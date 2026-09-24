@@ -18,10 +18,14 @@ import {
 // around the terminal's 256-character carry. A quoted value ("…", '…' or
 // $'…') is drawn from a wide alphabet: spaces, tabs, CR, LF, CRLF, escaped
 // quotes, the other quote, escaped backslashes, =, :, ; and non-ASCII letters,
-// and its quote may never close.
+// and its quote may never close. A value may also be a command substitution,
+// $(…) or `…`, bare, inside double quotes or inside a word, holding spaces,
+// tabs, CR, LF, CRLF, quotes (one holding a closing parenthesis), an escaped
+// parenthesis, a nested $(…), backticks inside $(…), escaped backticks inside
+// `…`, and heredocs (<<EOF, <<'EOF', <<-EOF) inside $(…); it may never close.
 // Every input is redacted whole, split at every point into two reads, split
-// at random points into three reads, and cut into random reads with idle
-// beats between some. The checks:
+// into three reads at points drawn from the value's syntax characters or at
+// random, and cut into random reads with idle beats between some. The checks:
 // - no letter or digit of a secret value may show, unless the ruling shows
 //   it: after a prefixed name, the word right before the sensitive name counts
 //   (total, has, max, min, count, is, enable) and the value is a complete plain
@@ -83,6 +87,51 @@ function widePieces(close: string | undefined): ReadonlyArray<readonly [string, 
   return [...pieces, ["escaped-quote", `\\${close}`], ["escaped-backslash", "\\\\"], ["other-quote", other], ["escaped-other-quote", `\\${other}`]]
 }
 
+// A command substitution, $(…) or `…`, of words and what may sit between them.
+// A heredoc goes last inside $(…), since its terminator needs a line of its
+// own before the closing parenthesis. An unclosed substitution is the closed
+// one cut short at a random point inside it, so any nesting, quote or escape
+// may be left open.
+function substitution(next: () => number, word: (length: number) => string, features: string[]): { text: string, closed: boolean } {
+  const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!
+  const chance = (probability: number) => next() < probability
+  const short = () => word(1 + Math.floor(next() * 3))
+  // inBacktick: some enclosing substitution is `…`, whose first unescaped
+  // backtick ends it, so nothing inside it holds a bare backtick.
+  const build = (depth: number, backtick: boolean, inBacktick = backtick): string => {
+    const pieces: Array<readonly [string, () => string]> = [
+      ["space", () => " "], ["tab", () => "\t"], ["lf", () => "\n"], ["crlf", () => "\r\n"], ["cr", () => "\r"],
+      ["double-quote", () => `"${short()} ${short()}"`], ["single-quote", () => `'${short()}\t${short()}'`],
+    ]
+    if (!backtick) pieces.push(["quoted-paren", () => `"${short()})${short()}"`], ["escaped-paren", () => "\\)"], ["escaped-quote", () => "\\\""])
+    if (backtick) pieces.push(["escaped-backtick", () => `\\\`${short()} ${short()}\\\``])
+    if (depth < 2) pieces.push(["nested", () => ` $(${build(depth + 1, false, inBacktick)}) `])
+    if (!inBacktick && depth < 2) pieces.push(["backtick-inside", () => ` \`${build(depth + 1, true)}\` `])
+    let body = short()
+    const count = 1 + Math.floor(next() * 4)
+    for (let index = 0; index < count; index += 1) {
+      const [feature, piece] = pick(pieces)
+      features.push(`sub-${feature}`)
+      body += `${piece()}${short()}`
+    }
+    if (depth === 0 && chance(0.05)) { features.push("sub-long"); body += ` ${word(260 + Math.floor(next() * 40))}` }
+    if (!backtick && depth === 0 && chance(0.15)) {
+      const [feature, marker, indent] = pick([["heredoc", "EOF", ""], ["heredoc-quoted", "'EOF'", ""], ["heredoc-dash", "-EOF", "\t"]] as const)
+      features.push(`sub-${feature}`)
+      body += ` <<${marker}\n${indent}${short()} ${short()}\n${indent}${short()}\n${indent}EOF\n`
+    }
+    return body
+  }
+  const backtick = chance(0.3)
+  features.push(backtick ? "sub-backtick" : "sub-dollar")
+  const closedText = backtick ? `\`${build(0, true)}\`` : `$(${build(0, false)})`
+  if (!chance(0.2)) return { text: closedText, closed: true }
+  features.push("unclosed-substitution")
+  const opener = backtick ? 1 : 2
+  const cutAt = opener + 1 + Math.floor(next() * (closedText.length - opener - 1))
+  return { text: closedText.slice(0, cutAt), closed: false }
+}
+
 function generatePrefixed(next: () => number): Case {
   const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!
   const chance = (probability: number) => next() < probability
@@ -122,18 +171,25 @@ function generatePrefixed(next: () => number): Case {
   // goes on, a long run around the carry, or a wide quoted value.
   // A value past the durable 8,192-character bound is costly to split at
   // every point, so it comes up a third as often as the others.
-  let kind = pick(["word", "number", "number", "decimal", "boolean", "number-then-word", "carry", "long", "wide", "wide", "wide"])
+  let kind = pick(["word", "number", "number", "decimal", "boolean", "number-then-word", "carry", "long", "wide", "wide", "wide", "substitution", "substitution", "substitution"])
   if (kind === "long" && !chance(1 / 3)) kind = "carry"
+  // cmd has no command substitution, and a JSON string with a following key
+  // is read as JSON, so neither holds one.
+  if (kind === "substitution" && (form === "cmd-set" || form === "json-mixed")) kind = "wide"
   // The quote: none, a double or single quote, or $'…'. A wide value is
   // always quoted, since unquoted it would end at its first space. JSON
-  // strings take double quotes.
+  // strings take double quotes. A substitution is bare or in double quotes.
   const opener = form === "cmd-set" || form === "json-mixed"
     ? ""
     : kind === "wide"
       ? (jsonLike ? "\"" : pick(["\"", "'", "$'"]))
-      : chance(0.3) ? (jsonLike ? "\"" : pick(["\"", "'"])) : ""
+      : kind === "substitution"
+        ? (jsonLike || chance(0.3) ? "\"" : "")
+        : chance(0.3) ? (jsonLike ? "\"" : pick(["\"", "'"])) : ""
   const close = form === "cmd-set" ? undefined : form === "json-mixed" ? "\"" : opener.slice(-1)
   let value: string
+  // Whether a substitution in the value closed.
+  let substitutionClosed = true
   switch (kind) {
     case "number": value = chance(0.5) ? digits(3 + Math.floor(next() * 4)) : String(1 + Math.floor(next() * 9)); break
     case "decimal": value = `${digits(3)}.${digits(3)}`; break
@@ -153,13 +209,25 @@ function generatePrefixed(next: () => number): Case {
       if (chance(0.05)) { features.push("wide-long"); value += word(260 + Math.floor(next() * 40)) }
       break
     }
+    case "substitution": {
+      const built = substitution(next, word, features)
+      substitutionClosed = built.closed
+      // Bare, a substitution may sit inside a word, with letters before it
+      // and, once closed, after it.
+      const lead = !opener && chance(0.15) ? (features.push("sub-in-word"), word(2)) : ""
+      const tail = !opener && built.closed && chance(0.15) ? (features.push("sub-in-word"), word(2)) : ""
+      value = `${lead}${built.text}${tail}`
+      break
+    }
     default: value = word(6 + Math.floor(next() * 7)); break
   }
   features.push(`value-${kind}`)
   if (opener) features.push(`quote-${opener === "\"" ? "double" : opener === "'" ? "single" : "dollar"}`)
   const plain = /^(?:\d+(?:\.\d+)?|true|false)$/iu.test(value)
 
-  const closed = !opener || chance(0.8)
+  // Inside a substitution that never closes, a closing quote would be part of
+  // it, so the quote is left off too.
+  const closed = !opener || (substitutionClosed && chance(0.8))
   if (opener && !closed) features.push("unclosed-quote")
   const quoted = `${opener}${value}${closed ? close : ""}`
   const space = () => chance(0.2) ? " " : ""
@@ -169,7 +237,7 @@ function generatePrefixed(next: () => number): Case {
   let kept: string[] = []
   // Whether the value, as written, is complete: its quote closed and a
   // delimiter or the end of the text right after it.
-  let complete = closed
+  let complete = closed && substitutionClosed
   switch (form) {
     case "assignment": text = `${name}${space()}=${space()}${quoted}`; break
     case "export": text = `export ${name}=${quoted}`; break
@@ -271,17 +339,38 @@ function splitPoints(item: Case): number[] {
   return points
 }
 
+// Where a value's syntax sits: its quotes, substitution delimiters,
+// backslashes and whitespace, just before or just after each. Cuts there
+// split an escape from what it escapes, $ from (, and a delimiter from its
+// neighbours.
+function syntaxPoints(item: Case): number[] {
+  if (item.value === undefined) return []
+  const start = item.text.indexOf(item.value)
+  const points: number[] = []
+  for (let at = 0; at < item.value.length; at += 1) {
+    if (/[$()`"'\\\s]/u.test(item.value[at]!)) points.push(start + at, start + at + 1)
+  }
+  return points.filter((point) => point > 0 && point < item.text.length)
+}
+
 // Every way a case is read: whole, split at every point into two reads, split
-// at random points into three reads, and cut into random reads with idle
+// into three reads (three times, each cut at a syntax point of the value half
+// the time and at random otherwise), and cut into random reads with idle
 // beats.
 function readings(item: Case, next: () => number): Step[][] {
   const text = item.text
   const all: Step[][] = [[text]]
   for (const at of splitPoints(item)) all.push([text.slice(0, at), text.slice(at)])
   if (text.length >= 3) {
+    const syntax = syntaxPoints(item)
+    const point = (from: number) => {
+      const random = from + Math.floor(next() * (text.length - from))
+      const candidates = syntax.filter((at) => at >= from && at < text.length)
+      return candidates.length > 0 && next() < 0.5 ? candidates[Math.floor(next() * candidates.length)]! : random
+    }
     for (let index = 0; index < 3; index += 1) {
-      const first = 1 + Math.floor(next() * (text.length - 2))
-      const second = first + 1 + Math.floor(next() * (text.length - first - 1))
+      const first = Math.min(point(1), text.length - 2)
+      const second = Math.max(first + 1, Math.min(point(first + 1), text.length - 1))
       all.push([text.slice(0, first), text.slice(first, second), text.slice(second)])
     }
   }
@@ -451,10 +540,12 @@ function show(step: Step): string {
 }
 
 // A failure is reported once per family: the form, whether the name is
-// prefixed, the quote and whether it closed, the redactor and the failure.
+// prefixed, the quote and whether it closed, a substitution, its kind and
+// whether it closed, the redactor and the failure.
 function family(item: Case): string {
   const features = item.shape.split("+")
-  const kept = features.filter((feature) => feature.startsWith("quote-") || feature === "unclosed-quote" || feature === "unclosed-set" || feature === "value-wide" || feature === "long-prefix")
+  const kept = features.filter((feature) => feature.startsWith("quote-") || feature === "unclosed-quote" || feature === "unclosed-set" || feature === "value-wide" || feature === "long-prefix"
+    || feature === "value-substitution" || feature === "unclosed-substitution" || feature === "sub-backtick" || feature === "sub-dollar")
   return [features[0], ...kept].join("+")
 }
 
@@ -515,6 +606,24 @@ describe("values the terminal drops, split at every point", () => {
     { shape: "long-key-json-single", text: `{"${keyOf(254)}": 'zqx jwvk', "safe": "visible"}\n`, value: "zqx jwvk", rule: "hide", kept: ["\"safe\": \"visible\"}"], longName: true },
     { shape: "long-key-assignment", text: `${keyOf(254)}="zqx jwvk" -s\n`, value: "zqx jwvk", rule: "hide", kept: [" -s"], longName: true },
     { shape: "long-key-long-value", text: `{"${keyOf(254)}": "${long} mkqz", "safe": "visible"}\n`, value: `${long} mkqz`, rule: "hide", kept: ["\"safe\": \"visible\"}"], longName: true },
+    // Command substitutions, which run to their matching closing delimiter.
+    ...[
+      ["sub-assignment", "TOKEN=", "$(get zqx jwvk)"],
+      ["sub-backtick-flag", "run --token ", "`get zqx jwvk`"],
+      ["sub-nested", "export X_TOKEN=", "$(get $(zqx\tjwvk) \"m)q\" `kz\nvw`)"],
+      ["sub-in-quotes", "NPM_TOKEN=\"", "$(get \"zqx jwvk\")"],
+      ["sub-heredoc", "X_PASSWORD=", "$(cat <<'EOF'\nzqx jwvk\nEOF\n)"],
+      ["sub-escaped-backtick", "token=", "`get \\`zqx jwvk\\` mq`"],
+      ["sub-in-word", "run --db-password=", "zq$(get x\r\njwvk)vk"],
+      ["sub-long", "TOKEN=", `$(get ${long} zqx)`],
+      ["sub-long-nested", "run --x-token \"", `$(get $(${long}) zqx)`],
+    ].map(([shape, before, value]): Case => ({
+      shape: shape!,
+      text: `${before!}${value!}${before!.endsWith("\"") ? "\"" : ""} -s\n`,
+      value: value!,
+      rule: "hide",
+      kept: [" -s"],
+    })),
   ]
 
   it.each(splitCases)("$shape", (item) => {
@@ -533,7 +642,9 @@ function standIn(show: (item: Case) => string): readonly Pair[] {
   return pairs.map((pair) => ({ ...pair, current: (item: Case) => show(item) }))
 }
 const identity = standIn((item) => item.text)
-const firstCharacterShown = standIn((item) => item.text.replace(item.value!, `${item.value!.slice(0, 1)}[REDACTED]`))
+// Shows the first letter or digit of the value, since a value such as
+// $(get x) opens with syntax the oracle does not count.
+const firstCharacterShown = standIn((item) => item.text.replace(item.value!, `${/[\p{L}\p{N}]/u.exec(item.value!)?.[0] ?? ""}[REDACTED]`))
 
 describe("the secret value oracle", () => {
   const probe = (text: string, value: string): Case => ({ shape: "probe", text, value, rule: "hide", kept: [] })
@@ -546,6 +657,8 @@ describe("the secret value oracle", () => {
     probe("NPM_TOKEN=\"zqx jwvk\" -s\n", "zqx jwvk"),
     probe("tool --npm-token=\"zqx\rjwvk\" -s\n", "zqx\rjwvk"),
     probe("token=$'ж\\'q' -s\n", "ж\\'q"),
+    probe("TOKEN=$(get zqx jwvk) -s\n", "$(get zqx jwvk)"),
+    probe("run --token `get zqx` -s\n", "`get zqx`"),
   ]
 
   it.each(probes)("hides $text and fails a redactor that shows it whole or in part", (item) => {
@@ -558,16 +671,19 @@ describe("the secret value oracle", () => {
     const missed: string[] = []
     let hidden = 0
     let wide = 0
+    let substituted = 0
     for (let index = 0; index < 4_000; index += 1) {
       const next = random(seed + index)
       const item = generate(next)
       if (item.rule !== "hide") continue
       hidden += 1
       if (item.shape.includes("value-wide")) wide += 1
+      if (item.shape.includes("value-substitution")) substituted += 1
       if (!failure(item, [[item.text]], identity)) missed.push(`${item.shape}: ${JSON.stringify(item.text.slice(0, 80))}`)
     }
     expect(hidden).toBeGreaterThan(2_000)
     expect(wide).toBeGreaterThan(500)
+    expect(substituted).toBeGreaterThan(500)
     expect(missed).toEqual([])
   })
 })

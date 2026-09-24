@@ -29,4 +29,7 @@ closing quote across spaces, tabs, `;`, CR, LF and terminal reads, so `NPM_TOKEN
 two pieces and `--npm-token="a\rb"` no longer show `b`, in terminal output, stored command output,
 approval cards and thread copies. A quote that never closes hides the rest of the record, and the
 terminal and the command output stream keep hiding into the following output until it closes,
-across an idle flush too.
+across an idle flush too. A command substitution, `$(...)` or a backtick pair, now stays hidden up to
+its matching closing delimiter, nested or inside double quotes, across spaces, line breaks and
+terminal reads, so `TOKEN=$(get secret value)` and ``--token `get secret` `` no longer show what
+follows the first space. A substitution that never closes is handled as an unclosed quote is.

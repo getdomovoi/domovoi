@@ -603,3 +603,113 @@ describe("quoted values across spaces, line breaks and reads", () => {
     expect(run([`${"a.".repeat(140)}TOKEN`, "_BUDGET=4096\n"])).toBe(`${"a.".repeat(140)}TOKEN_BUDGET=4096\n`)
   })
 })
+
+// Security review of 95302320, and what the fuzz widened to substitutions
+// found with it: a command substitution, $(…) or `…`, runs to its matching
+// closing delimiter across spaces, line breaks and reads, nested or inside
+// quotes, and a substitution that never closes hides the rest of the record
+// and carries into the next one, as an open quote does.
+describe("command substitutions across spaces, line breaks and reads", () => {
+  function run(reads: readonly string[]): string {
+    const redactor = new TerminalOutputRedactor()
+    return reads.map((read) => redactor.push(read)).join("") + redactor.flush()
+  }
+  function stream(reads: readonly string[]): string {
+    const redactor = new DurableOutputRedactor()
+    return reads.map((read) => redactor.push(read)).join("") + redactor.flush()
+  }
+  function splits(text: string): string[][] {
+    const all: string[][] = []
+    for (let first = 1; first < text.length; first += 1) {
+      all.push([text.slice(0, first), text.slice(first)])
+      for (let second = first + 1; second < text.length; second += 1) {
+        all.push([text.slice(0, first), text.slice(first, second), text.slice(second)])
+      }
+    }
+    return all
+  }
+
+  const closed: Array<{ text: string, expected: string }> = [
+    { text: "TOKEN=$(get zqx jwvk) -s\n", expected: "TOKEN=[REDACTED] -s\n" },
+    { text: "run --token `get zqx jwvk` -s\n", expected: "run --token [REDACTED] -s\n" },
+    { text: "export X_TOKEN=$(get $(zqx\tjwvk) \"m)q\" `kz\nvw`) -s\n", expected: "export X_TOKEN=[REDACTED] -s\n" },
+    { text: "NPM_TOKEN=\"$(get \"zqx jwvk\")\" -s\n", expected: "NPM_TOKEN=\"[REDACTED]\" -s\n" },
+    { text: "X_PASSWORD=$(cat <<'EOF'\nzqx jwvk\nEOF\n) -s\n", expected: "X_PASSWORD=[REDACTED] -s\n" },
+    { text: "token=`get \\`zqx jwvk\\` mq` -s\n", expected: "token=[REDACTED] -s\n" },
+    { text: "run --db-password=zq$(get x\r\njwvk)vk -s\n", expected: "run --db-password=[REDACTED] -s\n" },
+    { text: "{\"x_token\": \"$(get \\\"zqx jwvk\\\")\", \"safe\": \"visible\"}\n", expected: "{\"x_token\": \"[REDACTED]\", \"safe\": \"visible\"}\n" },
+    { text: "api_key: $(vault read zqx jwvk)\n", expected: "api_key: [REDACTED]\n" },
+  ]
+
+  it.each(closed)("hides $text whole in the durable redactors", ({ text, expected }) => {
+    expect(redactDurableCommand(text)).toMatchObject({ value: expected, redacted: true })
+    expect(redactDurableOutput(text).value).toBe(expected)
+    expect(redactDurableText(text).value).toBe(expected)
+  })
+
+  it.each(closed)("hides $text in every two- and three-read split of the terminal", ({ text, expected }) => {
+    const wrong = splits(text).filter((reads) => run(reads) !== expected).map((reads) => JSON.stringify(reads))
+    expect(wrong).toEqual([])
+  })
+
+  it.each(closed)("hides $text in every two- and three-read split of the durable stream", ({ text }) => {
+    const wrong = splits(text).filter((reads) => {
+      const shown = stream(reads)
+      return /zq|qx|jw|wv|vk|kz|mq|get|vault/u.test(shown) || !/ -s\n$|"safe": "visible"\}\n$|: \[REDACTED\]\n$/u.test(shown)
+    }).map((reads) => JSON.stringify(reads))
+    expect(wrong).toEqual([])
+  })
+
+  it("keeps a substitution open across an idle flush", () => {
+    const redactor = new TerminalOutputRedactor()
+    const shown = redactor.push("TOKEN=$(get zqx ") + redactor.flush() + redactor.push("jwvk) -s\n") + redactor.flush()
+    expect(shown).toBe("TOKEN=[REDACTED] -s\n")
+  })
+
+  it("keeps a long substitution open across line breaks until it closes", () => {
+    const value = `$(get ${"zqx ".repeat(80)}\r\n${"jwvk\n".repeat(80)}`
+    const shown = run([`export X_TOKEN=${value.slice(0, 300)}`, value.slice(300), ") -s\n"])
+    expect(shown).toBe("export X_TOKEN=[REDACTED] -s\n")
+    expect(run([`run --token \`${"zqx ".repeat(80)}`, "jwvk\n`", " -s\n"])).toBe("run --token [REDACTED] -s\n")
+  })
+
+  it("hides the rest of the record after a substitution that never closes, and carries it into the next", () => {
+    expect(redactDurableOutput("TOKEN=$(get zqx jwvk\nnext zqx\n").value).toBe("TOKEN=[REDACTED]\n")
+    expect(redactDurableCommand("run --token `get zqx\rjwvk").value).toBe("run --token [REDACTED]")
+    expect(redactDurableCommand("X_TOKEN=$(get $(zqx) \"m q").value).toBe("X_TOKEN=[REDACTED]")
+    expect(stream(["TOKEN=$(get zqx jwvk\n", "still $(jwvk)\n", "jwvk) -s\n", "after\n"])).toBe("TOKEN=[REDACTED]\n -s\nafter\n")
+    expect(run(["TOKEN=$(get zqx jwvk\r\n", "still jwvk\r\n", "jwvk) -s\r\n"])).toBe("TOKEN=[REDACTED] -s\r\n")
+  })
+
+  it("carries a substitution left open by an omitted long record into the next record", () => {
+    const long = "a".repeat(maximumStreamingOutputBufferLength + 10)
+    expect(stream([`${long} NPM_TOKEN=$(zqx\n`, "jwvk) -s\n"])).toBe("[Long command output line omitted]\n -s\n")
+    expect(stream([`${long} NPM_TOKEN=\`zqx\n`, "jwvk` -s\n"])).toBe("[Long command output line omitted]\n -s\n")
+  })
+
+  it("hides substitutions in workspace approval and thread copies", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals[0]!.command = "run --token $(vault read zqx jwvk) -s"
+    snapshot.approvals[0]!.operation = "Run with NPM_TOKEN=`get zqx\r\njwvk`"
+    const sessionId = snapshot.sessions[0]!.id
+    snapshot.thread.push(
+      { id: "tool-substituted", sessionId, kind: "tool", tool: "command", status: "completed", title: "run --token `get zqx jwvk` -s", output: "X_SECRET=$(get zqx\njwvk) -s\n", createdAt: "2026-09-24T12:00:00.000Z" },
+      { id: "user-substituted", sessionId, kind: "user", body: "export X_PASSWORD=$(get \"zqx jwvk\") now", createdAt: "2026-09-24T12:00:00.000Z" },
+    )
+    const copies = redactWorkspaceCopies(snapshot)
+    const shown = JSON.stringify({ approval: copies.approvals[0], thread: copies.thread.filter((item) => item.id.endsWith("-substituted")) })
+    expect(shown).not.toMatch(/jwvk/u)
+    expect(copies.approvals[0]).toMatchObject({ risk: "hard-gate", command: "run --token [REDACTED] -s" })
+    expect(copies.thread).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "tool-substituted", title: "run --token [REDACTED] -s", output: "X_SECRET=[REDACTED] -s\n" }),
+      expect.objectContaining({ id: "user-substituted", body: "export X_PASSWORD=[REDACTED] now" }),
+    ]))
+  })
+
+  it("leaves a substitution after a name that is not sensitive alone", () => {
+    for (const text of ["TOKEN_BUDGET=$(nproc) make", "echo $(date) token count", "tool --no-token `get x y` build"]) {
+      expect(redactDurableCommand(text)).toEqual({ value: text, redacted: false, truncated: false })
+      expect(run([text])).toBe(text)
+    }
+  })
+})
