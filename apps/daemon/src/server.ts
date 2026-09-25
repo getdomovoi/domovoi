@@ -9925,13 +9925,20 @@ export class DomovoiDaemon {
     }
   }
 
+  // Every stored approval card expires here, not only those of interrupted
+  // turns. A card's providerRequestId was issued by a provider process that is
+  // gone, and providers number requests from a fresh counter per process, so
+  // the same id can name a new live request in another session. Answering or
+  // denying the stale card would then decide that request. This runs before
+  // the listener opens, so no client can act on a stale card; the agent asks
+  // again if it still needs approval.
   #recoverInterruptedTurns(): void {
     const interrupted = this.#snapshot.sessions.filter(
       (session) => session.state !== "archiving"
         && session.state !== "archived"
         && session.activeTurnId,
     )
-    if (interrupted.length === 0) return
+    if (interrupted.length === 0 && this.#snapshot.approvals.length === 0) return
 
     for (const session of interrupted) {
       this.#holdQueuedSessionSend(session.id, "Daemon restart interrupted the turn before the queued boundary.")
@@ -9939,13 +9946,20 @@ export class DomovoiDaemon {
     const recoveredAt = new Date().toISOString()
     const candidate = structuredClone(this.#snapshot)
     const recoveredTurns: Array<{ sessionId: string; turnId: string }> = []
-    const expiredApprovals = candidate.approvals.filter(
-      (approval) => interrupted.some((session) => session.id === approval.sessionId),
-    )
+    const expiredApprovals = [...candidate.approvals]
     const interruptedSessionIds = new Set(interrupted.map((session) => session.id))
 
     for (const session of candidate.sessions) {
-      if (!interruptedSessionIds.has(session.id) || !session.activeTurnId) continue
+      if (!interruptedSessionIds.has(session.id) || !session.activeTurnId) {
+        // A session that was only waiting on an expired card has nothing left
+        // to wait for; it goes idle the way a denied card leaves it.
+        if (session.state === "waiting"
+          && expiredApprovals.some((approval) => approval.sessionId === session.id)) {
+          session.state = "idle"
+          session.updatedAt = recoveredAt
+        }
+        continue
+      }
       recoveredTurns.push({ sessionId: session.id, turnId: session.activeTurnId })
       session.state = "idle"
       session.updatedAt = recoveredAt

@@ -24,18 +24,21 @@ const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
 type TestRpcResponse<M extends RpcMethod> = Record<string, unknown> & { result: RpcResult<M> }
 
+// Turns and approval cards belong to the provider process that raised them:
+// startup recovery interrupts every stored turn and expires every stored card.
+// A test that needs them live holds them back from the stored snapshot and
+// restores them after start, as if this daemon's providers had raised them.
 function deferLiveTurns(snapshot: typeof demoWorkspace): () => void {
   const turns = snapshot.sessions.flatMap((session) => session.activeTurnId
     ? [{ sessionId: session.id, state: session.state, activeTurnId: session.activeTurnId }]
     : [])
-  const affected = new Set(turns.map(({ sessionId }) => sessionId))
-  const approvals = snapshot.approvals.filter((approval) => affected.has(approval.sessionId))
+  const approvals = snapshot.approvals
   for (const turn of turns) {
     const session = snapshot.sessions.find(({ id }) => id === turn.sessionId)!
     session.state = "idle"
     delete session.activeTurnId
   }
-  snapshot.approvals = snapshot.approvals.filter((approval) => !affected.has(approval.sessionId))
+  snapshot.approvals = []
   return () => {
     for (const turn of turns) {
       const session = snapshot.sessions.find(({ id }) => id === turn.sessionId)!
