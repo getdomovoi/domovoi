@@ -972,6 +972,26 @@ describe("names inside a value, and values after a line break or spaced =", () =
     expect(shown).not.toMatch(/zq|qx|xj|jw|wv|vk/u)
   })
 
+  // A name inside a quoted value is part of that quoted value, and its value
+  // ends with it: only a name outside every quote or construct of the value
+  // takes its own value on past it. Found by main's review round 6 test,
+  // "keeps the next line after an oversized quoted value that holds a name and
+  // value".
+  it.each([
+    { text: "API_KEY=\"zqx token=jwvk\" visible output\n", expected: "API_KEY=\"[REDACTED]\" visible output\n" },
+    { text: "TOKEN=$(get password=zqx) -s\n", expected: "TOKEN=[REDACTED] -s\n" },
+  ])("keeps what follows a quoted value holding a name and value: $text", ({ text, expected }) => {
+    expect(redactDurableOutput(text).value).toBe(expected)
+    expect(stream([text])).toBe(expected)
+    // The terminal drops a value longer than it carries, and keeps what follows.
+    const long = text.replace("zqx", "q".repeat(8_200))
+    for (const reads of [[long], [long.slice(0, -" visible output\n".length), long.slice(-" visible output\n".length)]]) {
+      const shown = run(reads)
+      expect(shown).not.toMatch(/jwvk|qqqq/u)
+      expect(shown.endsWith(expected.slice(expected.lastIndexOf("[REDACTED]") + "[REDACTED]".length).replace(/^["')]/u, ""))).toBe(true)
+    }
+  })
+
   // A quote that never closes holds the value open across reads, on to where
   // a quote arrives (owner ruling in #539).
   it("hides an unclosed single-quoted property value split across reads", () => {

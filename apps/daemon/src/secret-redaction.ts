@@ -119,7 +119,8 @@ function quoteAt(text: string, at = 0): GroupingConstruct | undefined {
 //   array's (, is a quoted value: hidden, it keeps its quotes.
 // - Within a construct, what its entry lists opens, a backslash escapes the
 //   next character, and its closer closes it.
-// When the text ends first, the value runs to the end of the text.
+// When the text ends first, the value runs to the end of the text; to: where
+// to stop reading, as if the text ended there.
 // A value inside a quote opened right before its name, as in set "NAME=value"
 // or echo 'NAME=a b', starts inside that quote: it is read with the escapes of
 // the table's entry for that quote, and as one shell word, so it goes on past
@@ -168,7 +169,7 @@ function quoteNamed(quote: string): GroupingName {
 
 // Reads a value from `from`. end: the index of the delimiter that ends the
 // value, or -1 when the text ends first; state: where the reading stands.
-function readValue(text: string, from: number, state: ValueState): { end: number, state: ValueState } {
+function readValue(text: string, from: number, state: ValueState, to = text.length): { end: number, state: ValueState } {
   const stack = state.stack
   let { escaped, pending, opened, closing, word, fresh, nested } = state
   const finish = (end: number) => {
@@ -186,7 +187,7 @@ function readValue(text: string, from: number, state: ValueState): { end: number
   }
   // Outside every construct: what may open next.
   const topOpeners = () => fresh ? valueStartOpeners : wordOpeners
-  for (let at = from; at < text.length; at += 1) {
+  for (let at = from; at < to; at += 1) {
     const character = text[at]!
     if (escaped) {
       escaped = false
@@ -406,12 +407,13 @@ const javaSystemProperty: ValuePattern = {
 // undefined when the value ended within the text. enclosing: a quote opened
 // right before the name and still open at the value, as in set "NAME=value"
 // or echo "NAME=a b": the value is read inside it and ends at its closer.
-// inner: names inside the value, each with a separator, whose own values run
-// on past the value before them, in order; end: where the last of them ends,
-// or the value's own end; open is then where the last one's reading stood.
+// delimiter: what ends the value. inner: names inside the value, each with a
+// separator, whose own values run on past the value before them, in order;
+// end: where the last of them ends, or the value's own end; open is then where
+// the last one's reading stood.
 type ValueMatch = {
   index: number, prefix: string, secret: string, open: ValueState | undefined, enclosing: GroupingName | undefined,
-  inner: readonly ValueMatch[], end: number,
+  delimiter: RegExp, inner: readonly ValueMatch[], end: number,
 }
 
 function valueStartState(delimiter: RegExp, enclosing: GroupingName | undefined): ValueState {
@@ -436,7 +438,10 @@ function readMatch(pattern: ValuePattern, text: string, match: RegExpExecArray):
   const enclosing = quote === undefined ? undefined : quoteNamed(quote)
   const read = readValue(text, valueAt, valueStartState(pattern.delimiter, enclosing))
   const end = read.end < 0 ? text.length : read.end
-  return { index: match.index, prefix: match[0], secret: text.slice(valueAt, end), open: read.end < 0 ? read.state : undefined, enclosing, inner: [], end }
+  return {
+    index: match.index, prefix: match[0], secret: text.slice(valueAt, end), open: read.end < 0 ? read.state : undefined, enclosing,
+    delimiter: pattern.delimiter, inner: [], end,
+  }
 }
 
 // Where each inner pattern next matches at or after a point, remembered for
@@ -457,23 +462,40 @@ function nextInner(search: InnerSearch, start: RegExp, text: string, from: numbe
 // as in -DGITHUB_TOKEN ==Password: value, where the value is =Password: and
 // Password's value comes after it (found by the differential fuzz of #598).
 // Each such name extends what is hidden to its own value's end, and names
-// inside that value are looked for in turn.
+// inside that value are looked for in turn. Only a name outside every quote
+// and construct of the value counts: one inside a quoted value, as in
+// API_KEY="a token=b", is part of that quoted value and ends with it.
 function withInnerValues(outer: ValueMatch, text: string, search: InnerSearch): ValueMatch {
   if (outer.open !== undefined) return outer
   const inner: ValueMatch[] = []
+  let region = outer
   let from = outer.index + outer.prefix.length
   let end = outer.end
   for (;;) {
-    let furthest: ValueMatch | undefined
+    const names: Array<{ pattern: ValuePattern, match: RegExpExecArray }> = []
     for (const { pattern, start } of innerStarts) {
       for (let match = nextInner(search, start, text, from); match !== null && match.index < end; match = nextInner(search, start, text, match.index + 1)) {
-        const read = readMatch(pattern, text, match)
-        if (read.end > end && (furthest === undefined || read.end > furthest.end)) furthest = read
-        if (read.open !== undefined) break
+        names.push({ pattern, match })
       }
+    }
+    names.sort((left, right) => left.match.index - right.match.index)
+    // The value the names sit in is read up to each name, in order, to see
+    // whether the name is outside its quotes and constructs.
+    const valueAt = region.index + region.prefix.length
+    const reading = valueStartState(region.delimiter, region.enclosing)
+    let readTo = valueAt
+    let furthest: ValueMatch | undefined
+    for (const { pattern, match } of names) {
+      if (match.index < valueAt) continue
+      if (readValue(text, readTo, reading, match.index).end >= 0) break
+      readTo = match.index
+      if (reading.stack.length > 0 || reading.escaped) continue
+      const read = readMatch(pattern, text, match)
+      if (read.end > end && (furthest === undefined || read.end > furthest.end)) furthest = read
     }
     if (furthest === undefined) break
     inner.push(furthest)
+    region = furthest
     from = end
     end = furthest.end
     if (furthest.open !== undefined) break
@@ -1062,7 +1084,11 @@ export class TerminalOutputRedactor {
         // and is dropped as the rest of a name that outgrew the carry is.
         const inner = this.#holdFrom(this.#dropped)
         this.#dropped = ""
-        if (inner.value === undefined) return end(read.end)
+        // A quote or construct character in what follows the separator may
+        // close one opened before the name, as in "a token=b": the name is
+        // then inside the value, and its value ended with it. A quote before
+        // the separator is the name's own, as in "x-token":.
+        if (inner.value === undefined || /["'`$(){}<>\\]/u.test(inner.value)) return end(read.end)
         this.#dropping = this.#startDropping(inner.value, inner.syntax ?? "", inner.flag ?? false, inner.word ?? "", inner.enclosing)
         this.#dropped = inner.value
         return { shown: "", rest: input.slice(read.end) }
