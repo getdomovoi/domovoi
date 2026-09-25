@@ -20,9 +20,11 @@ const automaticTriggers = ["push", "pull_request", "pull_request_target", "relea
 
 export function workflowTriggers(content) {
   const lines = content.split(/\r?\n/)
-  const start = lines.findIndex((line) => /^on:\s*$/.test(line) || /^on:\s*\S/.test(line))
+  // YAML allows the key quoted; an unread key would pass the check silently.
+  const onKey = /^(?:on|"on"|'on'):\s*(\S.*)?$/
+  const start = lines.findIndex((line) => onKey.test(line))
   if (start === -1) return []
-  const inline = /^on:\s*(\S.*)$/.exec(lines[start])
+  const inline = /^(?:on|"on"|'on'):\s*(\S.*)$/.exec(lines[start])
   if (inline) {
     const value = inline[1].trim()
     if (value.startsWith("[")) return value.slice(1, -1).split(",").map((item) => item.trim()).filter(Boolean)

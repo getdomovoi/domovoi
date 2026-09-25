@@ -18,6 +18,11 @@ test("reads triggers at whatever indent the workflow uses", () => {
   assert.deepEqual(workflowTriggers(fourSpaces), ["release", "workflow_dispatch"])
 })
 
+test("reads triggers under a quoted on key", () => {
+  assert.deepEqual(workflowTriggers(['"on":', "  release:", "jobs: {}"].join("\n")), ["release"])
+  assert.deepEqual(workflowTriggers("'on': [push]\njobs: {}"), ["push"])
+})
+
 test("accepts the unsigned line while signing is a maintainer dispatch only", () => {
   assert.deepEqual(evaluateUnsignedBuild([{ path: ".github/workflows/desktop-signing.yml", content: dispatchOnly }], settings), [])
 })
