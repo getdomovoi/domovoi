@@ -858,6 +858,15 @@ describe("quotes in the middle of a word and around a name", () => {
     expect(shown).toMatch(/ -s$/u)
   })
 
+  // Found by the 200,000-case fuzz on seeds 1 and 777: a JSON key that starts
+  // with a dash was taken for a flag, so its long value's drop ran past the
+  // comma and took the next field.
+  it("keeps what follows a long JSON value whose key starts with a dash", () => {
+    expect(run([`{"-DB.SECRET_KEY":"${"q".repeat(300)}",`, '"safe":"visible"}\n'])).toBe('{"-DB.SECRET_KEY":"[REDACTED]","safe":"visible"}\n')
+    const name = `-${"a.".repeat(140)}secret_key`
+    expect(run([`{"${name}`, '":"zqxjwvk","safe":"visible"}\n'])).toBe(`{"${name}":"[REDACTED]","safe":"visible"}\n`)
+  })
+
   it("reads a quoted value on to its delimiter after an idle flush in its name", () => {
     const redactor = new TerminalOutputRedactor()
     const shown = redactor.push("coun") + redactor.flush() + redactor.push("t.github_token=$'qv))x'xq\r\n") + redactor.flush()

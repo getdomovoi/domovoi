@@ -783,9 +783,10 @@ const danglingContext = /(?:\$env:|\bset\s+)["']?$|(?:^|[\s{,(])["']$/iu
 const lineBreak = /[\r\n]/u
 
 // Where a value ends after a name and its syntax: a name: or JSON value also
-// ends at a comma or brace, unless the name is a flag.
+// ends at a comma or brace, unless the name is a flag. A colon after a quoted
+// name is JSON even when the name starts with a dash, as in {"-db.secret":…}.
 function valueDelimiterAfter(syntax: string, flag: boolean): RegExp {
-  return syntax.includes(":") && !flag ? closedValueDelimiter : valueDelimiter
+  return syntax.includes(":") && (!flag || /["']/u.test(syntax)) ? closedValueDelimiter : valueDelimiter
 }
 
 // A quoted value that has ended, with something after it, is no longer
@@ -955,7 +956,9 @@ export class TerminalOutputRedactor {
         }
         if (!(dropping.flag && spaced)) return end(at, input.slice(0, at))
       }
-      const structured = separator === ":" && !dropping.flag
+      // A colon after a quoted name is JSON, even when the name starts with a
+      // dash.
+      const structured = separator === ":" && (!dropping.flag || quoted)
       if ((structured ? closedValueDelimiter : valueDelimiter).test(character)) return end(at, input.slice(0, at))
       const shown = input.slice(0, at)
       const delimiter = structured ? closedValueDelimiter : valueDelimiter
