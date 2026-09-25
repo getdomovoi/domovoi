@@ -56,7 +56,7 @@ export const credentialStoreNames: readonly (readonly string[])[] = credentialSt
 // "ﬁ" ligature or a fullwidth letter, and a case pair such as "ß" and "ss",
 // read as the name they stand for. Upper then lower case gives the full
 // folding that lower case alone does not.
-function comparable(text: string): string {
+export function comparable(text: string): string {
   return text
     .normalize("NFKC")
     .replace(/\p{Default_Ignorable_Code_Point}/gu, "")

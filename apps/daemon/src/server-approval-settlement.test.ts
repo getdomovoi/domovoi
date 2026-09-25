@@ -14,6 +14,14 @@ import { realPathLookupBudgetMs } from "./credential-stores.js"
 import { fileScopedTools, resolveCommandExecution, resolveExecution } from "./execution-resolution.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
+import {
+  cardCommand,
+  cardOperation,
+  cardTextFailures,
+  createHiddenFile,
+  hiddenNamePaths,
+  hiddenNameRun,
+} from "./test-hidden-names.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
@@ -639,6 +647,68 @@ describe("a card's own text when the card hides a path", () => {
     const receipts = (copy: WorkspaceSnapshot) => copy.thread.flatMap((item) => item.kind === "receipt" ? [item.operation] : [])
     expect(receipts(await current())).toEqual(expect.arrayContaining(operations))
     expect(receipts(store.load())).toEqual(expect.arrayContaining(operations))
+  })
+
+  // Round 13: a hidden file name that holds a comma stayed in the card's text
+  // and in its receipt. Generated hidden file names, each a real file, written
+  // every way an agent writes a path, show [REDACTED] in every copy of the
+  // card and in the receipt, and the text around each path stays.
+  it("shows [REDACTED] for generated hidden file names in every copy of the card and in its receipt", async () => {
+    const run = hiddenNameRun(6)
+    const paths = hiddenNamePaths(run).map((path, index) => `case-${index}/${path}`)
+    const made = new Set<string>()
+    const { directory, socket, emit, store, notices } = await setup(async (root) => {
+      for (const path of paths) if (await createHiddenFile(root, path)) made.add(path)
+    })
+    type Expected = { label: string; path: string; forms: string[]; operation: string; command: string }
+    const expected = new Map<number, Expected>()
+    for (const [index, path] of paths.entries()) {
+      if (!made.has(path)) continue
+      const forms = [path, join(directory, ...path.split("/"))]
+      const hidden = forms.map(() => "[REDACTED]")
+      const id = 900 + index
+      emit({ requestId: id, command: cardCommand(forms), reason: cardOperation(forms), path })
+      expected.set(id, { label: `case ${index} ${JSON.stringify(path)}`, path, forms, operation: cardOperation(hidden), command: cardCommand(hidden) })
+    }
+    const current = async () => (await rpc(socket, "workspace.get")).result as WorkspaceSnapshot
+    const lastChange = () => (JSON.parse(notices.at(-1)!) as { params: WorkspaceSnapshot }).params
+    await waitForDaemon(async () => expect((await current()).approvals).toHaveLength(expected.size))
+    await waitForDaemon(async () => expect(lastChange().approvals).toHaveLength(expected.size))
+
+    const failures = (where: string, id: number, shown: { operation: string; command?: string }) => {
+      const text = expected.get(id)!
+      const check = (line: string, value: string, want: string) => cardTextFailures({
+        label: `${where}, ${text.label} ${line}`, shown: value, expected: want, forms: text.forms, path: text.path,
+      })
+      return [
+        ...check("operation", shown.operation, text.operation),
+        ...(shown.command === undefined ? [] : check("command", shown.command, text.command)),
+      ]
+    }
+    const cardFailures = (copy: WorkspaceSnapshot, where: string) => copy.approvals.flatMap((card) => [
+      ...(card.risk === "hard-gate" ? [] : [`${where}, ${expected.get(card.providerRequestId!)!.label} is not a hard gate`]),
+      ...failures(where, card.providerRequestId!, card),
+    ])
+    const found = [
+      ...cardFailures(await current(), "workspace.get"),
+      ...cardFailures(lastChange(), "workspace.changed"),
+      ...cardFailures(store.load(), "store.load"),
+    ]
+
+    const ids = new Map<string, number>()
+    for (const card of (await current()).approvals) {
+      ids.set(card.id, card.providerRequestId!)
+      expect((await rpc(socket, "approval.resolve", { approvalId: card.id, decision: "deny", client: "cli" })).error).toBeUndefined()
+    }
+    const receiptFailures = (copy: WorkspaceSnapshot, where: string) => copy.thread.flatMap((item) => {
+      if (item.kind !== "receipt") return []
+      const id = [...ids].find(([approvalId]) => item.id.startsWith(`receipt-${approvalId}-`))?.[1]
+      return id === undefined ? [] : failures(where, id, { operation: item.operation })
+    })
+    const receipts = (copy: WorkspaceSnapshot) => copy.thread.filter((item) => item.kind === "receipt" && [...ids.keys()].some((id) => item.id.startsWith(`receipt-${id}-`)))
+    expect(receipts(await current())).toHaveLength(expected.size)
+    found.push(...receiptFailures(await current(), "receipt in workspace.get"), ...receiptFailures(store.load(), "receipt in store.load"))
+    expect(found, `seed ${run.seed}, ${run.cases} cases, ${paths.length - made.size} names refused by the filesystem`).toEqual([])
   })
 })
 
