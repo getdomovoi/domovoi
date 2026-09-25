@@ -240,12 +240,18 @@ export async function stageDaemonRuntime(input: {
   }
   const staging = pathApi.join(root, `.${input.version}.staging-${randomUUID()}`)
   const aside = pathApi.join(root, `.${input.version}.previous-${randomUUID()}`)
+  const failed = pathApi.join(root, `.${input.version}.failed-${randomUUID()}`)
+  // Whether the move aside is known to have happened: its call returned.
+  let asideMoved = false
   try {
     await fs.copy(shippedRoot, staging)
-    if (earlier === "directory") await fs.rename(destination, aside)
+    if (earlier === "directory") {
+      await fs.rename(destination, aside)
+      asideMoved = true
+    }
     await fs.rename(staging, destination)
   } catch (cause) {
-    await restoreVersionPath(fs, { destination, aside, hadEarlier: earlier === "directory" })
+    await restoreVersionPath(fs, { destination, aside, failed, hadEarlier: earlier === "directory", asideMoved })
     throw cause
   } finally {
     await fs.remove(staging)
@@ -264,13 +270,38 @@ export async function stageDaemonRuntime(input: {
 // Undo whatever part of a failed publish completed. The version path was
 // either the earlier copy or empty before; a directory there now that is not
 // the earlier copy is the new one, published by a rename whose flush threw.
-// Each step's error is ignored and the next state read from disk instead. If
-// the earlier copy cannot be put back, it stays at `aside`.
-async function restoreVersionPath(fs: RuntimeFileSystem, paths: { destination: string; aside: string; hadEarlier: boolean }): Promise<void> {
+// Final review round 3: the new copy is renamed out to a fresh `failed` name
+// (one atomic step that can be read back), the earlier copy renamed back, and
+// only then the moved-out copy removed, best effort. A remove that fails part
+// way therefore leaves a hidden leftover, never a partial copy at the version
+// path. Nothing here throws: each step's error is ignored and the next state
+// read from disk, and a read that fails counts as not known. The caller keeps
+// the error that stopped the publish. If the earlier copy cannot be put back,
+// it stays at `aside`.
+async function restoreVersionPath(fs: RuntimeFileSystem, paths: {
+  destination: string
+  aside: string
+  failed: string
+  hadEarlier: boolean
+  asideMoved: boolean
+}): Promise<void> {
   const settled = async (step: () => Promise<void>) => { try { await step() } catch { /* read back below */ } }
-  if (paths.hadEarlier && await fs.entry(paths.aside) === "missing") return
-  if (await fs.entry(paths.destination) !== "missing") await settled(() => fs.remove(paths.destination))
-  if (paths.hadEarlier && await fs.entry(paths.destination) === "missing") await settled(() => fs.rename(paths.aside, paths.destination))
+  const read = async (path: string): Promise<RuntimeEntry | undefined> => { try { return await fs.entry(path) } catch { return undefined } }
+  if (paths.hadEarlier && !paths.asideMoved) {
+    // The move aside threw. If the earlier copy is not known to be aside, it
+    // may still be at the version path, which must then not be touched.
+    const aside = await read(paths.aside)
+    if (aside === "missing" || aside === undefined) return
+  }
+  // The version path holds nothing of the earlier copy now, so whatever is
+  // there is the new copy. A read that fails still tries the rename, which
+  // does nothing when the path is empty.
+  if (await read(paths.destination) !== "missing") await settled(() => fs.rename(paths.destination, paths.failed))
+  if (paths.hadEarlier) {
+    const now = await read(paths.destination)
+    if (now === "missing" || now === undefined) await settled(() => fs.rename(paths.aside, paths.destination))
+  }
+  if (await read(paths.failed) !== "missing") await settled(() => fs.remove(paths.failed))
 }
 
 function message(cause: unknown): string {

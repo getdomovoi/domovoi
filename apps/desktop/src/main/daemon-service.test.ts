@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
-import { DesktopDaemonService, daemonRuntimeLayout, nodeRuntimeFileSystem, profileRuntimeDirectory, stageDaemonRuntime } from "./daemon-service.js"
+import { DesktopDaemonService, daemonRuntimeLayout, nodeRuntimeFileSystem, profileRuntimeDirectory, stageDaemonRuntime, type RuntimeFileSystem } from "./daemon-service.js"
 import { DesktopDaemon } from "./desktop-daemon.js"
 
 const runtime = { nodePath: "/Users/dana/.domovoi/runtime/0.9.4/node/bin/node", daemonEntryPath: "/Users/dana/.domovoi/runtime/0.9.4/daemon/dist/index.js" }
@@ -399,6 +399,53 @@ describe("staging the shipped runtime under the profile", () => {
     })
   })
 
+  // Final review round 3 of #576. A recursive remove can fail part way, and a
+  // failed read of the disk must not replace the error that stopped the
+  // publish. The rule still holds: the earlier copy is at the version path, or
+  // nothing is.
+  const partialRemove = (runtimeRoot: string) => async (path: string) => {
+    if (path.includes(".staging-") || !path.startsWith(runtimeRoot)) return rm(path, { recursive: true, force: true })
+    await rm(join(path, "daemon", "dist", "index.js"), { force: true })
+    throw new Error("simulated partial remove")
+  }
+
+  it("puts the earlier copy back when removing the new copy fails part way", async () => {
+    await withScratch(async ({ resources, home }) => {
+      const runtimeRoot = join(home, ".domovoi", "runtime")
+      const earlier = join(runtimeRoot, "0.9.4")
+      await mkdir(join(earlier, "daemon", "dist"), { recursive: true })
+      await writeFile(join(earlier, "daemon", "dist", "index.js"), "earlier")
+      await expect(stage({ resources, home, version: "0.9.4", rename: syncFailsAfter(".staging-"), remove: partialRemove(runtimeRoot) }))
+        .rejects.toThrow("simulated directory sync failure")
+      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
+      expect((await readdir(runtimeRoot)).filter((name) => !name.startsWith(".0.9.4.failed-"))).toEqual(["0.9.4"])
+    })
+  })
+
+  it("leaves nothing at the version path when removing a new copy with no earlier one fails part way", async () => {
+    await withScratch(async ({ resources, home }) => {
+      const runtimeRoot = join(home, ".domovoi", "runtime")
+      await expect(stage({ resources, home, version: "0.9.4", rename: syncFailsAfter(".staging-"), remove: partialRemove(runtimeRoot) }))
+        .rejects.toThrow("simulated directory sync failure")
+      expect((await readdir(runtimeRoot)).filter((name) => !name.startsWith(".0.9.4.failed-"))).toEqual([])
+    })
+  })
+
+  it("keeps the error that stopped the publish when reading the disk back fails, and still puts the earlier copy back", async () => {
+    await withScratch(async ({ resources, home }) => {
+      const earlier = join(home, ".domovoi", "runtime", "0.9.4")
+      await mkdir(join(earlier, "daemon", "dist"), { recursive: true })
+      await writeFile(join(earlier, "daemon", "dist", "index.js"), "earlier")
+      const entry = nodeRuntimeFileSystem().entry
+      await expect(stage({ resources, home, version: "0.9.4", rename: syncFailsAfter(".staging-"), entry: async (path) => {
+        if (path.includes(".previous-")) throw Object.assign(new Error("simulated EACCES"), { code: "EACCES" })
+        return entry(path)
+      } })).rejects.toThrow("simulated directory sync failure")
+      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
+      expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual(["0.9.4"])
+    })
+  })
+
   it("names the missing shipped part before copying anything", async () => {
     await withScratch(async ({ resources, home }) => {
       const nodePath = daemonRuntimeLayout(resources, platform).nodePath
@@ -448,6 +495,8 @@ type StageInput = {
   version: string
   copy?: (from: string, to: string) => Promise<void>
   rename?: (from: string, to: string) => Promise<void>
+  remove?: (path: string) => Promise<void>
+  entry?: RuntimeFileSystem["entry"]
 }
 
 function stage(input: StageInput) {
@@ -456,6 +505,8 @@ function stage(input: StageInput) {
     fileSystem: nodeRuntimeFileSystem({
       ...(input.copy ? { copy: input.copy } : {}),
       ...(input.rename ? { rename: input.rename } : {}),
+      ...(input.remove ? { remove: input.remove } : {}),
+      ...(input.entry ? { entry: input.entry } : {}),
     }),
   })
 }
