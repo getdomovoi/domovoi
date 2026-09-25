@@ -10,11 +10,13 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
-import type { AgentAdapter } from "./codex.js"
+import type { AgentAdapter, AgentEvent } from "./codex.js"
 import type { WorkspaceStore } from "./store.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
 const gate = vi.hoisted(() => ({
+  park: false,
+  execution: undefined as unknown,
   parked: undefined as undefined | ((value: unknown) => void),
   arrived: () => {},
 }))
@@ -23,10 +25,14 @@ vi.mock("./execution-resolution.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("./execution-resolution.js")>()
   return {
     ...original,
-    resolveExecution: vi.fn(() => new Promise((resolve) => {
-      gate.parked = resolve
-      gate.arrived()
-    })),
+    // The card is raised with the package script resolved; the read the
+    // Allow makes is the one held open.
+    resolveExecution: vi.fn(() => gate.park
+      ? new Promise((resolve) => {
+        gate.parked = resolve
+        gate.arrived()
+      })
+      : Promise.resolve(gate.execution)),
   }
 })
 
@@ -63,37 +69,44 @@ const execution: ExecutionResolution = {
   },
 }
 
-function waitingOnPackageScript(): WorkspaceSnapshot {
+function billingSession(worktree: boolean): WorkspaceSnapshot {
   const snapshot = structuredClone(demoWorkspace)
   const session = snapshot.sessions.find((candidate) => candidate.id === "session-billing")!
   session.runtime = { ...session.runtime, provider: "codex", model: "gpt-5.6-sol" }
-  session.state = "waiting"
-  session.workspacePath = "/worktrees/session-billing"
+  session.state = "idle"
+  if (worktree) session.workspacePath = "/worktrees/session-billing"
+  else delete session.workspacePath
   session.providerThreadId = "thread-billing"
   delete session.activeTurnId
-  snapshot.approvals = [{
-    ...demoWorkspace.approvals[0]!, risk: "normal", command: "pnpm run test", providerRequestId: 17, execution,
-  }]
+  // A stored card expires when the daemon starts, so the gate is raised after.
+  snapshot.approvals = []
   return workspaceSnapshotSchema.parse(snapshot)
 }
 
 describe("an approval allowed while an emergency stop runs", () => {
-  it("keeps the stop's denial when the package script check finishes afterwards", async () => {
+  // Later steps also miss a card the stop removed, but with a worktree a late
+  // allow would first take a checkpoint after the stop. Both cases are
+  // refused where the package scripts have just been read.
+  it.each([
+    { worktree: true, label: "with a worktree" },
+    { worktree: false, label: "without a worktree" },
+  ])("keeps the stop's denial when the package script check finishes afterwards, $label", async ({ worktree }) => {
+    let emit: (event: AgentEvent) => void = () => {}
     const provider = {
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => []),
       startThread: vi.fn(async () => "unused"),
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
-      startTurn: vi.fn(async () => "unused"),
+      startTurn: vi.fn(async () => "turn-billing"),
       steerTurn: vi.fn(async () => {}),
       interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
-      onEvent: vi.fn(() => () => {}),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => { emit = listener; return () => {} }),
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
     const store = {
-      load: () => waitingOnPackageScript(),
+      load: () => billingSession(worktree),
       save: vi.fn(),
       close: vi.fn(),
     } satisfies WorkspaceStore
@@ -119,14 +132,34 @@ describe("an approval allowed while an emergency stop runs", () => {
       client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken,
     })).error).toBeUndefined()
 
+    gate.park = false
+    gate.execution = execution
+    // A session without a worktree cannot start a turn, so its provider
+    // raises the gate on the thread without one.
+    if (worktree) {
+      expect((await rpc("session.send", { sessionId: "session-billing", prompt: "run the tests", client: "desktop" })).error).toBeUndefined()
+    }
+    emit({
+      type: "approval-requested", requestId: 17, threadId: "thread-billing", itemId: "call_test", command: "pnpm run test",
+      ...(worktree ? { turnId: "turn-billing" } : {}),
+    })
+    const card = await waitForDaemon(async () => {
+      const [raised] = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result).approvals
+      expect(raised?.execution).toMatchObject({ state: "resolved" })
+      return raised!
+    })
+
+    gate.park = true
     const arrived = new Promise<void>((resolve) => { gate.arrived = resolve })
-    const allowed = rpc("approval.resolve", { approvalId: "approval-migrate", decision: "allow-once", client: "desktop" })
+    const allowed = rpc("approval.resolve", { approvalId: card.id, decision: "allow-once", client: "desktop", revision: card.revision })
     await arrived
     expect((await rpc("system.emergencyStop", { client: "desktop" })).error).toBeUndefined()
     expect(provider.resolveApproval).toHaveBeenCalledWith(17, "deny")
     gate.parked!(execution)
 
-    expect((await allowed).error).toBeDefined()
+    // Refused as withdrawn, before a checkpoint is attempted or the card
+    // could be rewritten, not by a later step that happens to miss it.
+    expect((await allowed).error?.message).toBe("The approval was withdrawn before it could be allowed")
     expect(provider.resolveApproval).not.toHaveBeenCalledWith(17, "allow-once")
     await waitForDaemon(async () => {
       const workspace = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
