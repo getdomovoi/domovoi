@@ -763,3 +763,105 @@ describe("command substitutions across spaces, line breaks and reads", () => {
     }
   })
 })
+
+// A quote in the middle of a value word opens, as bash reads one word:
+// TOKEN=ab"c d" is the value ab"c d". A quote right before the name, as in
+// cmd's set "NAME=value", is still open at the value, which ends at its
+// closing quote. The set rows were green before this change and must stay so.
+describe("quotes in the middle of a word and around a name", () => {
+  function run(reads: readonly string[]): string {
+    const redactor = new TerminalOutputRedactor()
+    return reads.map((read) => redactor.push(read)).join("") + redactor.flush()
+  }
+  function stream(reads: readonly string[]): string {
+    const redactor = new DurableOutputRedactor()
+    return reads.map((read) => redactor.push(read)).join("") + redactor.flush()
+  }
+  function splits(text: string): string[][] {
+    const all: string[][] = []
+    for (let first = 1; first < text.length; first += 1) {
+      all.push([text.slice(0, first), text.slice(first)])
+      for (let second = first + 1; second < text.length; second += 1) {
+        all.push([text.slice(0, first), text.slice(first, second), text.slice(second)])
+      }
+    }
+    return all
+  }
+
+  type Row = { text: string, expected: string, streamed?: string }
+  const midWord: Row[] = [
+    { text: "TOKEN=zq\"x jw\"vk -s\n", expected: "TOKEN=[REDACTED] -s\n" },
+    { text: "TOKEN=zq'x jw'vk -s\n", expected: "TOKEN=[REDACTED] -s\n" },
+    { text: "TOKEN=zq$'x jw'vk -s\n", expected: "TOKEN=[REDACTED] -s\n" },
+    { text: "run --token zq$\"x jw\" -s\n", expected: "run --token [REDACTED] -s\n" },
+    { text: "export X_SECRET=zq\"x\njw\" -s\n", expected: "export X_SECRET=[REDACTED] -s\n", streamed: "export X_SECRET=[REDACTED]\n -s\n" },
+    { text: "echo \"NPM_TOKEN=zqx jwvk\" -s\n", expected: "echo \"NPM_TOKEN=[REDACTED]\" -s\n" },
+  ]
+  // cmd's set "NAME=value", from the existing tests.
+  const setQuote: Row[] = [
+    { text: "set \"DB_PASSWORD=zqxjwvk\"\n", expected: "set \"DB_PASSWORD=[REDACTED]\"\n" },
+    { text: "set \"DB_PASSWORD=zqx jwvk\"\n", expected: "set \"DB_PASSWORD=[REDACTED]\"\n" },
+    { text: "set 'X_TOKEN=zqxjwvk' & echo -s\n", expected: "set 'X_TOKEN=[REDACTED]' & echo -s\n" },
+    { text: "set \"PASSWORD=cmd secret with spaces\"\n", expected: "set \"PASSWORD=[REDACTED]\"\n" },
+    { text: "set \"is-API_KEY=False\"\n", expected: "set \"is-API_KEY=False\"\n" },
+    { text: "set \"DB-ACCESS_TOKEN=zqxjwvk\"\nvisible output\n", expected: "set \"DB-ACCESS_TOKEN=[REDACTED]\"\nvisible output\n" },
+  ]
+  const rows = [...midWord, ...setQuote]
+
+  it.each(rows)("hides $text whole in the durable redactors", ({ text, expected }) => {
+    expect(redactDurableCommand(text).value).toBe(expected)
+    expect(redactDurableOutput(text).value).toBe(expected)
+    expect(redactDurableText(text).value).toBe(expected)
+  })
+
+  it.each(rows)("hides $text in every two- and three-read split of the terminal", ({ text, expected }) => {
+    const wrong = splits(text).filter((reads) => run(reads) !== expected).map((reads) => JSON.stringify(reads))
+    expect(wrong).toEqual([])
+  })
+
+  // The stream emits whole records, so a value open across a line break ends
+  // its record as the replacement and the rest of the value is dropped from
+  // the next (streamed).
+  it.each(rows)("hides $text in every two- and three-read split of the durable stream", ({ text, expected, streamed }) => {
+    const wrong = splits(text).filter((reads) => stream(reads) !== (streamed ?? expected)).map((reads) => JSON.stringify(reads))
+    expect(wrong).toEqual([])
+  })
+
+  it("keeps the existing set quote cases", () => {
+    expect(run(['set "', "min-secret_key=2979\r\n"])).not.toContain("2979")
+    expect(run(['set "', 'is-API_KEY=False"\n'])).toBe('set "is-API_KEY=False"\n')
+    expect(redactDurableOutput('set "total-password=123456').value).not.toContain("123456")
+    expect(redactDurableCommand('set "total-password=123456').value).not.toContain("123456")
+    expect(run(['set "total-password=123456'])).not.toContain("123456")
+    expect(redactDurableCommand('set "X_PASSWORD=zqx\njwvk').value).toBe('set "X_PASSWORD=[REDACTED]"')
+    const redactor = new TerminalOutputRedactor()
+    const shown = redactor.push("a".repeat(60)) + redactor.flush() + redactor.push(`${"a".repeat(30)} set "DB-ACCESS_TOKEN=False"\nvisible output\n`) + redactor.flush()
+    expect(shown).toContain("\nvisible output\n")
+    expect(shown).not.toContain("False")
+  })
+
+  // Ruled by fetzy 2026-09-24: where the terminal has lost what came before a
+  // name (an idle flush in the middle of it, or a name longer than the carry),
+  // a quote in the value opens a quote, failing closed. The accepted cost: a
+  // set "NAME=value" split there may hide the output that follows until
+  // another quote arrives. The value itself stays hidden.
+  it("hides the value of a set quote whose name began before an idle flush", () => {
+    const redactor = new TerminalOutputRedactor()
+    const shown = redactor.push('set "DB-') + redactor.flush() + redactor.push('PASSWORD=zqxjwvk"\nvisible output\n') + redactor.flush()
+    expect(shown).not.toMatch(/zq|qx|jw|wv|vk/u)
+  })
+
+  it("opens a quote in the middle of a value whose name began before an idle flush", () => {
+    const redactor = new TerminalOutputRedactor()
+    const shown = redactor.push("curl --IS__COUNT") + redactor.flush() + redactor.push("_COOKIE=jw'qv$((z'vk -s") + redactor.flush()
+    expect(shown).not.toMatch(/jw|qv|vk/u)
+    expect(shown).toMatch(/ -s$/u)
+  })
+
+  it("reads a quoted value on to its delimiter after an idle flush in its name", () => {
+    const redactor = new TerminalOutputRedactor()
+    const shown = redactor.push("coun") + redactor.flush() + redactor.push("t.github_token=$'qv))x'xq\r\n") + redactor.flush()
+    expect(shown).not.toMatch(/qv|xq/u)
+    expect(shown).toMatch(/\r\n$/u)
+  })
+})

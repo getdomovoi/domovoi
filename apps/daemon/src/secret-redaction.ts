@@ -20,9 +20,12 @@ const closedValueDelimiter = /[\s;&|,}\r\n]/u
 // The shell's grouping constructs, which a value is read through. Each runs
 // from its opener to its closer, across spaces and line breaks.
 // at: where it opens outside every other construct. "start": only where a
-// value starts, and the value is then a quoted value that ends at its closer.
-// "word": anywhere in a word, and the word goes on after it. "inside": only
-// within a construct that lists it.
+// value starts, and the value is then a quoted value. "quote": anywhere in a
+// word, as bash reads ab"c d" as one word, and where the value starts it makes
+// the value a quoted value. "word": anywhere in a word. "inside": only within
+// a construct that lists it. After any of them closes, the word goes on to its
+// delimiter, as ab"c d"ef is one word; a quoted value keeps its quotes when it
+// is hidden.
 // inside: what opens within it. Anything else there is plain text, so a quote
 // that is not listed does not open.
 // escapes: a backslash escapes the next character within it. '…' takes
@@ -38,7 +41,7 @@ export type GroupingName =
 export type GroupingConstruct = {
   opener: string
   closer: string
-  at: "start" | "word" | "inside"
+  at: "start" | "quote" | "word" | "inside"
   inside: readonly GroupingName[]
   escapes: boolean
   brokenAs?: GroupingName
@@ -59,10 +62,10 @@ export const groupingConstructs: Readonly<Record<GroupingName, GroupingConstruct
   processOutput: { opener: ">(", closer: ")", at: "word", inside: [...withinSubstitution, "parenthesis"], escapes: true },
   parameter: { opener: "${", closer: "}", at: "word", inside: [...withinSubstitution, "brace"], escapes: true },
   backtick: { opener: "`", closer: "`", at: "word", inside: [], escapes: true },
-  doubleQuote: { opener: "\"", closer: "\"", at: "start", inside: withinDoubleQuote, escapes: true },
-  dollarDoubleQuote: { opener: "$\"", closer: "\"", at: "start", inside: withinDoubleQuote, escapes: true },
-  singleQuote: { opener: "'", closer: "'", at: "start", inside: [], escapes: true },
-  dollarSingleQuote: { opener: "$'", closer: "'", at: "start", inside: [], escapes: true },
+  doubleQuote: { opener: "\"", closer: "\"", at: "quote", inside: withinDoubleQuote, escapes: true },
+  dollarDoubleQuote: { opener: "$\"", closer: "\"", at: "quote", inside: withinDoubleQuote, escapes: true },
+  singleQuote: { opener: "'", closer: "'", at: "quote", inside: [], escapes: true },
+  dollarSingleQuote: { opener: "$'", closer: "'", at: "quote", inside: [], escapes: true },
   // An array assignment, NAME=(a b).
   array: { opener: "(", closer: ")", at: "start", inside: withinSubstitution, escapes: true },
   parenthesis: { opener: "(", closer: ")", at: "inside", inside: [...withinSubstitution, "parenthesis"], escapes: true },
@@ -86,10 +89,11 @@ function openersOf(names: readonly GroupingName[]): Openers {
 
 const groupingNames = Object.keys(groupingConstructs) as GroupingName[]
 const quoteNames = groupingNames
-  .filter((name) => groupingConstructs[name].at === "start")
+  .filter((name) => groupingConstructs[name].at === "start" || groupingConstructs[name].at === "quote")
   .sort((left, right) => groupingConstructs[right].opener.length - groupingConstructs[left].opener.length)
-// Outside every construct: what opens anywhere in a word, and what opens
-// where a value starts.
+// Outside every construct: what opens anywhere in a word, read as one shell
+// word or not, and what opens where a value starts.
+const shellWordOpeners = openersOf(groupingNames.filter((name) => groupingConstructs[name].at === "word" || groupingConstructs[name].at === "quote"))
 const wordOpeners = openersOf(groupingNames.filter((name) => groupingConstructs[name].at === "word"))
 const valueStartOpeners = openersOf(groupingNames.filter((name) => groupingConstructs[name].at !== "inside"))
 const openersInside = Object.fromEntries(groupingNames.map((name) => [name, openersOf(groupingConstructs[name].inside)])) as Record<GroupingName, Openers>
@@ -109,14 +113,21 @@ function quoteAt(text: string, at = 0): GroupingConstruct | undefined {
 // A value is read as shell syntax, one character at a time, through the
 // constructs in groupingConstructs, so a value split across reads is followed
 // from where the last read left it.
-// - A value that opens with a quote, "…", '…', $'…' or $"…", or with an
-//   array's (, runs to its closer, across spaces and line breaks.
-// - Any other value is a word, which runs to a delimiter. A construct that
-//   opens in a word, such as $(…), ${…} or <(…), runs to its closer first,
+// - A value is a word, which runs to a delimiter. A construct that opens in
+//   it, such as "…", $'…', $(…), ${…} or <(…), runs to its closer first,
 //   across spaces and line breaks, and the word goes on after it.
+// - A value that opens with a quote, "…", '…', $'…' or $"…", or with an
+//   array's (, is a quoted value: hidden, it keeps its quotes.
 // - Within a construct, what its entry lists opens, a backslash escapes the
 //   next character, and its closer closes it.
 // When the text ends first, the value runs to the end of the text.
+// shellWord false: the value is inside a quote opened right before its name,
+// as in set "NAME=value", and ends at that quote's closer.
+// Where what came before a name is out of view, the value is still read as
+// one shell word, so a quote in it opens, failing closed (ruled by fetzy
+// 2026-09-24): a closing quote there may belong to a quote opened before the
+// name, as in set "NAME=value" split by an idle flush, and then what follows
+// is hidden until another quote arrives.
 // The state is changed in place by each read, so a value nested however deep
 // costs each read only what that read holds. A state belongs to one reading.
 // stack: what is still open, innermost last. escaped: the last character was
@@ -137,22 +148,30 @@ type ValueState = {
   word: boolean
   fresh: boolean
   nested: boolean
+  shellWord: boolean
   delimiter: RegExp
 }
 
-function startValue(delimiter: RegExp): ValueState {
-  return { stack: [], escaped: false, pending: "", opened: false, closing: 0, word: true, fresh: true, nested: false, delimiter }
+function startValue(delimiter: RegExp, shellWord = true): ValueState {
+  return { stack: [], escaped: false, pending: "", opened: false, closing: 0, word: true, fresh: true, nested: false, shellWord, delimiter }
 }
 
-function quotedValueState(quote: GroupingName): ValueState {
-  return { stack: [quote], escaped: false, pending: "", opened: false, closing: 0, word: false, fresh: false, nested: true, delimiter: valueDelimiter }
+// A value already inside a quote: one that opened it, or one inside a quote
+// opened right before its name (shellWord false: it ends at the closer).
+function quotedValueState(quote: GroupingName, delimiter: RegExp = valueDelimiter, shellWord = true): ValueState {
+  return { stack: [quote], escaped: false, pending: "", opened: false, closing: 0, word: false, fresh: false, nested: true, shellWord, delimiter }
 }
 
-// Reads a value from `from`. end: the index where the value ends (a word's
-// delimiter, or just after a quoted value's closing quote), or -1 when the
-// text ends first; state: where the reading stands.
+function quoteNamed(quote: string): GroupingName {
+  return quote === "'" ? "singleQuote" : "doubleQuote"
+}
+
+// Reads a value from `from`. end: the index where the value ends (its
+// delimiter, or, with shellWord false, just after a quoted value's closing
+// quote), or -1 when the text ends first; state: where the reading stands.
 function readValue(text: string, from: number, state: ValueState): { end: number, state: ValueState } {
   const stack = state.stack
+  const shellWord = state.shellWord
   let { escaped, pending, opened, closing, word, fresh, nested } = state
   const finish = (end: number) => {
     Object.assign(state, { escaped, pending, opened, closing, word, fresh, nested })
@@ -163,11 +182,14 @@ function readValue(text: string, from: number, state: ValueState): { end: number
     pending = ""
     opened = true
     nested = true
-    // What opens only where a value starts, a quote or an array's (, makes
-    // it a quoted value, which ends at its closer.
-    if (stack.length === 1 && groupingConstructs[name].at === "start") word = false
+    // A quote or an array's ( where the value starts makes it a quoted value.
+    if (stack.length === 1 && fresh && groupingConstructs[name].at !== "word") word = false
     fresh = false
   }
+  // Outside every construct: what may open next.
+  const topOpeners = () => fresh ? valueStartOpeners : shellWord ? shellWordOpeners : wordOpeners
+  // A quoted value read as one shell word goes on after its closer.
+  const endsAtCloser = () => stack.length === 0 && !word && !shellWord
   for (let at = from; at < text.length; at += 1) {
     const character = text[at]!
     if (escaped) {
@@ -181,7 +203,7 @@ function readValue(text: string, from: number, state: ValueState): { end: number
         if (closing < construct.closer.length) continue
         closing = 0
         stack.pop()
-        if (stack.length === 0 && !word) return finish(at + 1)
+        if (endsAtCloser()) return finish(at + 1)
         continue
       }
       // The closer broke off: what it closed was nested inside, and this
@@ -192,7 +214,7 @@ function readValue(text: string, from: number, state: ValueState): { end: number
     if (opened) {
       opened = false
       const top = stack.at(-1)!
-      const within = stack.length > 1 ? openersInside[stack.at(-2)!] : wordOpeners
+      const within = stack.length > 1 ? openersInside[stack.at(-2)!] : shellWord ? shellWordOpeners : wordOpeners
       const longer = within.exact.get(`${groupingConstructs[top].opener}${character}`)
       if (longer !== undefined) {
         stack[stack.length - 1] = longer
@@ -205,12 +227,13 @@ function readValue(text: string, from: number, state: ValueState): { end: number
       if (state.delimiter.test(character)) return finish(at)
       if (pending !== "") {
         const joined = `${pending}${character}`
-        const name = (fresh ? valueStartOpeners : wordOpeners).exact.get(joined)
+        const pendingOpeners = topOpeners()
+        const name = pendingOpeners.exact.get(joined)
         if (name !== undefined) {
           open(name)
           continue
         }
-        if ((fresh ? valueStartOpeners : wordOpeners).starts.has(joined)) {
+        if (pendingOpeners.starts.has(joined)) {
           pending = joined
           continue
         }
@@ -218,7 +241,7 @@ function readValue(text: string, from: number, state: ValueState): { end: number
         pending = ""
         fresh = false
       }
-      const openers = fresh ? valueStartOpeners : wordOpeners
+      const openers = topOpeners()
       const name = openers.exact.get(character)
       if (name !== undefined) open(name)
       else if (openers.starts.has(character)) pending = character
@@ -248,7 +271,7 @@ function readValue(text: string, from: number, state: ValueState): { end: number
         continue
       }
       stack.pop()
-      if (stack.length === 0 && !word) return finish(at + 1)
+      if (endsAtCloser()) return finish(at + 1)
       continue
     }
     const name = openers.exact.get(character)
@@ -357,8 +380,14 @@ const javaSystemProperty: ValuePattern = {
 
 // A value found by a pattern. prefix: the name and its syntax; secret: the
 // value; open: where the reading stood when the text ended inside the value,
-// undefined when the value ended within the text.
-type ValueMatch = { index: number, prefix: string, secret: string, open: ValueState | undefined }
+// undefined when the value ended within the text. enclosing: a quote opened
+// right before the name and still open at the value, as in set "NAME=value"
+// or echo "NAME=a b": the value is read inside it and ends at its closer.
+type ValueMatch = { index: number, prefix: string, secret: string, open: ValueState | undefined, enclosing: GroupingName | undefined }
+
+function valueStartState(delimiter: RegExp, enclosing: GroupingName | undefined): ValueState {
+  return enclosing === undefined ? startValue(delimiter) : quotedValueState(enclosing, delimiter, false)
+}
 
 function valueMatches(pattern: ValuePattern, text: string): ValueMatch[] {
   const matches: ValueMatch[] = []
@@ -366,27 +395,32 @@ function valueMatches(pattern: ValuePattern, text: string): ValueMatch[] {
   start.lastIndex = 0
   for (let match = start.exec(text); match !== null; match = start.exec(text)) {
     const valueAt = match.index + match[0].length
-    const read = readValue(text, valueAt, startValue(pattern.delimiter))
+    // The whole name, from its first character: a pattern that starts at the
+    // sensitive word, as where what came before is out of view, may begin in
+    // the middle of it.
+    let nameStart = match.index
+    while (nameStart > 0 && match.index - nameStart < 1_024 && /[A-Za-z0-9_.-]/u.test(text[nameStart - 1]!)) nameStart -= 1
+    const quote = openNameQuote(`${text.slice(nameStart, match.index)}${match[0]}`, text[nameStart - 1])
+    const enclosing = quote === undefined ? undefined : quoteNamed(quote)
+    const read = readValue(text, valueAt, valueStartState(pattern.delimiter, enclosing))
     const end = read.end < 0 ? text.length : read.end
-    matches.push({ index: match.index, prefix: match[0], secret: text.slice(valueAt, end), open: read.end < 0 ? read.state : undefined })
+    matches.push({ index: match.index, prefix: match[0], secret: text.slice(valueAt, end), open: read.end < 0 ? read.state : undefined, enclosing })
     start.lastIndex = end
   }
   return matches
 }
 
-// A hidden value keeps its quotes. A value still open when the text ended ran
-// to the end of the text, so the line break it ended on is kept. A word that
-// ends in a quote it did not open, as in set "NAME=value", keeps that quote,
-// which closes the text around it.
-function hiddenValue(prefix: string, secret: string): string {
-  const read = readValue(secret, 0, startValue(valueDelimiter))
+// A hidden value keeps its quotes, and a value inside a quote opened before
+// its name keeps that quote's closer. A value still open when the text ended
+// ran to the end of the text, so the line break it ended on is kept.
+function hiddenValue(prefix: string, secret: string, enclosing: GroupingName | undefined): string {
+  const read = readValue(secret, 0, valueStartState(valueDelimiter, enclosing))
   const open = read.end < 0 && read.state.stack.length > 0
   const lineEnd = open ? /(?:\r\n|\r|\n)$/u.exec(secret)?.[0] ?? "" : ""
+  if (enclosing !== undefined) return `${prefix}${replacement}${open ? "" : groupingConstructs[enclosing].closer}${lineEnd}`
   const quote = quoteAt(secret)
   if (!read.state.word && quote !== undefined) return `${prefix}${quote.opener}${replacement}${quote.closer}${lineEnd}`
-  const last = secret.at(-1)
-  const closesAround = !open && (last === '"' || last === "'") && secret.length > 1 && secret.indexOf(last) === secret.length - 1
-  return `${prefix}${replacement}${closesAround ? last : ""}${lineEnd}`
+  return `${prefix}${replacement}${lineEnd}`
 }
 
 // A value these patterns hide that is still open at the end of the text: a
@@ -410,7 +444,9 @@ function openValue(text: string, words: boolean): OpenValue | undefined {
     if (state.stack.length === 0 && !(words && state.nested)) continue
     if (found !== undefined && found.start <= match.index) continue
     const quote = state.word ? undefined : quoteAt(match.secret)
-    const shown = quote === undefined ? replacement : `${quote.opener}${replacement}${quote.closer}`
+    const shown = match.enclosing !== undefined
+      ? `${replacement}${groupingConstructs[match.enclosing].closer}`
+      : quote === undefined ? replacement : `${quote.opener}${replacement}${quote.closer}`
     found = { start: match.index, valueStart: text.length - match.secret.length, shown, state }
   }
   const cmd = lastMatch(quotedCmdAssignment, text)
@@ -419,7 +455,7 @@ function openValue(text: string, words: boolean): OpenValue | undefined {
     const head = (cmd[1] ?? "").length + quote.length + (cmd[3] ?? "").length
     const closed = cmd[0].length > head && cmd[0].endsWith(quote)
     if (!closed && (found === undefined || cmd.index < found.start)) {
-      found = { start: cmd.index, valueStart: cmd.index + head, shown: `${replacement}${quote}`, state: quotedValueState(quote === "'" ? "singleQuote" : "doubleQuote") }
+      found = { start: cmd.index, valueStart: cmd.index + head, shown: `${replacement}${quote}`, state: quotedValueState(quoteNamed(quote), valueDelimiter, false) }
     }
   }
   return found
@@ -618,14 +654,14 @@ function redact(value: unknown, maximumLength: number, complete = true, exemptFr
   )
   // Each value a pattern finds is replaced as a whole, read to its end by
   // readValue rather than by the pattern.
-  const replaceValues = (input: string, pattern: ValuePattern, replacer: (prefix: string, secret: string, offset: number, whole: string) => string) => {
+  const replaceValues = (input: string, pattern: ValuePattern, replacer: (match: ValueMatch, whole: string) => string) => {
     const matches = valueMatches(pattern, input)
     if (matches.length === 0) return input
     let result = ""
     let from = 0
     for (const match of matches) {
       const matched = `${match.prefix}${match.secret}`
-      const next = replacer(match.prefix, match.secret, match.index, input)
+      const next = replacer(match, input)
       if (next !== matched || matched.includes(replacement)) changed = true
       result += `${input.slice(from, match.index)}${next}`
       from = match.index + matched.length
@@ -634,10 +670,11 @@ function redact(value: unknown, maximumLength: number, complete = true, exemptFr
   }
   // The exemption applies only to a value that is complete: balanced quotes and
   // a delimiter, or the true end of the text, right after it.
-  const valueReplacer = (prefix: string, secret: string, offset: number, whole: string) => {
+  const valueReplacer = (match: ValueMatch, whole: string) => {
+    const { prefix, secret, index: offset } = match
     const matched = `${prefix}${secret}`
     if (offset >= exemptFrom && showsPlainValue(prefix, secret, whole[offset - 1]) && delimitedAt(whole, offset + matched.length)) return matched
-    return hiddenValue(prefix, secret)
+    return hiddenValue(prefix, secret, match.enclosing)
   }
   // cmd's set "NAME=value" is read first, while its closing quote is still in
   // place: an assignment read first would take that quote as part of the
@@ -661,9 +698,9 @@ function redact(value: unknown, maximumLength: number, complete = true, exemptFr
   // terminal redactor, holding only from the sensitive word, redacted
   // Dpassword=... after a flush left -D behind.
   if (exemptFrom > 0) {
-    output = replaceValues(output, lostContextAssignment, (prefix, secret, offset) => {
-      if (offset >= exemptFrom) return `${prefix}${secret}`
-      return hiddenValue(prefix, secret)
+    output = replaceValues(output, lostContextAssignment, (match) => {
+      if (match.index >= exemptFrom) return `${match.prefix}${match.secret}`
+      return hiddenValue(match.prefix, match.secret, match.enclosing)
     })
   }
   output = replaceValues(output, assignment, valueReplacer)
@@ -745,11 +782,17 @@ const nameContext = /(?:\$env:|\bset\s+)?["']?$/iu
 const danglingContext = /(?:\$env:|\bset\s+)["']?$|(?:^|[\s{,(])["']$/iu
 const lineBreak = /[\r\n]/u
 
-// A quoted value whose closing quote has arrived, with something after it, is
-// no longer growing. A closing quote at the very end may still be followed by
-// more of the same shell word.
-function closedQuote(value: string): boolean {
-  const read = readValue(value, 0, startValue(valueDelimiter))
+// Where a value ends after a name and its syntax: a name: or JSON value also
+// ends at a comma or brace, unless the name is a flag.
+function valueDelimiterAfter(syntax: string, flag: boolean): RegExp {
+  return syntax.includes(":") && !flag ? closedValueDelimiter : valueDelimiter
+}
+
+// A quoted value that has ended, with something after it, is no longer
+// growing. A closing quote at the very end may still be followed by more of
+// the same shell word.
+function closedQuote(value: string, delimiter: RegExp, enclosing: GroupingName | undefined): boolean {
+  const read = readValue(value, 0, valueStartState(delimiter, enclosing))
   return !read.state.word && read.end >= 0 && read.end < value.length
 }
 
@@ -773,9 +816,14 @@ function hideOpenValue(text: string, open: OpenValue, complete: boolean, exemptF
 // name needs its separator first. word: the end of the name so far, since it
 // may still grow (CREDENTIAL into CREDENTIALS, SECRET into SECRET_KEY); the
 // drop goes on only while the name still ends in a sensitive name.
+// enclosing: a quote opened right before the name, which the value is read
+// inside.
 type Dropping =
   | { kind: "value", state: ValueState }
-  | { kind: "pending", separator: string | undefined, quoted: boolean, spaced: boolean, flag: boolean, word: string, grown: boolean }
+  | {
+    kind: "pending", separator: string | undefined, quoted: boolean, spaced: boolean, flag: boolean, word: string, grown: boolean,
+    enclosing: GroupingName | undefined,
+  }
 
 const nameWordLength = 64
 const endsInSensitiveName = new RegExp(String.raw`(?:^|[_.-])${sensitiveName}$`, "iu")
@@ -837,7 +885,7 @@ export class TerminalOutputRedactor {
       // carry. Redact what there is, which turns the value seen so far into
       // the replacement, and drop the rest of it as it arrives.
       this.#carry = ""
-      this.#dropping = this.#startDropping(hold.value, hold.syntax ?? "", hold.flag ?? false, hold.word ?? "")
+      this.#dropping = this.#startDropping(hold.value, hold.syntax ?? "", hold.flag ?? false, hold.word ?? "", hold.enclosing)
       this.#settle(combined)
       return `${lead}${redactStreamText(combined, false, exemptFrom)}`
     }
@@ -849,11 +897,11 @@ export class TerminalOutputRedactor {
     return `${lead}${redactStreamText(emitted, false, exemptFrom, this.#carry[0])}`
   }
 
-  #startDropping(value: string, syntax: string, flag: boolean, word: string): Dropping {
+  #startDropping(value: string, syntax: string, flag: boolean, word: string, enclosing: GroupingName | undefined): Dropping {
     if (value === "") {
-      return { kind: "pending", separator: /[:=]/u.exec(syntax)?.[0], quoted: /["']/u.test(syntax), spaced: /\s/u.test(syntax), flag, word, grown: false }
+      return { kind: "pending", separator: /[:=]/u.exec(syntax)?.[0], quoted: /["']/u.test(syntax), spaced: /\s/u.test(syntax), flag, word, grown: false, enclosing }
     }
-    const read = readValue(value, 0, startValue(valueDelimiter))
+    const read = readValue(value, 0, valueStartState(valueDelimiterAfter(syntax, flag), enclosing))
     if (read.end < 0) return { kind: "value", state: read.state }
     // A value whose quote has closed ends at a delimiter or at the comma or
     // brace that follows a JSON string.
@@ -876,7 +924,7 @@ export class TerminalOutputRedactor {
       return { shown: "", rest: "" }
     }
 
-    let { separator, quoted, spaced, word, grown } = dropping
+    let { separator, quoted, spaced, word, grown, enclosing } = dropping
     for (let at = 0; at < input.length; at += 1) {
       const character = input[at]!
       // The name is still being written: it goes on only while it still ends
@@ -901,6 +949,8 @@ export class TerminalOutputRedactor {
         }
         if (isQuote && !quoted && !spaced) {
           quoted = true
+          // The name's closing quote closes a quote opened before it.
+          if (enclosing !== undefined && character === groupingConstructs[enclosing].closer) enclosing = undefined
           continue
         }
         if (!(dropping.flag && spaced)) return end(at, input.slice(0, at))
@@ -908,21 +958,28 @@ export class TerminalOutputRedactor {
       const structured = separator === ":" && !dropping.flag
       if ((structured ? closedValueDelimiter : valueDelimiter).test(character)) return end(at, input.slice(0, at))
       const shown = input.slice(0, at)
-      // A value that opens with what opens only where a value starts, a
-      // quote ($'…' and $"…" among them) or an array's (, is dropped up to
-      // its closer.
+      const delimiter = structured ? closedValueDelimiter : valueDelimiter
+      // A value inside a quote opened before its name is dropped up to that
+      // quote's closer, which the replacement's closer stands for.
+      if (enclosing !== undefined) {
+        this.#dropping = { kind: "value", state: quotedValueState(enclosing, delimiter, false) }
+        return { shown: `${shown}${replacement}${groupingConstructs[enclosing].closer}`, rest: input.slice(at) }
+      }
+      // A quoted value, one that opens with a quote ($'…' and $"…" among
+      // them) or an array's (, is dropped up to its closer and, read as one
+      // shell word, on to its delimiter.
       const quoteName = quoteNames.find((name) => input.startsWith(groupingConstructs[name].opener, at))
       if (quoteName !== undefined) {
         const { opener, closer } = groupingConstructs[quoteName]
-        this.#dropping = { kind: "value", state: quotedValueState(quoteName) }
+        this.#dropping = { kind: "value", state: quotedValueState(quoteName, delimiter) }
         return { shown: `${shown}${opener}${replacement}${closer}`, rest: input.slice(at + opener.length) }
       }
       // Any other value is a word, read from its first character: a $ at the
       // end of the read may still open $'…' or $(…).
-      this.#dropping = { kind: "value", state: startValue(structured ? closedValueDelimiter : valueDelimiter) }
+      this.#dropping = { kind: "value", state: startValue(delimiter) }
       return { shown: `${shown}${replacement}`, rest: input.slice(at) }
     }
-    this.#dropping = { ...dropping, separator, quoted, spaced, word, grown }
+    this.#dropping = { ...dropping, separator, quoted, spaced, word, grown, enclosing }
     return { shown: input, rest: "" }
   }
 
@@ -969,20 +1026,30 @@ export class TerminalOutputRedactor {
   // cut: the held name reaches back past the bound, so what came before it
   // was emitted without it.
   // syntax: what follows the sensitive word before its value; flag: the name
-  // starts with a dash or a slash; word: the end of the name.
-  #holdFrom(combined: string): { start: number, value?: string, syntax?: string, flag?: boolean, word?: string, cut?: boolean } {
+  // starts with a dash or a slash; word: the end of the name; enclosing: a
+  // quote opened right before the name and not closed in its syntax.
+  #holdFrom(combined: string): {
+    start: number, value?: string, syntax?: string, flag?: boolean, word?: string, cut?: boolean,
+    enclosing?: GroupingName,
+  } {
     const assignment = danglingSecret.exec(combined)
-    if (assignment && !closedQuote(assignment[2] ?? "")) {
+    if (assignment) {
       const nameStart = this.#nameStart(combined, assignment.index, 0)
       const value = assignment[2] ?? ""
       const syntax = assignment[1] ?? ""
-      const wordEnd = assignment.index + assignment[0].length - syntax.length - value.length
-      return {
-        start: this.#contextStart(combined, nameStart),
-        value,
-        syntax,
-        flag: combined[nameStart] === "-" || combined[nameStart] === "/",
-        word: combined.slice(Math.max(nameStart, wordEnd - nameWordLength), wordEnd),
+      const flag = combined[nameStart] === "-" || combined[nameStart] === "/"
+      const before = combined[nameStart - 1]
+      const enclosing = (before === '"' || before === "'") && !syntax.includes(before) ? quoteNamed(before) : undefined
+      if (!closedQuote(value, valueDelimiterAfter(syntax, flag), enclosing)) {
+        const wordEnd = assignment.index + assignment[0].length - syntax.length - value.length
+        const held = {
+          start: this.#contextStart(combined, nameStart),
+          value,
+          syntax,
+          flag,
+          word: combined.slice(Math.max(nameStart, wordEnd - nameWordLength), wordEnd),
+        }
+        return enclosing === undefined ? held : { ...held, enclosing }
       }
     }
     const floor = Math.max(0, combined.length - terminalRedactionCarryCharacters)

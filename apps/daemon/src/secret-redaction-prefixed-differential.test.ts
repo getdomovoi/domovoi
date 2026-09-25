@@ -53,8 +53,13 @@ import {
 // flush on an idle timer), which shows any unquoted value typed after its name
 // on main as well; that is the idle-release fix in #575. Across an idle beat,
 // and for a name longer than the 256 characters the terminal carries, the
-// terminal is held only to hiding what main hides. Seeded: a failure names its
-// seed, its shape and a minimal list of reads.
+// terminal is held only to hiding what main hides. There, too, it may hide
+// more than main, and nothing else: ruled by fetzy 2026-09-24, where the
+// terminal has lost what came before a name, a quote in the value opens a
+// quote, failing closed, so a set "NAME=value" split there may hide what
+// follows until another quote arrives. Losing kept text is allowed there when
+// a quote follows the value's start; showing a value main hides never is. Seeded: a failure names its seed, its
+// shape and a minimal list of reads.
 
 type Step = string | "idle"
 // hide: the value must never show. show: the text must come out unchanged.
@@ -103,10 +108,13 @@ function widePieces(close: string | undefined): ReadonlyArray<readonly [string, 
 // inside another construct.
 const groupingNames = Object.keys(groupingConstructs) as GroupingName[]
 const valueStartNames = groupingNames.filter((name) => groupingConstructs[name].at !== "inside")
-const valueStartOnly = groupingNames.filter((name) => groupingConstructs[name].at === "start")
-// The quotes: what opens only where a value starts and lets neither quote
-// open inside it, so the wide alphabet's other quote is plain there.
+const valueStartOnly = groupingNames.filter((name) => groupingConstructs[name].at !== "inside" && groupingConstructs[name].at !== "word")
+// The quotes: what makes a value quoted where it starts and lets neither
+// quote open inside it, so the wide alphabet's other quote is plain there.
 const quoteNames = valueStartOnly.filter((name) => !groupingConstructs[name].inside.some((inner) => valueStartOnly.includes(inner)))
+// What may open after plain characters of a word, as bash reads one word:
+// every construct that opens in a word, and every quote.
+const inWordNames = groupingNames.filter((name) => groupingConstructs[name].at === "word" || quoteNames.includes(name))
 
 // Text that is plain inside a construct: an opener or closer from the table
 // that opens nothing there and does not close it. Letters come before and
@@ -252,10 +260,10 @@ function generatePrefixed(next: () => number): Case {
       const outer = pick(opener ? groupingConstructs.doubleQuote.inside : valueStartNames)
       const built = grouping(next, word, features, outer)
       substitutionClosed = built.closed
-      // Bare, a construct that opens in a word may sit inside one, with
-      // letters before it and, once closed, after it.
-      const inWord = !opener && groupingConstructs[outer].at === "word"
-      const lead = inWord && chance(0.15) ? (features.push("sub-in-word"), word(2)) : ""
+      // Bare, a construct that opens in a word, a quote included, may sit
+      // inside one, with letters before it and, once closed, after it.
+      const inWord = !opener && inWordNames.includes(outer)
+      const lead = inWord && chance(0.3) ? (features.push("sub-in-word", `in-word-${outer}`), word(2)) : ""
       const tail = inWord && built.closed && chance(0.15) ? (features.push("sub-in-word"), word(2)) : ""
       value = `${lead}${built.text}${tail}`
       break
@@ -514,7 +522,11 @@ function judge(pair: Pair, item: Case, steps: readonly Step[]): Failure | undefi
     if (absolute && current !== item.text) return fail("complete counting value not shown", JSON.stringify(current.slice(0, 160)))
     return undefined
   }
-  const lost = item.kept.find((part) => !current.includes(part) && main().includes(part))
+  // Across an idle beat or a name past the carry, the terminal may hide more
+  // than main where a quote from the value on may open (ruled 2026-09-24),
+  // never less.
+  const quoteMayOpen = !absolute && item.value !== undefined && /["']/u.test(item.text.slice(item.text.indexOf(item.value)))
+  const lost = quoteMayOpen ? undefined : item.kept.find((part) => !current.includes(part) && main().includes(part))
   if (lost !== undefined) return fail("loses what main keeps", `${JSON.stringify(lost)}: ${JSON.stringify(current.slice(-160))}`)
   const shown = exposed(item, current)
   if (shown === undefined) return undefined
@@ -587,7 +599,7 @@ function show(step: Step): string {
 function family(item: Case): string {
   const features = item.shape.split("+")
   const kept = features.filter((feature) => feature.startsWith("quote-") || feature === "unclosed-quote" || feature === "unclosed-set" || feature === "value-wide" || feature === "long-prefix"
-    || feature === "value-substitution" || feature === "unclosed-substitution" || feature.startsWith("outer-"))
+    || feature === "value-substitution" || feature === "unclosed-substitution" || feature.startsWith("outer-") || feature.startsWith("in-word-"))
   return [features[0], ...kept].join("+")
 }
 
@@ -707,6 +719,9 @@ describe("the secret value oracle", () => {
     probe("NPM_TOKEN=<(printf zqx jwvk) -s\n", "<(printf zqx jwvk)"),
     probe("NPM_TOKEN=${VAR:-zqx jwvk} -s\n", "${VAR:-zqx jwvk}"),
     probe("NPM_TOKEN=(zqx jwvk) -s\n", "(zqx jwvk)"),
+    probe("TOKEN=zq\"x jw\"vk -s\n", "zq\"x jw\"vk"),
+    probe("TOKEN=zq'x jw'vk -s\n", "zq'x jw'vk"),
+    probe("TOKEN=zq$'x jw'vk -s\n", "zq$'x jw'vk"),
   ]
 
   it.each(probes)("hides $text and fails a redactor that shows it whole or in part", (item) => {
@@ -738,13 +753,18 @@ describe("the secret value oracle", () => {
   it("generates every grouping construct in the reader's table, outermost and nested", () => {
     const outermost = new Set<string>()
     const anywhere = new Set<string>()
+    const inWord = new Set<string>()
     for (let index = 0; index < 4_000; index += 1) {
       for (const feature of generate(random(seed + index)).shape.split("+")) {
         if (feature.startsWith("outer-")) outermost.add(feature.slice("outer-".length))
         if (feature.startsWith("construct-")) anywhere.add(feature.slice("construct-".length))
+        if (feature.startsWith("in-word-")) inWord.add(feature.slice("in-word-".length))
       }
     }
     expect(groupingNames.filter((name) => !anywhere.has(name))).toEqual([])
     expect(valueStartNames.filter((name) => !outermost.has(name))).toEqual([])
+    // Every construct that may open after plain characters of a word does,
+    // quotes included.
+    expect(inWordNames.filter((name) => !inWord.has(name))).toEqual([])
   })
 })

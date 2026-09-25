@@ -36,6 +36,12 @@ follows the first space. A substitution that never closes is handled as an unclo
 Process substitutions, `<(...)` and `>(...)`, parameter expansions, `${...}`, arithmetic,
 `$((...))`, and array assignments, `NAME=(...)`, now stay hidden up to their closers the same way,
 so `NPM_TOKEN=<(printf a b)`, `NPM_TOKEN=${VAR:-a b}` and `NPM_TOKEN=(a b)` no longer show what
-follows the first space. A deeply nested value read one
+follows the first space. A value is now read as one shell word: a quote in the middle of it opens
+(`TOKEN=ab"c d"`, `TOKEN=ab'c d'`, `TOKEN=ab$'c d'`), and a quoted value goes on to its delimiter
+after its closing quote. A quote opened right before a name, as in `set "NAME=value"` or
+`echo "NAME=a b"`, holds the value up to that quote's closer. Where the terminal has lost what came
+before a name (an idle flush in the middle of it, or a name longer than it carries), a quote in the
+value still opens, so a `set "NAME=value"` split there may hide the output that follows until
+another quote arrives. A deeply nested value read one
 character at a time now costs each read only what that read holds, rather than a copy of the whole
 nesting.
