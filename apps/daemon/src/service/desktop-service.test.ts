@@ -10,7 +10,7 @@ import {
   WindowsTaskPercentSignError,
   type DaemonServiceDependencies,
 } from "../public.js"
-import { createServiceConfiguration } from "./configuration.js"
+import { createServiceConfiguration, parseServiceConfiguration } from "./configuration.js"
 import type { ServiceEffects } from "./install.js"
 import { ServiceOperationBusyError } from "./operation-lease.js"
 
@@ -86,6 +86,22 @@ describe("installDaemonService", () => {
     await expect(installDaemonService({ runtime }, effects)).rejects.toBeInstanceOf(ProfileAlreadyOwnedError)
     expect(effects.write).not.toHaveBeenCalled()
     expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  // Ruled 2026-09-24 (A): the install records the runtime and daemon entry it
+  // installed in its own service.json; an update's rollback starts only those.
+  it("records the installed runtime and daemon entry in service.json on every platform", async () => {
+    const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime\\daemon\\index.js" }
+    for (const [platform, home, shipped] of [
+      ["darwin", "/Users/dl", runtime],
+      ["linux", "/home/dl", runtime],
+      ["win32", "C:\\Users\\dl", windowsRuntime],
+    ] as const) {
+      const effects = dependencies({ platform, home })
+      const installed = await installDaemonService({ runtime: shipped }, effects)
+      const written = vi.mocked(effects.write).mock.calls.find(([path]) => path === installed.configurationPath)![1]
+      expect(parseServiceConfiguration(written).serviceRuntime).toEqual({ executable: shipped.nodePath, entry: shipped.daemonEntryPath })
+    }
   })
 
   it("runs a Windows logon task through the shipped node.exe", async () => {
@@ -253,7 +269,12 @@ function taskScheduler(task: { path: string; arguments: string } | undefined) {
 }
 
 const domovoiTask = { path: `"${windowsRuntime.nodePath}"`, arguments: `"${windowsRuntime.daemonEntryPath}" --service-config "${windowsConfigurationPath}"` }
-const savedConfiguration = { ...createServiceConfiguration({}, { platform: "win32", homeDirectory: windowsHome, workingDirectory: windowsHome }), registrationId: "5f0c7a9e-8a3b-4d1e-9c2f-0a1b2c3d4e5f" }
+// A desktop install records the runtime it installed in service.json.
+const savedConfiguration = {
+  ...createServiceConfiguration({}, { platform: "win32", homeDirectory: windowsHome, workingDirectory: windowsHome }),
+  registrationId: "5f0c7a9e-8a3b-4d1e-9c2f-0a1b2c3d4e5f",
+  serviceRuntime: { executable: windowsRuntime.nodePath, entry: windowsRuntime.daemonEntryPath },
+}
 
 describe("security review round 1: a same-named Windows task is not Domovoi's", () => {
   beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
@@ -297,5 +318,47 @@ describe("security review round 1: a same-named Windows task is not Domovoi's", 
     const effects = windowsDependencies({ capture: scheduler.capture, readConfiguration: vi.fn(() => savedConfiguration) })
     expect(await readDaemonServiceStatus(effects)).toMatchObject({ installed: false, running: false })
     expect(await removeDaemonService(effects)).toMatchObject({ kind: "task" })
+  })
+})
+
+// Security review round 2 on #574: a task that runs any absolute program with
+// the saved service.json path passed as Domovoi's. The task must run the
+// runtime and entry service.json records, compared as written; an install
+// from before that record must run node.exe on a Domovoi daemon entry.
+describe("security review round 2: the task must run Domovoi's runtime", () => {
+  beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
+  afterEach(() => { vi.unstubAllEnvs() })
+
+  const { serviceRuntime: _recorded, ...unrecorded } = savedConfiguration
+  const unrelated = [
+    { path: "C:\\Tools\\other.exe", arguments: `"C:\\Tools\\payload.js" --service-config "${windowsConfigurationPath}"` },
+    { path: "C:\\Tools\\other.exe", arguments: `--service-config "${windowsConfigurationPath}"` },
+  ]
+  const cases = [
+    ...unrelated.map((task) => [task, savedConfiguration] as const),
+    ...unrelated.map((task) => [task, unrecorded] as const),
+    // Recorded: a Domovoi-looking entry that is not the recorded one.
+    [{ path: `"${windowsRuntime.nodePath}"`, arguments: `"C:\\Users\\dl\\AppData\\Roaming\\npm\\node_modules\\@getdomovoi\\daemon\\dist\\index.js" --service-config "${windowsConfigurationPath}"` }, savedConfiguration],
+    // Recorded, differing only in case.
+    [{ path: `"${windowsRuntime.nodePath.toLowerCase()}"`, arguments: `"${windowsRuntime.daemonEntryPath}" --service-config "${windowsConfigurationPath}"` }, savedConfiguration],
+  ] as const
+
+  it("does not report a task that runs anything but that runtime as installed", async () => {
+    for (const [task, saved] of cases) {
+      const scheduler = taskScheduler(task)
+      const effects = windowsDependencies({ capture: scheduler.capture, readConfiguration: vi.fn(() => saved) })
+      expect(await readDaemonServiceStatus(effects), task.path).toMatchObject({ installed: false, running: false })
+    }
+  })
+
+  it("refuses to stop or delete a task that runs anything but that runtime", async () => {
+    for (const [task, saved] of cases) {
+      const scheduler = taskScheduler(task)
+      const effects = windowsDependencies({ capture: scheduler.capture, readConfiguration: vi.fn(() => saved) })
+      await expect(removeDaemonService(effects)).rejects.toBeInstanceOf(WindowsTaskNotDomovoiError)
+      expect(scheduler.state).toMatchObject({ registered: true, stopIssued: false, deleted: false })
+      expect(effects.remove).not.toHaveBeenCalled()
+      expect(effects.claimProfile).not.toHaveBeenCalled()
+    }
   })
 })

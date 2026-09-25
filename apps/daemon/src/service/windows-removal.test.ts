@@ -34,7 +34,10 @@ const isActionRead = (args: string[]) => Buffer.from(args.at(-1)!, "base64").toS
 function taskManager() {
   const task = { registered: true, enabled: true, running: true }
   const effects: ServiceEffects = {
-    readConfiguration: vi.fn((home: string) => createServiceConfiguration({}, { platform: "win32", homeDirectory: home, workingDirectory: home })),
+    readConfiguration: vi.fn((home: string) => ({
+      ...createServiceConfiguration({}, { platform: "win32", homeDirectory: home, workingDirectory: home }),
+      serviceRuntime: { executable: "C:\\Domovoi\\node.exe", entry: "C:\\Domovoi\\index.js" },
+    })),
     claimServiceOperation: vi.fn(() => ({ release: vi.fn() })),
     claimProfile: vi.fn(() => ({ release: vi.fn() })),
     removalSnapshot: vi.fn(() => ({ owner: undefined, configurationDigest: null })),
@@ -352,17 +355,53 @@ describe("the CLI and a same-named Windows task", () => {
     expect(effects.remove).not.toHaveBeenCalled()
   })
 
-  // Neither install records its runtime in service.json: one ran the entry
-  // through Node, the other ran one program.
+  // Security review round 2: an install from before service.json recorded its
+  // runtime ran `domovoid service install`, which runs node.exe on the daemon
+  // entry an npm or pnpm install or a checkout provides. Only that is kept
+  // removable without a record.
   it.each([
-    ["a runtime and an entry", { path: '"C:\\Program Files\\nodejs\\node.exe"', arguments: `"C:\\Users\\dl\\AppData\\Roaming\\npm\\domovoi\\dist\\index.js" --service-config "${configurationPath}"` }],
-    ["one program", { path: "C:\\Domovoi\\domovoid.exe", arguments: `--service-config "${configurationPath}"` }],
-  ])("remove still removes an older install that runs %s", async (_shape, action) => {
+    ["an npm install", { path: '"C:\\Program Files\\nodejs\\node.exe"', arguments: `"C:\\Users\\dl\\AppData\\Roaming\\npm\\node_modules\\@getdomovoi\\daemon\\dist\\index.js" --service-config "${configurationPath}"` }],
+    ["a pnpm install", { path: "C:\\Users\\dl\\AppData\\Local\\fnm\\node.exe", arguments: `"C:\\Users\\dl\\AppData\\Local\\pnpm\\global\\5\\.pnpm\\@getdomovoi+daemon@0.7.0\\node_modules\\@getdomovoi\\daemon\\dist\\index.js" --service-config "${configurationPath}"` }],
+    ["a checkout", { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\src\\domovoi\\apps\\daemon\\dist\\index.js" --service-config "${configurationPath}"` }],
+  ])("remove still removes an older install from %s", async (_shape, action) => {
     const { task, effects, cli, stdout, stderr } = scheduler(action, saved)
     expect(await runServiceCommand(["service", "remove"], cli)).toBe(0)
     expect(stderr).not.toHaveBeenCalled()
     expect(stdout).toHaveBeenCalledWith("Removed the Domovoi daemon service Domovoi daemon\n")
     expect(task.registered).toBe(false)
     expect(effects.remove).toHaveBeenCalledWith(configurationPath, expect.anything())
+  })
+
+  // Security review round 2: the reviewer's shape, an unrelated absolute
+  // program given the saved service.json path, with and without an entry.
+  // The last is the one-program shape no Domovoi install on Windows writes.
+  it.each([
+    ["with an entry", { path: "C:\\Tools\\other.exe", arguments: `"C:\\Tools\\payload.js" --service-config "${configurationPath}"` }],
+    ["that is node.exe on another script", { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\Tools\\daemon\\dist\\index.js" --service-config "${configurationPath}"` }],
+    ["alone", { path: "C:\\Domovoi\\domovoid.exe", arguments: `--service-config "${configurationPath}"` }],
+  ])("status and remove refuse an unrecorded task that runs an unrelated program %s", async (_shape, action) => {
+    const status = scheduler(action, saved)
+    expect(await runServiceCommand(["service", "status"], status.cli)).toBe(1)
+    expect(status.stdout).toHaveBeenCalledWith("not installed, not running: a task named Domovoi daemon exists, but Domovoi did not register it\n")
+    const removal = scheduler(action, saved)
+    expect(await runServiceCommand(["service", "remove"], removal.cli)).toBe(1)
+    expect(removal.stderr).toHaveBeenCalledWith('A Windows task named "Domovoi daemon" exists, but Domovoi did not register it. Nothing was stopped or deleted.\n')
+    expect(removal.task).toEqual({ registered: true, enabled: true, running: true, stopIssued: false })
+    expect(removal.effects.claimProfile).not.toHaveBeenCalled()
+    expect(removal.effects.remove).not.toHaveBeenCalled()
+  })
+
+  it("status and remove refuse a task that runs anything but the runtime service.json records", async () => {
+    const recorded = { ...saved, serviceRuntime: { executable: "C:\\Domovoi\\node.exe", entry: "C:\\Domovoi\\daemon\\dist\\index.js" } }
+    // A legacy-looking action does not stand in for a recorded one.
+    const action = { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\src\\domovoi\\apps\\daemon\\dist\\index.js" --service-config "${configurationPath}"` }
+    const status = scheduler(action, recorded)
+    expect(await runServiceCommand(["service", "status"], status.cli)).toBe(1)
+    const removal = scheduler(action, recorded)
+    expect(await runServiceCommand(["service", "remove"], removal.cli)).toBe(1)
+    expect(removal.task.registered).toBe(true)
+    const own = scheduler({ path: '"C:\\Domovoi\\node.exe"', arguments: `"C:\\Domovoi\\daemon\\dist\\index.js" --service-config "${configurationPath}"` }, recorded)
+    expect(await runServiceCommand(["service", "remove"], own.cli)).toBe(0)
+    expect(own.task.registered).toBe(false)
   })
 })

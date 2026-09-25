@@ -11,7 +11,7 @@ import { OperationDeadline } from "../operation-deadline.js"
 import { claimProfile, type ProfileLease } from "../profile-lease.js"
 import { localOwnerRemovalReceiptPath, writeLocalOwnerRemovalReceipt } from "../local-owner-removal.js"
 import { readServiceRemovalSnapshot, serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
-import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration } from "./configuration.js"
+import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration, type ServiceRuntimeRecord } from "./configuration.js"
 import { readLocalProfileFile } from "../local-owner-record.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
@@ -182,9 +182,17 @@ export function servicePlan({
   runtime,
   configuration,
 }: ServiceTarget): ServicePlan {
+  // Ruled 2026-09-24 (A): the runtime and daemon entry the service runs are
+  // recorded in service.json, so an update can tell what Domovoi installed
+  // without trusting the service definition. A WSL guest install records its
+  // own (runWslServiceCommand); a service with no separate entry has nothing
+  // an update could put back, and records nothing.
+  const recorded = configuration.wsl || runtime === undefined
+    ? configuration
+    : { ...configuration, serviceRuntime: { executable: runtime, entry: execPath } }
   const configurationFile = {
     path: serviceConfigurationPath(configuration.homeDirectory, platform),
-    contents: serializeServiceConfiguration(configuration),
+    contents: serializeServiceConfiguration(recorded),
   }
   // The configured home owns the per-user registration. The daemon profile
   // is explicit saved configuration, not a replacement provider HOME.
@@ -390,14 +398,17 @@ export function installService(
   return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.handoff))
 }
 
-// Security review round 1 (#574): any program can register a Windows task
-// under Domovoi's task name. Status and removal, from the desktop and the CLI
-// alike (ruled 2026-09-25), report or change the task only once it is
-// Domovoi's: service.json holds a Domovoi registration, and the task runs that
-// file in the shape servicePlan writes, a runtime and an entry (or one
-// program), then --service-config and the saved configuration path. The
-// runtime service.json may record is not required, so an install from before
-// that record stays removable.
+// Security review rounds 1 and 2 (#574): any program can register a Windows
+// task under Domovoi's task name. Status and removal, from the desktop and the
+// CLI alike (ruled 2026-09-25), report or change the task only once it is
+// Domovoi's: service.json holds a Domovoi registration, and the task runs a
+// runtime on an entry with --service-config and that file's path, in the
+// shape servicePlan writes. The runtime and entry must be exactly the ones
+// service.json records (serviceRuntime), compared as written. An install from
+// before that record was written stays removable only under a narrow rule:
+// `domovoid service install` ran process.execPath (node.exe) on process.argv[1],
+// the daemon entry of an npm or pnpm install (@getdomovoi\daemon\dist\index.js)
+// or of a checkout (apps\daemon\dist\index.js). No other program passes.
 
 // Text ruled 2026-09-25.
 export class WindowsTaskNotDomovoiError extends Error {
@@ -415,14 +426,17 @@ function plainWindowsPath(path: string | undefined): boolean {
     && win32.normalize(path) === path
 }
 
-function isDomovoiTaskAction(action: WindowsTaskAction, configurationPath: string): boolean {
+const legacyDaemonEntry = /\\(?:@getdomovoi|apps)\\daemon\\dist\\index\.js$/i
+
+function isDomovoiTaskAction(action: WindowsTaskAction, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): boolean {
   // Task Scheduler may report the program with the quotes schtasks was given.
   const program = /^"([^"]*)"$/.exec(action.path)?.[1] ?? action.path
-  const withEntry = /^"([^"]*)" --service-config "([^"]*)"$/.exec(action.arguments)
-  const alone = /^--service-config "([^"]*)"$/.exec(action.arguments)
-  const paths = withEntry ? [program, withEntry[1]] : [program]
-  const saved = withEntry ? withEntry[2] : alone?.[1]
-  return saved === configurationPath && paths.every(plainWindowsPath)
+  const quoted = /^"([^"]*)" --service-config "([^"]*)"$/.exec(action.arguments)
+  if (!quoted) return false
+  const [, entry = "", saved = ""] = quoted
+  if (saved !== configurationPath || !plainWindowsPath(program) || !plainWindowsPath(entry)) return false
+  if (recorded) return program === recorded.executable && entry === recorded.entry
+  return win32.basename(program).toLowerCase() === "node.exe" && legacyDaemonEntry.test(entry)
 }
 
 async function windowsTaskOwner(
@@ -434,7 +448,7 @@ async function windowsTaskOwner(
   if (action === "missing") return "missing"
   if (!effects.readConfiguration) throw new Error("checking who registered the Windows task needs the saved service configuration")
   const saved = effects.readConfiguration(home, "win32")
-  return saved !== undefined && isDomovoiTaskAction(action, serviceConfigurationPath(home, "win32")) ? "domovoi" : "other"
+  return saved !== undefined && isDomovoiTaskAction(action, serviceConfigurationPath(home, "win32"), saved.serviceRuntime) ? "domovoi" : "other"
 }
 
 // A service that was never installed is not an error to remove: the end state

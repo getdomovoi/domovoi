@@ -42,7 +42,7 @@ function registeredWindowsTask(answer: (command: string, args: string[]) => Prom
   const configurationPath = "C:\\Users\\dl\\.domovoi\\service.json"
   const action = { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\Program Files\\Domovoi\\dist\\index.js" --service-config "${configurationPath}"`, enabled: true, state: 4 }
   return {
-    readConfiguration: vi.fn(() => windows.configuration),
+    readConfiguration: vi.fn(() => ({ ...windows.configuration, serviceRuntime: { executable: "C:\\Program Files\\nodejs\\node.exe", entry: "C:\\Program Files\\Domovoi\\dist\\index.js" } })),
     capture: vi.fn(async (command: string, args: string[]) => {
       const script = command === "schtasks" ? "" : Buffer.from(args.at(-1)!, "base64").toString("utf16le")
       if (script.includes("domovoi-task-action:")) return { code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}\r\n` }
@@ -615,6 +615,9 @@ describe("runServiceCommand", () => {
       machineIdentityPath: at("machine.json"),
       advertiseHost: "studio.example.com",
       allowedOrigins: ["https://domovoi.example.com"],
+      // Ruled 2026-09-24 (A): a service that runs a script through a named
+      // runtime records both, so an update can put back only those.
+      ...("runtime" in target ? { serviceRuntime: { executable: target.runtime, entry: target.execPath } } : {}),
     })
     const launch = target.platform === "win32"
       ? vi.mocked(dependencies.run).mock.calls[0]?.[1].join(" ")

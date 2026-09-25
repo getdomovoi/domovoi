@@ -39,7 +39,10 @@ function manager(platform: "linux" | "darwin" | "win32") {
     // Ruled 2026-09-25: Windows removal first checks that Domovoi registered
     // the task, from service.json and the task's action.
     ...(platform === "win32"
-      ? { readConfiguration: vi.fn((home: string) => createServiceConfiguration({}, { platform: "win32", homeDirectory: home, workingDirectory: home })) }
+      ? { readConfiguration: vi.fn((home: string) => ({
+        ...createServiceConfiguration({}, { platform: "win32", homeDirectory: home, workingDirectory: home }),
+        serviceRuntime: { executable: "C:\\Domovoi\\node.exe", entry: "C:\\Domovoi\\index.js" },
+      })) }
       : {}),
     capture: vi.fn(async (_command, args) => {
       const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
