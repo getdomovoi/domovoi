@@ -3763,6 +3763,7 @@ describe("DomovoiDaemon", () => {
       body: `Message ${index}`,
       createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, index)).toISOString(),
     }))
+    snapshot.approvals = []
     snapshot.annotations = []
     const agent = {
       connect: vi.fn(async () => {}),
@@ -7796,6 +7797,7 @@ describe("DomovoiDaemon", () => {
     }
     session.workspacePath = "/worktrees/session-billing"
     session.providerThreadId = "provider-thread-billing"
+    snapshot.approvals = []
     snapshot.thread = []
     snapshot.annotations = []
     snapshot.workingPlans = []

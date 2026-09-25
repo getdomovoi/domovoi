@@ -10013,6 +10013,19 @@ export class DomovoiDaemon {
         createdAt: recoveredAt,
       })
     }
+    // One line per session whose card expired, however many cards it held.
+    // Wording ruled 2026-09-24.
+    const expiredSessionIds = new Set(expiredApprovals.map((approval) => approval.sessionId))
+    for (const session of candidate.sessions) {
+      if (!expiredSessionIds.has(session.id)) continue
+      candidate.thread.push({
+        id: `system-${randomUUID()}`,
+        sessionId: session.id,
+        kind: "system",
+        body: "Domovoi restarted, so this approval request expired. Send a message to continue.",
+        createdAt: recoveredAt,
+      })
+    }
 
     workspaceSnapshotSchema.parse(candidate)
     this.#store.save(candidate)

@@ -133,9 +133,11 @@ async function connect(daemon: DomovoiDaemon, port: number) {
   sockets.push(socket)
   await once(socket, "open")
   const responses = new Map<number, (message: Record<string, unknown>) => void>()
+  const notifications: Array<{ method: string, params: unknown }> = []
   socket.on("message", (data) => {
-    const message = JSON.parse(data.toString()) as { id?: number }
+    const message = JSON.parse(data.toString()) as { id?: number, method?: string, params?: unknown }
     if (message.id !== undefined) responses.get(message.id)?.(message)
+    else if (message.method !== undefined) notifications.push({ method: message.method, params: message.params })
   })
   let nextId = 0
   const rpc = (method: string, params: Record<string, unknown>) =>
@@ -148,8 +150,12 @@ async function connect(daemon: DomovoiDaemon, port: number) {
     client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken,
   })
   expect(hello.error).toBeUndefined()
-  return rpc
+  return Object.assign(rpc, { notifications })
 }
+
+const expiredNotice = "Domovoi restarted, so this approval request expired. Send a message to continue."
+const noticesIn = (snapshot: WorkspaceSnapshot) =>
+  snapshot.thread.filter((item) => item.kind === "system" && item.body === expiredNotice)
 
 async function restartedDaemon() {
   const profileDirectory = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-profile-"))
@@ -223,8 +229,10 @@ describe("stored approval cards after a restart", () => {
     expect(stale.state).toBe("idle")
     expect(stale).not.toHaveProperty("activeTurnId")
     expect(stale.providerThreadId).toBe("thread-billing")
-    expect(loaded.thread.filter((item) => item.sessionId === staleSessionId))
-      .toEqual(snapshot.thread.filter((item) => item.sessionId === staleSessionId))
+    expect(loaded.thread.filter((item) => item.sessionId === staleSessionId)).toEqual([
+      ...snapshot.thread.filter((item) => item.sessionId === staleSessionId),
+      expect.objectContaining({ sessionId: staleSessionId, kind: "system", body: expiredNotice }),
+    ])
     expect(append).toHaveBeenCalledWith(expect.objectContaining({
       actor: { kind: "daemon", component: "startup-recovery" },
       action: "approval.expired",
@@ -297,6 +305,50 @@ describe("stored approval cards after a restart", () => {
     const rpc = await connect(daemon, port)
     const after = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
     expect(after.approvals).toEqual([])
+  })
+})
+
+describe("the thread notice for an expired card", () => {
+  it("tells each session whose stored card expired once, and keeps the line across saves and restarts", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-notice-"))
+    const liveWorkspace = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-live-"))
+    roots.push(scratch, liveWorkspace)
+    const statePath = join(scratch, "state.sqlite")
+    const { snapshot } = storedSnapshot(liveWorkspace)
+    const card = snapshot.approvals[0]!
+    snapshot.approvals = [card, { ...card, id: "approval-second", providerRequestId: 2 }]
+    const initial = workspaceSnapshotSchema.parse(snapshot)
+    const start = async () => {
+      const daemon = new DomovoiDaemon({
+        port: 0,
+        profileDirectory: scratch,
+        store: new SqliteWorkspaceStore(statePath, initial),
+        agents: { codex: freshProviderProcess().adapter },
+        workspaceService: checkpointingWorkspace(),
+        errorSink: vi.fn(),
+      })
+      daemons.push(daemon)
+      const rpc = await connect(daemon, (await daemon.start()).port)
+      const workspace = async () => workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+      return { daemon, rpc, workspace }
+    }
+
+    const first = await start()
+    const notices = noticesIn(await first.workspace())
+    expect(notices).toEqual([expect.objectContaining({ sessionId: staleSessionId, kind: "system", body: expiredNotice })])
+    expect(notices[0]).not.toHaveProperty("detail")
+
+    expect((await first.rpc("session.activate", { sessionId: staleSessionId, client: "desktop" })).error).toBeUndefined()
+    const changed = await vi.waitFor(() => {
+      const notification = first.rpc.notifications.find(({ method }) => method === "workspace.changed")
+      expect(notification).toBeDefined()
+      return notification!
+    }, { timeout: 5_000 })
+    expect(noticesIn(workspaceSnapshotSchema.parse(changed.params))).toEqual(notices)
+    await first.daemon.stop()
+
+    const second = await start()
+    expect(noticesIn(await second.workspace())).toEqual(notices)
   })
 })
 
@@ -456,5 +508,7 @@ describe("stored approval cards in another project's saved state", () => {
     const opened = await workspace()
     expect(opened.approvals).toEqual([])
     expect(opened.sessions.find((session) => session.id === staleSessionId)?.state).toBe("idle")
+    // No restart happened here, so the restart notice does not apply.
+    expect(noticesIn(opened)).toEqual([])
   })
 })
