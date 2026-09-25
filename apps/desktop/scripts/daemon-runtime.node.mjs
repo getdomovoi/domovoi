@@ -396,3 +396,44 @@ test("refuses a runtime tree root that is itself a link, before walking it", asy
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test("the final check refuses a link whose real path leaves the tree and comes back in by the root's own name", async () => {
+  const { assertShippedTreeContained } = await import("./daemon-runtime.mjs")
+  const { mkdir, symlink } = await import("node:fs/promises")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-reentry-"))
+  try {
+    const tree = join(root, "darwin-arm64", "daemon")
+    await mkdir(join(tree, "d", "sub"), { recursive: true })
+    await mkdir(join(tree, "sub2"), { recursive: true })
+    await writeFile(join(tree, "sub2", "x.js"), "module")
+    // A canonical link: d/sub/L names daemon/sub2 directly.
+    await symlink(join("..", "..", "sub2"), join(tree, "d", "sub", "L"), "dir")
+    // Its text never climbs above the tree, but through L the real path
+    // passes the tree's parent and re-enters by the names darwin-arm64/daemon.
+    await symlink(["sub", "L", "..", "..", "..", "darwin-arm64", "daemon", "sub2", "x.js"].join(sep), join(tree, "d", "link"), "file")
+    const refused = await assertShippedTreeContained(tree).then(() => undefined, (error) => error)
+    assert.ok(refused instanceof Error, "the final check passed a link that re-enters the tree by its name")
+    assert.match(refused.message, /[\\/]d[\\/]link -> /)
+    assert.doesNotMatch(refused.message, /[\\/]sub[\\/]L -> /)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("refuses a linked runtime tree root named with a trailing separator", async () => {
+  const { assertShippedTreeContained, removeExternalLinks } = await import("./daemon-runtime.mjs")
+  const { mkdir, symlink } = await import("node:fs/promises")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-root-slash-"))
+  try {
+    const outside = join(root, "outside")
+    await mkdir(join(outside, "node", "bin"), { recursive: true })
+    await writeFile(join(outside, "node", "bin", "node"), "a program from outside the build")
+    await symlink(outside, join(root, "runtime"), "dir")
+    // lstat follows a link named with a trailing separator.
+    const named = `${join(root, "runtime")}${sep}`
+    await assert.rejects(removeExternalLinks(named, named), /runtime is a symbolic link/)
+    await assert.rejects(assertShippedTreeContained(named), /runtime is a symbolic link/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
