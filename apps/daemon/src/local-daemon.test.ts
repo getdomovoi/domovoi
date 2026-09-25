@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -185,4 +185,48 @@ it("refuses as unreachable when the deadline expires after a good final verifica
     vi.mocked(performance.now).mockRestore()
   }
   expect(vi.mocked(readLocalOwnerRecord).mock.calls.length - reads).toBe(2)
+})
+
+// An acquisition that refuses early still takes the inherited bearer out of
+// this process's environment and pins it to the profile it was handed for, so
+// a later acquisition for another profile cannot pick it up.
+it("takes the inherited bearer out of the environment even when it refuses before attaching", async () => {
+  const bearer = "a".repeat(43)
+  const previous = { token: process.env.DOMOVOI_AUTH_TOKEN, profile: process.env.DOMOVOI_PROFILE_DIR, port: process.env.DOMOVOI_PORT }
+  process.env.DOMOVOI_AUTH_TOKEN = bearer
+  process.env.DOMOVOI_PORT = "0"
+  try {
+    const profileA = await home()
+    const refusal = await acquireLocalDaemon({ environment: process.env, timeoutMs: budgetMs, mode: "attach-only", homeDirectory: profileA })
+    expect(refusal).toMatchObject({ kind: "refused" })
+    expect(process.env.DOMOVOI_AUTH_TOKEN).toBeUndefined()
+
+    const profileB = join(await home(), "profile-b")
+    await mkdir(profileB)
+    process.env.DOMOVOI_PROFILE_DIR = profileB
+    const other = await acquireLocalDaemon({ environment: process.env, timeoutMs: budgetMs, mode: "start-or-attach", homeDirectory: profileA })
+    handles.push(other)
+    expect(other).toMatchObject({ kind: "owned" })
+    expect(other.kind === "owned" ? other.endpoint.token : undefined).not.toBe(bearer)
+  } finally {
+    for (const [name, value] of [["DOMOVOI_AUTH_TOKEN", previous.token], ["DOMOVOI_PROFILE_DIR", previous.profile], ["DOMOVOI_PORT", previous.port]] as const) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
+})
+
+// Capture is the first thing an acquisition does, so even an acquisition that
+// fails on its own arguments leaves no bearer for a child or a later profile.
+it("takes the inherited bearer out of the environment even when its arguments are invalid", async () => {
+  const bearer = "b".repeat(43)
+  const previous = process.env.DOMOVOI_AUTH_TOKEN
+  process.env.DOMOVOI_AUTH_TOKEN = bearer
+  try {
+    await acquireLocalDaemon({ environment: process.env, timeoutMs: Number.NaN, mode: "attach-only", homeDirectory: await home() }).catch(() => undefined)
+    expect(process.env.DOMOVOI_AUTH_TOKEN).toBeUndefined()
+  } finally {
+    if (previous === undefined) delete process.env.DOMOVOI_AUTH_TOKEN
+    else process.env.DOMOVOI_AUTH_TOKEN = previous
+  }
 })

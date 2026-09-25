@@ -56,7 +56,7 @@ import {
 // in the output than in the text around it, so a one-character value and a
 // value shown in part are both caught.
 // An idle beat makes the terminal emit everything it holds (server.ts calls
-// flush on an idle timer), which shows any unquoted value typed after its name
+// release on an idle timer, flush before #598), which shows any unquoted value typed after its name
 // on main as well; that is the idle-release fix in #575. Across an idle beat,
 // and for a name longer than the 256 characters the terminal carries, the
 // terminal is held only to hiding what main hides. There, too, it may hide
@@ -525,9 +525,11 @@ const pairs: readonly Pair[] = [
       const redactor = new MainTerminalOutputRedactor()
       return steps.map((step) => step === "idle" ? redactor.flush() : redactor.push(step)).join("") + redactor.flush()
     },
+    // An idle beat is a release, as server.ts sends it since #598; the end of
+    // the output is a flush.
     current: (_item, steps) => {
       const redactor = new TerminalOutputRedactor()
-      return steps.map((step) => step === "idle" ? redactor.flush() : redactor.push(step)).join("") + redactor.flush()
+      return steps.map((step) => step === "idle" ? redactor.release() : redactor.push(step)).join("") + redactor.flush()
     },
   },
   {

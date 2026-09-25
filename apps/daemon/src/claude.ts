@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { isAbsolute, resolve } from "node:path"
+import { isAbsolute, resolve, sep } from "node:path"
 
 import {
   query,
@@ -17,6 +17,7 @@ import type {
   AgentVisualContext,
   AgentWorkingPlanStep,
 } from "./agents.js"
+import { projectInstructions } from "./project-instructions.js"
 import { claudeReadOutsideWorktree, claudeShellReadIsListed, isClaudeReadTool } from "./claude-read-scope.js"
 import { gitReadCanRunProgram } from "./git-read-config.js"
 import { permissionDecisionFor } from "./permission-policy.js"
@@ -26,6 +27,7 @@ import { normalizeProviderUsage } from "./usage.js"
 
 const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const
 const maximumClaudeStderrBytes = 16_384
+const claudeFileTools = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
 const claudeAskTools = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"] as const
 const claudeContextUsageTimeoutMs = 250
 
@@ -91,7 +93,7 @@ export type ClaudeQueryOptions = {
   settingSources?: Array<"user" | "project" | "local">
   tools?: string[]
   disallowedTools?: string[]
-  systemPrompt?: { type: "preset"; preset: "claude_code" }
+  systemPrompt?: { type: "preset"; preset: "claude_code"; append?: string }
   hooks?: { PreToolUse?: Array<{ hooks: ClaudePreToolUseHook[] }> }
   stderr?: (data: string) => void
   canUseTool?: (
@@ -385,8 +387,12 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const input = new PushStream<ClaudeUserMessage>()
     const stderr = new ClaudeStderrTail()
     const permission = claudePermissionFor(runtime)
+    const instructions = await projectInstructions(cwd, "claude")
     const options: ClaudeQueryOptions = {
       ...baseOptions(),
+      ...(instructions
+        ? { systemPrompt: { type: "preset", preset: "claude_code", append: instructions } }
+        : {}),
       cwd,
       ...(resume ? { resume: threadId } : { sessionId: threadId }),
       model: runtime.model,
@@ -499,7 +505,9 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     context: ClaudePermissionContext,
   ): Promise<PermissionResult> {
     const session = this.#requireSession(threadId)
-    const command = typeof input.command === "string" ? input.command : toolName
+    // A file tool is named by the tool Claude runs, never by a command field
+    // in its input, so an Edit cannot pass for a shell command.
+    const command = !claudeFileTools.has(toolName) && typeof input.command === "string" ? input.command : toolName
     const screened = session.screenedReads.get(context.toolUseID)
     session.screenedReads.delete(context.toolUseID)
     const reason = screened?.reason ?? context.title ?? context.description ?? context.decisionReason
@@ -518,9 +526,15 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       return Promise.resolve({ behavior: "allow", updatedInput: input })
     }
     const requestId = ++this.#nextApprovalId
-    const filePath = typeof input.file_path === "string"
-      ? input.file_path.trim()
-      : typeof input.notebook_path === "string" ? input.notebook_path.trim() : screened?.path?.trim()
+    // The file exactly as the provider will use it: not trimmed, and a
+    // relative path is joined to cwd without collapsing "..", so the daemon
+    // fingerprints the same file that runs. Bash acts on no file field, so a
+    // file_path beside its command is never sent.
+    const filePath = toolName === "Bash"
+      ? undefined
+      : typeof input.file_path === "string"
+        ? input.file_path
+        : typeof input.notebook_path === "string" ? input.notebook_path : screened?.path
     this.#emit({
       type: "approval-requested",
       requestId,
@@ -528,10 +542,13 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       ...(session.activeTurnId ? { turnId: session.activeTurnId } : {}),
       itemId: context.toolUseID,
       command,
-      cwd: context.blockedPath ?? cwd,
-      ...(filePath ? { path: isAbsolute(filePath) ? filePath : resolve(cwd, filePath) } : {}),
+      // The request runs in the thread's directory. The path Claude blocked
+      // on is named beside it and is never the directory a card shows.
+      cwd,
+      ...(filePath ? { path: isAbsolute(filePath) ? filePath : `${cwd}${sep}${filePath}` } : {}),
       ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
       ...(reason ? { reason } : {}),
+      ...(toolName !== "Bash" && !claudeFileTools.has(toolName) ? { tool: toolName } : {}),
     })
     return new Promise((resolve) => {
       this.#pendingApprovals.set(requestId, {
@@ -811,7 +828,7 @@ function baseOptions(): ClaudeQueryOptions {
   return {
     includePartialMessages: true,
     forwardSubagentText: true,
-    settingSources: ["user", "project", "local"],
+    settingSources: ["user"],
     systemPrompt: { type: "preset", preset: "claude_code" },
   }
 }

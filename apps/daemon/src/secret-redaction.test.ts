@@ -11,6 +11,7 @@ import {
   redactDurableCommand,
   redactDurableOutput,
   redactDurableText,
+  redactStreamText,
   TerminalOutputRedactor,
 } from "./secret-redaction.js"
 import { redactWorkspaceCopies } from "./workspace-redaction.js"
@@ -905,7 +906,7 @@ describe("quotes in the middle of a word and around a name", () => {
 describe("names inside a value, and values after a line break or spaced =", () => {
   function run(reads: readonly string[]): string {
     const redactor = new TerminalOutputRedactor()
-    return reads.map((read) => read === "idle" ? redactor.flush() : redactor.push(read)).join("") + redactor.flush()
+    return reads.map((read) => read === "idle" ? redactor.release() : redactor.push(read)).join("") + redactor.flush()
   }
   function stream(reads: readonly string[]): string {
     const redactor = new DurableOutputRedactor()
@@ -997,5 +998,106 @@ describe("names inside a value, and values after a line break or spaced =", () =
   it("hides an unclosed single-quoted property value split across reads", () => {
     const shown = run(["java -DPassword=  'zqx\\'jwvk", "mq -jar app.jar"])
     expect(shown).not.toMatch(/zq|qx|xj|jw|wv|vk|mq/u)
+  })
+})
+
+// Cases from review of #575. Ruled 2026-09-23 (B): durable redaction is main's
+// code, so these hold because main's code handles them. The one round-4 case
+// main does not handle (an escaped double quote inside a flag value) was
+// dropped with the improvements that handled it.
+describe("shell quoting in flag and property values", () => {
+  // Review round 4: a backslash is literal inside shell single quotes, so it
+  // cannot escape the closing quote; a JSON value ends where JSON says.
+  // Ruled 2026-09-25 in #539: a backslash inside '…' escapes the next
+  // character, so the quote here never closes and the value runs to the end
+  // of the line, taking what follows it. Losing " -s" is the accepted cost.
+  it.each([
+    ["curl --token 'abc zqxjwvkm\\' -s", "curl --token '[REDACTED]'"],
+    ["java -Dpassword='abc zqxjwvkm\\' -jar app.jar", "java -Dpassword='[REDACTED]'"],
+  ])("hides the whole quoted value of %j", (line, expected) => {
+    for (const redacted of [redactDurableOutput(line).value, redactDurableCommand(line).value, redactStreamText(line)]) {
+      expect(redacted).not.toContain("zqxjwvkm")
+      expect(redacted).toBe(expected)
+    }
+  })
+
+  it("keeps the fields after a redacted JSON value", () => {
+    const line = "{\"password\":\"secret\",\"safe\":\"visible\"}"
+    expect(redactDurableOutput(line).value).toBe("{\"password\":\"[REDACTED]\",\"safe\":\"visible\"}")
+    const terminal = new TerminalOutputRedactor()
+    expect(`${terminal.push(`${line}\r\n`)}${terminal.flush()}`).toBe("{\"password\":\"[REDACTED]\",\"safe\":\"visible\"}\r\n")
+  })
+
+  it.each([
+    "curl --token \"abc zqxjwvkm\\\"",
+    "java -Dpassword=\"abc zqxjwvkm\\\"",
+  ])("hides a double-quoted value whose closing quote is escaped: %j", (line) => {
+    // Review round 5: the quote never closes, so the value runs to the line end.
+    for (const redacted of [redactDurableOutput(line).value, redactDurableCommand(line).value, redactStreamText(line)]) {
+      expect(redacted).not.toContain("zqxjwvkm")
+    }
+    const stream = new DurableOutputRedactor()
+    expect(`${stream.push(`${line}\n`)}${stream.flush()}`).not.toContain("zqxjwvkm")
+  })
+
+  // Ruled in #539: a quote that never closes holds the drop open across line
+  // breaks until a quote arrives, so the line after it is hidden too.
+  it("hides the line after an oversized unclosed quote ends at a carriage return", () => {
+    const terminal = new TerminalOutputRedactor()
+    const shown = [terminal.push("API_KEY=\""), terminal.push("q".repeat(9_000)), terminal.push("\rvisible output\r\n"), terminal.flush()].join("")
+    expect(shown).toBe("API_KEY=\"[REDACTED]\"")
+    expect(shown).not.toContain("qqqq")
+  })
+
+  it.each([
+    ["\u2028", "flag"], ["\u2029", "flag"], ["\u0085", "flag"],
+    ["\u2028", "property"], ["\u2029", "property"], ["\u0085", "property"],
+  ])("hides a quoted value where a backslash comes before %j, in a %s", (separator, form) => {
+    // Review round 6 (P1): a backslash escapes any character short of a line
+    // end. `.` does not match U+2028 or U+2029, so the quote seemed to end there.
+    const line = form === "flag" ? `curl --token "abc\\${separator}zqxjwvkm" -s` : `java -Dpassword="abc\\${separator}zqxjwvkm" -jar app.jar`
+    for (const redacted of [redactDurableOutput(line).value, redactDurableCommand(line).value, redactDurableText(line).value, redactStreamText(line)]) {
+      expect(redacted).not.toContain("zqxjwvkm")
+    }
+    const stream = new DurableOutputRedactor()
+    expect(`${stream.push(`${line}\n`)}${stream.flush()}`).not.toContain("zqxjwvkm")
+    const terminal = new TerminalOutputRedactor()
+    expect(`${terminal.push(`${line}\r\n`)}${terminal.flush()}`).not.toContain("zqxjwvkm")
+  })
+
+  it.each([false, true])("keeps the next line after an oversized quoted value that holds a name and value, idle beat between: %s", (idle) => {
+    // Review round 6 (P2): the "token=" inside the quoted value is part of it,
+    // and the value closes before the line ends.
+    const terminal = new TerminalOutputRedactor()
+    const shown = [
+      terminal.push(`API_KEY="${"q".repeat(8_200)} token=zqxjwvkm"`),
+      idle ? terminal.release() : "",
+      terminal.push(" visible output\r\n"),
+      terminal.flush(),
+    ].join("")
+    expect(shown).toContain(" visible output\r\n")
+    expect(shown).not.toContain("zqxjwvkm")
+    expect(shown).not.toContain("qqqq")
+  })
+
+  it("hides the value of an assignment that sits where a flag's value would, split by an idle beat", () => {
+    // Review round 7 (P1): the flag's value is the name "token=", which main's
+    // code needs to read the value after it.
+    const terminal = new TerminalOutputRedactor()
+    const shown = [terminal.push("--token "), terminal.release(), terminal.push("token= zqxjwvkm\n"), terminal.flush()].join("")
+    expect(shown).not.toContain("zqxjwvkm")
+    const line = "--token token= zqxjwvkm\n"
+    for (const redacted of [redactDurableOutput(line).value, redactDurableCommand(line).value, redactDurableText(line).value, redactStreamText(line)]) {
+      expect(redacted).not.toContain("zqxjwvkm")
+    }
+    const stream = new DurableOutputRedactor()
+    expect(`${stream.push(line)}${stream.flush()}`).not.toContain("zqxjwvkm")
+  })
+
+  it("hides a Bearer credential on the line after its header, in one read", () => {
+    // Review round 7 (P1): main's code reads Bearer and its credential across
+    // the line break, so the line stage must leave "Bearer" for it.
+    const terminal = new TerminalOutputRedactor()
+    expect(`${terminal.push("Authorization: Bearer\nzqxjwvkm\n")}${terminal.flush()}`).not.toContain("zqxjwvkm")
   })
 })

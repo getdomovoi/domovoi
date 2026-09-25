@@ -139,14 +139,13 @@ describe("GitWorkspaceService", () => {
     })
 
     it("counts a submodule update even when the repository ignores submodules in diffs", async () => {
-      const { scratch, repositoryPath, service } = await repository("domovoi-unmerged-submodule-")
-      const library = join(scratch, "library")
-      await execute("git", ["init", "--initial-branch=main", library])
-      await execute("git", ["-C", library, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "one"])
-      await execute("git", ["-C", repositoryPath, "-c", "protocol.file.allow=always", "submodule", "add", library, "library"])
+      const { repositoryPath, service } = await repository("domovoi-unmerged-submodule-")
+      // A gitlink is only a commit id in the tree. Neither `worktree add` nor
+      // the tree diff reads the submodule's objects, so none are made.
+      const recorded = "1".repeat(40)
+      const updated = "2".repeat(40)
+      await execute("git", ["-C", repositoryPath, "update-index", "--add", "--cacheinfo", `160000,${recorded},library`])
       await execute("git", ["-C", repositoryPath, "commit", "-m", "add library"])
-      await execute("git", ["-C", library, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "two"])
-      const updated = (await execute("git", ["-C", library, "rev-parse", "HEAD"])).stdout.trim()
       const workspace = await service.createSessionWorkspace(repositoryPath, "session-submodule")
       await execute("git", ["-C", workspace.path, "update-index", "--cacheinfo", `160000,${updated},library`])
       await execute("git", ["-C", workspace.path, "commit", "-m", "bump library"])
@@ -166,6 +165,44 @@ describe("GitWorkspaceService", () => {
       await execute("git", ["-C", workspace.path, "add", "--", "\u00a0"])
       await execute("git", ["-C", workspace.path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "work"])
       expect(await service.sessionBranchFacts(workspace.path, repositoryPath)).toEqual({ branch: workspace.branch, unmergedFiles: 1 })
+    })
+  })
+
+  describe("a file whose name is only whitespace", () => {
+    // git() trims its output, which strips such a name from a NUL-delimited
+    // list when it is the first or last entry. The name is a no-break space:
+    // whitespace to String.prototype.trim, and a name every system can
+    // create. Windows cannot create a name of plain spaces, since it drops
+    // trailing spaces from a name.
+    async function sessionWithWhitespaceFile(prefix: string) {
+      const scratch = await mkdtemp(join(tmpdir(), prefix))
+      scratchDirectories.push(scratch)
+      const repositoryPath = join(scratch, "project")
+      await execute("git", ["init", "--initial-branch=main", repositoryPath])
+      for (const [key, value] of [["core.autocrlf", "false"], ["core.eol", "lf"], ["user.name", "Test User"], ["user.email", "test@example.invalid"]] as const) {
+        await execute("git", ["-C", repositoryPath, "config", key, value])
+      }
+      await writeFile(join(repositoryPath, "README.md"), "source\n")
+      await execute("git", ["-C", repositoryPath, "add", "README.md"])
+      await execute("git", ["-C", repositoryPath, "commit", "-m", "initial"])
+      const service = new GitWorkspaceService(join(scratch, "worktrees"))
+      const workspace = await service.createSessionWorkspace(repositoryPath, `session-${prefix.replace(/\W/g, "")}`)
+      await writeFile(join(workspace.path, "\u00a0"), "space\n")
+      return { service, workspace }
+    }
+
+    it("is checkpointed when it is the only change", async () => {
+      const { service, workspace } = await sessionWithWhitespaceFile("domovoi-checkpoint-space-")
+      const checkpoint = await service.checkpoint(workspace.path, "space")
+      expect(checkpoint.changedFiles).toEqual(["\u00a0"])
+      const listed = (await execute("git", ["-C", workspace.path, "show", "--name-only", "-z", "--format=", checkpoint.commit])).stdout
+      expect(listed.split("\0").filter(Boolean)).toEqual(["\u00a0"])
+    })
+
+    it("is named in the session's evidence", async () => {
+      const { service, workspace } = await sessionWithWhitespaceFile("domovoi-evidence-space-")
+      const evidence = await service.evidence(workspace.path)
+      expect(evidence.files.map(({ path }) => path)).toContain("\u00a0")
     })
   })
 

@@ -8,6 +8,7 @@ import {
   annotationVisualContextSchema,
   artifactAuthorizeParamsSchema,
   artifactAuthorizeResultSchema,
+  approvalRequestSchema,
   approvalResolveParamsSchema,
   checkpointCreateParamsSchema,
   checkpointRestoreParamsSchema,
@@ -1728,8 +1729,42 @@ describe("workspace protocol", () => {
     expect(approvalResolveParamsSchema.parse({
       approvalId: "approval-migrate",
       decision: "allow-once",
+      revision: 0,
       client: "desktop",
     })).not.toHaveProperty("client")
+  })
+
+  it("reads a saved approval card with no revision as revision 0", () => {
+    const saved = structuredClone(demoWorkspace.approvals[0]!) as Record<string, unknown>
+    delete saved.revision
+    expect(approvalRequestSchema.parse(saved).revision).toBe(0)
+    expect(approvalRequestSchema.parse({ ...saved, revision: 3 }).revision).toBe(3)
+    for (const revision of [-1, 1.5, "1", Number.MAX_SAFE_INTEGER + 1]) {
+      expect(approvalRequestSchema.safeParse({ ...saved, revision }).success).toBe(false)
+    }
+  })
+
+  it("requires the card revision to allow an approval, and not to deny one", () => {
+    for (const decision of ["allow-once", "always-project"] as const) {
+      const refused = approvalResolveParamsSchema.safeParse({ approvalId: "approval-migrate", decision })
+      expect(refused.success).toBe(false)
+      expect(refused.error?.issues.map((issue) => issue.path)).toEqual([["revision"]])
+      expect(approvalResolveParamsSchema.parse({ approvalId: "approval-migrate", decision, revision: 2 }).revision)
+        .toBe(2)
+    }
+    expect(approvalResolveParamsSchema.parse({ approvalId: "approval-migrate", decision: "deny" }))
+      .not.toHaveProperty("revision")
+    expect(approvalResolveParamsSchema.parse({
+      approvalId: "approval-migrate",
+      decision: "deny-explain",
+      explanation: "Use a staging database first.",
+    })).not.toHaveProperty("revision")
+    expect(approvalResolveParamsSchema.parse({ approvalId: "approval-migrate", decision: "deny", revision: 1 }).revision)
+      .toBe(1)
+    for (const revision of [-1, 0.5, "0", Number.MAX_SAFE_INTEGER + 1]) {
+      expect(approvalResolveParamsSchema.safeParse({ approvalId: "approval-migrate", decision: "allow-once", revision }).success)
+        .toBe(false)
+    }
   })
 
   it("validates the local project and session lifecycle", () => {
