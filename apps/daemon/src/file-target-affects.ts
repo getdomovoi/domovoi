@@ -69,6 +69,13 @@ export function cardDirectory(input: { directory: string; workspace: string }): 
 // is true when the file is hidden as [REDACTED] for naming a credential file:
 // the card is then a hard gate too (ruled for #541), so no standing rule is
 // made or used for a file the person cannot see.
+//
+// Every spelling the walk produces is judged, as #541 judges the requested
+// path, each hop and the final target: the path as given and as requested,
+// the lexical path, the path after each link (followedTarget's aliases), the
+// walked path and the realpath target. A credential name in any of them hides
+// the file, even when the file it leads to is public, since the card's text
+// may name the path that way (final check after fc428aba).
 export async function fileTargetAffects(input: {
   workspace: string
   path: string
@@ -76,9 +83,12 @@ export async function fileTargetAffects(input: {
 }): Promise<{ text: string; redacted: boolean; sensitive: boolean }> {
   const lexicalTarget = resolve(input.workspace, input.cwd ?? ".", input.path)
   const followed = await followedTarget(input.workspace, input.path, input.cwd)
-  const hide = namesSecretPath(input.path)
-    || namesSecretPath(lexicalTarget)
-    || (followed !== undefined && namesSecretPath(followed.target))
+  const hide = [
+    input.path,
+    requestedPath(input.workspace, input.path, input.cwd),
+    lexicalTarget,
+    ...(followed ? [...followed.targetAliases, followed.walkedTarget, followed.target] : []),
+  ].some(namesSecretPath)
   const shown = (path: string) => hide ? hiddenPath : shownPath(path)
   const lexical = within(resolve(input.workspace), lexicalTarget)
   const real = followed ? within(followed.workspace, followed.target) : lexical

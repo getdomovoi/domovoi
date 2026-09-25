@@ -63,6 +63,81 @@ describe("fileTargetAffects", () => {
       .resolves.toEqual({ text: "The file [REDACTED] in the session worktree.", redacted: false, sensitive: true })
   })
 
+  // Final check after fc428aba: the hide decision judges every spelling the
+  // walk produces, as #541 does (sensitive when the requested path, any hop,
+  // or the final target names a credential path). Each row names one in a
+  // single place only and leads to a public file; each must be hidden whole,
+  // with every hop hidden in the text. The controls name one nowhere.
+  it("hides a file whose requested path, any hop or final target names a credential path", async () => {
+    const workspace = await directory("domovoi-affects-hop-secret-")
+    const at = (...parts: string[]) => join(workspace, ...parts)
+    const written = (...parts: string[]) => parts.join(sep)
+    for (const row of ["r1", "r2", "r3", "r4", "r5", "r6", "r7", "c1", "c2"]) await mkdir(at(row))
+    for (const row of ["r1", "r2", "r3", "r4", "c1"]) await writeFile(at(row, "public.txt"), "hello")
+    for (const folder of [["r4", ".ssh"], ["r5", ".ssh"], ["r6", ".aws"], ["r7", "public"], ["c2", "real"]]) await mkdir(at(...folder))
+    // File links are plain symlinks; directory links are junctions, which
+    // Windows makes without admin rights and writes with an absolute target.
+    const links: Array<[target: string, link: string[], type?: "junction"]> = [
+      ["public.txt", ["r1", ".env"]],
+      ["public.txt", ["r2", ".env"]],
+      [".env", ["r2", "alias"]],
+      ["public.txt", ["r3", ".env"]],
+      [".env", ["r3", "b"]],
+      ["b", ["r3", "a"]],
+      [written(".ssh", "..", "public.txt"), ["r4", "c"]],
+      ["c", ["r4", "b"]],
+      ["b", ["r4", "a"]],
+      [at("r5", ".ssh"), ["r5", "data"], "junction"],
+      [at("r6", ".aws"), ["r6", "y"], "junction"],
+      ["y", ["r6", "x"], "junction"],
+      ["public", ["r7", ".ssh"], "junction"],
+      [at("r7", ".ssh"), ["r7", "p"], "junction"],
+      ["public.txt", ["c1", "b"]],
+      ["b", ["c1", "a"]],
+      ["real", ["c2", "z"], "junction"],
+      [at("c2", "z"), ["c2", "y"], "junction"],
+      ["y", ["c2", "x"], "junction"],
+    ]
+    for (const [target, link, type] of links) await symlink(target, at(...link), type)
+    // The path a link leads to, as the link writes it, with the rest after it.
+    const through = async (link: string[], rest: string[]) => {
+      const target = await readlink(at(...link))
+      const base = isAbsolute(target) ? target : `${dirname(at(...link))}${sep}${target}`
+      return rest.length === 0 ? base : `${base}${sep}${rest.join(sep)}`
+    }
+    const rows: Array<{ label: string; path: string[]; hops: Array<[link: string[], rest: string[]]> }> = [
+      { label: "requested path, 1 link", path: ["r1", ".env"], hops: [[["r1", ".env"], []]] },
+      { label: "first hop of 2", path: ["r2", "alias"], hops: [[["r2", "alias"], []], [["r2", ".env"], []]] },
+      { label: "middle hop of 3", path: ["r3", "a"], hops: [[["r3", "a"], []], [["r3", "b"], []], [["r3", ".env"], []]] },
+      { label: "last hop of 3", path: ["r4", "a"], hops: [[["r4", "a"], []], [["r4", "b"], []], [["r4", "c"], []]] },
+      { label: "final target, 1 link", path: ["r5", "data", "config"], hops: [[["r5", "data"], ["config"]]] },
+      { label: "last hop and final target of 2", path: ["r6", "x", "credentials"], hops: [[["r6", "x"], ["credentials"]], [["r6", "y"], ["credentials"]]] },
+      { label: "first hop of 2, directory part", path: ["r7", "p", "notes.txt"], hops: [[["r7", "p"], ["notes.txt"]], [["r7", ".ssh"], ["notes.txt"]]] },
+    ]
+    const missed: string[] = []
+    for (const { label, path, hops } of rows) {
+      const request = { workspace, path: at(...path) }
+      const affects = await fileTargetAffects(request)
+      if (!affects.sensitive || affects.text !== "The file [REDACTED] in the session worktree.") {
+        missed.push(`${label}: ${JSON.stringify(affects).split(workspace).join("<worktree>")}`)
+      }
+      const forms = await hiddenPathForms(request)
+      for (const [link, rest] of hops) {
+        const alias = await through(link, rest)
+        if (hidePaths(`Edit ${alias} now`, forms) !== "Edit [REDACTED] now") {
+          missed.push(`${label}: ${alias.split(workspace).join("<worktree>")} shown`)
+        }
+      }
+    }
+    expect(missed).toEqual([])
+
+    // No credential name anywhere on the chain: the card names the file.
+    await expect(fileTargetAffects({ workspace, path: at("c1", "a") }))
+      .resolves.toEqual({ text: "The file c1/public.txt in the session worktree.", redacted: false, sensitive: false })
+    await expect(fileTargetAffects({ workspace, path: at("c2", "x", "notes.txt") }))
+      .resolves.toEqual({ text: "The file c2/real/notes.txt in the session worktree.", redacted: false, sensitive: false })
+  })
+
   it("keeps a path on one line and bounded", async () => {
     const workspace = await directory("domovoi-affects-shape-")
     await expect(fileTargetAffects({ workspace, path: join(workspace, "a\nNetwork: none\u202e") }))

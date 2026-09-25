@@ -13359,6 +13359,15 @@ describe("DomovoiDaemon", () => {
     // relative one.
     await symlink(join(workspacePath, "hop2"), join(workspacePath, "hop1"), "junction")
     await symlink(".ssh", join(workspacePath, "hop2"), "junction")
+    // A chain whose middle name alone is a credential name (final check after
+    // fc428aba): pubalias leads to .env, which leads to a public file. Beside
+    // it, a chain with no credential name anywhere.
+    await mkdir(join(workspacePath, "pub"))
+    await writeFile(join(workspacePath, "pub", "public.txt"), "hello")
+    await symlink("public.txt", join(workspacePath, "pub", ".env"))
+    await symlink(".env", join(workspacePath, "pub", "pubalias"))
+    await symlink("public.txt", join(workspacePath, "pub", "second"))
+    await symlink("second", join(workspacePath, "pub", "first"))
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
     session.runtime = {
@@ -13452,6 +13461,10 @@ describe("DomovoiDaemon", () => {
       "OutsideCase",
       "hop1",
       "hop2",
+      "pubalias",
+      "pub/.env",
+      join(workspacePath, "pub", ".env"),
+      join(realWorkspace, "pub", ".env"),
     ]
     const neverNamed = () => {
       const copies = [
@@ -13535,7 +13548,21 @@ describe("DomovoiDaemon", () => {
       reason: `Edit ${join(workspacePath, "hop1", "config")}, which is ${join(workspacePath, "hop2", "config")} or hop2/config`,
       path: join(workspacePath, "hop1", "config"),
     })
-    await vi.waitFor(async () => expect(await cards()).toHaveLength(8), { timeout: 3_000 })
+    // Codex's chain: the file is public, but a hop on the way is named .env.
+    listener!({
+      ...request,
+      requestId: 509,
+      reason: `Edit ${join(workspacePath, "pub", "pubalias")}, which is ${join(workspacePath, "pub", ".env")} or pub/.env`,
+      path: join(workspacePath, "pub", "pubalias"),
+    })
+    // The control: no credential name anywhere on the chain.
+    listener!({
+      ...request,
+      requestId: 510,
+      reason: `Edit ${join(workspacePath, "pub", "first")}, which is pub/second`,
+      path: join(workspacePath, "pub", "first"),
+    })
+    await vi.waitFor(async () => expect(await cards()).toHaveLength(10), { timeout: 3_000 })
 
     expect(await card(501)).toMatchObject({
       risk: "hard-gate",
@@ -13571,6 +13598,18 @@ describe("DomovoiDaemon", () => {
       operation: "Edit [REDACTED], which is [REDACTED] or [REDACTED]",
       command: "Edit",
     })
+    expect(await card(509)).toMatchObject({
+      risk: "hard-gate",
+      affects: "The file [REDACTED] in the session worktree.",
+      operation: "Edit [REDACTED], which is [REDACTED] or [REDACTED]",
+      command: "Edit",
+    })
+    expect(await card(510)).toMatchObject({
+      risk: "normal",
+      affects: "The file pub/public.txt in the session worktree.",
+      operation: `Edit ${join(workspacePath, "pub", "first")}, which is pub/second`,
+      command: "Edit",
+    })
     neverNamed()
 
     // A card whose file becomes hidden when it is read again hides it in its
@@ -13586,7 +13625,7 @@ describe("DomovoiDaemon", () => {
     await expect(rpc("approval.resolve", { approvalId: (await card(503)).id, decision: "allow-once", revision: 0, client: "desktop" }))
       .resolves.not.toHaveProperty("error")
     expect(agent.resolveApproval).toHaveBeenCalledWith(503, "allow-once")
-    for (const requestId of [501, 502, 504, 507, 508]) {
+    for (const requestId of [501, 502, 504, 507, 508, 509]) {
       await expect(rpc("approval.resolve", { approvalId: (await card(requestId)).id, decision: "allow-once", revision: 0, client: "desktop" }))
         .resolves.not.toHaveProperty("error")
       expect(agent.resolveApproval).toHaveBeenCalledWith(requestId, "allow-once")
@@ -13602,8 +13641,8 @@ describe("DomovoiDaemon", () => {
       "Claude requested permissions to use Edit on [REDACTED]",
       "Edit [REDACTED], which is [REDACTED] or [REDACTED]",
     ]))
-    // Cards 507 and 508 read the same once hidden; each has its receipt.
-    expect(receipts.filter((operation) => operation === "Edit [REDACTED], which is [REDACTED] or [REDACTED]")).toHaveLength(2)
+    // Cards 507, 508 and 509 read the same once hidden; each has its receipt.
+    expect(receipts.filter((operation) => operation === "Edit [REDACTED], which is [REDACTED] or [REDACTED]")).toHaveLength(3)
     neverNamed()
     socket.close()
   })
