@@ -1,17 +1,16 @@
 import { homedir, hostname } from "node:os"
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
-import { access, cp, realpath, rm, stat } from "node:fs/promises"
+import { realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
-import { acquireLocalDaemon, installDaemonService, readDaemonServiceStatus, readLocalServiceHandoffRefusal, removeDaemonService, verifyLocalFleetClientRoute } from "@getdomovoi/daemon"
-import { publishFileDurably } from "@getdomovoi/credential-store"
+import { acquireLocalDaemon, holdServiceHandoffFence, installDaemonService, readDaemonServiceStatus, readLocalServiceHandoffRefusal, removeDaemonService, verifyLocalFleetClientRoute } from "@getdomovoi/daemon"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, protocol, session, shell } from "electron"
 
 import { DesktopDaemon } from "./desktop-daemon.js"
 import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
 import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
-import { DesktopDaemonService, stageDaemonRuntime } from "./daemon-service.js"
+import { DesktopDaemonService, nodeRuntimeFileSystem, stageDaemonRuntime } from "./daemon-service.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
   developmentDaemonEnvironment,
@@ -148,10 +147,7 @@ const desktopDaemonService = new DesktopDaemonService({
     home: homedir(),
     version: app.getVersion(),
     platform: process.platform,
-    exists: async (path) => { try { await access(path); return true } catch { return false } },
-    copy: (from, to) => cp(from, to, { recursive: true, errorOnExist: true, force: false }),
-    remove: (path) => rm(path, { recursive: true, force: true }),
-    rename: (from, to) => publishFileDurably(from, to),
+    fileSystem: nodeRuntimeFileSystem(),
   }),
   install: (options) => installDaemonService(options),
   status: () => readDaemonServiceStatus(),
@@ -161,6 +157,13 @@ const desktopDaemonService = new DesktopDaemonService({
     const endpoint = desktopDaemon.current()
     if (!endpoint || endpoint.kind === "refused") throw new Error("This app is not connected to a daemon")
     return readLocalServiceHandoffRefusal({ endpoint, timeoutMs: 5_000 })
+  },
+  // The same check inside the daemon, held from right before the stop until
+  // the handoff settles, so no turn starts after the read above.
+  fence: async () => {
+    const endpoint = desktopDaemon.current()
+    if (!endpoint || endpoint.kind === "refused") throw new Error("This app is not connected to a daemon")
+    return holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })
   },
   daemon: {
     beginHandoff: () => desktopDaemon.beginHandoff(),

@@ -38,16 +38,18 @@ export function workspaceWindowDecorationLabel(decoration: WorkspaceWindowDecora
 export type DaemonServiceProfileRecovery = "recorded" | "not-needed" | "operator-confirmation-required" | "proof-unavailable"
 
 // What the main process reports after an install or a removal. A removal
-// carries what the daemon's installer said about the profile owner, and
-// whether the app's own daemon came back.
+// carries what the daemon's installer said about the profile owner, whether a
+// daemon this app reaches is running, and whether it is one the app did not
+// start (daemonAttached). A failure carries the service as read back
+// afterwards, null when it could not be read.
 export type DaemonServiceOutcome =
-  | { ok: true; kind: "file" | "task"; target: string; daemonRunning: boolean; profileRecovery?: DaemonServiceProfileRecovery; profileRecoveryDetail?: string }
+  | { ok: true; kind: "file" | "task"; target: string; daemonRunning: boolean; daemonAttached?: boolean; profileRecovery?: DaemonServiceProfileRecovery; profileRecoveryDetail?: string }
   | { ok: false; reason: "runtime-missing"; part: "node" | "daemon"; path: string; message: string }
   | { ok: false; reason: "installed-not-attached"; kind: "file" | "task"; target: string; message: string }
   | { ok: false; reason: "busy"; message: string }
   | { ok: false; reason: "refused"; message: string }
   | { ok: false; reason: "check-failed"; message: string }
-  | { ok: false; reason: "failed"; message: string; daemon: "untouched" | "restarted" | "stopped" }
+  | { ok: false; reason: "failed"; message: string; daemon: "untouched" | "restarted" | "attached" | "stopped"; service: { installed: boolean | null; running: boolean } | null }
 
 export type DaemonServiceStatusReport =
   | { installed: boolean | null; running: boolean; detail: string }

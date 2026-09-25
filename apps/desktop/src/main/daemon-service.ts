@@ -1,5 +1,7 @@
 import { DaemonServiceRuntimeMissingError, type DaemonServiceInstallResult, type DaemonServiceOptions, type DaemonServiceRemovalResult, type DaemonServiceRuntime, type DaemonServiceStatus } from "@getdomovoi/daemon"
+import { publishFileDurably } from "@getdomovoi/credential-store"
 import { randomUUID } from "node:crypto"
+import { cp, lstat, mkdir, readdir, readlink, realpath, rm } from "node:fs/promises"
 import { posix, win32 } from "node:path"
 
 import type { DesktopDaemonAcquisition } from "../shared/daemon-acquisition.js"
@@ -16,18 +18,26 @@ import type { DesktopDaemonAcquisition } from "../shared/daemon-acquisition.js"
 
 export type DaemonServiceOutcome =
   | { ok: true; kind: "file" | "task"; target: string; configurationPath: string; daemonRunning: true }
-  | { ok: true; kind: "file" | "task"; target: string; profileRecovery: DaemonServiceRemovalResult["profileRecovery"]; profileRecoveryDetail?: string; daemonRunning: boolean }
+  // daemonRunning: a daemon runs and this app reaches it. daemonAttached: that
+  // daemon is one this app did not start, so quitting the app leaves it be.
+  | { ok: true; kind: "file" | "task"; target: string; profileRecovery: DaemonServiceRemovalResult["profileRecovery"]; profileRecoveryDetail?: string; daemonRunning: boolean; daemonAttached: boolean }
   | { ok: false; reason: "runtime-missing"; part: "node" | "daemon"; path: string; message: string }
   // The service is installed and this app's daemon is stopped, but the app
   // could not attach to the service. It does not start its own daemon again:
   // the service may hold the profile.
   | { ok: false; reason: "installed-not-attached"; kind: "file" | "task"; target: string; message: string }
   | { ok: false; reason: "busy" | "refused" | "check-failed"; message: string }
-  // What became of the app's own daemon: never stopped, started again, or
-  // stopped and not back.
-  | { ok: false; reason: "failed"; message: string; daemon: "untouched" | "restarted" | "stopped" }
+  // What became of the daemon this app reaches: never stopped, started again
+  // inside the app, attached to one the app did not start, or none. And the
+  // service as read back after the failure, since a manager can fail after it
+  // wrote or removed part of it; null when it could not be read.
+  | { ok: false; reason: "failed"; message: string; daemon: "untouched" | "restarted" | "attached" | "stopped"; service: ServiceReadBack | null }
+
+export type ServiceReadBack = { installed: boolean | null; running: boolean }
 
 export type DaemonServiceStatusReport = DaemonServiceStatus | { unavailable: string }
+
+export type ServiceHandoffFence = { refusal: string } | { release: () => void }
 
 export type DesktopDaemonServiceDependencies = {
   // Copies the shipped runtime under the profile and names the copy, or
@@ -40,6 +50,11 @@ export type DesktopDaemonServiceDependencies = {
   // as the renderer names them, or undefined when there are none. Throws when
   // the workspace cannot be read.
   refusal: () => Promise<string | undefined>
+  // The daemon's own fence, taken right before the stop: the same refusal,
+  // or no new turn there until release() or the daemon stops. The read above
+  // is only a snapshot; a turn can start after it. Throws when the daemon
+  // cannot be asked.
+  fence: () => Promise<ServiceHandoffFence>
   daemon: {
     // Held while the service takes the profile or gives it back, so a
     // renderer reconnect waits instead of starting a daemon.
@@ -63,40 +78,180 @@ export function daemonRuntimeLayout(resourcesPath: string, platform: string): Da
   }
 }
 
+// The app's version names the copy's directory, so it must be exactly one
+// directory name: a release version (semver, as package.json holds it), with
+// no separator, no "." or ".." and nothing a platform reserves.
+const runtimeVersionPattern = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
+const maximumRuntimeVersionLength = 64
+
+// Cause strings below are shown as the detail under "Could not install the
+// service". They are new in security review round 1 of #576 and await the
+// owner's ruling with the placeholders in packages/ui settings-shell.
 export function profileRuntimeDirectory(home: string, version: string, platform: string): string {
   const path = platform === "win32" ? win32 : posix
-  return path.join(home, ".domovoi", "runtime", version)
+  if (version.length > maximumRuntimeVersionLength || !runtimeVersionPattern.test(version)) {
+    throw new Error(`The app version "${version.slice(0, maximumRuntimeVersionLength)}" is not a release version, so no runtime was copied.`)
+  }
+  const root = path.join(home, ".domovoi", "runtime")
+  const destination = path.join(root, version)
+  // Belt and braces for the pattern: the copy is one name directly under root.
+  if (path.dirname(destination) !== root || path.basename(destination) !== version) {
+    throw new Error(`The app version "${version}" is not a release version, so no runtime was copied.`)
+  }
+  return destination
+}
+
+export type RuntimeEntry = "file" | "directory" | "link" | "other" | "missing"
+
+// What staging needs from the file system, so tests can fail one step. The
+// node implementation never follows a link where it asks what a path is.
+export type RuntimeFileSystem = {
+  entry(path: string): Promise<RuntimeEntry>
+  children(path: string): Promise<string[]>
+  readLink(path: string): Promise<string>
+  realpath(path: string): Promise<string>
+  // One directory, not its parents; a directory already there is fine.
+  makeDirectory(path: string): Promise<void>
+  // Copies a tree, keeping each link as the link it is.
+  copy(from: string, to: string): Promise<void>
+  remove(path: string): Promise<void>
+  rename(from: string, to: string): Promise<void>
+}
+
+export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}): RuntimeFileSystem {
+  return {
+    entry: async (path) => {
+      try {
+        const found = await lstat(path)
+        return found.isSymbolicLink() ? "link" : found.isFile() ? "file" : found.isDirectory() ? "directory" : "other"
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing"
+        throw error
+      }
+    },
+    children: (path) => readdir(path),
+    readLink: (path) => readlink(path),
+    realpath: (path) => realpath(path),
+    makeDirectory: async (path) => {
+      try {
+        await mkdir(path, { mode: 0o700 })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+      }
+    },
+    copy: (from, to) => cp(from, to, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true }),
+    remove: (path) => rm(path, { recursive: true, force: true }),
+    // Each rename is followed by a flush of the directory that holds it.
+    rename: (from, to) => publishFileDurably(from, to),
+    ...overrides,
+  }
+}
+
+function inside(pathApi: typeof posix, root: string, path: string): boolean {
+  const relative = pathApi.relative(root, path)
+  return relative === "" || (relative.split(pathApi.sep)[0] !== ".." && !pathApi.isAbsolute(relative))
+}
+
+// Each shipped part must be a regular file reached through real directories,
+// and every link in the shipped tree must be relative and stay inside it, so
+// the copy runs nothing from outside the app and still works after the app
+// moves. All of it is checked before any byte is copied.
+async function checkShippedRuntime(fs: RuntimeFileSystem, pathApi: typeof posix, shippedRoot: string, platform: string): Promise<void> {
+  const shipped = daemonRuntimeLayout(pathApi.dirname(shippedRoot), platform)
+  for (const [part, path] of [["node", shipped.nodePath], ["daemon", shipped.daemonEntryPath]] as const) {
+    const steps = pathApi.relative(shippedRoot, path).split(pathApi.sep)
+    let at = shippedRoot
+    for (const [index, step] of ["", ...steps].entries()) {
+      at = step === "" ? at : pathApi.join(at, step)
+      const found = await fs.entry(at)
+      if (found === "missing") throw new DaemonServiceRuntimeMissingError(part, path, "missing")
+      if (found !== (index === steps.length ? "file" : "directory")) throw new DaemonServiceRuntimeMissingError(part, path, "not-file")
+    }
+  }
+  const realRoot = await fs.realpath(shippedRoot)
+  const pending = [shippedRoot]
+  for (let directory = pending.pop(); directory !== undefined; directory = pending.pop()) {
+    for (const name of await fs.children(directory)) {
+      const path = pathApi.join(directory, name)
+      const found = await fs.entry(path)
+      if (found === "directory") pending.push(path)
+      else if (found === "link") {
+        const target = await fs.readLink(path)
+        let resolved: string | undefined
+        try { resolved = await fs.realpath(path) } catch { resolved = undefined }
+        if (pathApi.isAbsolute(target) || !inside(pathApi, shippedRoot, pathApi.resolve(directory, target))
+          || resolved === undefined || !inside(pathApi, realRoot, resolved)) {
+          throw new Error(`The runtime this app ships holds a link that leads outside it, at ${path}. Nothing was copied.`)
+        }
+      } else if (found !== "file") {
+        throw new Error(`The runtime this app ships holds something that is not a file or a directory, at ${path}. Nothing was copied.`)
+      }
+    }
+  }
+}
+
+// ~/.domovoi and ~/.domovoi/runtime must be real directories owned by this
+// profile: a link there would send the copy, and the replacement of an
+// earlier copy, somewhere else. Missing ones are made, private to the user.
+async function runtimeRoot(fs: RuntimeFileSystem, pathApi: typeof posix, home: string): Promise<string> {
+  let at = home
+  for (const step of [".domovoi", "runtime"]) {
+    at = pathApi.join(at, step)
+    if (await fs.entry(at) === "missing") await fs.makeDirectory(at)
+    if (await fs.entry(at) !== "directory") {
+      throw new Error(`${at} is not a directory (it may be a link), so no runtime was copied under it.`)
+    }
+  }
+  if (await fs.realpath(at) !== pathApi.join(await fs.realpath(home), ".domovoi", "runtime")) {
+    throw new Error(`${at} does not resolve inside the home directory, so no runtime was copied under it.`)
+  }
+  return at
 }
 
 // The copy under the profile outlives app updates and moves; the service
-// points at it, never into the app bundle. Both shipped parts are checked
-// before any byte is copied, so a half-shipped app installs nothing. The copy
-// is made in a fresh directory beside the destination and renamed over it, so
-// an earlier copy of the same version leaves no stale file behind, and a copy
-// that fails leaves the earlier one as it was.
+// points at it, never into the app bundle. The shipped runtime and the
+// profile's runtime directory are checked before any byte is copied, so a
+// half-shipped app or a redirected profile installs nothing. The copy is made
+// in a fresh directory beside the destination. An earlier copy of the same
+// version is moved aside, the new one renamed into place, and only then the
+// earlier one deleted: a failed rename puts it back, so it is never lost.
 export async function stageDaemonRuntime(input: {
   resourcesPath: string
   home: string
   version: string
   platform: string
-  exists: (path: string) => Promise<boolean>
-  copy: (from: string, to: string) => Promise<void>
-  remove: (path: string) => Promise<void>
-  rename: (from: string, to: string) => Promise<void>
+  fileSystem: RuntimeFileSystem
 }): Promise<DaemonServiceRuntime> {
-  const shipped = daemonRuntimeLayout(input.resourcesPath, input.platform)
-  for (const [part, path] of [["node", shipped.nodePath], ["daemon", shipped.daemonEntryPath]] as const) {
-    if (!(await input.exists(path))) throw new DaemonServiceRuntimeMissingError(part, path, "missing")
-  }
+  const fs = input.fileSystem
   const pathApi = input.platform === "win32" ? win32 : posix
   const destination = profileRuntimeDirectory(input.home, input.version, input.platform)
-  const staging = pathApi.join(pathApi.dirname(destination), `.${pathApi.basename(destination)}.staging-${randomUUID()}`)
+  const shippedRoot = pathApi.join(input.resourcesPath, runtimeDirectory)
+  await checkShippedRuntime(fs, pathApi, shippedRoot, input.platform)
+  const root = await runtimeRoot(fs, pathApi, input.home)
+  const earlier = await fs.entry(destination)
+  if (earlier !== "missing" && earlier !== "directory") {
+    throw new Error(`${destination} is not a directory (it may be a link), so no runtime was copied there.`)
+  }
+  const staging = pathApi.join(root, `.${input.version}.staging-${randomUUID()}`)
+  const aside = pathApi.join(root, `.${input.version}.previous-${randomUUID()}`)
   try {
-    await input.copy(pathApi.join(input.resourcesPath, runtimeDirectory), staging)
-    await input.remove(destination)
-    await input.rename(staging, destination)
+    await fs.copy(shippedRoot, staging)
+    if (earlier === "directory") await fs.rename(destination, aside)
+    try {
+      await fs.rename(staging, destination)
+    } catch (cause) {
+      // If putting it back fails too, the earlier copy stays at `aside`, and
+      // the failure reported is the one that stopped the publish.
+      if (earlier === "directory") await fs.rename(aside, destination).catch(() => {})
+      throw cause
+    }
+    if (earlier === "directory") {
+      // The new copy is in place. An earlier copy left behind here is only
+      // disk space, never something the service runs.
+      await fs.remove(aside).catch(() => {})
+    }
   } finally {
-    await input.remove(staging)
+    await fs.remove(staging)
   }
   return {
     nodePath: input.platform === "win32" ? pathApi.join(destination, "node", "node.exe") : pathApi.join(destination, "node", "bin", "node"),
@@ -106,6 +261,14 @@ export async function stageDaemonRuntime(input: {
 
 function message(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
+}
+
+// The fence answered a refusal, or could not be taken, inside the installer's
+// handoff hook. Throwing it stops the install before anything is claimed.
+class HandoffNotFenced extends Error {
+  constructor(readonly outcome: DaemonServiceOutcome) {
+    super(outcome.ok ? "" : outcome.message)
+  }
 }
 
 export class DesktopDaemonService {
@@ -125,6 +288,7 @@ export class DesktopDaemonService {
     if (this.#busy) return { ok: false, reason: "busy", message: "A service change is already in progress." }
     this.#busy = true
     let released = false
+    let fence: { release: () => void } | undefined
     try {
       const refused = await this.#refusal()
       if (refused) return refused
@@ -134,19 +298,24 @@ export class DesktopDaemonService {
         installed = await this.deps.install({
           runtime,
           releaseInAppDaemon: async () => {
+            const held = await this.#fence()
+            if (!("release" in held)) throw new HandoffNotFenced(held)
+            fence = held
             released = true
             this.deps.daemon.beginHandoff()
             await this.deps.daemon.stopOwned()
           },
         })
       } catch (cause) {
+        if (cause instanceof HandoffNotFenced) return cause.outcome
         if (cause instanceof DaemonServiceRuntimeMissingError) {
           return { ok: false, reason: "runtime-missing", part: cause.part, path: cause.path, message: cause.message }
         }
-        // The stop happened and the install did not finish: the profile is
-        // free, so the app takes its daemon back rather than sit idle.
-        const daemon = released ? ((await this.#restarted()) ? "restarted" : "stopped") : "untouched"
-        return { ok: false, reason: "failed", message: message(cause), daemon }
+        // The stop happened and the install did not finish: the profile may
+        // be free, so the app takes a daemon back rather than sit idle. The
+        // manager may have written part of the service, so it is read back.
+        const daemon = released ? await this.#daemonAfter() : "untouched"
+        return { ok: false, reason: "failed", message: message(cause), daemon, service: await this.#serviceAfter() }
       }
       const target = installed.kind === "file" ? installed.path : installed.name
       let attached: DesktopDaemonAcquisition
@@ -160,6 +329,7 @@ export class DesktopDaemonService {
       }
       return { ok: true, kind: installed.kind, target, configurationPath: installed.configurationPath, daemonRunning: true }
     } finally {
+      fence?.release()
       if (released) this.deps.daemon.endHandoff()
       this.#busy = false
     }
@@ -169,20 +339,33 @@ export class DesktopDaemonService {
     if (this.#busy) return { ok: false, reason: "busy", message: "A service change is already in progress." }
     this.#busy = true
     let held = false
+    let fence: { release: () => void } | undefined
     try {
       const refused = await this.#refusal()
       if (refused) return refused
+      const fenced = await this.#fence()
+      if (!("release" in fenced)) return fenced
+      fence = fenced
       held = true
       this.deps.daemon.beginHandoff()
-      const removed = await this.deps.remove()
-      const daemonRunning = await this.#restarted()
+      let removed: DaemonServiceRemovalResult
+      try {
+        removed = await this.deps.remove()
+      } catch (cause) {
+        // The manager can fail after it unloaded or deleted part of the
+        // service. Read it back; unless it still runs, take a daemon back.
+        const service = await this.#serviceAfter()
+        const daemon = service?.installed === true && service.running ? "untouched" : await this.#daemonAfter()
+        return { ok: false, reason: "failed", message: message(cause), daemon, service }
+      }
+      const daemon = await this.#daemonAfter()
+      const reached = { daemonRunning: daemon !== "stopped", daemonAttached: daemon === "attached" }
       const recovery = { profileRecovery: removed.profileRecovery, ...(removed.profileRecoveryDetail === undefined ? {} : { profileRecoveryDetail: removed.profileRecoveryDetail }) }
       return removed.kind === "file"
-        ? { ok: true, kind: "file", target: removed.path, ...recovery, daemonRunning }
-        : { ok: true, kind: "task", target: removed.name, ...recovery, daemonRunning }
-    } catch (cause) {
-      return { ok: false, reason: "failed", message: message(cause), daemon: "untouched" }
+        ? { ok: true, kind: "file", target: removed.path, ...recovery, ...reached }
+        : { ok: true, kind: "task", target: removed.name, ...recovery, ...reached }
     } finally {
+      fence?.release()
       if (held) this.deps.daemon.endHandoff()
       this.#busy = false
     }
@@ -197,11 +380,33 @@ export class DesktopDaemonService {
     }
   }
 
-  async #restarted(): Promise<boolean> {
+  // The same answers as the first check: the refusal, or not knowing.
+  async #fence(): Promise<{ release: () => void } | DaemonServiceOutcome> {
     try {
-      return (await this.deps.daemon.restart()).kind === "owned"
+      const fence = await this.deps.fence()
+      return "release" in fence ? fence : { ok: false, reason: "refused", message: fence.refusal }
+    } catch (cause) {
+      return { ok: false, reason: "check-failed", message: message(cause) }
+    }
+  }
+
+  async #serviceAfter(): Promise<ServiceReadBack | null> {
+    try {
+      const status = await this.deps.status()
+      return { installed: status.installed, running: status.running }
     } catch {
-      return false
+      return null
+    }
+  }
+
+  // The daemon this app reaches once the handoff is over: its own started
+  // again, one it did not start (attached), or none.
+  async #daemonAfter(): Promise<"restarted" | "attached" | "stopped"> {
+    try {
+      const acquired = await this.deps.daemon.restart()
+      return acquired.kind === "owned" ? "restarted" : acquired.kind === "attached" ? "attached" : "stopped"
+    } catch {
+      return "stopped"
     }
   }
 }

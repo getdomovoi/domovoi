@@ -324,8 +324,8 @@ it("says the service is installed when this window could not reach it", async ()
 it("says the daemon is not running when a failed install could not start it again", async () => {
   const user = userEvent.setup()
   const install = vi.fn()
-    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "stopped" })
-    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl is not available", daemon: "untouched" })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "stopped", service: { installed: false, running: false } })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl is not available", daemon: "untouched", service: { installed: false, running: false } })
   const section = daemonSection("app", { install })
   await user.click(within(section).getByRole("button", { name: "Install" }))
   expect(await within(section).findByText("Nothing was installed. The daemon inside this app stopped and did not start again, so no session is running. Quit and reopen Domovoi to start it.")).toBeTruthy()
@@ -403,4 +403,61 @@ it("says Removed once when the profile owner is unresolved and the daemon did no
   expect(await within(section).findByText("Removed. The profile owner remains unresolved. After confirming no custom or legacy supervisor will restart it, run this in a terminal.")).toBeTruthy()
   expect(within(section).getByText("The daemon did not start again inside this app, so no session is running. Quit and reopen Domovoi to start it.")).toBeTruthy()
   expect(section.textContent?.match(/Removed\./g)).toHaveLength(1)
+})
+
+// Security review round 1 of #576. The main process reads the service back
+// after a failed install or removal, and says whether the daemon it reaches
+// afterwards is one this app did not start. A line that is only true when
+// nothing changed is drawn only when the read-back says nothing changed. The
+// states without an approved line carry the "[Copy pending]" marker until the
+// owner rules the words.
+it("does not say nothing was installed when the service reads back as installed or cannot be read", async () => {
+  const user = userEvent.setup()
+  const install = vi.fn()
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "restarted", service: { installed: true, running: false } })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "stopped", service: null })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "attached", service: { installed: false, running: false } })
+  const section = daemonSection("app", { install })
+  const button = within(section).getByRole("button", { name: "Install" })
+  for (const fact of ["The LaunchAgent is installed", "Whether the LaunchAgent is installed is not known from here", "This app is connected to a daemon it did not start"]) {
+    await user.click(button)
+    expect(await within(section).findByText("Could not install the service")).toBeTruthy()
+    expect(section.textContent).toContain("[Copy pending]")
+    expect(section.textContent).toContain(fact)
+    expect(section.textContent).not.toContain("Nothing else was touched.")
+    if (fact !== "This app is connected to a daemon it did not start") expect(section.textContent).not.toContain("Nothing was installed.")
+  }
+})
+
+it("does not say nothing was removed when the removal stopped or deleted part of the service", async () => {
+  const user = userEvent.setup()
+  const remove = vi.fn()
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "unlink: permission denied", daemon: "restarted", service: { installed: true, running: false } })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "unlink: permission denied", daemon: "stopped", service: { installed: false, running: false } })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl could not be run", daemon: "restarted", service: null })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl bootout exited 5", daemon: "untouched", service: { installed: true, running: true } })
+  const section = daemonSection("outside", { remove })
+  const button = within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" })
+  for (const fact of ["The LaunchAgent is still installed but not running", "The LaunchAgent is gone", "Whether the LaunchAgent is installed is not known from here"]) {
+    await user.click(button)
+    expect(await within(section).findByText("Could not remove the service")).toBeTruthy()
+    expect(section.textContent).toContain("[Copy pending]")
+    expect(section.textContent).toContain(fact)
+    expect(section.textContent).not.toContain("Nothing was removed.")
+    expect(section.textContent).not.toContain("every session keeps running")
+  }
+  await user.click(button)
+  expect(await within(section).findByText("Nothing was removed. The LaunchAgent still holds the daemon, and every session keeps running.")).toBeTruthy()
+  expect(section.textContent).not.toContain("[Copy pending]")
+})
+
+it("does not say quitting stops the daemon, or that no session runs, when the removal left this app on a daemon it did not start", async () => {
+  const user = userEvent.setup()
+  const remove = vi.fn(async () => ({ ok: true, kind: "file", target: "/p", profileRecovery: "not-needed", daemonRunning: true, daemonAttached: true }))
+  const section = daemonSection("outside", { remove })
+  await user.click(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
+  expect(await within(section).findByText(/This app is connected to a daemon it did not start/)).toBeTruthy()
+  expect(section.textContent).toContain("[Copy pending]")
+  expect(section.textContent).not.toContain("Quitting Domovoi now stops the daemon")
+  expect(section.textContent).not.toContain("no session is running")
 })

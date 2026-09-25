@@ -1,7 +1,10 @@
 import { DaemonServiceRuntimeMissingError, type AcquireLocalDaemonOptions, type DaemonServiceInstallResult, type LocalDaemonHandle } from "@getdomovoi/daemon"
+import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
-import { DesktopDaemonService, daemonRuntimeLayout, profileRuntimeDirectory } from "./daemon-service.js"
+import { DesktopDaemonService, daemonRuntimeLayout, nodeRuntimeFileSystem, profileRuntimeDirectory, stageDaemonRuntime } from "./daemon-service.js"
 import { DesktopDaemon } from "./desktop-daemon.js"
 
 const runtime = { nodePath: "/Users/dana/.domovoi/runtime/0.9.4/node/bin/node", daemonEntryPath: "/Users/dana/.domovoi/runtime/0.9.4/daemon/dist/index.js" }
@@ -14,6 +17,7 @@ function harness(overrides: Partial<ConstructorParameters<typeof DesktopDaemonSe
     install: vi.fn(async (options: { releaseInAppDaemon?: () => Promise<void> }) => { calls.push("checks"); await options.releaseInAppDaemon?.(); calls.push("install"); return { kind: "file" as const, path: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/Users/dana/.domovoi/service.json" } }),
     status: vi.fn(async () => ({ installed: true, running: true, detail: "pid 48213" })),
     refusal: vi.fn(async (): Promise<string | undefined> => undefined),
+    fence: vi.fn(async (): Promise<{ refusal: string } | { release: () => void }> => { calls.push("fence"); return { release: () => { calls.push("unfence") } } }),
     remove: vi.fn(async () => ({ kind: "file" as const, path: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", profileRecovery: "not-needed" as const })),
     daemon: {
       beginHandoff: vi.fn(() => { calls.push("hold") }),
@@ -32,7 +36,7 @@ describe("DesktopDaemonService", () => {
     const { service, deps, calls } = harness()
     await expect(service.install()).resolves.toEqual({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/Users/dana/.domovoi/service.json", daemonRunning: true })
     expect(deps.install).toHaveBeenCalledWith(expect.objectContaining({ runtime }))
-    expect(calls).toEqual(["stage", "checks", "hold", "stop", "install", "attach", "release"])
+    expect(calls).toEqual(["stage", "checks", "fence", "hold", "stop", "install", "attach", "unfence", "release"])
   })
 
   it("reports a missing runtime without stopping anything", async () => {
@@ -46,7 +50,7 @@ describe("DesktopDaemonService", () => {
   it("starts its own daemon again when the install fails after the stop, and says so", async () => {
     const { service, calls } = harness({ install: vi.fn(async (options: { releaseInAppDaemon?: () => Promise<void> }) => { await options.releaseInAppDaemon?.(); throw new Error("launchctl bootstrap exited 5") }) })
     await expect(service.install()).resolves.toMatchObject({ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "restarted" })
-    expect(calls).toEqual(["stage", "hold", "stop", "restart", "release"])
+    expect(calls).toEqual(["stage", "fence", "hold", "stop", "restart", "unfence", "release"])
   })
 
   it("says the daemon is stopped when the install fails after the stop and the restart does not come back", async () => {
@@ -108,14 +112,14 @@ describe("DesktopDaemonService", () => {
   it("removes the service and starts the app's own daemon again", async () => {
     const { service, calls } = harness()
     await expect(service.remove()).resolves.toMatchObject({ ok: true, kind: "file", profileRecovery: "not-needed", daemonRunning: true })
-    expect(calls).toEqual(["hold", "restart", "release"])
+    expect(calls).toEqual(["fence", "hold", "restart", "unfence", "release"])
   })
 
   it("carries the removal's profile recovery and says when the app's own daemon did not come back", async () => {
     const { service, deps } = harness({ remove: vi.fn(async () => ({ kind: "task" as const, name: "\\Domovoi\\domovoid", profileRecovery: "proof-unavailable" as const, profileRecoveryDetail: "The service record could not be read" })) })
     vi.mocked(deps.daemon.restart).mockImplementationOnce(async () => ({ kind: "refused", reason: "owner-unreachable", message: "no daemon" }) as never)
     await expect(service.remove()).resolves.toEqual({
-      ok: true, kind: "task", target: "\\Domovoi\\domovoid", profileRecovery: "proof-unavailable", profileRecoveryDetail: "The service record could not be read", daemonRunning: false,
+      ok: true, kind: "task", target: "\\Domovoi\\domovoid", profileRecovery: "proof-unavailable", profileRecoveryDetail: "The service record could not be read", daemonRunning: false, daemonAttached: false,
     })
     vi.mocked(deps.daemon.restart).mockImplementationOnce(async () => { throw new Error("Desktop is quitting") })
     await expect(service.remove()).resolves.toMatchObject({ ok: true, daemonRunning: false })
@@ -126,6 +130,74 @@ describe("DesktopDaemonService", () => {
     await expect(service.status()).resolves.toEqual({ installed: true, running: true, detail: "pid 48213" })
     const broken = harness({ status: vi.fn(async () => { throw new Error("launchctl could not be run") }) })
     await expect(broken.service.status()).resolves.toEqual({ unavailable: "launchctl could not be run" })
+  })
+})
+
+// Security review round 1 of #576. The first workspace read is only a snapshot:
+// a turn can start between it and the stop. The daemon's own fence closes that
+// gap, and each outcome says what is still true after a partial change.
+describe("DesktopDaemonService after security review round 1", () => {
+  it("takes the daemon's fence right before the stop, and refuses without stopping when a turn started after the first check", async () => {
+    const { service, deps, calls } = harness()
+    vi.mocked(deps.fence).mockImplementationOnce(async () => ({ refusal: "1 turn is running (Fix login)." }))
+    await expect(service.install()).resolves.toEqual({ ok: false, reason: "refused", message: "1 turn is running (Fix login)." })
+    expect(deps.daemon.stopOwned).not.toHaveBeenCalled()
+    expect(deps.daemon.beginHandoff).not.toHaveBeenCalled()
+    expect(calls).toEqual(["stage", "checks"])
+
+    vi.mocked(deps.fence).mockImplementationOnce(async () => ({ refusal: "1 gate is waiting (Fix login)." }))
+    await expect(service.remove()).resolves.toEqual({ ok: false, reason: "refused", message: "1 gate is waiting (Fix login)." })
+    expect(deps.remove).not.toHaveBeenCalled()
+    expect(deps.daemon.restart).not.toHaveBeenCalled()
+  })
+
+  it("waits when the daemon's fence cannot be taken, and stops nothing", async () => {
+    const { service, deps } = harness()
+    vi.mocked(deps.fence).mockImplementationOnce(async () => { throw new Error("The daemon closed the connection") })
+    await expect(service.install()).resolves.toEqual({ ok: false, reason: "check-failed", message: "The daemon closed the connection" })
+    vi.mocked(deps.fence).mockImplementationOnce(async () => { throw new Error("The daemon closed the connection") })
+    await expect(service.remove()).resolves.toEqual({ ok: false, reason: "check-failed", message: "The daemon closed the connection" })
+    expect(deps.daemon.stopOwned).not.toHaveBeenCalled()
+    expect(deps.remove).not.toHaveBeenCalled()
+  })
+
+  it("reports a daemon it attached to after a removal as running, and as one this app did not start", async () => {
+    const { service, deps } = harness()
+    vi.mocked(deps.daemon.restart).mockImplementationOnce(async () => attachedToService)
+    await expect(service.remove()).resolves.toMatchObject({ ok: true, daemonRunning: true, daemonAttached: true })
+    vi.mocked(deps.daemon.restart).mockImplementationOnce(async () => ({ kind: "owned", url: "ws://127.0.0.1:47831/rpc", token: "t" }))
+    await expect(service.remove()).resolves.toMatchObject({ ok: true, daemonRunning: true, daemonAttached: false })
+  })
+
+  it("reads the service back after a failed install, so a service the manager left behind is not called nothing", async () => {
+    const failing = vi.fn(async (options: { releaseInAppDaemon?: () => Promise<void> }) => { await options.releaseInAppDaemon?.(); throw new Error("launchctl bootstrap exited 5") })
+    const left = harness({ install: failing, status: vi.fn(async () => ({ installed: true, running: false, detail: "not loaded" })) })
+    await expect(left.service.install()).resolves.toEqual({ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "restarted", service: { installed: true, running: false } })
+    const unreadable = harness({ install: failing, status: vi.fn(async () => { throw new Error("launchctl could not be run") }) })
+    await expect(unreadable.service.install()).resolves.toMatchObject({ ok: false, reason: "failed", service: null })
+    const attached = harness({ install: failing, status: vi.fn(async () => ({ installed: false, running: false, detail: "" })) })
+    vi.mocked(attached.deps.daemon.restart).mockImplementationOnce(async () => attachedToService)
+    await expect(attached.service.install()).resolves.toMatchObject({ ok: false, reason: "failed", daemon: "attached", service: { installed: false, running: false } })
+  })
+
+  it("reads the service back after a failed removal, and takes a daemon back when the service no longer runs", async () => {
+    const partial = harness({
+      remove: vi.fn(async () => { throw new Error("unlink ~/Library/LaunchAgents/sh.domovoi.daemon.plist: permission denied") }),
+      status: vi.fn(async () => ({ installed: true, running: false, detail: "not loaded" })),
+    })
+    await expect(partial.service.remove()).resolves.toEqual({
+      ok: false, reason: "failed", message: "unlink ~/Library/LaunchAgents/sh.domovoi.daemon.plist: permission denied", daemon: "restarted", service: { installed: true, running: false },
+    })
+    expect(partial.calls).toEqual(["fence", "hold", "restart", "unfence", "release"])
+
+    const untouched = harness({
+      remove: vi.fn(async () => { throw new Error("launchctl bootout exited 5") }),
+      status: vi.fn(async () => ({ installed: true, running: true, detail: "pid 48213" })),
+    })
+    await expect(untouched.service.remove()).resolves.toEqual({
+      ok: false, reason: "failed", message: "launchctl bootout exited 5", daemon: "untouched", service: { installed: true, running: true },
+    })
+    expect(untouched.deps.daemon.restart).not.toHaveBeenCalled()
   })
 })
 
@@ -159,6 +231,7 @@ describe("a renderer reconnect during the handoff", () => {
       status: async () => ({ installed: true, running: true, detail: "" }),
       remove: async () => ({ kind: "file", path: "/p", profileRecovery: "not-needed" }),
       refusal: async () => undefined,
+      fence: async () => ({ release: () => {} }),
       daemon,
     })
     const outcome = await service.install()
@@ -184,65 +257,169 @@ describe("daemon runtime layout", () => {
 
 describe("staging the shipped runtime under the profile", () => {
   it("copies node and the daemon from the app's resources and names the copy", async () => {
-    const { stageDaemonRuntime } = await import("./daemon-service.js")
-    const copied: [string, string][] = []
-    const runtime = await stageDaemonRuntime({
-      resourcesPath: "/Applications/Domovoi.app/Contents/Resources", home: "/Users/dana", version: "0.9.4", platform: "darwin",
-      exists: async () => true,
-      copy: async (from, to) => { copied.push([from, to]) },
-      remove: async () => {},
-      rename: async (from, to) => { copied.push([from, to]) },
+    await withScratch(async ({ resources, home }) => {
+      const renamed: [string, string][] = []
+      const runtime = await stage({ resources, home, version: "0.9.4", rename: async (from, to) => { renamed.push([from, to]); await rename(from, to) } })
+      const destination = join(home, ".domovoi", "runtime", "0.9.4")
+      expect(renamed).toEqual([[expect.stringContaining(join(home, ".domovoi", "runtime", ".0.9.4.staging-")), destination]])
+      expect(runtime).toEqual(daemonRuntimeLayoutUnder(destination))
+      expect(await readFile(runtime.daemonEntryPath, "utf8")).toBe("daemon")
+      expect(await readFile(runtime.nodePath, "utf8")).toBe("node")
     })
-    expect(copied).toEqual([
-      ["/Applications/Domovoi.app/Contents/Resources/daemon-runtime", expect.stringMatching(/^\/Users\/dana\/\.domovoi\/runtime\/\.0\.9\.4\.staging-/)],
-      [expect.stringMatching(/^\/Users\/dana\/\.domovoi\/runtime\/\.0\.9\.4\.staging-/), "/Users/dana/.domovoi/runtime/0.9.4"],
-    ])
-    expect(runtime).toEqual({ nodePath: "/Users/dana/.domovoi/runtime/0.9.4/node/bin/node", daemonEntryPath: "/Users/dana/.domovoi/runtime/0.9.4/daemon/dist/index.js" })
   })
 
   it("replaces an earlier copy of the same version whole, so no stale file survives, and leaves no staging directory", async () => {
-    const { stageDaemonRuntime } = await import("./daemon-service.js")
-    const { cp, mkdir, mkdtemp, readdir, rename, rm, writeFile, access } = await import("node:fs/promises")
-    const { join } = await import("node:path")
-    const { tmpdir } = await import("node:os")
-    const root = await mkdtemp(join(tmpdir(), "domovoi-stage-"))
-    try {
-      const resources = join(root, "Resources")
-      await mkdir(join(resources, "daemon-runtime", "node", "bin"), { recursive: true })
-      await mkdir(join(resources, "daemon-runtime", "daemon", "dist"), { recursive: true })
-      await writeFile(join(resources, "daemon-runtime", "node", "bin", "node"), "node")
-      await writeFile(join(resources, "daemon-runtime", "daemon", "dist", "index.js"), "daemon")
-      const home = join(root, "home")
+    await withScratch(async ({ resources, home }) => {
       const earlier = join(home, ".domovoi", "runtime", "0.9.4")
       await mkdir(join(earlier, "daemon", "dist"), { recursive: true })
       await writeFile(join(earlier, "daemon", "dist", "stale-chunk.js"), "old")
-      const fileSystem = {
-        exists: async (path: string) => { try { await access(path); return true } catch { return false } },
-        copy: (from: string, to: string) => cp(from, to, { recursive: true, force: true }),
-        remove: (path: string) => rm(path, { recursive: true, force: true }),
-        rename: (from: string, to: string) => rename(from, to),
-      }
-      await stageDaemonRuntime({ resourcesPath: resources, home, version: "0.9.4", platform: "linux", ...fileSystem })
+      await stage({ resources, home, version: "0.9.4" })
       expect((await readdir(join(earlier, "daemon", "dist"))).sort()).toEqual(["index.js"])
       expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual(["0.9.4"])
 
       await writeFile(join(earlier, "daemon", "dist", "stale-chunk.js"), "old")
-      await expect(stageDaemonRuntime({ resourcesPath: resources, home, version: "0.9.4", platform: "linux", ...fileSystem,
-        copy: async () => { throw new Error("disk full") } })).rejects.toThrow("disk full")
+      await expect(stage({ resources, home, version: "0.9.4", copy: async () => { throw new Error("disk full") } })).rejects.toThrow("disk full")
       expect((await readdir(join(earlier, "daemon", "dist"))).sort()).toEqual(["index.js", "stale-chunk.js"])
       expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual(["0.9.4"])
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
+    })
+  })
+
+  it("refuses a version that is not one directory name, and replaces nothing outside the runtime directory", async () => {
+    await withScratch(async ({ resources, home, root }) => {
+      const victim = join(root, "victim")
+      await mkdir(victim, { recursive: true })
+      await writeFile(join(victim, "keep.txt"), "keep")
+      for (const version of ["../../../victim", "..", "0.9.4/../../x", "0.9.4\\..\\x", ""]) {
+        await expect(stage({ resources, home, version })).rejects.toThrow()
+      }
+      expect(await readdir(victim)).toEqual(["keep.txt"])
+      expect(() => profileRuntimeDirectory(home, "../victim", "darwin")).toThrow()
+    })
+  })
+
+  it("refuses a runtime directory reached through a link, and changes nothing where the link points", async () => {
+    await withScratch(async ({ resources, home, root }) => {
+      const elsewhere = join(root, "elsewhere")
+      await mkdir(join(elsewhere, "0.9.4"), { recursive: true })
+      await writeFile(join(elsewhere, "0.9.4", "keep.txt"), "keep")
+      await mkdir(join(home, ".domovoi"), { recursive: true })
+      await symlink(elsewhere, join(home, ".domovoi", "runtime"), directoryLink)
+      await expect(stage({ resources, home, version: "0.9.4" })).rejects.toThrow()
+      expect(await readdir(elsewhere)).toEqual(["0.9.4"])
+      expect(await readdir(join(elsewhere, "0.9.4"))).toEqual(["keep.txt"])
+    })
+    await withScratch(async ({ resources, home, root }) => {
+      const elsewhere = join(root, "elsewhere")
+      await mkdir(join(elsewhere, "runtime", "0.9.4"), { recursive: true })
+      await writeFile(join(elsewhere, "runtime", "0.9.4", "keep.txt"), "keep")
+      await symlink(elsewhere, join(home, ".domovoi"), directoryLink)
+      await expect(stage({ resources, home, version: "0.9.4" })).rejects.toThrow()
+      expect(await readdir(join(elsewhere, "runtime", "0.9.4"))).toEqual(["keep.txt"])
+    })
+  })
+
+  it("requires each shipped part to be a regular file and refuses a link that leaves the shipped runtime, before copying", async () => {
+    await withScratch(async ({ resources, home }) => {
+      const nodePath = daemonRuntimeLayout(resources, platform).nodePath
+      await rm(nodePath)
+      await mkdir(nodePath)
+      await expect(stage({ resources, home, version: "0.9.4" })).rejects.toMatchObject({ name: "DaemonServiceRuntimeMissingError", part: "node" })
+      expect(await entries(home)).toEqual([])
+    })
+    await withScratch(async ({ resources, home, root }) => {
+      await writeFile(join(root, "outside.js"), "outside")
+      await rm(join(resources, "daemon-runtime", "daemon", "dist", "index.js"))
+      await symlink(join(root, "outside.js"), join(resources, "daemon-runtime", "daemon", "dist", "index.js"))
+      await expect(stage({ resources, home, version: "0.9.4" })).rejects.toMatchObject({ name: "DaemonServiceRuntimeMissingError", part: "daemon" })
+      expect(await entries(home)).toEqual([])
+    })
+    await withScratch(async ({ resources, home, root }) => {
+      await mkdir(join(root, "outside"))
+      await symlink(join(root, "outside"), join(resources, "daemon-runtime", "node", "lib"), directoryLink)
+      await expect(stage({ resources, home, version: "0.9.4" })).rejects.toThrow()
+      expect(await entries(home)).toEqual([])
+    })
+    await withScratch(async ({ resources, home }) => {
+      // A link that stays inside the shipped runtime, as npm's bin links do,
+      // is kept as a link in the copy.
+      await symlink("../daemon/dist/index.js", join(resources, "daemon-runtime", "node", "daemon-entry"), "file")
+      const runtime = await stage({ resources, home, version: "0.9.4" })
+      expect(runtime).toEqual(daemonRuntimeLayoutUnder(join(home, ".domovoi", "runtime", "0.9.4")))
+      expect(await readlink(join(home, ".domovoi", "runtime", "0.9.4", "node", "daemon-entry"))).toBe("../daemon/dist/index.js")
+    })
+  })
+
+  it("keeps the earlier copy of the same version when publishing the new one fails", async () => {
+    await withScratch(async ({ resources, home }) => {
+      const earlier = join(home, ".domovoi", "runtime", "0.9.4")
+      await mkdir(join(earlier, "daemon", "dist"), { recursive: true })
+      await writeFile(join(earlier, "daemon", "dist", "index.js"), "earlier")
+      await expect(stage({ resources, home, version: "0.9.4", rename: async (from, to) => {
+        if (from.includes(".staging-")) throw new Error("rename failed")
+        await rename(from, to)
+      } })).rejects.toThrow("rename failed")
+      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
+      expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual(["0.9.4"])
+    })
   })
 
   it("names the missing shipped part before copying anything", async () => {
-    const { stageDaemonRuntime } = await import("./daemon-service.js")
-    const copy = vi.fn(async () => {})
-    await expect(stageDaemonRuntime({
-      resourcesPath: "/Applications/Domovoi.app/Contents/Resources", home: "/Users/dana", version: "0.9.4", platform: "darwin",
-      exists: async (path) => !path.endsWith("bin/node"), copy, remove: async () => {}, rename: async () => {},
-    })).rejects.toMatchObject({ name: "DaemonServiceRuntimeMissingError", part: "node", path: "/Applications/Domovoi.app/Contents/Resources/daemon-runtime/node/bin/node" })
-    expect(copy).not.toHaveBeenCalled()
+    await withScratch(async ({ resources, home }) => {
+      const nodePath = daemonRuntimeLayout(resources, platform).nodePath
+      await rm(nodePath)
+      const copy = vi.fn(async () => {})
+      await expect(stage({ resources, home, version: "0.9.4", copy })).rejects.toMatchObject({ name: "DaemonServiceRuntimeMissingError", part: "node", path: nodePath })
+      expect(copy).not.toHaveBeenCalled()
+    })
   })
 })
+
+const platform = process.platform === "win32" ? "win32" : "linux"
+const directoryLink = process.platform === "win32" ? "junction" : "dir"
+
+function daemonRuntimeLayoutUnder(destination: string) {
+  return platform === "win32"
+    ? { nodePath: join(destination, "node", "node.exe"), daemonEntryPath: join(destination, "daemon", "dist", "index.js") }
+    : { nodePath: join(destination, "node", "bin", "node"), daemonEntryPath: join(destination, "daemon", "dist", "index.js") }
+}
+
+// Real files in a scratch directory: the shipped runtime under Resources and
+// an empty home. Nothing here reaches the real profile.
+async function withScratch(run: (paths: { root: string; resources: string; home: string }) => Promise<void>): Promise<void> {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-stage-")))
+  try {
+    const resources = join(root, "Resources")
+    const shipped = daemonRuntimeLayout(resources, platform)
+    await mkdir(dirname(shipped.nodePath), { recursive: true })
+    await mkdir(dirname(shipped.daemonEntryPath), { recursive: true })
+    await writeFile(shipped.nodePath, "node")
+    await writeFile(shipped.daemonEntryPath, "daemon")
+    const home = join(root, "home")
+    await mkdir(home)
+    await run({ root, resources, home })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
+async function entries(path: string): Promise<string[]> {
+  return (await readdir(path)).sort()
+}
+
+type StageInput = {
+  resources: string
+  home: string
+  version: string
+  copy?: (from: string, to: string) => Promise<void>
+  rename?: (from: string, to: string) => Promise<void>
+}
+
+function stage(input: StageInput) {
+  return stageDaemonRuntime({
+    resourcesPath: input.resources, home: input.home, version: input.version, platform,
+    fileSystem: nodeRuntimeFileSystem({
+      ...(input.copy ? { copy: input.copy } : {}),
+      ...(input.rename ? { rename: input.rename } : {}),
+    }),
+  })
+}
