@@ -293,3 +293,13 @@ it("does not call a daemon this app did not start the installed service", () => 
   expect(section.textContent).toContain("Install and Remove are off: this app did not start that daemon.")
   expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
 })
+
+// Another Domovoi window holds the daemon: quitting this one does not stop it,
+// so the section keeps that window's own line.
+it("keeps the other window's line for a daemon another Domovoi window started", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the daemon another Domovoi Desktop started", detail: "That app owns the daemon and stops it when it quits.", owner: "other-app", platform: "darwin" }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(section.textContent).toContain("That app owns the daemon and stops it when it quits.")
+  expect(section.textContent).not.toContain("Quitting Domovoi stops the daemon")
+  expect(section.textContent).not.toContain("Quitting this app leaves the daemon and its sessions running.")
+})
