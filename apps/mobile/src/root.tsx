@@ -2,9 +2,11 @@ import { useEffect, useState } from "react"
 import { useFonts } from "expo-font"
 
 import { App } from "./app"
+import { AppErrorBoundary } from "./components/app-error-boundary"
 import { Splash } from "./components/splash"
 import { drawWithFonts, fontWaitLimitMs } from "./theme/font-gate"
 import { fontSources } from "./theme/fonts"
+import { ThemeProvider } from "./theme/theme-provider"
 
 // Nothing draws until the faces are registered, otherwise the first frame
 // renders in the platform font and swaps a moment later. The wait is bounded:
@@ -23,8 +25,8 @@ export function Root() {
     if (error) console.warn(`fonts did not load, drawing with the platform face: ${error.message}`)
   }, [error])
 
-  if (!drawWithFonts({ loaded, failed: error !== null, waitedOut })) {
-    return <Splash />
-  }
-  return <App />
+  const content = drawWithFonts({ loaded, failed: error !== null, waitedOut })
+    ? <AppErrorBoundary><App /></AppErrorBoundary>
+    : <Splash />
+  return <ThemeProvider>{content}</ThemeProvider>
 }

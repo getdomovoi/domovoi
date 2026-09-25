@@ -1,7 +1,7 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Tablet v2.dc.html",
-  "sha256": "01479d3f9f2356a47af72e65678d9d728abd99dc013eba091fbf7b3776d78df0",
-  "derivedOn": "2026-09-18",
+  "sha256": "69b2db14ceff24c169c1645aa4caa00ece1d111a30d19b05a963ee408c02a5b7",
+  "derivedOn": "2026-09-23",
   "sources": [
     "apps/mobile/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts"
@@ -24,7 +24,9 @@
     "design-studio",
     "webhook_replay",
     "One row per Stripe event id. The unique key is the claim, so a second delivery cannot insert.",
-    "open"
+    "open",
+    "claude-code",
+    "tailnet · credential b41d…2fe"
   ],
   "elements": [
     {
@@ -37,11 +39,7 @@
       ],
       "evidence": [
         "TabletSessionsPane"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "S3.5: the tablet is not started; the phone has these groups as a single-column list"
-      }
+      ]
     },
     {
       "id": "thread.header",
@@ -49,11 +47,7 @@
       "where": "right pane top: title, repo · branch · worktree · clock, the files button opening the sheet, theme toggle",
       "evidence": [
         "TabletThreadHeader"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "S3.5"
-      }
+      ]
     },
     {
       "id": "thread.turns",
@@ -61,11 +55,7 @@
       "where": "right pane: the user message, prose, Worked for N with tools and files",
       "evidence": [
         "TabletThread"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "S3.5"
-      }
+      ]
     },
     {
       "id": "thread.gate",
@@ -80,11 +70,7 @@
       "evidence": [
         "TabletGateCard",
         "Always here"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "S3.5; the phone's approval screen decides with its own copy and layout"
-      }
+      ]
     },
     {
       "id": "thread.receipt",
@@ -92,11 +78,7 @@
       "where": "in the thread after the decision: what ran, how long, that a checkpoint exists",
       "evidence": [
         "TabletReceipt"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "S3.5"
-      }
+      ]
     },
     {
       "id": "composer",
@@ -108,11 +90,7 @@
       "evidence": [
         "TabletComposer",
         "Reply, or steer the plan"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "S3.5"
-      }
+      ]
     },
     {
       "id": "sheet",
@@ -126,11 +104,7 @@
       "evidence": [
         "TabletReviewSheet",
         "Say what is wrong with this element"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "S3.5"
-      }
+      ]
     },
     {
       "id": "cellular-banner",
@@ -147,6 +121,22 @@
         "needs": "platform",
         "reason": "the route is the Phase 2 relay; M1 has loopback and the tailnet"
       }
+    },
+    {
+      "id": "pairing.success",
+      "name": "Paired, with the gates-while-open limit",
+      "where": "frame 5 (J28): a card over the shell, Paired with <machine>, route and credential, the limit, Open Sessions",
+      "copy": [
+        "Paired with hetzner-cx42",
+        "Gates reach this tablet only while Domovoi is open on it. There are no notifications yet.",
+        "Open Sessions"
+      ],
+      "evidence": [
+        "Gates reach this tablet only while Domovoi is open on it",
+        "Open Sessions"
+      ]
     }
-  ]
+  ],
+  "annotations": [],
+  "humanRead": []
 }

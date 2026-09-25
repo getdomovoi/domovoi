@@ -1,6 +1,6 @@
 import { createHash, randomInt, timingSafeEqual } from "node:crypto"
 
-import type { ClientKind } from "@getdomovoi/protocol"
+import type { ClientAccess, ClientKind } from "@getdomovoi/protocol"
 
 import type { DeviceClaim, DevicePairing, DeviceRegistry } from "./device-registry.js"
 
@@ -31,6 +31,7 @@ type OpenPairing = {
   // code rather than with the claimer, so what a code can mint is decided when
   // it is shown and cannot be talked up when it is spent.
   targetClient?: ClientKind
+  clientAccess?: ClientAccess
 }
 
 function digestOf(code: string): string {
@@ -51,7 +52,7 @@ export class PairingCodeService {
     this.#devices = devices
   }
 
-  issue(nowMs: number, targetClient?: ClientKind): { code: string; expiresAt: string } {
+  issue(nowMs: number, targetClient?: ClientKind, clientAccess?: ClientAccess): { code: string; expiresAt: string } {
     const words = Array.from({ length: 3 }, () => codeWords[randomInt(codeWords.length)])
     const code = `${words.join("-")}-${String(randomInt(10, 100))}`
     // Keep plaintext out of incidental inspection, but do not treat this
@@ -62,6 +63,7 @@ export class PairingCodeService {
       expiresAtMs: nowMs + pairingCodeTtlMs,
       attempts: 0,
       ...(targetClient === undefined ? {} : { targetClient }),
+      ...(clientAccess === undefined ? {} : { clientAccess }),
     }
     return { code, expiresAt: new Date(nowMs + pairingCodeTtlMs).toISOString() }
   }
@@ -85,7 +87,14 @@ export class PairingCodeService {
   redeem(code: string, input: { label: string }, nowMs: number): DevicePairing {
     const open = this.#spend(code, nowMs)
     if (open.targetClient === undefined) throw new PairingCodeError("Pairing code is not valid")
-    return this.#devices.pair({ label: input.label, binding: { kind: "client", client: open.targetClient } })
+    return this.#devices.pair({
+      label: input.label,
+      binding: {
+        kind: "client",
+        client: open.targetClient,
+        clientAccess: open.clientAccess ?? "full",
+      },
+    })
   }
 
   #spend(code: string, nowMs: number): OpenPairing {

@@ -16,22 +16,27 @@ export function JumpPill({
   state,
   unseen,
   above,
+  watching = false,
   onPress,
 }: {
   state: ThreadFollow
   unseen: number
+  // A watching device cannot answer the decision below, so the pill names who can.
+  watching?: boolean
   // What the composer reported covering, so the pill sits just over it.
   above: number
   onPress: () => void
 }) {
-  const text = threadFollowPillText(state, unseen)
+  const text = watching && state === "gate"
+    ? "Waiting on a full-access device"
+    : threadFollowPillText(state, unseen)
   if (!text) return null
   const gate = state === "gate"
   return (
     <View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: above + 10, zIndex: 5, alignItems: "center" }}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={gate ? "Jump to the waiting decision" : `Jump to the ${text}`}
+        accessibilityLabel={gate ? "Jump to the waiting decision" : unseen > 0 ? `Jump to the ${text}` : "Jump to the latest output"}
         onPress={onPress}
         className={cn(
           "h-11 flex-row items-center gap-2.5 rounded-full border px-[17px]",

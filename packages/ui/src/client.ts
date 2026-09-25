@@ -5,6 +5,7 @@ import {
   projectSwitchConfirmationSchema,
   protocolVersion,
   rpcNotificationSchema,
+  rpcMethodAuthorizations,
   rpcMethods,
   rpcResponseSchema,
   artifactAuthorizeResultSchema,
@@ -17,6 +18,7 @@ import {
   systemEmergencyStoppedNotificationSchema,
   workspaceDeltaSchema,
   workspaceSnapshotSchema,
+  type ClientAccess,
   type ClientKind,
   type ApprovalDecision,
   type Annotation,
@@ -181,6 +183,7 @@ export class DomovoiClient extends EventTarget {
   #createSocket: ClientSocketFactory = (url) => new WebSocket(url)
   #defaultCreateSocket: ClientSocketFactory = this.#createSocket
   #requestId = 0
+  #clientAccess: ClientAccess = "full"
   #pending = new Map<number, PendingRequest>()
   // A request this client gave up on, by cancellation or by its deadline, is
   // still answered by the daemon. That answer is expected, so it is dropped
@@ -251,6 +254,10 @@ export class DomovoiClient extends EventTarget {
   }
 
   get admittedDeviceId(): string | undefined { return this.#admittedDeviceId }
+
+  setClientAccess(access: ClientAccess): void {
+    this.#clientAccess = access
+  }
 
   // A caller that is trying several routes for one connection passes the
   // deadline they share; this attempt then gets the smaller of what remains
@@ -483,6 +490,9 @@ export class DomovoiClient extends EventTarget {
     parseOrOptions?: ((value: unknown) => T) | DomovoiRequestOptions,
     requestOptions: DomovoiRequestOptions = {},
   ): Promise<T> {
+    if (this.#clientAccess === "watching" && rpcMethodAuthorizations[method] === "control") {
+      return Promise.reject(new Error("Watching clients cannot change workspace state"))
+    }
     const id = ++this.#requestId
     const parse = typeof parseOrOptions === "function" ? parseOrOptions : undefined
     const options = typeof parseOrOptions === "function" ? requestOptions : (parseOrOptions ?? {})
@@ -550,15 +560,18 @@ export class DomovoiClient extends EventTarget {
     })
   }
 
+  // The revision is the card revision the client showed; an Allow must carry it.
   resolveApproval(
     approvalId: string,
     decision: ApprovalDecision,
     explanation?: string,
+    revision?: number,
   ): Promise<WorkspaceSnapshot> {
     return this.request("approval.resolve", {
       approvalId,
       decision,
       ...(explanation ? { explanation } : {}),
+      ...(revision === undefined ? {} : { revision }),
     })
   }
 
@@ -631,12 +644,14 @@ export class DomovoiClient extends EventTarget {
     sessionId: string,
     prompt: string,
     skillSelection?: RpcParams<"session.send">["skillSelection"],
+    attachments?: RpcParams<"session.send">["attachments"],
   ): Promise<WorkspaceSnapshot> {
     return this.request("session.send", {
       sessionId,
       prompt,
       client: this.kind,
       ...(skillSelection ? { skillSelection } : {}),
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
     })
   }
 
@@ -829,6 +844,12 @@ export class DomovoiClient extends EventTarget {
     return this.request("skill.list", {}, options)
   }
 
+  // Titles and summaries on this daemon (session.search, 2026-09-23). The
+  // palette asks each admitted machine for its own; nothing crosses machines.
+  searchSessions(params: RpcParams<"session.search">, options?: DomovoiRequestOptions): Promise<RpcResult<"session.search">> {
+    return this.request("session.search", params, options)
+  }
+
   getSkillInventory(options?: DomovoiRequestOptions): Promise<SkillInventory> {
     return this.request("skill.inventory", {}, options)
   }
@@ -917,6 +938,12 @@ export class DomovoiClient extends EventTarget {
       confirmation: "target-does-not-have-session",
       initiatedByClient: this.kind,
     }, options)
+  }
+
+  // The same code `domovoid pair --client` prints, for the kind named and no
+  // other. A watching client is refused before the request leaves.
+  issueDeviceCode(targetClient: ClientKind, options?: DomovoiRequestOptions): Promise<RpcResult<"device.issueCode">> {
+    return this.request("device.issueCode", { targetClient }, options)
   }
 
   listDevices(options?: DomovoiRequestOptions): Promise<DevicesResult> {
@@ -1153,7 +1180,11 @@ export class DomovoiClient extends EventTarget {
 
     const response = rpcResponseSchema.safeParse(input)
     if (!response.success) {
-      const id = (input as { id?: unknown }).id
+      // "null", a number and an array all parse as JSON; only an object can
+      // name the request it answers.
+      const id = typeof input === "object" && input !== null && !Array.isArray(input)
+        ? (input as { id?: unknown }).id
+        : undefined
       if (typeof id === "number") {
         const pending = this.#pending.get(id)
         if (pending) {

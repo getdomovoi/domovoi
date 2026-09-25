@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   CheckCircle2Icon,
   CircleStopIcon,
+  ExternalLinkIcon,
   FileDiffIcon,
   RefreshCwIcon,
   Undo2Icon,
@@ -92,6 +93,21 @@ export function splitDiffRows(diff: string): SplitDiffRow[] {
   }
   flush()
   return rows
+}
+
+export type UnifiedDiffLine = { kind: "meta" | "add" | "del" | "context"; text: string }
+
+// The unified view reads the same hunks as one column, so it classifies each
+// line the way the split view does and keeps the marker in place. A header
+// starts with the same character as an addition, so meta is tested first.
+export function unifiedDiffLines(diff: string): UnifiedDiffLine[] {
+  if (!diff) return []
+  return diff.replace(/\n$/u, "").split("\n").map((text) => {
+    if (diffMetaPrefixes.some((prefix) => text.startsWith(prefix))) return { kind: "meta" as const, text }
+    if (text.startsWith("+")) return { kind: "add" as const, text }
+    if (text.startsWith("-")) return { kind: "del" as const, text }
+    return { kind: "context" as const, text }
+  })
 }
 
 export function diffByFile(diff: string): Map<string, string> {
@@ -227,12 +243,7 @@ function FileEvidenceRow({
     </div>
     {open ? (
       fileDiff ? (
-        <pre
-          aria-label={`Diff for ${file.path}`}
-          className="m-0 max-h-72 overflow-auto whitespace-pre-wrap break-words border-t bg-code px-3 py-2 font-machine text-[10px] leading-relaxed"
-        >
-          {fileDiff}
-        </pre>
+        <UnifiedDiff diff={fileDiff} label={`Diff for ${file.path}`} className="max-h-72 border-t py-2" />
       ) : (
         <p className="m-0 border-t px-3 py-2 font-machine text-mono-xs text-warning">
           {file.binary
@@ -283,9 +294,9 @@ function RevertFileDialog({
         <p className="m-0 truncate font-machine text-[10px] text-strong" title={path}>{path}</p>
         {error ? <p role="alert" className="m-0 text-sm text-destructive">{error}</p> : null}
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={pending}>Keep the changes</AlertDialogCancel>
+          <AlertDialogCancel disabled={pending}>Keep it</AlertDialogCancel>
           <Button variant="destructive" disabled={pending || !prompt.available} onClick={onConfirm}>
-            {pending ? "Working" : prompt.available ? `${prompt.verb} file` : "Unavailable"}
+            {pending ? "Working" : prompt.available ? `${prompt.verb} this file` : "Unavailable"}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -293,10 +304,38 @@ function RevertFileDialog({
   )
 }
 
+export function UnifiedDiff({ diff, label, className }: { diff: string; label: string; className?: string }) {
+  const lines = useMemo(() => unifiedDiffLines(diff), [diff])
+  return (
+    <div
+      aria-label={label}
+      className={cn("max-h-80 overflow-auto bg-code font-machine text-[10px] leading-relaxed", className)}
+    >
+      {lines.map((line, index) => (
+        <pre
+          key={index}
+          className={cn(
+            "m-0 whitespace-pre-wrap break-words px-3 py-0.5",
+            line.kind === "meta" && "text-faint",
+            line.kind === "add" && "bg-success/10 text-success",
+            line.kind === "del" && "bg-destructive/10 text-destructive",
+            line.kind === "context" && "text-muted-foreground",
+          )}
+        >
+          {line.text}
+        </pre>
+      ))}
+    </div>
+  )
+}
+
 function SplitDiff({ diff }: { diff: string }) {
   const rows = useMemo(() => splitDiffRows(diff), [diff])
   return (
-    <div aria-label="Split diff" className="max-h-80 overflow-auto bg-code font-machine text-[10px] leading-relaxed">
+    <div
+      aria-label="Split diff"
+      className="max-h-80 w-0 min-w-full overflow-auto bg-code font-machine text-[10px] leading-relaxed"
+    >
       <div className="grid min-w-max grid-cols-2">
         {rows.map((row, index) => (
           <div key={index} className="contents">
@@ -334,6 +373,7 @@ export function SessionEvidenceContent({
   loading,
   onRefresh,
   onRevertFile,
+  onOpenInEditor,
 }: {
   connected: boolean
   evidence?: SessionEvidence
@@ -341,6 +381,8 @@ export function SessionEvidenceContent({
   loading: boolean
   onRefresh: () => void
   onRevertFile?: (path: string, expectedBaseCommit?: string) => Promise<void>
+  // The desktop opens the worktree in the person's editor; a browser has none.
+  onOpenInEditor?: (() => void) | undefined
 }) {
   const associations = useMemo(
     () => new Map((evidence?.fileAssociations ?? []).map((association) => [association.path, association])),
@@ -393,8 +435,8 @@ export function SessionEvidenceContent({
           Refresh
         </Button>
       </div>
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-4 p-3">
+      <ScrollArea className="min-h-0 min-w-0 flex-1">
+        <div className="min-w-0 space-y-4 p-3">
           {loading && !evidence ? (
             <p role="status" className="py-8 text-center font-machine text-[10px] text-faint">
               Refreshing evidence
@@ -416,10 +458,11 @@ export function SessionEvidenceContent({
           ) : null}
           {evidence ? (
             <>
-              <section className="overflow-hidden rounded-lg border bg-card">
+              <section className="overflow-hidden rounded-lg border bg-card" aria-labelledby="evidence-per-file">
                 <div className="flex items-center justify-between px-3 py-2">
                   <div>
-                    <h3 className="m-0 text-[11px] font-medium">Working tree</h3>
+                    <h3 id="evidence-per-file" className="m-0 text-[10.5px] font-medium tracking-[0.13em] text-faint">EVIDENCE PER FILE</h3>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">What ran against each change, and whether it passed.</p>
                     <p className="mt-0.5 font-machine text-mono-xs text-faint">
                       {evidence.workspace.totalChangedFiles} changed files · {evidence.workspace.baseCommit.slice(0, 8)}
                     </p>
@@ -475,9 +518,17 @@ export function SessionEvidenceContent({
                     Only the first {evidence.workspace.files.length} changed files are shown.
                   </p>
                 ) : null}
+                {onOpenInEditor ? (
+                  <div className="flex items-center border-t px-3 py-2">
+                    <Button variant="outline" size="xs" onClick={onOpenInEditor}>
+                      <ExternalLinkIcon />
+                      Open in editor
+                    </Button>
+                  </div>
+                ) : null}
               </section>
 
-              <section className="overflow-hidden rounded-lg border bg-card">
+              <section className="min-w-0 overflow-hidden rounded-lg border bg-card">
                 <div className="flex items-center justify-between px-3 py-2">
                   <h3 className="m-0 text-[11px] font-medium">Worktree diff</h3>
                   <div className="flex items-center gap-2">
@@ -507,12 +558,7 @@ export function SessionEvidenceContent({
                   diffView === "split" ? (
                     <SplitDiff diff={evidence.workspace.diff} />
                   ) : (
-                    <pre
-                      aria-label="Unified diff"
-                      className="m-0 max-h-80 overflow-auto whitespace-pre-wrap break-words bg-code p-3 font-machine text-[10px] leading-relaxed text-muted-foreground"
-                    >
-                      {evidence.workspace.diff}
-                    </pre>
+                    <UnifiedDiff diff={evidence.workspace.diff} label="Unified diff" className="py-3" />
                   )
                 ) : (
                   <p className="m-0 px-3 py-5 text-center text-[11px] text-faint">No diff output.</p>
@@ -607,12 +653,14 @@ export function SessionEvidencePanel({
   sessionId,
   onLoad,
   onRevertFile,
+  onOpenInEditor,
 }: {
   connected: boolean
   readOnly?: boolean
   sessionId: string | null
   onLoad: (sessionId: string) => Promise<SessionEvidence>
   onRevertFile?: (sessionId: string, path: string, expectedBaseCommit?: string) => Promise<void>
+  onOpenInEditor?: (() => void) | undefined
 }) {
   const generation = useRef(0)
   const [state, setState] = useState<EvidenceState>({ loading: false, error: "" })
@@ -679,6 +727,7 @@ export function SessionEvidencePanel({
       error={visible.error}
       loading={visible.loading}
       onRefresh={refresh}
+      onOpenInEditor={onOpenInEditor}
       {...(onRevertFile && !readOnly
         ? {
           onRevertFile: async (path: string, expectedBaseCommit?: string) => {

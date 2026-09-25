@@ -43,9 +43,24 @@ for the scope and the offline schema validation boundary.
 They are proprietary, and they are a runtime dependency of the Claude Code session adapter in the
 Apache-2.0 daemon.
 
-This is a known constraint, not a resolved one. Domovoi does not redistribute the SDK: it is
-installed from npm under Anthropic's terms, the same way the Claude Code CLI is. Removing the
-exception requires one of:
+This is a known constraint, not a resolved one. What each artifact carries:
+
+- The daemon's npm package declares the SDK as a dependency. npm installs it, and the platform
+  package for that host, from the registry under Anthropic's terms. Domovoi does not publish a
+  copy of either.
+- The desktop app bundles the SDK's JavaScript library, because the daemon inside it imports that
+  library. It does not bundle any `@anthropic-ai/claude-agent-sdk-*` platform package, so it
+  carries no copy of the Claude Code agent binary. `apps/desktop/electron-builder.yml` excludes
+  them and `scripts/desktop-package-contents.test.mjs` checks the exclusion.
+- The daemon never runs the SDK's own agent binary. It finds `claude` on the tool PATH, the same
+  executable provider readiness reports, and passes that path to the SDK. With no `claude`
+  installed, Claude Code sessions do not start. On Windows it takes only the native `claude.exe`,
+  because the SDK starts the executable without a shell and the npm `claude` and `claude.cmd`
+  shims need one. A `claude` older than the SDK's `claudeCodeVersion` (2.1.263 for SDK 0.3.263)
+  is refused with the version to install, and readiness says the same. Domovoi does not install,
+  patch or re-sign that binary.
+
+Removing the exception requires one of:
 
 - driving the Claude Code adapter through the installed CLI over the Agent Client Protocol, as the
   Cursor and Grok adapters already do, and dropping the SDK dependency;
@@ -55,7 +70,8 @@ exception requires one of:
   permitted.
 
 Until one of those lands, the daemon's npm package carries a dependency whose terms are not
-Apache-2.0. Say so in release notes rather than implying the whole install is Apache-2.0.
+Apache-2.0, and the desktop app carries the SDK's JavaScript library under those terms. Say so in
+release notes rather than implying the whole install is Apache-2.0.
 
 ## Claude Agent SDK peer dependencies
 

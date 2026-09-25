@@ -1,8 +1,26 @@
-import type { ApprovalRisk, ExecutionResolution, HardGateCategory, Runtime } from "@getdomovoi/protocol"
+import type {
+  ApprovalRisk,
+  ExecutionResolution,
+  HardGateCategory,
+  PolicyRefusalThreadItem,
+  Runtime,
+} from "@getdomovoi/protocol"
 
 export type PermissionDecision = {
   action: "allow" | "review"
   risk: ApprovalRisk
+}
+
+type PolicyRefusalFacts = Pick<PolicyRefusalThreadItem, "rule" | "setBy" | "scope" | "remedy">
+
+export function permissionPolicyRefusalFor(runtime: Runtime): PolicyRefusalFacts | undefined {
+  if (runtime.permissionMode !== "ask") return undefined
+  return {
+    rule: "Ask mode is read-only",
+    setBy: "Domovoi permission mode",
+    scope: "This session",
+    remedy: "Switch to Plan or Build mode before asking the agent to write files.",
+  }
 }
 
 const secretPathStart = String.raw`(?:^|[\s:=/\\'"])`
@@ -25,6 +43,13 @@ const secretFilePattern = new RegExp(
   `${secretPathStart}(?:${secretFileNames.join("|")})${secretPathEnd}`,
   "i",
 )
+const privateKeyFileName = /\bid_(?:rsa|dsa|ecdsa|ed25519)\b/i
+
+// Whether a path names a credential file or private key: the same patterns
+// that put a command in the credentials hard-gate group.
+export function namesSecretPath(path: string): boolean {
+  return secretFilePattern.test(path) || privateKeyFileName.test(path)
+}
 
 const hardGateGroups: Record<HardGateCategory["id"], { label: string; patterns: readonly RegExp[] }> = {
   "privileged-operations": { label: "privilege escalation and file permission changes", patterns: [
@@ -44,7 +69,7 @@ const hardGateGroups: Record<HardGateCategory["id"], { label: string; patterns: 
   "database-migrations": { label: "database migrations", patterns: [/\b(?:migrate|migration)\b/i] },
   credentials: { label: "read credentials, private keys or environment secrets", patterns: [
     secretFilePattern,
-    /\bid_(?:rsa|dsa|ecdsa|ed25519)\b/i,
+    privateKeyFileName,
     /\b(?:printenv|keychain|security\s+find-(?:generic|internet)-password|pass\s+show)\b/i,
   ] },
   network: { label: "network calls through curl, wget, SSH or file transfer tools", patterns: [/\b(?:curl|wget|ssh|scp|sftp)\b/i] },
@@ -60,8 +85,11 @@ export function permissionHardGates(): { categories: HardGateCategory[] } {
 
 const fileToolCommands = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
 
+// Whether an approval card is a file tool's, which names its target file.
+// Execution resolution trims the command before it names the tool, so a padded
+// name is the same tool here too.
 export function isFileToolCommand(command: string): boolean {
-  return fileToolCommands.has(command)
+  return fileToolCommands.has(command.trim())
 }
 
 const gitSummaryFlag = String.raw`--(?:stat|shortstat|numstat|name-only|name-status)`
@@ -74,6 +102,11 @@ const safeBuildAutoPatterns = [
   ),
   /^pwd$/i,
 ] as const
+
+// A Git read that prints no file content and names no path or output file.
+export function isReadOnlyGitCommand(command: string): boolean {
+  return /^git\s/i.test(command) && safeBuildAutoPatterns.some((pattern) => pattern.test(command))
+}
 
 const ambiguousShellSyntax = /[\r\n`$<>(){}\\]/
 const skillInstallerPackage = String.raw`(?:@[a-z0-9._-]+\/)?(?:skills?|skill-installer)(?:@[^\s]+)?`
@@ -153,11 +186,10 @@ type BodyDecision = "allow" | "review" | "hard-gate"
 // patterns describe what is known dangerous rather than what is known safe.
 // Anything outside this list is reviewed, so an unrecognised runner cannot ride
 // in on a script name a human once trusted.
-const boundedScriptRunners = new Set([
-  "vitest", "jest", "mocha", "ava", "tsc", "tsd", "eslint", "biome", "prettier",
-  "stylelint", "oxlint", "tsup", "vite", "rollup", "esbuild", "swc", "webpack",
-  "next", "astro", "changeset", "attw", "publint", "knip", "madge",
-])
+// A runner that loads worktree code (test files, a JavaScript config, plugins or
+// lifecycle scripts) runs whatever the agent last wrote there, so vitest, jest,
+// eslint, vite and the like ask on every Build-auto run and are not listed.
+const boundedScriptRunners = new Set(["tsc", "tsd", "biome"])
 
 // Only these flags may appear before the runner. Anything else can change what
 // actually executes: `npx --package=@attacker/payload vitest` runs the attacker's
@@ -192,6 +224,7 @@ function resolvedExecutionDecision(execution: ExecutionResolution): BodyDecision
     return execution.reason === "sensitive-content" ? "hard-gate" : "review"
   }
   if (execution.record.kind !== "shell") return "review"
+  let decision: BodyDecision = "allow"
   for (const entry of execution.record.entries) {
     for (const part of entry.parts) {
       const command = part.argv.join(" ")
@@ -201,13 +234,13 @@ function resolvedExecutionDecision(execution: ExecutionResolution): BodyDecision
       ) return "hard-gate"
       if (part.expandsTo.length > 0) continue
       if (entry.source.kind === "request") {
-        if (!safeBuildAutoPatterns.some((pattern) => pattern.test(command))) return "review"
+        if (!safeBuildAutoPatterns.some((pattern) => pattern.test(command))) decision = "review"
       } else if (!boundedLeafCommand(part.argv)) {
-        return "review"
+        decision = "review"
       }
     }
   }
-  return "allow"
+  return decision
 }
 
 export function permissionDecisionFor(input: {

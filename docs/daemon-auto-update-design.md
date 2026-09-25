@@ -214,11 +214,14 @@ schemas and tests for:
 - `update.activate`: request activation of an already verified pending version,
   subject to the idle boundary and update policy.
 
-`update.status` is available to every authenticated client, including read-only
-relay admission. `update.check` and `update.activate` accept only a loopback
-connection that completed the local-owner proof, or the daemon's background
-updater acting under the stored install policy. Relay-carried connections,
-watch-only clients, and paired machine actors refuse both mutating methods. A
+As built (#428, 4ddf93f5), all three methods, `update.status` included, accept
+only a direct loopback connection authenticated with the daemon owner's
+credential; see [daemon update dispatch](daemon-update-dispatch.md). Paired
+client and machine credentials, relay-carried connections and watch-only
+clients are refused all three. This design first let every authenticated client
+read `update.status`; the dispatch did not ship that. The daemon's background
+updater, acting under the stored install policy, is the one other caller the
+design allows; nothing schedules it today. A
 manual local activation still respects the idle boundary; it is the operator's
 explicit request, not an agent hard-gate approval, and it does not change the
 stored policy.

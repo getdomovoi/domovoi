@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientAccess, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, RpcResult, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, StateRecovery, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, type DomovoiEndpoint } from "./client"
 import type { ClientAdmission } from "./client-admission-policy"
@@ -76,7 +76,6 @@ export const workspaceBudgets: DomovoiClientBudgets = {
   requestMs: 120_000,
 }
 export const pairingBudgetMs = 60_000
-export const machineDialBudgetMs = 45_000
 
 export type WorkspaceEndpointResolver = (deadline: Deadline) => Promise<DomovoiEndpoint>
 export type WorkspaceClientConnection = { state: "disabled" } | {
@@ -106,6 +105,8 @@ export function useWorkspace(
     snapshot: null,
   }))
   const [connected, setConnected] = useState(false)
+  const [clientAccess, setClientAccess] = useState<ClientAccess>("full")
+  const [stateRecovery, setStateRecovery] = useState<StateRecovery | null>(null)
   const [endpointUrl, setEndpointUrl] = useState(url)
   const [reconnecting, setReconnecting] = useState(false)
   const [protocolError, setProtocolError] = useState<string | null>(null)
@@ -152,6 +153,7 @@ export function useWorkspace(
     setEmergencyStopOutcome(null)
     setEmergencyStopError(null)
     setConnected(false)
+    setClientAccess("full")
     setReconnecting(false)
     setProtocolError(null)
     setAuthenticationRequired(null)
@@ -211,7 +213,11 @@ export function useWorkspace(
       if (!active) return
       setConnected(true)
       setEndpointUrl(client.url)
-      const hello = (event as CustomEvent<WorkspaceSnapshot | undefined>).detail
+      const hello = (event as CustomEvent<RpcResult<"system.hello"> | undefined>).detail
+      const access = hello?.clientAccess ?? "full"
+      client.setClientAccess(access)
+      setClientAccess(access)
+      setStateRecovery(hello?.stateRecovery ?? null)
       if (hello) reconcilePin(hello)
       // fleet.changed is not coalesced, so a client that was away may have
       // missed one. Every connection relists rather than trusting what it held.
@@ -256,10 +262,12 @@ export function useWorkspace(
     client.addEventListener("reconnecting", onReconnecting)
     client.addEventListener("protocol-error", onProtocolError)
     client.addEventListener("authentication-required", onAuthenticationRequired)
+    // The client has already dispatched the hello as a "snapshot" event and
+    // replayed what arrived during admission after it. Applying the resolved
+    // hello again here would put the older state back over those changes.
     client.connect().then(
-      (next) => {
+      () => {
         if (!active) return
-        updateSnapshotFrom(client, next)
         setConnected(true)
       },
       () => {
@@ -293,11 +301,12 @@ export function useWorkspace(
     async (
       approvalId: string,
       decision: ApprovalDecision,
-      explanation?: string,
+      explanation: string | undefined,
+      revision: number,
     ) => {
       const client = clientRef.current
       if (!client) throw new Error("Daemon connection is not open")
-      updateSnapshotFrom(client, await client.resolveApproval(approvalId, decision, explanation))
+      updateSnapshotFrom(client, await client.resolveApproval(approvalId, decision, explanation, revision))
     },
     [updateSnapshotFrom],
   )
@@ -359,10 +368,11 @@ export function useWorkspace(
     sessionId: string,
     prompt: string,
     skillSelection?: TurnSkillSelection,
+    attachments?: RpcParams<"session.send">["attachments"],
   ) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshotFrom(client, await client.sendMessage(sessionId, prompt, skillSelection))
+    updateSnapshotFrom(client, await client.sendMessage(sessionId, prompt, skillSelection, attachments))
   }, [updateSnapshotFrom])
 
   const createCheckpoint = useCallback(async (sessionId: string, label?: string) => {
@@ -511,6 +521,15 @@ export function useWorkspace(
     return client.getSkillInventory(options)
   }, [])
 
+  const searchSessions = useCallback(async (
+    params: RpcParams<"session.search">,
+    options?: DomovoiRequestOptions,
+  ): Promise<RpcResult<"session.search">> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.searchSessions(params, options)
+  }, [])
+
   const listProviderSecrets = useCallback(async () => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -624,6 +643,12 @@ export function useWorkspace(
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
     return client.releaseSession(params, options)
+  }, [])
+
+  const issueDeviceCode = useCallback(async (targetClient: ClientKind) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.issueDeviceCode(targetClient)
   }, [])
 
   const listDevices = useCallback(async (
@@ -815,11 +840,10 @@ export function useWorkspace(
     const client = clientRef.current
     if (!client) throw new Error("Daemon client is not ready")
     setConnected(false)
-    const next = await client.connect()
+    await client.connect()
     if (!isCurrentConnection(clientRef.current, client)) return
-    updateSnapshotFrom(client, next)
     setConnected(true)
-  }, [updateSnapshotFrom])
+  }, [])
 
   return {
     fleetClientRoute,
@@ -830,6 +854,8 @@ export function useWorkspace(
     claimTerminal,
     closeTerminal,
     connected,
+    clientAccess,
+    stateRecovery,
     createCheckpoint,
     createAnnotation,
     createTerminal,
@@ -845,11 +871,13 @@ export function useWorkspace(
     forgetMachine,
     forkSession,
     getSkillInventory,
+    searchSessions,
     listSkills,
     loadSessionHistory,
     loadSessionEvidence,
     listFleet,
     listDevices,
+    issueDeviceCode,
     listModels,
     discoverRuntime,
     listProviderSecrets,

@@ -1,23 +1,29 @@
-import { useEffect, useRef, useState } from "react"
+import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import {
   ArchiveIcon,
+  ArrowUpIcon,
   ArrowDownIcon,
   BotIcon,
   CheckIcon,
   CircleStopIcon,
   FolderOpenIcon,
-  ExternalLinkIcon,
   Maximize2Icon,
-  SendIcon,
+  PaperclipIcon,
+  SquareIcon,
+  TerminalIcon,
+  XIcon,
 } from "lucide-react"
 import type {
   ApprovalRequest,
   ApprovalDecision,
+  ClientAccess,
   ProviderFailure,
+  PermissionMode,
   ProviderModel,
   RpcParams,
   Runtime,
   FleetEntry,
+  SessionAttachment,
   SessionSummary,
   SessionTransferParams,
   SessionTransferResult,
@@ -29,11 +35,10 @@ import type {
   RuntimeDiscoverResult,
   UsageWindow,
   TurnSkillSelection,
-  TurnSkillSelectionRefusal,
   ThreadItem,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
-import { selectableTurnSkills, threadFollowPillText, sessionTransferRefusalMessage, turnSkillRefusalFrom, turnSkillSelectionFor } from "@getdomovoi/protocol"
+import { selectableTurnSkills, threadFollowPillText, sessionTransferRefusalMessage, toolFileEntries, turnSkillSelectionFor } from "@getdomovoi/protocol"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
   readOnlySessionNotice,
@@ -54,10 +59,19 @@ import {
 } from "./components/ui/alert-dialog"
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "./components/ui/dropdown-menu"
 import { Input } from "./components/ui/input"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
 import { ScrollArea } from "./components/ui/scroll-area"
+import { sessionDraftStore } from "./session-draft"
 import { useThreadFollow } from "./thread-follow"
+import { composerPlaceholder, composerPlatform, sendHint } from "./composer-keys"
 import { Textarea } from "./components/ui/textarea"
 import { MachineSwitcher } from "./machine-switcher.js"
 import { fleetMachines } from "./fleet-entries.js"
@@ -66,15 +80,17 @@ import { TransferSessionDialog } from "./transfer-session-dialog.js"
 import type { PairedMachine, PairMachineRequest } from "./pair-machine.js"
 import { cn } from "./lib/utils"
 import { DomovoiMark } from "./domovoi-mark"
-import { ComposerSkillChip } from "./composer-skills"
 import { ApprovalReceipt } from "./approval-receipt"
 import { PlanStrip } from "./plan-strip"
 import { ModelPopover } from "./model-popover.js"
-import { ModeChip, ThinkChip, type ReasoningCatalog } from "./mode-chip.js"
+import { FloatingSurface } from "./floating-surface"
+import { ModeChip } from "./mode-chip.js"
+import { permissionModeLabel, withPermissionMode } from "./permission-mode.js"
 import type { WorkingPlanEdit } from "./plan-step-editor.js"
-import { groupThreadActivity } from "./thread-activity-groups"
+import { groupThreadActivity, type ThreadRow } from "./thread-activity-groups"
+import { ThreadFileChips } from "./thread-file-chips"
 import { TurnActivity } from "./turn-activity"
-import { CheckpointRestore, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
+import { CheckpointRestore, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { UsageChip } from "./usage-chip.js"
 import {
   deliveryLabel,
@@ -84,11 +100,10 @@ import {
   type QueuedMessage,
 } from "./turn-queue"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
-import { providerCanStartSession, providerDisplayName, reasoningOptionsFor } from "./runtime"
 import { StatusDot, type StatusMeaning } from "./status-dot"
 import { MarkdownQuickView } from "./markdown-quick-view"
+import { stripPlanTags } from "./plan-tag-strip"
 import { PromptEditorDialog } from "./prompt-editor"
-import { desktopExternalActionLabel, type DesktopExternalEditor } from "./desktop-platform"
 import {
   activeSessionCount,
   activeThreadKey,
@@ -99,6 +114,134 @@ import {
   sessionIsArchiveReadOnly,
 } from "./workspace-selectors"
 import { restoreFocusAfterUpdate } from "./restore-focus"
+import { FailedReadState } from "./failed-read-state"
+import { PolicyRefusalCard } from "./policy-refusal-card"
+import {
+  attachmentFromBrowserFile,
+  attachmentMeta,
+  attachmentName,
+  desktopAttachmentLimit,
+  inlineTextPreview,
+  terminalOutputAttachment,
+  workspacePathAttachment,
+} from "./desktop-attachments"
+
+type SlashCommand = {
+  name: string
+  argument: string
+  note: string
+}
+
+const slashCommands: readonly SlashCommand[] = [
+  {
+    name: "/run",
+    argument: "pnpm prisma migrate deploy",
+    note: "Runs it now, in the worktree. Still gated if no rule covers it, and the gate says the request came from you.",
+  },
+  {
+    name: "/revert",
+    argument: "ckpt_7f24",
+    note: "Rewinds the worktree and the thread together to that checkpoint. Nothing merged is touched.",
+  },
+  {
+    name: "/replan",
+    argument: "from step 3",
+    note: "Keeps the finished steps and asks for a new plan for the rest. The old plan stays readable in the thread.",
+  },
+  {
+    name: "/mode",
+    argument: "plan · ask · build",
+    note: "Applies from the next turn. A turn already in flight keeps the mode it started with, and auto is only legal with build.",
+  },
+  {
+    name: "/skill",
+    argument: "pr-triage",
+    note: "Loads a skill for this turn only. Unsigned skills stay blocked in auto modes.",
+  },
+  {
+    name: "/handoff",
+    argument: "hetzner-cx42",
+    note: "Opens the pre-flight checks first. Nothing moves until they pass and you confirm.",
+  },
+]
+
+type SlashIntent =
+  | { kind: "send", prompt: string }
+  | { kind: "mode", permissionMode: PermissionMode }
+  | { kind: "revert", checkpointId: string }
+  | { kind: "skill", skillId: string }
+  | { kind: "handoff", machineId: string }
+  | { kind: "invalid", message: string }
+
+type SlashIntentContext = {
+  checkpointIds: readonly string[]
+  skills: readonly { id: string, name: string }[]
+  machines: readonly { id: string, label: string, self: boolean }[]
+}
+
+const slashUsage = {
+  run: "Usage: /run <command>",
+  revert: "Usage: /revert <checkpoint-id>. Choose a checkpoint from this active session.",
+  replan: "Usage: /replan [from step N]",
+  mode: "Usage: /mode <plan|ask|build>",
+  skill: "Usage: /skill <reviewed-skill>",
+  handoff: "Usage: /handoff <target-machine>",
+} as const
+
+function oneMatch<T>(items: readonly T[], matches: (item: T) => boolean): T | undefined {
+  const matched = items.filter(matches)
+  return matched.length === 1 ? matched[0] : undefined
+}
+
+function slashIntent(input: string, context: SlashIntentContext): SlashIntent {
+  const trimmed = input.trim()
+  const separator = trimmed.search(/\s/u)
+  const command = (separator < 0 ? trimmed : trimmed.slice(0, separator)).toLowerCase()
+  const argument = separator < 0 ? "" : trimmed.slice(separator).trim()
+  switch (command) {
+    case "/run":
+      return argument
+        ? { kind: "send", prompt: `Run this command in the worktree:\n\n${argument}` }
+        : { kind: "invalid", message: slashUsage.run }
+    case "/replan":
+      return {
+        kind: "send",
+        prompt: argument
+          ? `Replan the remaining work ${argument}${/[.!?]$/u.test(argument) ? "" : "."}`
+          : "Replan the remaining work while preserving completed steps and prior plan history.",
+      }
+    case "/mode":
+      return argument === "plan" || argument === "ask" || argument === "build"
+        ? { kind: "mode", permissionMode: argument }
+        : { kind: "invalid", message: slashUsage.mode }
+    case "/revert": {
+      const checkpoint = oneMatch(context.checkpointIds, (id) => id === argument)
+      return checkpoint
+        ? { kind: "revert", checkpointId: checkpoint }
+        : { kind: "invalid", message: slashUsage.revert }
+    }
+    case "/skill": {
+      const normalized = argument.toLowerCase()
+      const skill = oneMatch(context.skills, (candidate) =>
+        candidate.id.toLowerCase() === normalized || candidate.name.toLowerCase() === normalized
+      )
+      return skill
+        ? { kind: "skill", skillId: skill.id }
+        : { kind: "invalid", message: slashUsage.skill }
+    }
+    case "/handoff": {
+      const normalized = argument.toLowerCase()
+      const machine = oneMatch(context.machines, (candidate) =>
+        !candidate.self && (candidate.id.toLowerCase() === normalized || candidate.label.toLowerCase() === normalized)
+      )
+      return machine
+        ? { kind: "handoff", machineId: machine.id }
+        : { kind: "invalid", message: slashUsage.handoff }
+    }
+    default:
+      return { kind: "invalid", message: "Usage: /run, /revert, /replan, /mode, /skill, or /handoff" }
+  }
+}
 
 // The states name a meaning rather than a colour now, so the palette lives in
 // StatusDot alone instead of being restated per surface.
@@ -196,12 +339,18 @@ export function SessionRow({
 function ApprovalCard({
   approval,
   onResolve,
+  surface,
+  watching = false,
 }: {
   approval: ApprovalRequest
   onResolve: (
     decision: ApprovalDecision,
     explanation?: string,
   ) => void
+  surface: "desktop" | "web"
+  // A watching device is shown the gate in full and answers nothing. The
+  // daemon refuses its decisions; the card does not offer them.
+  watching?: boolean
 }) {
   const explainTriggerRef = useRef<HTMLButtonElement>(null)
   const [explainOpen, setExplainOpen] = useState(false)
@@ -226,8 +375,8 @@ function ApprovalCard({
     <Alert variant="warning" className="mx-auto max-w-3xl gap-3 rounded-xl p-4">
       <CircleStopIcon />
       <AlertTitle className="flex items-center gap-2 text-[12.5px]">
-        Approval required
-        {approval.risk === "hard-gate" ? <Badge variant="warning">Hard gate</Badge> : null}
+        {surface === "web" && approval.risk === "hard-gate" ? "Approval required, hard gate" : "Approval required"}
+        {surface === "desktop" && approval.risk === "hard-gate" ? <Badge variant="warning">Hard gate</Badge> : null}
         <span className="ml-auto font-machine text-[10.5px] font-normal text-warn-dim">
           {approval.agent} · {approval.mode}
         </span>
@@ -245,7 +394,9 @@ function ApprovalCard({
             </div>
           ))}
         </dl>
-        {explainOpen ? (
+        {watching ? (
+          <p className="text-[11px] text-warn-dim">Watching only. A device paired with full access answers this gate.</p>
+        ) : explainOpen ? (
           <div className="flex flex-col gap-2 rounded-md border border-warning/30 bg-background/40 p-3">
             <label htmlFor={`denial-${approval.id}`} className="text-[11px] font-medium text-warn-foreground">
               Tell the agent why this command was denied
@@ -270,6 +421,7 @@ function ApprovalCard({
             />
             <div className="flex justify-end gap-2">
               <Button variant="ghost" size="sm" onClick={closeExplanation}>Cancel</Button>
+              <Button variant="outline" size="sm" onClick={() => onResolve("deny")}>Deny without explanation</Button>
               <Button
                 variant="warning"
                 size="sm"
@@ -280,30 +432,25 @@ function ApprovalCard({
               </Button>
             </div>
           </div>
-        ) : null}
-        {/* One decision at full weight, two outlined beside it, and the fourth
-            as plain text. Four peer buttons make a person read all four before
-            the gate can move. */}
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="warning" size="sm" onClick={() => onResolve("allow-once")}>Allow once</Button>
-          <Button variant="outline" size="sm" onClick={() => onResolve("always-project")}>Always in this project</Button>
-          <Button variant="outline" size="sm" onClick={() => onResolve("deny")}>Deny</Button>
-          <button
-            ref={explainTriggerRef}
-            type="button"
-            onClick={() => setExplainOpen(true)}
-            className="ml-auto rounded-sm text-[11px] text-warn-dim underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warning"
-          >
-            Deny and explain
-          </button>
-        </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="warning" size="sm" onClick={() => onResolve("allow-once")}>Allow once</Button>
+            {/* Ruled 2026-09-24: the daemon refuses a standing rule on a hard gate
+                and for a request it could not resolve, so the card offers none. */}
+            {approval.execution.state === "resolved" && approval.risk !== "hard-gate" ? (
+              <Button variant="outline" size="sm" onClick={() => onResolve("always-project")}>{surface === "web" ? "Always here" : "Always in this project"}</Button>
+            ) : null}
+            <Button ref={explainTriggerRef} variant="outline" size="sm" onClick={() => setExplainOpen(true)}>Deny</Button>
+            {surface === "web" ? <span className="ml-auto font-machine text-[10.5px] text-warn-dim">This tab holds the gate</span> : null}
+          </div>
+        )}
       </AlertDescription>
     </Alert>
   )
 }
 
 
-export function CheckpointThreadItem({
+export const CheckpointThreadItem = memo(function CheckpointThreadItem({
   item,
   disabled,
   onRestore,
@@ -320,16 +467,53 @@ export function CheckpointThreadItem({
       ) : null}
     </div>
   )
-}
+})
 
-export const archiveSessionDescription = "Domovoi creates a final checkpoint, stops provider and terminal resources, and removes the isolated session worktree. Durable history, checkpoint refs, artifact and annotation records, audit refs, and the archive branch are retained. The source checkout's branch, HEAD, status, and files remain unchanged."
+// I69, 2026-09-23: the confirmation says exactly what archive does. The
+// daemon takes a final checkpoint, stops the agent and its terminals and
+// removes the worktree directory; the branch, that checkpoint and the thread
+// stay. The daemon counts unmerged files only while archiving, so before it
+// the kept branch reads "as it is" rather than implying a count (ruled
+// 2026-09-23).
+export const archiveSessionDescription = "Domovoi takes a final checkpoint, stops the agent and its terminals, then removes the worktree directory. Nothing is merged."
+
+export function ArchiveConfirmBody({ worktreePath, branch }: { worktreePath?: string | undefined; branch?: string | undefined }) {
+  const eyebrow = "text-[10.5px] tracking-[0.13em] text-faint"
+  return (
+    <div className="flex flex-col gap-3 text-[12px] leading-[1.5]">
+      <div className="overflow-hidden rounded-lg border">
+        <p className={`m-0 border-b px-3 py-2 ${eyebrow}`} id="archive-removed">REMOVED</p>
+        <ul aria-labelledby="archive-removed" className="m-0 list-none p-0">
+          <li className="flex flex-col gap-0.5 px-3 py-2">
+            <span>The worktree directory</span>
+            {worktreePath ? <span className="truncate font-machine text-[10.5px] text-faint" title={worktreePath}>{worktreePath}</span> : null}
+          </li>
+          <li className="border-t px-3 py-2">The agent and its terminals, stopped</li>
+        </ul>
+      </div>
+      <div className="overflow-hidden rounded-lg border">
+        <p className={`m-0 border-b px-3 py-2 ${eyebrow}`} id="archive-kept">KEPT</p>
+        <ul aria-labelledby="archive-kept" className="m-0 list-none p-0">
+          <li className="px-3 py-2">{branch ? <>The branch <span className="font-machine">{branch}</span></> : "The session branch"}, as it is</li>
+          <li className="border-t px-3 py-2">The final checkpoint, taken on that branch</li>
+          <li className="border-t px-3 py-2">The thread, readable here</li>
+        </ul>
+      </div>
+      <p className="m-0 text-[11.5px] text-muted-foreground">This cannot be undone. An archived session cannot be forked, unarchived or sent to.</p>
+    </div>
+  )
+}
 
 export function ArchiveSessionAction({
   disabled,
   onArchive,
+  worktreePath,
+  branch,
 }: {
   disabled: boolean
   onArchive: () => void
+  worktreePath?: string | undefined
+  branch?: string | undefined
 }) {
   return (
     <AlertDialog>
@@ -346,12 +530,66 @@ export function ArchiveSessionAction({
             {archiveSessionDescription}
           </AlertDialogDescription>
         </AlertDialogHeader>
+        <ArchiveConfirmBody worktreePath={worktreePath} branch={branch} />
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={onArchive}>Archive session</AlertDialogAction>
+          <AlertDialogCancel>Keep the session</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={onArchive}>Archive and remove the worktree</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  )
+}
+
+// I69: the head of an archived thread says what archive did, naming the kept
+// branch and the files never merged when the daemon reported them.
+function ArchivedSessionNotice({ session }: { session: SessionSummary }) {
+  const time = session.archivedAt ? threadClock.format(new Date(session.archivedAt)) : undefined
+  const unmerged = session.unmergedFiles === undefined ? undefined : `${session.unmergedFiles} ${session.unmergedFiles === 1 ? "file" : "files"} never merged`
+  const meta = [time ? `archived ${time}` : undefined, session.archiveCheckpoint?.slice(0, 7), unmerged].filter(Boolean).join(" · ")
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-accent px-4 py-3" role="status">
+      <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-muted-foreground" />
+      <span className="min-w-0 flex-1 text-[12px] leading-[1.5]">
+        Archived and read-only. The worktree was removed. {session.branch ? <>Branch <span className="font-machine">{session.branch}</span></> : "The session branch"} and its final checkpoint are kept.
+      </span>
+      {meta ? <span className="font-machine text-[10.5px] text-faint">{meta}</span> : null}
+      <Button variant="outline" size="sm" disabled title="Not built yet">
+        Start a new session from this branch
+        <span className="font-machine text-[10.5px] text-faint">later</span>
+      </Button>
+    </div>
+  )
+}
+
+const threadClock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+
+// v2 opens a conversation with one mono rule naming where the work happens, and
+// lets it scroll away. The session title is already in the command palette pill
+// at the top of the window, so a fixed banner would say it twice and take the
+// height the thread wants.
+function ThreadStartLine({
+  project,
+  branch,
+  workspacePath,
+  startedAt,
+}: {
+  project?: string | undefined
+  branch?: string | undefined
+  workspacePath?: string | undefined
+  startedAt?: string | undefined
+}) {
+  const worktree = workspacePath?.split(/[\\/]/u).filter(Boolean).at(-1)
+  const parts = [project, branch, worktree].filter((part): part is string => Boolean(part))
+  if (parts.length === 0 && !startedAt) return null
+
+  return (
+    <div className="flex items-center gap-2.5 text-faint">
+      {parts.length > 0 ? <span className="font-machine text-[11px]">{parts.join(" · ")}</span> : null}
+      <span aria-hidden className="h-px flex-1 bg-border" />
+      {startedAt ? (
+        <span className="font-machine text-[11px]">started {threadClock.format(new Date(startedAt))}</span>
+      ) : null}
+    </div>
   )
 }
 
@@ -410,6 +648,7 @@ export function SessionReadOnlyNotice({
 export function Thread({
   snapshot,
   connected,
+  clientAccess = "full",
   emergencyStopPending = false,
   queued,
   onQueuedChange,
@@ -426,20 +665,16 @@ export function Thread({
   onListModels,
   onNewSession,
   onSend,
-  onCheckpoint,
   onRestoreCheckpoint,
   restoreBusy = false,
   pendingTransferTargetId = null,
   onPendingTransferTargetChange,
   onPauseSession,
-  onArchiveSession,
-  onOpenExternal,
   onPairMachine,
   onSelectMachine,
   onTransferSession,
   onPreviewTransfer,
   onReleaseSession,
-  externalEditor = "system",
   usage = null,
   usageToday = null,
   loadLatestTurn,
@@ -447,13 +682,15 @@ export function Thread({
   onEditPlan,
   onDiscardPlanEdit,
   onOpenPlanPreview,
+  onOpenSheet,
   machineMenuRequest,
-  onOpenSkills,
   skillNames,
   skillCatalog,
+  surface = "desktop",
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
+  clientAccess?: ClientAccess
   emergencyStopPending?: boolean | undefined
   // Bound to the session it was typed in: releasing it into whatever session
   // happens to be open later would send someone's message to the wrong agent.
@@ -467,10 +704,13 @@ export function Thread({
   transferFleet?: FleetEntry[] | undefined
   admittedMachines?: ReadonlySet<string> | undefined
   currentMachineId?: string | undefined
+  // The revision is the one the card showed, so the daemon can refuse an
+  // Allow given to a card it has since rewritten.
   onResolve: (
     approvalId: string,
     decision: ApprovalDecision,
-    explanation?: string,
+    explanation: string | undefined,
+    revision: number,
   ) => Promise<void>
   onSetRuntime: (runtime: Runtime) => Promise<void>
   onRestartProviderThread?: (() => Promise<void>) | undefined
@@ -481,6 +721,7 @@ export function Thread({
     sessionId: string,
     prompt: string,
     skillSelection?: TurnSkillSelection,
+    attachments?: SessionAttachment[],
   ) => Promise<void>
   onCheckpoint: (sessionId: string) => Promise<void>
   onRestoreCheckpoint: (sessionId: string, checkpointId: string) => Promise<void>
@@ -490,8 +731,10 @@ export function Thread({
   pendingTransferTargetId?: string | null | undefined
   onPendingTransferTargetChange?: ((machineId: string | null) => void) | undefined
   onPauseSession: (sessionId: string) => Promise<void>
-  onArchiveSession: (sessionId: string) => Promise<void>
-  onOpenExternal?: ((path: string) => Promise<void>) | undefined
+  // v2 draws no archive control in the composer, so nothing here calls this.
+  // The prop stays because the shell and the tests still pass it, and dropping
+  // it would be a rename of Thread's surface rather than a design change.
+  onArchiveSession?: (sessionId: string) => Promise<void>
   onPairMachine?: ((request: PairMachineRequest) => Promise<PairedMachine>) | undefined
   onSelectMachine?: ((machineId: string) => void) | undefined
   onTransferSession?: ((
@@ -507,7 +750,6 @@ export function Thread({
     transferId: string
     confirmation: SessionRecoveryOffer["confirmation"]
   }) => Promise<unknown>) | undefined
-  externalEditor?: DesktopExternalEditor | undefined
   usage?: SessionUsage | null | undefined
   usageToday?: UsageWindow | null | undefined
   loadLatestTurn?: ((signal: AbortSignal) => Promise<SessionTurn | undefined>) | undefined
@@ -518,62 +760,153 @@ export function Thread({
   onEditPlan?: ((sessionId: string, edit: WorkingPlanEdit) => Promise<void>) | undefined
   onDiscardPlanEdit?: ((sessionId: string, editId: string) => Promise<void>) | undefined
   onOpenPlanPreview?: (() => void) | undefined
+  onOpenSheet?: (() => void) | undefined
   // Bumped by the sessions drawer's "Move to another machine" so the composer's
   // machine menu opens on the session it just activated.
   machineMenuRequest?: number | undefined
   onOpenSkills?: (() => void) | undefined
   skillNames?: Record<string, string> | undefined
   skillCatalog?: readonly SkillSummary[] | undefined
+  surface?: "desktop" | "web" | undefined
 }) {
+  const watching = clientAccess === "watching"
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
   const approval = active
     ? snapshot.approvals.find((candidate) => candidate.sessionId === active.id)
     : undefined
-  const [prompt, setPrompt] = useState("")
+  // Switching sessions remounts this component, which resets the pending send,
+  // the alerts and the receipts. That is correct for all of it except the part
+  // the person typed, so the composer starts from the stored draft instead of
+  // from empty. Everything else still resets.
+  const draftSessionId = snapshot.activeSessionId
+  const [prompt, setPrompt] = useState(() => sessionDraftStore.read(draftSessionId).prompt)
+  const [attachments, setAttachments] = useState<SessionAttachment[]>(() => [...sessionDraftStore.read(draftSessionId).attachments])
+  const [attachmentPathMode, setAttachmentPathMode] = useState<"repo" | "machine" | null>(null)
+  const [attachmentPath, setAttachmentPath] = useState("")
+  const [attachmentError, setAttachmentError] = useState("")
+  const attachmentInput = useRef<HTMLInputElement>(null)
+  const [slashDismissed, setSlashDismissed] = useState(false)
+  const composerField = useRef<HTMLTextAreaElement>(null)
+  const composerCard = useRef<HTMLDivElement>(null)
+  const slashListId = useId()
+  const slashQuery = prompt.split(/\s/u, 1)[0] ?? ""
+  const slashOpen = connected && !watching && prompt.startsWith("/") && !slashDismissed
   const threadViewport = useRef<HTMLDivElement>(null)
-  const threadRows = active ? groupThreadActivity(renderedThreadForActiveSession(snapshot)) : []
+  const previousThreadRows = useRef<readonly ThreadRow[]>([])
+  const renderedThread = useMemo(() => renderedThreadForActiveSession(snapshot), [snapshot])
+  const threadRows = useMemo(
+    () => active
+      ? groupThreadActivity(renderedThread, previousThreadRows.current)
+      : [],
+    [active, renderedThread],
+  )
+  useEffect(() => {
+    previousThreadRows.current = threadRows
+  }, [threadRows])
+  // A turn that has not called a tool yet still has to say it is alive. Once
+  // the turn has an activity row at the end of the thread, that row is the one
+  // working, and a second row beside it would say the same thing twice.
+  const lastRow = threadRows.at(-1)
+  const workingRow = Boolean(active?.activeTurnId) && lastRow?.kind !== "activity"
+  // The session carries no start time of its own, so the first thing said in it
+  // is the honest one. An empty thread has not started yet and says nothing.
+  const threadStartedAt = renderedThread[0]?.createdAt
   const follow = useThreadFollow(threadViewport, {
     itemCount: threadRows.length + (approval ? 1 : 0),
     gated: Boolean(approval),
     threadKey: activeThreadKey(snapshot),
   })
-  const followPill = threadFollowPillText(follow.state, follow.unseen)
-  const [skillSelection, setSkillSelection] = useState<ReadonlySet<string> | undefined>(undefined)
-  const [skillRefusal, setSkillRefusal] = useState<TurnSkillSelectionRefusal | undefined>(undefined)
-  const [promptEditorOpen, setPromptEditorOpen] = useState(false)
+  const followPill = watching && follow.state === "gate"
+    ? "Waiting on a full-access device"
+    : threadFollowPillText(follow.state, follow.unseen)
+  const [skillSelection, setSkillSelection] = useState<ReadonlySet<string> | undefined>(() => sessionDraftStore.read(draftSessionId).skillSelection)
+  const [promptEditorOpen, setPromptEditorOpen] = useState(() => sessionDraftStore.read(draftSessionId).promptEditorOpen)
+  // A send clears the prompt, which writes an empty draft, which the store reads
+  // as no draft at all. So nothing has to clear it by hand.
+  useEffect(() => {
+    sessionDraftStore.write(draftSessionId, { prompt, attachments, skillSelection, promptEditorOpen })
+  }, [draftSessionId, prompt, attachments, skillSelection, promptEditorOpen])
   const [pairingMachine, setPairingMachine] = useState(false)
   const [ownTransferTargetId, setOwnTransferTargetId] = useState<string | null>(null)
   // The composer's machine menu and the launcher both name a target. The shell
   // owns it when it supplies one, so either route reaches the same dialog.
   const transferTargetId = pendingTransferTargetId ?? ownTransferTargetId
   const setTransferTargetId = (machineId: string | null) => {
+    if (watching && machineId !== null) return
     setOwnTransferTargetId(machineId)
     onPendingTransferTargetChange?.(machineId)
   }
   const [transferReceipt, setTransferReceipt] = useState<SessionTransferReceipt | null>(null)
   const [pending, setPending] = useState(false)
+  // Local only, and never a thread item. The daemon owns the thread, so an
+  // in-flight message is shown beside it as a note, not forged into it.
+  const [sending, setSending] = useState<string | null>(null)
   const [runtimePending, setRuntimePending] = useState(false)
   const [sendError, setSendError] = useState("")
   const [recoveryError, setRecoveryError] = useState("")
   const [runtimeError, setRuntimeError] = useState("")
   const [restartPending, setRestartPending] = useState(false)
-  const [desktopError, setDesktopError] = useState("")
+  const [restartError, setRestartError] = useState("")
+  const archiveReadOnly = sessionIsArchiveReadOnly(active)
+  const readOnly = archiveReadOnly || watching
+  const activeSessionId = active?.id
+  const restoreCheckpoint = useCallback(async (checkpointId: string) => {
+    if (!activeSessionId || checkpointRestoreBlocked(pending, readOnly)) return
+    setPending(true)
+    setSendError("")
+    try {
+      await onRestoreCheckpoint(activeSessionId, checkpointId)
+    } catch (cause) {
+      setSendError(cause instanceof Error ? cause.message : "The checkpoint could not be restored")
+    } finally {
+      setPending(false)
+    }
+  }, [activeSessionId, onRestoreCheckpoint, pending, readOnly])
+  const restoreCheckpointFromRow = useCallback((checkpointId: string) => {
+    void restoreCheckpoint(checkpointId)
+  }, [restoreCheckpoint])
+  const addAttachments = (next: SessionAttachment[]) => {
+    const combined = [...attachments, ...next]
+    if (combined.length > desktopAttachmentLimit) {
+      setAttachmentError(`Attach up to ${desktopAttachmentLimit} items per message.`)
+      return
+    }
+    setAttachmentError("")
+    setAttachments(combined)
+  }
+  const attachWorkspacePath = () => {
+    try {
+      addAttachments([workspacePathAttachment(attachmentPath)])
+      setAttachmentPath("")
+      setAttachmentPathMode(null)
+    } catch (cause) {
+      setAttachmentError(cause instanceof Error ? cause.message : "That path cannot be attached")
+    }
+  }
+  const attachClipboardOutput = async () => {
+    try {
+      const content = await navigator.clipboard.readText()
+      addAttachments([terminalOutputAttachment(content)])
+    } catch (cause) {
+      setAttachmentError(cause instanceof Error ? cause.message : "Terminal output could not be read from the clipboard")
+    }
+  }
   // The Think chip offers what the current model reports. The catalog is read
   // once per provider change; a read that fails leaves the chip shut with its
   // reason rather than offering a guess. Hooks sit above the no-session return.
-  const activeProvider = active?.runtime.provider
-  const [catalog, setCatalog] = useState<{ status: "loading" } | { status: "ready", models: ProviderModel[] } | { status: "failed", message: string }>({ status: "loading" })
-  const [catalogAttempt, setCatalogAttempt] = useState(0)
+  // The editor answers a shortcut as well as its control, because a long prompt
+  // usually starts at the keyboard.
   useEffect(() => {
-    if (!activeProvider) return
-    let live = true
-    setCatalog({ status: "loading" })
-    void onListModels(activeProvider).then(
-      (models) => { if (live) setCatalog({ status: "ready", models }) },
-      (cause: unknown) => { if (live) setCatalog({ status: "failed", message: cause instanceof Error ? cause.message : "Models could not be loaded" }) },
-    )
-    return () => { live = false }
-  }, [onListModels, activeProvider, catalogAttempt])
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey) return
+      if (event.key.toLowerCase() !== "e") return
+      event.preventDefault()
+      if (!watching) setPromptEditorOpen(true)
+    }
+    globalThis.addEventListener("keydown", onKeyDown)
+    return () => globalThis.removeEventListener("keydown", onKeyDown)
+  }, [watching])
+
   if (!active) {
     const hasProject = snapshot.project !== null
     return (
@@ -591,7 +924,7 @@ export function Thread({
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
-            <Button onClick={onNewSession}>
+            <Button disabled={watching} onClick={onNewSession}>
               {hasProject ? <BotIcon data-icon="inline-start" /> : <FolderOpenIcon data-icon="inline-start" />}
               {hasProject ? "New session" : "Open project"}
             </Button>
@@ -609,13 +942,11 @@ export function Thread({
   const transferTarget = transferTargetId
     ? machines.find((machine) => machine.id === transferTargetId)
     : undefined
-  const reasoningCatalog: ReasoningCatalog = catalog.status === "ready"
-    ? { status: "ready", options: reasoningOptionsFor(catalog.models.find((model) => model.provider === active.runtime.provider && model.id === active.runtime.model)) }
-    : catalog
-  const providerReady = snapshot.machine.providers.some((provider) => provider.id === active.runtime.provider && providerCanStartSession(provider))
+  const selectableSkills = selectableTurnSkills(skillCatalog ?? [], snapshot.skillEnablements, snapshot.project?.id)
+  const activeCheckpointIds = snapshot.thread.flatMap((item) =>
+    item.sessionId === active.id && item.kind === "checkpoint" && item.commit ? [item.id] : []
+  )
 
-  const checkpointReason = checkpointBlockedReason(active.activeTurnId)
-  const archiveReadOnly = sessionIsArchiveReadOnly(active)
   const providerRestartRequired = active.state === "failed" && !active.providerThreadId
   const forkCheckpoint = snapshot.thread.filter((item) =>
     item.sessionId === active.id && item.kind === "checkpoint" && item.commit
@@ -628,7 +959,7 @@ export function Thread({
   const planStrip = (
     <PlanStrip
       plan={snapshot.workingPlans.find((candidate) => candidate.sessionId === active.id)}
-      readOnly={archiveReadOnly}
+      readOnly={readOnly}
       {...(onEditPlan ? { onEditPlan: (edit: WorkingPlanEdit) => onEditPlan(active.id, edit) } : {})}
       {...(onDiscardPlanEdit ? { onDiscardEdit: (editId: string) => onDiscardPlanEdit(active.id, editId) } : {})}
       {...(onOpenPlanPreview ? { onOpenPreview: onOpenPlanPreview } : {})}
@@ -636,14 +967,26 @@ export function Thread({
     />
   )
 
-  const sendPrompt = async (nextPrompt: string, { fromComposer }: { fromComposer: boolean }) => {
+  const paletteShortcut = composerPlatform() === "darwin" ? "⌘K" : "Ctrl+K"
+  const takeSlashCommand = (command: SlashCommand) => {
+    if (watching) return
+    const accepted = `${command.name} `
+    setPrompt(accepted)
+    setSlashDismissed(true)
+    queueMicrotask(() => {
+      const field = composerField.current
+      field?.focus()
+      field?.setSelectionRange(accepted.length, accepted.length)
+    })
+  }
+  const sendPrompt = async (nextPrompt: string, { fromComposer }: { fromComposer: boolean }, sendAttachments = attachments) => {
+    if (watching) return
     setPending(true)
     setSendError("")
-    setSkillRefusal(undefined)
     try {
       const { selection, missing } = turnSkillSelectionFor(
         skillSelection,
-        selectableTurnSkills(skillCatalog ?? [], snapshot.skillEnablements, snapshot.project?.id),
+        selectableSkills,
       )
       // Sending without them would quietly become a smaller selection, or an
       // explicit "no skills" if every chosen skill has gone.
@@ -656,21 +999,34 @@ export function Thread({
         if (!fromComposer) onQueuedChange({ sessionId: active.id, text: nextPrompt, state: "held", reason: "Held because the skills you chose are gone. Send it again when you have chosen." })
         return
       }
-      await onSend(active.id, nextPrompt, selection)
-      // Only clear the box when the box is what was sent. A queued message
-      // released while someone types would otherwise erase the new draft.
-      if (fromComposer) setPrompt("")
+      // Empty the box now rather than after the round trip. The request budget is
+      // 120 seconds, and the queue path already clears immediately, so waiting
+      // made the interaction where less happened look like the faster one. Only
+      // clear the box when the box is what was sent: a queued message released
+      // while someone types would otherwise erase the new draft.
+      if (fromComposer) {
+        setPrompt("")
+        setAttachments([])
+        setSending(nextPrompt)
+      }
+      if (sendAttachments.length > 0) await onSend(active.id, nextPrompt, selection, sendAttachments)
+      else await onSend(active.id, nextPrompt, selection)
       // The daemon accepted this selection, so it stops being a draft.
       setSkillSelection(undefined)
     } catch (cause) {
-      const refusal = turnSkillRefusalFrom(cause)
-      if (refusal) setSkillRefusal(refusal)
       setSendError(cause instanceof Error ? cause.message : "The message could not be sent")
+      // Give the words back, but never over a newer thought. Waiting out a failed
+      // send is exactly when someone starts typing the next one.
+      if (fromComposer) {
+        setPrompt((current) => current.length > 0 ? current : nextPrompt)
+        setAttachments((current) => current.length > 0 ? current : [...sendAttachments])
+      }
       // Held, not waiting: a refused message that re-queued itself would be
       // retried by the release effect on the very next render, forever.
       if (!fromComposer) onQueuedChange({ sessionId: active.id, text: nextPrompt, state: "held", reason: "Held because sending failed. Send it again when you want to retry." })
     } finally {
       setPending(false)
+      setSending(null)
     }
   }
 
@@ -678,9 +1034,59 @@ export function Thread({
   // and never a reason to cancel it. One queued message, replaced rather than
   // stacked, and it leaves at the next turn boundary.
   const submitPrompt = async () => {
-    if (pending || providerRestartRequired || emergencyStopPending) return
+    if (pending || providerRestartRequired || emergencyStopPending || readOnly) return
+    let submittedText = prompt
+    if (prompt.trimStart().startsWith("/")) {
+      const intent = slashIntent(prompt, {
+        checkpointIds: activeCheckpointIds,
+        skills: selectableSkills,
+        machines,
+      })
+      if (intent.kind === "invalid") {
+        setSendError(intent.message)
+        return
+      }
+      setSendError("")
+      setSlashDismissed(true)
+      switch (intent.kind) {
+        case "mode":
+          setPrompt("")
+          if (runtimePending) return
+          setRuntimePending(true)
+          setRuntimeError("")
+          try {
+            await onSetRuntime(withPermissionMode(active.runtime, intent.permissionMode))
+          } catch (cause) {
+            setRuntimeError(cause instanceof Error ? cause.message : "The runtime could not be updated")
+          } finally {
+            setRuntimePending(false)
+          }
+          return
+        case "revert":
+          if (active.activeTurnId || restoreBusy) {
+            setSendError(active.activeTurnId
+              ? "Stop the active turn before restoring a checkpoint."
+              : "Another checkpoint restore is already running.")
+            return
+          }
+          setPrompt("")
+          await restoreCheckpoint(intent.checkpointId)
+          return
+        case "skill":
+          setSkillSelection(new Set([intent.skillId]))
+          setPrompt("")
+          return
+        case "handoff":
+          setTransferTargetId(intent.machineId)
+          setPrompt("")
+          return
+        case "send":
+          submittedText = intent.prompt
+          break
+      }
+    }
     const outcome = submitFromComposer({
-      text: prompt,
+      text: submittedText,
       turnRunning: Boolean(active.activeTurnId),
       queued: queued?.sessionId === active.id ? queued.text : undefined,
     })
@@ -691,54 +1097,31 @@ export function Thread({
         text: outcome.text,
         state: "waiting",
         ...(skillSelection ? { skillIds: [...skillSelection] } : {}),
+        ...(attachments.length > 0 ? { attachments } : {}),
       })
       setPrompt("")
+      setAttachments([])
+      setSkillSelection(undefined)
       return
     }
     await sendPrompt(outcome.text, { fromComposer: true })
   }
 
   const restartProvider = async () => {
-    if (!onRestartProviderThread || restartPending) return
+    if (watching || !onRestartProviderThread || restartPending) return
     setRestartPending(true)
-    setSendError("")
+    setRestartError("")
     try {
       await onRestartProviderThread()
     } catch (cause) {
-      setSendError(cause instanceof Error ? cause.message : "The provider thread could not be restarted")
+      setRestartError(cause instanceof Error ? cause.message : "The provider thread could not be restarted")
     } finally {
       setRestartPending(false)
     }
   }
 
-  const createCheckpoint = async () => {
-    if (pending || checkpointReason) return
-    setPending(true)
-    setSendError("")
-    try {
-      await onCheckpoint(active.id)
-    } catch (cause) {
-      setSendError(cause instanceof Error ? cause.message : "The checkpoint could not be created")
-    } finally {
-      setPending(false)
-    }
-  }
-
-  const restoreCheckpoint = async (checkpointId: string) => {
-    if (checkpointRestoreBlocked(pending, archiveReadOnly)) return
-    setPending(true)
-    setSendError("")
-    try {
-      await onRestoreCheckpoint(active.id, checkpointId)
-    } catch (cause) {
-      setSendError(cause instanceof Error ? cause.message : "The checkpoint could not be restored")
-    } finally {
-      setPending(false)
-    }
-  }
-
   const pauseSession = async () => {
-    if (pending || !active.activeTurnId) return
+    if (watching || pending || !active.activeTurnId) return
     setPending(true)
     setSendError("")
     // Stopping is a refusal to run more work in this session. Without this the
@@ -764,7 +1147,7 @@ export function Thread({
   })()
 
   const releaseSession = async (offer: SessionRecoveryOffer) => {
-    if (pending) return
+    if (watching || pending) return
     setPending(true)
     setRecoveryError("")
     try {
@@ -780,31 +1163,8 @@ export function Thread({
     }
   }
 
-  const archiveSession = async () => {
-    if (pending || archiveReadOnly) return
-    setPending(true)
-    setSendError("")
-    try {
-      await onArchiveSession(active.id)
-    } catch (cause) {
-      setSendError(cause instanceof Error ? cause.message : "The session could not be archived")
-    } finally {
-      setPending(false)
-    }
-  }
-
-  const openExternal = async () => {
-    if (!active.workspacePath || !onOpenExternal) return
-    setDesktopError("")
-    try {
-      await onOpenExternal(active.workspacePath)
-    } catch (cause) {
-      setDesktopError(cause instanceof Error ? cause.message : "External editor could not open the worktree")
-    }
-  }
-
   const updateRuntime = async (runtime: Runtime) => {
-    if (runtimePending) return
+    if (watching || runtimePending) return
     setRuntimePending(true)
     setRuntimeError("")
     try {
@@ -817,7 +1177,7 @@ export function Thread({
   }
 
   const forkRuntime = async (runtime: Runtime, checkpointId: string, requestId: string) => {
-    if (runtimePending || forkReason) return
+    if (watching || runtimePending || forkReason) return
     setRuntimePending(true)
     setRuntimeError("")
     try {
@@ -836,80 +1196,72 @@ export function Thread({
   }
 
   const resolveCurrentApproval = (
-    approvalId: string,
+    approval: ApprovalRequest,
     decision: ApprovalDecision,
     explanation?: string,
   ) => {
+    if (watching) return
     setSendError("")
-    void onResolve(approvalId, decision, explanation).catch((cause: unknown) => {
+    void onResolve(approval.id, decision, explanation, approval.revision).catch((cause: unknown) => {
       setSendError(cause instanceof Error ? cause.message : "The approval could not be resolved")
     })
   }
 
   return (
     <main className="flex h-full min-w-0 flex-col bg-background">
-      <div className="flex min-h-[76px] flex-wrap items-start justify-between gap-4 border-b px-5 py-3">
-        <div className="min-w-0 flex-1">
-          <h1 className="m-0 max-w-xl text-[17px] leading-[1.25] font-semibold tracking-[-0.01em]">
-            {active.title}
-          </h1>
-          <div className="mt-1 flex flex-wrap items-center gap-2 font-machine text-[10px] text-faint">
-            {active.workspacePath ? <span>{active.workspacePath}</span> : null}
-            {active.baseCommit && snapshot.project ? <span>from {snapshot.project.branch} @ {active.baseCommit.slice(0, 8)}</span> : null}
-            <span>{active.changedFiles} files</span>
-            <span className="text-success">{active.testsPassed} pass</span>
-            {active.testsFailed ? <span className="text-destructive">{active.testsFailed} fail</span> : null}
-          </div>
-        </div>
-        {archiveReadOnly ? (
-          <Badge variant="outline">
-            {readOnlySessionNotice(active, otherMachineLabel)?.badge ?? "Read-only"}
-          </Badge>
-        ) : (
-          <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5">
-            {active.workspacePath && onOpenExternal ? (
-              <Button variant="outline" size="sm" onClick={() => void openExternal()}>
-                <ExternalLinkIcon data-icon="inline-start" />
-                {desktopExternalActionLabel(externalEditor)}
-              </Button>
-            ) : null}
-          </div>
-        )}
-      </div>
       <ScrollArea className="min-h-0 flex-1" viewportRef={threadViewport} onViewportScroll={follow.onScroll}>
         <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 pt-6 pb-14">
-          {active.providerFailure ? (
+          <ThreadStartLine
+            {...(snapshot.project ? { project: snapshot.project.name, branch: snapshot.project.branch } : {})}
+            {...(active.workspacePath ? { workspacePath: active.workspacePath } : {})}
+            {...(threadStartedAt ? { startedAt: threadStartedAt } : {})}
+          />
+          {active.state === "archived" ? <ArchivedSessionNotice session={active} /> : null}
+          {providerRestartRequired ? (
+            <FailedReadState
+              message={active.providerFailure?.message ?? "The provider stopped answering before this session could be read completely."}
+              facts={[
+                active.providerFailure
+                  ? providerFailureActionCopy(active.providerFailure)
+                  : "The provider can be started again without replacing this session.",
+                "The worktree and complete session history remain on this machine.",
+                "Sending stays blocked until provider recovery succeeds.",
+              ]}
+              retrying={restartPending}
+              retryDisabled={watching || !connected || onRestartProviderThread === undefined}
+              retryError={restartError}
+              onRetry={() => void restartProvider()}
+            />
+          ) : active.providerFailure ? (
             <Alert variant="destructive">
               <CircleStopIcon />
               <AlertTitle>{active.providerFailure.message}</AlertTitle>
               <AlertDescription>{providerFailureActionCopy(active.providerFailure)}</AlertDescription>
             </Alert>
           ) : null}
-          {providerRestartRequired ? (
-            <Alert variant="destructive">
-              <CircleStopIcon />
-              <AlertTitle>Provider thread needs recovery</AlertTitle>
-              <AlertDescription className="flex flex-wrap items-center gap-3">
-                The worktree and session history are safe. Restart the provider before sending another message.
-                <Button variant="outline" size="sm" disabled={!connected || restartPending} onClick={() => void restartProvider()}>
-                  {restartPending ? "Restarting provider…" : "Restart provider"}
-                </Button>
-              </AlertDescription>
-            </Alert>
-          ) : null}
           {threadRows.map((row) => {
             if (row.kind === "activity") {
+              // Between two calls no single call is in flight, but the turn
+              // still is. The row at the end of a running thread is the one
+              // the turn is working in.
+              const rowRunning = Boolean(active.activeTurnId)
+                && (row === lastRow || row.items.some((call) => call.outcome === "running"))
+              // A running turn's file list is still growing, so naming files
+              // mid-flight would show a total that keeps changing under the
+              // reader. The chips wait for the turn to settle.
+              const touched = rowRunning
+                ? []
+                : toolFileEntries(row.items.flatMap((call) => call.files ?? []))
               return (
-                <TurnActivity
-                  key={row.id}
-                  items={row.items}
-                  running={Boolean(active.activeTurnId) && row.items.some((call) => call.outcome === "running")}
-                />
+                <Fragment key={row.id}>
+                  <TurnActivity items={row.items} running={rowRunning} />
+                  {touched.length > 0 ? <ThreadFileChips files={touched} onReview={onOpenSheet} /> : null}
+                </Fragment>
               )
             }
             const item = row.item
             if (item.kind === "checkpoint") {
-              return <CheckpointThreadItem key={item.id} item={item} disabled={pending || restoreBusy || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
+              return <CheckpointThreadItem key={item.id} item={item} disabled={pending || restoreBusy || readOnly || Boolean(active.activeTurnId)} onRestore={restoreCheckpointFromRow} />
             }
             if (item.kind === "user") {
               return (
@@ -922,16 +1274,34 @@ export function Thread({
                 </div>
               )
             }
+            if (item.kind === "system" && item.notice === "context-compaction") {
+              // A boundary in the transcript, not a notice about it. The reader
+              // and the provider stop sharing history here, and the blue
+              // system banner would both overstate one row and repeat itself
+              // down a long session.
+              return (
+                <div key={item.id} data-testid="thread-compaction-marker" className="flex items-center gap-3 py-1 text-xs text-faint">
+                  <span className="h-px flex-1 bg-border" />
+                  <span className="shrink-0">
+                    Context compacted. The provider stopped reading the turns above. Domovoi kept the thread above.
+                  </span>
+                  <span className="h-px flex-1 bg-border" />
+                </div>
+              )
+            }
             if (item.kind === "system") {
               return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><BotIcon /><AlertTitle>System</AlertTitle><AlertDescription><MarkdownQuickView source={[item.body, item.detail].filter(Boolean).join("\n\n")} /></AlertDescription></Alert>
             }
             if (item.kind === "receipt") {
               return <ApprovalReceipt key={item.id} receipt={item} />
             }
-            // Grouping consumed every tool item, so nothing reaches here.
+            if (item.kind === "policy-refusal") {
+              return <PolicyRefusalCard key={item.id} refusal={item} />
+            }
             if (item.kind === "tool") return null
-            return <div key={item.id} className="flex max-w-2xl gap-3"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><MarkdownQuickView source={item.body} /></div>
+            return <div key={item.id} className="flex max-w-2xl gap-3"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><MarkdownQuickView source={stripPlanTags(item.body)} /></div>
           })}
+          {workingRow ? <TurnActivity items={[]} running /> : null}
           {transferReceipt ? (
             <Alert
               data-testid="session-transfer-receipt"
@@ -942,7 +1312,7 @@ export function Thread({
               <AlertDescription>{sessionTransferReceiptText(transferReceipt).detail}</AlertDescription>
             </Alert>
           ) : null}
-          {approval && !archiveReadOnly ? <ApprovalCard approval={approval} onResolve={(decision, explanation) => resolveCurrentApproval(approval.id, decision, explanation)} /> : null}
+          {approval && !archiveReadOnly ? <ApprovalCard surface={surface} approval={approval} watching={watching} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
       {followPill ? (
@@ -961,39 +1331,42 @@ export function Thread({
           </button>
         </div>
       ) : null}
-      {archiveReadOnly ? (
-        <div className="px-5 py-3">
-          {planStrip}
-          {recoveryError ? (
-            <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]">
-              <CircleStopIcon />
-              <AlertTitle>Session could not be released</AlertTitle>
-              <AlertDescription>{recoveryError}</AlertDescription>
-            </Alert>
-          ) : null}
-          <SessionReadOnlyNotice
-            session={active}
-            otherLabel={otherMachineLabel}
-            disabled={!connected || onReleaseSession === undefined}
-            pending={pending}
-            onRelease={(offer) => void releaseSession(offer)}
-          />
-        </div>
-      ) : <div className="px-5 py-3 [mask-image:linear-gradient(to_bottom,transparent_0,black_12px)]">
-        {desktopError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Desktop action failed</AlertTitle><AlertDescription>{desktopError}</AlertDescription></Alert> : null}
+      <div className="relative z-[1] -mt-5 bg-[linear-gradient(to_bottom,transparent_0,color-mix(in_oklab,var(--background)_58%,transparent)_9px,var(--background)_20px)] px-6 py-5">
         {runtimeError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Runtime update failed</AlertTitle><AlertDescription>{runtimeError}</AlertDescription></Alert> : null}
         {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
+        {recoveryError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Session could not be released</AlertTitle><AlertDescription>{recoveryError}</AlertDescription></Alert> : null}
         {planStrip}
-        <div className="mx-auto flex max-w-[var(--shell-thread)] flex-col gap-2 rounded-xl border bg-card p-3">
+        <div ref={composerCard} data-workspace-composer="" className={cn(
+          "relative mx-auto flex max-w-[var(--shell-thread)] flex-col gap-[11px] rounded-[16px] border bg-card pt-[13px] pr-[15px] pb-[11px] pl-[15px]",
+          readOnly && "[&_button:disabled]:opacity-[.45]",
+        )}>
+          {watching ? (
+            <div className="flex items-start gap-2.5 rounded-[calc(var(--radius)-2px)] border border-info-border bg-info-background px-3 py-[11px]">
+              <span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-info" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[12px] leading-[1.5] text-info-foreground">This device was paired to watch only.</div>
+                <div className="mt-1 text-[11px] leading-[1.5] text-info-dim">No sends, approvals, terminal or writes. Reads stream as normal.</div>
+              </div>
+            </div>
+          ) : archiveReadOnly ? (
+            <SessionReadOnlyNotice
+              session={active}
+              otherLabel={otherMachineLabel}
+              disabled={!connected || onReleaseSession === undefined}
+              pending={pending}
+              onRelease={(offer) => void releaseSession(offer)}
+            />
+          ) : null}
           {(failures ?? []).filter((attempt) => attempt.sessionId === active.id).map((attempt) => (
             <div key={attempt.id} className="flex items-center gap-2 rounded-lg border border-danger-border bg-danger-background px-3 py-2">
               <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-danger-foreground" />
               <span className="min-w-0 flex-1 truncate text-[12px] text-danger-foreground">{attempt.text}</span>
               <span className="text-[10.5px] whitespace-nowrap text-danger-dim">{deliveryLabel(attempt)}</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={readOnly}
+                  onClick={() => {
                   // Queueing it again replaces whatever is waiting, which the
                   // person can see beside it before they press.
                   onQueuedChange({
@@ -1007,45 +1380,207 @@ export function Thread({
               >
                 {attempt.delivery === "refused" ? "Queue again" : "Send anyway"}
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => onDismissFailure?.(attempt.id)}>Dismiss</Button>
+              <Button variant="ghost" size="sm" disabled={readOnly} onClick={() => onDismissFailure?.(attempt.id)}>Dismiss</Button>
             </div>
           ))}
+          {sending !== null ? (
+            <div role="status" aria-label="Sending" className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2">
+              <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-faint" />
+              <span className="min-w-0 flex-1 truncate text-[12px] text-strong">{sending}</span>
+              <span className="font-machine text-[10.5px] whitespace-nowrap text-faint">sending</span>
+            </div>
+          ) : null}
           {queued?.sessionId === active.id ? (
             <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2">
               <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-faint" />
               <span className="min-w-0 flex-1 truncate text-[12px] text-strong">{queued.text}</span>
               <span className="font-machine text-[10.5px] whitespace-nowrap text-faint">
-                {queued.state === "held" ? queued.reason ?? "held" : "sends at the next turn boundary"}
+                {queued.state === "held"
+                  ? queued.reason ?? "held"
+                  : active.activeTurnId ? "queued, sends when this turn ends" : "queued"}
               </span>
               {queued.state === "held" ? (
-                <Button variant="ghost" size="sm" disabled={Boolean(active.activeTurnId) || pending || emergencyStopPending || providerRestartRequired} onClick={() => onQueuedChange({ ...queued, state: "waiting" })}>Send</Button>
+                <Button variant="ghost" size="sm" disabled={readOnly || Boolean(active.activeTurnId) || pending || emergencyStopPending || providerRestartRequired} onClick={() => onQueuedChange({ ...queued, state: "waiting" })}>Send</Button>
               ) : null}
-              <Button variant="ghost" size="sm" onClick={() => onQueuedChange(undefined)}>Remove</Button>
+              <Button variant="ghost" size="icon-sm" aria-label="Unqueue the message" className="size-6 flex-none text-faint" disabled={readOnly} onClick={() => onQueuedChange(undefined)}><XIcon className="size-3" /></Button>
+            </div>
+          ) : null}
+          {attachments.length > 0 ? (
+            <div role="region" className="flex min-w-0 items-center gap-[7px] overflow-hidden" aria-label="Attachments">
+              {attachments.map((attachment, index) => {
+                return (
+                  <div key={`${attachmentName(attachment)}-${index}`} className="flex min-w-0 max-w-[260px] items-center gap-[7px] rounded-md border bg-background px-2 py-1">
+                    <span className="font-machine text-[10.5px] text-primary">{"kind" in attachment && attachment.kind === "text" ? "TXT" : "FILE"}</span>
+                    <span className="min-w-0 truncate font-machine text-[10.5px] text-strong">{attachmentName(attachment)}</span>
+                    <span className="font-machine text-[10px] text-faint">{attachmentMeta(attachment)}</span>
+                    <Button variant="ghost" size="icon-sm" className="size-5 flex-none text-faint" aria-label={`Remove ${attachmentName(attachment)}`} onClick={() => setAttachments((current) => current.filter((_, candidate) => candidate !== index))}><XIcon className="size-3" /></Button>
+                  </div>
+                )
+              })}
+            </div>
+          ) : null}
+          {attachments.some((attachment) => Boolean(inlineTextPreview(attachment))) ? (
+            <p className="m-0 text-[10.5px] leading-[1.45] text-warning">Too long to send inline. The prompt carries the first 40 lines, the agent reads the rest on request.</p>
+          ) : null}
+          {attachmentPathMode ? (
+            <div className="flex items-center gap-2">
+              <Input
+                autoFocus
+                aria-label={attachmentPathMode === "repo" ? "File in this repo" : `Path on ${snapshot.machine.name}`}
+                value={attachmentPath}
+                onChange={(event) => setAttachmentPath(event.target.value)}
+                placeholder={attachmentPathMode === "repo" ? "src/path/to/file.ts" : "relative/path/on/machine"}
+                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); attachWorkspacePath() } }}
+              />
+              <Button type="button" size="sm" disabled={!attachmentPath.trim()} onClick={attachWorkspacePath}>Attach</Button>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setAttachmentPathMode(null)}>Cancel</Button>
+            </div>
+          ) : null}
+          <input
+            ref={attachmentInput}
+            type="file"
+            accept="image/png,image/jpeg,text/plain,.md,.json,.csv,.log"
+            className="sr-only"
+            aria-label="Choose an image or file"
+            onChange={(event) => {
+              const files = [...(event.target.files ?? [])]
+              event.currentTarget.value = ""
+              void Promise.all(files.map(attachmentFromBrowserFile)).then(addAttachments, (cause: unknown) => {
+                setAttachmentError(cause instanceof Error ? cause.message : "The file could not be attached")
+              })
+            }}
+          />
+          {attachmentError ? <p role="alert" className="m-0 text-[11px] text-destructive">{attachmentError}</p> : null}
+          {slashOpen ? (
+            <div aria-hidden className="flex min-h-[22px] items-center gap-px">
+              <span className="font-machine text-[13.5px] text-foreground">{prompt}</span>
+              <span className="h-[15px] w-[1.5px] bg-primary animate-[dv-composer-caret_1.1s_steps(1)_infinite]" />
             </div>
           ) : null}
           <Textarea
+            ref={composerField}
             aria-label="Message"
+            aria-expanded={slashOpen}
+            aria-controls={slashOpen ? slashListId : undefined}
             rows={2}
-            className="min-h-12 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
-            placeholder={active.activeTurnId ? "Send to queue for the next turn" : "Message the agent"}
+            disabled={readOnly}
+            // v2 draws the field with no box of its own: it sits straight on
+            // the card. The dark variant on the shared Textarea has to be
+            // turned off by name, or it paints a panel the design never draws.
+            className={slashOpen
+              ? "sr-only"
+              : "max-h-[172px] min-h-[22px] resize-none overflow-y-auto border-0 bg-transparent p-0 text-[13.5px] leading-[1.6] shadow-none [field-sizing:content] focus-visible:ring-0 dark:bg-transparent"}
+            placeholder={surface === "web" && connected
+              ? "Steer it, or queue the next message"
+              : composerPlaceholder({ offline: !connected, working: Boolean(active.activeTurnId) })}
             value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
+            onChange={(event) => {
+              const next = event.target.value
+              setPrompt(next)
+              if (!next.startsWith("/")) setSlashDismissed(false)
+            }}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                event.preventDefault()
-                void submitPrompt()
-              }
+              // Enter sends, as the hint beside the send control says. Shift
+              // keeps the newline, and the old modifier still sends so a hand
+              // trained on it is not left pressing a dead key.
+              if (event.key !== "Enter" || event.shiftKey) return
+              event.preventDefault()
+              void submitPrompt()
             }}
           />
+          <FloatingSurface
+            open={slashOpen}
+            onClose={() => setSlashDismissed(true)}
+            label="Slash commands"
+            placement="above"
+            trigger={composerCard}
+            className="w-[380px] overflow-hidden rounded-[calc(var(--radius)-2px)] p-0"
+          >
+            <div
+              id={slashListId}
+              role="listbox"
+              aria-labelledby={`${slashListId}-label`}
+            >
+              <div className="flex items-center gap-2 border-b px-3 py-2">
+                <span id={`${slashListId}-label`} className="text-[10.5px] font-medium tracking-[.13em] text-faint">THIS TURN</span>
+                <span className="flex-1" />
+                <span className="text-[11px] text-faint">{paletteShortcut} to go somewhere</span>
+              </div>
+              <div className="max-h-[216px] overflow-y-auto">
+                {slashCommands.map((command) => {
+                  const match = command.name.startsWith(slashQuery)
+                  return (
+                    <button
+                      key={command.name}
+                      type="button"
+                      role="option"
+                      aria-label={`${command.name} ${command.argument}`}
+                      aria-selected={false}
+                      data-match={match}
+                      title={command.note}
+                      onClick={() => takeSlashCommand(command)}
+                      className={cn(
+                        "flex h-8 w-full cursor-pointer items-center gap-2.5 border-t px-3 text-left first:border-t-0",
+                        !match && "opacity-50",
+                      )}
+                    >
+                      <span className={cn(
+                        "w-[70px] flex-none font-machine text-[11.5px]",
+                        match ? "text-primary" : "text-muted-foreground",
+                      )}>{command.name}</span>
+                      <span className="min-w-0 flex-1 truncate font-machine text-[10.5px] text-faint">{command.argument}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </FloatingSurface>
           <div data-workspace-composer-actions="" className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
-              {/* v2's model chip leads the composer's action row and opens the
-                  flat, searchable list of what every harness here reports. */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon-sm" aria-label="Attach" className="size-7 rounded-full" disabled={readOnly || attachments.length >= desktopAttachmentLimit}>
+                    <PaperclipIcon className="size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" side="top" sideOffset={8} className="w-[400px] p-0">
+                  <DropdownMenuItem aria-label="File in this repo" className="items-start gap-[11px] rounded-none px-[13px] py-[11px]" onSelect={() => setAttachmentPathMode("repo")}>
+                    <span className="mt-px rounded bg-muted px-[5px] py-[3px] font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">TS</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[12.5px] text-foreground">File in this repo</span>
+                      <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">A path in the worktree. Nothing is copied, the agent reads it where it is.</span>
+                    </span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem aria-label={`Path on ${snapshot.machine.name}`} className="items-start gap-[11px] rounded-none border-t px-[13px] py-[11px]" onSelect={() => setAttachmentPathMode("machine")}>
+                    <span className="mt-px rounded bg-muted px-[5px] py-[3px] font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">DIR</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[12.5px] text-foreground">Path on {snapshot.machine.name}</span>
+                      <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">Anything else on that machine, including files outside the project. Reading outside the project asks first.</span>
+                    </span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem aria-label="Image or file from this device" className="items-start gap-[11px] rounded-none border-t px-[13px] py-[11px]" onSelect={() => attachmentInput.current?.click()}>
+                    <span className="mt-px rounded bg-muted px-[5px] py-[3px] font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">FILE</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[12.5px] text-foreground">Image or file from this device</span>
+                      <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">The selected file is copied to {snapshot.machine.name} with the next message.</span>
+                    </span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem aria-label="Paste terminal output" className="items-start gap-[11px] rounded-none border-t px-[13px] py-[11px]" onSelect={() => void attachClipboardOutput()}>
+                    <span className="mt-px rounded bg-muted px-[5px] py-[3px] font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">LOG</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[12.5px] text-foreground">Paste terminal output</span>
+                      <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">Pasted text, kept as a file in the session rather than inline in the message.</span>
+                    </span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              {/* v2's model chip follows the attachment control and opens the flat,
+                  searchable list of what every harness here reports. */}
               <ModelPopover
                 runtime={active.runtime}
                 providers={snapshot.machine.providers}
                 machineName={snapshot.machine.name}
-                pending={runtimePending}
+                pending={runtimePending || readOnly}
                 turnRunning={Boolean(active.activeTurnId)}
                 {...(forkCheckpoint ? { forkCheckpointId: forkCheckpoint.id } : {})}
                 {...(forkReason ? { forkBlockedReason: forkReason } : {})}
@@ -1056,19 +1591,78 @@ export function Thread({
               />
               {/* v2's mode chip sits beside the model. Think has no drawing in
                   v2; the runtime carries it, so it stays as a plain chip here. */}
-              <ModeChip runtime={active.runtime} pending={runtimePending} onSetRuntime={(runtime) => void updateRuntime(runtime)} />
-              <ThinkChip runtime={active.runtime} catalog={reasoningCatalog} pending={runtimePending} onSetRuntime={(runtime) => void updateRuntime(runtime)} onRetry={() => setCatalogAttempt((attempt) => attempt + 1)} />
-              {!providerReady ? <Badge variant="outline" className="text-warning">{providerDisplayName(active.runtime.provider)} not ready</Badge> : null}
-              {onOpenSkills ? (
-                <ComposerSkillChip
-                  snapshot={snapshot}
-                  skillNames={skillNames ?? {}}
-                  onOpenSkills={onOpenSkills}
-                  selection={skillSelection}
-                  onSelectionChange={setSkillSelection}
-                  refusal={skillRefusal}
-                />
+              <ModeChip runtime={active.runtime} pending={runtimePending || readOnly} onSetRuntime={(runtime) => void updateRuntime(runtime)} />
+              {/* v2 opens the machine surfaces from the row itself, on Changes.
+                  It is the only control here that looks at the machine rather
+                  than at what the next turn sends. */}
+              {onOpenSheet ? (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Open the sheet"
+                  className="size-7 flex-none rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
+                  onClick={onOpenSheet}
+                >
+                  <TerminalIcon className="size-4" />
+                </Button>
               ) : null}
+              {/* The editor is the same draft in a larger field. v2 draws its
+                  control here, beside the surfaces it runs against, not out at
+                  the send end of the row. */}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Expand prompt editor"
+                className="size-7 flex-none rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
+                disabled={readOnly}
+                onClick={() => setPromptEditorOpen(true)}
+              >
+                <Maximize2Icon className="size-4" />
+              </Button>
+              {/* v2 draws no checkpoint control in the composer. /revert
+                  rewinds to one, and the Checkpoints sheet tab lists them. */}
+              {/* Archiving lives on the session's own row in the drawer, which
+                  asks with these same words. v2 draws no archive control in
+                  the composer, so this row no longer carries a second one. */}
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+              {/* v2's usage chip belongs to the composer, at the right of its
+                  action row. The sidebar reorganisation moves the row with it. */}
+              <UsageChip usage={usage} today={usageToday} loadLatestTurn={loadLatestTurn} />
+              <span role="status" className="flex flex-col items-end font-machine text-mono-xs leading-[1.35] text-faint">
+                {providerRestartRequired
+                  ? <span>Restart the provider before sending</span>
+                  : sendHint(composerPlatform()).split(" · ").map((line) => (
+                      <span key={line} className="whitespace-nowrap">{line}</span>
+                    ))}
+              </span>
+              {/* v2 draws stop as a 28px round bordered control beside send,
+                  not as a labelled button out among the chips. */}
+              {active.activeTurnId ? (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="icon-sm"
+                        aria-label="Stop the agent"
+                        className="size-7 flex-none rounded-full"
+                        disabled={readOnly || pending || !connected}
+                        onClick={() => void pauseSession()}
+                      >
+                        <SquareIcon className="size-2.5 fill-current" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={8} className="block w-[220px] bg-card px-[11px] py-[9px] text-foreground ring-1 ring-border">
+                      <span className="block text-[11.5px]">Stop the agent</span>
+                      <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">Ends this turn at its next tool boundary. The session, plan and worktree stay as they are.</span>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              ) : null}<Button size="icon-sm" className="rounded-full" aria-label="Send message" disabled={readOnly || !prompt.trim() || pending || !connected || providerRestartRequired || emergencyStopPending} onClick={() => void submitPrompt()}><ArrowUpIcon /></Button></div>
+          </div>
+          {!readOnly ? (
+            <div className="sr-only">
               <MachineSwitcher
                 entries={entries}
                 openRequest={machineMenuRequest}
@@ -1080,61 +1674,66 @@ export function Thread({
                 {...(onSelectMachine ? { onSelectMachine } : {})}
                 {...(onTransferSession ? { onTransferSession: setTransferTargetId } : {})}
               />
-              {onPairMachine ? (
-                <PairMachineDialog
-                  open={pairingMachine}
-                  onOpenChange={setPairingMachine}
-                  onClaim={onPairMachine}
-                  onPaired={() => setPairingMachine(false)}
-                />
-              ) : null}
-              {onTransferSession && transferTarget ? (
-                <TransferSessionDialog
-                  open
-                  onOpenChange={(open) => { if (!open) setTransferTargetId(null) }}
-                  session={active}
-                  source={sourceMachine}
-                  target={transferTarget}
-                  onTransfer={onTransferSession}
-                  onPreview={onPreviewTransfer!}
-                  onTransferred={(machineId) => {
-                    setTransferTargetId(null)
-                    onSelectMachine?.(machineId)
-                  }}
-                  onOutcome={(result) => setTransferReceipt({
-                    targetLabel: transferTarget.label,
-                    sourceLabel: sourceMachine.label,
-                    result,
-                  })}
-                />
-              ) : null}
-              <Button variant="ghost" size="sm" disabled={pending || Boolean(checkpointReason)} title={checkpointReason} onClick={() => void createCheckpoint()}>Checkpoint</Button>
-              {checkpointReason ? <span role="status" className="font-machine text-mono-xs text-faint">{checkpointReason}</span> : null}
-              {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
-              <ArchiveSessionAction disabled={pending || !connected} onArchive={() => void archiveSession()} />
             </div>
-            <div className="ml-auto flex items-center gap-2">
-              {/* v2's usage chip belongs to the composer, at the right of its
-                  action row. The sidebar reorganisation moves the row with it. */}
-              <UsageChip usage={usage} today={usageToday} loadLatestTurn={loadLatestTurn} />
-              <span role="status" className="font-machine text-mono-xs text-faint">{providerRestartRequired ? "Restart the provider before sending" : "Ctrl/⌘ + Enter send"}</span><Button variant="ghost" size="icon-sm" aria-label="Expand prompt editor" onClick={() => setPromptEditorOpen(true)}><Maximize2Icon /></Button><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending || providerRestartRequired || emergencyStopPending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
-          </div>
+          ) : null}
+          {!readOnly && onPairMachine ? (
+            <PairMachineDialog
+              open={pairingMachine}
+              onOpenChange={setPairingMachine}
+              onClaim={onPairMachine}
+              onPaired={() => setPairingMachine(false)}
+            />
+          ) : null}
+          {!readOnly && onTransferSession && transferTarget ? (
+            <TransferSessionDialog
+              open
+              onOpenChange={(open) => { if (!open) setTransferTargetId(null) }}
+              session={active}
+              source={sourceMachine}
+              target={transferTarget}
+              onTransfer={onTransferSession}
+              onPreview={onPreviewTransfer!}
+              onTransferred={(machineId) => {
+                setTransferTargetId(null)
+                onSelectMachine?.(machineId)
+              }}
+              onOutcome={(result) => setTransferReceipt({
+                targetLabel: transferTarget.label,
+                sourceLabel: sourceMachine.label,
+                result,
+              })}
+              {...(onReleaseSession ? {
+                onRecoverSource: (transferId: string) => onReleaseSession({
+                  sessionId: active.id,
+                  transferId,
+                  confirmation: "target-does-not-have-session",
+                }).then(() => undefined),
+              } : {})}
+            />
+          ) : null}
         </div>
-        <PromptEditorDialog
-          open={promptEditorOpen}
-          draft={prompt}
-          pending={pending}
-          sendDisabled={!prompt.trim() || providerRestartRequired || emergencyStopPending}
-          onOpenChange={setPromptEditorOpen}
-          onDraftChange={setPrompt}
-          onSend={() => {
-            setPromptEditorOpen(false)
-            void submitPrompt()
-          }}
-          projectLabel={snapshot.project?.name ?? "No project"}
-          {...(active.workspacePath ? { worktreeLabel: active.workspacePath.split(/[\\/]/u).at(-1) } : {})}
-        />
-      </div>}
+        {!readOnly ? (
+          <PromptEditorDialog
+            open={promptEditorOpen}
+            draft={prompt}
+            pending={pending}
+            sendDisabled={!prompt.trim() || providerRestartRequired || emergencyStopPending}
+            onOpenChange={setPromptEditorOpen}
+            onDraftChange={setPrompt}
+            onSend={() => {
+              setPromptEditorOpen(false)
+              void submitPrompt()
+            }}
+            projectLabel={snapshot.project?.name ?? "No project"}
+            {...(active.workspacePath ? { worktreeLabel: active.workspacePath.split(/[\\/]/u).at(-1) } : {})}
+            turnRunning={Boolean(active.activeTurnId)}
+            machineName={snapshot.machine.name}
+            machineReachable={snapshot.machine.reachable}
+            modelLabel={active.runtime.model}
+            modeLabel={permissionModeLabel(active.runtime.permissionMode, active.runtime.auto).toLowerCase()}
+          />
+        ) : null}
+      </div>
     </main>
   )
 }

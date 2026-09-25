@@ -1,7 +1,7 @@
 import { expect, it } from "vitest"
 
 import {
-  demoWorkspace, deviceClaimParamsSchema, deviceConfirmClaimParamsSchema,
+  demoWorkspace, deviceClaimParamsSchema, deviceConfirmClaimParamsSchema, deviceRedeemCodeParamsSchema,
   fleetMachineDescriptorSchema, helloParamsSchema, protocolCompatibility,
   protocolMismatchSchema, protocolVersion, systemHelloResultSchema, workspaceSnapshotSchema,
 } from "./index.js"
@@ -11,6 +11,7 @@ const versionReaders = [
   ["hello", (version: string) => helloParamsSchema.safeParse({ client: "cli", clientVersion: "test", protocolVersion: version })],
   ["claim", (version: string) => deviceClaimParamsSchema.safeParse({ code: "one-two-three-42", label: "laptop", machineId, protocolVersion: version })],
   ["confirmation", (version: string) => deviceConfirmClaimParamsSchema.safeParse({ authToken: "a".repeat(43), machineId, protocolVersion: version })],
+  ["redeem", (version: string) => deviceRedeemCodeParamsSchema.safeParse({ code: "one-two-three-42", label: "phone", protocolVersion: version })],
   ["descriptor", (version: string) => fleetMachineDescriptorSchema.safeParse({
     id: machineId, label: "laptop", platform: "linux", arch: "x64", version: "1.2.3", capabilities: [], transports: [], protocolVersion: version,
   })],
@@ -32,7 +33,7 @@ it.each([
 it("keeps payload validation when a compatible patch is accepted", () => {
   const remoteVersion = protocolVersion.replace(/\d+$/, "1")
   expect(systemHelloResultSchema.safeParse({ ...demoWorkspace, protocolVersion: remoteVersion, sessions: "not sessions" }).success).toBe(false)
-  for (const version of ["0.6.0", "0.8.0", "1.2.0"]) {
+  for (const version of ["0.7.0", "0.9.0", "1.2.0"]) {
     expect(workspaceSnapshotSchema.safeParse({ ...demoWorkspace, protocolVersion: version }).success).toBe(false)
   }
 })

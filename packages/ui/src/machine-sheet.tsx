@@ -1,3 +1,4 @@
+import { PinIcon } from "lucide-react"
 import { useEffect, useRef, type ReactNode, type RefObject } from "react"
 
 import { cn } from "./lib/utils"
@@ -24,12 +25,14 @@ export function MachineSheet({
   onTogglePin,
   pinButtonRef,
   openerRef,
+  renderPinControl,
   children,
 }: {
   open: boolean
   pinned: boolean
-  // Content that carries its own tab bar passes none, and the sheet renders
-  // only the pin control above it.
+  // Content that carries its own tab bar takes the pin control into that bar
+  // through renderPinControl. A row of its own above the tabs is what the
+  // design does not draw, and the control then has nothing else beside it.
   tabs?: readonly SheetTab[]
   activeTab?: string
   onSelectTab?: (id: string) => void
@@ -42,6 +45,9 @@ export function MachineSheet({
   // and unpinning replace the sheet, and each swap removes whatever was focused
   // at the time, so a capture made here would be document.body.
   openerRef?: RefObject<Element | null> | undefined
+  // Receives the pin control so the content can place it in its own tab row.
+  // Passing this replaces children, because the content owns the whole sheet.
+  renderPinControl?: ((control: ReactNode) => ReactNode) | undefined
   children: ReactNode
 }) {
   const opener = useRef<Element | null>(null)
@@ -61,7 +67,16 @@ export function MachineSheet({
     const provided = openerRef?.current ?? null
     return () => {
       const previous = provided ?? opener.current
-      if (previous instanceof HTMLElement && document.contains(previous)) previous.focus()
+      if (!(previous instanceof HTMLElement)) return
+      if (document.contains(previous)) {
+        previous.focus()
+        return
+      }
+      const label = previous.getAttribute("aria-label")
+      if (!label) return
+      const replacement = [...document.querySelectorAll<HTMLElement>("[aria-label]")]
+        .find((element) => element.getAttribute("aria-label") === label)
+      replacement?.focus()
     }
   }, [open, openerRef])
 
@@ -76,6 +91,26 @@ export function MachineSheet({
   }, [open, pinned])
 
   if (!open) return null
+
+  const pinControl = (
+    <button
+      ref={pinButtonRef}
+      type="button"
+      onClick={onTogglePin}
+      aria-pressed={pinned}
+      // It sits in the dock's tab row but belongs to the sheet. Left inside the
+      // dock's own panel scope, collapsing from here sends focus to the rail's
+      // expand button instead of back to whatever opened the sheet.
+      data-workspace-panel="sheet-chrome"
+      aria-label={pinned ? "Unpin" : "Pin"}
+      className={cn(
+        "flex size-7 flex-none items-center justify-center rounded-full",
+        pinned ? "bg-accent text-primary" : "text-muted-foreground"
+      )}
+    >
+      <PinIcon className="size-[15px] shrink-0" />
+    </button>
+  )
 
   return (
     <div className={cn("absolute inset-y-0 right-0 flex", pinned ? "relative" : "left-0 z-40")}>
@@ -94,6 +129,7 @@ export function MachineSheet({
           pinned ? "" : "shadow-xl",
         )}
       >
+        {renderPinControl ? renderPinControl(pinControl) : (<>
         <div className="flex items-center gap-1 border-b border-border p-2">
           {(tabs ?? []).map((tab) => (
             <button
@@ -112,17 +148,10 @@ export function MachineSheet({
               {tab.count ? <span className="font-mono text-[10.5px] text-faint">{tab.count}</span> : null}
             </button>
           ))}
-          <button
-            ref={pinButtonRef}
-            type="button"
-            onClick={onTogglePin}
-            aria-pressed={pinned}
-            className="ml-auto rounded-md px-2 py-1 text-[11.5px] text-muted-foreground"
-          >
-            {pinned ? "Unpin" : "Pin"}
-          </button>
+          {pinControl}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+        </>)}
       </section>
     </div>
   )

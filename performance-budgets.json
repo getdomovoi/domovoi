@@ -9,20 +9,23 @@
       "rendererJavascriptBytes": 1250000,
       "rendererLazyJavascriptBytes": 400000,
       "rendererStylesheetBytes": 124000,
-      "mainBytes": 36864,
+      "mainBytes": 37888,
       "preloadBytes": 8192
     }
   },
   "memory": {
     "clientSnapshotThreadItems": 100,
     "sessionHistoryRetainedItems": 200,
-    "terminalReplayCharacters": 262144
+    "terminalReplayCharacters": 65536
   },
   "longThreads": {
     "historyPageItems": 100,
     "renderedThreadItems": 100,
     "markdownCharactersPerItem": 32768,
     "markdownLinesPerItem": 500
+  },
+  "workspaceDelta": {
+    "batchDelayMilliseconds": 32
   },
   "terminalThroughput": {
     "outputChunkCharacters": 65536,

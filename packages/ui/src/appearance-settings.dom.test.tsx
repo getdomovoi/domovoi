@@ -20,10 +20,6 @@ function settingsProps() {
   }
 }
 
-function openAppearance() {
-  return userEvent.click(screen.getAllByRole("button", { name: "Appearance & window" })[0]!)
-}
-
 it("offers system, dark, and light theme cards beside provider settings", async () => {
   const onThemeChange = vi.fn()
   render(
@@ -34,12 +30,14 @@ it("offers system, dark, and light theme cards beside provider settings", async 
     />,
   )
 
-  expect(screen.getAllByRole("button", { name: "Providers" }).length).toBeGreaterThan(0)
-  await openAppearance()
+  expect(screen.getByRole("heading", { name: "Providers and tokens" })).toBeTruthy()
 
   const themes = within(screen.getByRole("radiogroup", { name: "Theme" }))
   expect(themes.getByRole("radio", { name: /System/u }).getAttribute("aria-checked")).toBe("true")
   expect(themes.getByRole("radio", { name: /Dark/u })).toBeTruthy()
+  expect(themes.getByText("Follows your OS appearance, including scheduled switches.")).toBeTruthy()
+  expect(themes.getByText("The default. Tuned for long sessions and terminal output.")).toBeTruthy()
+  expect(themes.getByText("The same tokens inverted. Diffs read on paper-white.")).toBeTruthy()
 
   await userEvent.click(themes.getByRole("radio", { name: /Light/u }))
   expect(onThemeChange).toHaveBeenCalledWith("light")
@@ -53,8 +51,6 @@ it("hides window decoration on clients that cannot change it", async () => {
       onThemeChange={vi.fn()}
     />,
   )
-  await openAppearance()
-
   expect(screen.queryByRole("radiogroup", { name: "Window decoration" })).toBeNull()
 })
 
@@ -72,8 +68,6 @@ it("states that a window decoration change applies after a restart", async () =>
       onWindowDecorationChange={onWindowDecorationChange}
     />,
   )
-  await openAppearance()
-
   const decoration = within(screen.getByRole("radiogroup", { name: "Window decoration" }))
   await userEvent.click(decoration.getByRole("radio", { name: /System/u }))
   expect(onWindowDecorationChange).toHaveBeenCalledWith("system")
@@ -93,8 +87,6 @@ it("announces a stored decoration the running window has not adopted", async () 
       onWindowDecorationChange={vi.fn()}
     />,
   )
-  await openAppearance()
-
   expect(screen.getByRole("status").textContent).toMatch(
     /This window still uses the Domovoi decoration/u,
   )
@@ -114,6 +106,6 @@ it("keeps the external editor control reachable alongside appearance", async () 
     />,
   )
 
-  await userEvent.click(screen.getAllByRole("button", { name: "External editor" })[0]!)
+  expect(screen.getByRole("heading", { name: "External editor" })).toBeTruthy()
   expect(screen.getByText("Worktree handoff")).toBeTruthy()
 })

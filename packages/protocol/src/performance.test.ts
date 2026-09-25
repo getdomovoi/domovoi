@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest"
 import {
   boundedClientThread,
-  maximumClientSnapshotThreadItems,
   maximumEffectiveClientThreadItems,
   maximumRenderedPreviewStages,
-  maximumRenderedThreadItems,
   maximumSessionHistoryPageItems,
   performanceBudgets,
   performanceLimitsFor,
+  terminalOutputBatchDelayMilliseconds,
+  workspaceDeltaBatchDelayMilliseconds,
 } from "./performance.js"
 
 describe("boundedClientThread", () => {
@@ -40,9 +40,22 @@ describe("boundedClientThread", () => {
       effectiveClientThreadItems: 80,
       renderedPreviewStages: 1,
     })
-    expect(maximumClientSnapshotThreadItems).toBe(performanceBudgets.memory.clientSnapshotThreadItems)
     expect(maximumSessionHistoryPageItems).toBe(performanceBudgets.longThreads.historyPageItems)
-    expect(maximumRenderedThreadItems).toBe(performanceBudgets.longThreads.renderedThreadItems)
     expect(maximumRenderedPreviewStages).toBe(performanceBudgets.largePreviews.renderedStages)
+  })
+})
+
+describe("workspace delta batching budget", () => {
+  it("publishes the assistant delta batch delay as a named budget", () => {
+    expect(performanceBudgets.workspaceDelta.batchDelayMilliseconds).toBe(32)
+    expect(workspaceDeltaBatchDelayMilliseconds).toBe(
+      performanceBudgets.workspaceDelta.batchDelayMilliseconds,
+    )
+  })
+
+  it("never batches workspace deltas faster than terminal output", () => {
+    expect(workspaceDeltaBatchDelayMilliseconds).toBeGreaterThanOrEqual(
+      terminalOutputBatchDelayMilliseconds,
+    )
   })
 })

@@ -12,7 +12,7 @@ export function isLoopbackHost(host: string): boolean {
   try {
     const normalized = new URL(`wss://${endpointHost(host)}/`).hostname
     return normalized === "localhost" || normalized === "localhost." || normalized === "[::1]"
-      || /^127\.\d+\.\d+\.\d+$/u.test(normalized) || normalized.startsWith("[::ffff:7f")
+      || /^127\.\d+\.\d+\.\d+$/u.test(normalized) || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/u.test(normalized)
   } catch { return false }
 }
 

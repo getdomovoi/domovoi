@@ -29,24 +29,22 @@ describe("deviceLabel", () => {
 })
 
 describe("phoneFacts", () => {
-  const facts = () => phoneFacts({ os: "ios", osVersion: "18.2", appVersion: "1.2.3" })
+  const facts = () => phoneFacts({ os: "ios", osVersion: "18.2", appVersion: "1.2.3", appearance: "System" })
 
   it("reports the version it was given rather than one written down here", () => {
     expect(facts().find((fact) => fact.label === "About")?.value).toBe("1.2.3")
-    expect(phoneFacts({ os: "ios", osVersion: "18.2", appVersion: "9.9.9" })
+    expect(phoneFacts({ os: "ios", osVersion: "18.2", appVersion: "9.9.9", appearance: "System" })
       .find((fact) => fact.label === "About")?.value).toBe("9.9.9")
   })
 
   it("reports the device it was given rather than one written down here", () => {
     expect(facts().find((fact) => fact.label === "This device")?.value).toBe("iOS 18.2")
-    expect(phoneFacts({ os: "android", osVersion: "15", appVersion: "1.2.3" })
+    expect(phoneFacts({ os: "android", osVersion: "15", appVersion: "1.2.3", appearance: "System" })
       .find((fact) => fact.label === "This device")?.value).toBe("Android 15")
   })
 
-  // The phone has one theme and no switch for it, so the row states what is
-  // drawn. It stops being true the day a light surface lands.
-  it("states the one appearance this build has", () => {
-    expect(facts().find((fact) => fact.label === "Appearance")?.value).toBe("Dark")
+  it("states the selected appearance", () => {
+    expect(facts().find((fact) => fact.label === "Appearance")?.value).toBe("System")
   })
 
   // There is no notification code, no permission request and no stored

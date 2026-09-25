@@ -2,11 +2,20 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { createInterface } from "node:readline"
 import type { Readable } from "node:stream"
 
-import { buildVersion, type ApprovalDecision, type ProviderModel, type Runtime } from "@getdomovoi/protocol"
+import { buildVersion, type ApprovalDecision, type ProviderModel, type ProviderUsageLimits, type Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep } from "./agents.js"
+import {
+  codexMainCheckoutConfigFile,
+  codexMainCheckoutConfigRefusal,
+  codexProjectTrustKeys,
+  codexRepositoryConfigFile,
+  codexRepositoryConfigRefusal,
+} from "./codex-repository-config.js"
+import { projectInstructions } from "./project-instructions.js"
 import { redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
+import { onProcessEnd } from "./process-end.js"
 
 export type { AgentAdapter, AgentEvent } from "./agents.js"
 
@@ -25,16 +34,164 @@ export interface CodexTransport {
   close(): Promise<void>
 }
 
+export type CodexPermissionProfile = "domovoi-read" | "domovoi-build"
+
 export type CodexPolicy = {
   approvalPolicy: "on-request" | "never"
-  sandboxPolicy:
-    | { type: "readOnly"; access: { type: "fullAccess" } }
-    | {
-        type: "workspaceWrite"
-        writableRoots: string[]
-        readOnlyAccess: { type: "fullAccess" }
-        networkAccess: false
-      }
+  permissions: CodexPermissionProfile
+}
+
+// Codex reads anywhere its sandbox allows without asking. Until a strict
+// allow-list exists (it needs a survey of the toolchains commands load), both
+// Domovoi profiles keep today's read access and refuse these credential
+// stores. Every other read outside the worktree still runs without a card.
+export const codexSecretLocations = [
+  "~/.ssh",
+  "~/.aws",
+  "~/.domovoi",
+  "~/.config/gh",
+  "~/.kube",
+  "~/.docker",
+  "~/.netrc",
+  "~/.gnupg",
+  "~/.azure",
+  "~/.config/gcloud",
+  "~/.git-credentials",
+  "~/.config/git/credentials",
+  "~/.npmrc",
+  "~/.pypirc",
+  "~/.password-store",
+  "~/.terraform.d",
+  "~/.vault-token",
+  "~/.pgpass",
+  "~/.my.cnf",
+  "~/.cargo/credentials.toml",
+  "~/.gem/credentials",
+  "~/.config/op",
+  "~/.local/share/keyrings",
+  "~/Library/Keychains",
+  "~/.codex/auth.json",
+  "~/.claude/.credentials.json",
+] as const
+
+// Secret files inside the worktree are refused too (owner ruling, 2026-09-22),
+// in every mode. A test or build that loads one of them inside the sandbox
+// fails with "Operation not permitted".
+export const codexWorktreeSecretPatterns = [
+  "**/.env",
+  "**/.env.*",
+  "**/*.pem",
+  "**/*.key",
+  "**/id_rsa*",
+  "**/.npmrc",
+  "**/.netrc",
+  "**/.pypirc",
+] as const
+
+// Codex emits no item for a command its sandbox refuses, so Domovoi cannot see
+// the attempt. The person is told when a session reaches Codex, and the model
+// is asked to say so itself when a command fails on one of these files.
+const codexWorktreeSecretFiles = codexWorktreeSecretPatterns.map((pattern) => pattern.replace(/^\*\*\//, ""))
+
+export const codexWorktreeSecretNotice = {
+  body: "Codex cannot read secret files in this worktree.",
+  detail: `The Codex sandbox refuses reads of ${codexWorktreeSecretFiles.slice(0, -1).join(", ")} and ${codexWorktreeSecretFiles.at(-1)} at any depth. A test or build that loads .env fails with "Operation not permitted". Codex does not report the refused read to Domovoi, so it shows only in the agent's reply.`,
+} as const
+
+// The notice names committed copies of those files too, which Codex can
+// still read through Git, or says the history could not be checked.
+export function codexSandboxNotice(committed: readonly string[] | undefined): { body: string; detail: string } {
+  if (committed === undefined) {
+    return {
+      body: codexWorktreeSecretNotice.body,
+      detail: `${codexWorktreeSecretNotice.detail} Domovoi could not finish checking the repository history.`,
+    }
+  }
+  if (committed.length === 0) return codexWorktreeSecretNotice
+  const list = committed.length === 1
+    ? committed[0]!
+    : `${committed.slice(0, -1).join(", ")} and ${committed.at(-1)!}`
+  return {
+    body: codexWorktreeSecretNotice.body,
+    detail: `${codexWorktreeSecretNotice.detail} Codex can still read these through Git: ${list}.`,
+  }
+}
+
+export const codexDeveloperInstructions = `Domovoi runs you in a sandbox that refuses reads of these files anywhere in the worktree: ${codexWorktreeSecretFiles.join(", ")}. A command that opens one of them fails with "Operation not permitted", for example a test or build that loads .env. Domovoi cannot see that failure. When a command fails on one of these files, say so in your reply and name the file.`
+
+type CodexContextEntry = { kind: "application"; value: string }
+
+const codexSandboxContext: Record<string, CodexContextEntry> = {
+  "domovoi-sandbox": { kind: "application", value: codexDeveloperInstructions },
+}
+
+// Codex shortens the middle of any additionalContext value over 1,000 tokens,
+// counted as 4,000 bytes (context-fragments and utils/string at
+// rust-v0.156.1). Longer instructions go as numbered entries, each within that
+// size and cut after a line where one falls in its second half. Codex orders
+// entries by key.
+const codexContextValueBytes = 4_000
+const projectInstructionsKey = "domovoi-project-instructions"
+
+export function codexProjectInstructionsContext(text: string | undefined): Record<string, CodexContextEntry> {
+  if (text === undefined) return {}
+  const parts = utf8Parts(text, codexContextValueBytes)
+  if (parts.length === 1) return { [projectInstructionsKey]: { kind: "application", value: text } }
+  return Object.fromEntries(parts.map((value, index) => [
+    `${projectInstructionsKey}-${String(index + 1).padStart(2, "0")}`,
+    { kind: "application", value },
+  ]))
+}
+
+function utf8Parts(text: string, limit: number): string[] {
+  const bytes = Buffer.from(text, "utf8")
+  const parts: string[] = []
+  for (let start = 0; start < bytes.length;) {
+    let end = Math.min(start + limit, bytes.length)
+    if (end < bytes.length) {
+      while (end > start && (bytes[end]! & 0xc0) === 0x80) end -= 1
+      const newline = bytes.lastIndexOf(0x0a, end - 1)
+      if (newline >= start + limit / 2) end = newline + 1
+      // An escaped tag (&lt;) stays whole in one entry.
+      const escape = bytes.lastIndexOf(0x26, end - 1)
+      if (escape > start && escape > end - 4 && bytes.toString("latin1", escape, escape + 4) === "&lt;") end = escape
+    }
+    parts.push(bytes.toString("utf8", start, end))
+    start = end
+  }
+  return parts
+}
+
+// Marking every path Codex consults for trust as untrusted keeps Codex from
+// loading repository configuration and from recording trust of its own when a
+// writable thread starts. It also stops Codex reading the repository's
+// AGENTS.md, which Domovoi sends with each turn instead.
+function codexThreadConfig(cwd: string): { projects: Record<string, { trust_level: "untrusted" }> } {
+  return {
+    projects: Object.fromEntries(codexProjectTrustKeys(cwd).map((key) => [key, { trust_level: "untrusted" as const }])),
+  }
+}
+
+export function codexAppServerArguments(): string[] {
+  const worktreeSecrets = `{${codexWorktreeSecretPatterns.map((pattern) => `${JSON.stringify(pattern)}="deny"`).join(",")}}`
+  const denied = `{${[
+    ...codexSecretLocations.map((location) => `${JSON.stringify(location)}="deny"`),
+    `":workspace_roots"=${worktreeSecrets}`,
+  ].join(",")}}`
+  const profile = (name: CodexPermissionProfile, base: string) => [
+    "-c", `permissions.${name}.extends=${JSON.stringify(base)}`,
+    "-c", `permissions.${name}.filesystem=${denied}`,
+    "-c", `permissions.${name}.network.enabled=false`,
+  ]
+  return [
+    "app-server",
+    "--listen",
+    "stdio://",
+    "-c",
+    `default_permissions=${JSON.stringify(":workspace")}`,
+    ...profile("domovoi-read", ":read-only"),
+    ...profile("domovoi-build", ":workspace"),
+  ]
 }
 
 type PendingRequest = {
@@ -44,27 +201,12 @@ type PendingRequest = {
 
 const STDERR_TAIL_BYTES = 16_384
 
-export function codexPolicyFor(runtime: Runtime, cwd: string): CodexPolicy {
-  if (runtime.permissionMode === "ask") {
-    return {
-      approvalPolicy: "on-request",
-      sandboxPolicy: { type: "readOnly", access: { type: "fullAccess" } },
-    }
-  }
-  if (runtime.permissionMode === "plan") {
-    return {
-      approvalPolicy: "never",
-      sandboxPolicy: { type: "readOnly", access: { type: "fullAccess" } },
-    }
-  }
+export function codexPolicyFor(runtime: Runtime): CodexPolicy {
+  if (runtime.permissionMode === "ask") return { approvalPolicy: "on-request", permissions: "domovoi-read" }
+  if (runtime.permissionMode === "plan") return { approvalPolicy: "never", permissions: "domovoi-read" }
   return {
     approvalPolicy: runtime.permissionMode === "build" && runtime.auto ? "never" : "on-request",
-    sandboxPolicy: {
-      type: "workspaceWrite",
-      writableRoots: [cwd],
-      readOnlyAccess: { type: "fullAccess" },
-      networkAccess: false,
-    },
+    permissions: "domovoi-build",
   }
 }
 
@@ -80,18 +222,30 @@ export class StdioCodexTransport implements CodexTransport {
 
   constructor(childFactory: () => ChildProcessWithoutNullStreams = () => spawn(
     "codex",
-    ["app-server", "--listen", "stdio://"],
+    codexAppServerArguments(),
     { stdio: ["pipe", "pipe", "pipe"] },
   ), shutdownGraceMs = 2_000) {
     this.#child = childFactory()
     this.#shutdownGraceMs = shutdownGraceMs
     const stderrTail = captureStderrTail(this.#child.stderr)
+    // Once the process has exited, or its stdout has ended, an unparseable line
+    // is not reported: the process-end report below carries the reason it
+    // stopped, usually a sign-in failure on stderr. Such a line is a fragment
+    // the process died in the middle of, or output a background process that
+    // inherited the pipe wrote after the exit. The end listener is registered
+    // before readline's own, so it is set by the time readline flushes a last
+    // line that had no newline.
+    let stdoutEnded = false
+    let exited = false
+    this.#child.stdout.once("end", () => { stdoutEnded = true })
+    this.#child.once("exit", () => { exited = true })
     const lines = createInterface({ input: this.#child.stdout })
     lines.on("line", (line) => {
       try {
         const message = requireJsonRpcMessage(JSON.parse(line))
         for (const listener of this.#messageListeners) listener(message)
       } catch {
+        if (stdoutEnded || exited) return
         this.#emitError(new Error("Codex app-server emitted invalid JSONL"))
       }
     })
@@ -99,7 +253,7 @@ export class StdioCodexTransport implements CodexTransport {
     this.#child.stdin.on("error", (error) => this.#emitError(error))
     this.#child.stdout.on("error", (error) => this.#emitError(error))
     this.#child.stderr.on("error", (error) => this.#emitError(error))
-    this.#child.once("exit", (code, signal) => {
+    onProcessEnd(this.#child, (code, signal) => {
       if (this.#closing) return
       const exit = code !== null
         ? `Codex app-server exited with code ${code}`
@@ -188,6 +342,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
   #unsubscribeMessage: (() => void) | undefined
   #unsubscribeError: (() => void) | undefined
   #connectPromise: Promise<void> | undefined
+  #collaborationModeAvailable = true
+  #additionalContextAvailable = true
 
   constructor(transportFactory: () => CodexTransport = () => new StdioCodexTransport()) {
     this.#transportFactory = transportFactory
@@ -214,14 +370,22 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
-    const policy = codexPolicyFor(runtime, cwd)
-    const sandbox = policy.sandboxPolicy.type === "readOnly" ? "read-only" : "workspace-write"
+    refuseRepositoryConfig(cwd)
+    const policy = codexPolicyFor(runtime)
+    const sandbox = policy.permissions === "domovoi-read" ? "read-only" : "workspace-write"
+    // thread/start developerInstructions replaces the person's own
+    // developer_instructions rather than adding to them, so Domovoi reads the
+    // value Codex resolved for this worktree and sends both.
+    const own = resolvedDeveloperInstructions(await this.#request("config/read", { cwd }))
+    refuseRepositoryConfig(cwd)
     const result = await this.#request("thread/start", {
       cwd,
       model: runtime.model,
       approvalPolicy: policy.approvalPolicy,
       sandbox,
       serviceName: "domovoi",
+      developerInstructions: own ? `${own}\n\n${codexDeveloperInstructions}` : codexDeveloperInstructions,
+      config: codexThreadConfig(cwd),
     })
     const threadId = nestedId(result, "thread")
     if (!threadId) throw new Error("Codex did not return a thread id")
@@ -277,16 +441,25 @@ export class CodexAppServerAdapter implements AgentAdapter {
     return models
   }
 
+  async usageLimits(signal?: AbortSignal): Promise<ProviderUsageLimits | undefined> {
+    return parseCodexUsageLimits(await this.#request(
+      "account/rateLimits/read",
+      { excludeResetCreditDetails: true },
+      signal,
+    ))
+  }
+
   async stopThread(threadId: string): Promise<void> {
     await this.#request("thread/archive", { threadId })
   }
 
-  async resumeThread({ threadId }: {
+  async resumeThread({ threadId, cwd }: {
     threadId: string
     cwd: string
     runtime: Runtime
   }): Promise<void> {
-    const result = await this.#request("thread/resume", { threadId })
+    refuseRepositoryConfig(cwd)
+    const result = await this.#request("thread/resume", { threadId, config: codexThreadConfig(cwd) })
     if (nestedId(result, "thread") !== threadId) {
       throw new Error("Codex did not resume the requested thread")
     }
@@ -316,15 +489,57 @@ export class CodexAppServerAdapter implements AgentAdapter {
     prompt: string
     runtime: Runtime
   }): Promise<string> {
-    const policy = codexPolicyFor(runtime, cwd)
-    const result = await this.#request("turn/start", {
+    const policy = codexPolicyFor(runtime)
+    const params = {
       threadId,
       input: [{ type: "text", text: prompt }],
       cwd,
       model: runtime.model,
       effort: runtime.reasoning,
       ...policy,
-    })
+    }
+    const collaborationMode = {
+      mode: runtime.permissionMode === "plan" ? "plan" : "default",
+      settings: {
+        model: runtime.model,
+        reasoning_effort: runtime.reasoning,
+        developer_instructions: null,
+      },
+    }
+    // Thread developer instructions reach the model only when the thread
+    // starts, so a thread started before Domovoi sent them, then resumed,
+    // would never learn which files the sandbox refuses. Every turn carries
+    // the same text as context, which Codex keeps once per source key, and
+    // the repository's AGENTS.md, read again for each turn. A Codex without
+    // the field gets the rest of the turn unchanged.
+    const additionalContext = {
+      ...codexProjectInstructionsContext(await projectInstructions(cwd, "codex")),
+      ...codexSandboxContext,
+    }
+    let result: unknown
+    for (;;) {
+      const withCollaboration = this.#collaborationModeAvailable
+      const withContext = this.#additionalContextAvailable
+      refuseRepositoryConfig(cwd)
+      try {
+        result = await this.#request("turn/start", {
+          ...params,
+          ...(withCollaboration ? { collaborationMode } : {}),
+          ...(withContext ? { additionalContext } : {}),
+        })
+        break
+      } catch (error) {
+        if (withContext && additionalContextUnavailable(error)) {
+          this.#additionalContextAvailable = false
+          continue
+        }
+        if (withCollaboration && collaborationModeUnavailable(error)) {
+          this.#collaborationModeAvailable = false
+          continue
+        }
+        throw error
+      }
+    }
     const turnId = nestedId(result, "turn")
     if (!turnId) throw new Error("Codex did not return a turn id")
     return turnId
@@ -381,6 +596,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
   async #openTransport(): Promise<void> {
     const transport = this.#transportFactory()
     this.#transport = transport
+    this.#collaborationModeAvailable = true
+    this.#additionalContextAvailable = true
     this.#unsubscribeMessage = transport.onMessage((message) => {
       if (this.#transport === transport) this.#receive(message)
     })
@@ -388,9 +605,17 @@ export class CodexAppServerAdapter implements AgentAdapter {
       this.#handleTransportFailure(transport, error)
     })
     try {
-      await this.#request("initialize", {
-        clientInfo: { name: "domovoi", title: "Domovoi", version: buildVersion },
-      })
+      const clientInfo = { name: "domovoi", title: "Domovoi", version: buildVersion }
+      try {
+        await this.#request("initialize", {
+          clientInfo,
+          capabilities: { experimentalApi: true },
+        })
+      } catch (error) {
+        if (!collaborationModeUnavailable(error)) throw error
+        this.#collaborationModeAvailable = false
+        await this.#request("initialize", { clientInfo })
+      }
       if (this.#transport !== transport) {
         throw new Error("Codex transport disconnected during initialization")
       }
@@ -438,7 +663,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
       ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
     }
     if (message.method === "item/agentMessage/delta" && typeof params.delta === "string") {
-      this.#emit({ type: "text-delta", ...common, delta: params.delta })
+      this.#emit({
+        type: "text-delta",
+        ...common,
+        ...(typeof params.itemId === "string" ? { itemId: params.itemId } : {}),
+        delta: params.delta,
+      })
     } else if (message.method === "item/plan/delta" && typeof params.delta === "string") {
       this.#emit({ type: "plan-delta", ...common, delta: params.delta })
     } else if (message.method === "turn/plan/updated" && typeof params.threadId === "string") {
@@ -507,6 +737,34 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 }
 
+// A trusted project's own Codex configuration can start programs and change
+// permissions. Until a trust gate ships, a session is refused before Codex is
+// asked anything about a worktree that holds it, or whose main checkout holds
+// hook configuration Codex takes from there. Callers check again after every
+// await, so each thread/start, thread/resume and turn/start goes out in the
+// same tick as a check that passed.
+function refuseRepositoryConfig(cwd: string): void {
+  const file = codexRepositoryConfigFile(cwd)
+  if (file !== undefined) throw new Error(codexRepositoryConfigRefusal(file))
+  const main = codexMainCheckoutConfigFile(cwd)
+  if (main !== undefined) throw new Error(codexMainCheckoutConfigRefusal(main.file, main.mainCheckout))
+}
+
+function resolvedDeveloperInstructions(result: unknown): string | undefined {
+  const instructions = asRecord(asRecord(result)?.config)?.developer_instructions
+  return typeof instructions === "string" && instructions.trim() ? instructions.trim() : undefined
+}
+
+function additionalContextUnavailable(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /additionalContext/iu.test(message)
+}
+
+function collaborationModeUnavailable(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /collaborationMode|experimentalApi/iu.test(message)
+}
+
 function captureStderrTail(stream: Readable): () => string {
   let tail = Buffer.alloc(0)
   stream.on("data", (chunk: Buffer) => {
@@ -565,6 +823,41 @@ function requireModelPage(value: unknown): CodexModelPage {
     if (model) data.push(model)
   }
   return { data, nextCursor: page.nextCursor ?? null }
+}
+
+function parseCodexUsageLimits(value: unknown): ProviderUsageLimits | undefined {
+  const rateLimits = asRecord(asRecord(value)?.rateLimits)
+  if (!rateLimits) return undefined
+  const windows = (["primary", "secondary"] as const).flatMap((kind) => {
+    const window = asRecord(rateLimits[kind])
+    if (!window) return []
+    const usedPercent = window.usedPercent
+    if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100) {
+      return []
+    }
+    const duration = window.windowDurationMins
+    if (!isNullish(duration) && (typeof duration !== "number" || !Number.isInteger(duration) || duration <= 0)) {
+      return []
+    }
+    const resetSeconds = window.resetsAt
+    if (!isNullish(resetSeconds) && (typeof resetSeconds !== "number" || !Number.isFinite(resetSeconds) || resetSeconds < 0)) {
+      return []
+    }
+    return [{
+      kind,
+      usedPercent,
+      ...(typeof duration === "number" ? { windowDurationMinutes: duration } : {}),
+      ...(typeof resetSeconds === "number" ? { resetsAt: new Date(resetSeconds * 1_000).toISOString() } : {}),
+    }]
+  })
+  if (windows.length === 0) return undefined
+  return {
+    provider: "codex",
+    ...(typeof rateLimits.planType === "string" && rateLimits.planType.trim()
+      ? { planType: rateLimits.planType }
+      : {}),
+    windows,
+  }
 }
 
 function parseCodexModel(value: unknown): CodexModel | undefined {

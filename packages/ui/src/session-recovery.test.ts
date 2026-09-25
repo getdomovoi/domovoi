@@ -187,12 +187,15 @@ describe("readOnlySessionNotice", () => {
     expect(readOnlySessionNotice(conflicted, "studio")?.badge).toBe("Conflict")
   })
 
-  it("keeps the archive wording it had", () => {
+  // The wording is the design's own, from the watching-only notice in Domovoi
+  // Desktop V2: a reason, then the mechanism on both sides. It is pinned here
+  // so it cannot drift back to copy the design does not carry.
+  it("carries the design's archive wording", () => {
     expect(readOnlySessionNotice({ ...session, state: "archived" } as SessionSummary, undefined))
       .toEqual({
         badge: "Archived",
         title: "Archived",
-        detail: "This session is read-only. Its history, checkpoints, artifacts, and annotations remain available.",
+        detail: "Archived, so the daemon accepts reads only. No sends, approvals, terminal or writes. Reads stream as normal.",
       })
   })
 

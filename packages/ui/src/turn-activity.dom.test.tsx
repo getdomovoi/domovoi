@@ -11,8 +11,10 @@ const items: ToolActivity[] = [
   { id: "2", name: "test", argument: "pnpm vitest run replay", outcome: "1 failed", failed: true, log: "replay.spec.ts:14 expected 1 got 2" },
 ]
 
+// The count and the failure belong to a turn that has stopped. While it runs
+// the design's label is "Working", covered in turn-activity-working-label.
 it("collapses the whole turn into one row", () => {
-  render(<TurnActivity items={items} running />)
+  render(<TurnActivity items={items} running={false} />)
   expect(screen.getByRole("button", { name: /2 tool calls, 1 failed/ })).toBeTruthy()
   expect(screen.queryByText("src/webhooks/handler.ts")).toBeNull()
 })
@@ -37,10 +39,10 @@ it("keeps output behind a second click, so one failure does not flood the thread
 
 it("moves only while the turn is running", () => {
   const { container: live } = render(<TurnActivity items={items} running />)
-  expect(live.querySelectorAll(".animate-pulse")).toHaveLength(1)
+  expect(live.querySelectorAll(".sweep-bar")).toHaveLength(1)
   cleanup()
   const { container: still } = render(<TurnActivity items={items} running={false} />)
-  expect(still.querySelectorAll(".animate-pulse")).toHaveLength(0)
+  expect(still.querySelectorAll(".sweep-bar")).toHaveLength(0)
 })
 
 it("says it is working before any tool call has happened", () => {

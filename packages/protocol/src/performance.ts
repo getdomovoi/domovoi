@@ -16,13 +16,12 @@ export function performanceLimitsFor(budgets: typeof performanceBudgets) {
 
 const performanceLimits = performanceLimitsFor(performanceBudgets)
 
-export const maximumClientSnapshotThreadItems = performanceLimits.clientSnapshotThreadItems
 export const maximumSessionHistoryPageItems = performanceLimits.sessionHistoryPageItems
-export const maximumRenderedThreadItems = performanceLimits.renderedThreadItems
 export const maximumEffectiveClientThreadItems = performanceLimits.effectiveClientThreadItems
 export const maximumRenderedPreviewStages = performanceLimits.renderedPreviewStages
 export const maximumRetainedSessionHistoryItems = performanceBudgets.memory.sessionHistoryRetainedItems
 export const maximumTerminalReplayCharacters = performanceBudgets.memory.terminalReplayCharacters
+export const workspaceDeltaBatchDelayMilliseconds = performanceBudgets.workspaceDelta.batchDelayMilliseconds
 export const maximumTerminalOutputChunkCharacters = performanceBudgets.terminalThroughput.outputChunkCharacters
 export const terminalOutputBatchDelayMilliseconds = performanceBudgets.terminalThroughput.batchDelayMilliseconds
 export const terminalWebSocketHighWaterBytes = performanceBudgets.terminalThroughput.websocketHighWaterBytes

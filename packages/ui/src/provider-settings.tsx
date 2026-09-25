@@ -32,9 +32,9 @@ type ProviderSettingsProps = {
 export function ProviderSettings({ providers, secrets, localDaemon }: ProviderSettingsProps) {
   return (
     <>
-      <h1 className="m-0 text-[17px] font-semibold">Providers on this machine</h1>
-      <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-relaxed text-muted-foreground">
-        Subscription CLIs own their credentials. Direct API keys stay in the OS keychain on the machine that runs the agent and never pass through a client or relay.
+      <h2 className="m-0 text-[13px] font-medium">Providers and tokens</h2>
+      <p className="mt-1.5 max-w-[68ch] text-[11.5px] leading-relaxed text-muted-foreground">
+        Stored in each machine&apos;s OS keychain. Never in a Domovoi account. Subscription CLIs own their credentials, and direct API keys never pass through a client or relay.
       </p>
 
       {localDaemon ? (
@@ -68,7 +68,7 @@ export function ProviderSettings({ providers, secrets, localDaemon }: ProviderSe
                     {provider.command}{provider.version ? ` · ${provider.version}` : ""}
                   </span>
                   <span id={`provider-account-${provider.id}`} className="text-micro text-muted-foreground">
-                    Run <code className="font-machine">{providerAccountCommand(provider)}</code> in terminal
+                    {provider.problem ?? <>Run <code className="font-machine">{providerAccountCommand(provider)}</code> in terminal</>}
                   </span>
                 </span>
                 <span className="ml-auto flex flex-wrap items-center gap-2">
@@ -119,17 +119,17 @@ const themeOptions: readonly {
 }[] = [
   {
     value: "system",
-    description: "Follows the operating system and changes with it while Domovoi runs.",
+    description: "Follows your OS appearance, including scheduled switches.",
     preview: { shell: "#3a3a40", panel: "#d8d8dc", accent: "#7c6cf5" },
   },
   {
     value: "dark",
-    description: "Always uses the dark palette.",
+    description: "The default. Tuned for long sessions and terminal output.",
     preview: { shell: "#19191b", panel: "#2b2b30", accent: "#9c8cff" },
   },
   {
     value: "light",
-    description: "Always uses the light palette.",
+    description: "The same tokens inverted. Diffs read on paper-white.",
     preview: { shell: "#f6f6f8", panel: "#ffffff", accent: "#5945d8" },
   },
 ]
@@ -169,7 +169,7 @@ export function AppearanceSettings({
 
   return (
     <>
-      <h1 className="m-0 text-[17px] font-semibold">Appearance and window</h1>
+      <h2 className="m-0 text-[13px] font-medium">Appearance</h2>
       <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-relaxed text-muted-foreground">
         These preferences stay on this client. They are never sent to the execution machine.
       </p>

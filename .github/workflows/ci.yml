@@ -2,8 +2,16 @@ name: ci
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
+
+# A newer push to a pull request replaces the run for the older one, and so does
+# converting it to draft (that run stops at its first step). Pushes to main are
+# grouped by commit, so a main run is never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -16,6 +24,16 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      # Draft pull requests are still under review. Their run fails at once
+      # rather than being skipped: a skipped required check counts as passing,
+      # and run order within a concurrency group is not guaranteed, so a late
+      # draft run could otherwise replace a ready run and leave it looking green.
+      - name: Stop on a draft pull request
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft
+        shell: bash
+        run: |
+          echo "Draft pull request: not verified. Mark it ready to run CI."
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
@@ -76,6 +94,15 @@ jobs:
           launchctl print "gui/$uid" > "$RUNNER_TEMP/launchd-domain.txt"
           echo "gui/$uid answers with $(wc -l < "$RUNNER_TEMP/launchd-domain.txt") lines"
       - run: pnpm test
+      # A wire change since the last protocol release needs a minor above it.
+      # The release record is committed once, at release. --base refuses a
+      # pull request that changes or removes a record the base branch has, so
+      # no pull request rewrites the record it is measured against.
+      - name: Require a protocol minor bump for every wire change since the last release
+        if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest'
+        env:
+          WIRE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/protocol-wire.mjs check --base "$WIRE_BASE_SHA"
       - run: pnpm build
       - run: pnpm performance:budget
       - run: pnpm release:invariants
@@ -90,6 +117,11 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
+      - name: Stop on a draft pull request
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft
+        run: |
+          echo "Draft pull request: not verified. Mark it ready to run CI."
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false

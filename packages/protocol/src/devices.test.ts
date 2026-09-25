@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest"
 import { protocolVersion } from "./schema.js"
 
 import {
+  clientAccessSchema,
   deviceClaimParamsSchema,
+  deviceCurrentResultSchema,
+  deviceIssueCodeParamsSchema,
+  deviceIssueCodeResultSchema,
+  webAppUrlSchema,
   deviceLabelMismatchSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
@@ -19,12 +24,20 @@ const device = {
   id: `device-${"a".repeat(32)}`,
   label: "studio-ipad",
   pairedAt: "2026-08-31T12:00:00.000Z",
-  binding: { kind: "client" as const, client: "phone" as const },
+  binding: { kind: "client" as const, client: "phone" as const, clientAccess: "full" as const },
 }
 
 describe("pairedDeviceSchema", () => {
-  it("describes a paired device", () => {
-    expect(pairedDeviceSchema.parse(device)).toEqual(device)
+  it("defaults existing client credential bindings to full access", () => {
+    expect(clientAccessSchema.options).toEqual(["full", "watching"])
+    const legacy = { ...device, binding: { kind: "client" as const, client: "phone" as const } }
+    expect(pairedDeviceSchema.parse(legacy).binding).toEqual({
+      kind: "client", client: "phone", clientAccess: "full",
+    })
+    expect(pairedDeviceSchema.parse({
+      ...device,
+      binding: { ...device.binding, clientAccess: "watching" },
+    }).binding).toEqual({ kind: "client", client: "phone", clientAccess: "watching" })
   })
 
   it("carries the optional contact and revocation times", () => {
@@ -123,6 +136,81 @@ describe("devicePairParamsSchema", () => {
       client: "desktop",
     }).success).toBe(false)
     expect(devicePairParamsSchema.safeParse({ label: "studio-ipad" }).success).toBe(false)
+    expect(devicePairParamsSchema.parse({
+      label: "watcher", client: "desktop", targetClient: "web", clientAccess: "watching",
+    }).clientAccess).toBe("watching")
+  })
+
+  it("binds issued client codes to an access level", () => {
+    expect(deviceIssueCodeParamsSchema.parse({ targetClient: "phone" }))
+      .toEqual({ targetClient: "phone" })
+    expect(deviceIssueCodeParamsSchema.parse({ targetClient: "phone", clientAccess: "watching" }).clientAccess)
+      .toBe("watching")
+  })
+
+  it("issues a code with the address a device dials, or the problem that leaves none", () => {
+    const issued = { code: "hearth-quiet-ember-42", expiresAt: "2026-08-31T12:03:00.000Z" }
+    const tailnet = { url: "wss://djs-macbook-pro-1.raptor-pompano.ts.net:47831/rpc", label: "djs-macbook-pro-1.raptor-pompano.ts.net", loopback: false }
+    expect(deviceIssueCodeResultSchema.parse({ ...issued, pairingAddress: tailnet })).toEqual({ ...issued, pairingAddress: tailnet })
+    const loopback = { url: "ws://127.0.0.1:47831/rpc", loopback: true }
+    expect(deviceIssueCodeResultSchema.parse({ ...issued, pairingAddress: loopback })).toEqual({ ...issued, pairingAddress: loopback })
+    const problem = { problem: "This daemon serves no certificate, so a device has no address it can verify." }
+    expect(deviceIssueCodeResultSchema.parse({ ...issued, pairingAddress: problem })).toEqual({ ...issued, pairingAddress: problem })
+    // An address a device cannot verify is refused at the schema, as the
+    // payload refuses it: plaintext is loopback only.
+    expect(deviceIssueCodeResultSchema.safeParse({ ...issued, pairingAddress: { url: "ws://100.80.185.103:47831/rpc", loopback: false } }).success).toBe(false)
+    expect(deviceIssueCodeResultSchema.safeParse({ ...issued, pairingAddress: { url: "wss://a.example.ts.net:47831/rpc" } }).success).toBe(false)
+    expect(deviceIssueCodeResultSchema.safeParse({ ...issued, pairingAddress: { problem: "" } }).success).toBe(false)
+    expect(deviceIssueCodeResultSchema.safeParse(issued).success).toBe(false)
+  })
+
+  it("names the web app address a code can be opened at, when the daemon has one", () => {
+    const issued = {
+      code: "hearth-quiet-ember-42",
+      expiresAt: "2026-08-31T12:03:00.000Z",
+      pairingAddress: { url: "ws://127.0.0.1:47831/rpc", loopback: true },
+    }
+    expect(deviceIssueCodeResultSchema.parse(issued)).toEqual(issued)
+    for (const webAppUrl of ["https://app.domovoi.dev/connect", "http://localhost:5173/", "https://studio.tailnet.example/"]) {
+      expect(deviceIssueCodeResultSchema.parse({ ...issued, webAppUrl })).toEqual({ ...issued, webAppUrl })
+      expect(webAppUrlSchema.parse(webAppUrl)).toBe(webAppUrl)
+    }
+    for (const webAppUrl of [
+      "", "/connect", "app.domovoi.dev", "ftp://app.domovoi.dev/", "javascript:alert(1)",
+      "https://person:secret@app.domovoi.dev/", "https://app.domovoi.dev/#code",
+      `https://app.domovoi.dev/${"a".repeat(2_048)}`,
+    ]) {
+      expect(webAppUrlSchema.safeParse(webAppUrl).success, webAppUrl).toBe(false)
+      expect(deviceIssueCodeResultSchema.safeParse({ ...issued, webAppUrl }).success, webAppUrl).toBe(false)
+    }
+  })
+
+  // The URL parser strips or encodes these on its own, so the address that
+  // parses is not the text that was configured. The raw text is refused first.
+  it("refuses raw whitespace and control characters in the web app address", () => {
+    for (const webAppUrl of [
+      " https://app.domovoi.dev/", "https://app.domovoi.dev/ ", "https://app.domovoi.dev/con nect",
+      "https://app.domovoi.dev/\tconnect", "https://app.domovoi.dev/connect\r\n", "https://app.domovoi.dev/\nconnect",
+      "https://app.domovoi.dev/\u0000", "https://app.domovoi.dev/\u007f", "https://app.domovoi.dev/\u0085",
+      "https://app.domovoi.dev/\u00a0", "https://app.domovoi.dev/\u2028",
+    ]) {
+      expect(webAppUrlSchema.safeParse(webAppUrl).success, JSON.stringify(webAppUrl)).toBe(false)
+    }
+  })
+
+  it("reports client access from the authenticated device", () => {
+    const current = {
+      kind: "client",
+      machineId: `machine-${"b".repeat(32)}`,
+      deviceId: device.id,
+      client: "phone",
+      clientAccess: "watching",
+    }
+    expect(deviceCurrentResultSchema.parse(current)).toEqual(current)
+    const { clientAccess: _clientAccess, ...legacy } = current
+    expect(deviceCurrentResultSchema.parse(legacy)).toMatchObject({
+      kind: "client", clientAccess: "full",
+    })
   })
 })
 

@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from "vitest"
 import { deviceLabelMismatchErrorCode, fleetForgetRefusalSchema, maximumFleetEntries, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary } from "@getdomovoi/protocol"
 
 import { DaemonRpcError } from "./client.js"
+import type { FleetAccessState } from "./fleet-access-session.js"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { FleetView, orderedMachineTransports } from "./fleet-view.js"
 import { forgetRefusalMessage } from "./forget-machine.js"
@@ -15,7 +16,7 @@ afterEach(cleanup)
 it("shows client authorization next to disabled remote controls and names its authority", async () => {
   const user = userEvent.setup()
   render(<TooltipProvider><FleetView connected entries={entries(local, studio)} fleetOverflow={null}
-    currentMachineId={local.id} currentSessionCount={2} onOpenSkills={() => {}}
+    currentMachineId={local.id} devicesMachineLabel={local.label} currentSessionCount={2} onOpenSkills={() => {}}
     onListDevices={async () => ({ devices: [] })} onRevokeDevice={vi.fn()} onRotateDevice={vi.fn()} onRenameDevice={vi.fn()}
     onUseMachine={vi.fn()} onOpenMachineTerminal={vi.fn()} clientKind="desktop" onAuthorizeClient={vi.fn()}
   /></TooltipProvider>)
@@ -65,6 +66,17 @@ function entries(...machines: FleetMachine[]): FleetEntry[] {
   return machines.map((machine) => ({ kind: "machine", machine }))
 }
 
+it("lists installed providers on the local machine", () => {
+  render(<TooltipProvider><FleetView connected entries={entries(local)} fleetOverflow={null}
+    currentMachineId={local.id} devicesMachineLabel={local.label} currentSessionCount={2} onOpenSkills={() => {}}
+    providers={[{ id: "claude-code", command: "claude", status: "ready", sessionCapable: true }]}
+    onListDevices={async () => ({ devices: [] })} onRevokeDevice={vi.fn()} onRotateDevice={vi.fn()} onRenameDevice={vi.fn()}
+  /></TooltipProvider>)
+  const providers = screen.getByRole("region", { name: "Agents and providers on workshop" })
+  expect(providers.textContent).toContain("Claude")
+  expect(providers.textContent).toContain("Tokens live in that machine's OS keychain")
+})
+
 const pending: FleetEntry = {
   kind: "pending",
   id: "3d5b7a2e-4c1f-4a6b-9e2d-8f7c6b5a4d3e",
@@ -86,7 +98,7 @@ const device: PairedDeviceSummary = {
   id: `device-${"d".repeat(32)}`,
   label: "studio-ipad",
   pairedAt: "2026-08-20T09:00:00.000Z",
-  binding: { kind: "client", client: "tablet" },
+  binding: { kind: "client", client: "tablet", clientAccess: "full" },
   lastSeenAt: "2026-08-31T11:00:00.000Z",
 }
 
@@ -96,7 +108,7 @@ const liar: PairedDeviceSummary = {
   id: `device-${"e".repeat(32)}`,
   label: "hetzner-build-runner-03",
   pairedAt: "2026-08-30T20:16:00.000Z",
-  binding: { kind: "client", client: "phone" },
+  binding: { kind: "client", client: "phone", clientAccess: "full" },
   lastSeenAt: "2026-09-04T06:22:00.000Z",
 }
 
@@ -115,15 +127,21 @@ const machineConsequence =
 function renderFleet(overrides: {
   entries?: FleetEntry[]
   currentMachineId?: string
+  devicesMachineLabel?: string
   fleetOverflow?: FleetSnapshotOverflow
   devices?: PairedDeviceSummary[]
   onForgetMachine?: (machineId: string) => Promise<FleetForgetResult>
   onRevokeDevice?: (params: { deviceId: string }) => Promise<{ device: PairedDeviceSummary }>
   onRotateDevice?: (params: { deviceId: string }) => Promise<{ device: PairedDeviceSummary; token: string }>
   onRenameDevice?: (params: { deviceId: string; label: string; expectedLabel?: string }) => Promise<{ device: PairedDeviceSummary }>
+  onListDevices?: () => Promise<{ devices: PairedDeviceSummary[] }>
+  connected?: boolean
+  readOnly?: boolean
+  onMoveSessionHere?: (machineId: string) => void
+  clientAccess?: Readonly<Record<string, FleetAccessState>>
 } = {}) {
   const devices = overrides.devices ?? [device]
-  const onListDevices = vi.fn(() => Promise.resolve({ devices }))
+  const onListDevices = vi.fn(overrides.onListDevices ?? (() => Promise.resolve({ devices })))
   const onRevokeDevice = vi.fn(
     overrides.onRevokeDevice
       ?? ((params: { deviceId: string }) => Promise.resolve({
@@ -152,13 +170,15 @@ function renderFleet(overrides: {
   const onForgetMachine = vi.fn(overrides.onForgetMachine ?? (() => Promise.resolve(forgotten)))
   const onUseMachine = vi.fn()
   const onOpenMachineTerminal = vi.fn()
+  const onMoveSessionHere = vi.fn(overrides.onMoveSessionHere)
   const user = userEvent.setup()
   render(
     <TooltipProvider>
       <FleetView
-        connected
+        connected={overrides.connected ?? true}
         entries={overrides.entries ?? entries(local, studio)}
         currentMachineId={overrides.currentMachineId ?? local.id}
+        devicesMachineLabel={overrides.devicesMachineLabel ?? local.label}
         fleetOverflow={overrides.fleetOverflow ?? null}
         currentSessionCount={2}
         onOpenSkills={() => {}}
@@ -170,11 +190,59 @@ function renderFleet(overrides: {
         onForgetMachine={onForgetMachine}
         onUseMachine={onUseMachine}
         onOpenMachineTerminal={onOpenMachineTerminal}
+        onMoveSessionHere={onMoveSessionHere}
+        {...(overrides.clientAccess ? { clientAccess: overrides.clientAccess } : {})}
+        {...(overrides.readOnly !== undefined ? { readOnly: overrides.readOnly } : {})}
       />
     </TooltipProvider>,
   )
-  return { user, onListDevices, onRevokeDevice, onRotateDevice, onRenameDevice, onPairMachine, onForgetMachine, onUseMachine, onOpenMachineTerminal }
+  return { user, onListDevices, onRevokeDevice, onRotateDevice, onRenameDevice, onPairMachine, onForgetMachine, onUseMachine, onOpenMachineTerminal, onMoveSessionHere }
 }
+
+it("renders the v2 Machines hierarchy without a settings rail", () => {
+  renderFleet()
+
+  expect(screen.getByRole("heading", { level: 1, name: "Machines" })).toBeTruthy()
+  expect(screen.getByText("Each one runs its own daemon. Code, credentials and Git state stay where the work happens.")).toBeTruthy()
+  expect(screen.queryByRole("complementary", { name: "Settings navigation" })).toBeNull()
+  const content = document.body.textContent ?? ""
+  expect(content.indexOf("Machines")).toBeLessThan(content.indexOf("Devices paired with"))
+})
+
+it("offers the active session as a transfer intent on another machine", async () => {
+  const onMoveSessionHere = vi.fn()
+  const healthyStudio = { ...studio, health: "healthy" as const }
+  const { user } = renderFleet({
+    entries: entries(local, healthyStudio),
+    onMoveSessionHere,
+    clientAccess: { [studio.id]: { state: "admitted", deviceId: `device-${"a".repeat(32)}` } },
+  })
+
+  await user.click(screen.getByRole("button", { name: "Move a session here on studio" }))
+
+  expect(onMoveSessionHere).toHaveBeenCalledWith(studio.id)
+  expect(screen.queryByRole("button", { name: "Move a session here on workshop" })).toBeNull()
+})
+
+it("draws a distinct empty Machines state", async () => {
+  renderFleet({ entries: [], devices: [] })
+
+  expect(screen.getByText("No machines are enrolled")).toBeTruthy()
+  expect(screen.getByText(/Pair a machine to reach its sessions without moving its code or credentials/u)).toBeTruthy()
+  expect(await screen.findByText("No device is paired with this machine")).toBeTruthy()
+})
+
+it("draws paired-device failure and unreachable states without a loading latch", async () => {
+  const failed = renderFleet({ onListDevices: () => Promise.reject(new Error("daemon stopped answering")) })
+  expect((await screen.findByRole("alert")).textContent).toContain("Could not read paired devices")
+  expect(screen.queryByText("Loading paired devices")).toBeNull()
+  cleanup()
+
+  failed.onListDevices.mockClear()
+  renderFleet({ connected: false })
+  expect(screen.getByText("Paired devices are unavailable while this daemon is unreachable.")).toBeTruthy()
+  expect(screen.queryByText("Loading paired devices")).toBeNull()
+})
 
 it("describes each machine in the fleet", () => {
   renderFleet()
@@ -316,6 +384,9 @@ it("rotates a device credential and shows it once", async () => {
   await user.click(within(notice).getByRole("button", { name: "Show the credential" }))
   expect(notice.textContent).toContain("r".repeat(43))
   expect(notice.textContent).toContain("shown once")
+  expect(within(notice).getByRole("button", { name: "Copy once" })).toBeTruthy()
+  await user.click(within(notice).getByRole("button", { name: "Done" }))
+  expect(screen.queryByRole("status")).toBeNull()
 })
 
 it("names the kind from the binding, never from the label", async () => {
@@ -370,7 +441,7 @@ it("masks a rotated credential and copies it without revealing it", async () => 
   expect(receipt.textContent).not.toContain("r".repeat(43))
   expect(receipt.textContent).toContain("•".repeat(20))
 
-  await user.click(within(receipt).getByRole("button", { name: "Copy" }))
+  await user.click(within(receipt).getByRole("button", { name: "Copy once" }))
 
   expect(await navigator.clipboard.readText()).toBe("r".repeat(43))
   await waitFor(() => {
@@ -386,7 +457,7 @@ it("says when the clipboard refused the credential", async () => {
   const receipt = await screen.findByRole("status")
   vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce(new Error("denied"))
 
-  await user.click(within(receipt).getByRole("button", { name: "Copy" }))
+  await user.click(within(receipt).getByRole("button", { name: "Copy once" }))
 
   await waitFor(() => {
     expect(receipt.textContent).toContain("This browser refused the clipboard.")
@@ -529,7 +600,7 @@ it("holds the table shape while the list loads", async () => {
         connected
         entries={entries(local)}
         fleetOverflow={null}
-        currentMachineId={local.id}
+        currentMachineId={local.id} devicesMachineLabel={local.label}
         currentSessionCount={0}
         onOpenSkills={() => {}}
         onListDevices={(() => pending) as never}
@@ -713,6 +784,16 @@ it("says when no device is paired", async () => {
   expect(await screen.findByText("No device is paired with this machine")).toBeTruthy()
 })
 
+it("keeps machine, pairing, and device mutations locked while watching", async () => {
+  renderFleet({ readOnly: true })
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+
+  expect(screen.getByRole("button", { name: "Pair a machine" })).toHaveProperty("disabled", true)
+  expect(screen.queryByRole("button", { name: "Use studio" })).toBeNull()
+  expect(within(row).getByRole("button", { name: "Rename studio-ipad" })).toHaveProperty("disabled", true)
+  expect(within(row).getByRole("button", { name: "Rotate the credential on studio-ipad" })).toHaveProperty("disabled", true)
+  expect(within(row).getByRole("button", { name: "Revoke studio-ipad" })).toHaveProperty("disabled", true)
+})
 
 it("refuses to open a remote machine and names the missing credential", async () => {
   const { user, onUseMachine } = renderFleet()
@@ -778,7 +859,7 @@ it("does not offer machine actions while the daemon is unreachable", () => {
       connected={false}
       entries={entries({ ...local, capabilities: ["sessions", "terminals"] })}
       fleetOverflow={null}
-      currentMachineId={studio.id}
+      currentMachineId={studio.id} devicesMachineLabel={local.label}
       currentSessionCount={2}
       onOpenSkills={() => {}}
       onListDevices={(() => Promise.resolve({ devices: [] })) as never}
@@ -793,6 +874,14 @@ it("does not offer machine actions while the daemon is unreachable", () => {
   const card = within(screen.getByRole("group", { name: "workshop" }))
   expect(card.getByRole("button", { name: "Use workshop" })).toHaveProperty("disabled", true)
   expect(card.getByRole("button", { name: "Terminal on workshop" })).toHaveProperty("disabled", true)
+})
+
+it("keeps an unreachable machine listed, dimmed, and names the unknown state", () => {
+  renderFleet({ entries: entries(local, { ...studio, health: "unreachable" }) })
+
+  const card = screen.getByRole("group", { name: "studio" })
+  expect(card.className.split(" ")).toContain("opacity-60")
+  expect(card.textContent).toContain("The daemon reports studio as unreachable. Its sessions are not reported as stopped.")
 })
 
 it("says the target refused this machine's credential and that pairing again is the fix", () => {
@@ -946,4 +1035,23 @@ it("shows no overflow notice when the daemon listed the fleet", () => {
   renderFleet()
 
   expect(screen.queryByText("Fleet list withheld")).toBeNull()
+})
+
+// v2 names whose list this is, because each daemon keeps its own and a person
+// who pairs from Settings should not look for the device on another machine.
+it("names the daemon that keeps the paired-device list", async () => {
+  renderFleet()
+  const section = screen.getByRole("region", { name: `Devices paired with ${local.label}` })
+  expect(within(section).getByRole("heading", { name: `Devices paired with ${local.label}` })).toBeTruthy()
+  expect(section.textContent).toContain("Each daemon keeps its own list. Pair a new one from Settings.")
+  expect(await within(section).findByText(device.label)).toBeTruthy()
+})
+
+it("names the daemon that answers the device list while another machine is in use", async () => {
+  const { onListDevices } = renderFleet({ currentMachineId: studio.id, devicesMachineLabel: local.label })
+  const section = screen.getByRole("region", { name: `Devices paired with ${local.label}` })
+  expect(within(section).getByRole("heading", { name: `Devices paired with ${local.label}` })).toBeTruthy()
+  expect(within(section).queryByRole("heading", { name: `Devices paired with ${studio.label}` })).toBeNull()
+  expect(await within(section).findByText(device.label)).toBeTruthy()
+  expect(onListDevices).toHaveBeenCalled()
 })

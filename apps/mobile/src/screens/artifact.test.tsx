@@ -1,6 +1,7 @@
 import { describe, expect, it, jest } from "@jest/globals"
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { fireEvent, render, screen } from "@testing-library/react-native"
+import { Linking } from "react-native"
 
 import { ArtifactScreen, type PreviewRender } from "./artifact"
 
@@ -11,8 +12,21 @@ jest.mock("react-native-webview", () => {
   return {
     // The host view has no `source`; it is carried as an extra prop so the
     // test can read what the frame was handed.
-    WebView: (props: { testID: string, source: { uri: string }, onMessage?: (event: { nativeEvent: { data: string } }) => void }) =>
-      <Host testID={props.testID} {...{ source: props.source, onMessage: props.onMessage }} />,
+    WebView: (props: {
+      testID: string
+      source: { uri: string }
+      onMessage?: (event: { nativeEvent: { data: string } }) => void
+      onShouldStartLoadWithRequest?: (request: { url: string }) => boolean
+      setSupportMultipleWindows?: boolean
+      allowsBackForwardNavigationGestures?: boolean
+    }) =>
+      <Host testID={props.testID} {...{
+        source: props.source,
+        onMessage: props.onMessage,
+        onShouldStartLoadWithRequest: props.onShouldStartLoadWithRequest,
+        setSupportMultipleWindows: props.setSupportMultipleWindows,
+        allowsBackForwardNavigationGestures: props.allowsBackForwardNavigationGestures,
+      }} />,
   }
 })
 
@@ -42,6 +56,7 @@ async function draw(overrides: Partial<Parameters<typeof ArtifactScreen>[0]> = {
     comments: [],
     render: undefined as PreviewRender | undefined,
     variants: [],
+    machine: "mac-mini-m4",
     onBack: jest.fn<() => void>(),
     onRetryRender: jest.fn<() => void>(),
     onOpenVariant: jest.fn<(artifactId: string) => void>(),
@@ -52,13 +67,75 @@ async function draw(overrides: Partial<Parameters<typeof ArtifactScreen>[0]> = {
   return props
 }
 
+describe("ArtifactScreen plan", () => {
+  it("renders PLAN.md as semantic headings, lists, code and checkboxes instead of raw source", async () => {
+    const openURL = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined)
+    const plan = structuredClone(demoWorkspace).artifacts.find((artifact) => artifact.type === "plan")
+    if (!plan) throw new Error("fixture needs a plan artifact")
+    plan.title = "PLAN.md"
+    plan.mimeType = "text/markdown"
+    plan.content = [
+      "# Idempotent billing webhooks",
+      "Stripe can deliver the same event twice.",
+      "",
+      "---",
+      "",
+      "## Constraints",
+      "- Nothing runs against production.",
+      "1. Claim before side effects.",
+      "2. Commit the claim.",
+      "Use `webhook_replay` before any side effect and read [Stripe delivery docs](https://docs.stripe.com/webhooks).",
+      "Do not open [an unsafe link](javascript:alert(1)).",
+      "```sql",
+      "create unique index webhook_replay_event on webhook_replay (event_id);",
+      "```",
+      "- [x] claims an unseen event id",
+      "- [ ] releases an expired claim",
+    ].join("\n")
+
+    await draw({ artifact: plan })
+
+    expect(screen.getByRole("header", { name: "Idempotent billing webhooks" })).toBeOnTheScreen()
+    expect(screen.getByRole("header", { name: "Constraints" })).toBeOnTheScreen()
+    expect(screen.getByText("Stripe can deliver the same event twice.")).toBeOnTheScreen()
+    expect(screen.getByTestId("markdown-rule")).toBeOnTheScreen()
+    expect(screen.getByText("Nothing runs against production.")).toBeOnTheScreen()
+    expect(screen.getByText("Claim before side effects.")).toBeOnTheScreen()
+    expect(screen.getByText("Commit the claim.")).toBeOnTheScreen()
+    expect(screen.getByText("webhook_replay")).toBeOnTheScreen()
+    expect(screen.getByRole("link", { name: "Stripe delivery docs" })).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("link", { name: "Stripe delivery docs" }))
+    expect(openURL).toHaveBeenCalledWith("https://docs.stripe.com/webhooks")
+    expect(screen.queryByRole("link", { name: "an unsafe link" })).toBeNull()
+    expect(screen.getByText("an unsafe link")).toBeOnTheScreen()
+    expect(screen.getByText("create unique index webhook_replay_event on webhook_replay (event_id);")).toBeOnTheScreen()
+    expect(screen.getByRole("checkbox", { name: "claims an unseen event id", checked: true })).toBeOnTheScreen()
+    expect(screen.getByRole("checkbox", { name: "releases an expired claim", checked: false })).toBeOnTheScreen()
+    expect(screen.queryByText("# Idempotent billing webhooks")).toBeNull()
+    openURL.mockRestore()
+  })
+})
+
 describe("ArtifactScreen preview", () => {
   it("shows the render from the machine and says it stays there", async () => {
     await draw({ render: { state: "ready", url: "https://mac.ts.net:47831/artifacts/artifact-preview?signature=s", channel } })
 
     const frame = screen.getByTestId("preview-render")
     expect(frame.props.source).toEqual({ uri: "https://mac.ts.net:47831/artifacts/artifact-preview?signature=s" })
-    expect(screen.getByText(/The render stays on the machine\./)).toBeOnTheScreen()
+    // The frame never leaves the signed address: no link, redirect or script
+    // navigation, no new window and no back gesture into another page.
+    const mayLoad = frame.props.onShouldStartLoadWithRequest as (request: { url: string }) => boolean
+    expect(mayLoad({ url: "https://mac.ts.net:47831/artifacts/artifact-preview?signature=s" })).toBe(true)
+    for (const url of [
+      "https://attacker.example/collect?d=1",
+      "https://mac.ts.net:47831/artifacts/artifact-preview?signature=other",
+      "https://mac.ts.net:47831/rpc",
+      "file:///etc/hosts",
+      "javascript:alert(1)",
+    ]) expect(mayLoad({ url })).toBe(false)
+    expect(frame.props.setSupportMultipleWindows).toBe(false)
+    expect(frame.props.allowsBackForwardNavigationGestures).toBe(false)
+    expect(screen.getByText("The render stays on mac-mini-m4. This phone displays it and never downloads the repository.")).toBeOnTheScreen()
     expect(screen.queryByText(/signed fetch/)).toBeNull()
   })
 
@@ -98,6 +175,8 @@ describe("ArtifactScreen preview", () => {
 
     expect(props.onOpenVariant).toHaveBeenCalledWith("artifact-preview-b")
     expect(screen.getByRole("button", { name: "Variant A" }).props.accessibilityState).toEqual({ selected: true })
+    expect(screen.getByText("Viewing a variant does not change the build basis. Choose the build basis on desktop.")).toBeOnTheScreen()
+    expect(screen.getByText("Choosing which variant the agent builds on happens at a desktop. A comment is a note; a choice is a commitment.")).toBeOnTheScreen()
   })
 
 })
@@ -122,6 +201,21 @@ describe("ArtifactScreen comment on an element", () => {
       "Fifteen minutes is too long.",
     )
     expect(screen.queryByText("ANCHORED TO")).toBeNull()
+  })
+
+  it("saves a comment draft for the same element without sending it", async () => {
+    const props = await draw({ render: { state: "ready", url: "https://x/y", channel } })
+
+    await fireEvent.press(screen.getByRole("button", { name: "Comment" }))
+    await fireEvent(screen.getByTestId("preview-render"), "message", { nativeEvent: { data: selection(props.artifact.id) } })
+    await fireEvent.changeText(screen.getByLabelText("Comment on this element"), "Keep this thought")
+    await fireEvent.press(screen.getByRole("button", { name: "Save for later" }))
+    expect(props.onComment).not.toHaveBeenCalled()
+    expect(screen.queryByText("ANCHORED TO")).toBeNull()
+
+    await fireEvent.press(screen.getByRole("button", { name: "Comment" }))
+    await fireEvent(screen.getByTestId("preview-render"), "message", { nativeEvent: { data: selection(props.artifact.id) } })
+    expect(screen.getByDisplayValue("Keep this thought")).toBeOnTheScreen()
   })
 
   it("ignores a selection for another render and will not send an empty comment", async () => {

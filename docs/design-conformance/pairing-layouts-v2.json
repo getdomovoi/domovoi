@@ -1,0 +1,47 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/Domovoi Pairing Layouts.dc.html",
+  "sha256": "7642743371fa9b786f4d05b9796784195157ccf47e9ed446c73361095c1f2670",
+  "derivedOn": "2026-09-23",
+  "sources": [
+    "packages/ui/src/**/*.{ts,tsx}",
+    "apps/desktop/src/**/*.{ts,tsx}"
+  ],
+  "note": "The J23 layout study: the imported PairingCard in Settings at an 800px window, dark and light, and the chosen code-first layout. Turn and frame labels are annotations; the card's own copy is held by pairing-card-v2.json.",
+  "sample": [],
+  "annotations": [
+    "TURN 2 · THE WINNER AT THE NARROWEST WINDOW",
+    "The card in an 800px window, both themes",
+    "The settings column is 690px here. The code slot keeps its 165px, the right column wraps under it only below 520px, and no approval fact is dropped.",
+    "2a",
+    "Dark",
+    "2b",
+    "Light",
+    "TURN 1 · THE CHOSEN LAYOUT",
+    "Code-first card",
+    "The code is the one thing the person acts on, so it leads. The three-step strip was dropped.",
+    "1a",
+    "A: code-first card",
+    "chosen"
+  ],
+  "elements": [
+    {
+      "id": "layouts.settings-section",
+      "name": "Phone and tablet section around the card",
+      "where": "Settings column at 690px: heading and line, then the card",
+      "copy": [
+        "Phone and tablet",
+        "Pair a device to watch sessions and answer gates while away from the desk."
+      ],
+      "evidence": [
+        "Pair a device to watch sessions and answer gates while away from the desk."
+      ]
+    }
+  ],
+  "humanRead": [
+    {
+      "id": "layouts.settings-section",
+      "since": "2026-09-23",
+      "note": "The narrow-window arrangement (code slot 165px, right column wraps below 520px) is layout, not copy."
+    }
+  ]
+}

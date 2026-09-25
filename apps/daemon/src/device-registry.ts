@@ -2,12 +2,14 @@ import { createHash, randomBytes } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 
 import {
+  clientAccessSchema,
   clientKindSchema,
   deviceLabelMismatchSchema,
   deviceRenameLabelSchema,
   machineIdSchema,
   pairedDeviceSchema,
   relayPublicKeySchema,
+  type ClientAccess,
   type ClientKind,
   type DeviceCredentialBinding as PublicDeviceCredentialBinding,
   type DeviceLabelMismatch,
@@ -23,12 +25,16 @@ export type DevicePairing = {
 }
 
 export type DeviceCredentialBinding =
-  | { kind: "client"; client: ClientKind }
+  | { kind: "client"; client: ClientKind; clientAccess?: ClientAccess }
+  | { kind: "machine"; machineId: string }
+
+type ActiveDeviceCredentialBinding =
+  | { kind: "client"; client: ClientKind; clientAccess: ClientAccess }
   | { kind: "machine"; machineId: string }
 
 export type VerifiedDeviceCredential = {
   device: PairedDevice
-  binding: DeviceCredentialBinding
+  binding: ActiveDeviceCredentialBinding
   channelPublicKey?: string
 }
 
@@ -84,6 +90,7 @@ type StoredDevice = {
   revocation_reason: string | null
   credential_role: string
   client_kind: string | null
+  client_access: string | null
   machine_id: string | null
   channel_public_key: string | null
 }
@@ -123,10 +130,22 @@ function toPairedDevice(row: StoredDevice): PairedDevice {
   })
 }
 
-function credentialBinding(row: StoredDevice): DeviceCredentialBinding | undefined {
+export function storedDeviceRowIsValid(row: unknown): boolean {
+  try {
+    toPairedDevice(row as StoredDevice)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function credentialBinding(row: StoredDevice): ActiveDeviceCredentialBinding | undefined {
   if (row.credential_role === "client" && row.machine_id === null) {
     const client = clientKindSchema.safeParse(row.client_kind)
-    return client.success ? { kind: "client", client: client.data } : undefined
+    const clientAccess = clientAccessSchema.safeParse(row.client_access ?? "full")
+    return client.success && clientAccess.success
+      ? { kind: "client", client: client.data, clientAccess: clientAccess.data }
+      : undefined
   }
   if (row.credential_role !== "machine" || row.client_kind !== null) return undefined
   const machineId = machineIdSchema.safeParse(row.machine_id)
@@ -158,6 +177,7 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
         revocation_reason TEXT,
         credential_role TEXT NOT NULL,
         client_kind TEXT,
+        client_access TEXT,
         machine_id TEXT,
         channel_public_key TEXT
       );
@@ -191,6 +211,9 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
     if (!columns.some((column) => column.name === "client_kind")) {
       this.#database.exec("ALTER TABLE paired_devices ADD COLUMN client_kind TEXT")
     }
+    if (!columns.some((column) => column.name === "client_access")) {
+      this.#database.exec("ALTER TABLE paired_devices ADD COLUMN client_access TEXT")
+    }
     if (!columns.some((column) => column.name === "revocation_reason")) {
       this.#database.exec("ALTER TABLE paired_devices ADD COLUMN revocation_reason TEXT")
     }
@@ -215,14 +238,19 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
   pair(input: { label: string; binding: DeviceCredentialBinding; channelPublicKey?: string }): DevicePairing {
     const label = validateLabel(input.label)
     const channelPublicKey = relayPublicKeySchema.optional().parse(input.channelPublicKey)
-    if (input.binding.kind === "machine") machineIdSchema.parse(input.binding.machineId)
-    else clientKindSchema.parse(input.binding.client)
+    const binding: ActiveDeviceCredentialBinding = input.binding.kind === "machine"
+      ? { kind: "machine", machineId: machineIdSchema.parse(input.binding.machineId) }
+      : {
+          kind: "client",
+          client: clientKindSchema.parse(input.binding.client),
+          clientAccess: clientAccessSchema.parse(input.binding.clientAccess ?? "full"),
+        }
     const token = randomBytes(32).toString("base64url")
     const device: PairedDevice = {
       id: `device-${randomBytes(16).toString("hex")}`,
       label,
       pairedAt: new Date().toISOString(),
-      binding: input.binding,
+      binding,
     }
     this.#database.exec("BEGIN IMMEDIATE")
     try {
@@ -243,17 +271,18 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
       this.#database
       .prepare(`
         INSERT INTO paired_devices (
-          id, label, token_hash, paired_at, credential_role, client_kind, machine_id, channel_public_key
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          id, label, token_hash, paired_at, credential_role, client_kind, client_access, machine_id, channel_public_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         device.id,
         device.label,
         hashDeviceToken(token),
         device.pairedAt,
-        input.binding.kind,
-        input.binding.kind === "client" ? input.binding.client : null,
-        input.binding.kind === "machine" ? input.binding.machineId : null,
+        binding.kind,
+        binding.kind === "client" ? binding.client : null,
+        binding.kind === "client" ? binding.clientAccess : null,
+        binding.kind === "machine" ? binding.machineId : null,
         channelPublicKey ?? null,
       )
       this.#database.exec("COMMIT")

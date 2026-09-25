@@ -1,13 +1,22 @@
-# Session image attachments
+# Session attachments
 
-`session.send` accepts optional `attachments`, at most two objects with `mimeType`,
-`width`, `height` and `data`. Existing text-only sends remain valid.
+`session.send` accepts optional `attachments`, at most two objects in total, of three kinds.
+Existing text-only sends remain valid. The schemas are in `packages/protocol/src/image-upload.ts`.
 
-- PNG and JPEG only, not WebP, URLs, file references or terminal ranges.
-- Each image: canonical Base64, at most 1,500,000 decoded bytes, positive integer
-  dimensions at most 2048 pixels on either side.
-- The same Base64 and dimension validators back annotation uploads. Annotations
-  remain PNG-only and retain their artifact revision field.
+- **Image:** `mimeType`, `width`, `height` and `data`. PNG and JPEG only, not WebP or URLs.
+  Canonical Base64, at most 1,500,000 decoded bytes, positive integer dimensions at most 2048
+  pixels on either side. The same Base64 and dimension validators back annotation uploads.
+  Annotations remain PNG-only and retain their artifact revision field.
+- **Text file:** `kind: "text"`, a `name` of at most 255 characters, `mimeType: "text/plain"`
+  and `content` of at most 262,144 UTF-8 bytes. The daemon writes it into the session worktree
+  under `.domovoi/attachments/` with owner-only permissions and gives the agent the path and the
+  first 40 lines.
+- **Worktree file:** `kind: "workspace-file"` and a relative `path` of at most 1,024 characters.
+  The path may not be absolute, start with `-`, contain `..` or `.` segments, or leave the session
+  worktree after symlinks are resolved. The file must be a regular file of at most 262,144 bytes.
+  Nothing is copied: the agent is told the path and reads the file itself.
+
+Terminal ranges and URLs are not attachments.
 
 The daemon bounds bytes before decoding Base64, checks the image header and its
 declared dimensions, then hands bytes to the adapter as turn-local `visualContexts`
@@ -18,15 +27,30 @@ a later send. A provider may retain its own transcript under its own rules.
 
 Both a new turn and steering an active turn use this path. If the registered
 adapter does not explicitly declare `capabilities.vision`, the entire send refuses
-before thread resume, provider dispatch or prompt persistence. Error data validates
-with `sessionAttachmentRefusalSchema`:
+before thread resume, provider dispatch or prompt persistence. The error message
+names the session's model and the number of images ("2 images cannot go to
+qwen3-coder-72b. Remove them or pick another model."). Error data keeps the shape
+released clients parse strictly, and validates with `sessionAttachmentRefusalSchema`:
 
 ```json
 {"kind":"session-attachment-refused","reason":"image-input-unsupported"}
 ```
 
-Invalid decoded images use `invalid-image`. Invalid parameter shapes receive the
-normal invalid-params refusal. No image is silently omitted to make a send work.
+A client already knows the session's model and what it sent. The code the attach
+sheet shows, `attach.image.model_no_input`, is the exported constant
+`modelImageInputRefusalCode`, not a wire field.
+
+`runtime.models` says the same per model ahead of a send: `imageInput` is `true` when an image
+attachment on a send to that model is delivered, `false` when it is not. The daemon fills it from
+the same rule the send uses, the adapter's vision capability, and overrides any value an adapter
+listed. So it is `true` for every model of an adapter that delivers images and `false` for the
+rest, whatever their harness could take. A missing field is an older daemon,
+which a client treats as not known rather than as no.
+
+Invalid decoded images use `invalid-image`. A text file over its byte limit uses
+`invalid-text`. A worktree file that is missing, outside the worktree, not a regular file or
+too large, or any file attachment on a session with no worktree, uses
+`invalid-workspace-file`. Invalid parameter shapes receive the normal invalid-params refusal. No image is silently omitted to make a send work.
 The handheld method allowlist is unchanged; `session.send` was already allowed.
 
 ## Transport bounds
@@ -48,4 +72,6 @@ an adapter without vision still refuses the entire image send. The flag is not
 persisted in workspace state. Larger sends also require updated transport endpoints.
 
 The phone UI is a separate slice. Its queue must state: two images, 1.5 MB each,
-2048 pixels on a side. `terminal.watch` remains deferred until after Phase 1.
+2048 pixels on a side. The daemon answers `terminal.list`, `terminal.watch` and
+`terminal.unwatch` to phone and tablet credentials; attaching a terminal selection
+to a turn is not built.

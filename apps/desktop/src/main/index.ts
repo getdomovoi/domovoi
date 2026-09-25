@@ -1,3 +1,6 @@
+// First: the inherited credentials leave process.env before any other module
+// of the app runs (see inherited-environment.ts).
+import { developmentEnvironment } from "./inherited-environment.js"
 import { homedir, hostname } from "node:os"
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
 import { realpath, stat } from "node:fs/promises"
@@ -12,7 +15,7 @@ import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
-  developmentDaemonEnvironment,
+  developmentDaemonOverrides,
   inlineScriptHashes,
   isAuthorizedRendererEvent,
   isTrustedRendererFrameUrl,
@@ -33,7 +36,6 @@ import {
   type DesktopPlatform,
 } from "./desktop-platform.js"
 import {
-  isWindowDecoration,
   readWindowDecoration,
   serializeWindowDecoration,
   windowDecorationFileName,
@@ -103,13 +105,34 @@ function appendDomovoiMainLog(logPath: string, text: string): void {
   appendFileSync(logPath, text)
 }
 
+const developmentLoop = developmentEnvironment()
+const developmentLoopConfigured = !app.isPackaged && Boolean(
+  developmentLoop.DOMOVOI_DEV_FIXTURE_URL
+    || developmentLoop.DOMOVOI_DEV_DAEMON_URL
+    || developmentLoop.DOMOVOI_DEV_DAEMON_TOKEN,
+)
+const developmentLoopModule = developmentLoopConfigured
+  ? await import("./dev-fixture-seam.js")
+  : undefined
+const developmentLoopEndpoint = developmentLoopModule?.devLoopEndpoint({
+  isPackaged: false,
+  environment: developmentLoop,
+})
+const daemonSeam = developmentLoopModule
+  ? developmentLoopModule.resolveDesktopDaemonSeam({
+      isPackaged: false,
+      environment: developmentLoop,
+      acquire: acquireLocalDaemon,
+    })
+  : acquireLocalDaemon
+
 // Attach to the profile's owner, or own a daemon only when the profile is free.
-const desktopDaemon = new DesktopDaemon(acquireLocalDaemon, () => ({
+const desktopDaemon = new DesktopDaemon(daemonSeam, () => ({
   // The window resolves its renderer target before the first acquisition, so a
-  // development daemon is told the origin its renderer is actually served from.
-  environment: mainRendererTarget
-    ? developmentDaemonEnvironment(process.env, mainRendererTarget)
-    : process.env,
+  // development daemon is told the origin its renderer is actually served from,
+  // as an override on top of process.env so the inherited bearer stays bound.
+  environment: process.env,
+  ...(mainRendererTarget ? { environmentOverrides: developmentDaemonOverrides(process.env, mainRendererTarget) } : {}),
   homeDirectory: homedir(),
   machineLabel: hostname(),
   errorSink: daemonErrorLogSink(domovoiMainLogPath(), appendDomovoiMainLog),
@@ -291,16 +314,6 @@ function serveRendererPolicy(): void {
   })
 }
 
-ipcMain.handle("domovoi:window-decoration-get", (event) => {
-  if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
-  return activeWindowDecoration
-})
-ipcMain.handle("domovoi:window-decoration-set", (event, decoration: unknown) => {
-  if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
-  if (!isWindowDecoration(decoration)) throw new Error("Window decoration is invalid")
-  return persistWindowDecoration(decoration)
-})
-
 registerDesktopIpc(ipcMain, {
   fleetRoute: (machineId, budgetMs) => fleetOrigins.authorize(machineId, budgetMs),
   forgetFleetRoute: (machineId) => fleetOrigins.forget(machineId),
@@ -327,6 +340,10 @@ registerDesktopIpc(ipcMain, {
     get: () => rendererDeepLinkSink,
     set: (sink) => { rendererDeepLinkSink = sink },
   },
+  windowDecoration: {
+    get: () => activeWindowDecoration,
+    set: persistWindowDecoration,
+  },
   launchSmoke: {
     enabled: launchSmoke,
     preloadReady: () => { launchSmokeStage = "preload" },
@@ -349,10 +366,24 @@ registerDesktopIpc(ipcMain, {
   },
 })
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock()
+const hasSingleInstanceLock = developmentLoopEndpoint ? true : app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
-  app.quit()
+  void import("./dev-loop-log.js")
+    .then(({ reportLockHeld }) => reportLockHeld({ environment: process.env, log: (line) => console.log(line) }))
+    .finally(() => app.quit())
 } else {
+  void import("./dev-loop-log.js").then(({ reportMainBoot }) => reportMainBoot({
+    environment: process.env,
+    readState: (path) => {
+      try {
+        return readFileSync(path, "utf8")
+      } catch {
+        return undefined
+      }
+    },
+    writeState: (path, value) => writeFileSync(path, value, "utf8"),
+    log: (line) => console.log(line),
+  }))
   if (!launchSmoke) {
     if (process.defaultApp && process.argv[1]) {
       app.setAsDefaultProtocolClient("domovoi", process.execPath, [resolve(process.argv[1])])

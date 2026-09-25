@@ -8,12 +8,14 @@ import {
   annotationVisualContextSchema,
   artifactAuthorizeParamsSchema,
   artifactAuthorizeResultSchema,
+  approvalRequestSchema,
   approvalResolveParamsSchema,
   checkpointCreateParamsSchema,
   checkpointRestoreParamsSchema,
   createEmptyWorkspace,
   daemonShuttingDownErrorCode,
   demoWorkspace,
+  sessionSummarySchema,
   projectOpenParamsSchema,
   providerModelSchema,
   providerFailureSchema,
@@ -58,6 +60,7 @@ import {
   workspaceDeltaSchema,
   artifactSchema,
   threadItemSchema,
+  toolFileEntries,
   type WorkingPlan,
 } from "./index.js"
 
@@ -69,8 +72,8 @@ const skillSecurityMetadata = {
 }
 
 describe("workspace protocol", () => {
-  it("uses a breaking minor for counted and revoked approval rules", () => {
-    expect(protocolVersion).toBe("0.7.0")
+  it("uses a breaking minor for client access, refusals, and queued sends", () => {
+    expect(protocolVersion).toBe("0.8.0")
     expect(demoWorkspace.protocolVersion).toBe(protocolVersion)
   })
 
@@ -343,6 +346,62 @@ describe("workspace protocol", () => {
     // load rather than failing the daemon on startup.
     expect(threadItemSchema.safeParse({ ...tool, tool: "file-change" }).success).toBe(true)
     expect(threadItemSchema.safeParse({ ...tool, tool: "invented" }).success).toBe(false)
+  })
+
+  it("carries the files a tool call touched", () => {
+    const tool = {
+      id: "tool-1", sessionId: "session-a", kind: "tool", tool: "command", status: "completed",
+      title: "pnpm test", createdAt: "2026-08-25T22:00:00.000Z",
+    }
+    // A snapshot written before the field existed still loads.
+    expect(threadItemSchema.safeParse(tool).success).toBe(true)
+    expect(threadItemSchema.safeParse({ ...tool, files: ["src/a.ts", "src/b.ts"] }).success).toBe(true)
+    expect(threadItemSchema.safeParse({ ...tool, files: [""] }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: "src/a.ts" }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: Array.from({ length: 257 }, (_, index) => `src/${index}.ts`) }).success).toBe(false)
+  })
+
+  // A leading or trailing space is a legal character in a path name. Trimming it
+  // reports a file the provider never named, and can fold two real paths into
+  // one so the count lies. Whitespace alone is still not a path.
+  it("reports the touched path the provider named", () => {
+    const tool = {
+      id: "tool-1", sessionId: "session-a", kind: "tool", tool: "command", status: "completed",
+      title: "pnpm test", createdAt: "2026-08-25T22:00:00.000Z",
+    }
+    const parsed = threadItemSchema.safeParse({ ...tool, files: [" src/a.ts", "src/a.ts"] })
+    expect(parsed.success).toBe(true)
+    expect(parsed.success && parsed.data.kind === "tool" ? parsed.data.files : undefined)
+      .toEqual([" src/a.ts", "src/a.ts"])
+    expect(threadItemSchema.safeParse({ ...tool, files: ["   "] }).success).toBe(false)
+  })
+
+  // The thread names the files a turn moved and by how much. A count that the
+  // client derives from the worktree describes the tree now, not that turn, so
+  // it drifts as later turns land. The provider reports the real numbers.
+  it("carries how far a tool call moved each file", () => {
+    const tool = {
+      id: "tool-1", sessionId: "session-a", kind: "tool", tool: "file-change", status: "completed",
+      title: "File changes", createdAt: "2026-08-25T22:00:00.000Z",
+    }
+    const entry = { path: "src/a.ts", additions: 62, deletions: 14 }
+    const parsed = threadItemSchema.safeParse({ ...tool, files: [entry, "src/b.ts"] })
+    expect(parsed.success).toBe(true)
+    expect(parsed.success && parsed.data.kind === "tool" ? parsed.data.files : undefined)
+      .toEqual([entry, "src/b.ts"])
+    // A counted entry still needs a path, and a count is a whole number of lines.
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ additions: 1 }] }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ path: "   ", additions: 1 }] }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ path: "src/a.ts", additions: -1 }] }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ path: "src/a.ts", additions: 1.5 }] }).success).toBe(false)
+    // Counts are optional, so a provider that reports only paths still parses.
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ path: "src/a.ts" }] }).success).toBe(true)
+  })
+
+  it("reads a touched file whether or not it carries counts", () => {
+    expect(toolFileEntries(["src/a.ts", { path: "src/b.ts", additions: 7, deletions: 0 }]))
+      .toEqual([{ path: "src/a.ts" }, { path: "src/b.ts", additions: 7, deletions: 0 }])
+    expect(toolFileEntries(undefined)).toEqual([])
   })
 
   it("defaults durable skill reviews for older snapshots", () => {
@@ -1430,6 +1489,19 @@ describe("workspace protocol", () => {
     }).success).toBe(true)
   })
 
+  it("says per model whether an image attachment is delivered to it", () => {
+    // Phone v2 frames 13 and 13b: "takes image input, as its harness reports".
+    // Absent means the daemon did not say, which is an older daemon, not a no.
+    const model = {
+      provider: "claude-code", id: "sonnet", displayName: "Sonnet", description: "",
+      supportedReasoningEfforts: [], defaultReasoningEffort: "medium", isDefault: true,
+    }
+    expect(providerModelSchema.parse({ ...model, imageInput: true }).imageInput).toBe(true)
+    expect(providerModelSchema.parse({ ...model, imageInput: false }).imageInput).toBe(false)
+    expect(providerModelSchema.parse(model)).not.toHaveProperty("imageInput")
+    expect(providerModelSchema.safeParse({ ...model, imageInput: "yes" }).success).toBe(false)
+  })
+
   it("validates machine provider readiness", () => {
     expect(providerRuntimeSchema.parse({
       id: "claude-code",
@@ -1448,6 +1520,20 @@ describe("workspace protocol", () => {
       command: "codex",
       status: "logged-in-ish",
     }).success).toBe(false)
+  })
+
+  it("carries why a detected provider cannot start sessions here", () => {
+    const provider = {
+      id: "claude-code",
+      command: "claude",
+      status: "ready",
+      version: "2.1.100",
+      sessionCapable: true,
+      problem: "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100.",
+    } as const
+    expect(providerRuntimeSchema.parse(provider)).toEqual(provider)
+    expect(providerRuntimeSchema.safeParse({ ...provider, problem: "" }).success).toBe(false)
+    expect(providerRuntimeSchema.safeParse({ ...provider, problem: "x".repeat(1_025) }).success).toBe(false)
   })
 
   it("upgrades snapshots that predate annotation state", () => {
@@ -1643,8 +1729,42 @@ describe("workspace protocol", () => {
     expect(approvalResolveParamsSchema.parse({
       approvalId: "approval-migrate",
       decision: "allow-once",
+      revision: 0,
       client: "desktop",
     })).not.toHaveProperty("client")
+  })
+
+  it("reads a saved approval card with no revision as revision 0", () => {
+    const saved = structuredClone(demoWorkspace.approvals[0]!) as Record<string, unknown>
+    delete saved.revision
+    expect(approvalRequestSchema.parse(saved).revision).toBe(0)
+    expect(approvalRequestSchema.parse({ ...saved, revision: 3 }).revision).toBe(3)
+    for (const revision of [-1, 1.5, "1", Number.MAX_SAFE_INTEGER + 1]) {
+      expect(approvalRequestSchema.safeParse({ ...saved, revision }).success).toBe(false)
+    }
+  })
+
+  it("requires the card revision to allow an approval, and not to deny one", () => {
+    for (const decision of ["allow-once", "always-project"] as const) {
+      const refused = approvalResolveParamsSchema.safeParse({ approvalId: "approval-migrate", decision })
+      expect(refused.success).toBe(false)
+      expect(refused.error?.issues.map((issue) => issue.path)).toEqual([["revision"]])
+      expect(approvalResolveParamsSchema.parse({ approvalId: "approval-migrate", decision, revision: 2 }).revision)
+        .toBe(2)
+    }
+    expect(approvalResolveParamsSchema.parse({ approvalId: "approval-migrate", decision: "deny" }))
+      .not.toHaveProperty("revision")
+    expect(approvalResolveParamsSchema.parse({
+      approvalId: "approval-migrate",
+      decision: "deny-explain",
+      explanation: "Use a staging database first.",
+    })).not.toHaveProperty("revision")
+    expect(approvalResolveParamsSchema.parse({ approvalId: "approval-migrate", decision: "deny", revision: 1 }).revision)
+      .toBe(1)
+    for (const revision of [-1, 0.5, "0", Number.MAX_SAFE_INTEGER + 1]) {
+      expect(approvalResolveParamsSchema.safeParse({ approvalId: "approval-migrate", decision: "allow-once", revision }).success)
+        .toBe(false)
+    }
   })
 
   it("validates the local project and session lifecycle", () => {
@@ -1705,5 +1825,41 @@ describe("persisted thread compatibility", () => {
       createdAt: new Date().toISOString(),
     }
     expect(threadItemSchema.parse(item)).toMatchObject({ tool: "file-change" })
+  })
+})
+
+describe("context compaction notice", () => {
+  const base = {
+    id: "item-compaction",
+    sessionId: "session-1",
+    kind: "system" as const,
+    body: "Context compacted.",
+    createdAt: new Date().toISOString(),
+  }
+
+  it("carries a compaction notice on a system row", () => {
+    expect(threadItemSchema.parse({ ...base, notice: "context-compaction" })).toMatchObject({
+      notice: "context-compaction",
+    })
+  })
+
+  it("still parses a system row written before the notice existed", () => {
+    expect(threadItemSchema.parse(base)).toMatchObject({ kind: "system" })
+  })
+
+  it("rejects an unknown notice", () => {
+    expect(() => threadItemSchema.parse({ ...base, notice: "something-else" })).toThrow()
+  })
+})
+
+describe("session branch and unmerged files", () => {
+  it("names the kept branch and how many files never merged", () => {
+    const session = demoWorkspace.sessions[0]!
+    expect(sessionSummarySchema.parse({ ...session, branch: "domovoi/session-billing", unmergedFiles: 7 }))
+      .toMatchObject({ branch: "domovoi/session-billing", unmergedFiles: 7 })
+    expect(sessionSummarySchema.parse(session)).not.toHaveProperty("branch")
+    expect(sessionSummarySchema.safeParse({ ...session, branch: "" }).success).toBe(false)
+    expect(sessionSummarySchema.safeParse({ ...session, unmergedFiles: -1 }).success).toBe(false)
+    expect(sessionSummarySchema.safeParse({ ...session, unmergedFiles: 1.5 }).success).toBe(false)
   })
 })

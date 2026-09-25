@@ -182,6 +182,44 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  // JSON.parse accepts "null", a number and an array. None of them is a
+  // JSON-RPC message, and reading an id off null must not throw inside the
+  // socket's message handler.
+  it.each([null, 7, [1, 2]])("reports a %j frame as a message it cannot classify, without throwing", async (frame) => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const protocolErrors: string[] = []
+    client.addEventListener("protocol-error", (event) => {
+      protocolErrors.push((event as CustomEvent<{ reason: string }>).detail.reason)
+    })
+
+    expect(() => socket.receive(frame)).not.toThrow()
+    expect(protocolErrors).toEqual(["Daemon sent a message this client could not classify"])
+    client.disconnect()
+  })
+
+  it("rejects a malformed reply to a pending request without repeating what it said", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+
+    const listing = client.listModels("codex")
+    socket.receive({ jsonrpc: "2.0", id: 2, result: [], smuggled: "token-a1b2c3 was here" })
+
+    const failure = await listing.then(() => undefined, (error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toBe("Daemon returned a response this client could not parse")
+    expect((failure as Error).message).not.toContain("token-a1b2c3")
+    client.disconnect()
+  })
+
   it("rejects a pending request immediately when its response cannot be parsed", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()
@@ -2017,7 +2055,7 @@ describe("DomovoiClient session transfer and devices", () => {
       id: `device-${"d".repeat(32)}`,
       label: "studio-ipad",
       pairedAt: "2026-08-31T12:00:00.000Z",
-      binding: { kind: "client", client: "tablet" },
+      binding: { kind: "client", client: "tablet", clientAccess: "full" },
       revokedAt: "2026-09-01T12:00:00.000Z",
     }
 
@@ -2037,7 +2075,7 @@ describe("DomovoiClient session transfer and devices", () => {
       id: `device-${"d".repeat(32)}`,
       label: "kitchen-ipad",
       pairedAt: "2026-08-31T12:00:00.000Z",
-      binding: { kind: "client", client: "tablet" },
+      binding: { kind: "client", client: "tablet", clientAccess: "full" },
     }
 
     const renaming = client.renameDevice({ deviceId: device.id, label: "kitchen-ipad" })
@@ -2056,7 +2094,7 @@ describe("DomovoiClient session transfer and devices", () => {
       id: `device-${"d".repeat(32)}`,
       label: "studio-ipad",
       pairedAt: "2026-08-31T12:00:00.000Z",
-      binding: { kind: "client", client: "tablet" },
+      binding: { kind: "client", client: "tablet", clientAccess: "full" },
     }
 
     const renaming = client.renameDevice({ deviceId: device.id, label: "studio-ipad", expectedLabel: "kitchen-ipad" })
@@ -2074,7 +2112,7 @@ describe("DomovoiClient session transfer and devices", () => {
       id: `device-${"e".repeat(32)}`,
       label: "studio-ipad",
       pairedAt: "2026-08-31T12:00:00.000Z",
-      binding: { kind: "client", client: "tablet" },
+      binding: { kind: "client", client: "tablet", clientAccess: "full" },
     }
 
     const rotating = client.rotateDevice({ deviceId: device.id })
@@ -2408,5 +2446,18 @@ describe("DomovoiClient endpoint resolution", () => {
     void client.connect().catch(() => {})
     expect(FakeWebSocket.instances).toHaveLength(1)
     client.disconnect()
+  })
+})
+
+describe("DomovoiClient approval decisions", () => {
+  it("names the card revision it answers", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
+    const request = vi.spyOn(client, "request").mockResolvedValue(structuredClone(demoWorkspace) as never)
+    await client.resolveApproval("approval-1", "allow-once", undefined, 2)
+    await client.resolveApproval("approval-1", "deny-explain", "Use staging", 3)
+    expect(request.mock.calls).toEqual([
+      ["approval.resolve", { approvalId: "approval-1", decision: "allow-once", revision: 2 }],
+      ["approval.resolve", { approvalId: "approval-1", decision: "deny-explain", explanation: "Use staging", revision: 3 }],
+    ])
   })
 })

@@ -30,6 +30,10 @@ function props(detail: SessionDetail, snapshot: WorkspaceSnapshot) {
     sending: false,
     sendProblem: "",
     skillLabel: "",
+    access: "full" as const,
+    onWatchReceipt: jest.fn<() => void>(),
+    onCancelQueuedSend: jest.fn<(queueId: string) => void>(),
+    onComposerFocusChange: jest.fn<(focused: boolean) => void>(),
     onBack: jest.fn<() => void>(),
     onOpenApproval: jest.fn<(approvalId: string) => void>(),
     onOpenArtifact: jest.fn<(artifactId: string) => void>(),
@@ -55,7 +59,7 @@ function props(detail: SessionDetail, snapshot: WorkspaceSnapshot) {
 }
 
 function grown(detail: SessionDetail, count: number): SessionDetail {
-  const extra = Array.from({ length: count }, (_, index) => ({ id: `late-${index}`, voice: "agent" as const, body: `line ${index}`, meta: undefined }))
+  const extra = Array.from({ length: count }, (_, index) => ({ id: `late-${index}`, kind: "message" as const, voice: "agent" as const, body: `line ${index}` }))
   return { ...detail, entries: [...detail.entries, ...extra] }
 }
 
@@ -102,6 +106,18 @@ describe("SessionScreen follow", () => {
     expect(await screen.findByText("Waiting on you")).toBeOnTheScreen()
 
     await scrollTo(1300)
+    expect(screen.queryByText("Waiting on you")).toBeNull()
+  })
+
+  it("says a watching phone's waiting decision waits on a full-access device", async () => {
+    const { snapshot, detail } = fixture()
+    const base = { ...props(detail, snapshot), access: "watching" as const }
+    const gated = { ...grown(detail, 1), approvalId: "approval-1" }
+    const view = await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...base} /></SafeAreaProvider>)
+    await measure()
+    await scrollTo(100)
+    view.rerender(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...base} detail={gated} /></SafeAreaProvider>)
+    expect(await screen.findByText("Waiting on a full-access device")).toBeOnTheScreen()
     expect(screen.queryByText("Waiting on you")).toBeNull()
   })
 })

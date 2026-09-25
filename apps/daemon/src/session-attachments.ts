@@ -1,17 +1,35 @@
+import { randomUUID } from "node:crypto"
+import { mkdir, realpath, stat, writeFile } from "node:fs/promises"
+import { basename, relative, resolve } from "node:path"
+
 import {
   canonicalBase64DecodedByteLength, maximumImageUploadBytes, maximumImageUploadDimension,
-  maximumSessionAttachments, type ImageUpload, type SessionAttachmentRefusal,
+  maximumSessionAttachments, maximumTextAttachmentBytes, type ImageUpload, type SessionAttachment,
+  type SessionAttachmentRefusal,
 } from "@getdomovoi/protocol"
 import type { AgentCapabilities, AgentVisualContext } from "./agents.js"
 
 export class SessionAttachmentError extends Error {
   readonly refusal: SessionAttachmentRefusal
-  constructor(reason: SessionAttachmentRefusal["reason"]) {
-    super(reason === "image-input-unsupported"
-      ? "This adapter cannot accept images. No part of the send was delivered."
-      : "An attachment is not a bounded PNG or JPEG matching its declared dimensions.")
+  constructor(reason: Exclude<SessionAttachmentRefusal["reason"], "image-input-unsupported">)
+  constructor(reason: "image-input-unsupported", target: { model: string, imageCount: number })
+  constructor(reason: SessionAttachmentRefusal["reason"], target?: { model: string, imageCount: number }) {
+    super(reason === "image-input-unsupported" && target
+      ? `${target.imageCount} ${target.imageCount === 1 ? "image" : "images"} cannot go to ${target.model}. Remove them or pick another model.`
+      : reason === "invalid-text"
+        ? "The text attachment is empty or exceeds the 256 KB limit."
+        : reason === "invalid-workspace-file"
+          ? "The attached path must name a bounded file inside the session worktree."
+          : "An attachment is not a bounded PNG or JPEG matching its declared dimensions.")
     this.refusal = { kind: "session-attachment-refused", reason }
   }
+}
+
+// One rule for the model list and the send: an image reaches a model when its
+// adapter declares vision. Nothing else delivers images yet, so a model whose
+// adapter does not say so takes no image input, whatever its harness could do.
+export function modelImageInput(capabilities: AgentCapabilities | undefined): boolean {
+  return capabilities?.vision === true
 }
 
 function dimensions(bytes: Buffer, mimeType: ImageUpload["mimeType"]): { width: number; height: number } | undefined {
@@ -38,9 +56,9 @@ function dimensions(bytes: Buffer, mimeType: ImageUpload["mimeType"]): { width: 
   return undefined
 }
 
-export function prepareSessionAttachments(uploads: ImageUpload[] | undefined, capabilities: AgentCapabilities | undefined): AgentVisualContext[] {
+export function prepareSessionAttachments(uploads: ImageUpload[] | undefined, capabilities: AgentCapabilities | undefined, model: string): AgentVisualContext[] {
   if (!uploads?.length) return []
-  if (capabilities?.vision !== true) throw new SessionAttachmentError("image-input-unsupported")
+  if (!modelImageInput(capabilities)) throw new SessionAttachmentError("image-input-unsupported", { model, imageCount: uploads.length })
   if (uploads.length > maximumSessionAttachments) throw new SessionAttachmentError("invalid-image")
   return uploads.map((upload, attachmentIndex) => {
     const size = canonicalBase64DecodedByteLength(upload.data)
@@ -55,4 +73,43 @@ export function prepareSessionAttachments(uploads: ImageUpload[] | undefined, ca
     }
     return { attachmentIndex, mimeType: upload.mimeType, bytes }
   })
+}
+
+function inside(root: string, candidate: string): boolean {
+  const path = relative(root, candidate)
+  return path === "" || (!path.startsWith("..") && !path.startsWith("/"))
+}
+
+function firstLines(content: string): string {
+  return content.split(/\r?\n/u).slice(0, 40).join("\n")
+}
+
+export async function prepareSessionAttachmentText(
+  attachments: SessionAttachment[] | undefined,
+  workspacePath: string | undefined,
+): Promise<string> {
+  const nonImages = attachments?.filter((attachment) => "kind" in attachment) ?? []
+  if (nonImages.length === 0) return ""
+  if (!workspacePath) throw new SessionAttachmentError("invalid-workspace-file")
+  const root = await realpath(workspacePath)
+  const entries: string[] = []
+  for (const attachment of nonImages) {
+    if (attachment.kind === "workspace-file") {
+      const target = await realpath(resolve(root, attachment.path)).catch(() => "")
+      if (!target || !inside(root, target)) throw new SessionAttachmentError("invalid-workspace-file")
+      const info = await stat(target)
+      if (!info.isFile() || info.size > maximumTextAttachmentBytes) throw new SessionAttachmentError("invalid-workspace-file")
+      entries.push(`Attached worktree file: ${attachment.path}. Read it from the worktree when needed.`)
+      continue
+    }
+    const bytes = Buffer.byteLength(attachment.content, "utf8")
+    if (bytes < 1 || bytes > maximumTextAttachmentBytes) throw new SessionAttachmentError("invalid-text")
+    const directory = resolve(root, ".domovoi", "attachments")
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    const safeName = basename(attachment.name).replace(/[^a-zA-Z0-9._-]/gu, "-") || "attachment.txt"
+    const relativePath = `.domovoi/attachments/${randomUUID()}-${safeName}`
+    await writeFile(resolve(root, relativePath), attachment.content, { encoding: "utf8", mode: 0o600, flag: "wx" })
+    entries.push(`Attached text file: ${relativePath}. First 40 lines:\n\n${firstLines(attachment.content)}\n\nRead the file for the complete content when needed.`)
+  }
+  return entries.join("\n\n")
 }

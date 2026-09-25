@@ -76,11 +76,11 @@ describe("SessionEvidenceContent revert and diff view", () => {
     expect(screen.getByText(/recovery checkpoint/i)).not.toBeNull()
     expect(screen.getByText(/before it changes the worktree/i)).not.toBeNull()
 
-    await user.click(screen.getByRole("button", { name: "Keep the changes" }))
+    await user.click(screen.getByRole("button", { name: "Keep it" }))
     expect(onRevertFile).not.toHaveBeenCalled()
 
     await user.click(screen.getByRole("button", { name: "Revert src/generated.ts" }))
-    await user.click(screen.getByRole("button", { name: "Revert file" }))
+    await user.click(screen.getByRole("button", { name: "Revert this file" }))
     // This fixture carries no file associations, so there is no commit to bind
     // the confirmation to and the legacy revert is what runs.
     expect(onRevertFile).toHaveBeenCalledWith("src/generated.ts", undefined)
@@ -124,5 +124,87 @@ describe("SessionEvidenceContent revert and diff view", () => {
 
     await user.click(screen.getByRole("button", { name: "Unified" }))
     expect(screen.getByLabelText("Unified diff")).not.toBeNull()
+  })
+
+  it("colours added and removed lines in the worktree diff", () => {
+    render(
+      <SessionEvidenceContent
+        connected
+        evidence={evidence}
+        error=""
+        loading={false}
+        onRefresh={vi.fn()}
+      />,
+    )
+
+    const unified = screen.getByLabelText("Unified diff")
+    const removed = [...unified.querySelectorAll("pre")].find((line) => line.textContent === "-const before = 2")
+    const added = [...unified.querySelectorAll("pre")].find((line) => line.textContent === "+const after = 3")
+    expect(removed?.className).toContain("text-destructive")
+    expect(added?.className).toContain("text-success")
+  })
+
+  it("colours added and removed lines when one file diff is expanded", async () => {
+    const user = userEvent.setup()
+    render(
+      <SessionEvidenceContent
+        connected
+        evidence={evidence}
+        error=""
+        loading={false}
+        onRefresh={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }))
+
+    const fileDiff = screen.getByLabelText("Diff for src/app.ts")
+    const removed = [...fileDiff.querySelectorAll("pre")].find((line) => line.textContent === "-const before = 2")
+    const added = [...fileDiff.querySelectorAll("pre")].find((line) => line.textContent === "+const after = 3")
+    expect(removed?.className).toContain("text-destructive")
+    expect(added?.className).toContain("text-success")
+  })
+
+  it("colours both columns of the split diff", async () => {
+    const user = userEvent.setup()
+    render(
+      <SessionEvidenceContent
+        connected
+        evidence={evidence}
+        error=""
+        loading={false}
+        onRefresh={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getByRole("button", { name: "Split" }))
+
+    const split = screen.getByLabelText("Split diff")
+    const left = [...split.querySelectorAll("pre")].find((line) => line.textContent === "const before = 2")
+    const right = [...split.querySelectorAll("pre")].find((line) => line.textContent === "const after = 3")
+    expect(left?.className).toContain("text-destructive")
+    expect(right?.className).toContain("text-success")
+  })
+
+  // v2 heads the list with what the rows are for: evidence per file, what ran
+  // against each change and whether it passed.
+  it("heads the changed files as evidence per file", () => {
+    render(<SessionEvidenceContent connected evidence={evidence} error="" loading={false} onRefresh={vi.fn()} />)
+    const list = screen.getByRole("region", { name: "EVIDENCE PER FILE" })
+    expect(list.textContent).toContain("What ran against each change, and whether it passed.")
+    expect(list.textContent).toContain("src/app.ts")
+  })
+
+  it("opens the worktree in the editor from the foot of the list", async () => {
+    const user = userEvent.setup()
+    const onOpenInEditor = vi.fn()
+    render(<SessionEvidenceContent connected evidence={evidence} error="" loading={false} onRefresh={vi.fn()} onOpenInEditor={onOpenInEditor} />)
+    await user.click(screen.getByRole("button", { name: "Open in editor" }))
+    expect(onOpenInEditor).toHaveBeenCalledOnce()
+  })
+
+  it("offers no editor where the client has none", () => {
+    render(<SessionEvidenceContent connected evidence={evidence} error="" loading={false} onRefresh={vi.fn()} />)
+    expect(screen.queryByRole("button", { name: "Open in editor" })).toBeNull()
   })
 })

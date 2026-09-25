@@ -87,7 +87,7 @@ describe("validation compatibility", () => {
     "2026-09-07T12:30+05:30",
     "2026-09-07T12:30:00-06:00",
   ])("preserves a valid offset timestamp without rewriting its bytes: %s", (pairedAt) => {
-    const device = { id: deviceId, label: "phone", pairedAt, binding: { kind: "client", client: "phone" } }
+    const device = { id: deviceId, label: "phone", pairedAt, binding: { kind: "client", client: "phone", clientAccess: "full" } }
     expect(pairedDeviceSchema.parse(device)).toEqual(device)
   })
 
@@ -100,7 +100,7 @@ describe("validation compatibility", () => {
     "2026-09-07T12:30+24:00",
   ])("still refuses an invalid timestamp: %j", (pairedAt) => {
     expect(pairedDeviceSchema.safeParse({
-      id: deviceId, label: "phone", pairedAt, binding: { kind: "client", client: "phone" },
+      id: deviceId, label: "phone", pairedAt, binding: { kind: "client", client: "phone", clientAccess: "full" },
     }).success).toBe(false)
   })
 

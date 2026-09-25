@@ -1,29 +1,14 @@
+import type { PolicyRefusalThreadItem } from "@getdomovoi/protocol"
 import { CircleSlashIcon } from "lucide-react"
 
 import { cn } from "./lib/utils"
 
-// A refusal is not a gate. The daemon refuses before the command runs, so no
-// client-side decision can permit it and this card carries no approve control.
-// It is deliberately not the amber gate card: amber means a person is being
-// waited on, and nobody is waiting here.
-//
-// There is no wire shape for this yet. approvalRiskSchema is normal | hard-gate
-// and every approval carries decisions, so the fields below are named by the
-// design rather than read from the protocol. When a shape lands, this type is
-// what it has to satisfy.
-export type PolicyRefusal = {
-  operation: string
-  command: string
-  rule: string
-  setBy: string
-  scope: string
-  remedy: string
-}
+export type PolicyRefusal = Pick<
+  PolicyRefusalThreadItem,
+  "operation" | "command" | "rule" | "setBy" | "scope" | "remedy"
+>
 
 export function PolicyRefusalCard({ refusal, className }: { refusal: PolicyRefusal; className?: string }) {
-  // A chain of custody reads in order: what was asked, which rule refused it,
-  // who set that rule, and how far it reaches. A two-column fact grid would
-  // scramble that into lookup order.
   const custody = [
     ["Rule", refusal.rule],
     ["Set by", refusal.setBy],

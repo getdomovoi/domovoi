@@ -3,8 +3,9 @@ import { z } from "zod"
 import { dateTimeSchema, offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
 
 import { executionResolutionSchema, resolvedExecutionSchema } from "./execution.js"
+import { maximumImageUploadBytes, maximumImageUploadDimension, maximumSessionAttachments, maximumTextAttachmentBytes } from "./image-upload.js"
 import { providerPromptDeliverySchema } from "./prompt-delivery.js"
-import { approvalDecisionDurationMsSchema, checkpointReasonSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
+import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointReasonSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
 import { sessionTransferCoverageSchema } from "./transfer-coverage.js"
 
 import {
@@ -74,6 +75,10 @@ export const providerModelSchema = z.object({
   description: z.string(),
   supportedReasoningEfforts: z.array(reasoningEffortSchema),
   defaultReasoningEffort: reasoningEffortSchema,
+  // Whether an image attachment on a send to this model is delivered. Absent
+  // when the daemon did not say, which a client treats as not known rather
+  // than as no. Phone v2 frames 13 and 13b.
+  imageInput: z.boolean().optional(),
   isDefault: z.boolean(),
 }).superRefine((model, context) => {
   if (
@@ -111,6 +116,9 @@ export const providerRuntimeSchema = z.object({
   status: providerRuntimeStatusSchema,
   version: z.string().trim().min(1).optional(),
   sessionCapable: z.boolean().default(false),
+  // Why this machine cannot start sessions with the detected CLI, in the words
+  // a session start would be refused with. Absent when nothing is known wrong.
+  problem: z.string().trim().min(1).max(1_024).optional(),
 })
 
 export const machineSchema = z.object({
@@ -256,6 +264,46 @@ export const sessionOwnershipConflictSchema = z.union([
   }).strict(),
 ])
 
+export const queuedSessionSendStateSchema = z.enum([
+  "waiting",
+  "held",
+  "refused",
+  "unconfirmed",
+  "delivered",
+])
+
+export const queuedSessionSendSchema = z.object({
+  id: z.string().trim().min(1).check(utf16MaxLength(128)),
+  sessionId: z.string().trim().min(1).check(utf16MaxLength(128)),
+  state: queuedSessionSendStateSchema,
+  createdAt: dateTimeSchema,
+  origin: z.object({
+    client: clientKindSchema,
+    clientId: clientIdentityIdSchema.optional(),
+    connectionId: connectionIdSchema,
+  }).strict(),
+  skillIds: z.array(z.string().trim().min(1).check(utf16MaxLength(128))).max(8),
+  attachments: z.array(z.union([
+    z.object({
+      kind: z.literal("image"),
+      mimeType: z.enum(["image/png", "image/jpeg"]),
+      width: z.number().int().positive().max(maximumImageUploadDimension),
+      height: z.number().int().positive().max(maximumImageUploadDimension),
+      bytes: z.number().int().positive().max(maximumImageUploadBytes),
+    }).strict(),
+    z.object({
+      kind: z.literal("text"),
+      name: z.string().trim().min(1).check(utf16MaxLength(255)),
+      bytes: z.number().int().positive().max(maximumTextAttachmentBytes),
+    }).strict(),
+    z.object({
+      kind: z.literal("workspace-file"),
+      path: z.string().min(1).check(utf16MaxLength(1024)),
+    }).strict(),
+  ])).max(maximumSessionAttachments),
+  reason: z.string().trim().min(1).check(utf16MaxLength(1_024)).optional(),
+}).strict()
+
 export const sessionSummarySchema = z.object({
   id: z.string().min(1),
   projectId: z.string().min(1),
@@ -271,6 +319,13 @@ export const sessionSummarySchema = z.object({
   activeTurnId: z.string().min(1).optional(),
   providerFailure: providerFailureSchema.optional(),
   baseCommit: z.string().min(1).optional(),
+  // The branch the session's worktree is on, kept after archive; and, filled
+  // at archive, how many files that branch changed that the source checkout
+  // never received (files changed since the merge base with the source's
+  // HEAD, so a branch merged before archive says 0). Desktop V2 archived
+  // notice: "Branch <b> and its final checkpoint are kept", "7 files never merged".
+  branch: z.string().min(1).optional(),
+  unmergedFiles: z.number().int().nonnegative().optional(),
   archiveRequestedAt: dateTimeSchema.optional(),
   archiveCheckpoint: commitShaSchema.optional(),
   archivedAt: dateTimeSchema.optional(),
@@ -446,6 +501,8 @@ export const sessionSummarySchema = z.object({
   }
 })
 
+export const approvalRevisionSchema = z.number().int().nonnegative().safe()
+
 export const approvalRequestSchema = z.object({
   id: z.string().min(1),
   sessionId: z.string().min(1),
@@ -461,8 +518,14 @@ export const approvalRequestSchema = z.object({
   estimatedDuration: z.string().min(1),
   checkpoint: z.string().min(1),
   providerRequestId: z.number().int().nonnegative().optional(),
+  // The provider's item the gate belongs to, so the receipt can say how long
+  // the allowed command ran once that item completes.
+  itemId: z.string().min(1).check(utf16MaxLength(256)).optional(),
   requestedAt: dateTimeSchema,
   execution: executionResolutionSchema,
+  // Raised each time the daemon rewrites the card, so an Allow names the card
+  // it answers. A card saved before revisions existed reads as revision 0.
+  revision: approvalRevisionSchema.default(0),
   reapproval: z.object({
     reason: z.literal("legacy-text-only"),
     inactiveRuleIds: z.array(z.string().min(1)).min(1).max(128).refine(
@@ -511,7 +574,28 @@ export const approvalRuleSchema = z.discriminatedUnion("status", [
   ]),
 ])
 
+export const policyRefusalThreadItemSchema = z.object({
+  id: z.string().min(1).check(utf16MaxLength(128)),
+  sessionId: z.string().min(1),
+  turnId: sessionTurnIdSchema.optional(),
+  kind: z.literal("policy-refusal"),
+  operation: z.string().trim().min(1).check(utf16MaxLength(4_096)),
+  command: z.string().trim().min(1).check(utf16MaxLength(16_384)),
+  rule: z.string().trim().min(1).check(utf16MaxLength(4_096)),
+  setBy: z.string().trim().min(1).check(utf16MaxLength(1_024)),
+  scope: z.string().trim().min(1).check(utf16MaxLength(1_024)),
+  remedy: z.string().trim().min(1).check(utf16MaxLength(4_096)),
+  createdAt: dateTimeSchema,
+}).strict()
+
+// Reported verbatim: a space is a legal character in a path name, so trimming
+// would name a file the provider never did and could fold two real paths into
+// one. Whitespace alone is still not a path.
+const toolFilePathSchema = z.string().min(1).check(utf16MaxLength(1_024))
+  .refine((path) => path.trim().length > 0)
+
 export const threadItemSchema = z.discriminatedUnion("kind", [
+  policyRefusalThreadItemSchema,
   z.object({
     id: z.string(),
     sessionId: z.string().min(1),
@@ -544,6 +628,12 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     body: z.string(),
     detail: z.string().optional(),
     transfer: sessionTransferHistorySchema.optional(),
+    // A provider that compacts drops earlier turns from its own context while
+    // Domovoi keeps the whole thread, so the reader and the agent stop seeing
+    // the same history. A client that cannot tell this row from any other
+    // notice cannot say where that split happened. Absent on a snapshot
+    // written before the notice existed, and on every other system row.
+    notice: z.literal("context-compaction").optional(),
     createdAt: dateTimeSchema,
   }),
   z.object({
@@ -567,6 +657,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     clientId: clientIdentityIdSchema.optional(),
     explanation: z.string().min(1).optional(),
     decisionDurationMs: approvalDecisionDurationMsSchema.optional(),
+    ranForMs: approvedCommandRunMsSchema.optional(),
     createdAt: dateTimeSchema,
   }),
   z.object({
@@ -574,16 +665,43 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     sessionId: z.string().min(1),
     kind: z.literal("tool"),
     turnId: sessionTurnIdSchema.optional(),
-    // Nothing emits "file-change" any more, but a snapshot written before it was
-    // retired still carries it, and narrowing the enum would make that snapshot
-    // fail to parse on startup. Accepted on read, never produced.
+    // "file-change" went unproduced for a while and the enum kept it so an older
+    // snapshot would still parse on startup. The daemon emits it again, one row
+    // per provider file change, so both kinds are produced and read.
     tool: toolKindSchema,
     status: toolStatusSchema,
     title: z.string(),
+    // The files this call touched, so a client can say how much of the worktree
+    // a turn has moved without parsing the title. Absent on a snapshot written
+    // before the field existed, and absent on a call that touched none.
+    // Reported verbatim: a space is a legal character in a path name, so
+    // trimming would name a file the provider never did and could fold two
+    // real paths into one. Whitespace alone is still not a path.
+    // An entry carries counts when the provider reported a diff, and stays a
+    // bare path when it did not. A client deriving counts from the worktree
+    // would describe the tree now rather than this turn, and drift once a later
+    // turn lands, so the numbers travel with the call that earned them.
+    files: z.array(
+      z.union([toolFilePathSchema, z.object({
+        path: toolFilePathSchema,
+        additions: z.number().int().min(0).max(1_000_000).optional(),
+        deletions: z.number().int().min(0).max(1_000_000).optional(),
+      })]),
+    ).max(256).optional(),
     output: z.string().optional(),
     createdAt: dateTimeSchema,
   }),
 ])
+
+export type ToolFileEntry = { path: string; additions?: number | undefined; deletions?: number | undefined }
+
+// Both entry shapes answer the same question, so a reader asks once and gets a
+// path either way. A bare path reports no counts rather than zero: the provider
+// did not say the file gained nothing, it said nothing about how far it moved.
+export function toolFileEntries(files: readonly (string | ToolFileEntry)[] | undefined): ToolFileEntry[] {
+  if (!files) return []
+  return files.map((entry) => (typeof entry === "string" ? { path: entry } : entry))
+}
 
 export const artifactVariantSchema = z.object({
   id: z.string().min(1).check(utf16MaxLength(128)),
@@ -849,6 +967,7 @@ export const workspaceSnapshotSchema = z.object({
   workingPlans: z.array(workingPlanSchema).default([]),
   annotations: z.array(annotationSchema).default([]),
   skillEnablements: skillEnablementReviewsSchema.default([]),
+  queuedSends: z.array(queuedSessionSendSchema).optional(),
   historyTruncated: z.boolean().optional(),
 }).superRefine((snapshot, context) => {
   const aggregates = [
@@ -900,6 +1019,27 @@ export const workspaceSnapshotSchema = z.object({
     })
   })
 
+  const queuedSessionIds = new Set<string>()
+  const queuedSendIds = new Set<string>()
+  snapshot.queuedSends?.forEach((queued, index) => {
+    if (queuedSessionIds.has(queued.sessionId)) {
+      context.addIssue({
+        code: "custom",
+        message: "A session can have only one queued send",
+        path: ["queuedSends", index, "sessionId"],
+      })
+    }
+    if (queuedSendIds.has(queued.id)) {
+      context.addIssue({
+        code: "custom",
+        message: "Queued send IDs must be unique",
+        path: ["queuedSends", index, "id"],
+      })
+    }
+    queuedSessionIds.add(queued.sessionId)
+    queuedSendIds.add(queued.id)
+  })
+
   if (snapshot.project === null) {
     const populatedFields = [
       snapshot.sessions,
@@ -909,6 +1049,7 @@ export const workspaceSnapshotSchema = z.object({
       snapshot.artifacts,
       snapshot.workingPlans,
       snapshot.annotations,
+      snapshot.queuedSends ?? [],
     ]
     if (snapshot.activeSessionId !== null || populatedFields.some((field) => field.length > 0)) {
       context.addIssue({
@@ -1018,6 +1159,15 @@ export const workspaceSnapshotSchema = z.object({
       path: ["activeSessionId"],
     })
   }
+  snapshot.queuedSends?.forEach((queued, index) => {
+    if (!sessionIds.has(queued.sessionId)) {
+      context.addIssue({
+        code: "custom",
+        message: "Queued send must reference an existing session",
+        path: ["queuedSends", index, "sessionId"],
+      })
+    }
+  })
   const approvalRulesById = new Map(snapshot.approvalRules.map((rule) => [rule.id, rule]))
   const approvalsById = new Map(snapshot.approvals.map((approval) => [approval.id, approval]))
   snapshot.approvals.forEach((approval, index) => {
@@ -1132,6 +1282,8 @@ export type ApprovalRisk = z.infer<typeof approvalRiskSchema>
 export type Runtime = z.infer<typeof runtimeSchema>
 export type Machine = z.infer<typeof machineSchema>
 export type Project = z.infer<typeof projectSchema>
+export type QueuedSessionSendState = z.infer<typeof queuedSessionSendStateSchema>
+export type QueuedSessionSend = z.infer<typeof queuedSessionSendSchema>
 export type SessionSummary = z.infer<typeof sessionSummarySchema>
 export type SessionForkOrigin = z.infer<typeof sessionForkOriginSchema>
 export type SessionTransferReconciliation = z.infer<typeof sessionTransferReconciliationSchema>
@@ -1141,6 +1293,7 @@ export type SessionTransferReconciliationReason = z.infer<
 export type ApprovalRequest = z.infer<typeof approvalRequestSchema>
 export type ApprovalDecision = z.infer<typeof approvalDecisionSchema>
 export type ApprovalRule = z.infer<typeof approvalRuleSchema>
+export type PolicyRefusalThreadItem = z.infer<typeof policyRefusalThreadItemSchema>
 export type ThreadItem = z.infer<typeof threadItemSchema>
 export type Artifact = z.infer<typeof artifactSchema>
 export type WorkingPlanBlocker = z.infer<typeof workingPlanBlockerSchema>

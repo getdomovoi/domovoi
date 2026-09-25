@@ -1,3 +1,4 @@
+import { accessSync } from "node:fs"
 import { access, constants, mkdir, readFile, writeFile } from "node:fs/promises"
 import { userInfo } from "node:os"
 import { basename, delimiter as platformDelimiter, isAbsolute, join } from "node:path"
@@ -81,27 +82,46 @@ export async function readLoginShellPath(input: {
   return path ? path : undefined
 }
 
+function commandCandidates(command: string, path: string, platform: NodeJS.Platform): string[] {
+  if (isAbsolute(command)) return [command]
+  const delimiter = platform === "win32" ? ";" : ":"
+  const extensions = platform === "win32" ? ["", ".exe", ".cmd", ".bat"] : [""]
+  return path.split(delimiter)
+    .filter((directory) => directory !== "")
+    .flatMap((directory) => extensions.map((extension) => join(directory, `${command}${extension}`)))
+}
+
 export async function resolveCommandPath(
   command: string,
   path: string,
   platform: NodeJS.Platform,
 ): Promise<string | undefined> {
-  if (isAbsolute(command)) return (await executable(command)) ? command : undefined
-  const delimiter = platform === "win32" ? ";" : ":"
-  const extensions = platform === "win32" ? ["", ".exe", ".cmd", ".bat"] : [""]
-  for (const directory of path.split(delimiter)) {
-    if (!directory) continue
-    for (const extension of extensions) {
-      const candidate = join(directory, `${command}${extension}`)
-      if (await executable(candidate)) return candidate
-    }
+  for (const candidate of commandCandidates(command, path, platform)) {
+    if (await executable(candidate)) return candidate
   }
   return undefined
+}
+
+export function resolveCommandPathSync(
+  command: string,
+  path: string,
+  platform: NodeJS.Platform,
+): string | undefined {
+  return commandCandidates(command, path, platform).find(executableSync)
 }
 
 async function executable(path: string): Promise<boolean> {
   try {
     await access(path, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function executableSync(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK)
     return true
   } catch {
     return false

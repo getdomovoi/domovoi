@@ -119,7 +119,7 @@ describe("relay pin on hello", () => {
     expect(sentRequests(socket, "relay.recovery")).toHaveLength(0)
     await act(async () => {
       notify(socket, "workspace.changed", other)
-      respond(socket, "device.current", { kind: "client", machineId: original.machine.id, deviceId, client: "web" })
+      respond(socket, "device.current", { kind: "client", machineId: original.machine.id, deviceId, client: "web", clientAccess: "full" })
     })
     await settle()
     expect(sentRequests(socket, "relay.recovery").map((request) => request.params)).toEqual([{ machineId: original.machine.id }])

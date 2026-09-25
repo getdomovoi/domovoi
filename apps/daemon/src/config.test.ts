@@ -101,6 +101,30 @@ describe("parseDaemonEnvironment", () => {
     }, "/home/tester")).toThrow(DaemonConfigurationError)
   })
 
+  it("reads the web app address a pairing code can be opened at, and leaves it absent when unset", () => {
+    expect(parseDaemonEnvironment({ DOMOVOI_WEB_APP_URL: "https://app.domovoi.dev/connect" }, "/home/tester").webAppUrl)
+      .toBe("https://app.domovoi.dev/connect")
+    expect(parseDaemonEnvironment({}, "/home/tester")).not.toHaveProperty("webAppUrl")
+  })
+
+  it.each([
+    "", "app.domovoi.dev", "/connect", "ftp://app.domovoi.dev/", "https://person:secret@app.domovoi.dev/",
+    "https://app.domovoi.dev/#code", `https://app.domovoi.dev/${"a".repeat(2_048)}`,
+  ])("refuses a web app address that is not an absolute credential-free http(s) URL: %j", (value) => {
+    expect(() => parseDaemonEnvironment({ DOMOVOI_WEB_APP_URL: value }, "/home/tester"))
+      .toThrow(/^DOMOVOI_WEB_APP_URL must be an absolute http or https URL/)
+  })
+
+  it.each([
+    " https://app.domovoi.dev/", "https://app.domovoi.dev/ ", "https://app.domovoi.dev/con nect",
+    "https://app.domovoi.dev/\tconnect", "https://app.domovoi.dev/connect\r\n", "https://app.domovoi.dev/\nconnect",
+    "https://app.domovoi.dev/\u0000", "https://app.domovoi.dev/\u007f", "https://app.domovoi.dev/\u0085",
+    "https://app.domovoi.dev/\u00a0", "https://app.domovoi.dev/\u2028",
+  ])("refuses raw whitespace or a control character in the web app address: %j", (value) => {
+    expect(() => parseDaemonEnvironment({ DOMOVOI_WEB_APP_URL: value }, "/home/tester"))
+      .toThrow(/^DOMOVOI_WEB_APP_URL must be an absolute http or https URL/)
+  })
+
   it("normalizes and deduplicates trusted browser origins", () => {
     expect(parseDaemonEnvironment({
       DOMOVOI_ALLOWED_ORIGINS: "https://app.domovoi.sh/, file://,http://localhost:5178,https://app.domovoi.sh,domovoi-app://desktop",

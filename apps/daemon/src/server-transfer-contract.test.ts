@@ -69,11 +69,15 @@ function targetSnapshot(): WorkspaceSnapshot {
   return snapshot
 }
 
-async function transferFixture() {
+async function transferFixture(options: { sessionId?: string; transferId?: string } = {}) {
   const source = structuredClone(demoWorkspace)
   source.machine.id = sourceMachineId
   source.project!.machineId = sourceMachineId
-  const session = source.sessions.find((candidate) => candidate.state === "idle")!
+  const session = source.sessions.find((candidate) => (
+    options.sessionId === undefined ? candidate.state === "idle" : candidate.id === options.sessionId
+  ))!
+  session.state = "idle"
+  delete session.activeTurnId
   session.runtime = {
     provider: "claude-code",
     model: "claude-opus-5",
@@ -108,7 +112,7 @@ async function transferFixture() {
     readAnnotationCrop: async () => { throw new Error("no crops") },
   })
   const packaged = createSessionTransferPackage(intent, {
-    transferId: `transfer-${"f".repeat(32)}`,
+    transferId: options.transferId ?? `transfer-${"f".repeat(32)}`,
     checkpointCommit,
     repository: { method: "git-bundle", bytes: Buffer.from("repository") },
     createdAt: "2026-09-03T22:00:00.000Z",
@@ -831,6 +835,83 @@ describe("transactional session transfer RPC", () => {
     ])
     expect(store.load().sessions[0]).toMatchObject({ state: "idle", ownershipGeneration: 1 })
     expect(store.load().sessions[0]).not.toHaveProperty("transfer")
+  })
+
+  it("keeps both sessions when two arriving commits overlap", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-overlapping-commits-"))
+    scratchDirectories.push(scratch)
+    const store = new SqliteWorkspaceStore(":memory:", targetSnapshot())
+    const parked = new Map<string, { arrived: Promise<void>; arrive: () => void; released: Promise<void>; release: () => void }>()
+    for (const sessionId of ["session-audit", "session-billing"]) {
+      let arrive = () => {}
+      let release = () => {}
+      const arrived = new Promise<void>((resolve) => { arrive = resolve })
+      const released = new Promise<void>((resolve) => { release = resolve })
+      parked.set(sessionId, { arrived, arrive, released, release })
+    }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: testAuthToken("correct-horse-battery-staple"),
+      workspaceService: {
+        inspect: async (path: string) => ({ root: path, name: "project", branch: "main", head: baseCommit }),
+        createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+        removeSessionWorkspace: async () => {},
+        checkpoint: async () => ({ commit: checkpointCommit, changedFiles: [] }),
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        projectHasLineage: async () => true,
+        restoreSessionFromBundle: async (_path: string, sessionId: string) => {
+          const gate = parked.get(sessionId)!
+          gate.arrive()
+          await gate.released
+          return { path: `/target/${sessionId}`, branch: `domovoi/${sessionId}`, baseCommit: checkpointCommit }
+        },
+      } satisfies WorkspaceService,
+      transferTransactions: new FileTransferTransactions(join(scratch, "transactions")),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const { socket } = await openMachine(daemon, store)
+    const call = rpc(socket)
+    const transfers = [
+      (await transferFixture({ sessionId: "session-audit", transferId: `transfer-${"1".repeat(32)}` })).packaged,
+      (await transferFixture({ sessionId: "session-billing", transferId: `transfer-${"2".repeat(32)}` })).packaged,
+    ]
+    for (const packaged of transfers) {
+      await expect(call("transfer.prepare", {
+        manifest: packaged.manifest,
+        manifestDigest: packaged.manifestDigest,
+        initiatedByClient: "desktop",
+      })).resolves.toMatchObject({ result: { state: "receiving" } })
+      for (const entry of packaged.members) {
+        await call("transfer.member", {
+          transferId: packaged.manifest.transferId,
+          memberId: entry.member.memberId,
+          sequence: 0,
+          bytes: entry.bytes.toString("base64"),
+          final: true,
+          initiatedByClient: "desktop",
+        })
+      }
+    }
+    const commits = transfers.map((packaged) => call("transfer.commit", {
+      transferId: packaged.manifest.transferId,
+      manifestDigest: packaged.manifestDigest,
+      initiatedByClient: "desktop",
+    }))
+    await parked.get("session-audit")!.arrived
+    await parked.get("session-billing")!.arrived
+    parked.get("session-audit")!.release()
+    await expect(commits[0]).resolves.toMatchObject({ result: { state: "committed" } })
+    parked.get("session-billing")!.release()
+    await expect(commits[1]).resolves.toMatchObject({ result: { state: "committed" } })
+
+    const client = await openClient(daemon)
+    const workspace = workspaceSnapshotSchema.parse((await rpc(client)("workspace.get", {})).result)
+    expect(workspace.sessions.map((session) => session.id).sort()).toEqual(["session-audit", "session-billing"])
+    expect(store.load().sessions.map((session) => session.id).sort()).toEqual(["session-audit", "session-billing"])
+    client.close()
   })
 
   it("retries a target commit that was interrupted during recovery", async () => {

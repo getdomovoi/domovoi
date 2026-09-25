@@ -1,5 +1,5 @@
-import { ArchiveIcon, ChevronRightIcon, EllipsisIcon, GitForkIcon, MonitorIcon, PauseIcon } from "lucide-react"
-import { useState } from "react"
+import { ArchiveIcon, ChevronRightIcon, EllipsisIcon, GitBranchIcon, GitForkIcon, MonitorIcon, PanelLeftIcon, PauseIcon, PlayIcon } from "lucide-react"
+import { useId, useState } from "react"
 
 import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
 
@@ -19,13 +19,15 @@ import { cn } from "./lib/utils"
 // design system publishes is what the shell reads), grouped by what each
 // session wants from you, each group collapsible with
 // its count, and every row carrying the session's own actions in a menu:
-// stop the agent, fork from a checkpoint, move to another machine, archive.
-// The design also draws "Delete the worktree"; the protocol has no such RPC,
-// so the menu does not offer it. The count that matters stays on the button,
+// stop or resume the agent, fork from a checkpoint, move to another machine,
+// and archive. Direct worktree deletion has no protocol method, so the menu
+// cannot safely offer it. An archived row (I69) has no worktree left: its menu
+// says so and draws the one way forward, a new session from the kept branch,
+// disabled and marked later. The count that matters stays on the button,
 // because a session waiting on a person blocks work and a closed drawer hides
 // it.
 
-export type SessionRowAction = "stop" | "fork" | "move" | "archive"
+export type SessionRowAction = "stop" | "resume" | "fork" | "move" | "archive"
 
 export function SessionsDrawerTrigger({
   snapshot,
@@ -40,27 +42,22 @@ export function SessionsDrawerTrigger({
 }) {
   const groups = groupSessions(snapshot)
   const needsYou = groups.find((group) => group.id === "needs-you")?.sessions.length ?? 0
+  const total = groups.reduce((count, group) => count + group.sessions.filter((session) => !session.archived).length, 0)
   return (
     <button
       type="button"
+      aria-label={`${open ? "Hide sessions" : "Sessions"} ${total}${needsYou > 0 ? `, ${needsYou} needs you` : ""}`}
       aria-expanded={open}
       aria-controls="sessions-drawer"
       onClick={() => onOpenChange(!open)}
       className={cn(
-        "flex items-center gap-2 rounded-full border border-border px-3 py-1 text-[11.5px] text-muted-foreground",
+        "relative flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
         open && "bg-accent text-foreground",
         className,
       )}
     >
-      {open ? "Hide sessions" : "Sessions"}
-      <span className="font-machine text-[10.5px] text-faint">
-        {groups.reduce((total, group) => total + group.sessions.length, 0)}
-      </span>
-      {needsYou > 0 ? (
-        <span className="rounded-full bg-warn-background px-2 py-[2px] text-[10.5px] text-warn-foreground">
-          {needsYou} needs you
-        </span>
-      ) : null}
+      <PanelLeftIcon className="size-4" />
+      {needsYou > 0 ? <span className="absolute top-[3px] right-[3px] size-[7px] rounded-full bg-destructive ring-2 ring-background" /> : null}
     </button>
   )
 }
@@ -70,19 +67,28 @@ export function SessionsDrawerColumn({
   open,
   onActivate,
   onAction,
-  onNewSession,
-  onOpenProviderSettings,
+  machineAvailability,
+  onOpenMachines,
+  scope,
+  credentialNote,
   className,
 }: {
   snapshot: WorkspaceSnapshot
   open: boolean
   onActivate: (sessionId: string) => void
+  // A browser tab over the tailnet reaches one machine and holds its
+  // credential for the tab only; the column says both (Web v2, 2026-09-23).
+  scope?: { machine: string; note: string } | undefined
+  credentialNote?: { label: string; meta: string } | undefined
   onAction?: ((action: SessionRowAction, sessionId: string) => void) | undefined
   onNewSession?: (() => void) | undefined
   onOpenProviderSettings?: (() => void) | undefined
+  machineAvailability?: string | undefined
+  onOpenMachines?: (() => void) | undefined
   className?: string
 }) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<SessionGroupId>>(new Set())
+  const archivedNoteId = useId()
   if (!open) return null
   const groups = groupSessions(snapshot)
   const machine = snapshot.machine.name
@@ -97,8 +103,15 @@ export function SessionsDrawerColumn({
     <aside
       id="sessions-drawer"
       aria-label="Sessions"
-      className={cn("flex w-[var(--shell-sidebar)] shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar", className)}
+      className={cn("flex w-[268px] shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar", className)}
     >
+      {scope ? (
+        <div className="flex shrink-0 items-center gap-2 border-b px-[14px] py-[9px]">
+          <span className="font-machine text-[11px] text-strong">{scope.machine}</span>
+          <span className="flex-1" />
+          <span className="text-[10.5px] text-faint">{scope.note}</span>
+        </div>
+      ) : null}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-2">
         {groups.length === 0 ? (
           <p className="m-0 px-2 py-3 text-[11.5px] text-faint">
@@ -126,8 +139,6 @@ export function SessionsDrawerColumn({
                   <div
                     key={entry.id}
                     className={cn(
-                      // The tint is the third signal, after the Current mark
-                      // and aria-current. Colour never carries this on its own.
                       "group flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-accent/60",
                       current && "bg-accent",
                       entry.meaning === "idle" && "opacity-70",
@@ -142,11 +153,6 @@ export function SessionsDrawerColumn({
                       <span className="line-clamp-2 text-[12px] leading-[1.38] text-strong">{entry.title}</span>
                       <span className="flex w-full items-center gap-2">
                         <StatusDot meaning={entry.meaning} label={`${machine} · ${entry.note}`} size="inline" />
-                        {current ? (
-                          <span className="ml-auto rounded-full border border-border px-1.5 py-[1px] text-[10.5px] text-muted-foreground">
-                            Current
-                          </span>
-                        ) : null}
                       </span>
                     </button>
                     {onAction ? (
@@ -161,12 +167,28 @@ export function SessionsDrawerColumn({
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-[214px]">
-                          {entry.running ? (
-                            <DropdownMenuItem onSelect={() => onAction("stop", entry.id)}><PauseIcon />Stop the agent</DropdownMenuItem>
-                          ) : null}
-                          <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("fork", entry.id)}><GitForkIcon />Fork from a checkpoint</DropdownMenuItem>
-                          <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("move", entry.id)}><MonitorIcon />Move to another machine</DropdownMenuItem>
-                          <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("archive", entry.id)}><ArchiveIcon />Archive session</DropdownMenuItem>
+                          {entry.archived ? (
+                            <>
+                              <DropdownMenuItem disabled title="Not built yet" aria-describedby={`${archivedNoteId}-${entry.id}`} className="justify-between">
+                                <span className="flex items-center gap-2"><GitBranchIcon />Start a new session from this branch</span>
+                                <span className="font-machine text-[10.5px] text-faint">later</span>
+                              </DropdownMenuItem>
+                              <p id={`${archivedNoteId}-${entry.id}`} className="m-0 px-2 py-1.5 text-[11px] leading-[1.5] text-muted-foreground">
+                                Archived, so there is no worktree to delete. It cannot be forked, unarchived or sent to.
+                              </p>
+                            </>
+                          ) : (
+                            <>
+                              {entry.running ? (
+                                <DropdownMenuItem onSelect={() => onAction("stop", entry.id)}><PauseIcon />Stop the agent</DropdownMenuItem>
+                              ) : (
+                                <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("resume", entry.id)}><PlayIcon />Resume session</DropdownMenuItem>
+                              )}
+                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("fork", entry.id)}><GitForkIcon />Fork from a checkpoint</DropdownMenuItem>
+                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("move", entry.id)}><MonitorIcon />Move to another machine</DropdownMenuItem>
+                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("archive", entry.id)}><ArchiveIcon />Archive session</DropdownMenuItem>
+                            </>
+                          )}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     ) : null}
@@ -177,59 +199,21 @@ export function SessionsDrawerColumn({
           )
         })}
       </div>
-      {onNewSession || onOpenProviderSettings ? (
-        // Outside the scroller on purpose: these stay reachable no matter how
-        // many sessions are open.
-        <div className="flex shrink-0 gap-1 border-t border-border p-1">
-          {onNewSession ? (
-            <button type="button" onClick={onNewSession} className="flex-1 rounded-md px-2 py-1.5 text-left text-[12px] text-strong hover:bg-accent">
-              New session
-            </button>
-          ) : null}
-          {onOpenProviderSettings ? (
-            <button type="button" onClick={onOpenProviderSettings} className="rounded-md px-2 py-1.5 text-[12px] text-muted-foreground hover:bg-accent">
-              Providers
-            </button>
-          ) : null}
+      {credentialNote ? (
+        <div className="flex shrink-0 items-center gap-2 border-t px-[14px] py-[9px]">
+          <span aria-hidden className="size-1.5 rounded-full bg-info" />
+          <span className="text-[11px]">{credentialNote.label}</span>
+          <span className="flex-1" />
+          <span className="font-machine text-[10.5px] text-faint">{credentialNote.meta}</span>
+        </div>
+      ) : null}
+      {machineAvailability ? (
+        <div className="flex shrink-0 items-center justify-center px-[10px] pt-[9px] pb-[11px]">
+          <button type="button" className="font-machine text-[10.5px] text-muted-foreground" disabled={!onOpenMachines} onClick={onOpenMachines}>
+            {machineAvailability}
+          </button>
         </div>
       ) : null}
     </aside>
-  )
-}
-
-// The trigger and the column together, for surfaces that lay them out as one.
-// The shell places the trigger in the top bar and the column beside the thread.
-export function SessionsDrawer({
-  snapshot,
-  open,
-  onOpenChange,
-  onActivate,
-  onAction,
-  onNewSession,
-  onOpenProviderSettings,
-  className,
-}: {
-  snapshot: WorkspaceSnapshot
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  onActivate: (sessionId: string) => void
-  onAction?: ((action: SessionRowAction, sessionId: string) => void) | undefined
-  onNewSession?: (() => void) | undefined
-  onOpenProviderSettings?: (() => void) | undefined
-  className?: string
-}) {
-  return (
-    <div className={cn("flex flex-col", className)}>
-      <SessionsDrawerTrigger snapshot={snapshot} open={open} onOpenChange={onOpenChange} className="self-start" />
-      <SessionsDrawerColumn
-        snapshot={snapshot}
-        open={open}
-        onActivate={onActivate}
-        onAction={onAction}
-        onNewSession={onNewSession}
-        onOpenProviderSettings={onOpenProviderSettings}
-        className="mt-2 max-h-[70vh]"
-      />
-    </div>
   )
 }

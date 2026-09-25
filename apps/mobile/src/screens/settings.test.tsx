@@ -19,7 +19,11 @@ async function draw(overrides: Partial<Parameters<typeof SettingsScreen>[0]> = {
     onChangeToken: jest.fn<(value: string) => void>(),
     onConnect: jest.fn<() => void>(),
     onForget: jest.fn<() => void>(),
+    onOpenStop: jest.fn<() => void>(),
+    themePreference: "system" as const,
+    onChangeTheme: jest.fn<(preference: "light" | "dark" | "system") => void>(),
     paired: true,
+    device: "phone" as const,
     bottomInset: 0,
     ...overrides,
   }
@@ -28,44 +32,42 @@ async function draw(overrides: Partial<Parameters<typeof SettingsScreen>[0]> = {
 }
 
 describe("SettingsScreen", () => {
-  it("never shows the pairing token in the clear", async () => {
+  it("never puts the stored credential in the rendered tree", async () => {
     await draw()
 
-    // The token can do anything the person can do on that machine, so the
-    // field that holds it is masked and no text on the screen repeats it.
-    const field = screen.getByDisplayValue(token)
-    expect(field.props.secureTextEntry).toBe(true)
+    expect(screen.queryByDisplayValue(token)).toBeNull()
     expect(screen.queryByText(token)).toBeNull()
     expect(screen.queryByText(new RegExp(token))).toBeNull()
   })
 
-  it("shows the daemon address in the clear, because it is not a secret", async () => {
+  it("keeps raw connection fields off the production settings surface", async () => {
     await draw()
 
-    const field = screen.getByDisplayValue(url)
-    expect(field.props.secureTextEntry).toBeFalsy()
+    expect(screen.queryByDisplayValue(url)).toBeNull()
+    expect(screen.queryByDisplayValue(token)).toBeNull()
+    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull()
   })
 
-  it("hands each field's typing to its own handler", async () => {
-    const { onChangeUrl, onChangeToken } = await draw()
+  it("opens the development diagnostic route with honest scope copy", async () => {
+    const { onChangeUrl, onChangeToken, onConnect } = await draw()
 
-    await fireEvent.changeText(screen.getByDisplayValue(token), "dmv_pair_next")
+    await fireEvent.press(screen.getByRole("button", { name: "Connection diagnostics" }))
+    expect(screen.getByText(/credential scope is unverified/i)).toBeOnTheScreen()
     await fireEvent.changeText(screen.getByDisplayValue(url), "ws://other:1/rpc")
+    await fireEvent.changeText(screen.getByDisplayValue(token), "dmv_pair_next")
+    await fireEvent.press(screen.getByRole("button", { name: "Connect" }))
 
-    expect(onChangeToken).toHaveBeenCalledWith("dmv_pair_next")
     expect(onChangeUrl).toHaveBeenCalledWith("ws://other:1/rpc")
-    expect(onChangeToken).not.toHaveBeenCalledWith("ws://other:1/rpc")
+    expect(onChangeToken).toHaveBeenCalledWith("dmv_pair_next")
+    expect(onConnect).toHaveBeenCalledTimes(1)
   })
 
-  it("connects and forgets from their own buttons", async () => {
-    const { onConnect, onForget } = await draw()
-
-    await fireEvent.press(screen.getByRole("button", { name: "Connect" }))
-    expect(onConnect).toHaveBeenCalledTimes(1)
-    expect(onForget).not.toHaveBeenCalled()
+  it("forgets the saved pairing without exposing its credential", async () => {
+    const { onForget } = await draw()
 
     await fireEvent.press(screen.getByRole("button", { name: "Forget this daemon" }))
     expect(onForget).toHaveBeenCalledTimes(1)
+    expect(screen.queryByDisplayValue(token)).toBeNull()
   })
 
   it("says when it has stopped trying, and why", async () => {
@@ -99,12 +101,12 @@ describe("SettingsScreen", () => {
     expect(screen.queryByText("Needs a paired machine")).toBeNull()
   })
 
-  // Device settings are not machine settings. An unpaired phone still holds its
-  // own credential, so the one control that changes that has to keep working.
-  it("keeps the phone's own settings working while nothing is paired", async () => {
-    const { onConnect } = await draw({ paired: false })
-    await fireEvent.press(screen.getByRole("button", { name: "Connect" }))
-    expect(onConnect).toHaveBeenCalledTimes(1)
+  it("moves the global stop entry point into Settings", async () => {
+    const { onOpenStop } = await draw()
+    expect(screen.getByText(/stops at the next turn boundary/i)).toBeOnTheScreen()
+    expect(screen.getByText(/kills every running agent and terminal immediately/i)).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("button", { name: "Pause or emergency stop" }))
+    expect(onOpenStop).toHaveBeenCalledTimes(1)
   })
 
   // The handoff's values are fixture data. A screen that repeated them would
@@ -129,11 +131,29 @@ describe("SettingsScreen", () => {
     await draw()
     const pressable = screen.getAllByRole("button").map((node) => node.props.accessibilityLabel)
     expect(pressable).not.toContain(`About, ${clientVersion}`)
-    expect(pressable).not.toContain("Appearance, Dark")
   })
 
-  it("keeps the phone's own facts on screen once a machine is paired", async () => {
-    await draw({ paired: true })
-    expect(screen.getByLabelText("Appearance, Dark")).toBeOnTheScreen()
+  it("selects light, dark or system appearance", async () => {
+    const { onChangeTheme } = await draw({ paired: true, themePreference: "system" })
+    expect(screen.getByLabelText("Appearance, System")).toBeOnTheScreen()
+    expect(screen.getByRole("radio", { name: "System", checked: true })).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("radio", { name: "Light" }))
+    expect(onChangeTheme).toHaveBeenCalledWith("light")
+  })
+
+  // A setting that does not exist yet stays listed, dimmed and untouchable,
+  // and the line under it says why.
+  it("lists notifications as not yet, and says when a gate can reach this phone", async () => {
+    await draw()
+    const row = screen.getByLabelText("Notifications, Not yet")
+    expect(row).toBeOnTheScreen()
+    expect(row).toBeDisabled()
+    expect(screen.getAllByRole("button").map((node) => node.props.accessibilityLabel)).not.toContain("Notifications, Not yet")
+    expect(screen.getByText("Gates reach this phone only while Domovoi is open on it. There are no notifications yet.")).toBeOnTheScreen()
+  })
+
+  it("names the tablet when it runs on one", async () => {
+    await draw({ device: "tablet" })
+    expect(screen.getByText("Gates reach this tablet only while Domovoi is open on it. There are no notifications yet.")).toBeOnTheScreen()
   })
 })

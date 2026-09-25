@@ -81,11 +81,11 @@ describe("Settings shell and provider pane", () => {
       />,
     )
 
-    expect(webMarkup).toContain("Providers on this machine")
+    expect(webMarkup).toContain("Providers and tokens")
     expect(webMarkup).not.toContain("External editor")
     expect(webMarkup).not.toContain("external-editor-label")
     expect(webMarkup).not.toContain("First-run setup")
-    expect(desktopMarkup).toContain(">External editor</button>")
+    expect(desktopMarkup).toContain(">External editor</h1>")
     expect(desktopMarkup).toContain(">First-run setup</button>")
   })
 
@@ -115,7 +115,7 @@ describe("Settings shell and provider pane", () => {
       />,
     )
 
-    expect(markup).toContain("Providers on this machine")
+    expect(markup).toContain("Providers and tokens")
     expect(markup).toContain("Subscription CLIs own their credentials")
     expect(markup).toContain("Cursor Agent")
     expect(markup).toContain("Re-authenticate")
@@ -134,7 +134,28 @@ describe("Settings shell and provider pane", () => {
     expect(markup).not.toContain('type="password"')
     expect(markup).not.toMatch(/>Store<\/button|>Replace<\/button|>Remove<\/button/)
     expect(markup).not.toMatch(/sk-|secret@example|key ending/i)
-    expect(markup).toContain(">External editor</button>")
+    expect(markup).toContain(">External editor</h1>")
+  })
+
+  it("shows why a detected provider cannot start sessions instead of the sign-in hint", () => {
+    const problem = "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100."
+    const markup = renderToStaticMarkup(
+      <SettingsShell
+        providers={[{ ...providers[0]!, version: "2.1.100", problem }]}
+        secrets={[]}
+        approvalRules={[]}
+        notifications={defaultNotificationPreferences()}
+        onNotificationsChange={vi.fn()}
+        onOpenFleet={vi.fn()}
+        onOpenSkills={vi.fn()}
+        onOpenAudit={vi.fn()}
+        theme="dark"
+        onThemeChange={vi.fn()}
+      />,
+    )
+
+    expect(markup).toContain(problem)
+    expect(markup).toContain("Cannot start")
   })
 
   it("uses the installed single-choice primitive for every allowlisted editor", () => {

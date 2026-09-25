@@ -31,6 +31,16 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+const openSheet = async () => {
+  // v2 starts with the sheet closed, so a test that reads the dock opens it
+  // first. Already open is not an error: pinned runs render the same tabs.
+  if (screen.queryAllByRole("tab", { name: "Changes" }).length > 0) return
+  const open = screen.queryByRole("button", { name: "Open the sheet" })
+  if (!open) return
+  await userEvent.setup().click(open)
+  await settle()
+}
+
 const settle = () => act(async () => {
   for (let index = 0; index < 8; index += 1) await Promise.resolve()
 })
@@ -63,6 +73,7 @@ it("dispatches one checkpoint.restore even when the pane is confirmed twice", as
     completeHandshake(socket, snapshot)
   })
   await settle()
+  await openSheet()
 
   await user.click(screen.getByRole("tab", { name: /History/ }))
   await settle()

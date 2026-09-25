@@ -64,7 +64,7 @@ describe("client credential admission", () => {
     notify(sockets.socket(0), "workspace.changed", demoWorkspace)
     await vi.advanceTimersByTimeAsync(0)
     expect(snapshots).not.toHaveBeenCalled()
-    respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "desktop" })
+    respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "desktop", clientAccess: "full" })
     expect(await outcome).toEqual(demoWorkspace)
     expect(snapshots).toHaveBeenCalledTimes(2)
     expect(client.admittedDeviceId).toBe(deviceId)
@@ -82,7 +82,7 @@ describe("client credential admission", () => {
     // fact, not something that can be captured in a later microtask.
     notify(socket, "workspace.changed", after)
     await vi.advanceTimersByTimeAsync(0)
-    respond(socket, "device.current", { kind: "client", machineId, deviceId, client: "desktop" })
+    respond(socket, "device.current", { kind: "client", machineId, deviceId, client: "desktop", clientAccess: "full" })
     await outcome
     expect(snapshots.mock.calls.map(([event]) => (event as CustomEvent).detail.machine.name))
       .toEqual([demoWorkspace.machine.name, "After hello"])
@@ -90,8 +90,8 @@ describe("client credential admission", () => {
 
   it.each([
     { kind: "daemon" as const, machineId },
-    { kind: "client" as const, machineId, deviceId, client: "web" as const },
-    { kind: "client" as const, machineId, deviceId: `device-${"b".repeat(32)}`, client: "desktop" as const },
+    { kind: "client" as const, machineId, deviceId, client: "web" as const, clientAccess: "full" as const },
+    { kind: "client" as const, machineId, deviceId: `device-${"b".repeat(32)}`, client: "desktop" as const, clientAccess: "full" as const },
   ])("refuses authority that differs from the admitted client: %j", async (receipt) => {
     const { outcome, snapshots } = connect()
     completeHandshake(sockets.socket(0))
@@ -115,7 +115,7 @@ describe("client credential admission", () => {
     const { outcome, snapshots } = connect()
     completeHandshake(sockets.socket(0))
     await vi.advanceTimersByTimeAsync(0)
-    respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "desktop" })
+    respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "desktop", clientAccess: "full" })
     await outcome
     sockets.socket(0).drop()
     await vi.advanceTimersByTimeAsync(1_500)
@@ -131,14 +131,14 @@ describe("client credential admission", () => {
     const { outcome, snapshots } = connect(machineId, false)
     completeHandshake(sockets.socket(0))
     await vi.advanceTimersByTimeAsync(0)
-    respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "desktop" })
+    respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "desktop", clientAccess: "full" })
     await outcome
     sockets.socket(0).drop()
     await vi.advanceTimersByTimeAsync(1_500)
     completeHandshake(sockets.socket(1))
     await vi.advanceTimersByTimeAsync(0)
     respond(sockets.socket(1), "device.current", {
-      kind: "client", machineId, deviceId: `device-${"b".repeat(32)}`, client: "desktop",
+      kind: "client", machineId, deviceId: `device-${"b".repeat(32)}`, client: "desktop", clientAccess: "full",
     })
     await vi.advanceTimersByTimeAsync(10_000)
     expect(snapshots).toHaveBeenCalledTimes(1)

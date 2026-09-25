@@ -1,0 +1,94 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 Team.dc.html",
+  "sha256": "607565c1db96581a166f551d66d12b48840a00ecc4401d72b5a0f339aa181791",
+  "derivedOn": "2026-09-20",
+  "sources": [
+    "packages/protocol/src/**/*.ts",
+    "packages/ui/src/**/*.{ts,tsx}",
+    "apps/mobile/src/**/*.{ts,tsx}"
+  ],
+  "note": "Inventory re-derived from the current v2 design. Statuses record current implementation evidence and platform blockers; layout, visual state and interaction fidelity remain human-read checks.",
+  "elements": [
+    {
+      "id": "team.organisation",
+      "name": "Organisation shell and ownership",
+      "where": "team surface",
+      "copy": [
+        "Domovoi",
+        "acme.dev \u00b7 Team",
+        "ORGANISATION",
+        "You are an owner",
+        "Owners set policy and hold billing. They cannot read a member's session or open a shell on a machine they were not granted.",
+        "People",
+        "A seat is a person who may attach to machines this organisation granted them. Seats are not metered by machine, and a seat alone reaches nothing until a grant exists."
+      ],
+      "blocked": {
+        "since": "2026-09-20",
+        "needs": "platform",
+        "reason": "Organisation identity, seats and grants are Phase 5 platform work."
+      }
+    },
+    {
+      "id": "team.grants",
+      "name": "People, machines and grants",
+      "where": "team access management",
+      "copy": [
+        "Invite by email",
+        "PERSON",
+        "ROLE",
+        "GRANTED MACHINES",
+        "DEVICES",
+        "Removing a seat revokes its device credentials and its grants. It does not stop a session already running on a machine, because that machine owns the session. Stop it there.",
+        "Machines the organisation owns",
+        "These are the metered units. A grant gives a seat a route and a credential to one machine, which is not the same as an account login, and never gives the organisation a way to read that machine's code.",
+        "Granted to",
+        "Grant to someone"
+      ],
+      "blocked": {
+        "since": "2026-09-20",
+        "needs": "platform",
+        "reason": "Team seat and machine grant management is not implemented in the current product surface."
+      }
+    },
+    {
+      "id": "team.audit",
+      "name": "Organisation audit and policy",
+      "where": "team audit and policy",
+      "copy": [
+        "What a grant is, and is not",
+        "Who decided what",
+        "Decisions taken on organisation machines, across everyone. This is a record of choices, not of work: it names the command and the person who allowed it, and it carries no prompt, no diff and no thread.",
+        "last 7 days \u00b7 org machines only",
+        "WHAT AN OWNER CANNOT SEE HERE",
+        "Organisation policy",
+        "A policy is a refusal the daemon enforces on every granted machine. Unlike a rule, no approval, mode or client can permit what it forbids, and the refusal is recorded with the daemon as the actor.",
+        "Add a policy",
+        "Turning a policy off is not retroactive",
+        "It takes effect at the next turn boundary on each machine, and the refusals it already recorded stay in the audit log. A member's machine that is unreachable keeps enforcing the last policy it received."
+      ],
+      "blocked": {
+        "since": "2026-09-20",
+        "needs": "platform",
+        "reason": "Organisation-wide audit and policy surfaces require the Phase 5 control service."
+      }
+    },
+    {
+      "id": "team.billing",
+      "name": "Organisation billing",
+      "where": "team billing",
+      "copy": [
+        "Plan and machines",
+        "Machines registered to the organisation are what you pay for, in buckets. People are not metered, because a phone answering a gate is not a cost driver and a daemon holding a route is.",
+        "This period",
+        "Due 1 October",
+        "$186.00",
+        "IF THE CARD FAILS"
+      ],
+      "blocked": {
+        "since": "2026-09-20",
+        "needs": "platform",
+        "reason": "Organisation billing and metering are Phase 5 platform work."
+      }
+    }
+  ]
+}

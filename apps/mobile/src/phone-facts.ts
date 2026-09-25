@@ -33,12 +33,10 @@ export function phoneFacts(input: {
   // The same string the greeting sends the daemon, so the number on screen and
   // the number the machine has recorded cannot disagree.
   appVersion: string
+  appearance: "Light" | "Dark" | "System"
 }): PhoneFact[] {
   return [
-    // Not a preference yet. The phone follows the desktop's dark theme and has
-    // no light surface, so this states what is drawn rather than offering a
-    // choice between two.
-    { label: "Appearance", value: "Dark" },
+    { label: "Appearance", value: input.appearance },
     { label: "This device", value: deviceLabel(input.os, input.osVersion) },
     { label: "About", value: input.appVersion },
   ]

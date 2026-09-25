@@ -1,6 +1,9 @@
 import { describe, expect, it, jest } from "@jest/globals"
 
+import { protocolCompatibility } from "@getdomovoi/protocol"
+
 import { redeemPairingCode } from "./redeem-pairing-code"
+import { protocolVersionForClient } from "./protocol-facts"
 
 const payload = { v: 1 as const, url: "wss://machine.example.ts.net:47831/rpc", code: "hearth-quiet-ember-42", label: "machine" }
 
@@ -36,7 +39,7 @@ describe("spending a pairing code", () => {
       token: "t".repeat(43),
       device: { id: `device-${"a".repeat(32)}`, label: "iPhone", pairedAt: "2026-09-16T12:00:00.000Z", binding: { kind: "client", client: "phone" } },
     } }) })
-    await expect(pending).resolves.toEqual({ url: payload.url, token: "t".repeat(43) })
+    await expect(pending).resolves.toEqual({ url: payload.url, token: "t".repeat(43), client: "phone", deviceId: `device-${"a".repeat(32)}` })
     expect(socket.closed).toBe(true)
   })
 
@@ -88,5 +91,56 @@ describe("spending a pairing code", () => {
     } finally {
       jest.useRealTimers()
     }
+  })
+
+  function answered(reply: unknown) {
+    const socket = fakeSocket()
+    const pending = redeemPairingCode(payload, "iPad", () => socket as unknown as WebSocket)
+    socket.onopen!()
+    socket.onmessage!({ data: JSON.stringify({ jsonrpc: "2.0", id: 1, ...reply as object }) })
+    return pending
+  }
+
+  function paired(client: string) {
+    return { result: {
+      token: "t".repeat(43),
+      device: { id: `device-${"a".repeat(32)}`, label: "iPad", pairedAt: "2026-09-16T12:00:00.000Z", binding: { kind: "client", client } },
+    } }
+  }
+
+  it("keeps a tablet code's kind, so the app greets as the tablet it was paired as", async () => {
+    await expect(answered(paired("tablet"))).resolves.toEqual({ url: payload.url, token: "t".repeat(43), client: "tablet", deviceId: `device-${"a".repeat(32)}` })
+  })
+
+  it("refuses a code issued for a desktop and says which kind to show instead", async () => {
+    await expect(answered(paired("desktop"))).rejects.toThrow(/issued for a desktop.*phone or tablet/)
+  })
+
+  it("says the protocols differ and that the code was not used, rather than calling it spent", async () => {
+    const daemonProtocolVersion = "99.0.0"
+    const pending = answered({ error: {
+      code: -32012,
+      message: "Client and daemon protocol versions are incompatible",
+      data: {
+        kind: "protocol-mismatch",
+        daemonProtocolVersion,
+        clientProtocolVersion: protocolVersionForClient,
+        compatibility: protocolCompatibility(daemonProtocolVersion, protocolVersionForClient),
+      },
+    } })
+    await expect(pending).rejects.toThrow(new RegExp(`protocol ${protocolVersionForClient}.*protocol 99\\.0\\.0.*not used`))
+    await expect(pending).rejects.not.toThrow(/may already have been used/)
+  })
+
+  it("says the machine has too many paired devices rather than calling the code spent", async () => {
+    const pending = answered({ error: { code: -32013, message: "The paired device limit is reached" } })
+    await expect(pending).rejects.toThrow(/too many paired devices/)
+    await expect(pending).rejects.not.toThrow(/may already have been used/)
+  })
+
+  it("carries any other refusal's own reason", async () => {
+    const pending = answered({ error: { code: -32603, message: "Device pairing is unavailable" } })
+    await expect(pending).rejects.toThrow(/Device pairing is unavailable/)
+    await expect(pending).rejects.not.toThrow(/may already have been used/)
   })
 })

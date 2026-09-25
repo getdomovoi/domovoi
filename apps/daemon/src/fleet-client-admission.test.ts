@@ -12,11 +12,11 @@ describe("real remote client admission", () => {
   it("keeps the issuer honest while granting a different client kind", async () => {
     const target = await machine("target")
     const granted = devicePairResultSchema.parse(await target.root.ok("device.pair", { client: "cli", targetClient: "desktop", label: "Laptop desktop" }))
-    expect(granted.device.binding).toEqual({ kind: "client", client: "desktop" })
+    expect(granted.device.binding).toEqual({ kind: "client", client: "desktop", clientAccess: "full" })
     const desktop = await connect(target.address.url)
     await desktop.ok("system.hello", { client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: granted.token })
     expect(await desktop.ok("device.current", {})).toEqual({
-      kind: "client", machineId: target.id, deviceId: granted.device.id, client: "desktop",
+      kind: "client", machineId: target.id, deviceId: granted.device.id, client: "desktop", clientAccess: "full",
     })
     expect(await target.root.ok("device.current", {})).toEqual({ kind: "daemon", machineId: target.id })
     expect((await desktop.call("device.pair", { label: "extra", client: "desktop", targetClient: "desktop" })).error?.code)

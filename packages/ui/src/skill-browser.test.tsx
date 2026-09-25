@@ -66,7 +66,11 @@ describe("skill browser", () => {
       />,
     )
 
-    expect(markup).toContain("2 discovered")
+    expect(markup).toContain("Skills on this machine")
+    expect(markup).toContain("A skill is a folder with a SKILL.md and a manifest. Installing is not enabling: enabling is a review, per project.")
+    expect(markup).toContain("Install from a path")
+    expect(markup).toContain("Inventories from your other machines")
+    expect(markup).not.toContain("Settings navigation")
     expect(markup).toContain("design-studio")
     expect(markup).toContain("USER · AGENTS")
     expect(markup).toContain("/home/dev/.agents/skills/design-studio/SKILL.md")
@@ -78,7 +82,7 @@ describe("skill browser", () => {
     expect(markup).toContain("Review &amp; enable")
     expect(markup).toContain("sha256:")
     expect(markup).toContain("No declared capabilities")
-    expect(markup.match(/>Audit log<\/button>/g)).toHaveLength(2)
+    expect(markup).not.toContain("Settings navigation")
   })
 
   it("shows project-scoped reviewed state without granting trust", () => {

@@ -1,13 +1,12 @@
-import { clientKindSchema, deviceRenameLabelSchema, encodePairingPayload, phoneAndTabletPromise, type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
+import { clientKindSchema, deviceRenameLabelSchema, encodePairingPayload, pairingAddressSchema, phoneAndTabletPromise, type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 
 import { CliDeadlineError } from "./cli-rpc.js"
-import type { PairingAddress, PairingAddressProblem } from "./pairing-address.js"
 import { pairingCodeTtlMs } from "./pairing-codes.js"
 
 export type PairCommandDependencies = {
+  // The daemon answers with the code and the address a scanned code tells a
+  // device to dial, or why there is none; this command draws, it never guesses.
   issue: (targetClient?: ClientKind) => Promise<DeviceIssueCodeResult>
-  // The address a scanned code tells a device to dial, or why there is none.
-  pairingAddress: () => PairingAddress | PairingAddressProblem
   renderCode: (payload: string) => string
   stdout: (text: string) => void
   stderr: (text: string) => void
@@ -44,7 +43,15 @@ export async function runPairCommand(
       dependencies.stdout("\n")
     }
 
-    const address = dependencies.pairingAddress()
+    // A daemon older than this command answers with the code alone. Say so,
+    // rather than drawing a symbol with no address a device could dial.
+    const named = pairingAddressSchema.safeParse((issued as { pairingAddress?: unknown }).pairingAddress)
+    if (!named.success) {
+      dependencies.stdout(`Pairing code: ${issued.code}\n`)
+      dependencies.stderr("This daemon does not say which address a device should dial, so no symbol was drawn. Update the daemon to match this command, then run this again.\n")
+      return 1
+    }
+    const address = named.data
     if ("problem" in address) {
       // A symbol carrying an address the device cannot verify fails at TLS
       // with nothing to read, so say what is missing instead of drawing one.

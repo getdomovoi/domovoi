@@ -5,7 +5,8 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 
 import { demoWorkspace, maximumEffectiveClientThreadItems, providerFailureSchema } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, normalizePermissionMode, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
+import { buildWorkspaceCommands } from "./command-palette"
 import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
 
 const runtime: Runtime = {
@@ -16,19 +17,6 @@ const runtime: Runtime = {
   auto: false,
 }
 
-it.each(["ask", "plan"] as const)("clears auto when the UI selects %s mode", (permissionMode) => {
-  expect(normalizePermissionMode({ ...runtime, auto: true }, permissionMode)).toMatchObject({
-    permissionMode,
-    auto: false,
-  })
-})
-
-it("retains an explicit auto choice when the UI remains in Build mode", () => {
-  expect(normalizePermissionMode({ ...runtime, auto: true }, "build")).toMatchObject({
-    permissionMode: "build",
-    auto: true,
-  })
-})
 
 describe("PreviewVariantThumbnail", () => {
   it("keeps authorization dependencies stable across unrelated artifact replacement", () => {
@@ -76,9 +64,6 @@ describe("PreviewVariantThumbnail", () => {
 })
 
 
-it("names settings navigation for the surface it opens", () => {
-  expect(providerSettingsNavigationLabel).toBe("Provider settings")
-})
 
 it("does not refetch skills for unrelated workspace updates", () => {
   const updated = structuredClone(demoWorkspace)
@@ -161,14 +146,12 @@ describe("Thread", () => {
     expect(rendered[0]?.id).toBe("rendered-5")
   })
 
-  // v2 puts the mode beside the model in the composer's action row, not in
-  // the thread header; Think, undrawn in v2, sits beside it as a plain chip.
-  it("draws mode and Think in the composer's action row and not in the header", () => {
+  it("draws mode in the composer's action row, with Think nowhere", () => {
     const snapshot = structuredClone(demoWorkspace)
     const markup = renderToStaticMarkup(<Thread onQueuedChange={vi.fn()} snapshot={snapshot} connected onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})} onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})} onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})} onPauseSession={vi.fn(async () => {})} onArchiveSession={vi.fn(async () => {})} />)
     const actions = markup.slice(markup.indexOf("data-workspace-composer-actions"))
     expect(actions).toMatch(/aria-label="Mode: (Plan|Ask|Build)/)
-    expect(actions).toMatch(/aria-label="Think: /)
+    expect(markup).not.toContain("Think: ")
     const header = markup.slice(0, markup.indexOf("data-workspace-composer-actions"))
     expect(header).not.toMatch(/aria-label="Mode: /)
     expect(header).not.toContain("Think: ")
@@ -465,31 +448,25 @@ describe("checkpointBlockedReason", () => {
 })
 
 describe("Thread", () => {
-  it("names the signed session-header action for the selected editor", () => {
-    const snapshot = structuredClone(demoWorkspace)
-    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
-    active.workspacePath = "/worktrees/session-billing"
-    const markup = renderToStaticMarkup(
-      <Thread
-      onQueuedChange={vi.fn()}
-        snapshot={snapshot}
-        connected
-        onResolve={vi.fn(async () => {})}
-        onSetRuntime={vi.fn(async () => {})}
-        onForkSession={vi.fn(async () => {})}
-        onListModels={vi.fn(async () => [])}
-        onNewSession={vi.fn()}
-        onSend={vi.fn(async () => {})}
-        onCheckpoint={vi.fn(async () => {})}
-        onRestoreCheckpoint={vi.fn(async () => {})}
-        onPauseSession={vi.fn(async () => {})}
-        onArchiveSession={vi.fn(async () => {})}
-        onOpenExternal={vi.fn(async () => {})}
-        externalEditor="cursor"
-      />,
-    )
+  // v2 carries no fixed session banner, so the worktree action lives in the
+  // command palette. The editor it names is still the one the operator chose.
+  it("names the worktree action for the selected editor", () => {
+    const commands = buildWorkspaceCommands({
+      activeWorkspacePath: "/worktrees/session-billing",
+      openInEditor: vi.fn(),
+      externalEditor: "cursor",
+      connected: true,
+      emergencyStopPending: false,
+      hasProject: true,
+      openProject: vi.fn(),
+      newSession: vi.fn(),
+      pauseAll: vi.fn(),
+      emergencyStop: vi.fn(),
+      reconnect: vi.fn(),
+      setSurface: vi.fn(),
+    })
 
-    expect(markup).toContain(">Open in Cursor</button>")
+    expect(commands.find((command) => command.id === "open-in-editor")?.label).toBe("Open in Cursor")
   })
 
   it("offers a signed archive confirmation describing retained history and cleanup", () => {
@@ -497,10 +474,10 @@ describe("Thread", () => {
       <ArchiveSessionAction disabled={false} onArchive={vi.fn()} />,
     )
 
+    // I69, 2026-09-23: the description is the design's one line; what is
+    // removed and kept is listed by the dialog body, not restated here.
     expect(markup).toContain("Archive session")
-    expect(archiveSessionDescription).toContain("final checkpoint")
-    expect(archiveSessionDescription).toContain("provider and terminal")
-    expect(archiveSessionDescription).toContain("source checkout's branch, HEAD, status, and files remain unchanged")
+    expect(archiveSessionDescription).toBe("Domovoi takes a final checkpoint, stops the agent and its terminals, then removes the worktree directory. Nothing is merged.")
   })
 
   it("renders archived sessions read-only with history still visible", () => {
@@ -510,12 +487,14 @@ describe("Thread", () => {
     active.archiveRequestedAt = "2026-08-29T11:59:00.000Z"
     active.archiveCheckpoint = "a".repeat(40)
     active.archivedAt = "2026-08-29T12:00:00.000Z"
+    active.branch = "domovoi/session-billing"
+    active.unmergedFiles = 7
     delete active.workspacePath
     delete active.providerThreadId
     delete active.activeTurnId
     const markup = renderToStaticMarkup(
       <Thread
-      onQueuedChange={vi.fn()}
+        onQueuedChange={vi.fn()}
         snapshot={snapshot}
         connected
         onResolve={vi.fn(async () => {})}
@@ -533,16 +512,24 @@ describe("Thread", () => {
 
     expect(markup).toContain("Archived")
     expect(markup).toContain("The Stripe retries are double-charging")
-    expect(markup).not.toContain('aria-label="Message"')
+    expect(markup).toContain("Archived, so the daemon accepts reads only.")
+    // I69: the notice at the head of the thread says what archive did, names
+    // the checkpoint kept, and draws the one way forward disabled and later.
+    expect(markup).toContain("Archived and read-only. The worktree was removed. Branch <span class=\"font-machine\">domovoi/session-billing</span> and its final checkpoint are kept.")
+    expect(markup).toMatch(/archived \d\d:\d\d · aaaaaaa · 7 files never merged/)
+    expect(markup).toMatch(/Start a new session from this branch[\s\S]{0,200}later/)
+    expect(markup).not.toContain("Unarchive")
+    expect(markup).toMatch(/aria-label="Message"[^>]*disabled=""/)
+    expect(markup).toContain("data-workspace-composer-actions")
   })
 
-  it("disables manual checkpoint creation while the active turn owns the worktree", () => {
+  it("draws no manual checkpoint control, even while a turn owns the worktree", () => {
     const snapshot = structuredClone(demoWorkspace)
     const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
     active.activeTurnId = "turn-active"
     const markup = renderToStaticMarkup(
       <Thread
-      onQueuedChange={vi.fn()}
+        onQueuedChange={vi.fn()}
         snapshot={snapshot}
         connected
         onResolve={vi.fn(async () => {})}
@@ -558,51 +545,13 @@ describe("Thread", () => {
       />,
     )
 
-    expect(markup).toMatch(
-      /<button(?=[^>]*disabled="")(?=[^>]*title="Stop the active turn before creating a checkpoint")[^>]*>Checkpoint<\/button>/,
-    )
-    expect(markup).toContain(
-      '<span role="status" class="font-machine text-mono-xs text-faint">Stop the active turn before creating a checkpoint</span>',
-    )
+    expect(markup).not.toMatch(/>Checkpoint<\/button>/)
+    expect(markup).not.toContain("Stop the active turn before creating a checkpoint")
   })
 })
 
-describe("provider failure guidance", () => {
-  it.each([
-    ["authentication-expired", "sign-in", "Provider authentication expired", false, "Open Provider settings and sign in again"],
-    ["rate-limit", "retry", "Provider rate limit reached", true, "Retry the message after the provider cooldown"],
-    ["quota-exhausted", "check-quota", "Provider quota is exhausted", false, "Check the provider quota or billing plan"],
-    ["model-unavailable", "change-model", "Selected model is unavailable", false, "Choose another model in the runtime controls"],
-    ["transport", "retry", "Provider connection failed", true, "Retry the message after the provider reconnects"],
-    ["unknown", "retry", "Provider request failed", true, "Retry the message, or review Provider settings if the failure continues"],
-  ] as const)("renders %s with a fixed recovery action", (kind, action, message, retryable, guidance) => {
-    const snapshot = structuredClone(demoWorkspace)
-    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
-    active.state = "failed"
-    active.providerFailure = providerFailureSchema.parse({ kind, action, message, retryable })
-    const markup = renderToStaticMarkup(
-      <Thread
-      onQueuedChange={vi.fn()}
-        snapshot={snapshot}
-        connected
-        onResolve={vi.fn(async () => {})}
-        onSetRuntime={vi.fn(async () => {})}
-        onForkSession={vi.fn(async () => {})}
-        onListModels={vi.fn(async () => [])}
-        onNewSession={vi.fn()}
-        onSend={vi.fn(async () => {})}
-        onCheckpoint={vi.fn(async () => {})}
-        onRestoreCheckpoint={vi.fn(async () => {})}
-        onPauseSession={vi.fn(async () => {})}
-        onArchiveSession={vi.fn(async () => {})}
-      />,
-    )
-
-    expect(markup).toContain(message)
-    expect(markup).toContain(guidance)
-  })
-
-  it("requires provider restart before another message", () => {
+describe("provider failure state", () => {
+  it("uses the shared failed-read surface without allowing another send", () => {
     const snapshot = structuredClone(demoWorkspace)
     const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
     active.state = "failed"
@@ -615,7 +564,7 @@ describe("provider failure guidance", () => {
     })
     const markup = renderToStaticMarkup(
       <Thread
-      onQueuedChange={vi.fn()}
+        onQueuedChange={vi.fn()}
         snapshot={snapshot}
         connected
         onResolve={vi.fn(async () => {})}
@@ -632,9 +581,9 @@ describe("provider failure guidance", () => {
       />,
     )
 
-    expect(markup).toContain("Provider thread needs recovery")
-    expect(markup).toContain("Restart provider")
-    expect(markup).toContain("Restart the provider before sending")
+    expect(markup).toContain("Could not read this session")
+    expect(markup).toContain("nothing was written, nothing was lost")
+    expect(markup).toContain("Try again")
     expect(markup).toMatch(/aria-label="Send message"[^>]*disabled=""/)
   })
 })

@@ -36,7 +36,7 @@ const settle = () => act(async () => {
   for (let index = 0; index < 8; index += 1) await Promise.resolve()
 })
 
-const composer = /Message the agent|Send to queue for the next turn/
+const composer = /Steer it, or queue the next message|Cannot send, the daemon is not answering/
 
 it("opens the chosen session's thread, whichever surface the drawer was used from", async () => {
   const user = userEvent.setup()
@@ -109,11 +109,12 @@ it("stops and archives a session from its row, and forks by opening its checkpoi
   await user.click(screen.getByRole("menuitem", { name: "Archive session" }))
   expect(screen.getByRole("alertdialog").textContent).toContain(other.title)
   expect(sentRequests(socket, "session.archive")).toHaveLength(0)
-  await user.click(screen.getByRole("button", { name: "Cancel" }))
+  // I69: the confirmation's actions say what they do.
+  await user.click(screen.getByRole("button", { name: "Keep the session" }))
   expect(sentRequests(socket, "session.archive")).toHaveLength(0)
   await user.click(screen.getByRole("button", { name: `Actions for ${other.title}` }))
   await user.click(screen.getByRole("menuitem", { name: "Archive session" }))
-  await user.click(screen.getByRole("button", { name: "Archive session" }))
+  await user.click(screen.getByRole("button", { name: "Archive and remove the worktree" }))
   expect(pendingRequest(socket, "session.archive").params).toMatchObject({ sessionId: other.id })
   await act(async () => { respond(socket, "session.archive", snapshot) })
   await settle()

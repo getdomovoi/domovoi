@@ -1,16 +1,27 @@
 import {
   applyWorkspaceDelta,
   fleetSnapshotSchema,
+  rpcMethods,
+  rpcNotificationSchema,
+  rpcResponseSchema,
   workspaceDeltaSchema,
   workspaceSnapshotSchema,
   type FleetEntry,
+  type RpcMethod,
+  type RpcParams,
+  type RpcResult,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
-import { clientKind, clientVersion, protocolVersionForClient } from "./protocol-facts"
+import { clientVersion, protocolVersionForClient, type HandheldClient } from "./protocol-facts"
 import { DaemonTimeoutError, requestTimeoutMs } from "./request-timeout"
 
+// Every call is checked against the protocol when it compiles, and its answer
+// against the method's own result schema when it arrives.
+export type DaemonCall = <M extends RpcMethod>(method: M, params: RpcParams<M>) => Promise<RpcResult<M>>
+
 type Pending = {
+  method: RpcMethod
   resolve: (value: unknown) => void
   reject: (error: Error) => void
   timer: ReturnType<typeof setTimeout>
@@ -48,6 +59,15 @@ export class DaemonError extends Error {
   }
 }
 
+// The daemon said something this build cannot read. Retrying reads the same
+// thing again, so the answer is an update rather than another dial.
+export class DaemonProtocolError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "DaemonProtocolError"
+  }
+}
+
 export type DaemonStatus = "connecting" | "open" | "closed"
 
 // The phone connects to a daemon over the tailnet like any other client. This
@@ -62,6 +82,7 @@ export class DaemonConnection {
   constructor(
     private readonly url: string,
     private readonly token: string,
+    private readonly client: HandheldClient,
     private readonly handlers: {
       onSnapshot: (snapshot: WorkspaceSnapshot) => void
       // Only after the daemon accepted this connection's token. A snapshot
@@ -69,7 +90,7 @@ export class DaemonConnection {
       // pins trust may run on one of those.
       // The hello answer is the snapshot plus what this daemon can do that
       // the snapshot does not say, read once and never from a later push.
-      onHello?: (hello: WorkspaceSnapshot & { sessionImageAttachments?: boolean }) => void
+      onHello?: (hello: RpcResult<"system.hello">) => void
       onDelta: (delta: Parameters<typeof applyWorkspaceDelta>[1]) => void
       // The daemon pushes the whole fleet whenever it changes, so a list on
       // screen stops being a claim about when the tab was opened.
@@ -78,6 +99,10 @@ export class DaemonConnection {
       // The cause rather than its sentence, because whether a refusal is worth
       // retrying is decided by the daemon's error code, not its wording.
       onError: (cause: unknown) => void
+      // A frame this build could not read. The screen keeps what it had, so
+      // the person is told it may be missing a change rather than shown it
+      // as current.
+      onProtocolError: (reason: string) => void
       onClosed: () => void
     },
   ) {}
@@ -90,16 +115,16 @@ export class DaemonConnection {
 
     socket.onopen = () => {
       void this.call("system.hello", {
-        client: clientKind,
-        clientId: `phone-${Math.random().toString(16).slice(2, 10)}`,
+        client: this.client,
+        clientId: `${this.client}-${Math.random().toString(16).slice(2, 10)}`,
         clientVersion,
         protocolVersion: protocolVersionForClient,
         authToken: this.token,
       }).then(
-        (snapshot) => {
+        (hello) => {
           this.handlers.onStatus("open")
-          this.handlers.onSnapshot(snapshot as WorkspaceSnapshot)
-          this.handlers.onHello?.(snapshot as WorkspaceSnapshot & { sessionImageAttachments?: boolean })
+          this.handlers.onSnapshot(hello)
+          this.handlers.onHello?.(hello)
         },
         (cause: Error) => {
           this.handlers.onError(cause)
@@ -109,39 +134,25 @@ export class DaemonConnection {
     }
 
     socket.onmessage = (event) => {
-      let message: {
-        id?: number
-        result?: unknown
-        error?: { code?: number, message?: string, data?: unknown }
-        method?: string
-        params?: unknown
-      }
+      let input: unknown
       try {
-        message = JSON.parse(String(event.data))
+        input = JSON.parse(String(event.data))
       } catch {
+        this.handlers.onProtocolError("The daemon sent a message that is not valid JSON")
         return
       }
-      if (typeof message.id === "number") {
-        const pending = this.#pending.get(message.id)
-        if (!pending) return
-        clearTimeout(pending.timer)
-        this.#pending.delete(message.id)
-        if (message.error) {
-          pending.reject(new DaemonError(
-            message.error.message ?? "The daemon refused",
-            message.error.code,
-            message.error.data,
-          ))
-        } else {
-          pending.resolve(message.result)
-        }
+      const notification = rpcNotificationSchema.safeParse(input)
+      if (!notification.success) {
+        this.#answer(input)
         return
       }
+      const message = notification.data
       // A delta describes a change to the snapshot the client already holds, so
       // it is applied rather than treated as a reason to ask for everything.
       if (message.method === "workspace.delta") {
         const parsed = workspaceDeltaSchema.safeParse(message.params)
         if (parsed.success) this.handlers.onDelta(parsed.data)
+        else this.handlers.onProtocolError("The daemon sent a workspace.delta notification this app could not read")
         return
       }
       // Everything except streamed provider output arrives as a whole snapshot,
@@ -150,6 +161,7 @@ export class DaemonConnection {
       if (message.method === "workspace.changed") {
         const parsed = workspaceSnapshotSchema.safeParse(message.params)
         if (parsed.success) this.handlers.onSnapshot(parsed.data)
+        else this.handlers.onProtocolError("The daemon sent a workspace.changed notification this app could not read")
         return
       }
       // A machine enrolled, forgotten, or gone quiet reaches every client this
@@ -157,6 +169,7 @@ export class DaemonConnection {
       if (message.method === "fleet.changed") {
         const parsed = fleetSnapshotSchema.safeParse(message.params)
         if (parsed.success) this.handlers.onFleet(parsed.data.entries)
+        else this.handlers.onProtocolError("The daemon sent a fleet.changed notification this app could not read")
       }
     }
 
@@ -179,6 +192,13 @@ export class DaemonConnection {
     return this.#socket?.readyState === 1
   }
 
+  // Still dialing counts: a second dial beside it would greet twice and feed
+  // every delta to the screen twice.
+  isLive(): boolean {
+    const state = this.#socket?.readyState
+    return state === 0 || state === 1
+  }
+
   // Requests sent and not yet answered. Every one of them holds a promise the
   // caller is waiting on, so a number that climbs and never falls is the shape
   // of a leak.
@@ -186,19 +206,54 @@ export class DaemonConnection {
     return this.#pending.size
   }
 
-  call(method: string, params: unknown): Promise<unknown> {
+  // A response is read by the protocol's own schema, and its result by the
+  // schema of the method that asked for it, before anything waiting on it runs.
+  #answer(input: unknown): void {
+    const response = rpcResponseSchema.safeParse(input)
+    const id = response.success
+      ? response.data.id
+      : typeof input === "object" && input !== null ? (input as { id?: unknown }).id : undefined
+    const pending = typeof id === "number" ? this.#pending.get(id) : undefined
+    if (pending && typeof id === "number") {
+      clearTimeout(pending.timer)
+      this.#pending.delete(id)
+    }
+    if (!response.success) {
+      const reason = "The daemon sent a response this app could not read"
+      this.handlers.onProtocolError(reason)
+      pending?.reject(new DaemonProtocolError(reason))
+      return
+    }
+    if (!pending) return
+    const { error } = response.data
+    if (error) {
+      pending.reject(new DaemonError(error.message, error.code, error.data))
+      return
+    }
+    const result = rpcMethods[pending.method].result.safeParse(response.data.result)
+    if (!result.success) {
+      const reason = `The daemon answered ${pending.method} with something this app could not read`
+      this.handlers.onProtocolError(reason)
+      pending.reject(new DaemonProtocolError(reason))
+      return
+    }
+    pending.resolve(result.data)
+  }
+
+  call<M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> {
     const socket = this.#socket
     if (!socket) return Promise.reject(new DaemonNotSentError("The daemon connection is not open"))
     const id = this.#nextId++
     const timeoutMs = requestTimeoutMs(method)
-    return new Promise((resolve, reject) => {
+    return new Promise<RpcResult<M>>((resolve, reject) => {
       // Cleared on an answer, on a send that throws, and on close, so the only
       // way it fires is the case it exists for: accepted and never answered.
       const timer = setTimeout(() => {
         this.#pending.delete(id)
         reject(new DaemonTimeoutError(method, timeoutMs))
       }, timeoutMs)
-      this.#pending.set(id, { resolve, reject, timer })
+      // The answer was parsed by rpcMethods[method].result before it gets here.
+      this.#pending.set(id, { method, resolve: (value) => resolve(value as RpcResult<M>), reject, timer })
       try {
         socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
       } catch (cause) {

@@ -1,10 +1,10 @@
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { useState } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { SessionsDrawer } from "./sessions-drawer"
+import { ComposedSessionsDrawer as SessionsDrawer } from "./test-support/sessions-drawer"
 
 afterEach(cleanup)
 
@@ -86,9 +86,7 @@ it("folds a group away and back, keeping its count on the header", async () => {
   expect(screen.getByText("Migrate billing webhooks")).toBeTruthy()
 })
 
-// Each row carries the session's own actions. Stop is only offered while a
-// turn runs; the protocol has no worktree delete, so none is drawn.
-it("offers each session's actions from its row, stop only while it runs", async () => {
+it("keeps supported row actions reachable, while offering stop only for a running turn", async () => {
   const user = userEvent.setup()
   const onAction = vi.fn()
   function WithActions() {
@@ -97,21 +95,24 @@ it("offers each session's actions from its row, stop only while it runs", async 
   }
   render(<WithActions />)
   await user.click(screen.getByRole("button", { name: "Actions for Migrate billing webhooks" }))
-  expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-    "Stop the agent", "Fork from a checkpoint", "Move to another machine", "Archive session",
-  ])
+  expect(screen.getByRole("menuitem", { name: "Stop the agent" })).toBeTruthy()
+  expect(screen.getByRole("menuitem", { name: "Fork from a checkpoint" })).toBeTruthy()
+  expect(screen.getByRole("menuitem", { name: "Move to another machine" })).toBeTruthy()
+  expect(screen.getByRole("menuitem", { name: "Archive session" })).toBeTruthy()
   await user.click(screen.getByRole("menuitem", { name: "Stop the agent" }))
   expect(onAction).toHaveBeenCalledWith("stop", "s1")
 
   await user.click(screen.getByRole("button", { name: "Actions for Document the replay table" }))
-  expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-    "Fork from a checkpoint", "Move to another machine", "Archive session",
-  ])
+  expect(screen.queryByRole("menuitem", { name: "Stop the agent" })).toBeNull()
+  await user.click(screen.getByRole("menuitem", { name: "Resume session" }))
+  expect(onAction).toHaveBeenCalledWith("resume", "s3")
+
+  await user.click(screen.getByRole("button", { name: "Actions for Document the replay table" }))
   await user.click(screen.getByRole("menuitem", { name: "Archive session" }))
   expect(onAction).toHaveBeenCalledWith("archive", "s3")
 })
 
-it("keeps its actions reachable when the list is long", async () => {
+it("keeps long session lists scrollable and reserves the drawer footer for machine availability", async () => {
   const user = userEvent.setup()
   const snapshot = structuredClone(demoWorkspace)
   const base = snapshot.sessions[0]!
@@ -125,19 +126,15 @@ it("keeps its actions reachable when the list is long", async () => {
 
   function Long() {
     const [open, setOpen] = useState(false)
-    return <SessionsDrawer snapshot={snapshot} open={open} onOpenChange={setOpen} onActivate={vi.fn()} onNewSession={vi.fn()} />
+    return <SessionsDrawer snapshot={snapshot} open={open} onOpenChange={setOpen} onActivate={vi.fn()} machineAvailability="3 machines · 1 unreachable" />
   }
   render(<Long />)
   await user.click(screen.getByRole("button", { name: /Sessions/ }))
 
-  // Measured in a real browser at 1280x800: 43 sessions rendered 2440px tall
-  // with no cap and no scroll, putting New session 1679px below the fold. The
-  // column scrolls its list and keeps its actions in a footer outside it.
   const surface = screen.getByRole("complementary", { name: "Sessions" })
-  const scroller = surface.querySelector(".overflow-y-auto")
-  expect(scroller).not.toBeNull()
-  const action = screen.getByRole("button", { name: "New session" })
-  expect(scroller!.contains(action)).toBe(false)
+  expect(surface.querySelector(".overflow-y-auto")).not.toBeNull()
+  expect(screen.queryByRole("button", { name: "New session" })).toBeNull()
+  expect(screen.getByText(/machines.*unreachable/u)).toBeTruthy()
 })
 
 it("closes again when its own trigger is clicked", async () => {
@@ -170,7 +167,7 @@ function Twins({ activeSessionId }: { activeSessionId: string }) {
   return <SessionsDrawer snapshot={twinSnapshot(activeSessionId)} open={open} onOpenChange={setOpen} onActivate={vi.fn()} />
 }
 
-it("says which session is open, in text and to a reader, never in tint alone", async () => {
+it("retains aria-current while leaving the active state to the drawer row", async () => {
   const user = userEvent.setup()
   const view = render(<Twins activeSessionId="t1" />)
   await user.click(screen.getByRole("button", { name: /^Sessions / }))
@@ -179,12 +176,70 @@ it("says which session is open, in text and to a reader, never in tint alone", a
   const other = () => screen.getByRole("button", { name: /Trim the audit retention/ })
   expect(open().getAttribute("aria-current")).toBe("true")
   expect(other().getAttribute("aria-current")).toBeNull()
-  expect(open().textContent).toContain("Current")
-  expect(other().textContent).not.toContain("Current")
+  expect(open().textContent).not.toContain("Current")
 
   view.rerender(<Twins activeSessionId="t2" />)
   expect(other().getAttribute("aria-current")).toBe("true")
-  expect(other().textContent).toContain("Current")
   expect(open().getAttribute("aria-current")).toBeNull()
-  expect(open().textContent).not.toContain("Current")
+  expect(other().textContent).not.toContain("Current")
+})
+
+// A browser tab over the tailnet reaches one machine and holds its credential
+// for the tab only; the column says both where the design draws them.
+it("names the tab's scope and credential when asked to", async () => {
+  const user = userEvent.setup()
+  function Scoped() {
+    const [open, setOpen] = useState(false)
+    return <SessionsDrawer snapshot={snapshotWith()} open={open} onOpenChange={setOpen} onActivate={vi.fn()} scope={{ machine: demoWorkspace.machine.name, note: "this machine only" }} credentialNote={{ label: "Paired for this tab", meta: "ends when it closes" }} />
+  }
+  render(<Scoped />)
+  await user.click(screen.getByRole("button", { name: /^Sessions / }))
+  const column = screen.getByRole("complementary", { name: "Sessions" })
+  expect(within(column).getByText(demoWorkspace.machine.name)).toBeTruthy()
+  expect(within(column).getByText("this machine only")).toBeTruthy()
+  expect(within(column).getByText("Paired for this tab")).toBeTruthy()
+  expect(within(column).getByText("ends when it closes")).toBeTruthy()
+})
+
+// I69: an archived session has no worktree, so its row offers none of the
+// worktree actions and says why. The one way forward is drawn disabled.
+it("gives an archived row a menu that says what archive did", async () => {
+  const user = userEvent.setup()
+  const snapshot = snapshotWith()
+  const archived = snapshot.sessions[2]!
+  Object.assign(archived, { state: "archived", archiveRequestedAt: "2026-09-23T13:59:00.000Z", archiveCheckpoint: "b".repeat(40), archivedAt: "2026-09-23T14:09:00.000Z" })
+  function WithArchived() {
+    const [open, setOpen] = useState(true)
+    return <SessionsDrawer snapshot={snapshot} open={open} onOpenChange={setOpen} onActivate={vi.fn()} onAction={vi.fn()} />
+  }
+  render(<WithArchived />)
+  expect(screen.getByText(/· archived$/)).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: `Actions for ${archived.title}` }))
+  const later = screen.getByRole("menuitem", { name: /Start a new session from this branch/ })
+  expect(later.getAttribute("aria-disabled")).toBe("true")
+  expect(later.textContent).toContain("later")
+  expect(screen.getByText("Archived, so there is no worktree to delete. It cannot be forked, unarchived or sent to.")).toBeTruthy()
+  for (const name of ["Archive session", "Fork from a checkpoint", "Move to another machine", "Resume session"]) {
+    expect(screen.queryByRole("menuitem", { name })).toBeNull()
+  }
+})
+
+it("counts only live sessions on the drawer button", () => {
+  const snapshot = snapshotWith()
+  Object.assign(snapshot.sessions[2]!, { state: "archived", archivedAt: "2026-09-23T14:09:00.000Z" })
+  render(<SessionsDrawer snapshot={snapshot} open={false} onOpenChange={vi.fn()} onActivate={vi.fn()} />)
+  expect(screen.getByRole("button", { name: /^Sessions 2/ })).toBeTruthy()
+})
+
+it("ties the archived explanation to the disabled later item", async () => {
+  const user = userEvent.setup()
+  const snapshot = snapshotWith()
+  const archived = snapshot.sessions[2]!
+  Object.assign(archived, { state: "archived", archivedAt: "2026-09-23T14:09:00.000Z" })
+  render(<SessionsDrawer snapshot={snapshot} open onOpenChange={vi.fn()} onActivate={vi.fn()} onAction={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: `Actions for ${archived.title}` }))
+  const later = screen.getByRole("menuitem", { name: /Start a new session from this branch/ })
+  const describedBy = later.getAttribute("aria-describedby")
+  expect(describedBy).toBeTruthy()
+  expect(document.getElementById(describedBy!)?.textContent).toBe("Archived, so there is no worktree to delete. It cannot be forked, unarchived or sent to.")
 })

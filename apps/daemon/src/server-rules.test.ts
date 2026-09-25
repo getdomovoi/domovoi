@@ -39,13 +39,13 @@ function rpc(socket: WebSocket, method: string, params: Record<string, unknown> 
   })
 }
 
-async function setup() {
+async function setup(permissionMode: "ask" | "build" = "build") {
   const directory = await mkdtemp(join(tmpdir(), "domovoi-rules-"))
   roots.push(directory)
   await writeFile(join(directory, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }))
   const snapshot = structuredClone(demoWorkspace)
   const session = snapshot.sessions[0]!
-  session.runtime = { provider: "claude-code", model: "sonnet", reasoning: "high", permissionMode: "build", auto: false }
+  session.runtime = { provider: "claude-code", model: "sonnet", reasoning: "high", permissionMode, auto: false }
   session.state = "idle"
   session.workspacePath = directory
   session.providerThreadId = "thread-rules"
@@ -69,7 +69,8 @@ async function setup() {
   } satisfies AgentAdapter
   const path = join(directory, "state.sqlite")
   const store = new SqliteWorkspaceStore(path, snapshot)
-  const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent }, errorSink: () => {} })
+  const errorSink = vi.fn()
+  const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent }, errorSink })
   daemons.push(daemon)
   const address = await daemon.start()
   const socket = new WebSocket(`ws://127.0.0.1:${address.port}/rpc`)
@@ -81,7 +82,14 @@ async function setup() {
   const emit = (id: number, reason = "Run tests", command = "pnpm test") => listener!({
     type: "approval-requested", requestId: id, threadId: "thread-rules", turnId: "turn-rules", reason, command, cwd: directory,
   })
-  return { socket, store, agent, emit, daemon, path, directory, snapshot,
+  const emitPolicyRefusal = () => listener!({
+    type: "policy-refused",
+    threadId: "thread-rules",
+    itemId: "tool-write",
+    reason: "Write a generated file",
+    command: "Write",
+  } as AgentEvent)
+  return { socket, store, agent, emit, emitPolicyRefusal, daemon, errorSink, path, directory, snapshot,
     connectionId: (hello.result as { connectionId: string }).connectionId }
 }
 
@@ -154,6 +162,56 @@ describe("Rules daemon support", () => {
     expect(store.auditLog.query({ limit: 100 }).entries).toEqual(expect.arrayContaining([
       expect.objectContaining({ action: "approval-rule.used", outcome: "denied", target: "rule-tests" }),
     ]))
+  })
+
+  it("persists and broadcasts Ask-mode refusals without creating an approval path", async () => {
+    const { socket, store, agent, emitPolicyRefusal, daemon, errorSink, path, snapshot } = await setup("ask")
+    const notifications: Array<{ method?: string; params?: WorkspaceSnapshot }> = []
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as { method?: string; params?: WorkspaceSnapshot }
+      if (message.method) notifications.push(message)
+    })
+
+    emitPolicyRefusal()
+    await waitForDaemon(() => expect(
+      store.load().thread.filter(({ kind }) => kind === "policy-refusal").length + errorSink.mock.calls.length,
+    ).toBeGreaterThan(0))
+    expect(errorSink).not.toHaveBeenCalled()
+    await waitForDaemon(() => expect(store.load().thread.filter(({ kind }) => kind === "policy-refusal")).toHaveLength(1))
+    const refusal = store.load().thread.find(({ kind }) => kind === "policy-refusal")
+    expect(refusal).toMatchObject({
+      kind: "policy-refusal",
+      operation: "Write a generated file",
+      command: "Write",
+      rule: "Ask mode is read-only",
+      setBy: "Domovoi permission mode",
+      scope: "This session",
+      remedy: "Switch to Plan or Build mode before asking the agent to write files.",
+    })
+    expect(store.load().approvals).toEqual([])
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+    expect((await rpc(socket, "approval.resolve", { approvalId: refusal!.id, decision: "allow-once", revision: 0, client: "cli" })).error)
+      .toMatchObject({ code: -32602, message: "Approval does not exist" })
+    expect((await rpc(socket, "session.history", {
+      sessionId: snapshot.sessions[0]!.id,
+      categories: ["policy-refusals"],
+    })).result).toMatchObject({
+      items: [expect.objectContaining({ sourceId: refusal!.id, category: "policy-refusals", rule: "Ask mode is read-only" })],
+    })
+    await waitForDaemon(() => expect(notifications.some((message) =>
+      message.method === "workspace.changed"
+      && message.params?.thread.some(({ id }) => id === refusal!.id),
+    )).toBe(true))
+
+    socket.terminate()
+    await daemon.stop()
+    const reopened = new SqliteWorkspaceStore(path, demoWorkspace)
+    try {
+      expect(reopened.load().thread).toContainEqual(refusal)
+      expect(reopened.load().approvals).toEqual([])
+    } finally {
+      await reopened.close()
+    }
   })
 
   it("returns the daemon policy's category data", async () => {

@@ -1,0 +1,150 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 Skills.dc.html",
+  "sha256": "bf89650c0858632c1e74bd813dacbb920dac170d35440feda89be3e23e993b61",
+  "derivedOn": "2026-09-23",
+  "sources": [
+    "packages/ui/src/**/*.{ts,tsx}",
+    "packages/protocol/src/**/*.ts"
+  ],
+  "note": "Inventory re-derived from the current v2 design. Statuses record current implementation evidence and platform blockers; layout, visual state and interaction fidelity remain human-read checks.",
+  "elements": [
+    {
+      "id": "skills.browser",
+      "name": "Skills inventory and installation",
+      "where": "skills surface",
+      "copy": [
+        "Domovoi",
+        "Skills on mac-mini-m4",
+        "A skill is a folder with a SKILL.md and a manifest. Installing is not enabling: enabling is a review, per project.",
+        "Install from a path",
+        "1 review no longer matches its skill",
+        "This turn's selection",
+        "Inventories from your other machines",
+        "Usable only where installed.",
+        "Install from a path on mac-mini-m4",
+        "A path is the only source. No bundle, no registry, no installer, so nothing runs code to install.",
+        "SOURCE PATH",
+        "/Users/dana/work/skills/pr-triage",
+        "Manifest",
+        "Declared needs. Each is still gated when used.",
+        "FILES, 4 OF A 256 LIMIT",
+        "WHERE IT CAN GO",
+        "Two files will not be copied",
+        "typed refusals, not warnings",
+        "Install, leave it untrusted",
+        "Read it, then decide",
+        "Installing does not enable it in any project.",
+        "pr-triage",
+        "Enablement is a review, and it is per project",
+        "acme-api · reviewed 12 Aug 14:02 by desktop",
+        "Pinned to the digest and manifest you read. Change either and it is refused with",
+        "review-changed",
+        ". Manual review also grants trust.",
+        "SKILL.md",
+        "2.1 kB of a 128 kB limit · read-only here",
+        "Trust it for acme-api",
+        "Revoke",
+        "Trust and revoke are the only two decisions.",
+        "sql-explain changed since you reviewed it",
+        "refused · review-changed",
+        "The digest moved and the manifest gained a capability, so your old review does not carry. The daemon refused this turn with a reason.",
+        "WHAT CHANGED",
+        "The new capability is",
+        "secrets.read",
+        ", and it runs processes. Read that part.",
+        "Read the diff and re-review",
+        "Leave it disabled",
+        "The agent carried on this turn without it.",
+        "Skills for this turn",
+        "Eight at most, chosen explicitly. Omissions are reported with a reason.",
+        "Selected",
+        "No skills this turn. The agent works from the thread and the plan alone, which is the normal case for most turns.",
+        "Select three again",
+        "Remove",
+        "Omitted, with the reason",
+        "These four reasons are the whole vocabulary.",
+        "The delivery record keeps this partition, so an odd turn is explainable."
+      ],
+      "evidence": [
+        "Install from a path"
+      ],
+      "presence": [
+        "skill-browser"
+      ]
+    },
+    {
+      "id": "tools.tab",
+      "name": "Tools each agent will load",
+      "where": "second tab beside Skills (J45): the read-only statement, By agent and By source file views, rows listed before any session opens, what runs at session start, files that could not be read, the no-tool-servers footer, tools on other machines",
+      "states": [
+        "by agent",
+        "by source file",
+        "could not read",
+        "no tool servers passed"
+      ],
+      "copy": [
+        "Skills",
+        "Tools",
+        "Domovoi reads these files and reports what they declare. It installs, enables and changes nothing.",
+        "By agent",
+        "By source file",
+        "Listed before any session opens. Reading them does not start them.",
+        "Nothing from this repository can run when a session starts.",
+        "Tool servers",
+        "none passed",
+        "This agent starts with no tool servers passed.",
+        "No tool servers, hooks or permission rules in the files read.",
+        "Runs when a session starts",
+        "Could not read",
+        "Its entries are not listed. Domovoi does not guess what the file holds.",
+        "Tools on your other machines",
+        "Each daemon reads its own files."
+      ],
+      "evidence": [
+        "Domovoi reads these files and reports what they declare",
+        "By source file",
+        "Listed before any session opens"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "no RPC reports the tool servers, hooks and permission rules an agent's own files declare; the daemon passes no tool servers to any agent today (mcpServers: [])"
+      }
+    },
+    {
+      "id": "tools.gate-facts",
+      "name": "A tool call at the gate",
+      "where": "desktop thread lane and phone (J45): Waiting on your decision, Tool from server <server> (<file>), the call, Allow once, Always for <tool> here, Deny",
+      "copy": [
+        "Waiting on your decision",
+        "Tool from server",
+        "Allow once",
+        "Always for postgres-dev.run_query here",
+        "Deny"
+      ],
+      "evidence": [
+        "Tool from server"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "approval requests carry no tool server or declaring file, so a gate cannot name them"
+      }
+    }
+  ],
+  "annotations": [
+    "The card names the server and the file that declared it. A phone stacks the facts and keeps every one.",
+    "DESKTOP, THREAD LANE",
+    "PHONE, FACTS STACKED",
+    "A tool call at the gate"
+  ],
+  "sample": [
+    "codex",
+    "postgres-dev",
+    ".mcp.json",
+    "postgres-dev.run_query",
+    "sql: DELETE FROM webhook_replay WHERE received_at < now() - interval '30 days'",
+    "step 3 of 4 · claude-code · ask"
+  ],
+  "humanRead": []
+}

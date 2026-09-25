@@ -23,27 +23,18 @@ function shellProps() {
   }
 }
 
-function nav() {
-  return within(screen.getByRole("navigation", { name: "Settings" }))
-}
+it("renders the v2 settings contract as one ordered scrolling column", () => {
+  const { container } = render(<SettingsShell {...shellProps()} />)
 
-function openPane(name: string) {
-  return userEvent.click(nav().getByRole("button", { name }))
-}
+  expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeTruthy()
+  expect(screen.getByText("This machine holds its own settings. Nothing here is synced anywhere unless the row says so.")).toBeTruthy()
+  expect(screen.queryByRole("navigation", { name: "Settings" })).toBeNull()
 
-it("lists every settings destination in the handoff order", () => {
-  render(<SettingsShell {...shellProps()} />)
-
-  const labels = nav().getAllByRole("button").map((button) => button.textContent)
-  expect(labels).toEqual([
-    "Fleet & machines",
-    "Skills",
-    "Providers",
-    "Appearance & window",
-    "Permissions & rules",
-    "Notifications",
-    "Audit log",
-  ])
+  const content = container.textContent ?? ""
+  const sections = ["Providers and tokens", "Notifications", "Permissions and rules", "Elsewhere", "Appearance"]
+  const positions = sections.map((section) => content.indexOf(section))
+  expect(positions.every((position) => position >= 0)).toBe(true)
+  expect(positions).toEqual([...positions].sort((left, right) => left - right))
 })
 
 it("adds External editor only where the client can change it", () => {
@@ -58,15 +49,15 @@ it("adds External editor only where the client can change it", () => {
     />,
   )
 
-  expect(nav().getByRole("button", { name: "External editor" })).toBeTruthy()
+  expect(screen.getByRole("heading", { name: "External editor" })).toBeTruthy()
 })
 
 it("routes fleet and skills to the surfaces that own them", async () => {
   const props = shellProps()
   render(<SettingsShell {...props} />)
 
-  await openPane("Fleet & machines")
-  await openPane("Skills")
+  await userEvent.click(screen.getByRole("button", { name: /Machines and daemons/u }))
+  await userEvent.click(screen.getByRole("button", { name: /Skills/u }))
 
   expect(props.onOpenFleet).toHaveBeenCalledTimes(1)
   expect(props.onOpenSkills).toHaveBeenCalledTimes(1)
@@ -110,8 +101,6 @@ const legacyRule: ApprovalRule = {
 it("shows standing rules with the client that created them", async () => {
   render(<SettingsShell {...shellProps()} approvalRules={[activeRule]} />)
 
-  await openPane("Permissions & rules")
-
   const rules = within(screen.getByRole("list", { name: "Standing approval rules" }))
   const entry = within(rules.getAllByRole("listitem")[0]!)
   expect(entry.getByText("pnpm test")).toBeTruthy()
@@ -122,13 +111,11 @@ it("shows standing rules with the client that created them", async () => {
 it("says what a rule match does not cover", async () => {
   render(<SettingsShell {...shellProps()} approvalRules={[activeRule]} />)
 
-  await openPane("Permissions & rules")
-
   expect(screen.getByText(/Matches command and package-script text only/u)).toBeTruthy()
   expect(screen.getByText(/dependency binaries may still change/u)).toBeTruthy()
 })
 
-it("says a file-tool rule covers the worktree, not one path", async () => {
+it("says a worktree-wide file-tool rule no longer matches", async () => {
   const fileRule: ApprovalRule = {
     ...activeRule,
     id: "rule-3",
@@ -148,16 +135,36 @@ it("says a file-tool rule covers the worktree, not one path", async () => {
   }
   render(<SettingsShell {...shellProps()} approvalRules={[fileRule]} />)
 
-  await openPane("Permissions & rules")
-
-  expect(screen.getByText(/matches that tool anywhere inside the worktree/u)).toBeTruthy()
+  expect(screen.getByText(/made for the whole worktree no longer matches anything/u)).toBeTruthy()
   expect(screen.queryByText(/Matches command and package-script text only/u)).toBeNull()
+})
+
+it("says a file-tool rule covers one file", async () => {
+  const fileRule: ApprovalRule = {
+    ...activeRule,
+    id: "rule-4",
+    command: "Edit",
+    execution: {
+      state: "resolved",
+      digest: `sha256:${"c".repeat(64)}`,
+      record: {
+        version: 1,
+        cwd: ".",
+        kind: "workspace-file-tool",
+        coverage: "tool-and-file",
+        tool: "Edit",
+        scope: "file",
+        path: "src/index.ts",
+      },
+    },
+  }
+  render(<SettingsShell {...shellProps()} approvalRules={[fileRule]} />)
+
+  expect(screen.getByText(/matches that tool on one file/u)).toBeTruthy()
 })
 
 it("announces a retired legacy rule before its approval card returns", async () => {
   render(<SettingsShell {...shellProps()} approvalRules={[activeRule, legacyRule]} />)
-
-  await openPane("Permissions & rules")
 
   const retired = within(screen.getByRole("list", { name: "Retired approval rules" }))
   const entry = within(retired.getAllByRole("listitem")[0]!)
@@ -170,16 +177,12 @@ it("announces a retired legacy rule before its approval card returns", async () 
 it("keeps a retired rule out of the active list even when it is the only rule", async () => {
   render(<SettingsShell {...shellProps()} approvalRules={[legacyRule]} />)
 
-  await openPane("Permissions & rules")
-
   expect(screen.getByText(/No standing rules/u)).toBeTruthy()
   expect(screen.getByRole("list", { name: "Retired approval rules" })).toBeTruthy()
 })
 
 it("states when a project has no standing rules", async () => {
   render(<SettingsShell {...shellProps()} />)
-
-  await openPane("Permissions & rules")
 
   expect(screen.getByText(/No standing rules/u)).toBeTruthy()
   expect(screen.queryByRole("list", { name: "Standing approval rules" })).toBeNull()
@@ -189,7 +192,6 @@ it("changes one notification kind without disturbing the others", async () => {
   const props = shellProps()
   render(<SettingsShell {...props} />)
 
-  await openPane("Notifications")
   await userEvent.click(screen.getByRole("switch", { name: "Failures" }))
 
   expect(props.onNotificationsChange).toHaveBeenCalledWith({

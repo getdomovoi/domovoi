@@ -20,7 +20,7 @@ import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
-import { Field, FieldGroup, FieldLabel } from "./components/ui/field"
+import { Field, FieldLabel } from "./components/ui/field"
 import { Input } from "./components/ui/input"
 import { ScrollArea } from "./components/ui/scroll-area"
 import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
@@ -29,6 +29,14 @@ import { Deadline } from "./deadline"
 
 const outcomes = ["all", "started", "succeeded", "failed", "denied", "cancelled"] as const
 type OutcomeFilter = (typeof outcomes)[number]
+const actors = [
+  ["all", "Every actor"],
+  ["client", "Clients"],
+  ["daemon", "Daemon"],
+  ["provider", "Providers"],
+  ["machine", "Machines"],
+] as const
+type ActorFilter = (typeof actors)[number][0]
 type AuditExportFilters = Omit<AuditExportParams, "before" | "format" | "limit">
 type AuditDownload = Pick<AuditExportResult, "format" | "exportedAt" | "entryCount" | "content">
 const auditQueryBudgetMs = 15_000
@@ -171,7 +179,6 @@ function AuditEntryRow({ entry }: { entry: AuditEntry }) {
 export function AuditLogView({
   connected,
   initialPage,
-  onOpenSkills,
   onQuery,
   onExport,
 }: {
@@ -184,6 +191,7 @@ export function AuditLogView({
   const [query, setQuery] = useState("")
   const [action, setAction] = useState("")
   const [outcome, setOutcome] = useState<OutcomeFilter>("all")
+  const [actor, setActor] = useState<ActorFilter>("all")
   const [page, setPage] = useState<AuditQueryPage | undefined>(initialPage)
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -197,7 +205,8 @@ export function AuditLogView({
     ...(normalizedQuery ? { query: normalizedQuery } : {}),
     ...(normalizedAction ? { action: normalizedAction } : {}),
     ...(outcome !== "all" ? { outcome: outcome as AuditOutcome } : {}),
-  }), [normalizedAction, normalizedQuery, outcome])
+    ...(actor !== "all" ? { actor } : {}),
+  }), [actor, normalizedAction, normalizedQuery, outcome])
 
   useEffect(() => {
     loadControllerRef.current?.abort()
@@ -294,122 +303,68 @@ export function AuditLogView({
   }
 
   return (
-    <div className="flex min-h-0 flex-1">
-      <aside aria-label="Settings navigation" className="hidden w-[236px] shrink-0 flex-col border-r bg-sidebar p-2.5 sm:flex">
-        <div className="px-2 py-2 text-base font-semibold">Settings</div>
-        <Button variant="ghost" className="justify-start" onClick={onOpenSkills}>Skills</Button>
-        <Button variant="secondary" className="justify-start">Audit log</Button>
-      </aside>
+    <ScrollArea className="min-h-0 min-w-0 flex-1">
+      <main className="mx-auto flex w-full max-w-[900px] flex-col gap-[18px] px-6 pb-10 pt-[30px]">
+        <header className="flex flex-col gap-[7px]">
+          <h1 className="m-0 text-[19px] font-semibold tracking-[-0.01em]">Audit log</h1>
+          <p className="m-0 text-[13px] leading-[1.62] text-muted-foreground">
+            Every decision this machine recorded, across every session. This is the record the product actually promises, so it is a query rather than a feed: filter it, read it, export it, and it stays here.
+          </p>
+        </header>
 
-      <ScrollArea className="min-h-0 min-w-0 flex-1">
-        <main className="mx-auto flex w-full max-w-[900px] flex-col px-4 py-5 sm:px-8 sm:py-7">
-          <nav aria-label="Settings" className="mb-3 -ml-2 flex flex-wrap items-center gap-1 self-start sm:hidden">
-            <Button variant="ghost" className="min-h-11" onClick={onOpenSkills}>Skills</Button>
-          </nav>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h1 className="m-0 text-[17px] font-semibold">Audit log</h1>
-              <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-relaxed text-muted-foreground">
-                Search redacted security, session, provider, approval, tool, and terminal events stored on this machine.
-              </p>
+        <div className="flex flex-wrap items-end gap-2">
+          <Field className="min-w-52 flex-1">
+            <FieldLabel htmlFor="audit-search" className="sr-only">Search</FieldLabel>
+            <div className="relative">
+              <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-faint" />
+              <Input id="audit-search" className="rounded-full pl-9 font-machine text-[11px]" maxLength={512} placeholder="Search the audit log" value={query} onChange={(event) => setQuery(event.target.value)} />
             </div>
-            <Button variant="outline" disabled={!connected} onClick={toggleExport}>
-              <DownloadIcon data-icon="inline-start" />
-              {exporting ? "Cancel export" : "Export JSONL"}
-            </Button>
-          </div>
-
-          <FieldGroup className="mt-5 gap-3 sm:flex-row">
-            <Field>
-              <FieldLabel htmlFor="audit-search">Search</FieldLabel>
-              <Input
-                id="audit-search"
-                maxLength={512}
-                placeholder="Actor, target, action, or redacted detail"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="audit-action">Action</FieldLabel>
-              <Input
-                id="audit-action"
-                maxLength={512}
-                placeholder="terminal.create"
-                value={action}
-                onChange={(event) => setAction(event.target.value)}
-              />
-            </Field>
-          </FieldGroup>
-
-          <Field className="mt-3">
-            <FieldLabel>Outcome</FieldLabel>
-            <ToggleGroup
-              type="single"
-              value={outcome}
-              onValueChange={(value) => { if (value) setOutcome(value as OutcomeFilter) }}
-              variant="outline"
-              size="sm"
-              spacing={0}
-              aria-label="Audit outcome"
-              className="flex-wrap justify-start"
-            >
-              {outcomes.map((value) => (
-                <ToggleGroupItem key={value} value={value}>{value}</ToggleGroupItem>
-              ))}
-            </ToggleGroup>
           </Field>
+          <Field className="w-48">
+            <FieldLabel htmlFor="audit-action" className="sr-only">Action</FieldLabel>
+            <Input id="audit-action" className="rounded-full font-machine text-[11px]" maxLength={512} placeholder="Action, for example terminal.create" value={action} onChange={(event) => setAction(event.target.value)} />
+          </Field>
+          <ToggleGroup type="single" value={outcome} onValueChange={(value) => { if (value) setOutcome(value as OutcomeFilter) }} variant="outline" size="sm" spacing={1} aria-label="Audit outcome" className="flex-wrap justify-start">
+            {outcomes.map((value) => <ToggleGroupItem key={value} value={value} className="rounded-full px-3 capitalize">{value}</ToggleGroupItem>)}
+          </ToggleGroup>
+          <ToggleGroup type="single" value={actor} onValueChange={(value) => { if (value) setActor(value as ActorFilter) }} variant="outline" size="sm" spacing={1} aria-label="Audit actor" className="flex-wrap justify-start">
+            {actors.map(([value, label]) => <ToggleGroupItem key={value} value={value} className="rounded-full px-3">{label}</ToggleGroupItem>)}
+          </ToggleGroup>
+        </div>
 
-          {error ? (
-            <Alert variant="destructive" className="mt-4">
-              <CircleStopIcon />
-              <AlertTitle>Audit log unavailable</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+        {error ? <Alert variant="destructive"><CircleStopIcon /><AlertTitle>Audit log unavailable</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
+
+        <section aria-label="Audit entries" className="overflow-hidden rounded-xl border bg-card">
+          {page?.entries.map((entry) => <AuditEntryRow key={entry.id} entry={entry} />)}
+          {!loading && !error && page?.entries.length === 0 ? (
+            <Empty className="min-h-52 border-0">
+              <EmptyHeader>
+                <EmptyMedia variant="icon"><SearchIcon /></EmptyMedia>
+                {Object.keys(filters).length === 0 ? <><EmptyTitle>This machine has recorded nothing yet</EmptyTitle><EmptyDescription>Approvals, sessions and terminals are written here as they happen.</EmptyDescription></> : <><EmptyTitle>No matching audit entries</EmptyTitle><EmptyDescription>Change search terms, action, or outcome.</EmptyDescription></>}
+              </EmptyHeader>
+            </Empty>
           ) : null}
+          {loading && !page ? <p role="status" className="p-6 text-center font-machine text-[10px] text-faint">Loading audit log</p> : null}
+        </section>
 
-          <section className="mt-5" aria-label="Audit entries">
-            {page?.entries.map((entry) => <AuditEntryRow key={entry.id} entry={entry} />)}
-            {/* Not-searched and no-results are different answers. Telling
-                someone to change a filter they never set does not merely fail to
-                distinguish the two: it hands them the one instruction that
-                cannot help, because there is nothing narrowing the list. */}
-            {!loading && !error && page?.entries.length === 0 ? (
-              <Empty className="min-h-52 border">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon"><SearchIcon /></EmptyMedia>
-                  {Object.keys(filters).length === 0 ? (
-                    <>
-                      <EmptyTitle>This machine has recorded nothing yet</EmptyTitle>
-                      <EmptyDescription>
-                        Approvals, sessions and terminals are written here as they happen.
-                      </EmptyDescription>
-                    </>
-                  ) : (
-                    <>
-                      <EmptyTitle>No matching audit entries</EmptyTitle>
-                      <EmptyDescription>Change search terms, action, or outcome.</EmptyDescription>
-                    </>
-                  )}
-                </EmptyHeader>
-              </Empty>
-            ) : null}
-            {loading && !page ? (
-              <p role="status" className="p-6 text-center font-machine text-[10px] text-faint">Loading audit log</p>
-            ) : null}
-            {page?.hasMore ? (
-              <Button className="mx-auto mt-4" variant="outline" size="sm" disabled={loading} onClick={() => void loadOlder()}>
-                {loading ? "Loading" : "Load older"}
-              </Button>
-            ) : null}
-            {!loading && page?.entries.length ? (
-              <p className="mt-4 flex items-center justify-center gap-1.5 font-machine text-mono-xs text-faint">
-                <ShieldCheckIcon /> Stored and exported fields are redacted by the daemon.
-              </p>
-            ) : null}
-          </section>
-        </main>
-      </ScrollArea>
-    </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" disabled={!connected} onClick={toggleExport} aria-label={exporting ? "Cancel export" : "Export this query"}>
+            <DownloadIcon data-icon="inline-start" />{exporting ? "Cancel export" : "Export this query"}
+          </Button>
+          <span className="font-machine text-[10.5px] text-faint">writes a file on this machine · {page?.entries.length ?? 0} rows loaded</span>
+          {page?.hasMore ? <Button className="ml-auto" variant="outline" size="sm" disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading" : "Load older"}</Button> : null}
+        </div>
+
+        <section className="overflow-hidden rounded-xl border bg-card" aria-labelledby="audit-facts-title">
+          <h2 id="audit-facts-title" className="m-0 border-b px-[15px] py-[11px] text-[10.5px] font-medium tracking-[0.13em] text-faint">WHAT THIS LOG IS, AND IS NOT</h2>
+          {[
+            "Rows name verified credentials, so renaming a device does not rewrite history.",
+            "Retention is bounded by the daemon's local audit policy.",
+            "It lives on this machine and is never uploaded.",
+            "Export writes a redacted file here. Moving it is your decision.",
+          ].map((fact) => <div key={fact} className="flex items-start gap-2.5 px-[15px] py-2.5 text-[12px] leading-[1.55] text-strong"><ShieldCheckIcon className="mt-1 size-3 shrink-0 text-success" />{fact}</div>)}
+        </section>
+      </main>
+    </ScrollArea>
   )
 }

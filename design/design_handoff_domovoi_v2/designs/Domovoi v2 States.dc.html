@@ -155,7 +155,7 @@
                 <sc-for list="{{ readyRows }}" as="r" hint-placeholder-count="3">
                   <div style="{{ r.rowStyle }}">
                     <span style="{{ r.dot }}"></span>
-                    <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong);">{{ r.name }}</span>
+                    <sc-for list="{{ r.marks }}" as="mk" hint-placeholder-count="0"><span style="width: 18px; height: 18px; flex: 0 0 18px; border-radius: 50%; background: var(--muted); border: 1px solid var(--border); display: inline-flex; align-items: center; justify-content: center; color: var(--strong);"><span role="img" aria-label="{{ mk }}" style="display: block; width: 62%; height: 62%; background: currentColor; -webkit-mask: url(assets/harness/{{ mk }}.svg) center / contain no-repeat; mask: url(assets/harness/{{ mk }}.svg) center / contain no-repeat;"></span></span></sc-for><span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong);">{{ r.name }}</span>
                     <span style="font-size: 11.5px; color: var(--faint);">{{ r.state }}</span>
                   </div>
                 </sc-for>
@@ -241,7 +241,7 @@
               <span style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--foreground);">idempotency</span>
               <span style="display: inline-block; width: 1.5px; height: 15px; background: var(--primary);"></span>
               <span style="flex: 1;"></span>
-              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">searched 3 machines</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">searched 2 of 3 machines</span>
             </div>
             <div style="flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 30px;">
               <div style="width: 100%; max-width: 520px; display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center;">
@@ -367,7 +367,7 @@ class Component extends DCLogic {
       { id: "firstRun", num: "1", label: "No sessions yet", note: "The daemon answers and the list is empty. Empty is a state with a cause, so the screen names the cause." },
       { id: "loading", num: "2", label: "Reading the thread", note: "Skeletons in the shape of what is coming, and a line saying which machine is being read." },
       { id: "failed", num: "3", label: "Failed to load", note: "A partial thread reads like a finished one, so Domovoi refuses to show one." },
-      { id: "noResults", num: "4", label: "Nothing matched", note: "Two machines answered and one did not. No results and not searched are different answers." },
+      { id: "noResults", num: "4", label: "Nothing matched", note: "Two of three machines answered, so the count reads 2 of 3. No results and not searched are different answers." },
       { id: "newThread", num: "5", label: "Nothing has run yet", note: "The worktree is cut and no turn has been taken. The first message is what starts it." }
     ];
 
@@ -447,9 +447,9 @@ class Component extends DCLogic {
       readyRows: [
         { name: "acme-api", state: "clean · main at 8f3c1de", k: "success" },
         { name: "acme-web", state: "3 uncommitted files", k: "warning" },
-        { name: "claude-code, codex", state: "both authenticated", k: "success" }
+        { name: "claude-code, codex", state: "both authenticated", k: "success", marks: ["claude-code", "codex"] }
       ].map((r, i) => ({
-        name: r.name, state: r.state,
+        name: r.name, state: r.state, marks: r.marks || [],
         dot: this.dot("var(--" + r.k + ")", 6),
         rowStyle: "display: flex; align-items: center; gap: 10px; padding: 10px 14px;" + (i ? " border-top: 1px solid var(--border);" : "")
       })),

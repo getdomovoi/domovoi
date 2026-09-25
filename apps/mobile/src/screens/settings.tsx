@@ -1,4 +1,5 @@
-import { Platform, TextInput, View } from "react-native"
+import { useState } from "react"
+import { Platform, Pressable, TextInput, View } from "react-native"
 
 import { PageScroller } from "../components/page-scroller"
 import { Button } from "../components/ui/button"
@@ -6,11 +7,14 @@ import { Card } from "../components/ui/card"
 import { KeyProbeCard } from "../components/key-probe-card"
 import { Text } from "../components/ui/text"
 import { cn } from "../lib/cn"
+import type { HandheldClient } from "../lib/protocol-facts"
+import { gateReach } from "../gate-reach"
 import { clientVersion } from "../lib/protocol-facts"
 import { phoneFacts } from "../phone-facts"
 import type { ConnectionFault } from "../lib/connection-fault"
 import type { DaemonStatus } from "../lib/daemon"
-import { colors } from "../theme/tokens.generated"
+import type { ThemePreference } from "../theme/theme"
+import { useTheme } from "../theme/theme-provider"
 
 // The four the handoff lists. They configure a machine rather than a phone, so
 // an unpaired phone cannot reach any of them. The handoff keeps them on screen
@@ -37,8 +41,11 @@ export function SettingsScreen({
   onChangeToken,
   onConnect,
   onForget,
-  onScanPairingCode,
+  onOpenStop,
+  themePreference,
+  onChangeTheme,
   paired,
+  device,
   bottomInset,
 }: {
   url: string
@@ -49,15 +56,67 @@ export function SettingsScreen({
   onChangeToken: (value: string) => void
   onConnect: () => void
   onForget: () => void
-  // Pairing by camera: the phone reads the address and a client credential
-  // from the code the machine shows, instead of typing both.
-  onScanPairingCode?: (() => void) | undefined
+  onOpenStop: () => void
+  themePreference: ThemePreference
+  onChangeTheme: (preference: ThemePreference) => void
   // Whether this phone has a daemon to talk to at all. Device settings work
   // either way; the machine-scoped ones do not exist until one is paired.
   paired: boolean
+  // Which device this is, so the line about gates names it.
+  device: HandheldClient
   // What the floating tab bar covers, so the list can pad by exactly that.
   bottomInset: number
 }) {
+  const [diagnostics, setDiagnostics] = useState(false)
+  const { palette } = useTheme()
+
+  if (__DEV__ && diagnostics) {
+    return (
+      <View className="flex-1 bg-background">
+        <View className="px-4 pb-3 pt-2">
+          <Text variant="heading">Connection diagnostics</Text>
+          <Text variant="meta" className="mt-[3px]">Development build only</Text>
+        </View>
+        <PageScroller contentContainerClassName="gap-[14px] px-3" bottomInset={bottomInset} keyboardShouldPersistTaps="handled">
+          <Card className="gap-3">
+            <Text className="text-[12.5px] leading-[19px] text-warning">
+              Credential scope is unverified. This route checks connectivity only and cannot prove that a pasted credential is limited to phone permissions.
+            </Text>
+            <View className="gap-1.5">
+              <Text variant="label">Daemon address</Text>
+              <TextInput
+                value={url}
+                onChangeText={onChangeUrl}
+                autoCapitalize="none"
+                autoCorrect={false}
+                inputMode="url"
+                placeholder="ws://workshop.tailnet:47831/rpc"
+                placeholderTextColor={palette.faint}
+                selectionColor={palette.primary}
+                className="min-h-tap rounded-md border border-border bg-code px-3 font-mono text-[11px] text-foreground"
+              />
+            </View>
+            <View className="gap-1.5">
+              <Text variant="label">Diagnostic credential</Text>
+              <TextInput
+                value={token}
+                onChangeText={onChangeToken}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+                placeholderTextColor={palette.faint}
+                selectionColor={palette.primary}
+                className="min-h-tap rounded-md border border-border bg-code px-3 font-mono text-[11px] text-foreground"
+              />
+            </View>
+            <Button title="Connect" variant="primary" shape="block" onPress={onConnect} />
+            <Button title="Back to Settings" variant="ghost" shape="block" onPress={() => setDiagnostics(false)} />
+          </Card>
+        </PageScroller>
+      </View>
+    )
+  }
+
   return (
     <View className="flex-1 bg-background">
       <View className="px-4 pb-3 pt-2">
@@ -74,85 +133,97 @@ export function SettingsScreen({
             disagree with what the machine has been told. None has anywhere to
             go, so none is drawn with a chevron. */}
         <View className="gap-[7px]">
-          <Text variant="label" className="px-1">This phone</Text>
+          <Text variant="label" className="px-1">THIS PHONE</Text>
           <Card flush>
             {phoneFacts({
               os: Platform.OS,
               osVersion: Platform.Version,
               appVersion: clientVersion,
-            }).map((fact, index) => (
+              appearance: themePreference === "system" ? "System" : themePreference === "light" ? "Light" : "Dark",
+            }).map((fact, index) => fact.label === "Appearance" ? (
+              <View
+                key={fact.label}
+                accessibilityLabel={`${fact.label}, ${fact.value}`}
+                className="gap-2 px-[13px] py-3"
+              >
+                <View className="flex-row items-center gap-2.5">
+                  <Text className="flex-1 text-[12.5px]">{fact.label}</Text>
+                  <Text variant="meta">{fact.value}</Text>
+                </View>
+                <View className="flex-row rounded-lg bg-accent p-1">
+                  {(["system", "light", "dark"] as const).map((choice) => {
+                    const selected = themePreference === choice
+                    const label = choice[0]!.toUpperCase() + choice.slice(1)
+                    return (
+                      <Pressable
+                        key={choice}
+                        accessibilityRole="radio"
+                        accessibilityLabel={label}
+                        accessibilityState={{ checked: selected }}
+                        onPress={() => onChangeTheme(choice)}
+                        className={cn("min-h-tap flex-1 items-center justify-center rounded-md", selected && "bg-card")}
+                      >
+                        <Text className={cn("font-sans-medium text-[12px]", selected ? "text-foreground" : "text-muted-foreground")}>{label}</Text>
+                      </Pressable>
+                    )
+                  })}
+                </View>
+              </View>
+            ) : (
               <View
                 key={fact.label}
                 accessibilityLabel={`${fact.label}, ${fact.value}`}
                 className={cn(
-                  "flex-row items-center gap-2.5 px-[13px] py-3",
-                  index > 0 && "border-t border-border",
+                  "flex-row items-center gap-2.5 border-t border-border px-[13px] py-3",
+                  index === 0 && "border-t-0",
                 )}
               >
                 <Text className="flex-1 text-[12.5px]">{fact.label}</Text>
                 <Text variant="meta">{fact.value}</Text>
               </View>
             ))}
+            {/* Listed, dimmed and not touchable, with no chevron: there is no
+                push without the relay, so the setting does not exist yet. */}
+            <View
+              accessibilityLabel="Notifications, Not yet"
+              accessibilityState={{ disabled: true }}
+              className="flex-row items-center gap-2.5 border-t border-border px-[13px] py-3 opacity-50"
+            >
+              <Text className="flex-1 text-[12.5px]">Notifications</Text>
+              <Text variant="meta">Not yet</Text>
+            </View>
           </Card>
+          <Text variant="note" className="px-1">{gateReach(device)}</Text>
         </View>
 
-        <Card className="gap-3">
-          {onScanPairingCode ? (
-            <Button title="Scan a pairing code" variant="primary" shape="block" onPress={onScanPairingCode} />
-          ) : null}
-          <View className="gap-1.5">
-            <Text variant="label">Daemon address</Text>
-            <TextInput
-              value={url}
-              onChangeText={onChangeUrl}
-              autoCapitalize="none"
-              autoCorrect={false}
-              inputMode="url"
-              placeholder="ws://workshop.tailnet:47831/rpc"
-              placeholderTextColor={colors.dark.faint}
-              // Left unset, iOS tints the caret and the selection with its own
-              // system blue, which is the one accent on the screen that is not
-              // this product's.
-              selectionColor={colors.dark.primary}
-              className="min-h-tap rounded-md border border-border bg-code px-3 font-mono text-[11px] text-foreground"
-            />
-          </View>
-          <View className="gap-1.5">
-            <Text variant="label">Pairing token</Text>
+        {paired ? (
+          <Card className="gap-3">
+            <Text variant="label">Paired machine</Text>
             <Text variant="note">
-              This credential can send work to an agent on that machine, approve a command, and
-              pause a session. It cannot open a terminal or read files there. Treat it like a key
-              to those three things.
+              {fault && !fault.retriable ? "Not connected, and not trying again" : statusLabel[status]}
             </Text>
-            <TextInput
-              value={token}
-              onChangeText={onChangeToken}
-              autoCapitalize="none"
-              autoCorrect={false}
-              secureTextEntry
-              placeholderTextColor={colors.dark.faint}
-              selectionColor={colors.dark.primary}
-              className="min-h-tap rounded-md border border-border bg-code px-3 font-mono text-[11px] text-foreground"
-            />
-          </View>
-          <Button title="Connect" variant="primary" shape="block" onPress={onConnect} />
-          <Button title="Forget this daemon" variant="ghost" shape="block" onPress={onForget} />
-          <Text variant="note">
-            {fault && !fault.retriable ? "Not connected, and not trying again" : statusLabel[status]}
-          </Text>
-          {fault ? (
-            <View className="gap-1">
-              <Text className="font-sans-medium text-[11.5px] text-destructive">{fault.headline}</Text>
-              <Text variant="note">{fault.detail}</Text>
-            </View>
-          ) : null}
-        </Card>
+            {fault ? (
+              <View className="gap-1">
+                <Text className="font-sans-medium text-[11.5px] text-destructive">{fault.headline}</Text>
+                <Text variant="note">{fault.detail}</Text>
+              </View>
+            ) : null}
+            <Button title="Forget this daemon" variant="ghost" shape="block" onPress={onForget} />
+            <Text variant="note">
+              The credential stays in this device's keychain and is never shown here. Forgetting the daemon removes it.
+            </Text>
+          </Card>
+        ) : null}
 
-        <Text variant="note" className="px-1">
-          The phone reaches the daemon directly over your tailnet. Nothing is relayed through a
-          hosted service. The token is held in this device's keychain, is never copied off it, and
-          forgetting the daemon removes it.
-        </Text>
+        {paired ? (
+          <Card className="gap-3 border-danger-border bg-danger-bg">
+            <Text variant="label" className="text-danger-dim">Machine safety</Text>
+            <Text className="text-[12.5px] leading-[19px] text-danger-fg">
+              Pause stops at the next turn boundary. Emergency stop kills every running agent and terminal immediately, and half-written files stay half-written.
+            </Text>
+            <Button title="Pause or emergency stop" variant="destructive" shape="block" onPress={onOpenStop} />
+          </Card>
+        ) : null}
 
         {/* Listed, dimmed and not touchable. Hiding them would leave the screen
             looking finished when it is not, and making them tappable would
@@ -184,7 +255,14 @@ export function SettingsScreen({
           </View>
         )}
 
-        {__DEV__ ? <KeyProbeCard /> : null}
+        {__DEV__ ? (
+          <Card className="gap-3">
+            <Text variant="label">Development diagnostics</Text>
+            <Text variant="note">Raw connection values exist only on a development-build route.</Text>
+            <Button title="Connection diagnostics" variant="outline" shape="block" onPress={() => setDiagnostics(true)} />
+            <KeyProbeCard />
+          </Card>
+        ) : null}
       </PageScroller>
     </View>
   )

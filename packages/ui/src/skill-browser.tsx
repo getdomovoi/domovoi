@@ -188,7 +188,6 @@ export function SkillBrowser({
   inventorySources = [],
   loading,
   error,
-  onOpenAudit,
   onReadSkill,
   projectId,
   enablements,
@@ -198,6 +197,7 @@ export function SkillBrowser({
   onInstallSkill,
   onRetry,
   requestedSkillId,
+  readOnly = false,
 }: {
   skills: readonly SkillSummary[]
   inventorySources?: readonly SkillInventorySource[]
@@ -226,6 +226,7 @@ export function SkillBrowser({
     sourceDigest: string
   }) => Promise<SkillSummary>
   onRetry: () => void
+  readOnly?: boolean
 }) {
   const [query, setQuery] = useState("")
   const [selectedId, setSelectedId] = useState(() => skills[0]?.id ?? "")
@@ -306,7 +307,7 @@ export function SkillBrowser({
   }
 
   const submitReview = () => {
-    if (!selected || reviewEnabled === undefined) return
+    if (readOnly || !selected || reviewEnabled === undefined) return
     setReviewPending(true)
     setReviewError("")
     void onSetSkillEnabled({
@@ -325,6 +326,7 @@ export function SkillBrowser({
   const addRefusals = [...(addPreview?.refusals ?? []), ...(addRefusal ? [addRefusal] : [])]
 
   const openAdd = () => {
+    if (readOnly) return
     setAddPath("")
     setAddPreview(undefined)
     setAddScope(undefined)
@@ -334,6 +336,7 @@ export function SkillBrowser({
   }
 
   const reviewAdd = () => {
+    if (readOnly) return
     const source = skillInstallSourceSchema.safeParse({ kind: "path", path: addPath.trim() })
     if (!source.success) {
       setAddError("Enter the absolute path of a folder on this machine that contains SKILL.md.")
@@ -353,7 +356,7 @@ export function SkillBrowser({
   }
 
   const installAdd = () => {
-    if (!addPreview || !addScope) return
+    if (readOnly || !addPreview || !addScope) return
     setAddPending(true)
     setAddError("")
     setAddRefusal(undefined)
@@ -375,7 +378,7 @@ export function SkillBrowser({
   }
 
   const submitMachineReview = (decision: SkillReviewDecision) => {
-    if (!selected) return
+    if (readOnly || !selected) return
     setMachineReviewPending(true)
     setMachineReviewError("")
     void onReviewSkill({
@@ -388,29 +391,17 @@ export function SkillBrowser({
   }
 
   return (
-    <div className="flex min-h-0 flex-1">
-      <aside aria-label="Settings navigation" className="hidden w-[236px] shrink-0 flex-col border-r bg-sidebar p-2.5 sm:flex">
-        <div className="px-2 py-2 text-base font-semibold">Settings</div>
-        <Button variant="secondary" className="justify-start">Skills</Button>
-        <Button variant="ghost" className="justify-start" onClick={onOpenAudit}>Audit log</Button>
-      </aside>
-
+    <>
       <ScrollArea className="min-h-0 min-w-0 flex-1">
-        <main className="mx-auto w-full max-w-[740px] px-4 py-5 sm:px-8 sm:py-7">
-          <nav aria-label="Settings" className="mb-3 -ml-2 flex flex-wrap items-center gap-1 sm:hidden">
-            <Button variant="ghost" className="min-h-11" onClick={onOpenAudit}>Audit log</Button>
-          </nav>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h1 className="m-0 text-[17px] font-semibold">Skills</h1>
-              <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-relaxed text-muted-foreground">
-                {loading ? "Discovering skills on this machine." : `${skills.length} discovered across Domovoi, user, provider, project, and system directories.`} Skills run on the machine that holds the files they need.
-              </p>
-            </div>
-            <Button variant="outline" size="sm" className="shrink-0" onClick={openAdd}>
-              <PlusIcon data-icon="inline-start" />
-              Add skill
-            </Button>
+        <main className="mx-auto w-full max-w-[900px] px-6 pb-10 pt-8">
+          <header className="flex flex-col gap-2">
+            <h1 className="m-0 text-[20px] font-semibold tracking-[-0.015em]">Skills on this machine</h1>
+            <p className="m-0 text-[13px] leading-[1.65] text-muted-foreground">A skill is a folder with a SKILL.md and a manifest. Installing is not enabling: enabling is a review, per project.</p>
+          </header>
+
+          <div className="mt-5 flex flex-wrap items-center gap-2">
+            <Button disabled={readOnly} onClick={openAdd}><PlusIcon data-icon="inline-start" />Install from a path</Button>
+            {reReview ? <Badge variant="warning">1 REVIEW NO LONGER CURRENT</Badge> : null}
           </div>
 
           <div className="relative mt-4">
@@ -475,6 +466,20 @@ export function SkillBrowser({
             </div>
           ) : null}
 
+          <section className="mt-6 overflow-hidden rounded-xl border bg-card" aria-labelledby="skill-inventories-title">
+            <div className="flex items-center gap-2 border-b px-3.5 py-[11px]">
+              <h2 id="skill-inventories-title" className="m-0 text-[13px] font-semibold">Inventories from your other machines</h2>
+              <span className="text-[11px] text-muted-foreground">Usable only where installed.</span>
+            </div>
+            {inventorySources.length > 1 ? comparisons.flatMap((comparison) => comparison.machines).map((machine, index) => (
+              <div key={`${machine.machineId}:${machine.state}:${index}`} className="flex items-center gap-3 border-t px-3.5 py-2.5 first:border-t-0">
+                <span className="size-1.5 rounded-full bg-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate font-machine text-[11px]">{machine.machineName}</span>
+                <Badge variant={comparisonVariant(machine.state)}>{comparisonLabel[machine.state]}</Badge>
+              </div>
+            )) : <p className="m-0 px-3.5 py-3 text-[11px] text-muted-foreground">No other paired machine reports the skills capability.</p>}
+          </section>
+
           {selected && filtered.some((skill) => skill.id === selected.id) ? (
             <section className="mt-7 border-t pt-6">
               <div className="flex flex-wrap items-center gap-2.5">
@@ -537,7 +542,7 @@ export function SkillBrowser({
                         <Button
                           variant={machineReviewed ? "outline" : "default"}
                           size="sm"
-                          disabled={machineReviewPending}
+                          disabled={readOnly || machineReviewPending}
                           onClick={() => submitMachineReview(machineReviewed ? "revoke" : "trust")}
                         >
                           {machineReviewed ? "Revoke machine review" : "Mark reviewed on this machine"}
@@ -598,7 +603,7 @@ export function SkillBrowser({
                     named beside it. */}
                 {projectId ? (
                   <Button
-                    disabled={selected.trust.state === "blocked" && !selectedEnabled}
+                    disabled={readOnly || (selected.trust.state === "blocked" && !selectedEnabled)}
                     onClick={() => setReviewEnabled(!selectedEnabled)}
                   >
                     {selectedEnabled ? "Review & disable" : "Review & enable"}
@@ -640,8 +645,8 @@ export function SkillBrowser({
       <Dialog open={addOpen} onOpenChange={(open) => { if (!open && !addPending) setAddOpen(false) }}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Add a skill</DialogTitle>
-            <DialogDescription>Skills are folders with a SKILL.md. Domovoi reviews declared capabilities before anything runs, and never pushes a skill to a remote machine without you saying so.</DialogDescription>
+            <DialogTitle>Install from a path on this machine</DialogTitle>
+            <DialogDescription>A path is the only source. No bundle, no registry, no installer, so nothing runs code to install.</DialogDescription>
           </DialogHeader>
           <div className="flex max-h-[62vh] flex-col gap-4 overflow-auto">
             <div className="flex flex-col gap-2">
@@ -655,7 +660,7 @@ export function SkillBrowser({
                   disabled={addPending}
                   onChange={(event) => setAddPath(event.target.value)}
                 />
-                <Button variant="outline" disabled={addPending || addPath.trim() === ""} onClick={reviewAdd}>Review</Button>
+                <Button variant="outline" disabled={readOnly || addPending || addPath.trim() === ""} onClick={reviewAdd}>Review</Button>
               </div>
               <p className="m-0 text-[10.5px] text-muted-foreground">The folder is read on the execution machine. Nothing is copied until you install.</p>
             </div>
@@ -740,7 +745,7 @@ export function SkillBrowser({
             <Button variant="outline" disabled={addPending} onClick={() => setAddOpen(false)}>Cancel</Button>
             {addPreview ? (
               <Button
-                disabled={addPending || !addTarget || addTarget.state === "conflict" || addPreview.refusals.length > 0}
+                disabled={readOnly || addPending || !addTarget || addTarget.state === "conflict" || addPreview.refusals.length > 0}
                 onClick={installAdd}
               >
                 Install
@@ -790,12 +795,12 @@ export function SkillBrowser({
           {selected ? <div className="flex flex-col gap-2 font-machine text-[10.5px]"><code className="break-all">{selected.contentDigest}</code><span>{selected.manifest.capabilities.join(", ") || "No declared capabilities"}</span></div> : null}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={reviewPending}>Cancel</AlertDialogCancel>
-            <AlertDialogAction disabled={reviewPending} onClick={submitReview}>
+            <AlertDialogAction disabled={readOnly || reviewPending} onClick={submitReview}>
               {reviewEnabled ? "Enable for project" : "Disable for project"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </>
   )
 }

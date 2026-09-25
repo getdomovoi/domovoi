@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { pairingAddressSchema } from "./pairing-url.js"
 import { offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
 
 import { clientKindSchema, credentialSchema, machineIdSchema } from "./identifiers.js"
@@ -13,11 +14,13 @@ export const maximumListedDevices = 256
 
 export const deviceIdSchema = z.string().regex(/^device-[0-9a-f]{32}$/)
 export const deviceLabelSchema = z.string().trim().min(1).check(utf16MaxLength(maximumPairedDeviceLabelLength))
+export const clientAccessSchema = z.enum(["full", "watching"])
 
 export const deviceCredentialBindingSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("client"),
     client: clientKindSchema,
+    clientAccess: clientAccessSchema.default("full"),
   }).strict(),
   z.object({
     kind: z.literal("machine"),
@@ -90,6 +93,7 @@ export const devicePairParamsSchema = z.object({
   // client remains the authenticated issuer. Only local root can mint this
   // separate kind-bound credential. Omission retains the existing behavior.
   targetClient: clientKindSchema.optional(),
+  clientAccess: clientAccessSchema.optional(),
   channelPublicKey: relayPublicKeySchema.optional(),
 }).strict()
 
@@ -113,7 +117,7 @@ export const deviceCurrentResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("daemon"), machineId: machineIdSchema }).strict(),
   z.object({
     kind: z.literal("client"), machineId: machineIdSchema,
-    deviceId: deviceIdSchema, client: clientKindSchema,
+    deviceId: deviceIdSchema, client: clientKindSchema, clientAccess: clientAccessSchema.default("full"),
   }).strict(),
 ])
 
@@ -204,11 +208,44 @@ export const deviceConfirmClaimResultSchema = z.object({ device: pairedDeviceSch
 // a phone cannot be spent into a desktop credential by a claimer that says so.
 export const deviceIssueCodeParamsSchema = z.object({
   targetClient: clientKindSchema.optional(),
+  clientAccess: clientAccessSchema.optional(),
 }).strict()
 
+// The web app a pairing code can be opened in, as the daemon's owner set it.
+// An absolute http(s) address with no credentials and no fragment, so a card
+// can build a link from it without carrying a secret or losing its own part.
+// Whitespace and control characters are refused in the raw text: the URL parser
+// would strip or encode them, so the address that parses is not the one set.
+export const maximumWebAppUrlLength = 2_048
+
+function hasWhitespaceOrControl(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f) || /\s/u.test(character)) return true
+  }
+  return false
+}
+
+export const webAppUrlSchema = z.string().check(utf16MaxLength(maximumWebAppUrlLength)).refine((value) => {
+  if (hasWhitespaceOrControl(value) || value.includes("#")) return false
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+  return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password
+}, "Expected an absolute http or https URL without whitespace, control characters, credentials or a fragment")
+
+// The code comes with the address a device dials to spend it, or the problem
+// that leaves it nothing to dial, so the desktop card, the web connect page
+// and the command line draw one address and none of them guesses it. The web
+// app address is there only when the daemon's owner configured one.
 export const deviceIssueCodeResultSchema = z.object({
   code: pairingCodeSchema,
   expiresAt: offsetDateTimeSchema,
+  pairingAddress: pairingAddressSchema,
+  webAppUrl: webAppUrlSchema.optional(),
 }).strict()
 
 // Redeeming is one step, unlike a machine claim: a client stores its
@@ -217,10 +254,8 @@ export const deviceIssueCodeResultSchema = z.object({
 export const deviceRedeemCodeParamsSchema = z.object({
   code: pairingCodeSchema,
   label: deviceLabelSchema,
-  protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
+  protocolVersion: protocolVersionSchema,
 }).strict()
-
-export const machineCredentialSchema = credentialSchema
 
 export const deviceListParamsSchema = z.object({}).strict()
 
@@ -228,6 +263,7 @@ export const devicesResultSchema = z.object({
   devices: z.array(pairedDeviceSchema).max(maximumListedDevices),
 }).strict()
 
+export type ClientAccess = z.infer<typeof clientAccessSchema>
 export type DeviceIssueCodeResult = z.infer<typeof deviceIssueCodeResultSchema>
 export type PendingDeviceClaim = z.infer<typeof pendingDeviceClaimSchema>
 export type DeviceClaimResult = z.infer<typeof deviceClaimResultSchema>

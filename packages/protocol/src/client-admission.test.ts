@@ -21,7 +21,7 @@ describe("remote client admission", () => {
     expect(method.params.parse({})).toEqual({})
     for (const result of [
       { kind: "daemon", machineId },
-      { kind: "client", machineId, deviceId, client: "desktop" },
+      { kind: "client", machineId, deviceId, client: "desktop", clientAccess: "full" },
     ]) {
       expect(method.result.parse(result)).toEqual(result)
       expect(method.result.safeParse({ ...result, token: "n".repeat(43) }).success).toBe(false)

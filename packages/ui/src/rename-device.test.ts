@@ -9,7 +9,7 @@ const device: PairedDeviceSummary = {
   id: `device-${"d".repeat(32)}`,
   label: "desk-ipad",
   pairedAt: "2026-08-20T09:00:00.000Z",
-  binding: { kind: "client", client: "tablet" },
+  binding: { kind: "client", client: "tablet", clientAccess: "full" },
 }
 
 const mismatch: DeviceLabelMismatch = { kind: "device-label-mismatch", device }

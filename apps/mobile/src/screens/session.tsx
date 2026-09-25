@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useRef, useState } from "react"
 import { KeyboardAvoidingView, Modal, Platform, Pressable, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 
-import { threadFollowState, type PermissionMode } from "@getdomovoi/protocol"
+import { threadFollowState, type ClientAccess, type PermissionMode, type QueuedSessionSend } from "@getdomovoi/protocol"
 
 import type { ConnectionNotice } from "../connection-notice"
 
@@ -23,7 +23,7 @@ import type { ArtifactRow } from "../artifact-rows"
 import { planStrip, type PlanRow, type PlanSummary } from "../plan-rows"
 import type { Attachment } from "../attachments"
 import type { SessionDetail, ThreadEntry } from "../session-detail"
-import { colors } from "../theme/tokens.generated"
+import { useTheme } from "../theme/theme-provider"
 
 // The handoff tints a step's mark with the state it is in rather than outlining
 // it, so a plan reads as a column of coloured marks at a glance.
@@ -41,15 +41,39 @@ const textTone: Record<PlanRow["tone"], string> = {
   queued: "text-muted-foreground",
 }
 
-function Entry({ entry }: { entry: ThreadEntry }) {
-  if (entry.voice === "you") {
+// Memoized, with a stable onWatch from the screen: a keystroke or a streamed
+// batch re-renders the screen, and a row that has not changed is not drawn or
+// parsed again.
+const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWatch: () => void }) {
+  if (entry.kind === "receipt") {
+    return (
+      <Card className="gap-3 border-ok-border bg-ok-bg">
+        <View className="flex-row items-center gap-2">
+          <View className="h-2 w-2 rounded-full bg-success" />
+          <Text variant="nav" className="text-ok-fg">{entry.decision}</Text>
+        </View>
+        <Text variant="meta" className="text-ok-dim">{entry.operation}</Text>
+        {entry.explanation ? <Text variant="meta" className="text-ok-dim">{entry.explanation}</Text> : null}
+        <View className="gap-2 rounded-xl border border-border bg-card p-3">
+          <Text variant="label">RECORDED AS</Text>
+          <Text variant="machine">Attribution · {entry.attribution}</Text>
+          <Text variant="machine">Checkpoint · {entry.checkpoint}</Text>
+          {entry.duration ? <Text variant="machine">Duration · {entry.duration}</Text> : null}
+        </View>
+        <Button title="Watch the rest of the turn" shape="block" onPress={onWatch} />
+        <Text variant="note">Reverting happens on a desktop. A phone answers what a machine proposed; it does not rewind the work.</Text>
+      </Card>
+    )
+  }
+  if (entry.kind === "policy-refusal") return null
+  if (entry.kind === "message" && entry.voice === "you") {
     return (
       <View className="max-w-[84%] self-end rounded-[13px] rounded-br-[4px] border border-border bg-accent px-[13px] py-2.5">
         <Text variant="body">{entry.body}</Text>
       </View>
     )
   }
-  if (entry.voice === "agent") {
+  if (entry.kind === "message") {
     return (
       <View className="flex-row gap-2.5">
         <View className="h-[22px] w-[22px] items-center justify-center rounded-md border border-border">
@@ -64,11 +88,76 @@ function Entry({ entry }: { entry: ThreadEntry }) {
       <View className="mt-1.5 h-1.5 w-1.5 rounded-full bg-info" />
       <View className="flex-1">
         <Text className="text-[11px] leading-[17px] text-info-fg">{entry.body}</Text>
-        {entry.meta
-          ? <Text variant="machine" className="mt-1 text-faint">{entry.meta}</Text>
-          : null}
+        {entry.meta ? <Text variant="machine" className="mt-1 text-faint">{entry.meta}</Text> : null}
       </View>
     </View>
+  )
+})
+
+function PolicyRefusal({ refusal }: {
+  refusal: Extract<ThreadEntry, { kind: "policy-refusal" }>
+}) {
+  return (
+    <View className="gap-3">
+      <Text variant="title" className="text-[24px] leading-[30px]">Nothing to approve</Text>
+      <PolicyRefusalCards refusal={refusal} />
+    </View>
+  )
+}
+
+export function PolicyRefusalCards({ refusal }: {
+  refusal: Extract<ThreadEntry, { kind: "policy-refusal" }>
+}) {
+  return (
+    <>
+      <Card className="gap-2 border-danger-border bg-danger-bg">
+        <Text variant="nav" className="text-danger-fg">Refused by policy</Text>
+        <Text variant="meta" className="text-danger-fg">The daemon refused before the command ran. No approval can override it.</Text>
+        <View className="rounded-xl bg-code p-3">
+          <Text variant="machine" className="text-danger-fg">{refusal.command}</Text>
+        </View>
+      </Card>
+      <Card className="gap-2 border-danger-border">
+        <Text variant="label" className="text-danger-dim">THE RULE IT BROKE</Text>
+        <Text variant="title" className="text-danger-fg">{refusal.rule}</Text>
+        <Text variant="meta" className="text-danger-dim">{refusal.setBy}</Text>
+        <Text variant="meta" className="text-danger-dim">{refusal.scope}</Text>
+      </Card>
+      <Card className="gap-2">
+        <Text variant="label">WHAT YOU CAN DO</Text>
+        <Text variant="meta">{refusal.remedy}</Text>
+      </Card>
+    </>
+  )
+}
+
+export function keyboardAvoidance(platform: string, top: number) {
+  return {
+    behavior: platform === "ios" ? "padding" as const : undefined,
+    keyboardVerticalOffset: top,
+  }
+}
+
+const queueLabels: Record<QueuedSessionSend["state"], string> = {
+  waiting: "Waiting for the next turn",
+  held: "Held for the next turn",
+  refused: "Refused by the daemon",
+  unconfirmed: "Delivery unconfirmed",
+  delivered: "Delivered to the next turn",
+}
+
+function QueuedSendCard({ queued, canCancel, onCancel }: {
+  queued: QueuedSessionSend
+  canCancel: boolean
+  onCancel: (queueId: string) => void
+}) {
+  const cancellable = queued.state === "waiting" || queued.state === "held" || queued.state === "unconfirmed"
+  return (
+    <Card className="gap-2 border-info-border bg-info-bg">
+      <Text variant="section" className="text-info-fg">{queueLabels[queued.state]}</Text>
+      {queued.reason ? <Text variant="note" className="text-info-dim">{queued.reason}</Text> : null}
+      {cancellable && canCancel ? <Button title="Cancel queued message" onPress={() => onCancel(queued.id)} /> : null}
+    </Card>
   )
 }
 
@@ -83,6 +172,7 @@ function StepEditor({ row, index, saving, onSave, onCancel }: {
   onCancel: () => void
 }) {
   const [text, setText] = useState(row.text)
+  const { palette } = useTheme()
   const usable = text.trim().length > 0
   return (
     <View className="gap-2 px-3 py-2.5">
@@ -92,7 +182,7 @@ function StepEditor({ row, index, saving, onSave, onCancel }: {
         editable={!saving}
         value={text}
         onChangeText={setText}
-        selectionColor={colors.dark.primary}
+        selectionColor={palette.primary}
         accessibilityLabel={`Step ${index + 1}`}
         className="min-h-tap rounded-lg border border-border bg-code px-2.5 py-2 font-sans text-[12px] text-foreground"
       />
@@ -272,6 +362,7 @@ function PlanSheet({ plan, open, onClose, onUnpin, onEditStep }: {
           </Text>
           <View className="flex-row gap-2">
             <Button title="Unpin" onPress={onUnpin} className="flex-1" />
+            <Button title="Looks right" variant="primary" onPress={onClose} className="flex-1" />
           </View>
         </PageScroller>
       </View>
@@ -334,7 +425,12 @@ export function SessionScreen({
   sending,
   sendProblem,
   skillLabel,
+  access,
   onBack,
+  onWatchReceipt,
+  onCancelQueuedSend,
+  onComposerFocusChange,
+  composerBottomInset,
   onOpenApproval,
   onOpenArtifact,
   onPause,
@@ -367,7 +463,12 @@ export function SessionScreen({
   sending: boolean
   sendProblem: string
   skillLabel: string
+  access: ClientAccess
   onBack: () => void
+  onWatchReceipt: () => void
+  onCancelQueuedSend: (queueId: string) => void
+  onComposerFocusChange: (focused: boolean) => void
+  composerBottomInset?: number | undefined
   onOpenApproval: (approvalId: string) => void
   onOpenArtifact: (artifactId: string) => void
   onPause: () => void
@@ -411,6 +512,10 @@ export function SessionScreen({
   // itself instead of a count. Back at the bottom, by hand or by the pill,
   // the count clears.
   const thread = useRef<PageScrollerHandle>(null)
+  const watchReceipt = useCallback(() => {
+    onWatchReceipt()
+    thread.current?.scrollToEnd()
+  }, [onWatchReceipt])
   const [atEnd, setAtEnd] = useState(true)
   const [unseen, setUnseen] = useState(0)
   const seenEntries = useRef(detail.entries.length)
@@ -432,11 +537,12 @@ export function SessionScreen({
   // composer is lifted short by exactly that much and the keyboard covers its
   // bottom rows.
   const insets = useSafeAreaInsets()
+  const keyboard = keyboardAvoidance(Platform.OS, insets.top)
   return (
     <KeyboardAvoidingView
       className="flex-1 bg-background"
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={insets.top}
+      behavior={keyboard.behavior}
+      keyboardVerticalOffset={keyboard.keyboardVerticalOffset}
     >
       <View className="flex-row items-center gap-2.5 px-3.5 pb-3 pt-1.5">
         <Pressable
@@ -451,7 +557,7 @@ export function SessionScreen({
           <Text variant="nav" numberOfLines={1}>{detail.title}</Text>
           <Text variant="machine">{detail.runtime}</Text>
         </View>
-        <Badge label={detail.mode} tone="outline" />
+        {access === "watching" ? <Badge label="watching" tone="outline" /> : <Badge label={detail.mode} tone="outline" />}
       </View>
 
       <PageScroller
@@ -463,6 +569,7 @@ export function SessionScreen({
         testID="thread"
       >
         <ConnectionBanner notice={notice} />
+        {detail.policyRefusal ? <PolicyRefusal refusal={detail.policyRefusal} /> : <>
         {/* The reason the phone was picked up goes above the reading, because
             scrolling a thread to find the decision is the slow path. */}
         {approvalId ? (
@@ -473,7 +580,7 @@ export function SessionScreen({
           >
             <View className="flex-row items-center gap-2">
               <Text className="flex-1 font-sans-medium text-[12.5px] text-warn-fg">
-                An approval is waiting
+                {access === "full" ? "An approval is waiting" : "An approval is waiting on a full-access device"}
               </Text>
               <Icon name="chevron-right" tone="warn-fg" size={16} />
             </View>
@@ -481,7 +588,7 @@ export function SessionScreen({
         ) : null}
 
         {plan && planPinned ? <PlanStrip plan={plan} onOpen={() => setPlanOpen(true)} /> : null}
-        {plan && !planPinned ? <PlanCard plan={plan} onEditStep={onEditStep} onPin={() => onPinPlan(true)} /> : null}
+        {plan && !planPinned ? <PlanCard plan={plan} onEditStep={access === "full" ? onEditStep : undefined} onPin={() => onPinPlan(true)} /> : null}
 
         {artifacts.length > 0 ? <ArtifactList rows={artifacts} onOpen={onOpenArtifact} /> : null}
 
@@ -506,9 +613,18 @@ export function SessionScreen({
             </View>
           )
           : null}
-        {detail.entries.map((entry) => <Entry key={entry.id} entry={entry} />)}
+        {detail.queuedSend ? (
+          <QueuedSendCard
+            queued={detail.queuedSend}
+            canCancel={access === "full"}
+            onCancel={onCancelQueuedSend}
+          />
+        ) : null}
+        {detail.entries.map((entry) => (
+          <Entry key={entry.id} entry={entry} onWatch={watchReceipt} />
+        ))}
 
-        <Card className="gap-2">
+        {access === "full" ? <Card className="gap-2">
           <Text variant="label">Session control</Text>
           <Text variant="note">
             {detail.pausable
@@ -526,7 +642,8 @@ export function SessionScreen({
             provider and model.
           </Text>
           <Button title="Start another like this one" shape="block" onPress={() => setStartOpen(true)} />
-        </Card>
+        </Card> : null}
+        </>}
       </PageScroller>
 
       <StartLikeSheet
@@ -544,12 +661,12 @@ export function SessionScreen({
           open={planOpen}
           onClose={() => setPlanOpen(false)}
           onUnpin={() => { setPlanOpen(false); onPinPlan(false) }}
-          onEditStep={onEditStep}
+          onEditStep={access === "full" ? onEditStep : undefined}
         />
       ) : null}
 
-      <JumpPill state={follow} unseen={unseen} above={composerFootprint} onPress={() => thread.current?.scrollToEnd()} />
-      <Composer
+      <JumpPill state={follow} unseen={unseen} above={composerFootprint} watching={access !== "full"} onPress={() => thread.current?.scrollToEnd()} />
+      {!detail.policyRefusal ? <Composer
         draft={draft}
         readiness={detail.sending}
         sending={sending}
@@ -561,10 +678,17 @@ export function SessionScreen({
         attachments={attachments}
         attachmentSummary={attachmentSummary}
         attachmentsAllowed={attachmentsAllowed}
+        planAvailable={plan !== undefined}
+        onOpenPlan={() => {
+          if (plan && !planPinned) onPinPlan(true)
+          if (plan) setPlanOpen(true)
+        }}
+        onFocusChange={onComposerFocusChange}
+        bottomInset={composerBottomInset}
         onOpenAttach={() => setAttachOpen(true)}
         onRemoveAttachment={onRemoveAttachment}
         onFootprint={setComposerFootprint}
-      />
+      /> : null}
       <AttachSheet
         open={attachOpen}
         machine={machine}

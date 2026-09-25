@@ -75,7 +75,7 @@ describe("public successor delivery schemas", () => {
 
   it("co-publishes the identity and channel pins only for opt-in pairing", () => {
     const { identity } = fixture()
-    const paired = { device: { id: "device-" + "b".repeat(32), label: "phone", pairedAt: "2026-09-13T00:00:00Z", binding: { kind: "client", client: "phone" } }, token: "x".repeat(43) }
+    const paired = { device: { id: "device-" + "b".repeat(32), label: "phone", pairedAt: "2026-09-13T00:00:00Z", binding: { kind: "client", client: "phone", clientAccess: "full" } }, token: "x".repeat(43) }
     expect(devicePairResultSchema.parse(paired)).toEqual(paired)
     const result = { ...paired, relay: identity.channel, relayIdentity: identity }
     expect(devicePairResultSchema.parse(result)).toEqual(result)

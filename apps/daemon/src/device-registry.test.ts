@@ -60,11 +60,30 @@ describe("SqliteDeviceRegistry", () => {
 
     expect(devices.verify(client.token)).toEqual({
       device: expect.objectContaining({ id: client.device.id }),
-      binding: { kind: "client", client: "phone" },
+      binding: { kind: "client", client: "phone", clientAccess: "full" },
     })
     expect(devices.verify(machine.token)).toEqual({
       device: expect.objectContaining({ id: machine.device.id }),
       binding: { kind: "machine", machineId },
+    })
+  })
+
+  it("persists client access and defaults existing client rows to full", () => {
+    const database = new DatabaseSync(":memory:")
+    const first = new SqliteDeviceRegistry(database)
+    const full = first.pair({ label: "studio", binding: { kind: "client", client: "desktop" } })
+    const watching = first.pair({
+      label: "display", binding: { kind: "client", client: "web", clientAccess: "watching" },
+    })
+
+    expect(first.verify(full.token)?.binding).toEqual({
+      kind: "client", client: "desktop", clientAccess: "full",
+    })
+    expect(first.verify(watching.token)?.binding).toEqual({
+      kind: "client", client: "web", clientAccess: "watching",
+    })
+    expect(new SqliteDeviceRegistry(database).verify(full.token)?.binding).toEqual({
+      kind: "client", client: "desktop", clientAccess: "full",
     })
   })
 
@@ -117,7 +136,9 @@ describe("SqliteDeviceRegistry", () => {
       revokedAt: expect.any(String),
       revocationReason: "legacy-unbound-credential",
     }))
-    expect(devices.verify(paired.token)?.binding).toEqual({ kind: "client", client: "phone" })
+    expect(devices.verify(paired.token)?.binding).toEqual({
+      kind: "client", client: "phone", clientAccess: "full",
+    })
     expect(database.prepare("SELECT credential_role, client_kind, machine_id FROM paired_devices WHERE id = ?")
       .get(paired.device.id)).toEqual({
         credential_role: "client",

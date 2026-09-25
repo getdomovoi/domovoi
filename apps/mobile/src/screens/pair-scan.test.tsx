@@ -9,7 +9,7 @@ import type { PairingPayload } from "@getdomovoi/protocol"
 import type { PairedCredential } from "../lib/redeem-pairing-code"
 
 const payload = { v: 1 as const, url: "wss://djs-macbook-pro-1.raptor-pompano.ts.net:47831/rpc", code: "hearth-quiet-ember-42", label: "djs-macbook-pro-1" }
-const credential: PairedCredential = { url: payload.url, token: "t".repeat(43) }
+const credential: PairedCredential = { url: payload.url, token: "t".repeat(43), client: "phone" }
 
 // A fake camera: after it mounts, it reports the text a QR would carry, the
 // way the real one reports a frame.
@@ -39,9 +39,10 @@ describe("pairing by camera", () => {
   it("pairs from a scanned code and names the machine before connecting", async () => {
     const onPaired = jest.fn()
     await render(
-      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" />,
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device="phone" />,
     )
     expect(screen.getByText(/djs-macbook-pro-1/)).toBeTruthy()
+    expect(screen.queryByTestId("tab-bar")).toBeNull()
     expect(screen.queryByText(credential.token)).toBeNull()
     // The phone checks shape, not scope; the promise is conditional.
     for (const line of phoneAndTabletPromise) expect(screen.getByText(line.text)).toBeTruthy()
@@ -51,16 +52,26 @@ describe("pairing by camera", () => {
   }, cold)
   it("says what a wrong code is and keeps scanning", async () => {
     await render(
-      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith("https://example.com")} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" />,
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith("https://example.com")} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device="phone" />,
     )
     expect(screen.getByText("This is not a Domovoi pairing code")).toBeTruthy()
     expect(screen.queryByRole("button", { name: "Pair with this machine" })).toBeNull()
   })
 
+  it("keeps the typed fallback explicit beside the camera", async () => {
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith("")} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device="phone" />,
+    )
+
+    expect(screen.getByText("Point at the pairing code that domovoid pair prints on the machine.")).toBeTruthy()
+    expect(screen.getByText("Or type the code")).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Paste" })).toBeTruthy()
+  })
+
   it("offers the pasted code when the camera is refused, and reads it the same way", async () => {
     const onPaired = jest.fn()
     await render(
-      <PairScanScreen permission={denied} requestPermission={jest.fn(async () => denied)} Scanner={scannerWith("")} onPaired={onPaired} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" />,
+      <PairScanScreen permission={denied} requestPermission={jest.fn(async () => denied)} Scanner={scannerWith("")} onPaired={onPaired} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device="phone" />,
     )
     expect(screen.getByText("Camera refused")).toBeTruthy()
     await fireEvent.changeText(screen.getByLabelText("Pairing code"), encodePairingPayload(payload))
@@ -73,7 +84,7 @@ describe("pairing by camera", () => {
     const onPaired = jest.fn()
     const redeem = jest.fn<(payload: PairingPayload, label: string) => Promise<PairedCredential>>(async () => credential)
     await render(
-      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={redeem} deviceName="iPhone" />,
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={redeem} deviceName="iPhone" onDone={jest.fn()} device="phone" />,
     )
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
     await waitFor(() => expect(onPaired).toHaveBeenCalledWith(credential))
@@ -85,7 +96,7 @@ describe("pairing by camera", () => {
     const onPaired = jest.fn()
     const redeem = jest.fn<(payload: PairingPayload, label: string) => Promise<PairedCredential>>(async () => { throw new Error("The machine would not take this code. It may already have been used. Show a fresh one and scan again.") })
     await render(
-      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={redeem} deviceName="iPhone" />,
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={redeem} deviceName="iPhone" onDone={jest.fn()} device="phone" />,
     )
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
     await waitFor(() => expect(screen.getByText(/may already have been used/)).toBeTruthy())
@@ -101,7 +112,7 @@ describe("pairing by camera", () => {
       () => new Promise((resolve) => { finish = resolve }),
     )
     await render(
-      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={onCancel} redeem={redeem} deviceName="iPhone" />,
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={onCancel} redeem={redeem} deviceName="iPhone" onDone={jest.fn()} device="phone" />,
     )
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
     await fireEvent.press(screen.getByRole("button", { name: "Cancel" }))
@@ -117,4 +128,34 @@ describe("pairing by camera", () => {
   // cleanup in pair-scan.tsx. That path is not covered here: this preset
   // (RNTL 14 on React 19) does not run effect cleanups on unmount, so a test
   // for it would pass without exercising the guard.
+
+  // Nothing can wake a phone over a tailnet, so the limit is said the moment
+  // pairing succeeds, not when a gate is missed.
+  it("says who it paired with and when gates can reach it, then opens Sessions", async () => {
+    const onPaired = jest.fn()
+    const onDone = jest.fn()
+    const deviceId = `device-7c3e${"0".repeat(25)}a90`
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onDone={onDone} onCancel={jest.fn()} redeem={async () => ({ ...credential, deviceId })} deviceName="iPhone" device="phone" />,
+    )
+    await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    await waitFor(() => expect(screen.getByText("Paired with djs-macbook-pro-1")).toBeOnTheScreen())
+    expect(onPaired).toHaveBeenCalledWith(credential)
+    expect(screen.getByText("tailnet · credential 7c3e…a90")).toBeOnTheScreen()
+    expect(screen.getByText("Gates reach this phone only while Domovoi is open on it. There are no notifications yet.")).toBeOnTheScreen()
+    expect(screen.queryByText(credential.token)).toBeNull()
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull()
+    await fireEvent.press(screen.getByRole("button", { name: "Open Sessions" }))
+    expect(onDone).toHaveBeenCalledTimes(1)
+  })
+
+  it("names the tablet in the paired card on a tablet", async () => {
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={jest.fn()} onDone={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPad" device="tablet" />,
+    )
+    await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    await waitFor(() => expect(screen.getByText("Gates reach this tablet only while Domovoi is open on it. There are no notifications yet.")).toBeOnTheScreen())
+    // Without the device the machine assigned, the card names only the route.
+    expect(screen.getByText("tailnet")).toBeOnTheScreen()
+  })
 })
