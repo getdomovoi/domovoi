@@ -76,7 +76,7 @@ test("refuses a version answer from a program that never loaded the daemon entry
   const root = await fixture("domovoi-runtime-ignored-entry-", { node: "prints the version, ignores its arguments", "index.mjs": 'throw new Error("the entry does not load")\n' })
   try {
     const nodeExecutable = join(root, "node")
-    // Prints the expected version whatever it is asked, as Codex's fake did.
+    // Prints the expected version whatever it is asked, as the review's fake program did.
     const run = async () => ({ stdout: "0.0.1\n" })
     await assert.rejects(
       proveDaemonRuns({ nodeExecutable, nodeSha256: await sha256Of(nodeExecutable), daemonEntry: join(root, "index.mjs"), expectedVersion: "0.0.1", run }),
