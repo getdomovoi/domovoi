@@ -83,7 +83,12 @@ describe("daemon assertion waits", () => {
     const entries = await readdir(import.meta.dirname, { recursive: true })
     for (const entry of entries.filter((path) => path.endsWith(".test.ts"))) {
       const path = join(import.meta.dirname, entry)
-      const source = ts.createSourceFile(path, await readFile(path, "utf8"), ts.ScriptTarget.Latest)
+      const text = await readFile(path, "utf8")
+      // Parsing every file under coverage outgrew the 5 s Linux budget. A call
+      // named waitFor needs the whole word in the text, or a \u escape that
+      // spells it, so any other file cannot hold an offender and skips the parse.
+      if (/\bwaitFor\b/.test(text) === false && text.includes("\\u") === false) continue
+      const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest)
       const visit = (node: ts.Node) => {
         if (
           ts.isCallExpression(node)

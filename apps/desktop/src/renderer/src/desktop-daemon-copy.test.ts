@@ -9,6 +9,9 @@ const daemonMessages: Record<DaemonRefusalReason, string> = {
   "owner-incompatible": "The local daemon uses an incompatible protocol. Update the daemon and Desktop, then reconnect.",
   "owner-unverified": "The local daemon could not prove its identity or accept this profile's credential. Check the running daemon and its profile; no fallback daemon was started.",
   "profile-invalid": "The local daemon profile is invalid or inaccessible. Check its owner record, private key and credential file before retrying.",
+  "port-in-use": "Another program is using the local daemon's port. Quit it, or set DOMOVOI_PORT to a free port, then retry. No fallback daemon was started.",
+  "state-locked": "Another process holds this profile's state database. Quit the other Domovoi process that uses this profile, then retry.",
+  "identity-mismatch": "The stored workspace belongs to a different machine identity than this profile's. Restore the matching machine identity and state together before retrying.",
 }
 
 function expectPlainPunctuation(copy: DesktopDaemonCopy): void {

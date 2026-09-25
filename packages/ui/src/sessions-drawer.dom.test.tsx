@@ -1,5 +1,5 @@
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { useState } from "react"
 import { afterEach, expect, it, vi } from "vitest"
@@ -182,4 +182,64 @@ it("retains aria-current while leaving the active state to the drawer row", asyn
   expect(other().getAttribute("aria-current")).toBe("true")
   expect(open().getAttribute("aria-current")).toBeNull()
   expect(other().textContent).not.toContain("Current")
+})
+
+// A browser tab over the tailnet reaches one machine and holds its credential
+// for the tab only; the column says both where the design draws them.
+it("names the tab's scope and credential when asked to", async () => {
+  const user = userEvent.setup()
+  function Scoped() {
+    const [open, setOpen] = useState(false)
+    return <SessionsDrawer snapshot={snapshotWith()} open={open} onOpenChange={setOpen} onActivate={vi.fn()} scope={{ machine: demoWorkspace.machine.name, note: "this machine only" }} credentialNote={{ label: "Paired for this tab", meta: "ends when it closes" }} />
+  }
+  render(<Scoped />)
+  await user.click(screen.getByRole("button", { name: /^Sessions / }))
+  const column = screen.getByRole("complementary", { name: "Sessions" })
+  expect(within(column).getByText(demoWorkspace.machine.name)).toBeTruthy()
+  expect(within(column).getByText("this machine only")).toBeTruthy()
+  expect(within(column).getByText("Paired for this tab")).toBeTruthy()
+  expect(within(column).getByText("ends when it closes")).toBeTruthy()
+})
+
+// I69: an archived session has no worktree, so its row offers none of the
+// worktree actions and says why. The one way forward is drawn disabled.
+it("gives an archived row a menu that says what archive did", async () => {
+  const user = userEvent.setup()
+  const snapshot = snapshotWith()
+  const archived = snapshot.sessions[2]!
+  Object.assign(archived, { state: "archived", archiveRequestedAt: "2026-09-23T13:59:00.000Z", archiveCheckpoint: "b".repeat(40), archivedAt: "2026-09-23T14:09:00.000Z" })
+  function WithArchived() {
+    const [open, setOpen] = useState(true)
+    return <SessionsDrawer snapshot={snapshot} open={open} onOpenChange={setOpen} onActivate={vi.fn()} onAction={vi.fn()} />
+  }
+  render(<WithArchived />)
+  expect(screen.getByText(/· archived$/)).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: `Actions for ${archived.title}` }))
+  const later = screen.getByRole("menuitem", { name: /Start a new session from this branch/ })
+  expect(later.getAttribute("aria-disabled")).toBe("true")
+  expect(later.textContent).toContain("later")
+  expect(screen.getByText("Archived, so there is no worktree to delete. It cannot be forked, unarchived or sent to.")).toBeTruthy()
+  for (const name of ["Archive session", "Fork from a checkpoint", "Move to another machine", "Resume session"]) {
+    expect(screen.queryByRole("menuitem", { name })).toBeNull()
+  }
+})
+
+it("counts only live sessions on the drawer button", () => {
+  const snapshot = snapshotWith()
+  Object.assign(snapshot.sessions[2]!, { state: "archived", archivedAt: "2026-09-23T14:09:00.000Z" })
+  render(<SessionsDrawer snapshot={snapshot} open={false} onOpenChange={vi.fn()} onActivate={vi.fn()} />)
+  expect(screen.getByRole("button", { name: /^Sessions 2/ })).toBeTruthy()
+})
+
+it("ties the archived explanation to the disabled later item", async () => {
+  const user = userEvent.setup()
+  const snapshot = snapshotWith()
+  const archived = snapshot.sessions[2]!
+  Object.assign(archived, { state: "archived", archivedAt: "2026-09-23T14:09:00.000Z" })
+  render(<SessionsDrawer snapshot={snapshot} open onOpenChange={vi.fn()} onActivate={vi.fn()} onAction={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: `Actions for ${archived.title}` }))
+  const later = screen.getByRole("menuitem", { name: /Start a new session from this branch/ })
+  const describedBy = later.getAttribute("aria-describedby")
+  expect(describedBy).toBeTruthy()
+  expect(document.getElementById(describedBy!)?.textContent).toBe("Archived, so there is no worktree to delete. It cannot be forked, unarchived or sent to.")
 })

@@ -75,9 +75,14 @@ describe("permissionDecisionFor", () => {
     })).toEqual({ action: "review", risk: "hard-gate" })
     expect(permissionDecisionFor({
       runtime: runtime(true),
+      command: "pnpm typecheck",
+      execution: resolvedScript(["tsc", "--noEmit"]),
+    })).toEqual({ action: "allow", risk: "normal" })
+    expect(permissionDecisionFor({
+      runtime: runtime(true),
       command: "pnpm test",
       execution: resolvedScript(["vitest", "run"]),
-    })).toEqual({ action: "allow", risk: "normal" })
+    })).toEqual({ action: "review", risk: "normal" })
   })
 
   it("never allows a hard gate found anywhere in a resolved script graph", () => {
@@ -244,10 +249,9 @@ describe("permissionDecisionFor", () => {
   })
 
   it.each([
-    ["pnpm test", { test: "vitest run" }],
-    ["pnpm run test -- --reporter=json", { test: "vitest run" }],
-    ["npm run lint", { lint: "eslint ." }],
     ["yarn typecheck", { typecheck: "tsc --noEmit" }],
+    ["pnpm run typecheck -- --pretty", { typecheck: "tsc --noEmit" }],
+    ["pnpm test", { test: "tsd" }],
     ["bun run check", { check: "pnpm run inner", inner: "biome check ." }],
   ] as const)(
     "auto-allows a Build-auto script whose resolved body is bounded: %s",
@@ -257,6 +261,45 @@ describe("permissionDecisionFor", () => {
         command,
         execution: resolveCommandExecution({ command, packageScripts }),
       })).toEqual({ action: "allow", risk: "normal" })
+    },
+  )
+
+  it.each([
+    ["pnpm test", { test: "vitest run" }],
+    ["pnpm run test -- --reporter=json", { test: "vitest run" }],
+    ["pnpm test", { test: "jest" }],
+    ["pnpm test", { test: "mocha" }],
+    ["pnpm test", { test: "ava" }],
+    ["npm run lint", { lint: "eslint ." }],
+    ["pnpm lint", { lint: "prettier --check ." }],
+    ["pnpm lint", { lint: "stylelint '**/*.css'" }],
+    ["pnpm lint", { lint: "oxlint" }],
+    ["pnpm lint", { lint: "knip" }],
+    ["pnpm lint", { lint: "madge --circular src" }],
+    ["pnpm build", { build: "vite build" }],
+    ["pnpm build", { build: "tsup" }],
+    ["pnpm build", { build: "rollup -c" }],
+    ["pnpm build", { build: "esbuild src/index.ts --bundle" }],
+    ["pnpm build", { build: "swc src -d dist" }],
+    ["pnpm build", { build: "webpack" }],
+    ["pnpm build", { build: "next build" }],
+    ["pnpm build", { build: "astro build" }],
+    ["pnpm run version", { version: "changeset version" }],
+    ["pnpm run check:exports", { "check:exports": "attw --pack ." }],
+    ["pnpm run check:package", { "check:package": "publint" }],
+    ["pnpm test", { test: "npx -y vitest run" }],
+    ["pnpm lint", { lint: "pnpm exec eslint ." }],
+    ["pnpm check", { check: "tsc --noEmit && vitest run" }],
+  ] as const)(
+    "asks on every Build-auto run of a script whose runner executes worktree code: %s",
+    (command, packageScripts) => {
+      const execution = resolveCommandExecution({ command, packageScripts })
+      expect(execution.state).toBe("resolved")
+      expect(permissionDecisionFor({
+        runtime: runtime(true),
+        command,
+        execution,
+      })).toEqual({ action: "review", risk: "normal" })
     },
   )
 
@@ -326,7 +369,7 @@ describe("permissionDecisionFor", () => {
   )
 
   it.each([
-    ["pnpm test", { test: "npx -y vitest run" }],
+    ["pnpm test", { test: "npx -y tsc --noEmit" }],
     ["pnpm test", { test: "pnpm exec tsc --noEmit" }],
   ] as const)(
     "still allows a plain wrapper around a bounded runner: %s",

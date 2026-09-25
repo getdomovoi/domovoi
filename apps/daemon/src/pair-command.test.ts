@@ -10,14 +10,18 @@ function recorder() {
   return {
     out,
     err,
-    pairingAddress: () => ({ url: "wss://djs-macbook-pro-1.raptor-pompano.ts.net:47831/rpc", label: "djs-macbook-pro-1", loopback: false }),
     renderCode: (payload: string) => `<qr>${payload}</qr>\n`,
     stdout: (text: string) => out.push(text),
     stderr: (text: string) => err.push(text),
   }
 }
 
-const issued = { code: "hearth-quiet-ember-42", expiresAt: "2026-08-31T12:03:00.000Z" }
+// The daemon names the address beside the code; the command draws it and
+// never works one out for itself.
+const issued = {
+  code: "hearth-quiet-ember-42", expiresAt: "2026-08-31T12:03:00.000Z",
+  pairingAddress: { url: "wss://djs-macbook-pro-1.raptor-pompano.ts.net:47831/rpc", label: "djs-macbook-pro-1", loopback: false },
+}
 
 describe("runPairCommand", () => {
   it("shows a single-use code for the requested client, as a symbol and as text", async () => {
@@ -50,9 +54,19 @@ describe("runPairCommand", () => {
     expect(out).toContain("It works once, and only for a desktop.")
   })
 
+  it("says an older daemon does not name an address, rather than failing", async () => {
+    const io = recorder()
+    // A daemon from before issueCode named its address answers with the code alone.
+    const older = { ...io, issue: vi.fn(async () => ({ code: issued.code, expiresAt: issued.expiresAt }) as unknown as typeof issued) }
+    expect(await runPairCommand(["pair", "--client", "phone", "--label", "iPhone"], older)).toBe(1)
+    expect(io.out.join("")).toContain(issued.code)
+    expect(io.err.join("")).toContain("This daemon does not say which address a device should dial")
+    expect(io.out.join("")).not.toContain("<qr>")
+  })
+
   it("says the daemon answers only on this machine rather than drawing a code a phone cannot dial", async () => {
     const io = recorder()
-    const loopback = { ...io, issue: vi.fn(async () => issued), pairingAddress: () => ({ url: "ws://127.0.0.1:47831/rpc", loopback: true }) }
+    const loopback = { ...io, issue: vi.fn(async () => ({ ...issued, pairingAddress: { url: "ws://127.0.0.1:47831/rpc", loopback: true } })) }
     expect(await runPairCommand(["pair", "--client", "phone", "--label", "iPhone"], loopback)).toBe(0)
     expect(io.out.join("")).toContain("which only this machine can reach")
   })
@@ -61,8 +75,7 @@ describe("runPairCommand", () => {
     const io = recorder()
     const unreachable = {
       ...io,
-      issue: vi.fn(async () => issued),
-      pairingAddress: () => ({ problem: "This daemon's certificate names no host a device could dial." }),
+      issue: vi.fn(async () => ({ ...issued, pairingAddress: { problem: "This daemon's certificate names no host a device could dial." } })),
     }
     expect(await runPairCommand(["pair", "--client", "phone", "--label", "iPhone"], unreachable)).toBe(1)
     expect(io.out.join("")).toContain(issued.code)

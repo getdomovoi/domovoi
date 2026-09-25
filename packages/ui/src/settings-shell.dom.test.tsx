@@ -115,7 +115,7 @@ it("says what a rule match does not cover", async () => {
   expect(screen.getByText(/dependency binaries may still change/u)).toBeTruthy()
 })
 
-it("says a file-tool rule covers the worktree, not one path", async () => {
+it("says a worktree-wide file-tool rule no longer matches", async () => {
   const fileRule: ApprovalRule = {
     ...activeRule,
     id: "rule-3",
@@ -135,8 +135,32 @@ it("says a file-tool rule covers the worktree, not one path", async () => {
   }
   render(<SettingsShell {...shellProps()} approvalRules={[fileRule]} />)
 
-  expect(screen.getByText(/matches that tool anywhere inside the worktree/u)).toBeTruthy()
+  expect(screen.getByText(/made for the whole worktree no longer matches anything/u)).toBeTruthy()
   expect(screen.queryByText(/Matches command and package-script text only/u)).toBeNull()
+})
+
+it("says a file-tool rule covers one file", async () => {
+  const fileRule: ApprovalRule = {
+    ...activeRule,
+    id: "rule-4",
+    command: "Edit",
+    execution: {
+      state: "resolved",
+      digest: `sha256:${"c".repeat(64)}`,
+      record: {
+        version: 1,
+        cwd: ".",
+        kind: "workspace-file-tool",
+        coverage: "tool-and-file",
+        tool: "Edit",
+        scope: "file",
+        path: "src/index.ts",
+      },
+    },
+  }
+  render(<SettingsShell {...shellProps()} approvalRules={[fileRule]} />)
+
+  expect(screen.getByText(/matches that tool on one file/u)).toBeTruthy()
 })
 
 it("announces a retired legacy rule before its approval card returns", async () => {

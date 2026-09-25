@@ -88,6 +88,16 @@ describe("provider readiness", () => {
     expect(providerStatusLabel(provider({}))).toBe("Ready")
   })
 
+  it("keeps a provider whose install cannot run sessions out of the launcher, and says so", () => {
+    const outdated = provider({
+      id: "claude-code",
+      command: "claude",
+      problem: "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100.",
+    })
+    expect(providerCanStartSession(outdated)).toBe(false)
+    expect(providerStatusLabel(outdated)).toBe("Cannot start")
+  })
+
   it("prefers Codex without hard-coding it as the only provider", () => {
     const providers = [
       provider({ id: "claude-code", command: "claude" }),
