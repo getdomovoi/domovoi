@@ -29,4 +29,6 @@ export {
   type DaemonServiceRuntime,
   type DaemonServiceStatus,
   type RuntimeFileState,
+  WindowsTaskNotDomovoiError,
+  WindowsTaskPercentSignError,
 } from "./service/desktop-service.js"

@@ -15,6 +15,8 @@ import {
   type ServiceStatus,
 } from "./install.js"
 
+export { WindowsTaskNotDomovoiError, WindowsTaskPercentSignError } from "./install.js"
+
 // The desktop's way to keep the daemon running after the app quits: a per-user
 // service (a launchd agent, a systemd user unit or a Windows logon task) that
 // runs the Node and the daemon the app ships. The CLI reaches the same
@@ -35,7 +37,9 @@ export type DaemonServiceOptions = {
   // the user's home. DOMOVOI_AUTH_TOKEN is refused, as the CLI refuses it.
   environment?: DaemonEnvironment
   // The handoff, ruled 2026-09-23: called once the runtime, the platform and
-  // the configuration have been checked, and before the profile is claimed.
+  // the configuration have been checked, the service-operation lease is held
+  // and the saved registration has been read, and before the profile is
+  // claimed.
   // The desktop stops its in-app daemon here, so a refused install never
   // stops it. A rejection stops the install with nothing claimed or written.
   // The desktop refuses the handoff before calling this while a turn runs or
@@ -115,10 +119,14 @@ export async function installDaemonService(
     configuration,
   }
   // The plan is pure: building it refuses an unsupported platform, a missing
-  // user or uid, and an overlong Windows command, all before the handoff.
+  // user or uid, an overlong Windows command and a Windows path Task
+  // Scheduler would expand, all before the service-operation lease is taken.
   servicePlan(serviceTarget)
-  await options.releaseInAppDaemon?.()
-  const plan = await installService(serviceTarget, dependencies)
+  // Security review round 1: the installer calls the handoff inside that
+  // lease, so a busy lease refuses with the in-app daemon still running.
+  const plan = await installService(serviceTarget, dependencies, {
+    ...(options.releaseInAppDaemon === undefined ? {} : { handoff: options.releaseInAppDaemon }),
+  })
   return plan.kind === "file"
     ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
     : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
@@ -127,13 +135,17 @@ export async function installDaemonService(
 export function readDaemonServiceStatus(
   dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),
 ): Promise<DaemonServiceStatus> {
-  return serviceStatus(target(dependencies), dependencies)
+  // Security review round 1: a Windows task under Domovoi's name is reported
+  // only once service.json and the task's action show Domovoi registered it.
+  return serviceStatus(target(dependencies), dependencies, { verifyWindowsTaskOwner: true })
 }
 
 export async function removeDaemonService(
   dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),
 ): Promise<DaemonServiceRemovalResult> {
-  const removed = await removeService(target(dependencies), dependencies)
+  // Security review round 1: a Windows task Domovoi did not register is
+  // neither stopped nor deleted.
+  const removed = await removeService(target(dependencies), dependencies, { verifyWindowsTaskOwner: true })
   const recovery = {
     profileRecovery: removed.profileRecovery,
     ...(removed.profileRecoveryDetail === undefined ? {} : { profileRecoveryDetail: removed.profileRecoveryDetail }),
