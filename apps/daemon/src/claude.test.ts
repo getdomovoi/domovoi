@@ -2,7 +2,7 @@ import { waitForDaemon } from "./test-wait-for.js"
 import { execFileSync } from "node:child_process"
 import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve, sep } from "node:path"
+import { join, sep } from "node:path"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -761,10 +761,10 @@ describe("ClaudeAgentSdkAdapter", () => {
       itemId: "tool-write-relative",
       command: "Write",
       cwd: "/worktree",
-      // A relative tool path is resolved against the thread cwd, and resolve()
-      // anchors a bare posix root to the current drive on Windows, so the
-      // expectation has to be computed the same way rather than hardcoded.
-      path: resolve("/worktree", "src/generated.ts"),
+      // A relative tool path is joined to the thread cwd with the platform
+      // separator and nothing else: ".." is not collapsed and no drive is
+      // added, so the daemon follows it the way the filesystem does.
+      path: `/worktree${sep}src/generated.ts`,
       reason: "Write a generated file",
     })))
     adapter.resolveApproval(2, "deny")
