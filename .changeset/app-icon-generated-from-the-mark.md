@@ -1,5 +1,6 @@
 ---
 "@getdomovoi/mobile": patch
+"@getdomovoi/desktop": patch
 ---
 
 Generate the app icon and the splash from the mark instead of shipping a hand-made tile.
