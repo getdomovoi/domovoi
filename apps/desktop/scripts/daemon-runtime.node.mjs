@@ -257,6 +257,8 @@ test("rewrites every link that stays inside the shipped tree so a verbatim copy 
     await symlink(join("..", "..", "daemon", "node_modules", "real"), join(shipped, "node_modules", "reentering"), "dir")
 
     assert.equal(await removeExternalLinks(shipped, shipped), 0)
+    const { assertShippedTreeContained } = await import("./daemon-runtime.mjs")
+    assert.equal(await assertShippedTreeContained(shipped), 3)
     const copy = join(elsewhere, "runtime")
     await cp(shipped, copy, { recursive: true, verbatimSymlinks: true })
     await rm(root, { recursive: true, force: true })
@@ -283,5 +285,95 @@ test("rewrites every link that stays inside the shipped tree so a verbatim copy 
   } finally {
     await rm(root, { recursive: true, force: true })
     await rm(elsewhere, { recursive: true, force: true })
+  }
+})
+
+test("unpacks only the verified copy, even when the cached archive is swapped after its check", async () => {
+  const { unpackNode } = await import("./daemon-runtime.mjs")
+  const { mkdir } = await import("node:fs/promises")
+  const root = await fixture("domovoi-runtime-archive-swap-", { "node.tar.gz": "the node program" })
+  try {
+    const archive = join(root, "node.tar.gz")
+    const target = { ...runtimeTarget("darwin", "arm64"), sha256: await sha256Of(archive) }
+    // A toy archive format whose program is the archive's bytes. The cached
+    // archive is swapped after every check, just before tar reads its input.
+    const run = async (_file, args) => {
+      await writeFile(archive, "a fake node program")
+      const top = join(args[args.indexOf("-C") + 1], "node-v24.21.0-darwin-arm64")
+      await mkdir(join(top, "bin"), { recursive: true })
+      await writeFile(join(top, "bin", "node"), await readFile(args[args.indexOf("-xf") + 1]))
+      return { stdout: "" }
+    }
+    const unpacked = await unpackNode({ archive, target, destination: join(root, "out", "node"), run })
+    assert.equal(await readFile(unpacked.executable, "utf8"), "the node program")
+    assert.equal(unpacked.sha256, createHash("sha256").update("the node program").digest("hex"))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("removes a file swapped for an outside link while the walk runs", async () => {
+  const { removeExternalLinks } = await import("./daemon-runtime.mjs")
+  const { createRequire, syncBuiltinESMExports } = await import("node:module")
+  const { lstat, mkdir, symlink } = await import("node:fs/promises")
+  const promises = createRequire(import.meta.url)("node:fs/promises")
+  const listed = promises.readdir
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-walk-swap-"))
+  try {
+    const shipped = join(root, "daemon")
+    const directory = join(shipped, "node_modules", "pkg")
+    const swapped = join(directory, "index.js")
+    await mkdir(directory, { recursive: true })
+    await mkdir(join(root, "outside"))
+    await writeFile(swapped, "module")
+    await writeFile(join(root, "outside", "secret"), "outside the shipped tree")
+    let raced = false
+    // The race: the directory is listed while index.js is a file, and the
+    // file becomes a link out of the tree before the walk acts on it.
+    promises.readdir = async (path, ...rest) => {
+      const entries = await listed(path, ...rest)
+      if (!raced && path === directory) {
+        raced = true
+        await rm(swapped)
+        await symlink(join(root, "outside", "secret"), swapped, "file")
+      }
+      return entries
+    }
+    syncBuiltinESMExports()
+    await removeExternalLinks(shipped, shipped)
+    assert.ok(raced)
+    await assert.rejects(lstat(swapped), { code: "ENOENT" })
+  } finally {
+    promises.readdir = listed
+    syncBuiltinESMExports()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("the final check refuses a shipped tree with any link that leaves it, and passes one that stays inside", async () => {
+  const { assertShippedTreeContained } = await import("./daemon-runtime.mjs")
+  const { mkdir, symlink } = await import("node:fs/promises")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-final-check-"))
+  try {
+    const tree = join(root, "runtime")
+    const modules = join(tree, "daemon", "node_modules")
+    await mkdir(join(modules, "real"), { recursive: true })
+    await mkdir(join(tree, "node", "bin"), { recursive: true })
+    await mkdir(join(root, "outside"))
+    await writeFile(join(modules, "real", "index.js"), "module")
+    await writeFile(join(tree, "node", "bin", "node"), "program")
+    await symlink("real", join(modules, "alias"), "dir")
+    assert.equal(await assertShippedTreeContained(tree), 1)
+
+    await symlink(join(modules, "real"), join(modules, "absolute"), "dir")
+    await symlink(join(root, "outside"), join(modules, "outside"), "dir")
+    await symlink(join("..", "..", "..", "runtime", "daemon", "node_modules", "real"), join(modules, "reentering"), "dir")
+    await symlink("missing", join(modules, "dangling"), "file")
+    const refused = await assertShippedTreeContained(tree).then(() => undefined, (error) => error)
+    assert.ok(refused instanceof Error, "the final check passed a tree with links that leave it")
+    for (const name of ["absolute", "outside", "reentering", "dangling"]) assert.match(refused.message, new RegExp(`node_modules[\\\\/]${name}\\b`))
+    assert.doesNotMatch(refused.message, /alias/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
   }
 })

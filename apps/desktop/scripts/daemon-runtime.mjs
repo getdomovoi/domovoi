@@ -9,9 +9,9 @@
 // entry under that program.
 import { createHash, randomBytes } from "node:crypto"
 import { createReadStream, createWriteStream } from "node:fs"
-import { access, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, stat, symlink } from "node:fs/promises"
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join, relative, resolve, sep } from "node:path"
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { pipeline } from "node:stream/promises"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
@@ -102,23 +102,31 @@ export async function downloadOverHttps(url, destination) {
 // Returns the program's path and the sha256 of the program as it came out of
 // the verified archive; proveDaemonRuns refuses to run anything else.
 export async function unpackNode({ archive, target, destination, run = execute }) {
-  // The member digest below is only as good as the archive tar reads, so the
-  // archive is verified again here rather than trusted from the fetch.
-  const archiveDigest = await sha256Of(archive)
-  if (archiveDigest !== target.sha256) throw new Error(`${archive} has sha256 ${archiveDigest}, pinned ${target.sha256}. Nothing was unpacked.`)
+  // The cached archive is read exactly once, into memory. Those bytes are
+  // checked against the pin and written to a private directory, and tar reads
+  // only that copy, so a cache swapped after the check cannot reach tar. Limit:
+  // a process running as the same user can still write the private copy.
   const staging = await mkdtemp(join(tmpdir(), "domovoi-node-"))
   let sha256
   try {
-    await run("tar", ["-xf", archive, "-C", staging])
-    const [top] = await readdir(staging)
+    await chmod(staging, 0o700)
+    const bytes = await readFile(archive)
+    const archiveDigest = createHash("sha256").update(bytes).digest("hex")
+    if (archiveDigest !== target.sha256) throw new Error(`${archive} has sha256 ${archiveDigest}, pinned ${target.sha256}. Nothing was unpacked.`)
+    const verified = join(staging, target.archive)
+    await writeFile(verified, bytes, { flag: "wx", mode: 0o600 })
+    const unpacked = join(staging, "unpacked")
+    await mkdir(unpacked, { mode: 0o700 })
+    await run("tar", ["-xf", verified, "-C", unpacked])
+    const [top] = await readdir(unpacked)
     if (!top) throw new Error(`${archive} unpacked to nothing`)
-    const member = join(staging, top, target.nodeExecutable)
+    const member = join(unpacked, top, target.nodeExecutable)
     const program = await lstat(member).catch(() => undefined)
     if (!program?.isFile()) throw new Error(`${archive} holds no ${target.nodeExecutable}`)
     sha256 = await sha256Of(member)
     await rm(destination, { recursive: true, force: true })
     await mkdir(resolve(destination, ".."), { recursive: true })
-    await rename(join(staging, top), destination)
+    await rename(join(unpacked, top), destination)
   } finally {
     await rm(staging, { recursive: true, force: true })
   }
@@ -171,11 +179,16 @@ export async function deployDaemon({ repositoryRoot, destination, run = execute 
 // a relative one that climbs out of root and back in by its name, names the
 // staging path; a verbatim copy would carry that name to a machine where it
 // points outside the copy. Returns the number of links removed.
+// Each entry is read with lstat when it is acted on, not from the listing: a
+// file can become a link between the two. That narrows the race without
+// closing it; assertShippedTreeContained is the check that decides.
 export async function removeExternalLinks(path, root) {
   const inside = `${await realpath(root)}${sep}`
   let removed = 0
-  for (const entry of await readdir(path, { withFileTypes: true })) {
-    const child = join(path, entry.name)
+  for (const name of await readdir(path)) {
+    const child = join(path, name)
+    const entry = await lstat(child).catch(() => undefined)
+    if (entry === undefined) continue
     if (entry.isSymbolicLink()) {
       const target = await realpath(child).catch(() => undefined)
       if (target === undefined || !target.startsWith(inside)) { await rm(child, { force: true }); removed += 1; continue }
@@ -196,8 +209,10 @@ export async function removeExternalLinks(path, root) {
 
 export async function removeDanglingLinks(path) {
   let removed = 0
-  for (const entry of await readdir(path, { withFileTypes: true })) {
-    const child = join(path, entry.name)
+  for (const name of await readdir(path)) {
+    const child = join(path, name)
+    const entry = await lstat(child).catch(() => undefined)
+    if (entry === undefined) continue
     if (entry.isSymbolicLink()) {
       if (!(await exists(child))) { await rm(child, { force: true }); removed += 1 }
     } else if (entry.isDirectory()) {
@@ -205,6 +220,43 @@ export async function removeDanglingLinks(path) {
     }
   }
   return removed
+}
+
+// The check that decides whether the runtime ships: every link in the final
+// tree is relative, stays inside the tree at every step of its path (so a
+// verbatim copy elsewhere resolves the same way), and resolves to something
+// inside the tree now. Throws naming each link that fails; returns the number
+// of links checked.
+export async function assertShippedTreeContained(root) {
+  const base = resolve(root)
+  const inside = `${await realpath(base)}${sep}`
+  const failures = []
+  let links = 0
+  const walk = async (directory) => {
+    for (const name of await readdir(directory)) {
+      const child = join(directory, name)
+      const entry = await lstat(child)
+      if (entry.isDirectory()) { await walk(child); continue }
+      if (!entry.isSymbolicLink()) continue
+      links += 1
+      const raw = await readlink(child)
+      if (isAbsolute(raw) || /^[a-z]:|^[\\/]/i.test(raw)) { failures.push(`${child} -> ${raw} is absolute`); continue }
+      let depth = relative(base, dirname(child)).split(/[\\/]/).filter((part) => part !== "" && part !== ".").length
+      let leaves = false
+      for (const part of raw.split(/[\\/]/)) {
+        if (part === "" || part === ".") continue
+        depth += part === ".." ? -1 : 1
+        if (depth < 0) { leaves = true; break }
+      }
+      if (leaves) { failures.push(`${child} -> ${raw} climbs out of the tree`); continue }
+      const target = await realpath(child).catch(() => undefined)
+      if (target === undefined) failures.push(`${child} -> ${raw} resolves to nothing`)
+      else if (!target.startsWith(inside)) failures.push(`${child} -> ${raw} resolves to ${target}, outside the tree`)
+    }
+  }
+  await walk(base)
+  if (failures.length > 0) throw new Error(`${base} would ship ${failures.length} link${failures.length === 1 ? "" : "s"} that leave it:\n${failures.join("\n")}`)
+  return links
 }
 
 // What the runtime never loads on the platform being packaged: types, source
@@ -252,10 +304,16 @@ const entryLoadCheck = [
 ].join("\n")
 
 // The installer cannot prove the entry's imports resolve; running it can.
-// Three separate facts: the program is the one unpacked from the verified
-// archive (its digest, checked before anything runs), the entry answers with
-// the daemon's version, and the entry loads under that program (a nonce only
-// the load check prints, so a program that ignores its arguments cannot pass).
+// Three checks, and only the first defends against a hostile program:
+// - the program's sha256 is the one unpackNode took from the verified copy of
+//   the pinned archive, checked before anything runs;
+// - the entry answers --version with the daemon's version;
+// - the entry loads under the program: the load check imports it, then prints
+//   a nonce. This catches a program that ignores its arguments. It cannot
+//   catch a hostile program, which sees the nonce in its arguments and can
+//   print it without loading anything; nothing a program prints can prove
+//   what it ran. The two run checks show the entry loads only because the
+//   digest check has already shown the program is the pinned build.
 export async function proveDaemonRuns({ nodeExecutable, nodeSha256, daemonEntry, expectedVersion, run = execute }) {
   const digest = await sha256Of(nodeExecutable)
   if (digest !== nodeSha256) throw new Error(`${nodeExecutable} has sha256 ${digest}; the program unpacked from the verified archive has sha256 ${nodeSha256}. Nothing was run.`)
@@ -294,6 +352,9 @@ export async function prepareDaemonRuntime({
   const daemonEntry = await deployDaemon({ repositoryRoot, destination: join(output, "daemon"), run })
   const pruned = await pruneDaemonRuntime(join(output, "daemon"), { platform, arch })
   log(`pruned ${pruned.files} entries, ${(pruned.bytes / 1048576).toFixed(1)} MB, the runtime never loads on ${target.key}`)
+  // After the last change to the tree: this, not the cleanup above, decides.
+  const links = await assertShippedTreeContained(output)
+  log(`${links} link${links === 1 ? "" : "s"} in daemon-runtime/${target.key}, every one relative and inside it`)
   const manifest = JSON.parse(await readFile(join(repositoryRoot, "apps/daemon/package.json"), "utf8"))
   const host = platform === process.platform && arch === process.arch
   if (host) {
