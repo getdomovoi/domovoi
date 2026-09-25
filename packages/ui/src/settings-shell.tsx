@@ -69,13 +69,9 @@ type ServicePhase =
 
 const profileRecoverCommand = "domovoid profile recover --confirm-no-supervisor"
 
-// COPY PLACEHOLDERS (security review round 1 of #576). Each line built with
-// this marker names a true state that has no approved line yet: a failed
-// install or removal the service manager left half done, a read-back that
-// could not be taken, or a daemon this app did not start. The states and their
-// tests stay; the words await the owner's ruling, and the marker shows on
-// screen until then.
-const copyPending = "[Copy pending]"
+// Security review round 1 of #576, lines approved by fetzy on 2026-09-25: a
+// failed install or removal the service manager left half done, a read-back
+// that could not be taken, or a daemon this app did not start.
 
 type FailedOutcome = Extract<DaemonServiceOutcome, { ok: false; reason: "failed" }>
 
@@ -106,7 +102,7 @@ function failedStill(kind: string, action: "install" | "remove", outcome: Failed
   if (action === "remove" && service?.installed === true && service.running && outcome.daemon === "untouched") {
     return `Nothing was removed. The ${kind} still holds the daemon, and every session keeps running.`
   }
-  return `${copyPending} ${readBackFact(kind, action, service)} ${daemonFact(outcome.daemon)}`
+  return `${readBackFact(kind, action, service)} ${daemonFact(outcome.daemon)}`
 }
 
 // The daemon installer's own words for a removal that leaves the profile owner
@@ -197,7 +193,7 @@ function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: N
               <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{profileRecoverCommand}</span>
             </>
           ) : phase.daemonRunning && !phase.attached ? <span>Removed. Quitting Domovoi now stops the daemon and every session on it.</span> : null}
-          {phase.daemonRunning && phase.attached ? <span>{`${copyPending} ${phase.recovery ? "" : "Removed. "}This app is connected to a daemon it did not start. Quitting this app leaves it running.`}</span> : null}
+          {phase.daemonRunning && phase.attached ? <span>{`${phase.recovery ? "" : "Removed. "}This app is connected to a daemon it did not start. Quitting this app leaves it running.`}</span> : null}
           {phase.daemonRunning ? null : <span>{`${phase.recovery ? "" : "Removed. "}The daemon did not start again inside this app, so no session is running. Quit and reopen Domovoi to start it.`}</span>}
         </div>
       ) : null}

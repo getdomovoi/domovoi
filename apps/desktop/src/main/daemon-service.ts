@@ -85,8 +85,8 @@ const runtimeVersionPattern = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?
 const maximumRuntimeVersionLength = 64
 
 // Cause strings below are shown as the detail under "Could not install the
-// service". They are new in security review round 1 of #576 and await the
-// owner's ruling with the placeholders in packages/ui settings-shell.
+// service". They are new in security review round 1 of #576 and were
+// approved by fetzy on 2026-09-25.
 export function profileRuntimeDirectory(home: string, version: string, platform: string): string {
   const path = platform === "win32" ? win32 : posix
   if (version.length > maximumRuntimeVersionLength || !runtimeVersionPattern.test(version)) {

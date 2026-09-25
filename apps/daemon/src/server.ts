@@ -287,11 +287,10 @@ export const maximumAuthenticationPayloadBytes = 4 * 1_024
 // so it stops accepting work that would deepen the gap.
 export const persistenceFailureThreshold = 3
 export const persistenceUnavailableContext = "Domovoi can no longer persist state"
-// COPY PLACEHOLDER (security review round 1 of #576, awaiting the owner's
-// ruling): the answer to a turn asked for while the desktop holds the service
-// handoff fence. The state is true; the words are not approved.
+// Security review round 1 of #576, approved by fetzy on 2026-09-25: the
+// answer to a turn asked for while the desktop holds the service handoff fence.
 export const serviceHandoffFencedMessage =
-  "[Copy pending] The daemon is moving to or from the login service, so no new turn starts until the switch finishes or stops. Nothing is interrupted."
+  "The daemon is moving to or from the login service, so no new turn starts until the switch finishes or stops. Nothing is interrupted."
 export const persistenceUnavailableMessage =
   "Daemon cannot persist state, so changes are refused"
 

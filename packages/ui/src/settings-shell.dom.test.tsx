@@ -409,8 +409,7 @@ it("says Removed once when the profile owner is unresolved and the daemon did no
 // after a failed install or removal, and says whether the daemon it reaches
 // afterwards is one this app did not start. A line that is only true when
 // nothing changed is drawn only when the read-back says nothing changed. The
-// states without an approved line carry the "[Copy pending]" marker until the
-// owner rules the words.
+// other states' lines were approved by fetzy on 2026-09-25.
 it("does not say nothing was installed when the service reads back as installed or cannot be read", async () => {
   const user = userEvent.setup()
   const install = vi.fn()
@@ -422,7 +421,6 @@ it("does not say nothing was installed when the service reads back as installed 
   for (const fact of ["The LaunchAgent is installed", "Whether the LaunchAgent is installed is not known from here", "This app is connected to a daemon it did not start"]) {
     await user.click(button)
     expect(await within(section).findByText("Could not install the service")).toBeTruthy()
-    expect(section.textContent).toContain("[Copy pending]")
     expect(section.textContent).toContain(fact)
     expect(section.textContent).not.toContain("Nothing else was touched.")
     if (fact !== "This app is connected to a daemon it did not start") expect(section.textContent).not.toContain("Nothing was installed.")
@@ -441,14 +439,12 @@ it("does not say nothing was removed when the removal stopped or deleted part of
   for (const fact of ["The LaunchAgent is still installed but not running", "The LaunchAgent is gone", "Whether the LaunchAgent is installed is not known from here"]) {
     await user.click(button)
     expect(await within(section).findByText("Could not remove the service")).toBeTruthy()
-    expect(section.textContent).toContain("[Copy pending]")
     expect(section.textContent).toContain(fact)
     expect(section.textContent).not.toContain("Nothing was removed.")
     expect(section.textContent).not.toContain("every session keeps running")
   }
   await user.click(button)
   expect(await within(section).findByText("Nothing was removed. The LaunchAgent still holds the daemon, and every session keeps running.")).toBeTruthy()
-  expect(section.textContent).not.toContain("[Copy pending]")
 })
 
 it("does not say quitting stops the daemon, or that no session runs, when the removal left this app on a daemon it did not start", async () => {
@@ -457,7 +453,6 @@ it("does not say quitting stops the daemon, or that no session runs, when the re
   const section = daemonSection("outside", { remove })
   await user.click(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
   expect(await within(section).findByText(/This app is connected to a daemon it did not start/)).toBeTruthy()
-  expect(section.textContent).toContain("[Copy pending]")
   expect(section.textContent).not.toContain("Quitting Domovoi now stops the daemon")
   expect(section.textContent).not.toContain("no session is running")
 })
