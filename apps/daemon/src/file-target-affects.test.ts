@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve, sep } from "node:path"
 
@@ -101,6 +101,26 @@ describe("hidePaths", () => {
     expect(hidePaths(`ls ${join(workspace, ".ssh")}/keys .ssh/known_hosts .sshrc`, directoryForms))
       .toBe("ls [REDACTED]/keys [REDACTED]/known_hosts .sshrc")
     expect(hidePaths("nothing hidden", [])).toBe("nothing hidden")
+  })
+
+  // Final check after 8181baf4: a link whose target is written in another case
+  // than the directory it reaches. realpath writes the stored case, so the
+  // spelling the link target used has to stay a form of its own.
+  it("keeps the spelling a link target used beside the one realpath writes", async () => {
+    const workspace = await directory("domovoi-hide-link-case-")
+    const real = await realpath(workspace)
+    await mkdir(join(workspace, "OutsideCase"))
+    await writeFile(join(workspace, "OutsideCase", ".env"), "TOKEN=1")
+    await symlink(join(workspace, "outsidecase"), join(workspace, "through"), "junction")
+    const forms = await hiddenPathForms({ workspace, path: join(workspace, "through", ".env") })
+    expect(forms).toEqual(expect.arrayContaining([
+      join(workspace, "outsidecase", ".env"),
+      join(real, "outsidecase", ".env"),
+      "outsidecase/.env",
+      "outsidecase\\.env",
+    ]))
+    expect(hidePaths(`Edit ${join(workspace, "outsidecase", ".env")} or outsidecase/.env`, forms))
+      .toBe("Edit [REDACTED] or [REDACTED]")
   })
 
   // Round 10: a hidden file under a subdirectory, named from the request's

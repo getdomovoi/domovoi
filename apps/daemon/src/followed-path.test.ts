@@ -72,18 +72,36 @@ describe("followPath", () => {
   // in the worktree reads as outside it.
   it("writes the path the way native realpath writes it, missing tail included", async () => {
     const name = `domovoi-spelling-absent-${randomUUID()}`
-    expect(await followPath(join(tmpdir(), name))).toBe(join(await realpath(tmpdir()), name))
-    expect(await followPath(join(tmpdir(), name, "file.json"))).toBe(join(await realpath(tmpdir()), name, "file.json"))
+    expect((await followPath(join(tmpdir(), name)))?.path).toBe(join(await realpath(tmpdir()), name))
+    expect((await followPath(join(tmpdir(), name, "file.json")))?.path).toBe(join(await realpath(tmpdir()), name, "file.json"))
 
     const workspace = await directory("domovoi-spelling-")
     const real = await realpath(workspace)
     await mkdir(join(workspace, "Mixed"))
     await writeFile(join(workspace, "Mixed", "Case.json"), "{}")
-    expect(await followPath(join(workspace, "Mixed", "Case.json"))).toBe(join(real, "Mixed", "Case.json"))
+    expect((await followPath(join(workspace, "Mixed", "Case.json")))?.path).toBe(join(real, "Mixed", "Case.json"))
     const caseInsensitive = await lstat(join(workspace, "mIXED")).then(() => true, () => false)
     if (caseInsensitive) {
-      expect(await followPath(join(workspace, "mIXED", "cASE.json"))).toBe(join(real, "Mixed", "Case.json"))
-      expect(await followPath(join(workspace, "mIXED", "absent", "file.json"))).toBe(join(real, "Mixed", "absent", "file.json"))
+      expect((await followPath(join(workspace, "mIXED", "cASE.json")))?.path).toBe(join(real, "Mixed", "Case.json"))
+      expect((await followPath(join(workspace, "mIXED", "absent", "file.json")))?.path).toBe(join(real, "Mixed", "absent", "file.json"))
+    }
+  })
+
+  // Final check after 8181baf4: the realpath spelling is not the only one
+  // Domovoi derives. The walk writes each link target as the link wrote it,
+  // and a hidden path in that spelling must still be hidden, so both are kept.
+  it("keeps the path as walked, each link target as written, beside the realpath spelling", async () => {
+    const workspace = await directory("domovoi-spelling-link-")
+    await mkdir(join(workspace, "Stored"))
+    await symlink(join(workspace, "stored"), join(workspace, "link"), "junction")
+    const walkedRoot = (await followPath(workspace))!.walked
+    const followed = await followPath(join(workspace, "link", "file.json"))
+    expect(followed?.walked).toBe(join(walkedRoot, "stored", "file.json"))
+    const identity = await fileTargetIdentity(workspace, join("link", "file.json"), workspace)
+    expect(identity.walkedPath).toBe(followed?.walked)
+    expect(identity.realPath).toBe(followed?.path)
+    if (await lstat(join(workspace, "stored")).then(() => true, () => false)) {
+      expect(followed?.path).toBe(join(await realpath(workspace), "Stored", "file.json"))
     }
   })
 

@@ -111,8 +111,9 @@ function from(directory: string, target: string): string | undefined {
 }
 
 // Every form in which a card's text can name a path it hides (ruled
-// 2026-09-24): as written, from the request's directory, where it really leads,
-// and each of those relative to the worktree, both as given and as it really
+// 2026-09-24): as written, from the request's directory, where it really leads
+// (as walked and as realpath writes it), and each of those relative to the
+// worktree, both as given and as it really
 // lies, and each relative form joined to either worktree root again. The path
 // from the request's directory counts too, from the directory as given and
 // from where it really lies (round 10). Each relative form is written with "/"
@@ -125,19 +126,24 @@ export async function hiddenPathForms(input: {
   const workspace = resolve(input.workspace)
   const followed = await followedTarget(input.workspace, input.path, input.cwd)
   const lexical = resolve(workspace, input.cwd ?? ".", input.path)
+  // Where the path really leads is written both as the walk wrote it (each
+  // link target as the link spelled it) and as realpath writes it; a text can
+  // name either (final check after 8181baf4).
   const absolute = [
     input.path,
     requestedPath(input.workspace, input.path, input.cwd),
     lexical,
-    ...(followed ? [followed.target] : []),
+    ...(followed ? [followed.target, followed.walkedTarget] : []),
   ]
-  const roots = [workspace, ...(followed ? [followed.workspace] : [])]
+  const roots = [workspace, ...(followed ? [followed.workspace, followed.walkedWorkspace] : [])]
   const inside = absolute.flatMap((path) => roots.flatMap((root) => within(root, path) ?? []))
   const directory = resolve(workspace, input.cwd ?? ".")
   const realDirectory = followed ? await followPath(directory) : undefined
   const fromDirectory = [
     from(directory, lexical),
-    ...(followed && realDirectory !== undefined ? [from(realDirectory, followed.target)] : []),
+    ...(followed && realDirectory !== undefined
+      ? [from(realDirectory.path, followed.target), from(realDirectory.walked, followed.walkedTarget)]
+      : []),
   ].flatMap((path) => path ?? [])
   const relativeForms = [...inside, ...fromDirectory].flatMap((path) => {
     const backslashed = path.split("/").join("\\")

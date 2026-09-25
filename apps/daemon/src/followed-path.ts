@@ -23,17 +23,25 @@ const maximumLinksFollowed = 40
 // Walk the path one component at a time from its root. A link, including one
 // whose target does not exist yet, is replaced by its target before the rest
 // of the path is read; ".." then leaves the directory the link led to. A
-// component that does not exist is kept as written. What exists is written as
-// native realpath writes it (spelledPath). Undefined when the links loop past
-// the bound.
-export async function followPath(path: string): Promise<string | undefined> {
-  return (await walkPath(path))?.path
+// component that does not exist is kept as written. Undefined when the links
+// loop past the bound.
+//
+// The result is written two ways. Walked is the path as the walk wrote it,
+// each link target spelled as the link wrote it. Path is the same place
+// written as native realpath writes it (spelledPath), which is what the
+// worktree check and a reading compare. Both are spellings Domovoi itself
+// derives, so a path it hides is hidden in either (hiddenPathForms).
+export type FollowedPath = { path: string; walked: string }
+
+export async function followPath(path: string): Promise<FollowedPath | undefined> {
+  const walk = await walkPath(path)
+  return walk && { path: walk.path, walked: walk.walked }
 }
 
 // The walk behind followPath. Unreadable is true when a component could not be
 // read for a reason other than being absent: what lies there, a link included,
-// is then unknown, and the path is only a guess.
-async function walkPath(path: string): Promise<{ path: string; unreadable: boolean } | undefined> {
+// is then unknown, and the path is only a guess, left as walked.
+async function walkPath(path: string): Promise<{ path: string; walked: string; unreadable: boolean } | undefined> {
   const root = parse(path).root
   let current = root
   const pending = path.slice(root.length).split(separators).filter((part) => part !== "")
@@ -59,7 +67,7 @@ async function walkPath(path: string): Promise<{ path: string; unreadable: boole
     if (targetRoot !== "") current = targetRoot
     pending.unshift(...target.slice(targetRoot.length).split(separators).filter((item) => item !== ""))
   }
-  return { path: unreadable ? current : await spelledPath(current), unreadable }
+  return { path: unreadable ? current : await spelledPath(current), walked: current, unreadable }
 }
 
 // The walked path written the way native realpath writes it, as canonicalCwd
@@ -89,13 +97,16 @@ async function spelledPath(path: string): Promise<string> {
   }
 }
 
-// The worktree and the target, each followed the same way. Undefined when
-// either loops.
-export async function followedTarget(workspace: string, path: string, cwd?: string): Promise<{ workspace: string; target: string } | undefined> {
+// The worktree and the target, each followed the same way. Workspace and
+// target are the realpath spellings; walkedWorkspace and walkedTarget are the
+// walk's own. Undefined when either loops.
+export type FollowedTarget = { workspace: string; target: string; walkedWorkspace: string; walkedTarget: string }
+
+export async function followedTarget(workspace: string, path: string, cwd?: string): Promise<FollowedTarget | undefined> {
   const target = await followPath(requestedPath(workspace, path, cwd))
   const realWorkspace = await followPath(resolve(workspace))
   if (target === undefined || realWorkspace === undefined) return undefined
-  return { workspace: realWorkspace, target }
+  return { workspace: realWorkspace.path, target: target.path, walkedWorkspace: realWorkspace.walked, walkedTarget: target.walked }
 }
 
 type NodeKind = "regular" | "directory" | "fifo" | "socket" | "device" | "symlink" | "missing" | "unreadable"
@@ -106,8 +117,15 @@ type NodeIdentity = { kind: NodeKind; dev: string; ino: string; nlink: string }
 
 // What a file target is: the entry at the requested path (a link is its own
 // entry), the path it really leads to, and the entry there. Two readings that
-// differ in any field are two different targets.
-export type FileTargetIdentity = { entry: NodeIdentity; realPath: string | undefined; target: NodeIdentity }
+// differ in any of those are two different targets. WalkedPath is the same
+// path as the walk wrote it (FollowedPath.walked); it is a spelling, not a
+// place, and is not compared.
+export type FileTargetIdentity = {
+  entry: NodeIdentity
+  realPath: string | undefined
+  walkedPath: string | undefined
+  target: NodeIdentity
+}
 
 async function nodeIdentity(path: string): Promise<NodeIdentity> {
   try {
@@ -132,13 +150,13 @@ async function nodeIdentity(path: string): Promise<NodeIdentity> {
 export async function fileTargetIdentity(workspace: string, path: string, cwd?: string): Promise<FileTargetIdentity> {
   const requested = requestedPath(workspace, path, cwd)
   const entry = await nodeIdentity(requested)
-  let walk: { path: string; unreadable: boolean } | undefined
+  let walk: Awaited<ReturnType<typeof walkPath>>
   try { walk = await walkPath(requested) } catch { walk = undefined }
-  const realPath = walk === undefined || walk.unreadable ? undefined : walk.path
-  const target = realPath === undefined
+  const read = walk === undefined || walk.unreadable ? undefined : walk
+  const target = read === undefined
     ? { kind: "unreadable" as const, dev: "", ino: "", nlink: "" }
-    : await nodeIdentity(realPath)
-  return { entry, realPath, target }
+    : await nodeIdentity(read.path)
+  return { entry, realPath: read?.path, walkedPath: read?.walked, target }
 }
 
 // Whether any part of a reading could not be read.
