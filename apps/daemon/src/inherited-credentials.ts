@@ -1,4 +1,4 @@
-import { realpathSync, statSync } from "node:fs"
+import { realpathSync, statSync, type BigIntStats } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 
@@ -66,7 +66,8 @@ function canonicalMissingPath(directory: string): string {
 }
 
 // Undefined when the profile cannot be named: an invalid DOMOVOI_PROFILE_DIR,
-// a symlink loop or an unreadable path. Nothing is kept for it or filled into
+// a symlink loop, an unreadable path, or a directory that exists but whose
+// canonical path cannot then be read. Nothing is kept for it or filled into
 // it, and the settings parse or the profile claim reports the problem.
 function profileIdentity(profileSetting: string | undefined, homeDirectory: string): ProfileIdentity | undefined {
   try {
@@ -75,13 +76,17 @@ function profileIdentity(profileSetting: string | undefined, homeDirectory: stri
     // libuv reports the change time as birth time, and the change time moves
     // whenever a file is added to the directory, so the daemon writing its own
     // credential would make the profile stop matching itself.
+    let stats: BigIntStats
     try {
-      const stats = statSync(directory, { bigint: true })
-      return { kind: "inode", dev: stats.dev, ino: stats.ino, path: realpathSync.native(directory) }
+      stats = statSync(directory, { bigint: true })
     } catch (error) {
       if (!isMissing(error)) return undefined
       return { kind: "path", path: canonicalMissingPath(directory) }
     }
+    // The directory exists, so a canonical path that cannot be read, even with
+    // ENOENT, is not a missing profile. It throws to the outer catch and the
+    // profile gets nothing, rather than matching a bearer pinned by path.
+    return { kind: "inode", dev: stats.dev, ino: stats.ino, path: realpathSync.native(directory) }
   } catch {
     return undefined
   }
