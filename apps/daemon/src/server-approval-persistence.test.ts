@@ -126,7 +126,7 @@ describe("approval decisions", () => {
     const { port } = await daemon.start()
     raiseApprovals()
     const rpc = await connect(daemon, port)
-    const decision = { approvalId: "approval-migrate", decision: "always-project", client: "desktop" }
+    const decision = { approvalId: "approval-migrate", decision: "always-project", revision: 0, client: "desktop" }
 
     const refused = await rpc("approval.resolve", decision)
     expect(refused.error).toMatchObject({ code: daemonPersistenceUnavailableErrorCode })
@@ -181,7 +181,7 @@ describe("approval decisions", () => {
 
     parkNext = true
     const decision = rpc("approval.resolve", {
-      approvalId: "approval-migrate", decision: "always-project", client: "desktop",
+      approvalId: "approval-migrate", decision: "always-project", revision: 0, client: "desktop",
     })
     await parkedWrite
     const other = await connect(daemon, port)
@@ -226,7 +226,7 @@ describe("approval decisions", () => {
 
     const before = await history()
     const resolved = await rpc("approval.resolve", {
-      approvalId: "approval-migrate", decision: "allow-once", client: "desktop",
+      approvalId: "approval-migrate", decision: "allow-once", revision: 0, client: "desktop",
     })
     expect(resolved.error).toBeUndefined()
     const receipt = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result).thread
@@ -257,7 +257,7 @@ describe("approval decisions", () => {
     const { port } = await daemon.start()
     raiseApprovals()
     const rpc = await connect(daemon, port)
-    const decision = { approvalId: "approval-migrate", decision: "always-project", client: "desktop" }
+    const decision = { approvalId: "approval-migrate", decision: "always-project", revision: 0, client: "desktop" }
     const waiting = (snapshot: WorkspaceSnapshot) => {
       expect(snapshot.approvals.map((approval) => approval.id)).toEqual(["approval-migrate"])
       expect(snapshot.approvalRules).toEqual([])
@@ -308,7 +308,7 @@ describe("approval decisions", () => {
     const rpc = await connect(daemon, port)
 
     const undelivered = await rpc("approval.resolve", {
-      approvalId: "approval-migrate", decision: "always-project", client: "desktop",
+      approvalId: "approval-migrate", decision: "always-project", revision: 0, client: "desktop",
     })
     expect(undelivered.error).toMatchObject({ code: daemonPersistenceUnavailableErrorCode })
     const live = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
@@ -367,7 +367,7 @@ describe("standing rule replacement links", () => {
     expect(before.approvals.map(({ id }) => id)).toEqual(["approval-migrate", "approval-second"])
 
     const undelivered = await rpc("approval.resolve", {
-      approvalId: "approval-migrate", decision: "always-project", client: "desktop",
+      approvalId: "approval-migrate", decision: "always-project", revision: 0, client: "desktop",
     })
     expect(undelivered.error).toMatchObject({ code: -32603 })
     const live = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
@@ -406,11 +406,11 @@ describe("standing rule replacement links", () => {
 
     parkNext = true
     const decidedFirst = first("approval.resolve", {
-      approvalId: "approval-migrate", decision: "always-project", client: "desktop",
+      approvalId: "approval-migrate", decision: "always-project", revision: 0, client: "desktop",
     })
     await parkedWrite
     const decidedSecond = second("approval.resolve", {
-      approvalId: "approval-second", decision: "always-project", client: "desktop",
+      approvalId: "approval-second", decision: "always-project", revision: 0, client: "desktop",
     })
     await new Promise((resolve) => setTimeout(resolve, 100))
     release()

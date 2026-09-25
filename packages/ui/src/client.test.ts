@@ -2448,3 +2448,16 @@ describe("DomovoiClient endpoint resolution", () => {
     client.disconnect()
   })
 })
+
+describe("DomovoiClient approval decisions", () => {
+  it("names the card revision it answers", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
+    const request = vi.spyOn(client, "request").mockResolvedValue(structuredClone(demoWorkspace) as never)
+    await client.resolveApproval("approval-1", "allow-once", undefined, 2)
+    await client.resolveApproval("approval-1", "deny-explain", "Use staging", 3)
+    expect(request.mock.calls).toEqual([
+      ["approval.resolve", { approvalId: "approval-1", decision: "allow-once", revision: 2 }],
+      ["approval.resolve", { approvalId: "approval-1", decision: "deny-explain", explanation: "Use staging", revision: 3 }],
+    ])
+  })
+})

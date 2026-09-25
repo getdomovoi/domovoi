@@ -2,7 +2,7 @@ import { waitForDaemon } from "./test-wait-for.js"
 import { execFileSync } from "node:child_process"
 import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { join, sep } from "node:path"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -731,7 +731,9 @@ describe("ClaudeAgentSdkAdapter", () => {
       threadId: "22222222-2222-4222-8222-222222222222",
       itemId: "tool-edit-blocked",
       command: "Edit",
-      cwd: "/worktree/.claude/settings.json",
+      // The request runs in the thread's directory; the blocked path is
+      // named beside it, never as it.
+      cwd: "/worktree",
       path: "/worktree/src/index.ts",
       blockedPath: "/worktree/.claude/settings.json",
       reason: "Edit a settings file",
@@ -759,10 +761,10 @@ describe("ClaudeAgentSdkAdapter", () => {
       itemId: "tool-write-relative",
       command: "Write",
       cwd: "/worktree",
-      // A relative tool path is resolved against the thread cwd, and resolve()
-      // anchors a bare posix root to the current drive on Windows, so the
-      // expectation has to be computed the same way rather than hardcoded.
-      path: resolve("/worktree", "src/generated.ts"),
+      // A relative tool path is joined to the thread cwd with the platform
+      // separator and nothing else: ".." is not collapsed and no drive is
+      // added, so the daemon follows it the way the filesystem does.
+      path: `/worktree${sep}src/generated.ts`,
       reason: "Write a generated file",
     })))
     adapter.resolveApproval(2, "deny")
@@ -1043,6 +1045,76 @@ describe("changing the mode on a live session", () => {
     await expect(
       adapter.startTurn({ threadId, cwd: "/worktree", prompt: "retry", runtime: runtime("build") }),
     ).resolves.toBeTruthy()
+  })
+})
+
+describe("the file behind an approval request", () => {
+  it("sends the daemon the file name exactly as the provider will use it", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const ask = (input: Record<string, unknown>, id: string) => void calls[0]!.options.canUseTool!("Edit", input, {
+      signal: new AbortController().signal, toolUseID: id, requestId: id,
+    })
+
+    ask({ file_path: "/worktree/target.txt ", old_string: "a", new_string: "b" }, "spaced")
+    ask({ file_path: "link/../src/index.ts", old_string: "a", new_string: "b" }, "relative")
+
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(2))
+    const paths = Object.fromEntries(events.flatMap((event) => event.type === "approval-requested" ? [[event.itemId, event.path]] : []))
+    expect(paths).toEqual({ spaced: "/worktree/target.txt ", relative: `/worktree${sep}link/../src/index.ts` })
+    await adapter.close()
+  })
+})
+
+describe("the tool behind an approval request", () => {
+  it("names a provider tool that is neither a command nor a file tool, so no rule can stand for all its uses", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const ask = (toolName: string, input: Record<string, unknown>, id: string) => void calls[0]!.options.canUseTool!(toolName, input, {
+      signal: new AbortController().signal, toolUseID: id, requestId: id,
+    })
+
+    ask("WebFetch", { url: "https://docs.example.com/page", prompt: "Summarise" }, "fetch")
+    ask("mcp__github__create_issue", { title: "x" }, "mcp")
+    ask("Edit", { file_path: "/worktree/src/index.ts", old_string: "a", new_string: "b" }, "edit")
+    ask("Bash", { command: "pnpm test" }, "bash")
+
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(4))
+    const tools = Object.fromEntries(events.flatMap((event) => event.type === "approval-requested" ? [[event.itemId, event.tool]] : []))
+    expect(tools).toEqual({ fetch: "WebFetch", mcp: "mcp__github__create_issue", edit: undefined, bash: undefined })
+    await adapter.close()
+  })
+
+  it("takes the request's identity from the tool that runs, not from fields the tool input supplies", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const ask = (toolName: string, input: Record<string, unknown>, id: string) => void calls[0]!.options.canUseTool!(toolName, input, {
+      signal: new AbortController().signal, toolUseID: id, requestId: id,
+    })
+
+    ask("mcp__github__create_issue", { command: "Edit", file_path: "/worktree/src/index.ts", title: "x" }, "mcp")
+    ask("Edit", { command: "pnpm test", file_path: "/worktree/src/index.ts", old_string: "a", new_string: "b" }, "edit")
+    ask("Bash", { command: "Edit", file_path: "/worktree/src/index.ts" }, "bash")
+
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(3))
+    const requests = Object.fromEntries(events.flatMap((event) => event.type === "approval-requested"
+      ? [[event.itemId, { command: event.command, path: event.path, tool: event.tool }]]
+      : []))
+    expect(requests).toEqual({
+      mcp: { command: "Edit", path: "/worktree/src/index.ts", tool: "mcp__github__create_issue" },
+      edit: { command: "Edit", path: "/worktree/src/index.ts", tool: undefined },
+      bash: { command: "Edit", path: undefined, tool: undefined },
+    })
+    await adapter.close()
   })
 })
 

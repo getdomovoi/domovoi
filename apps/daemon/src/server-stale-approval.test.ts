@@ -253,7 +253,7 @@ describe("stored approval cards after a restart", () => {
     const { rpc, workspace, provider, liveSessionId, liveCard } = await restartedDaemonWithLiveRequest()
 
     const allowed = await rpc("approval.resolve", {
-      approvalId: liveCard.id, decision: "allow-once", client: "desktop",
+      approvalId: liveCard.id, decision: "allow-once", revision: liveCard.revision, client: "desktop",
     })
     expect(allowed.error).toBeUndefined()
 
@@ -265,7 +265,7 @@ describe("stored approval cards after a restart", () => {
     const { rpc, workspace, provider, liveSessionId, liveCard } = await restartedDaemonWithLiveRequest()
 
     const allowed = await rpc("approval.resolve", {
-      approvalId: staleApprovalId, decision: "allow-once", client: "desktop",
+      approvalId: staleApprovalId, decision: "allow-once", revision: 0, client: "desktop",
     })
 
     expect(provider.released.filter((release) => release.owner === liveSessionId)).toEqual([])
@@ -429,7 +429,8 @@ describe("stored approval cards in another project's saved state", () => {
     await vi.waitFor(async () => {
       expect((await firstWorkspace()).approvals.map(({ providerRequestId }) => providerRequestId)).toEqual([1])
     }, { timeout: 5_000 })
-    const staleCardId = (await firstWorkspace()).approvals[0]!.id
+    const staleCard = (await firstWorkspace()).approvals[0]!
+    const staleCardId = staleCard.id
     const refused = await firstRpc("project.open", { path: rootB, client: "desktop" })
     const confirmation = (refused.error as unknown as { data: unknown }).data
     expect((await firstRpc("project.open", { path: rootB, client: "desktop", confirmation })).error).toBeUndefined()
@@ -468,7 +469,9 @@ describe("stored approval cards in another project's saved state", () => {
       expect(card).toBeDefined()
       return card!
     }, { timeout: 5_000 })
-    const allowed = await rpc("approval.resolve", { approvalId: staleCardId, decision: "allow-once", client: "desktop" })
+    const allowed = await rpc("approval.resolve", {
+      approvalId: staleCardId, decision: "allow-once", revision: staleCard.revision, client: "desktop",
+    })
     await rpc("session.archive", { sessionId: staleSessionId, client: "desktop" })
 
     expect(secondProvider.released).toEqual([])
@@ -517,6 +520,35 @@ describe("stored approval cards in another project's saved state", () => {
       .toEqual([liveSessionId, staleSessionId].sort())
     expect(noticesIn(opened)).toEqual([])
   })
+
+  it("keeps no requested file, hidden record or hidden command for a card that expired when its project reopened", async () => {
+    const { daemon, workspace, provider, liveSessionId, liveWorkspace, switchAwayAndBack } = await projectDaemon()
+    const envFile = join(liveWorkspace, ".env")
+    // A file tool's card keeps the file it was raised for, and one on a
+    // credential file also keeps the execution record that names it. A
+    // command blocked on a credential file keeps the command as sent.
+    provider.request(liveSessionId, {
+      threadId: liveThreadId, itemId: "item-edit", command: "Edit", reason: "Edit the notes",
+      path: join(liveWorkspace, "notes.txt"), cwd: liveWorkspace,
+    })
+    provider.request(liveSessionId, {
+      threadId: liveThreadId, itemId: "item-env", command: "Edit", reason: `Edit ${envFile}`,
+      path: envFile, cwd: liveWorkspace,
+    })
+    provider.request(liveSessionId, {
+      threadId: liveThreadId, itemId: "item-cat", command: `cat ${envFile}`, reason: "Read the settings",
+      blockedPath: envFile, cwd: liveWorkspace,
+    })
+    await vi.waitFor(async () => expect((await workspace()).approvals).toHaveLength(3), { timeout: 5_000 })
+    expect((await workspace()).approvals.find((approval) => approval.itemId === "item-cat")?.command)
+      .toBe("cat [REDACTED]")
+    const cardIds = (await workspace()).approvals.map(({ id }) => id).sort()
+    expect([...daemon.fileApprovalTargetIds].sort()).toEqual(cardIds)
+
+    const opened = await switchAwayAndBack()
+    expect(opened.approvals).toEqual([])
+    expect(daemon.fileApprovalTargetIds).toEqual([])
+  })
 })
 
 // One daemon run in project A, whose sessions match `storedSnapshot` with no
@@ -560,5 +592,5 @@ async function projectDaemon() {
     expect((await rpc("project.open", { path: rootA, client: "desktop" })).error).toBeUndefined()
     return workspace()
   }
-  return { workspace, provider, liveSessionId, liveWorkspace, switchAwayAndBack }
+  return { daemon, workspace, provider, liveSessionId, liveWorkspace, switchAwayAndBack }
 }

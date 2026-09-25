@@ -93,7 +93,7 @@ async function start(options: { worktree?: boolean, checkpoint?: () => Promise<{
   return { provider, workspaceService, rpc, snapshot, approvalId, emit: (event: AgentEvent) => emit(event) }
 }
 
-const allow = (approvalId: string, decision = "allow-once") => ({ approvalId, decision, client: "phone" })
+const allow = (approvalId: string, decision = "allow-once") => ({ approvalId, decision, revision: 0, client: "phone" })
 
 describe("a checkpoint before an approved write", () => {
   it("is taken before the agent hears the decision, and named on the receipt", async () => {

@@ -52,6 +52,7 @@ import {
 import {
   annotationAnchorSchema,
   approvalDecisionSchema,
+  approvalRevisionSchema,
   clientIdentityIdSchema,
   clientKindSchema,
   connectionIdSchema,
@@ -1106,6 +1107,9 @@ export const approvalResolveParamsSchema = z
     approvalId: z.string().min(1),
     decision: approvalDecisionSchema,
     explanation: z.string().trim().min(1).check(utf16MaxLength(4_096)).optional(),
+    // The card revision the client showed. An Allow must name it, so the
+    // daemon can refuse one given to a card it has since rewritten.
+    revision: approvalRevisionSchema.optional(),
   })
   .superRefine((params, context) => {
     if (params.decision === "deny-explain" && !params.explanation) {
@@ -1113,6 +1117,13 @@ export const approvalResolveParamsSchema = z
         code: "custom",
         message: "An explanation is required for deny-explain",
         path: ["explanation"],
+      })
+    }
+    if ((params.decision === "allow-once" || params.decision === "always-project") && params.revision === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "The card revision is required to allow an approval",
+        path: ["revision"],
       })
     }
   })

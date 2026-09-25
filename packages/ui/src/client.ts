@@ -560,15 +560,18 @@ export class DomovoiClient extends EventTarget {
     })
   }
 
+  // The revision is the card revision the client showed; an Allow must carry it.
   resolveApproval(
     approvalId: string,
     decision: ApprovalDecision,
     explanation?: string,
+    revision?: number,
   ): Promise<WorkspaceSnapshot> {
     return this.request("approval.resolve", {
       approvalId,
       decision,
       ...(explanation ? { explanation } : {}),
+      ...(revision === undefined ? {} : { revision }),
     })
   }
 

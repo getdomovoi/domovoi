@@ -501,6 +501,8 @@ export const sessionSummarySchema = z.object({
   }
 })
 
+export const approvalRevisionSchema = z.number().int().nonnegative().safe()
+
 export const approvalRequestSchema = z.object({
   id: z.string().min(1),
   sessionId: z.string().min(1),
@@ -521,6 +523,9 @@ export const approvalRequestSchema = z.object({
   itemId: z.string().min(1).check(utf16MaxLength(256)).optional(),
   requestedAt: dateTimeSchema,
   execution: executionResolutionSchema,
+  // Raised each time the daemon rewrites the card, so an Allow names the card
+  // it answers. A card saved before revisions existed reads as revision 0.
+  revision: approvalRevisionSchema.default(0),
   reapproval: z.object({
     reason: z.literal("legacy-text-only"),
     inactiveRuleIds: z.array(z.string().min(1)).min(1).max(128).refine(
