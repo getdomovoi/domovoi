@@ -133,7 +133,9 @@ export function TabletThreadHeader({ snapshot, detail, artifactCount, onOpenRevi
 
 export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = false }: {
   approval: ApprovalRequest
-  onResolve: (approvalId: string, decision: TabletDecision) => void
+  // The revision is the one this card shows, so the daemon can refuse an
+  // Allow given to a card it has since rewritten.
+  onResolve: (approvalId: string, decision: TabletDecision, revision: number) => void
   onDenyExplain: (approvalId: string) => void
   watching?: boolean
 }) {
@@ -171,11 +173,13 @@ export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = 
           title="Allow once"
           variant="affirm"
           className="h-[52px] rounded-xl"
-          onPress={() => onResolve(approval.id, "allow-once")}
+          onPress={() => onResolve(approval.id, "allow-once", approval.revision)}
         />
         <View className="flex-row gap-2">
-          {hardGate ? null : (
-            <Button title="Always here" className="h-12 flex-1 rounded-xl border-warn-border" onPress={() => onResolve(approval.id, "always-project")} />
+          {/* The daemon refuses a standing rule on a hard gate and for a request
+              it could not resolve (ruled 2026-09-24). */}
+          {hardGate || approval.execution.state !== "resolved" ? null : (
+            <Button title="Always here" className="h-12 flex-1 rounded-xl border-warn-border" onPress={() => onResolve(approval.id, "always-project", approval.revision)} />
           )}
           <Button title="Deny" className="h-12 flex-1 rounded-xl border-warn-border" onPress={() => onDenyExplain(approval.id)} />
         </View>
@@ -227,7 +231,7 @@ export function TabletThread({ snapshot, detail, approval, access, onResolve, on
   detail: SessionDetail
   approval: ApprovalRequest | undefined
   access: ClientAccess
-  onResolve: (approvalId: string, decision: TabletDecision) => void
+  onResolve: (approvalId: string, decision: TabletDecision, revision: number) => void
   onDenyExplain: (approvalId: string) => void
 }) {
   const tools = snapshot.thread.filter((item) => item.sessionId === detail.id && item.kind === "tool").length
@@ -411,7 +415,7 @@ export function TabletShell({
   onOpenMachines: () => void
   onChangeDraft: (draft: string) => void
   onSend: (sessionId: string) => void
-  onResolve: (approvalId: string, decision: TabletDecision) => void
+  onResolve: (approvalId: string, decision: TabletDecision, revision: number) => void
   onDenyExplain: (approvalId: string) => void
   onPostReview: (artifactId: string, body: string) => Promise<void>
 }) {

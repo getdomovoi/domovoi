@@ -412,8 +412,10 @@ export function App() {
 
   useEffect(() => () => fleetLoads.invalidate(), [fleetLoads])
 
+  // The revision is the one the card on screen shows, so the daemon can refuse
+  // an Allow given to a card it has since rewritten.
   const resolveApproval = async (
-    approval: WorkspaceSnapshot["approvals"][number],
+    approval: Pick<WorkspaceSnapshot["approvals"][number], "id" | "revision">,
     decision: ApprovalDecision,
     explanation?: string,
   ) => {
@@ -424,6 +426,7 @@ export function App() {
         approvalId: approval.id,
         decision,
         ...(explanation ? { explanation } : {}),
+        revision: approval.revision,
       })
       setExplaining(false)
       setOpenApprovalId(undefined)
@@ -683,9 +686,9 @@ export function App() {
               if (sendProblem) setSendProblem("")
             }}
             onSend={(sessionId) => void sendMessage(sessionId)}
-            onResolve={(approvalId, decision) => {
+            onResolve={(approvalId, decision, revision) => {
               const approval = snapshot.approvals.find((candidate) => candidate.id === approvalId)
-              if (approval) void resolveApproval(approval, decision)
+              if (approval) void resolveApproval({ id: approval.id, revision }, decision)
             }}
             onDenyExplain={(approvalId) => {
               setOpenApprovalId(approvalId)
@@ -813,12 +816,18 @@ export function App() {
             mode={pairingMode}
             permission={cameraPermission}
             requestPermission={requestCameraPermission}
+            device={tablet ? "tablet" : "phone"}
             onPaired={(credential) => {
               setUrl(credential.url)
               setToken(credential.token)
-              setPairingMode(undefined)
               setConnectTo(credential)
               void saveCredential(credential)
+            }}
+            // The paired card stays up until the person moves on, so the line
+            // about when a gate can reach this device is read, not flashed.
+            onDone={() => {
+              setPairingMode(undefined)
+              selectTab("sessions")
             }}
             onCancel={() => setPairingMode(undefined)}
           />
@@ -933,6 +942,7 @@ export function App() {
               themePreference={preference}
               onChangeTheme={setPreference}
               paired={!unpaired}
+              device={tablet ? "tablet" : "phone"}
               bottomInset={tabFootprint}
             />
           ) : null}

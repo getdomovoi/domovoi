@@ -13,6 +13,16 @@ import {
 import type { AgentAdapter } from "./codex.js"
 import { DomovoiDaemon } from "./server.js"
 import type { WorkspaceStore } from "./store.js"
+import type { WorkspaceService } from "./workspace.js"
+
+// A person's allow takes a snapshot checkpoint before the decision is saved
+// (J34), so these gates need a worktree that can take one.
+function checkpointingWorkspace(): WorkspaceService {
+  return {
+    inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(), restore: vi.fn(), checkpoint: vi.fn(),
+    snapshot: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
+  }
+}
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -32,6 +42,17 @@ function pendingApproval(): WorkspaceSnapshot {
   delete session.activeTurnId
   snapshot.approvals = [{ ...demoWorkspace.approvals[0]!, risk: "normal", providerRequestId: 41 }]
   return workspaceSnapshotSchema.parse(snapshot)
+}
+
+// A stored card expires when the daemon starts, because its provider request
+// id belonged to a provider process that is gone. Each gate here is held back
+// from the stored snapshot and raised after start, as a card from this
+// daemon's provider would be. The daemon keeps the loaded snapshot as its live
+// state, so the cards pushed back are the ones it holds.
+function heldApprovals(snapshot: WorkspaceSnapshot): { stored: WorkspaceSnapshot, raiseApprovals: () => void } {
+  const approvals = snapshot.approvals
+  snapshot.approvals = []
+  return { stored: snapshot, raiseApprovals: () => { snapshot.approvals.push(...approvals) } }
 }
 
 function agent() {
@@ -76,13 +97,14 @@ async function connect(daemon: DomovoiDaemon, port: number) {
 describe("approval decisions", () => {
   it("answers the agent only after the decision is saved", async () => {
     const provider = agent()
+    const { stored, raiseApprovals } = heldApprovals(pendingApproval())
     let failNext = true
     let parkNext = false
     let parked = () => {}
     let release = () => {}
     const parkedWrite = new Promise<void>((resolve) => { parked = resolve })
     const store = {
-      load: () => pendingApproval(),
+      load: () => stored,
       save: vi.fn(),
       saveAsync: vi.fn(async () => {
         if (failNext) {
@@ -99,11 +121,12 @@ describe("approval decisions", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
+    raiseApprovals()
     const rpc = await connect(daemon, port)
-    const decision = { approvalId: "approval-migrate", decision: "always-project", client: "desktop" }
+    const decision = { approvalId: "approval-migrate", decision: "always-project", revision: 0, client: "desktop" }
 
     const refused = await rpc("approval.resolve", decision)
     expect(refused.error).toMatchObject({ code: daemonPersistenceUnavailableErrorCode })
@@ -129,13 +152,14 @@ describe("approval decisions", () => {
   })
   it("keeps an emergency stop that lands while the decision is being saved", async () => {
     const provider = agent()
+    const { stored, raiseApprovals } = heldApprovals(pendingApproval())
     let parkNext = false
     let parked = () => {}
     let release = () => {}
     const parkedWrite = new Promise<void>((resolve) => { parked = resolve })
     const saved: WorkspaceSnapshot[] = []
     const store = {
-      load: () => pendingApproval(),
+      load: () => stored,
       save: vi.fn(),
       saveAsync: vi.fn(async (snapshot: WorkspaceSnapshot) => {
         if (parkNext) {
@@ -149,14 +173,15 @@ describe("approval decisions", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
+    raiseApprovals()
     const rpc = await connect(daemon, port)
 
     parkNext = true
     const decision = rpc("approval.resolve", {
-      approvalId: "approval-migrate", decision: "always-project", client: "desktop",
+      approvalId: "approval-migrate", decision: "always-project", revision: 0, client: "desktop",
     })
     await parkedWrite
     const other = await connect(daemon, port)
@@ -181,15 +206,17 @@ describe("approval decisions", () => {
 
   it("shows the new receipt in cached session history", async () => {
     const provider = agent()
+    const { stored, raiseApprovals } = heldApprovals(pendingApproval())
     const store = {
-      load: () => pendingApproval(),
+      load: () => stored,
       save: vi.fn(),
       saveAsync: vi.fn(async () => {}),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
+    raiseApprovals()
     const rpc = await connect(daemon, port)
     const history = async () => {
       const page = await rpc("session.history", { sessionId: "session-billing" })
@@ -199,7 +226,7 @@ describe("approval decisions", () => {
 
     const before = await history()
     const resolved = await rpc("approval.resolve", {
-      approvalId: "approval-migrate", decision: "allow-once", client: "desktop",
+      approvalId: "approval-migrate", decision: "allow-once", revision: 0, client: "desktop",
     })
     expect(resolved.error).toBeUndefined()
     const receipt = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result).thread
@@ -209,11 +236,12 @@ describe("approval decisions", () => {
   })
   it("keeps the gate waiting when the agent cannot be told after the save", async () => {
     const provider = agent()
+    const { stored, raiseApprovals } = heldApprovals(pendingApproval())
     provider.resolveApproval.mockImplementationOnce(() => { throw new Error("stdin closed") })
     const saved: WorkspaceSnapshot[] = []
     let failNext = false
     const store = {
-      load: () => pendingApproval(),
+      load: () => stored,
       save: vi.fn(),
       saveAsync: vi.fn(async (snapshot: WorkspaceSnapshot) => {
         if (failNext) {
@@ -224,11 +252,12 @@ describe("approval decisions", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
+    raiseApprovals()
     const rpc = await connect(daemon, port)
-    const decision = { approvalId: "approval-migrate", decision: "always-project", client: "desktop" }
+    const decision = { approvalId: "approval-migrate", decision: "always-project", revision: 0, client: "desktop" }
     const waiting = (snapshot: WorkspaceSnapshot) => {
       expect(snapshot.approvals.map((approval) => approval.id)).toEqual(["approval-migrate"])
       expect(snapshot.approvalRules).toEqual([])
@@ -255,13 +284,14 @@ describe("approval decisions", () => {
 
   it("answers the persistence failure when the rollback cannot be saved either", async () => {
     const provider = agent()
+    const { stored, raiseApprovals } = heldApprovals(pendingApproval())
     let failNext = false
     provider.resolveApproval.mockImplementationOnce(() => {
       failNext = true
       throw new Error("stdin closed")
     })
     const store = {
-      load: () => pendingApproval(),
+      load: () => stored,
       save: vi.fn(),
       saveAsync: vi.fn(async () => {
         if (failNext) {
@@ -271,13 +301,14 @@ describe("approval decisions", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
+    raiseApprovals()
     const rpc = await connect(daemon, port)
 
     const undelivered = await rpc("approval.resolve", {
-      approvalId: "approval-migrate", decision: "always-project", client: "desktop",
+      approvalId: "approval-migrate", decision: "always-project", revision: 0, client: "desktop",
     })
     expect(undelivered.error).toMatchObject({ code: daemonPersistenceUnavailableErrorCode })
     const live = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
@@ -319,22 +350,24 @@ function reapprovals(): WorkspaceSnapshot {
 describe("standing rule replacement links", () => {
   it("removes the replacement link a rolled-back decision set", async () => {
     const provider = agent()
+    const { stored, raiseApprovals } = heldApprovals(reapprovals())
     provider.resolveApproval.mockImplementationOnce(() => { throw new Error("stdin closed") })
     const store = {
-      load: () => reapprovals(),
+      load: () => stored,
       save: vi.fn(),
       saveAsync: vi.fn(async () => {}),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
+    raiseApprovals()
     const rpc = await connect(daemon, port)
     const before = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
     expect(before.approvals.map(({ id }) => id)).toEqual(["approval-migrate", "approval-second"])
 
     const undelivered = await rpc("approval.resolve", {
-      approvalId: "approval-migrate", decision: "always-project", client: "desktop",
+      approvalId: "approval-migrate", decision: "always-project", revision: 0, client: "desktop",
     })
     expect(undelivered.error).toMatchObject({ code: -32603 })
     const live = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
@@ -343,6 +376,7 @@ describe("standing rule replacement links", () => {
 
   it("keeps another decision's replacement link when a concurrent one rolls back", async () => {
     const provider = agent()
+    const { stored, raiseApprovals } = heldApprovals(reapprovals())
     provider.resolveApproval.mockImplementation((requestId: number) => {
       if (requestId === 42) throw new Error("stdin closed")
     })
@@ -351,7 +385,7 @@ describe("standing rule replacement links", () => {
     let release = () => {}
     const parkedWrite = new Promise<void>((resolve) => { parked = resolve })
     const store = {
-      load: () => reapprovals(),
+      load: () => stored,
       save: vi.fn(),
       saveAsync: vi.fn(async () => {
         if (!parkNext) return
@@ -363,19 +397,20 @@ describe("standing rule replacement links", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
+    raiseApprovals()
     const first = await connect(daemon, port)
     const second = await connect(daemon, port)
 
     parkNext = true
     const decidedFirst = first("approval.resolve", {
-      approvalId: "approval-migrate", decision: "always-project", client: "desktop",
+      approvalId: "approval-migrate", decision: "always-project", revision: 0, client: "desktop",
     })
     await parkedWrite
     const decidedSecond = second("approval.resolve", {
-      approvalId: "approval-second", decision: "always-project", client: "desktop",
+      approvalId: "approval-second", decision: "always-project", revision: 0, client: "desktop",
     })
     await new Promise((resolve) => setTimeout(resolve, 100))
     release()

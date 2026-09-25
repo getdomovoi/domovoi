@@ -94,8 +94,11 @@ export function PermissionRuleSettings({ rules }: { rules: readonly ApprovalRule
                 {active.some((rule) => rule.status === "active" && rule.execution.record.coverage === "command-and-script-text")
                   ? "Matches command and package-script text only. Config, plugins, source files, and dependency binaries may still change."
                   : null}
+                {active.some((rule) => rule.status === "active" && rule.execution.record.coverage === "tool-and-file")
+                  ? " A file-tool rule matches that tool on one file."
+                  : null}
                 {active.some((rule) => rule.status === "active" && rule.execution.record.coverage === "tool-and-workspace-scope")
-                  ? " A file-tool rule matches that tool anywhere inside the worktree, not one path."
+                  ? " A file-tool rule made for the whole worktree no longer matches anything; approving a file again makes a rule for that file."
                   : null}
               </p>
             </>

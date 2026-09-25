@@ -1199,7 +1199,7 @@ describe("SqliteWorkspaceStore", () => {
       const bytesBefore = await readFile(databasePath)
 
       expect(() => new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine)))
-        .toThrow(`was written by Domovoi protocol ${newer}, which is newer than this build's protocol ${protocolVersion}`)
+        .toThrow(`was written by a newer daemon (protocol ${newer}), and this daemon speaks protocol ${protocolVersion}`)
       expect((await readdir(scratch)).sort()).toEqual(entriesBefore)
       expect((await readFile(databasePath)).equals(bytesBefore)).toBe(true)
       const database = new DatabaseSync(databasePath)
@@ -1348,6 +1348,55 @@ describe("SqliteWorkspaceStore", () => {
         expect(store.devices.list()).toEqual([paired!.device])
         expect(store.devices.verify(paired!.token)?.device).toEqual(paired!.device)
       } finally { store.close() }
+    })
+
+    // Ruled 2026-09-23: a salvage that SQLite ends on its own (a full database)
+    // starts the daemon and reports the pairings as not kept.
+    it("starts and reports pairings not kept when SQLite ends the salvage transaction itself", async () => {
+      const marker = "unreadable-audit-page"
+      const { databasePath } = await seedThenDamage(
+        "salvage-full",
+        async (path) => {
+          insertLargeAuditRow(path, marker)
+          await writeFile(path, corruptOverflowPage(await readFile(path), marker))
+          return ""
+        },
+        (seed) => {
+          for (let index = 0; index < 60; index += 1) {
+            seed.devices.pair({ label: `phone-${index}`, binding: { kind: "client", client: "phone" } })
+          }
+        },
+      )
+      const prepare = DatabaseSync.prototype.prepare
+      const limited: DatabaseSync[] = []
+      const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql: string) {
+        const statement = prepare.call(this, sql)
+        if (sql.includes('INSERT INTO paired_devices ("') && limited.length === 0) {
+          limited.push(this)
+          const pages = prepare.call(this, "PRAGMA page_count").get() as { page_count: number }
+          this.exec(`PRAGMA max_page_count = ${pages.page_count}`)
+          // Lift the limit once the salvage insert has failed, so the rest of
+          // the start writes normally and only the salvage meets a full file.
+          const run = statement.run.bind(statement)
+          const unlimit = () => { for (const database of limited) database.exec("PRAGMA max_page_count = 1073741823") }
+          Object.defineProperty(statement, "run", {
+            value: (...values: Parameters<typeof run>) => {
+              try { return run(...values) } catch (error) { unlimit(); throw error }
+            },
+          })
+        }
+        return statement
+      })
+      let store: SqliteWorkspaceStore | undefined
+      try {
+        store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine))
+        expect(limited).toHaveLength(1)
+        expect(store.recovery).toMatchObject({ kind: "database", pairedDevicesKept: false })
+      } finally {
+        spy.mockRestore()
+        for (const database of limited) database.exec("PRAGMA max_page_count = 1073741823")
+        store?.close()
+      }
     })
 
     it("moves a database with an unreadable snapshot page aside and keeps its paired devices", async () => {
