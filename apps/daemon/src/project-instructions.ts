@@ -1,4 +1,5 @@
-import { lstat, readFile, realpath, stat } from "node:fs/promises"
+import { constants } from "node:fs"
+import { type FileHandle, lstat, open, realpath, stat } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import { fromMarkdown } from "mdast-util-from-markdown"
@@ -8,10 +9,15 @@ import { fromMarkdown } from "mdast-util-from-markdown"
 // files. The daemon reads those files itself: text only, from inside the
 // session worktree, never a hook, server, plugin or environment block.
 
-export type ProjectInstructionReader = "claude" | "opencode"
+export type ProjectInstructionReader = "claude" | "codex" | "opencode"
 
 const claudeInstructionFiles = ["CLAUDE.md", join(".claude", "CLAUDE.md"), "CLAUDE.local.md"]
 const openCodeInstructionFiles = ["AGENTS.md", "CLAUDE.md", "CONTEXT.md"]
+// Codex takes AGENTS.override.md when it is a file, else AGENTS.md, and reads
+// at most project_doc_max_bytes of it, 32 KiB unless configured. Read from
+// agents_md.rs and config_toml.rs at rust-v0.156.1.
+const codexInstructionFiles = ["AGENTS.override.md", "AGENTS.md"]
+const codexInstructionBudgetBytes = 32 * 1024
 const maximumInstructionFileBytes = 128 * 1024
 const maximumInstructionFiles = 32
 const maximumImportDepth = 5
@@ -35,6 +41,7 @@ export async function projectInstructions(
     }
     return undefined
   }
+  if (reader === "codex") return codexInstructions(root)
   const files: InstructionFile[] = []
   const seen = new Set<string>()
   for (const name of claudeInstructionFiles) {
@@ -44,6 +51,47 @@ export async function projectInstructions(
   return files
     .map((file) => `Contents of ${relative(root, file.path).split(sep).join("/")} (project instructions, checked into the codebase):\n\n${file.text}`)
     .join("\n\n")
+}
+
+// The first candidate that is a file decides, as in Codex: an override that is
+// empty or refused here does not hand the turn to AGENTS.md.
+async function codexInstructions(root: string): Promise<string | undefined> {
+  for (const name of codexInstructionFiles) {
+    const candidate = join(root, name)
+    if (!(await isFile(candidate))) continue
+    const file = await worktreeFile(root, candidate)
+    if (!file) return undefined
+    const text = utf8Prefix(file.text, codexInstructionBudgetBytes)
+    if (!text.trim()) return undefined
+    return `# AGENTS.md instructions for ${root}\n\n<INSTRUCTIONS>\n${escapeWrapperTags(text)}\n</INSTRUCTIONS>`
+  }
+  return undefined
+}
+
+// Codex wraps each additionalContext entry in a tag named by its key, beside
+// Domovoi's own domovoi-sandbox entry, and does not escape the value. A file
+// could close INSTRUCTIONS and its entry and open a forged Domovoi entry, so
+// the < of any INSTRUCTIONS or domovoi- tag in it is sent as &lt;.
+const wrapperTag = /<(?=\s*\/?\s*(?:instructions|domovoi-))/gi
+
+function escapeWrapperTags(text: string): string {
+  return text.replace(wrapperTag, "&lt;")
+}
+
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile()
+  } catch {
+    return false
+  }
+}
+
+function utf8Prefix(text: string, bytes: number): string {
+  const encoded = Buffer.from(text, "utf8")
+  if (encoded.length <= bytes) return text
+  let end = bytes
+  while (end > 0 && (encoded[end]! & 0xc0) === 0x80) end -= 1
+  return encoded.toString("utf8", 0, end)
 }
 
 async function collectClaudeFile(
@@ -186,8 +234,6 @@ async function worktreeFile(root: string, candidate: string): Promise<Instructio
   let path: string
   try {
     path = await realpath(candidate)
-    const info = await stat(path)
-    if (!info.isFile() || info.size > maximumInstructionFileBytes) return undefined
   } catch {
     return undefined
   }
@@ -196,7 +242,8 @@ async function worktreeFile(root: string, candidate: string): Promise<Instructio
   // Git metadata and another repository's files are not this repository's
   // instructions: no .git segment, and no .git entry in any directory between
   // the file and the worktree root (a nested clone or a submodule).
-  if (inside.split(sep).some((segment) => segment.toLowerCase() === ".git")) return undefined
+  const segments = inside.split(sep)
+  if (segments.some((segment) => segment.toLowerCase() === ".git")) return undefined
   for (let directory = dirname(path); directory !== root && directory.startsWith(root); directory = dirname(directory)) {
     try {
       await lstat(join(directory, ".git"))
@@ -205,9 +252,68 @@ async function worktreeFile(root: string, candidate: string): Promise<Instructio
       // No .git entry here; keep walking toward the root.
     }
   }
+  const directories = segments.slice(0, -1).map((_, index) => join(root, ...segments.slice(0, index + 1)))
+  const text = await readWorktreeFile(directories, path)
+  return text === undefined ? undefined : { path, text }
+}
+
+// A writer in the worktree can swap any name for a link between a check and a
+// read, so the file is opened once and read only from that descriptor. The
+// final name is opened without following a link. Windows has no O_NOFOLLOW;
+// there the lstat taken before the open stands in, and the identity check
+// below refuses a link swapped in after it. The descriptor must be the very
+// file lstat found (device and inode), and each directory between the worktree
+// root and the file must be a real directory, the same one before and after the
+// open. Node cannot open relative to a directory descriptor, so a directory
+// swapped for a link and back between these checks is narrowed, not ruled out.
+// O_NONBLOCK keeps a FIFO swapped in from holding the open.
+type FileIdentity = { dev: bigint; ino: bigint }
+
+async function readWorktreeFile(directories: readonly string[], path: string): Promise<string | undefined> {
+  let handle: FileHandle | undefined
   try {
-    return { path, text: await readFile(path, "utf8") }
+    const before = await pathIdentities(directories, path)
+    if (!before) return undefined
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+    const opened = await handle.stat({ bigint: true })
+    // A hard link has no target for realpath to resolve, so a second name for
+    // an outside file passes every path check. The open file must have one name.
+    if (!opened.isFile() || opened.nlink > 1n || opened.size > BigInt(maximumInstructionFileBytes)) return undefined
+    if (!sameFile(opened, before.at(-1))) return undefined
+    const after = await pathIdentities(directories, path)
+    if (!after || after.length !== before.length || !after.every((identity, index) => sameFile(identity, before[index]))) {
+      return undefined
+    }
+    // A file can grow after fstat: read at most the limit plus one byte.
+    const buffer = Buffer.alloc(maximumInstructionFileBytes + 1)
+    let length = 0
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null)
+      if (bytesRead === 0) break
+      length += bytesRead
+    }
+    if (length > maximumInstructionFileBytes) return undefined
+    return buffer.toString("utf8", 0, length)
   } catch {
     return undefined
+  } finally {
+    await handle?.close().catch(() => undefined)
   }
+}
+
+async function pathIdentities(directories: readonly string[], path: string): Promise<FileIdentity[] | undefined> {
+  const identities: FileIdentity[] = []
+  for (const directory of directories) {
+    const info = await lstat(directory, { bigint: true })
+    if (!info.isDirectory()) return undefined
+    identities.push({ dev: info.dev, ino: info.ino })
+  }
+  const info = await lstat(path, { bigint: true })
+  if (!info.isFile() || info.size > BigInt(maximumInstructionFileBytes)) return undefined
+  identities.push({ dev: info.dev, ino: info.ino })
+  return identities
+}
+
+function sameFile(left: FileIdentity, right: FileIdentity | undefined): boolean {
+  return right !== undefined && left.dev === right.dev && left.ino === right.ino
 }

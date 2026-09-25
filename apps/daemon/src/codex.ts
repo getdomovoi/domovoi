@@ -5,6 +5,14 @@ import type { Readable } from "node:stream"
 import { buildVersion, type ApprovalDecision, type ProviderModel, type ProviderUsageLimits, type Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep } from "./agents.js"
+import {
+  codexMainCheckoutConfigFile,
+  codexMainCheckoutConfigRefusal,
+  codexProjectTrustKeys,
+  codexRepositoryConfigFile,
+  codexRepositoryConfigRefusal,
+} from "./codex-repository-config.js"
+import { projectInstructions } from "./project-instructions.js"
 import { redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
 import { onProcessEnd } from "./process-end.js"
@@ -111,9 +119,58 @@ export function codexSandboxNotice(committed: readonly string[] | undefined): { 
 
 export const codexDeveloperInstructions = `Domovoi runs you in a sandbox that refuses reads of these files anywhere in the worktree: ${codexWorktreeSecretFiles.join(", ")}. A command that opens one of them fails with "Operation not permitted", for example a test or build that loads .env. Domovoi cannot see that failure. When a command fails on one of these files, say so in your reply and name the file.`
 
-const codexSandboxContext = {
+type CodexContextEntry = { kind: "application"; value: string }
+
+const codexSandboxContext: Record<string, CodexContextEntry> = {
   "domovoi-sandbox": { kind: "application", value: codexDeveloperInstructions },
-} as const
+}
+
+// Codex shortens the middle of any additionalContext value over 1,000 tokens,
+// counted as 4,000 bytes (context-fragments and utils/string at
+// rust-v0.156.1). Longer instructions go as numbered entries, each within that
+// size and cut after a line where one falls in its second half. Codex orders
+// entries by key.
+const codexContextValueBytes = 4_000
+const projectInstructionsKey = "domovoi-project-instructions"
+
+export function codexProjectInstructionsContext(text: string | undefined): Record<string, CodexContextEntry> {
+  if (text === undefined) return {}
+  const parts = utf8Parts(text, codexContextValueBytes)
+  if (parts.length === 1) return { [projectInstructionsKey]: { kind: "application", value: text } }
+  return Object.fromEntries(parts.map((value, index) => [
+    `${projectInstructionsKey}-${String(index + 1).padStart(2, "0")}`,
+    { kind: "application", value },
+  ]))
+}
+
+function utf8Parts(text: string, limit: number): string[] {
+  const bytes = Buffer.from(text, "utf8")
+  const parts: string[] = []
+  for (let start = 0; start < bytes.length;) {
+    let end = Math.min(start + limit, bytes.length)
+    if (end < bytes.length) {
+      while (end > start && (bytes[end]! & 0xc0) === 0x80) end -= 1
+      const newline = bytes.lastIndexOf(0x0a, end - 1)
+      if (newline >= start + limit / 2) end = newline + 1
+      // An escaped tag (&lt;) stays whole in one entry.
+      const escape = bytes.lastIndexOf(0x26, end - 1)
+      if (escape > start && escape > end - 4 && bytes.toString("latin1", escape, escape + 4) === "&lt;") end = escape
+    }
+    parts.push(bytes.toString("utf8", start, end))
+    start = end
+  }
+  return parts
+}
+
+// Marking every path Codex consults for trust as untrusted keeps Codex from
+// loading repository configuration and from recording trust of its own when a
+// writable thread starts. It also stops Codex reading the repository's
+// AGENTS.md, which Domovoi sends with each turn instead.
+function codexThreadConfig(cwd: string): { projects: Record<string, { trust_level: "untrusted" }> } {
+  return {
+    projects: Object.fromEntries(codexProjectTrustKeys(cwd).map((key) => [key, { trust_level: "untrusted" as const }])),
+  }
+}
 
 export function codexAppServerArguments(): string[] {
   const worktreeSecrets = `{${codexWorktreeSecretPatterns.map((pattern) => `${JSON.stringify(pattern)}="deny"`).join(",")}}`
@@ -313,12 +370,14 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
+    refuseRepositoryConfig(cwd)
     const policy = codexPolicyFor(runtime)
     const sandbox = policy.permissions === "domovoi-read" ? "read-only" : "workspace-write"
     // thread/start developerInstructions replaces the person's own
     // developer_instructions rather than adding to them, so Domovoi reads the
     // value Codex resolved for this worktree and sends both.
     const own = resolvedDeveloperInstructions(await this.#request("config/read", { cwd }))
+    refuseRepositoryConfig(cwd)
     const result = await this.#request("thread/start", {
       cwd,
       model: runtime.model,
@@ -326,6 +385,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       sandbox,
       serviceName: "domovoi",
       developerInstructions: own ? `${own}\n\n${codexDeveloperInstructions}` : codexDeveloperInstructions,
+      config: codexThreadConfig(cwd),
     })
     const threadId = nestedId(result, "thread")
     if (!threadId) throw new Error("Codex did not return a thread id")
@@ -393,12 +453,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
     await this.#request("thread/archive", { threadId })
   }
 
-  async resumeThread({ threadId }: {
+  async resumeThread({ threadId, cwd }: {
     threadId: string
     cwd: string
     runtime: Runtime
   }): Promise<void> {
-    const result = await this.#request("thread/resume", { threadId })
+    refuseRepositoryConfig(cwd)
+    const result = await this.#request("thread/resume", { threadId, config: codexThreadConfig(cwd) })
     if (nestedId(result, "thread") !== threadId) {
       throw new Error("Codex did not resume the requested thread")
     }
@@ -448,17 +509,23 @@ export class CodexAppServerAdapter implements AgentAdapter {
     // Thread developer instructions reach the model only when the thread
     // starts, so a thread started before Domovoi sent them, then resumed,
     // would never learn which files the sandbox refuses. Every turn carries
-    // the same text as context, which Codex keeps once per source key. A
-    // Codex without the field gets the rest of the turn unchanged.
+    // the same text as context, which Codex keeps once per source key, and
+    // the repository's AGENTS.md, read again for each turn. A Codex without
+    // the field gets the rest of the turn unchanged.
+    const additionalContext = {
+      ...codexProjectInstructionsContext(await projectInstructions(cwd, "codex")),
+      ...codexSandboxContext,
+    }
     let result: unknown
     for (;;) {
       const withCollaboration = this.#collaborationModeAvailable
       const withContext = this.#additionalContextAvailable
+      refuseRepositoryConfig(cwd)
       try {
         result = await this.#request("turn/start", {
           ...params,
           ...(withCollaboration ? { collaborationMode } : {}),
-          ...(withContext ? { additionalContext: codexSandboxContext } : {}),
+          ...(withContext ? { additionalContext } : {}),
         })
         break
       } catch (error) {
@@ -668,6 +735,19 @@ export class CodexAppServerAdapter implements AgentAdapter {
     for (const pending of this.#pending.values()) pending.reject(error)
     this.#pending.clear()
   }
+}
+
+// A trusted project's own Codex configuration can start programs and change
+// permissions. Until a trust gate ships, a session is refused before Codex is
+// asked anything about a worktree that holds it, or whose main checkout holds
+// hook configuration Codex takes from there. Callers check again after every
+// await, so each thread/start, thread/resume and turn/start goes out in the
+// same tick as a check that passed.
+function refuseRepositoryConfig(cwd: string): void {
+  const file = codexRepositoryConfigFile(cwd)
+  if (file !== undefined) throw new Error(codexRepositoryConfigRefusal(file))
+  const main = codexMainCheckoutConfigFile(cwd)
+  if (main !== undefined) throw new Error(codexMainCheckoutConfigRefusal(main.file, main.mainCheckout))
 }
 
 function resolvedDeveloperInstructions(result: unknown): string | undefined {
