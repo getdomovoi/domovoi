@@ -51,4 +51,7 @@ name and separator inside a value, as in `-DGITHUB_TOKEN ==Password: value`, hid
 follows them too, even past the end of the value they sit in. A name and separator at the end of a
 line, as in `X_TOKEN:` or `{"x-token":`, hide the first value on the next line in the command
 output stream as they already did in stored output and the terminal, so that stream holds such a
-line until the next one arrives.
+line until the next one arrives. A name inside another name's quoted value, as in
+`java -Dpassword="a API_KEY=b" -jar app.jar`, is part of that value: it is hidden with it, and what
+follows the value is kept. A doubled separator or terminal formatting where a value starts, as in
+`TOKEN==(a b)` or a colour code before the value, still lets an array's `(` open there.

@@ -935,6 +935,10 @@ describe("names inside a value, and values after a line break or spaced =", () =
     { text: "X_TOKEN:\nzqxjwvk -s\n", expected: "X_TOKEN:\n[REDACTED] -s\n" },
     { text: "x.password:\r\n  \"zqx jwvk\" -s\n", expected: "x.password:\r\n  \"[REDACTED]\" -s\n" },
     { text: "export NPM_TOKEN=\nzqxjwvk -s\n", expected: "export NPM_TOKEN=\n[REDACTED] -s\n" },
+    // A doubled separator or terminal formatting where the value starts leaves
+    // it starting, so an array's ( still opens there.
+    { text: "X_TOKEN==(zqx jwvk) -s\n", expected: "X_TOKEN=[REDACTED] -s\n" },
+    { text: "X_TOKEN=\u001b[1m(zqx jwvk) -s\n", expected: "X_TOKEN=[REDACTED] -s\n" },
   ]
 
   it.each(rows)("hides $text whole in the durable redactors", ({ text, expected }) => {
@@ -991,6 +995,29 @@ describe("names inside a value, and values after a line break or spaced =", () =
       expect(shown).not.toMatch(/jwvk|qqqq/u)
       expect(shown.endsWith(expected.slice(expected.lastIndexOf("[REDACTED]") + "[REDACTED]".length).replace(/^["')]/u, ""))).toBe(true)
     }
+  })
+
+  // A name inside another name's quoted value is part of that value: it is
+  // neither shown nor read as a name of its own, whatever pattern finds each
+  // name and however the reads are split. Found by the differential fuzz of
+  // #598 with its oracle counting every letter of a value (40,000 cases, seeds
+  // 1 and 20260923).
+  const insideQuoted = [
+    { text: "java -Dpassword=\"zqx API_KEY=jwvk\" -jar app.jar\n", expected: "java -Dpassword=\"[REDACTED]\" -jar app.jar\n", inner: "API_KEY" },
+    { text: "java -Dpassword=  'zqx client_secret=jwvk' -jar app.jar\n", expected: "java -Dpassword=  '[REDACTED]' -jar app.jar\n", inner: "client_secret" },
+    { text: "curl --token 'zqx password: jwvk' -s\n", expected: "curl --token '[REDACTED]' -s\n", inner: "password" },
+    { text: "X_TOKEN='zqx password: jwvk' -s\n", expected: "X_TOKEN='[REDACTED]' -s\n", inner: "password" },
+    { text: "java -DAPI_KEY= \"zqx GITHUB_TOKEN=jwvk\" -jar app.jar\n", expected: "java -DAPI_KEY= \"[REDACTED]\" -jar app.jar\n", inner: "GITHUB_TOKEN" },
+  ]
+  it.each(insideQuoted)("hides a name inside another name's quoted value: $text", ({ text, expected, inner }) => {
+    expect(redactDurableCommand(text).value).toBe(expected)
+    expect(redactDurableOutput(text).value).toBe(expected)
+    expect(stream([text])).toBe(expected)
+    expect(run([text])).toBe(expected)
+    const wrong = splits(text).map((reads) => ({ reads, shown: run(reads) }))
+      .filter(({ shown }) => shown.includes(inner) || /zq|qx|jw|wv|vk/u.test(shown))
+      .map(({ reads, shown }) => `${JSON.stringify(reads)} -> ${JSON.stringify(shown)}`)
+    expect(wrong).toEqual([])
   })
 
   // A quote that never closes holds the value open across reads, on to where

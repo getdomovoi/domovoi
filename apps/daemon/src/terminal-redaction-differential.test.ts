@@ -324,14 +324,14 @@ describe("terminal redaction against main", () => {
   it("fails a redactor that shows everything wherever main hides a value", () => {
     let hidden = 0
     const missed: string[] = []
-    for (let index = 0; index < cases; index += 1) {
+    for (let index = 0; index < 4_000; index += 1) {
       const next = random(seed + index)
       const item = generate(next)
       if (item.value === undefined || exposed(item, mainRedactDurableOutput(item.text).value) !== undefined) continue
       hidden += 1
       if (failure(item, [item.text], identity) === undefined) missed.push(`${item.shape}: ${JSON.stringify(item.text.slice(0, 80))}`)
     }
-    expect(hidden).toBeGreaterThan(cases / 4)
+    expect(hidden).toBeGreaterThan(1_000)
     expect(missed).toEqual([])
   })
 })

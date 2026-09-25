@@ -69,8 +69,11 @@ import {
 
 type Step = string | "idle"
 // hide: the value must never show. show: the text must come out unchanged.
+// either: a counting value the ruling may show, read another way when a
+// separator, a name or formatting comes before it (--total-token =5 is the
+// counting value 5, token==5 is the value =5), so it may show or be hidden.
 // plain: no secret.
-type Rule = "hide" | "show" | "plain"
+type Rule = "hide" | "show" | "either" | "plain"
 // longName: a name longer than the terminal carries, which the terminal is
 // held to main on.
 // nameSpan: where the name and its syntax sit, from its flag dashes or -D to
@@ -323,11 +326,12 @@ function generatePrefixed(next: () => number): Case {
       ])}${nested}`
     }
   }
-  // Terminal formatting after the separator, and spaces around a -D
-  // property's or a flag's =.
-  const ansi = () => chance(0.08) ? (features.push("ansi"), pick(formatting)) : ""
+  // Terminal formatting right before the value, after its separator and any
+  // name inside it, and spaces around a -D property's or a flag's =.
+  const formatted = ["assignment", "structured", "flag-equals", "property"].includes(form)
+  const ansi = formatted && chance(0.08) ? (features.push("ansi"), pick(formatting)) : ""
   const spaced = () => chance(0.15) ? (features.push("spaced-equals"), pick([" ", "  "])) : ""
-  const quoted = `${nested}${opener}${value}${closed ? close : ""}`
+  const quoted = `${nested}${ansi}${opener}${value}${closed ? close : ""}`
   const before = chance(0.05) ? (features.push("filler-near-carry"), `${pick([" ", "a"]).repeat(236 + Math.floor(next() * 40))} `) : ""
 
   let text: string
@@ -336,7 +340,7 @@ function generatePrefixed(next: () => number): Case {
   // delimiter or the end of the text right after it.
   let complete = closed && substitutionClosed
   switch (form) {
-    case "assignment": text = `${name}${space()}=${space()}${ansi()}${quoted}`; break
+    case "assignment": text = `${name}${space()}=${space()}${quoted}`; break
     case "export": text = `export ${name}=${quoted}`; break
     case "env": text = `$env:${name}=${quoted}`; break
     case "set": text = `set ${name}=${quoted}`; break
@@ -344,13 +348,13 @@ function generatePrefixed(next: () => number): Case {
     case "echo-enclosed": complete = enclosedClosed; text = `echo ${close}${name}=${value}${enclosedCloser} -s`; kept = [" -s"]; break
     case "json": text = `{"${name}":${gap(space())}${quoted}}`; break
     case "json-mixed": text = `{"${name}":"${value}","safe":"visible"}`; kept = [`"safe":"visible"}`]; complete = true; break
-    case "structured": text = `${name}:${gap(space() || " ")}${ansi()}${quoted}`; break
+    case "structured": text = `${name}:${gap(space() || " ")}${quoted}`; break
     case "flag-space": text = `curl --${name} ${quoted} -s`; kept = [" -s"]; break
-    case "flag-equals": text = `curl --${name}${spaced()}=${spaced()}${ansi()}${quoted} -s`; kept = [" -s"]; break
+    case "flag-equals": text = `curl --${name}${spaced()}=${spaced()}${quoted} -s`; kept = [" -s"]; break
     case "single-dash-space": text = `tool -${name} ${quoted} -s`; kept = [" -s"]; break
     case "single-dash-equals": text = `tool -${name}${spaced()}=${spaced()}${quoted} -s`; kept = [" -s"]; break
     case "slash-colon": text = `tool /${name}:${quoted} -s`; kept = [" -s"]; break
-    default: text = `java -D${name}${spaced()}=${spaced()}${ansi()}${quoted} -jar app.jar`; kept = [" -jar app.jar"]; break
+    default: text = `java -D${name}${spaced()}=${spaced()}${quoted} -jar app.jar`; kept = [" -jar app.jar"]; break
   }
   const following = chance(0.15) ? (features.push("following-line"), pick(["\nvisible output\n", "\r\nvisible output\r\n"])) : ""
   const ending = following ? "" : pick(["\r\n", "\n", ""])
@@ -360,8 +364,7 @@ function generatePrefixed(next: () => number): Case {
   if (!complete) kept = []
 
   let rule: Rule
-  // Formatting or another name before the value makes it no plain value.
-  if (prefixed && counting && plain && complete && nested === "" && !features.includes("ansi")) rule = "show"
+  if (prefixed && counting && plain && complete) rule = nested === "" && ansi === "" ? "show" : "either"
   else rule = "hide"
   const nameAt = text.indexOf(name)
   return {
@@ -577,6 +580,7 @@ function judge(pair: Pair, item: Case, steps: readonly Step[]): Failure | undefi
     if (absolute && current !== item.text) return fail("complete counting value not shown", JSON.stringify(current.slice(0, 160)))
     return undefined
   }
+  if (item.rule === "either") return undefined
   // Across an idle beat or a name past the carry, the terminal may hide more
   // than main where a quote from the value on may open (ruled 2026-09-24),
   // never less.

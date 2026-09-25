@@ -167,6 +167,19 @@ function quoteNamed(quote: string): GroupingName {
   return quote === "'" ? "singleQuote" : "doubleQuote"
 }
 
+// Where a terminal control sequence at `at` ends, such as the colour ESC[1m:
+// ESC [, parameter and intermediate bytes, then a final byte. -1 when there is
+// none, or it does not end before `to`.
+function controlSequenceEnd(text: string, at: number, to: number): number {
+  if (text[at] !== "\u001b" || text[at + 1] !== "[") return -1
+  for (let index = at + 2; index < to; index += 1) {
+    const code = text.charCodeAt(index)
+    if (code >= 0x40 && code <= 0x7e) return index + 1
+    if (code < 0x20 || code > 0x3f) return -1
+  }
+  return -1
+}
+
 // Reads a value from `from`. end: the index of the delimiter that ends the
 // value, or -1 when the text ends first; state: where the reading stands.
 function readValue(text: string, from: number, state: ValueState, to = text.length): { end: number, state: ValueState } {
@@ -221,6 +234,17 @@ function readValue(text: string, from: number, state: ValueState, to = text.leng
     const top = stack.at(-1)
     if (top === undefined) {
       if (state.delimiter.test(character)) return finish(at)
+      // A doubled separator or terminal formatting where the value starts,
+      // as in TOKEN==(a b) or TOKEN=ESC[1m(a b), leaves it starting, so what
+      // opens only there still opens after it.
+      if (fresh && pending === "") {
+        if (character === "=" || character === ":") continue
+        const formattingEnd = controlSequenceEnd(text, at, to)
+        if (formattingEnd > 0) {
+          at = formattingEnd - 1
+          continue
+        }
+      }
       if (pending !== "") {
         const joined = `${pending}${character}`
         const pendingOpeners = topOpeners()
@@ -410,10 +434,11 @@ const javaSystemProperty: ValuePattern = {
 // delimiter: what ends the value. inner: names inside the value, each with a
 // separator, whose own values run on past the value before them, in order;
 // end: where the last of them ends, or the value's own end; open is then where
-// the last one's reading stood.
+// the last one's reading stood. ties: other patterns' reads of a name found
+// at the same place, as -max.secret_key :False is a flag and a name: at once.
 type ValueMatch = {
   index: number, prefix: string, secret: string, open: ValueState | undefined, enclosing: GroupingName | undefined,
-  delimiter: RegExp, inner: readonly ValueMatch[], end: number,
+  delimiter: RegExp, inner: readonly ValueMatch[], end: number, ties: readonly ValueMatch[],
 }
 
 function valueStartState(delimiter: RegExp, enclosing: GroupingName | undefined): ValueState {
@@ -440,7 +465,7 @@ function readMatch(pattern: ValuePattern, text: string, match: RegExpExecArray):
   const end = read.end < 0 ? text.length : read.end
   return {
     index: match.index, prefix: match[0], secret: text.slice(valueAt, end), open: read.end < 0 ? read.state : undefined, enclosing,
-    delimiter: pattern.delimiter, inner: [], end,
+    delimiter: pattern.delimiter, inner: [], end, ties: [],
   }
 }
 
@@ -504,6 +529,35 @@ function withInnerValues(outer: ValueMatch, text: string, search: InnerSearch): 
   return { ...outer, inner, end, open: inner.at(-1)!.open }
 }
 
+// Every value the value patterns find, read left to right as one scan: the
+// match that starts first is taken, and a name inside a value already taken
+// is part of that value, not a name of its own, whichever pattern finds it
+// (a name in a -D property's quoted value, java -Dpassword="a API_KEY=b", is
+// found by the assignment pattern). Only names withInnerValues takes let a
+// value run on past it.
+const scanStarts = valuePatterns.map((pattern) => ({ pattern, start: new RegExp(pattern.start.source, pattern.start.flags) }))
+
+function scanValues(text: string): ValueMatch[] {
+  const matches: ValueMatch[] = []
+  const search: InnerSearch = new Map()
+  const inner: InnerSearch = new Map()
+  let from = 0
+  for (;;) {
+    const found = scanStarts
+      .map(({ pattern, start }) => ({ pattern, match: nextInner(search, start, text, from) }))
+      .filter((candidate): candidate is { pattern: ValuePattern, match: RegExpExecArray } => candidate.match !== null)
+    if (found.length === 0) return matches
+    const index = Math.min(...found.map(({ match }) => match.index))
+    // Each pattern that finds a name here reads it; the read that runs
+    // furthest stands for them all, and the others are kept as ties.
+    const reads = found.filter(({ match }) => match.index === index)
+      .map(({ pattern, match }) => withInnerValues(readMatch(pattern, text, match), text, inner))
+    const read = reads.reduce((furthest, next) => next.end > furthest.end ? next : furthest)
+    matches.push({ ...read, ties: reads.filter((other) => other !== read) })
+    from = Math.max(read.end, index + 1)
+  }
+}
+
 function valueMatches(pattern: ValuePattern, text: string): ValueMatch[] {
   const matches: ValueMatch[] = []
   const search: InnerSearch = new Map()
@@ -554,19 +608,16 @@ function hiddenMatch(match: ValueMatch, text: string): string {
 // value; state: where its reading stands.
 type OpenValue = { start: number, valueStart: number, shown: string, state: ValueState }
 
-const openValuePatterns = valuePatterns
 
 // words: also count a word holding a substitution as open, as the terminal
 // does, since the rest of that word may still arrive.
 function openValue(text: string, words: boolean): OpenValue | undefined {
   if (!anyValueOpener.test(text)) return undefined
   let found: OpenValue | undefined
-  for (const pattern of openValuePatterns) {
-    const match = valueMatches(pattern, text).at(-1)
-    const state = match?.open
-    if (match === undefined || state === undefined) continue
-    if (state.stack.length === 0 && !(words && state.nested)) continue
-    if (found !== undefined && found.start <= match.index) continue
+  // Only the last value can still be open: the scan takes no name inside it.
+  const match = scanValues(text).at(-1)
+  const state = match?.open
+  if (match !== undefined && state !== undefined && (state.stack.length > 0 || (words && state.nested))) {
     // The value still open is the last inner one's, when a name inside the
     // value took its value on past it.
     const last = match.inner.at(-1) ?? match
@@ -577,10 +628,10 @@ function openValue(text: string, words: boolean): OpenValue | undefined {
     found = { start: match.index, valueStart: text.length - last.secret.length, shown, state }
   }
   const cmd = cmdMatches(text).at(-1)
-  const state = cmd?.open
-  if (cmd !== undefined && state !== undefined && (state.stack.length > 0 || words) && (found === undefined || cmd.index < found.start)) {
+  const cmdState = cmd?.open
+  if (cmd !== undefined && cmdState !== undefined && (cmdState.stack.length > 0 || words) && (found === undefined || cmd.index < found.start)) {
     const valueStart = cmd.index + cmd.set.length + cmd.quote.length + cmd.name.length
-    found = { start: cmd.index, valueStart, shown: `${replacement}${cmd.quote}`, state }
+    found = { start: cmd.index, valueStart, shown: `${replacement}${cmd.quote}`, state: cmdState }
   }
   return found
 }
@@ -798,8 +849,7 @@ function redact(value: unknown, maximumLength: number, complete = true, exemptFr
   )
   // Each value a pattern finds is replaced as a whole, read to its end by
   // readValue rather than by the pattern.
-  const replaceValues = (input: string, pattern: ValuePattern, replacer: (match: ValueMatch, whole: string) => string) => {
-    const matches = valueMatches(pattern, input)
+  const replaceValues = (input: string, matches: readonly ValueMatch[], replacer: (match: ValueMatch, whole: string) => string) => {
     if (matches.length === 0) return input
     let result = ""
     let from = 0
@@ -814,10 +864,13 @@ function redact(value: unknown, maximumLength: number, complete = true, exemptFr
   }
   // The exemption applies only to a value that is complete: balanced quotes and
   // a delimiter, or the true end of the text, right after it.
+  // A counting value shows only when every pattern that found its name reads
+  // it as one.
+  const showsValue = (match: ValueMatch, whole: string) => match.inner.length === 0 && match.index >= exemptFrom
+    && showsPlainValue(match.prefix, match.secret, whole[match.index - 1])
+    && delimitedAt(whole, match.index + match.prefix.length + match.secret.length)
   const valueReplacer = (match: ValueMatch, whole: string) => {
-    const { prefix, secret, index: offset } = match
-    const matched = `${prefix}${secret}`
-    if (match.inner.length === 0 && offset >= exemptFrom && showsPlainValue(prefix, secret, whole[offset - 1]) && delimitedAt(whole, offset + matched.length)) return matched
+    if (showsValue(match, whole) && match.ties.every((tie) => showsValue(tie, whole))) return whole.slice(match.index, match.end)
     return hiddenMatch(match, whole)
   }
   // cmd's set "NAME=value" is read first, while its closing quote is still in
@@ -850,15 +903,12 @@ function redact(value: unknown, maximumLength: number, complete = true, exemptFr
   // terminal redactor, holding only from the sensitive word, redacted
   // Dpassword=... after a flush left -D behind.
   if (exemptFrom > 0) {
-    output = replaceValues(output, lostContextAssignment, (match, whole) => {
+    output = replaceValues(output, valueMatches(lostContextAssignment, output), (match, whole) => {
       if (match.index >= exemptFrom) return whole.slice(match.index, match.end)
       return hiddenMatch(match, whole)
     })
   }
-  output = replaceValues(output, assignment, valueReplacer)
-  output = replaceValues(output, structuredAssignment, valueReplacer)
-  output = replaceValues(output, secretFlag, valueReplacer)
-  output = replaceValues(output, javaSystemProperty, valueReplacer)
+  output = replaceValues(output, scanValues(output), valueReplacer)
   output = replace(
     output,
     /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b/gu,
