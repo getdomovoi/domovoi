@@ -54,6 +54,16 @@ describe("runPairCommand", () => {
     expect(out).toContain("It works once, and only for a desktop.")
   })
 
+  it("says an older daemon does not name an address, rather than failing", async () => {
+    const io = recorder()
+    // A daemon from before issueCode named its address answers with the code alone.
+    const older = { ...io, issue: vi.fn(async () => ({ code: issued.code, expiresAt: issued.expiresAt }) as unknown as typeof issued) }
+    expect(await runPairCommand(["pair", "--client", "phone", "--label", "iPhone"], older)).toBe(1)
+    expect(io.out.join("")).toContain(issued.code)
+    expect(io.err.join("")).toContain("This daemon does not say which address a device should dial")
+    expect(io.out.join("")).not.toContain("<qr>")
+  })
+
   it("says the daemon answers only on this machine rather than drawing a code a phone cannot dial", async () => {
     const io = recorder()
     const loopback = { ...io, issue: vi.fn(async () => ({ ...issued, pairingAddress: { url: "ws://127.0.0.1:47831/rpc", loopback: true } })) }

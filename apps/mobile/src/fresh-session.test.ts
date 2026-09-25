@@ -85,4 +85,30 @@ describe("fresh session start", () => {
       reason: "Open a project on the machine before starting a session.",
     })
   })
+
+  // The desktop labels a provider with a problem "Cannot start"; the phone must
+  // not choose it either, even when it reports ready.
+  it("skips a ready provider the daemon says cannot start, and starts the next one", async () => {
+    const snapshot = workspace()
+    const outdated = "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100."
+    snapshot.machine.providers = [
+      { id: "claude-code", command: "claude", status: "ready", sessionCapable: true, version: "2.1.100", problem: outdated },
+      { id: "codex", command: "codex", status: "ready", sessionCapable: true },
+    ]
+    // Stops at the first call; the test is which provider it asked about.
+    const call = vi.fn(async (_method: string, _params: unknown) => { throw new Error("stop here") })
+
+    await expect(startFreshSession(snapshot, "Go", call, "phone")).rejects.toThrow("stop here")
+    expect(call.mock.calls[0]?.[1]).toMatchObject({ provider: "codex" })
+  })
+
+  it("says why when the only ready provider cannot start", () => {
+    const snapshot = workspace()
+    const outdated = "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100."
+    snapshot.machine.providers = [
+      { id: "claude-code", command: "claude", status: "ready", sessionCapable: true, version: "2.1.100", problem: outdated },
+    ]
+
+    expect(freshSessionReadiness(snapshot)).toEqual({ canStart: false, reason: outdated })
+  })
 })

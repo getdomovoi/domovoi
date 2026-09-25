@@ -301,11 +301,12 @@ export function useWorkspace(
     async (
       approvalId: string,
       decision: ApprovalDecision,
-      explanation?: string,
+      explanation: string | undefined,
+      revision: number,
     ) => {
       const client = clientRef.current
       if (!client) throw new Error("Daemon connection is not open")
-      updateSnapshotFrom(client, await client.resolveApproval(approvalId, decision, explanation))
+      updateSnapshotFrom(client, await client.resolveApproval(approvalId, decision, explanation, revision))
     },
     [updateSnapshotFrom],
   )

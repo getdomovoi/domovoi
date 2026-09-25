@@ -251,11 +251,7 @@
       "evidence": [
         "Start a new session from this branch",
         "Archived, so there is no worktree to delete"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for I69; archived rows have no menu that says why fork, unarchive and delete are absent"
-      }
+      ]
     },
     {
       "id": "drawer.archive-confirm",
@@ -273,18 +269,21 @@
         "Archive and remove the worktree",
         "Keep the session"
       ],
-      "presence": [
-        "<AlertDialog open={archiveTarget !== null}"
-      ],
       "evidence": [
         "<AlertDialog open={archiveTarget !== null}",
         "Archive and remove the worktree",
         "Keep the session",
-        "then removes the worktree directory"
+        "then removes the worktree directory",
+        "files that were never merged"
+      ],
+      "presence": [
+        "<AlertDialog open={archiveTarget !== null}",
+        "Archive and remove the worktree",
+        "Keep the session"
       ],
       "partial": {
         "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for I69; a confirmation exists; it does not list what is removed and kept, and its actions are not the design's"
+        "reason": "needs an unmerged-file count before archive"
       }
     },
     {
@@ -647,14 +646,7 @@
       "copy": [
         "Archived and read-only. The worktree was removed. Branch",
         "and its final checkpoint are kept."
-      ],
-      "presence": [
-        "SessionReadOnlyNotice"
-      ],
-      "partial": {
-        "since": "2026-09-23",
-        "reason": "the archived notice does not yet say the worktree was removed and which branch and checkpoint are kept (I69)"
-      }
+      ]
     },
     {
       "id": "conversation.subagent",
@@ -1798,11 +1790,6 @@
   ],
   "humanRead": [
     {
-      "id": "thread.session-notice",
-      "since": "2026-09-18",
-      "note": "paused and archived banners with a resume action are not verified against the design"
-    },
-    {
       "id": "composer.send-hint",
       "since": "2026-09-19",
       "note": "The design defines kSend in its data and draws it nowhere. Enter alone now sends, so the hint is rendered rather than left out; read it against the design as an addition, not a match."
@@ -1831,6 +1818,11 @@
       "id": "palette.other-machines",
       "since": "2026-09-23",
       "note": "Grouped per machine (the design's layout A). The window's own machine is searched too and counted by its answer; its summary matches join the SESSIONS group, marked in summary. A row picked elsewhere switches this window to that machine and opens the session once its snapshot arrives (needs session.search, #570)."
+    },
+    {
+      "id": "thread.session-notice",
+      "since": "2026-09-23",
+      "note": "Branch name and files-never-merged count come from sessionSummary.branch and unmergedFiles (daemon lane, #568); a part the daemon did not report is left out rather than guessed."
     }
   ],
   "annotations": [

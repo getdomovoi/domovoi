@@ -11,9 +11,11 @@ import type { AgentCapabilities, AgentVisualContext } from "./agents.js"
 
 export class SessionAttachmentError extends Error {
   readonly refusal: SessionAttachmentRefusal
-  constructor(reason: SessionAttachmentRefusal["reason"]) {
-    super(reason === "image-input-unsupported"
-      ? "This adapter cannot accept images. No part of the send was delivered."
+  constructor(reason: Exclude<SessionAttachmentRefusal["reason"], "image-input-unsupported">)
+  constructor(reason: "image-input-unsupported", target: { model: string, imageCount: number })
+  constructor(reason: SessionAttachmentRefusal["reason"], target?: { model: string, imageCount: number }) {
+    super(reason === "image-input-unsupported" && target
+      ? `${target.imageCount} ${target.imageCount === 1 ? "image" : "images"} cannot go to ${target.model}. Remove them or pick another model.`
       : reason === "invalid-text"
         ? "The text attachment is empty or exceeds the 256 KB limit."
         : reason === "invalid-workspace-file"
@@ -21,6 +23,13 @@ export class SessionAttachmentError extends Error {
           : "An attachment is not a bounded PNG or JPEG matching its declared dimensions.")
     this.refusal = { kind: "session-attachment-refused", reason }
   }
+}
+
+// One rule for the model list and the send: an image reaches a model when its
+// adapter declares vision. Nothing else delivers images yet, so a model whose
+// adapter does not say so takes no image input, whatever its harness could do.
+export function modelImageInput(capabilities: AgentCapabilities | undefined): boolean {
+  return capabilities?.vision === true
 }
 
 function dimensions(bytes: Buffer, mimeType: ImageUpload["mimeType"]): { width: number; height: number } | undefined {
@@ -47,9 +56,9 @@ function dimensions(bytes: Buffer, mimeType: ImageUpload["mimeType"]): { width: 
   return undefined
 }
 
-export function prepareSessionAttachments(uploads: ImageUpload[] | undefined, capabilities: AgentCapabilities | undefined): AgentVisualContext[] {
+export function prepareSessionAttachments(uploads: ImageUpload[] | undefined, capabilities: AgentCapabilities | undefined, model: string): AgentVisualContext[] {
   if (!uploads?.length) return []
-  if (capabilities?.vision !== true) throw new SessionAttachmentError("image-input-unsupported")
+  if (!modelImageInput(capabilities)) throw new SessionAttachmentError("image-input-unsupported", { model, imageCount: uploads.length })
   if (uploads.length > maximumSessionAttachments) throw new SessionAttachmentError("invalid-image")
   return uploads.map((upload, attachmentIndex) => {
     const size = canonicalBase64DecodedByteLength(upload.data)

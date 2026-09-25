@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import { CliDeadlineError } from "./cli-rpc.js"
 import { runOpenCommand, type OpenCommandDependencies } from "./open-command.js"
+import { notARepositoryMessage } from "./rpc-errors.js"
 import type { WslDistribution } from "./wsl-distributions.js"
 import { listWslDistributions } from "./wsl-list.js"
 
@@ -29,6 +30,39 @@ function dependencies(overrides: Partial<OpenCommandDependencies> = {}) {
 }
 
 describe("runOpenCommand", () => {
+  it("repeats the daemon's refusal of a folder that is not a repository", async () => {
+    const deps = dependencies({
+      open: vi.fn<OpenCommandDependencies["open"]>(async () => {
+        throw new Error(notARepositoryMessage)
+      }),
+    })
+    expect(await runOpenCommand(["open", "C:\\notes"], deps)).toBe(1)
+    expect(deps.stderr).toHaveBeenCalledWith(`${notARepositoryMessage}\n`)
+  })
+
+  it.each([
+    "Git was not found on this machine's PATH. Install Git, then restart Domovoi so it can find it.",
+    "Git refused this folder because a different user owns it. Add it to Git's safe.directory list, then open it again.",
+  ])("repeats the daemon's fixed answer %j", async (message) => {
+    const deps = dependencies({
+      open: vi.fn<OpenCommandDependencies["open"]>(async () => {
+        throw new Error(message)
+      }),
+    })
+    expect(await runOpenCommand(["open", "/code/app"], deps)).toBe(1)
+    expect(deps.stderr).toHaveBeenCalledWith(`${message}\n`)
+  })
+
+  it("still reports only the fact of any other daemon failure", async () => {
+    const deps = dependencies({
+      open: vi.fn<OpenCommandDependencies["open"]>(async () => {
+        throw new Error("Internal detail naming C:\\Users\\me\\secret")
+      }),
+    })
+    expect(await runOpenCommand(["open", "C:\\notes"], deps)).toBe(1)
+    expect(deps.stderr).toHaveBeenCalledWith("Could not open C:\\notes\n")
+  })
+
   it("opens the current directory when no path is given", async () => {
     const deps = dependencies()
     expect(await runOpenCommand(["open"], deps)).toBe(0)

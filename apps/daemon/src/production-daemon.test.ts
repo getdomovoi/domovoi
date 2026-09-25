@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -14,6 +14,7 @@ import {
   type ProductionDaemonHandle,
   type ProductionDaemonRuntime,
 } from "./production-daemon.js"
+import { resetKeptCredentialsForTests } from "./inherited-credentials.js"
 import { MachineCredentialStore, type MachineKeyring } from "./machine-credentials.js"
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { DomovoiDaemon, type DaemonServerOptions } from "./server.js"
@@ -24,6 +25,9 @@ const running: ProductionDaemonHandle[] = []
 
 afterEach(async () => {
   await Promise.allSettled(running.splice(0).map((daemon) => daemon.stop()))
+  // A kept bearer is pinned to a profile directory this hook is about to
+  // delete. Forget it so no later test can match it.
+  resetKeptCredentialsForTests()
   await removeScratchDirectories(roots)
 })
 
@@ -100,6 +104,305 @@ describe("createProductionDaemon", () => {
     })).rejects.toThrow(/DOMOVOI_(TAILNET_HOST|SSH_TUNNELS)/)
     expect(loadOrCreateToken).not.toHaveBeenCalled()
     expect(createDaemon).not.toHaveBeenCalled()
+  })
+
+  it("takes the bearer out of its own environment, so no provider or terminal it starts inherits it", async () => {
+    const authToken = testToken("environment bearer")
+    const previous = { token: process.env.DOMOVOI_AUTH_TOKEN, path: process.env.DOMOVOI_CREDENTIAL_PATH }
+    process.env.DOMOVOI_AUTH_TOKEN = authToken
+    process.env.DOMOVOI_CREDENTIAL_PATH = join(await temporaryHome(), "daemon.token")
+    try {
+      const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+      const handle = await createProductionDaemonWithDependencies({ homeDirectory: await temporaryHome() }, {
+        ...productionDaemonDependencies,
+        createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+        createDaemon,
+      })
+      running.push(handle)
+
+      expect(handle.authToken).toBe(authToken)
+      expect(process.env.DOMOVOI_AUTH_TOKEN).toBeUndefined()
+      expect(process.env.DOMOVOI_CREDENTIAL_PATH).toBeUndefined()
+    } finally {
+      if (previous.token === undefined) delete process.env.DOMOVOI_AUTH_TOKEN
+      else process.env.DOMOVOI_AUTH_TOKEN = previous.token
+      if (previous.path === undefined) delete process.env.DOMOVOI_CREDENTIAL_PATH
+      else process.env.DOMOVOI_CREDENTIAL_PATH = previous.path
+    }
+  })
+
+  async function withInheritedBearer(run: (authToken: string) => Promise<void>) {
+    const authToken = testToken("inherited bearer")
+    const previous = { token: process.env.DOMOVOI_AUTH_TOKEN, path: process.env.DOMOVOI_CREDENTIAL_PATH }
+    process.env.DOMOVOI_AUTH_TOKEN = authToken
+    process.env.DOMOVOI_CREDENTIAL_PATH = join(await temporaryHome(), "daemon.token")
+    try {
+      await run(authToken)
+    } finally {
+      if (previous.token === undefined) delete process.env.DOMOVOI_AUTH_TOKEN
+      else process.env.DOMOVOI_AUTH_TOKEN = previous.token
+      if (previous.path === undefined) delete process.env.DOMOVOI_CREDENTIAL_PATH
+      else process.env.DOMOVOI_CREDENTIAL_PATH = previous.path
+    }
+  }
+  const acquire = (home: string, environment: NodeJS.ProcessEnv) => createProductionDaemonWithDependencies({ homeDirectory: home, environment }, {
+    ...productionDaemonDependencies,
+    createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+    createDaemon: vi.fn((options: DaemonServerOptions) => fakeRuntime(options)),
+  })
+
+  it.each([
+    ["the process environment itself", () => process.env],
+    ["a copy of the process environment", () => ({ ...process.env })],
+  ])("takes the bearer out of the process environment when the desktop passes %s", async (_label, environment) => {
+    await withInheritedBearer(async (authToken) => {
+      const handle = await acquire(await temporaryHome(), environment())
+      running.push(handle)
+
+      expect(handle.authToken).toBe(authToken)
+      expect(process.env.DOMOVOI_AUTH_TOKEN).toBeUndefined()
+      expect(process.env.DOMOVOI_CREDENTIAL_PATH).toBeUndefined()
+    })
+  })
+
+  it("keeps the inherited bearer for a second acquisition in the same process", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const first = await acquire(home, process.env)
+      expect(first.credential).toEqual({ source: "environment" })
+      await first.stop()
+
+      const second = await acquire(home, process.env)
+      running.push(second)
+      expect(second.authToken).toBe(authToken)
+      expect(second.credential).toEqual({ source: "environment" })
+    })
+  })
+
+  // The kept bearer belongs to the profile it was handed for. Another profile
+  // in the same process, or an environment the caller built itself, loads its
+  // own credential rather than borrowing that one.
+  it("does not hand the kept bearer to a second profile in the same process", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const first = await acquire(await temporaryHome(), process.env)
+      expect(first.authToken).toBe(authToken)
+      await first.stop()
+
+      const other = await acquire(await temporaryHome(), process.env)
+      running.push(other)
+      expect(other.authToken).not.toBe(authToken)
+      expect(other.credential).not.toEqual({ source: "environment" })
+    })
+  })
+
+  it("does not hand the kept bearer to a profile that names its own credential path", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const first = await acquire(home, process.env)
+      expect(first.authToken).toBe(authToken)
+      await first.stop()
+
+      const profileB = join(await temporaryHome(), "profile-b")
+      const ownPath = join(profileB, "daemon.token")
+      process.env.DOMOVOI_PROFILE_DIR = profileB
+      process.env.DOMOVOI_CREDENTIAL_PATH = ownPath
+      try {
+        const other = await acquire(home, process.env)
+        running.push(other)
+        expect(other.authToken).not.toBe(authToken)
+        expect(other.credential).not.toEqual({ source: "environment" })
+      } finally {
+        delete process.env.DOMOVOI_PROFILE_DIR
+      }
+    })
+  })
+
+  it("does not fill the kept bearer into an environment the caller built without it", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const first = await acquire(home, process.env)
+      expect(first.authToken).toBe(authToken)
+      await first.stop()
+
+      const explicit = await acquire(home, { ...process.env })
+      running.push(explicit)
+      expect(explicit.authToken).not.toBe(authToken)
+      expect(explicit.credential).not.toEqual({ source: "environment" })
+    })
+  })
+
+  // The profile a kept bearer belongs to is pinned when it is taken. A profile
+  // path that later leads somewhere else is another profile.
+  it.runIf(process.platform !== "win32")("does not hand the kept bearer to the profile a retargeted symlink now names", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const profileA = join(home, "profile-a")
+      const profileB = join(home, "profile-b")
+      await mkdir(profileA)
+      await mkdir(profileB)
+      const link = join(home, "profile")
+      await symlink(profileA, link)
+      process.env.DOMOVOI_PROFILE_DIR = link
+      try {
+        const first = await acquire(home, process.env)
+        expect(first.authToken).toBe(authToken)
+        await first.stop()
+
+        await rm(link)
+        await symlink(profileB, link)
+        const other = await acquire(home, process.env)
+        running.push(other)
+        expect(other.authToken).not.toBe(authToken)
+        expect(other.credential).not.toEqual({ source: "environment" })
+      } finally {
+        delete process.env.DOMOVOI_PROFILE_DIR
+      }
+    })
+  })
+
+  it.runIf(process.platform !== "win32")("takes a newly supplied bearer out of the environment even when its profile path cannot be resolved", async () => {
+    await withInheritedBearer(async () => {
+      const first = await acquire(await temporaryHome(), process.env)
+      await first.stop()
+
+      const home = await temporaryHome()
+      const loop = join(home, "loop")
+      await symlink(loop, loop)
+      process.env.DOMOVOI_AUTH_TOKEN = testToken("second bearer")
+      process.env.DOMOVOI_PROFILE_DIR = loop
+      try {
+        await acquire(home, process.env).then((handle) => { running.push(handle) }, () => {})
+        expect(process.env.DOMOVOI_AUTH_TOKEN).toBeUndefined()
+        expect(process.env.DOMOVOI_CREDENTIAL_PATH).toBeUndefined()
+      } finally {
+        delete process.env.DOMOVOI_PROFILE_DIR
+      }
+    })
+  })
+
+  // The desktop in development adds its renderer origin to the daemon's
+  // settings. Passed as overrides on top of process.env, not as a copy of it,
+  // each acquisition still reads process.env itself and gets the kept bearer.
+  it("keeps the inherited bearer across acquisitions that add settings on top of the process environment", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+      const acquireWithOverrides = () => createProductionDaemonWithDependencies({
+        homeDirectory: home, environment: process.env, environmentOverrides: { DOMOVOI_ALLOWED_ORIGINS: "http://localhost:5173" },
+      }, {
+        ...productionDaemonDependencies,
+        createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+        createDaemon,
+      })
+      const first = await acquireWithOverrides()
+      expect(first.authToken).toBe(authToken)
+      await first.stop()
+      const second = await acquireWithOverrides()
+      running.push(second)
+      expect(second.authToken).toBe(authToken)
+      expect(createDaemon).toHaveBeenLastCalledWith(expect.objectContaining({ allowedOrigins: ["http://localhost:5173"] }))
+      expect(process.env.DOMOVOI_ALLOWED_ORIGINS).toBeUndefined()
+    })
+  })
+
+  // An override that names another profile makes this acquisition that
+  // profile's. The kept bearer is matched against the profile the acquisition
+  // ends up with, so it never moves to the overridden one, in either order.
+  const acquireFor = (home: string, overrides?: Record<string, string>) => createProductionDaemonWithDependencies({
+    homeDirectory: home, environment: process.env, ...(overrides ? { environmentOverrides: overrides } : {}),
+  }, {
+    ...productionDaemonDependencies,
+    createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+    createDaemon: vi.fn((options: DaemonServerOptions) => fakeRuntime(options)),
+  })
+
+  it("does not move the kept bearer to a profile an override names, after the bearer's own profile used it", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const own = await acquireFor(home)
+      expect(own.authToken).toBe(authToken)
+      await own.stop()
+
+      const other = await acquireFor(home, { DOMOVOI_PROFILE_DIR: join(await temporaryHome(), "profile-b") })
+      running.push(other)
+      expect(other.authToken).not.toBe(authToken)
+      expect(other.credential).not.toEqual({ source: "environment" })
+    })
+  })
+
+  it("does not move the kept bearer to a profile an override names, before the bearer's own profile used it", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const other = await acquireFor(home, { DOMOVOI_PROFILE_DIR: join(await temporaryHome(), "profile-b") })
+      expect(other.authToken).not.toBe(authToken)
+      expect(other.credential).not.toEqual({ source: "environment" })
+      await other.stop()
+
+      const own = await acquireFor(home)
+      running.push(own)
+      expect(own.authToken).toBe(authToken)
+    })
+  })
+
+  // Overrides carry settings, never credentials: an override that names a
+  // bearer or a credential file is refused before anything starts, whichever
+  // profile it names and whatever acquired before it.
+  it.each([
+    ["DOMOVOI_AUTH_TOKEN"],
+    ["DOMOVOI_CREDENTIAL_PATH"],
+    ["DOMOVOI_RELAY_CREDENTIAL_FILE"],
+  ])("refuses an override that sets %s, before and after the kept bearer's own profile used it", async (name) => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const otherProfile = join(await temporaryHome(), "profile-b")
+      const value = name === "DOMOVOI_AUTH_TOKEN" ? authToken : join(otherProfile, "credential")
+      const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+      const acquireWith = (overrides?: Record<string, string>) => createProductionDaemonWithDependencies({
+        homeDirectory: home, environment: process.env, ...(overrides ? { environmentOverrides: overrides } : {}),
+      }, {
+        ...productionDaemonDependencies,
+        createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+        createDaemon,
+      })
+      const overrides = { DOMOVOI_PROFILE_DIR: otherProfile, [name]: value }
+
+      await expect(acquireWith(overrides)).rejects.toThrow(`environmentOverrides cannot set ${name}`)
+      expect(createDaemon).not.toHaveBeenCalled()
+      const own = await acquireWith()
+      expect(own.authToken).toBe(authToken)
+      await own.stop()
+      await expect(acquireWith(overrides)).rejects.toThrow(`environmentOverrides cannot set ${name}`)
+      expect(createDaemon).toHaveBeenCalledTimes(1)
+      expect(process.env.DOMOVOI_AUTH_TOKEN).toBeUndefined()
+    })
+  })
+
+  // The relay credential file is a credential too: taken out of the process
+  // environment and pinned to the profile it was handed for, like the bearer.
+  it("pins an inherited relay credential file to its own profile", async () => {
+    const previous = process.env.DOMOVOI_RELAY_CREDENTIAL_FILE
+    const home = await temporaryHome()
+    const relayFile = join(home, "relay-credential")
+    process.env.DOMOVOI_RELAY_CREDENTIAL_FILE = relayFile
+    try {
+      const parseEnvironment = vi.fn(productionDaemonDependencies.parseEnvironment)
+      const acquireIn = (directory: string) => createProductionDaemonWithDependencies({ homeDirectory: directory, environment: process.env }, {
+        ...productionDaemonDependencies,
+        parseEnvironment,
+        createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+        createDaemon: vi.fn((options: DaemonServerOptions) => fakeRuntime(options)),
+      }).then((handle) => { running.push(handle) }, () => undefined)
+
+      await acquireIn(home)
+      expect(process.env.DOMOVOI_RELAY_CREDENTIAL_FILE).toBeUndefined()
+      expect(parseEnvironment.mock.calls.at(-1)?.[0].DOMOVOI_RELAY_CREDENTIAL_FILE).toBe(relayFile)
+
+      await acquireIn(await temporaryHome())
+      expect(parseEnvironment.mock.calls.at(-1)?.[0].DOMOVOI_RELAY_CREDENTIAL_FILE).toBeUndefined()
+    } finally {
+      if (previous === undefined) delete process.env.DOMOVOI_RELAY_CREDENTIAL_FILE
+      else process.env.DOMOVOI_RELAY_CREDENTIAL_FILE = previous
+    }
   })
 
   it("passes validated routes from the production environment to the server", async () => {

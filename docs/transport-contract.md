@@ -30,7 +30,7 @@ target's advertised hostname.
 ## Availability and authority
 
 `orderedTransports` validates and orders records for display. `usableTransports` additionally
-removes unavailable routes. Dialers must use the latter; `selectTransport` returns its first item.
+removes unavailable routes. Dialers must use the latter.
 Neither an absent route nor a failed network attempt becomes a different kind. Existing shared
 operation deadlines still govern connection, authentication and fallback.
 
