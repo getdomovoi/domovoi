@@ -33,3 +33,9 @@ across an idle flush too. A command substitution, `$(...)` or a backtick pair, n
 its matching closing delimiter, nested or inside double quotes, across spaces, line breaks and
 terminal reads, so `TOKEN=$(get secret value)` and ``--token `get secret` `` no longer show what
 follows the first space. A substitution that never closes is handled as an unclosed quote is.
+Process substitutions, `<(...)` and `>(...)`, parameter expansions, `${...}`, arithmetic,
+`$((...))`, and array assignments, `NAME=(...)`, now stay hidden up to their closers the same way,
+so `NPM_TOKEN=<(printf a b)`, `NPM_TOKEN=${VAR:-a b}` and `NPM_TOKEN=(a b)` no longer show what
+follows the first space. A deeply nested value read one
+character at a time now costs each read only what that read holds, rather than a copy of the whole
+nesting.

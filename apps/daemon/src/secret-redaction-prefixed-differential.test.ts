@@ -3,7 +3,14 @@ import { performance } from "node:perf_hooks"
 
 import { describe, expect, it } from "vitest"
 
-import { DurableOutputRedactor, redactDurableCommand, redactDurableOutput, TerminalOutputRedactor } from "./secret-redaction.js"
+import {
+  DurableOutputRedactor,
+  type GroupingName,
+  groupingConstructs,
+  redactDurableCommand,
+  redactDurableOutput,
+  TerminalOutputRedactor,
+} from "./secret-redaction.js"
 import {
   DurableOutputRedactor as MainDurableOutputRedactor,
   redactDurableCommand as mainRedactDurableCommand,
@@ -15,14 +22,18 @@ import {
 // (secret-redaction-baseline.ts, pinned by its own test). Inputs are secret
 // forms whose name mostly carries a prefix (X_API_KEY=, --x-token,
 // -Dx.password=, /x-token:, $env:, set "…", JSON), plain lines, long runs
-// around the terminal's 256-character carry. A quoted value ("…", '…' or
-// $'…') is drawn from a wide alphabet: spaces, tabs, CR, LF, CRLF, escaped
-// quotes, the other quote, escaped backslashes, =, :, ; and non-ASCII letters,
-// and its quote may never close. A value may also be a command substitution,
-// $(…) or `…`, bare, inside double quotes or inside a word, holding spaces,
-// tabs, CR, LF, CRLF, quotes (one holding a closing parenthesis), an escaped
-// parenthesis, a nested $(…), backticks inside $(…), escaped backticks inside
-// `…`, and heredocs (<<EOF, <<'EOF', <<-EOF) inside $(…); it may never close.
+// around the terminal's 256-character carry. A quoted value (any quote in the
+// reader's table: "…", '…', $'…', $"…") is drawn from a wide alphabet: spaces,
+// tabs, CR, LF, CRLF, escaped quotes, the other quote, escaped backslashes, =,
+// :, ; and non-ASCII letters, and its quote may never close. A value may also
+// be any grouping construct in the reader's table (groupingConstructs in
+// secret-redaction.ts: $(…), $((…)), <(…), >(…), ${…}, `…`, the quotes and an
+// array's (…)),
+// bare, inside double quotes or inside a word, holding spaces, tabs, CR, LF,
+// CRLF, every construct the table lets open inside it, escapes, table syntax
+// that is plain there, and heredocs (<<EOF, <<'EOF', <<-EOF) inside $(…); it
+// may never close. A construct added to the table is generated with no change
+// here, and a test fails if the generator misses one.
 // Every input is redacted whole, split at every point into two reads, split
 // into three reads at points drawn from the value's syntax characters or at
 // random, and cut into random reads with idle beats between some. The checks:
@@ -87,47 +98,71 @@ function widePieces(close: string | undefined): ReadonlyArray<readonly [string, 
   return [...pieces, ["escaped-quote", `\\${close}`], ["escaped-backslash", "\\\\"], ["other-quote", other], ["escaped-other-quote", `\\${other}`]]
 }
 
-// A command substitution, $(…) or `…`, of words and what may sit between them.
-// A heredoc goes last inside $(…), since its terminator needs a line of its
-// own before the closing parenthesis. An unclosed substitution is the closed
-// one cut short at a random point inside it, so any nesting, quote or escape
-// may be left open.
-function substitution(next: () => number, word: (length: number) => string, features: string[]): { text: string, closed: boolean } {
+// The reader's grouping constructs, from its own table: what opens where a
+// value starts (a quote), what opens anywhere in a word, and what opens only
+// inside another construct.
+const groupingNames = Object.keys(groupingConstructs) as GroupingName[]
+const valueStartNames = groupingNames.filter((name) => groupingConstructs[name].at !== "inside")
+const valueStartOnly = groupingNames.filter((name) => groupingConstructs[name].at === "start")
+// The quotes: what opens only where a value starts and lets neither quote
+// open inside it, so the wide alphabet's other quote is plain there.
+const quoteNames = valueStartOnly.filter((name) => !groupingConstructs[name].inside.some((inner) => valueStartOnly.includes(inner)))
+
+// Text that is plain inside a construct: an opener or closer from the table
+// that opens nothing there and does not close it. Letters come before and
+// after every piece, and letters complete no opener.
+function plainPieces(name: GroupingName): string[] {
+  const construct = groupingConstructs[name]
+  const openers = construct.inside.map((inner) => groupingConstructs[inner].opener)
+  const candidates = new Set(groupingNames.flatMap((other) => [groupingConstructs[other].opener, groupingConstructs[other].closer]))
+  return [...candidates].filter((text) => !text.includes("\\") && !text.includes(construct.closer[0]!) && !openers.some((opener) => text.includes(opener)))
+}
+
+// A grouping construct from the reader's table, of words and what may sit
+// between them: spaces, tabs and line breaks, every construct the table lets
+// open inside it (nested up to two deep), escapes where it takes them, and
+// table syntax that is plain inside it. A heredoc goes last inside $(…),
+// since its terminator needs a line of its own before the closing
+// parenthesis. An unclosed construct is the closed one cut short at a random
+// point inside it, so any nesting, quote or escape may be left open.
+function grouping(next: () => number, word: (length: number) => string, features: string[], outer: GroupingName): { text: string, closed: boolean } {
   const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!
   const chance = (probability: number) => next() < probability
   const short = () => word(1 + Math.floor(next() * 3))
-  // inBacktick: some enclosing substitution is `…`, whose first unescaped
-  // backtick ends it, so nothing inside it holds a bare backtick.
-  const build = (depth: number, backtick: boolean, inBacktick = backtick): string => {
+  const build = (name: GroupingName, depth: number): string => {
+    const construct = groupingConstructs[name]
+    features.push(`construct-${name}`)
     const pieces: Array<readonly [string, () => string]> = [
       ["space", () => " "], ["tab", () => "\t"], ["lf", () => "\n"], ["crlf", () => "\r\n"], ["cr", () => "\r"],
-      ["double-quote", () => `"${short()} ${short()}"`], ["single-quote", () => `'${short()}\t${short()}'`],
+      ...plainPieces(name).map((text) => ["plain-syntax", () => text] as const),
     ]
-    if (!backtick) pieces.push(["quoted-paren", () => `"${short()})${short()}"`], ["escaped-paren", () => "\\)"], ["escaped-quote", () => "\\\""])
-    if (backtick) pieces.push(["escaped-backtick", () => `\\\`${short()} ${short()}\\\``])
-    if (depth < 2) pieces.push(["nested", () => ` $(${build(depth + 1, false, inBacktick)}) `])
-    if (!inBacktick && depth < 2) pieces.push(["backtick-inside", () => ` \`${build(depth + 1, true)}\` `])
+    if (construct.escapes) pieces.push(["escaped-closer", () => `\\${construct.closer[0]!}`], ["escaped-backslash", () => "\\\\"], ["escaped-dollar", () => "\\$"])
+    const nests = depth < 2 && construct.inside.length > 0
     let body = short()
     const count = 1 + Math.floor(next() * 4)
     for (let index = 0; index < count; index += 1) {
+      if (nests && chance(0.4)) {
+        features.push("sub-nested")
+        body += ` ${build(pick(construct.inside), depth + 1)} ${short()}`
+        continue
+      }
       const [feature, piece] = pick(pieces)
       features.push(`sub-${feature}`)
       body += `${piece()}${short()}`
     }
     if (depth === 0 && chance(0.05)) { features.push("sub-long"); body += ` ${word(260 + Math.floor(next() * 40))}` }
-    if (!backtick && depth === 0 && chance(0.15)) {
+    if (name === "commandSubstitution" && depth === 0 && chance(0.15)) {
       const [feature, marker, indent] = pick([["heredoc", "EOF", ""], ["heredoc-quoted", "'EOF'", ""], ["heredoc-dash", "-EOF", "\t"]] as const)
       features.push(`sub-${feature}`)
       body += ` <<${marker}\n${indent}${short()} ${short()}\n${indent}${short()}\n${indent}EOF\n`
     }
-    return body
+    return `${construct.opener}${body}${construct.closer}`
   }
-  const backtick = chance(0.3)
-  features.push(backtick ? "sub-backtick" : "sub-dollar")
-  const closedText = backtick ? `\`${build(0, true)}\`` : `$(${build(0, false)})`
+  features.push(`outer-${outer}`)
+  const closedText = build(outer, 0)
   if (!chance(0.2)) return { text: closedText, closed: true }
   features.push("unclosed-substitution")
-  const opener = backtick ? 1 : 2
+  const opener = groupingConstructs[outer].opener.length
   const cutAt = opener + 1 + Math.floor(next() * (closedText.length - opener - 1))
   return { text: closedText.slice(0, cutAt), closed: false }
 }
@@ -176,13 +211,17 @@ function generatePrefixed(next: () => number): Case {
   // cmd has no command substitution, and a JSON string with a following key
   // is read as JSON, so neither holds one.
   if (kind === "substitution" && (form === "cmd-set" || form === "json-mixed")) kind = "wide"
-  // The quote: none, a double or single quote, or $'…'. A wide value is
-  // always quoted, since unquoted it would end at its first space. JSON
-  // strings take double quotes. A substitution is bare or in double quotes.
+  // The quote: none, or one of the table's quotes: "…", '…', $'…' or $"…". A
+  // wide value is always quoted, since unquoted it would end at its first
+  // space. JSON strings take double quotes. A substitution is bare, when it
+  // may be any construct that opens where a value starts, a quote or an
+  // array included, or in double quotes, when it is one the double quote lets
+  // open.
+  const quoteOpeners = quoteNames.map((name) => groupingConstructs[name].opener)
   const opener = form === "cmd-set" || form === "json-mixed"
     ? ""
     : kind === "wide"
-      ? (jsonLike ? "\"" : pick(["\"", "'", "$'"]))
+      ? (jsonLike ? "\"" : pick(quoteOpeners))
       : kind === "substitution"
         ? (jsonLike || chance(0.3) ? "\"" : "")
         : chance(0.3) ? (jsonLike ? "\"" : pick(["\"", "'"])) : ""
@@ -210,19 +249,22 @@ function generatePrefixed(next: () => number): Case {
       break
     }
     case "substitution": {
-      const built = substitution(next, word, features)
+      const outer = pick(opener ? groupingConstructs.doubleQuote.inside : valueStartNames)
+      const built = grouping(next, word, features, outer)
       substitutionClosed = built.closed
-      // Bare, a substitution may sit inside a word, with letters before it
-      // and, once closed, after it.
-      const lead = !opener && chance(0.15) ? (features.push("sub-in-word"), word(2)) : ""
-      const tail = !opener && built.closed && chance(0.15) ? (features.push("sub-in-word"), word(2)) : ""
+      // Bare, a construct that opens in a word may sit inside one, with
+      // letters before it and, once closed, after it.
+      const inWord = !opener && groupingConstructs[outer].at === "word"
+      const lead = inWord && chance(0.15) ? (features.push("sub-in-word"), word(2)) : ""
+      const tail = inWord && built.closed && chance(0.15) ? (features.push("sub-in-word"), word(2)) : ""
       value = `${lead}${built.text}${tail}`
       break
     }
     default: value = word(6 + Math.floor(next() * 7)); break
   }
   features.push(`value-${kind}`)
-  if (opener) features.push(`quote-${opener === "\"" ? "double" : opener === "'" ? "single" : "dollar"}`)
+  const quoteName = quoteNames.find((name) => groupingConstructs[name].opener === opener)
+  if (quoteName !== undefined) features.push(`quote-${quoteName}`, `construct-${quoteName}`)
   const plain = /^(?:\d+(?:\.\d+)?|true|false)$/iu.test(value)
 
   // Inside a substitution that never closes, a closing quote would be part of
@@ -545,7 +587,7 @@ function show(step: Step): string {
 function family(item: Case): string {
   const features = item.shape.split("+")
   const kept = features.filter((feature) => feature.startsWith("quote-") || feature === "unclosed-quote" || feature === "unclosed-set" || feature === "value-wide" || feature === "long-prefix"
-    || feature === "value-substitution" || feature === "unclosed-substitution" || feature === "sub-backtick" || feature === "sub-dollar")
+    || feature === "value-substitution" || feature === "unclosed-substitution" || feature.startsWith("outer-"))
   return [features[0], ...kept].join("+")
 }
 
@@ -617,6 +659,9 @@ describe("values the terminal drops, split at every point", () => {
       ["sub-in-word", "run --db-password=", "zq$(get x\r\njwvk)vk"],
       ["sub-long", "TOKEN=", `$(get ${long} zqx)`],
       ["sub-long-nested", "run --x-token \"", `$(get $(${long}) zqx)`],
+      ["sub-process-long", "NPM_TOKEN=", `<(printf ${long} zqx)`],
+      ["sub-parameter-long", "TOKEN=", `\${VAR:-${long} zqx}`],
+      ["sub-arithmetic-long", "TOKEN=", `$((${long} + (zqx * 2)))`],
     ].map(([shape, before, value]): Case => ({
       shape: shape!,
       text: `${before!}${value!}${before!.endsWith("\"") ? "\"" : ""} -s\n`,
@@ -659,6 +704,9 @@ describe("the secret value oracle", () => {
     probe("token=$'ж\\'q' -s\n", "ж\\'q"),
     probe("TOKEN=$(get zqx jwvk) -s\n", "$(get zqx jwvk)"),
     probe("run --token `get zqx` -s\n", "`get zqx`"),
+    probe("NPM_TOKEN=<(printf zqx jwvk) -s\n", "<(printf zqx jwvk)"),
+    probe("NPM_TOKEN=${VAR:-zqx jwvk} -s\n", "${VAR:-zqx jwvk}"),
+    probe("NPM_TOKEN=(zqx jwvk) -s\n", "(zqx jwvk)"),
   ]
 
   it.each(probes)("hides $text and fails a redactor that shows it whole or in part", (item) => {
@@ -685,5 +733,18 @@ describe("the secret value oracle", () => {
     expect(wide).toBeGreaterThan(500)
     expect(substituted).toBeGreaterThan(500)
     expect(missed).toEqual([])
+  })
+
+  it("generates every grouping construct in the reader's table, outermost and nested", () => {
+    const outermost = new Set<string>()
+    const anywhere = new Set<string>()
+    for (let index = 0; index < 4_000; index += 1) {
+      for (const feature of generate(random(seed + index)).shape.split("+")) {
+        if (feature.startsWith("outer-")) outermost.add(feature.slice("outer-".length))
+        if (feature.startsWith("construct-")) anywhere.add(feature.slice("construct-".length))
+      }
+    }
+    expect(groupingNames.filter((name) => !anywhere.has(name))).toEqual([])
+    expect(valueStartNames.filter((name) => !outermost.has(name))).toEqual([])
   })
 })

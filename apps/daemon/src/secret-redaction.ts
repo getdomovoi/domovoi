@@ -17,28 +17,123 @@ const sensitiveName = String.raw`(?:api[_-]?key|access[_-]?token|refresh[_-]?tok
 const valueDelimiter = /[\s;&|\r\n]/u
 const closedValueDelimiter = /[\s;&|,}\r\n]/u
 
-// A value is read as shell syntax, one character at a time, so a value split
-// across reads is followed from where the last read left it.
-// - A value that opens with a quote, "…", '…', $'…' or $"…", runs to its
-//   first unescaped closing quote, across spaces and line breaks.
-// - Any other value is a word, which runs to a delimiter. A command
-//   substitution in it, $(…) or `…`, runs to its matching closing delimiter
-//   first, across spaces and line breaks, and the word goes on after it.
-// - Inside $(…), parentheses nest and quotes and backticks open; inside "…",
-//   $(…) and backticks open; `…` ends at its first unescaped backtick. A
-//   backslash escapes the next character in every one of them, and in '…'
-//   too, as the quoted value always has here.
+// The shell's grouping constructs, which a value is read through. Each runs
+// from its opener to its closer, across spaces and line breaks.
+// at: where it opens outside every other construct. "start": only where a
+// value starts, and the value is then a quoted value that ends at its closer.
+// "word": anywhere in a word, and the word goes on after it. "inside": only
+// within a construct that lists it.
+// inside: what opens within it. Anything else there is plain text, so a quote
+// that is not listed does not open.
+// escapes: a backslash escapes the next character within it. '…' takes
+// escapes too, as the quoted value always has here.
+// brokenAs: a closer of two characters whose second does not follow is read
+// as this construct instead, as bash reads $((a) b) as $( (a) b).
+// The reader and the differential fuzz both draw from this table, so a
+// construct added here is read and fuzzed.
+export type GroupingName =
+  | "commandSubstitution" | "arithmetic" | "processInput" | "processOutput" | "parameter" | "backtick"
+  | "doubleQuote" | "dollarDoubleQuote" | "singleQuote" | "dollarSingleQuote" | "array" | "parenthesis" | "brace"
+
+export type GroupingConstruct = {
+  opener: string
+  closer: string
+  at: "start" | "word" | "inside"
+  inside: readonly GroupingName[]
+  escapes: boolean
+  brokenAs?: GroupingName
+}
+
+// Within a substitution, every construct that opens in a word or where a
+// value starts opens too.
+const withinSubstitution: readonly GroupingName[] = [
+  "commandSubstitution", "arithmetic", "processInput", "processOutput", "parameter", "backtick",
+  "doubleQuote", "dollarDoubleQuote", "singleQuote", "dollarSingleQuote",
+]
+const withinDoubleQuote: readonly GroupingName[] = ["commandSubstitution", "arithmetic", "parameter", "backtick"]
+
+export const groupingConstructs: Readonly<Record<GroupingName, GroupingConstruct>> = {
+  commandSubstitution: { opener: "$(", closer: ")", at: "word", inside: [...withinSubstitution, "parenthesis"], escapes: true },
+  arithmetic: { opener: "$((", closer: "))", at: "word", inside: [...withinSubstitution, "parenthesis"], escapes: true, brokenAs: "commandSubstitution" },
+  processInput: { opener: "<(", closer: ")", at: "word", inside: [...withinSubstitution, "parenthesis"], escapes: true },
+  processOutput: { opener: ">(", closer: ")", at: "word", inside: [...withinSubstitution, "parenthesis"], escapes: true },
+  parameter: { opener: "${", closer: "}", at: "word", inside: [...withinSubstitution, "brace"], escapes: true },
+  backtick: { opener: "`", closer: "`", at: "word", inside: [], escapes: true },
+  doubleQuote: { opener: "\"", closer: "\"", at: "start", inside: withinDoubleQuote, escapes: true },
+  dollarDoubleQuote: { opener: "$\"", closer: "\"", at: "start", inside: withinDoubleQuote, escapes: true },
+  singleQuote: { opener: "'", closer: "'", at: "start", inside: [], escapes: true },
+  dollarSingleQuote: { opener: "$'", closer: "'", at: "start", inside: [], escapes: true },
+  // An array assignment, NAME=(a b).
+  array: { opener: "(", closer: ")", at: "start", inside: withinSubstitution, escapes: true },
+  parenthesis: { opener: "(", closer: ")", at: "inside", inside: [...withinSubstitution, "parenthesis"], escapes: true },
+  brace: { opener: "{", closer: "}", at: "inside", inside: [...withinSubstitution, "brace"], escapes: true },
+}
+
+// The openers that may come next in one place: whole, and the starts of those
+// longer than one character.
+type Openers = { exact: ReadonlyMap<string, GroupingName>, starts: ReadonlySet<string> }
+
+function openersOf(names: readonly GroupingName[]): Openers {
+  const exact = new Map<string, GroupingName>()
+  const starts = new Set<string>()
+  for (const name of names) {
+    const { opener } = groupingConstructs[name]
+    exact.set(opener, name)
+    for (let length = 1; length < opener.length; length += 1) starts.add(opener.slice(0, length))
+  }
+  return { exact, starts }
+}
+
+const groupingNames = Object.keys(groupingConstructs) as GroupingName[]
+const quoteNames = groupingNames
+  .filter((name) => groupingConstructs[name].at === "start")
+  .sort((left, right) => groupingConstructs[right].opener.length - groupingConstructs[left].opener.length)
+// Outside every construct: what opens anywhere in a word, and what opens
+// where a value starts.
+const wordOpeners = openersOf(groupingNames.filter((name) => groupingConstructs[name].at === "word"))
+const valueStartOpeners = openersOf(groupingNames.filter((name) => groupingConstructs[name].at !== "inside"))
+const openersInside = Object.fromEntries(groupingNames.map((name) => [name, openersOf(groupingConstructs[name].inside)])) as Record<GroupingName, Openers>
+// Text holding none of these can hold no open value.
+const anyValueOpener = new RegExp(
+  [...valueStartOpeners.exact.keys()].map((opener) => opener.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|"),
+  "u",
+)
+
+// What a text starts with that opens only where a value starts, a quote or an
+// array's (, as a value would open with it: $'…' and $"…" before '…' and "…".
+function quoteAt(text: string, at = 0): GroupingConstruct | undefined {
+  const name = quoteNames.find((quote) => text.startsWith(groupingConstructs[quote].opener, at))
+  return name === undefined ? undefined : groupingConstructs[name]
+}
+
+// A value is read as shell syntax, one character at a time, through the
+// constructs in groupingConstructs, so a value split across reads is followed
+// from where the last read left it.
+// - A value that opens with a quote, "…", '…', $'…' or $"…", or with an
+//   array's (, runs to its closer, across spaces and line breaks.
+// - Any other value is a word, which runs to a delimiter. A construct that
+//   opens in a word, such as $(…), ${…} or <(…), runs to its closer first,
+//   across spaces and line breaks, and the word goes on after it.
+// - Within a construct, what its entry lists opens, a backslash escapes the
+//   next character, and its closer closes it.
 // When the text ends first, the value runs to the end of the text.
-// stack: what is still open, innermost last: a quote, a backtick, or ( for
-// $(…) and the parentheses inside it. escaped: the last character was an
-// escaping backslash. dollar: the last character was a $ that opens $( when
-// ( comes next. word: the value is a word rather than a quoted value. fresh:
-// what has been read of the value is nothing or a lone $, so a quote next
-// opens a quoted value. nested: a quote or substitution has been opened.
+// The state is changed in place by each read, so a value nested however deep
+// costs each read only what that read holds. A state belongs to one reading.
+// stack: what is still open, innermost last. escaped: the last character was
+// an escaping backslash. pending: the start of a longer opener read so far,
+// such as $ or <. opened: the last character completed the innermost
+// construct's opener, which the next may still lengthen, as ( turns $( into
+// $((. closing: how much of the innermost construct's closer has been read,
+// when it is longer than one character. word: the value is a word rather than
+// a quoted value. fresh: nothing of the value has been read but a pending
+// opener start, so a quote next opens a quoted value. nested: a construct has
+// been opened.
 type ValueState = {
-  stack: readonly string[]
+  stack: GroupingName[]
   escaped: boolean
-  dollar: boolean
+  pending: string
+  opened: boolean
+  closing: number
   word: boolean
   fresh: boolean
   nested: boolean
@@ -46,64 +141,119 @@ type ValueState = {
 }
 
 function startValue(delimiter: RegExp): ValueState {
-  return { stack: [], escaped: false, dollar: false, word: true, fresh: true, nested: false, delimiter }
+  return { stack: [], escaped: false, pending: "", opened: false, closing: 0, word: true, fresh: true, nested: false, delimiter }
 }
 
-function quotedValueState(quote: string): ValueState {
-  return { stack: [quote], escaped: false, dollar: false, word: false, fresh: false, nested: true, delimiter: valueDelimiter }
+function quotedValueState(quote: GroupingName): ValueState {
+  return { stack: [quote], escaped: false, pending: "", opened: false, closing: 0, word: false, fresh: false, nested: true, delimiter: valueDelimiter }
 }
 
 // Reads a value from `from`. end: the index where the value ends (a word's
 // delimiter, or just after a quoted value's closing quote), or -1 when the
 // text ends first; state: where the reading stands.
 function readValue(text: string, from: number, state: ValueState): { end: number, state: ValueState } {
-  const stack = [...state.stack]
-  let { escaped, dollar, word, fresh, nested } = state
-  const finish = (end: number) => ({ end, state: { stack, escaped, dollar, word, fresh, nested, delimiter: state.delimiter } })
+  const stack = state.stack
+  let { escaped, pending, opened, closing, word, fresh, nested } = state
+  const finish = (end: number) => {
+    Object.assign(state, { escaped, pending, opened, closing, word, fresh, nested })
+    return { end, state }
+  }
+  const open = (name: GroupingName) => {
+    stack.push(name)
+    pending = ""
+    opened = true
+    nested = true
+    // What opens only where a value starts, a quote or an array's (, makes
+    // it a quoted value, which ends at its closer.
+    if (stack.length === 1 && groupingConstructs[name].at === "start") word = false
+    fresh = false
+  }
   for (let at = from; at < text.length; at += 1) {
     const character = text[at]!
     if (escaped) {
       escaped = false
       continue
     }
-    if (fresh) {
-      if (character === "\"" || character === "'") {
-        stack.push(character)
-        word = false
-        fresh = false
-        dollar = false
-        nested = true
+    if (closing > 0) {
+      const construct = groupingConstructs[stack.at(-1)!]
+      if (character === construct.closer[closing]) {
+        closing += 1
+        if (closing < construct.closer.length) continue
+        closing = 0
+        stack.pop()
+        if (stack.length === 0 && !word) return finish(at + 1)
         continue
       }
-      if (character === "$" && !dollar) {
-        dollar = true
-        continue
-      }
-      fresh = false
+      // The closer broke off: what it closed was nested inside, and this
+      // character is read within what the construct is read as instead.
+      closing = 0
+      if (construct.brokenAs !== undefined) stack[stack.length - 1] = construct.brokenAs
     }
-    const opensSubstitution = dollar && character === "("
-    dollar = false
+    if (opened) {
+      opened = false
+      const top = stack.at(-1)!
+      const within = stack.length > 1 ? openersInside[stack.at(-2)!] : wordOpeners
+      const longer = within.exact.get(`${groupingConstructs[top].opener}${character}`)
+      if (longer !== undefined) {
+        stack[stack.length - 1] = longer
+        opened = true
+        continue
+      }
+    }
     const top = stack.at(-1)
     if (top === undefined) {
       if (state.delimiter.test(character)) return finish(at)
-      if (opensSubstitution || character === "`") {
-        stack.push(opensSubstitution ? "(" : "`")
-        nested = true
-      } else {
-        dollar = character === "$"
+      if (pending !== "") {
+        const joined = `${pending}${character}`
+        const name = (fresh ? valueStartOpeners : wordOpeners).exact.get(joined)
+        if (name !== undefined) {
+          open(name)
+          continue
+        }
+        if ((fresh ? valueStartOpeners : wordOpeners).starts.has(joined)) {
+          pending = joined
+          continue
+        }
+        // What was pending opened nothing: it is part of the word.
+        pending = ""
+        fresh = false
       }
+      const openers = fresh ? valueStartOpeners : wordOpeners
+      const name = openers.exact.get(character)
+      if (name !== undefined) open(name)
+      else if (openers.starts.has(character)) pending = character
+      else fresh = false
       continue
     }
-    if (character === "\\") escaped = true
-    else if (top === "'" || top === "`") {
-      if (character === top) stack.pop()
-    } else if (top === "\"") {
-      if (character === "\"") stack.pop()
-      else if (opensSubstitution || character === "`") stack.push(opensSubstitution ? "(" : "`")
-      else dollar = character === "$"
-    } else if (character === ")") stack.pop()
-    else if (character === "(" || character === "\"" || character === "'" || character === "`") stack.push(character)
-    if (stack.length === 0 && !word) return finish(at + 1)
+    const construct = groupingConstructs[top]
+    if (construct.escapes && character === "\\") {
+      escaped = true
+      pending = ""
+      continue
+    }
+    const openers = openersInside[top]
+    if (pending !== "") {
+      const joined = `${pending}${character}`
+      const name = openers.exact.get(joined)
+      if (name !== undefined) {
+        open(name)
+        continue
+      }
+      pending = openers.starts.has(joined) ? joined : ""
+      if (pending !== "") continue
+    }
+    if (character === construct.closer[0]) {
+      if (construct.closer.length > 1) {
+        closing = 1
+        continue
+      }
+      stack.pop()
+      if (stack.length === 0 && !word) return finish(at + 1)
+      continue
+    }
+    const name = openers.exact.get(character)
+    if (name !== undefined) open(name)
+    else if (openers.starts.has(character)) pending = character
   }
   return finish(-1)
 }
@@ -232,8 +382,8 @@ function hiddenValue(prefix: string, secret: string): string {
   const read = readValue(secret, 0, startValue(valueDelimiter))
   const open = read.end < 0 && read.state.stack.length > 0
   const lineEnd = open ? /(?:\r\n|\r|\n)$/u.exec(secret)?.[0] ?? "" : ""
-  const opener = /^\$?["']/u.exec(secret)?.[0]
-  if (!read.state.word && opener !== undefined) return `${prefix}${opener}${replacement}${opener.slice(-1)}${lineEnd}`
+  const quote = quoteAt(secret)
+  if (!read.state.word && quote !== undefined) return `${prefix}${quote.opener}${replacement}${quote.closer}${lineEnd}`
   const last = secret.at(-1)
   const closesAround = !open && (last === '"' || last === "'") && secret.length > 1 && secret.indexOf(last) === secret.length - 1
   return `${prefix}${replacement}${closesAround ? last : ""}${lineEnd}`
@@ -251,7 +401,7 @@ const openValuePatterns = [assignment, structuredAssignment, secretFlag, javaSys
 // words: also count a word holding a substitution as open, as the terminal
 // does, since the rest of that word may still arrive.
 function openValue(text: string, words: boolean): OpenValue | undefined {
-  if (!/["'`]|\$\(/u.test(text)) return undefined
+  if (!anyValueOpener.test(text)) return undefined
   let found: OpenValue | undefined
   for (const pattern of openValuePatterns) {
     const match = valueMatches(pattern, text).at(-1)
@@ -259,8 +409,8 @@ function openValue(text: string, words: boolean): OpenValue | undefined {
     if (match === undefined || state === undefined) continue
     if (state.stack.length === 0 && !(words && state.nested)) continue
     if (found !== undefined && found.start <= match.index) continue
-    const opener = state.word ? undefined : /^\$?["']/u.exec(match.secret)?.[0]
-    const shown = opener === undefined ? replacement : `${opener}${replacement}${opener.slice(-1)}`
+    const quote = state.word ? undefined : quoteAt(match.secret)
+    const shown = quote === undefined ? replacement : `${quote.opener}${replacement}${quote.closer}`
     found = { start: match.index, valueStart: text.length - match.secret.length, shown, state }
   }
   const cmd = lastMatch(quotedCmdAssignment, text)
@@ -269,7 +419,7 @@ function openValue(text: string, words: boolean): OpenValue | undefined {
     const head = (cmd[1] ?? "").length + quote.length + (cmd[3] ?? "").length
     const closed = cmd[0].length > head && cmd[0].endsWith(quote)
     if (!closed && (found === undefined || cmd.index < found.start)) {
-      found = { start: cmd.index, valueStart: cmd.index + head, shown: `${replacement}${quote}`, state: quotedValueState(quote) }
+      found = { start: cmd.index, valueStart: cmd.index + head, shown: `${replacement}${quote}`, state: quotedValueState(quote === "'" ? "singleQuote" : "doubleQuote") }
     }
   }
   return found
@@ -758,13 +908,14 @@ export class TerminalOutputRedactor {
       const structured = separator === ":" && !dropping.flag
       if ((structured ? closedValueDelimiter : valueDelimiter).test(character)) return end(at, input.slice(0, at))
       const shown = input.slice(0, at)
-      // $'…' and $"…" are quoted as '…' and "…" are.
-      const dollarQuote = character === "$" && (input[at + 1] === '"' || input[at + 1] === "'")
-      if (isQuote || dollarQuote) {
-        const quote = dollarQuote ? input[at + 1]! : character
-        const opener = dollarQuote ? `$${quote}` : quote
-        this.#dropping = { kind: "value", state: quotedValueState(quote) }
-        return { shown: `${shown}${opener}${replacement}${quote}`, rest: input.slice(at + opener.length) }
+      // A value that opens with what opens only where a value starts, a
+      // quote ($'…' and $"…" among them) or an array's (, is dropped up to
+      // its closer.
+      const quoteName = quoteNames.find((name) => input.startsWith(groupingConstructs[name].opener, at))
+      if (quoteName !== undefined) {
+        const { opener, closer } = groupingConstructs[quoteName]
+        this.#dropping = { kind: "value", state: quotedValueState(quoteName) }
+        return { shown: `${shown}${opener}${replacement}${closer}`, rest: input.slice(at + opener.length) }
       }
       // Any other value is a word, read from its first character: a $ at the
       // end of the read may still open $'…' or $(…).

@@ -1,3 +1,5 @@
+import { appendFileSync } from "node:fs"
+
 import { demoWorkspace } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
@@ -639,6 +641,16 @@ describe("command substitutions across spaces, line breaks and reads", () => {
     { text: "run --db-password=zq$(get x\r\njwvk)vk -s\n", expected: "run --db-password=[REDACTED] -s\n" },
     { text: "{\"x_token\": \"$(get \\\"zqx jwvk\\\")\", \"safe\": \"visible\"}\n", expected: "{\"x_token\": \"[REDACTED]\", \"safe\": \"visible\"}\n" },
     { text: "api_key: $(vault read zqx jwvk)\n", expected: "api_key: [REDACTED]\n" },
+    // Security review of 779406a3: process substitutions and parameter
+    // expansions, and the rest of the reader's table.
+    { text: "NPM_TOKEN=<(printf zqx jwvk) -s\n", expected: "NPM_TOKEN=[REDACTED] -s\n" },
+    { text: "NPM_TOKEN=${VAR:-zqx jwvk} -s\n", expected: "NPM_TOKEN=[REDACTED] -s\n" },
+    { text: "run --token >(tee zqx jwvk) -s\n", expected: "run --token [REDACTED] -s\n" },
+    { text: "X_TOKEN=\"${VAR:-zqx \"jwvk\" {m}}\" -s\n", expected: "X_TOKEN=\"[REDACTED]\" -s\n" },
+    { text: "TOKEN=$((zqx + (jwvk * 2))) -s\n", expected: "TOKEN=[REDACTED] -s\n" },
+    { text: "TOKEN=$((get zqx) jwvk) -s\n", expected: "TOKEN=[REDACTED] -s\n" },
+    { text: "token=$\"zqx jwvk\" -s\n", expected: "token=$\"[REDACTED]\" -s\n" },
+    { text: "NPM_TOKEN=(zqx \"jwvk mq\" $(get kz)) -s\n", expected: "NPM_TOKEN=([REDACTED]) -s\n" },
   ]
 
   it.each(closed)("hides $text whole in the durable redactors", ({ text, expected }) => {
@@ -704,6 +716,44 @@ describe("command substitutions across spaces, line breaks and reads", () => {
       expect.objectContaining({ id: "tool-substituted", title: "run --token [REDACTED] -s", output: "X_SECRET=[REDACTED] -s\n" }),
       expect.objectContaining({ id: "user-substituted", body: "export X_PASSWORD=[REDACTED] now" }),
     ]))
+  })
+
+  // Security review of 779406a3: a nested value read one character at a time
+  // took time growing with the square of its depth, since each read copied
+  // the whole nesting. The check is a ratio, not a time limit: four times the
+  // reads must take well under the sixteen times a square would.
+  it.each([
+    ["terminal", (reads: number) => {
+      const redactor = new TerminalOutputRedactor()
+      let shown = redactor.push("TOKEN=$(")
+      for (let index = 0; index < reads; index += 1) shown += redactor.push("(")
+      return `${shown}${redactor.push(`${")".repeat(reads + 1)} -s\n`)}${redactor.flush()}`
+    }, "TOKEN=[REDACTED] -s\n"],
+    ["durable output stream", (reads: number) => {
+      const redactor = new DurableOutputRedactor()
+      let shown = redactor.push("TOKEN=$(get\n")
+      for (let index = 0; index < reads; index += 1) shown += redactor.push("(")
+      return `${shown}${redactor.push(`${")".repeat(reads + 1)} -s\n`)}${redactor.flush()}`
+    }, "TOKEN=[REDACTED]\n -s\n"],
+  ] as const)("reads a deeply nested value one character at a time in linear time in the %s", (name, read, expected) => {
+    const smaller = 4_000
+    const larger = 4 * smaller
+    expect(read(smaller)).toBe(expected)
+    // The fastest of five runs, so a pause in one run does not decide it.
+    const fastest = (reads: number) => {
+      let best = Number.POSITIVE_INFINITY
+      for (let round = 0; round < 5; round += 1) {
+        const started = performance.now()
+        read(reads)
+        best = Math.min(best, performance.now() - started)
+      }
+      return best
+    }
+    const small = fastest(smaller)
+    const large = fastest(larger)
+    const measured = `${name}: ${smaller} reads ${small.toFixed(2)} ms, ${larger} reads ${large.toFixed(2)} ms, ratio ${(large / small).toFixed(2)}`
+    if (process.env.REDACTION_TIMING_REPORT) appendFileSync(process.env.REDACTION_TIMING_REPORT, `${measured}\n`)
+    expect(large / small, measured).toBeLessThan(8)
   })
 
   it("leaves a substitution after a name that is not sensitive alone", () => {
