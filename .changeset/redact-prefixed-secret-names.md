@@ -39,7 +39,9 @@ so `NPM_TOKEN=<(printf a b)`, `NPM_TOKEN=${VAR:-a b}` and `NPM_TOKEN=(a b)` no l
 follows the first space. A value is now read as one shell word: a quote in the middle of it opens
 (`TOKEN=ab"c d"`, `TOKEN=ab'c d'`, `TOKEN=ab$'c d'`), and a quoted value goes on to its delimiter
 after its closing quote. A quote opened right before a name, as in `set "NAME=value"` or
-`echo "NAME=a b"`, holds the value up to that quote's closer. Where the terminal has lost what came
+`echo "NAME=a b"`, holds the value up to that quote's closer, honouring backslash escapes as any
+quoted value does, so `set "TOKEN=a\"b"` no longer shows `b`, and the value goes on to its delimiter
+after the closer, as `echo "TOKEN=a"b` is one word. Where the terminal has lost what came
 before a name (an idle flush in the middle of it, or a name longer than it carries), a quote in the
 value still opens, so a `set "NAME=value"` split there may hide the output that follows until
 another quote arrives. A deeply nested value read one

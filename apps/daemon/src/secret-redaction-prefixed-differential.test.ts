@@ -92,13 +92,14 @@ const separators = ["_", ".", "-"]
 // What may sit inside a quoted value besides letters. An escape is a
 // backslash and the character it escapes, so a value never ends in a lone
 // backslash that would escape its own closing quote.
-function widePieces(close: string | undefined): ReadonlyArray<readonly [string, string]> {
+// A quote opened before a name (set "NAME=…", echo 'NAME=…') is read with the
+// same escapes as the table's entry for that quote, so it draws the same
+// pieces, escaped quotes of both kinds among them.
+function widePieces(close: string): ReadonlyArray<readonly [string, string]> {
   const pieces: Array<readonly [string, string]> = [
     ["space", " "], ["tab", "\t"], ["cr", "\r"], ["lf", "\n"], ["crlf", "\r\n"],
     ["equals", "="], ["colon", ":"], ["semicolon", ";"], ["non-ascii", "é"], ["non-ascii", "ж"], ["non-ascii", "漢"],
   ]
-  // A cmd set quote has no escapes: a quote inside it would end it.
-  if (close === undefined) return [...pieces, ["backslash", "\\"]]
   const other = close === "\"" ? "'" : "\""
   return [...pieces, ["escaped-quote", `\\${close}`], ["escaped-backslash", "\\\\"], ["other-quote", other], ["escaped-other-quote", `\\${other}`]]
 }
@@ -205,10 +206,15 @@ function generatePrefixed(next: () => number): Case {
   if (chance(0.3)) name = name.toUpperCase()
 
   const form = pick([
-    "assignment", "export", "env", "set", "cmd-set", "json", "json-mixed", "structured",
+    "assignment", "export", "env", "set", "cmd-set", "echo-enclosed", "json", "json-mixed", "structured",
     "flag-space", "flag-equals", "single-dash-space", "single-dash-equals", "slash-colon", "property",
   ])
   const jsonLike = form === "json" || form === "json-mixed"
+  // A quote opened right before the name encloses the value: cmd's
+  // set "NAME=…" and a quoted argument such as echo 'NAME=…'.
+  const enclosed = form === "cmd-set" || form === "echo-enclosed"
+  const enclosingQuote = enclosed ? pick(["\"", "'"]) : undefined
+  if (enclosingQuote !== undefined) features.push(`enclosed-${enclosingQuote === "\"" ? "double" : "single"}`)
 
   // The value: a secret word, a plain number or true/false, a number that
   // goes on, a long run around the carry, or a wide quoted value.
@@ -216,9 +222,9 @@ function generatePrefixed(next: () => number): Case {
   // every point, so it comes up a third as often as the others.
   let kind = pick(["word", "number", "number", "decimal", "boolean", "number-then-word", "carry", "long", "wide", "wide", "wide", "substitution", "substitution", "substitution"])
   if (kind === "long" && !chance(1 / 3)) kind = "carry"
-  // cmd has no command substitution, and a JSON string with a following key
-  // is read as JSON, so neither holds one.
-  if (kind === "substitution" && (form === "cmd-set" || form === "json-mixed")) kind = "wide"
+  // An enclosed value and a JSON string with a following key hold no
+  // substitution here.
+  if (kind === "substitution" && (enclosed || form === "json-mixed")) kind = "wide"
   // The quote: none, or one of the table's quotes: "…", '…', $'…' or $"…". A
   // wide value is always quoted, since unquoted it would end at its first
   // space. JSON strings take double quotes. A substitution is bare, when it
@@ -226,14 +232,14 @@ function generatePrefixed(next: () => number): Case {
   // array included, or in double quotes, when it is one the double quote lets
   // open.
   const quoteOpeners = quoteNames.map((name) => groupingConstructs[name].opener)
-  const opener = form === "cmd-set" || form === "json-mixed"
+  const opener = enclosed || form === "json-mixed"
     ? ""
     : kind === "wide"
       ? (jsonLike ? "\"" : pick(quoteOpeners))
       : kind === "substitution"
         ? (jsonLike || chance(0.3) ? "\"" : "")
         : chance(0.3) ? (jsonLike ? "\"" : pick(["\"", "'"])) : ""
-  const close = form === "cmd-set" ? undefined : form === "json-mixed" ? "\"" : opener.slice(-1)
+  const close = enclosingQuote ?? (form === "json-mixed" ? "\"" : opener.slice(-1))
   let value: string
   // Whether a substitution in the value closed.
   let substitutionClosed = true
@@ -273,6 +279,12 @@ function generatePrefixed(next: () => number): Case {
   features.push(`value-${kind}`)
   const quoteName = quoteNames.find((name) => groupingConstructs[name].opener === opener)
   if (quoteName !== undefined) features.push(`quote-${quoteName}`, `construct-${quoteName}`)
+  // An enclosed value is one shell word with its quote: letters may follow
+  // the closing quote, as in set "NAME=a b"c, and belong to the value.
+  const enclosedClosed = enclosed && chance(0.7)
+  if (enclosed && !enclosedClosed) features.push("unclosed-enclosure")
+  if (enclosedClosed && chance(0.2)) { features.push("enclosed-tail"); value = `${value}${close}${word(2)}` }
+  const enclosedCloser = enclosedClosed && !features.includes("enclosed-tail") ? close : ""
   const plain = /^(?:\d+(?:\.\d+)?|true|false)$/iu.test(value)
 
   // Inside a substitution that never closes, a closing quote would be part of
@@ -293,13 +305,8 @@ function generatePrefixed(next: () => number): Case {
     case "export": text = `export ${name}=${quoted}`; break
     case "env": text = `$env:${name}=${quoted}`; break
     case "set": text = `set ${name}=${quoted}`; break
-    case "cmd-set": {
-      const cmdClosed = chance(0.7)
-      complete = cmdClosed
-      if (!cmdClosed) features.push("unclosed-set")
-      text = `set "${name}=${value}${cmdClosed ? '"' : ""}`
-      break
-    }
+    case "cmd-set": complete = enclosedClosed; text = `set ${close}${name}=${value}${enclosedCloser}`; break
+    case "echo-enclosed": complete = enclosedClosed; text = `echo ${close}${name}=${value}${enclosedCloser} -s`; kept = [" -s"]; break
     case "json": text = `{"${name}":${space()}${quoted}}`; break
     case "json-mixed": text = `{"${name}":"${value}","safe":"visible"}`; kept = [`"safe":"visible"}`]; complete = true; break
     case "structured": text = `${name}:${space() || " "}${quoted}`; break
@@ -598,7 +605,7 @@ function show(step: Step): string {
 // whether it closed, the redactor and the failure.
 function family(item: Case): string {
   const features = item.shape.split("+")
-  const kept = features.filter((feature) => feature.startsWith("quote-") || feature === "unclosed-quote" || feature === "unclosed-set" || feature === "value-wide" || feature === "long-prefix"
+  const kept = features.filter((feature) => feature.startsWith("quote-") || feature === "unclosed-quote" || feature === "unclosed-enclosure" || feature.startsWith("enclosed-") || feature === "value-wide" || feature === "long-prefix"
     || feature === "value-substitution" || feature === "unclosed-substitution" || feature.startsWith("outer-") || feature.startsWith("in-word-"))
   return [features[0], ...kept].join("+")
 }
@@ -722,6 +729,8 @@ describe("the secret value oracle", () => {
     probe("TOKEN=zq\"x jw\"vk -s\n", "zq\"x jw\"vk"),
     probe("TOKEN=zq'x jw'vk -s\n", "zq'x jw'vk"),
     probe("TOKEN=zq$'x jw'vk -s\n", "zq$'x jw'vk"),
+    probe("set \"TOKEN=zqx\\\"jwvk\"", "zqx\\\"jwvk"),
+    probe("set 'TOKEN=zqx\\'jwvk", "zqx\\'jwvk"),
   ]
 
   it.each(probes)("hides $text and fails a redactor that shows it whole or in part", (item) => {

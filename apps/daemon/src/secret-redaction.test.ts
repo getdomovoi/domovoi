@@ -806,7 +806,22 @@ describe("quotes in the middle of a word and around a name", () => {
     { text: "set \"is-API_KEY=False\"\n", expected: "set \"is-API_KEY=False\"\n" },
     { text: "set \"DB-ACCESS_TOKEN=zqxjwvk\"\nvisible output\n", expected: "set \"DB-ACCESS_TOKEN=[REDACTED]\"\nvisible output\n" },
   ]
-  const rows = [...midWord, ...setQuote]
+  // Security review of 14a437db: a quote opened before the name is read with
+  // the escapes of the table's entry for that quote, and the value is one
+  // shell word, so it goes on past the quote's closer to its delimiter. In
+  // '…' a backslash escapes too, as it does for every quoted value here:
+  // bash ends '…' at \' but reads what follows as the same word
+  // ('TOKEN=zqx\'jwvk is TOKEN=zqx\jwvk), so reading on hides at least as much.
+  const enclosedEscapes: Row[] = [
+    { text: "set \"TOKEN=zqx\\\"jwvk\"", expected: "set \"TOKEN=[REDACTED]\"" },
+    { text: "set 'TOKEN=zqx\\'jwvk", expected: "set 'TOKEN=[REDACTED]'" },
+    { text: "set \"TOKEN=zqx\\\"jw vk\" & echo -s\n", expected: "set \"TOKEN=[REDACTED]\" & echo -s\n" },
+    { text: "echo \"NPM_TOKEN=zqx\\\"jw vk\" -s\n", expected: "echo \"NPM_TOKEN=[REDACTED]\" -s\n" },
+    { text: "echo \"NPM_TOKEN=zqx\"jwvk -s\n", expected: "echo \"NPM_TOKEN=[REDACTED]\" -s\n" },
+    { text: "set 'TOKEN=zqx'jwvk & echo -s\n", expected: "set 'TOKEN=[REDACTED]' & echo -s\n" },
+    { text: "echo 'NPM_TOKEN=zqx\\\"jw vk' -s\n", expected: "echo 'NPM_TOKEN=[REDACTED]' -s\n" },
+  ]
+  const rows = [...midWord, ...setQuote, ...enclosedEscapes]
 
   it.each(rows)("hides $text whole in the durable redactors", ({ text, expected }) => {
     expect(redactDurableCommand(text).value).toBe(expected)
@@ -815,7 +830,7 @@ describe("quotes in the middle of a word and around a name", () => {
   })
 
   it.each(rows)("hides $text in every two- and three-read split of the terminal", ({ text, expected }) => {
-    const wrong = splits(text).filter((reads) => run(reads) !== expected).map((reads) => JSON.stringify(reads))
+    const wrong = splits(text).filter((reads) => run(reads) !== expected).map((reads) => `${JSON.stringify(reads)} -> ${JSON.stringify(run(reads))}`)
     expect(wrong).toEqual([])
   })
 

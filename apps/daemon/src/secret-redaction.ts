@@ -91,10 +91,9 @@ const groupingNames = Object.keys(groupingConstructs) as GroupingName[]
 const quoteNames = groupingNames
   .filter((name) => groupingConstructs[name].at === "start" || groupingConstructs[name].at === "quote")
   .sort((left, right) => groupingConstructs[right].opener.length - groupingConstructs[left].opener.length)
-// Outside every construct: what opens anywhere in a word, read as one shell
-// word or not, and what opens where a value starts.
-const shellWordOpeners = openersOf(groupingNames.filter((name) => groupingConstructs[name].at === "word" || groupingConstructs[name].at === "quote"))
-const wordOpeners = openersOf(groupingNames.filter((name) => groupingConstructs[name].at === "word"))
+// Outside every construct: what opens anywhere in a word, and what opens
+// where a value starts.
+const wordOpeners = openersOf(groupingNames.filter((name) => groupingConstructs[name].at === "word" || groupingConstructs[name].at === "quote"))
 const valueStartOpeners = openersOf(groupingNames.filter((name) => groupingConstructs[name].at !== "inside"))
 const openersInside = Object.fromEntries(groupingNames.map((name) => [name, openersOf(groupingConstructs[name].inside)])) as Record<GroupingName, Openers>
 // Text holding none of these can hold no open value.
@@ -121,8 +120,10 @@ function quoteAt(text: string, at = 0): GroupingConstruct | undefined {
 // - Within a construct, what its entry lists opens, a backslash escapes the
 //   next character, and its closer closes it.
 // When the text ends first, the value runs to the end of the text.
-// shellWord false: the value is inside a quote opened right before its name,
-// as in set "NAME=value", and ends at that quote's closer.
+// A value inside a quote opened right before its name, as in set "NAME=value"
+// or echo 'NAME=a b', starts inside that quote: it is read with the escapes of
+// the table's entry for that quote, and as one shell word, so it goes on past
+// the quote's closer to its delimiter (echo "NAME=a"b is NAME=ab).
 // Where what came before a name is out of view, the value is still read as
 // one shell word, so a quote in it opens, failing closed (ruled by fetzy
 // 2026-09-24): a closing quote there may belong to a quote opened before the
@@ -148,30 +149,27 @@ type ValueState = {
   word: boolean
   fresh: boolean
   nested: boolean
-  shellWord: boolean
   delimiter: RegExp
 }
 
-function startValue(delimiter: RegExp, shellWord = true): ValueState {
-  return { stack: [], escaped: false, pending: "", opened: false, closing: 0, word: true, fresh: true, nested: false, shellWord, delimiter }
+function startValue(delimiter: RegExp): ValueState {
+  return { stack: [], escaped: false, pending: "", opened: false, closing: 0, word: true, fresh: true, nested: false, delimiter }
 }
 
 // A value already inside a quote: one that opened it, or one inside a quote
-// opened right before its name (shellWord false: it ends at the closer).
-function quotedValueState(quote: GroupingName, delimiter: RegExp = valueDelimiter, shellWord = true): ValueState {
-  return { stack: [quote], escaped: false, pending: "", opened: false, closing: 0, word: false, fresh: false, nested: true, shellWord, delimiter }
+// opened right before its name.
+function quotedValueState(quote: GroupingName, delimiter: RegExp = valueDelimiter): ValueState {
+  return { stack: [quote], escaped: false, pending: "", opened: false, closing: 0, word: false, fresh: false, nested: true, delimiter }
 }
 
 function quoteNamed(quote: string): GroupingName {
   return quote === "'" ? "singleQuote" : "doubleQuote"
 }
 
-// Reads a value from `from`. end: the index where the value ends (its
-// delimiter, or, with shellWord false, just after a quoted value's closing
-// quote), or -1 when the text ends first; state: where the reading stands.
+// Reads a value from `from`. end: the index of the delimiter that ends the
+// value, or -1 when the text ends first; state: where the reading stands.
 function readValue(text: string, from: number, state: ValueState): { end: number, state: ValueState } {
   const stack = state.stack
-  const shellWord = state.shellWord
   let { escaped, pending, opened, closing, word, fresh, nested } = state
   const finish = (end: number) => {
     Object.assign(state, { escaped, pending, opened, closing, word, fresh, nested })
@@ -187,9 +185,7 @@ function readValue(text: string, from: number, state: ValueState): { end: number
     fresh = false
   }
   // Outside every construct: what may open next.
-  const topOpeners = () => fresh ? valueStartOpeners : shellWord ? shellWordOpeners : wordOpeners
-  // A quoted value read as one shell word goes on after its closer.
-  const endsAtCloser = () => stack.length === 0 && !word && !shellWord
+  const topOpeners = () => fresh ? valueStartOpeners : wordOpeners
   for (let at = from; at < text.length; at += 1) {
     const character = text[at]!
     if (escaped) {
@@ -203,7 +199,6 @@ function readValue(text: string, from: number, state: ValueState): { end: number
         if (closing < construct.closer.length) continue
         closing = 0
         stack.pop()
-        if (endsAtCloser()) return finish(at + 1)
         continue
       }
       // The closer broke off: what it closed was nested inside, and this
@@ -214,7 +209,7 @@ function readValue(text: string, from: number, state: ValueState): { end: number
     if (opened) {
       opened = false
       const top = stack.at(-1)!
-      const within = stack.length > 1 ? openersInside[stack.at(-2)!] : shellWord ? shellWordOpeners : wordOpeners
+      const within = stack.length > 1 ? openersInside[stack.at(-2)!] : wordOpeners
       const longer = within.exact.get(`${groupingConstructs[top].opener}${character}`)
       if (longer !== undefined) {
         stack[stack.length - 1] = longer
@@ -271,7 +266,6 @@ function readValue(text: string, from: number, state: ValueState): { end: number
         continue
       }
       stack.pop()
-      if (endsAtCloser()) return finish(at + 1)
       continue
     }
     const name = openers.exact.get(character)
@@ -367,12 +361,39 @@ const lostContextAssignment: ValuePattern = {
   start: new RegExp(String.raw`${sensitiveName}["']?\s*[:=]\s*${valueStart}`, "giu"),
   delimiter: valueDelimiter,
 }
-// cmd's set "NAME=value": the quote before the name closes after the value,
-// across line breaks; when it never closes, the value runs to the end.
+// cmd's set "NAME=value": where the name starts. The quote before the name
+// encloses the value, which readValue reads as it reads any value inside
+// that quote: with the table's escapes for it (so set "NAME=a\"b" does not
+// end at \"), across line breaks, and on past the closer to its delimiter.
+// When the quote never closes, the value runs to the end. As with the other
+// patterns, a name with nothing after it yet has no value to read.
 const quotedCmdAssignment = new RegExp(
-  String.raw`(\bset\s+)(["'])(${namePrefix}${sensitiveName}\s*=)[\s\S]*?(?:\2|$)`,
+  String.raw`(\bset\s+)(["'])(${namePrefix}${sensitiveName}\s*=)(?=[\s\S])`,
   "giu",
 )
+
+// A set "NAME=value" found in text. set, quote, name: what comes before the
+// value, the name with its =; secret: the value as written, the closer included; closed: its quote
+// closed; open: where the reading stood when the text ended inside the value.
+type CmdMatch = { index: number, set: string, quote: string, name: string, secret: string, closed: boolean, open: ValueState | undefined }
+
+function cmdMatches(text: string): CmdMatch[] {
+  const matches: CmdMatch[] = []
+  const start = quotedCmdAssignment
+  start.lastIndex = 0
+  for (let match = start.exec(text); match !== null; match = start.exec(text)) {
+    const quote = match[2] ?? "\""
+    const valueAt = match.index + match[0].length
+    const read = readValue(text, valueAt, quotedValueState(quoteNamed(quote)))
+    const end = read.end < 0 ? text.length : read.end
+    matches.push({
+      index: match.index, set: match[1] ?? "", quote, name: match[3] ?? "", secret: text.slice(valueAt, end),
+      closed: read.state.stack.length === 0, open: read.end < 0 ? read.state : undefined,
+    })
+    start.lastIndex = Math.max(end, valueAt + 1)
+  }
+  return matches
+}
 const javaSystemProperty: ValuePattern = {
   start: new RegExp(String.raw`(?:(?<![A-Za-z0-9_.-])-D${namePrefix}|-D)${sensitiveName}\s*=${valueStart}`, "giu"),
   delimiter: valueDelimiter,
@@ -386,7 +407,7 @@ const javaSystemProperty: ValuePattern = {
 type ValueMatch = { index: number, prefix: string, secret: string, open: ValueState | undefined, enclosing: GroupingName | undefined }
 
 function valueStartState(delimiter: RegExp, enclosing: GroupingName | undefined): ValueState {
-  return enclosing === undefined ? startValue(delimiter) : quotedValueState(enclosing, delimiter, false)
+  return enclosing === undefined ? startValue(delimiter) : quotedValueState(enclosing, delimiter)
 }
 
 function valueMatches(pattern: ValuePattern, text: string): ValueMatch[] {
@@ -449,22 +470,13 @@ function openValue(text: string, words: boolean): OpenValue | undefined {
       : quote === undefined ? replacement : `${quote.opener}${replacement}${quote.closer}`
     found = { start: match.index, valueStart: text.length - match.secret.length, shown, state }
   }
-  const cmd = lastMatch(quotedCmdAssignment, text)
-  if (cmd !== undefined && cmd.index + cmd[0].length === text.length) {
-    const quote = cmd[2] ?? "\""
-    const head = (cmd[1] ?? "").length + quote.length + (cmd[3] ?? "").length
-    const closed = cmd[0].length > head && cmd[0].endsWith(quote)
-    if (!closed && (found === undefined || cmd.index < found.start)) {
-      found = { start: cmd.index, valueStart: cmd.index + head, shown: `${replacement}${quote}`, state: quotedValueState(quoteNamed(quote), valueDelimiter, false) }
-    }
+  const cmd = cmdMatches(text).at(-1)
+  const state = cmd?.open
+  if (cmd !== undefined && state !== undefined && (state.stack.length > 0 || words) && (found === undefined || cmd.index < found.start)) {
+    const valueStart = cmd.index + cmd.set.length + cmd.quote.length + cmd.name.length
+    found = { start: cmd.index, valueStart, shown: `${replacement}${cmd.quote}`, state }
   }
   return found
-}
-
-function lastMatch(pattern: RegExp, text: string): RegExpExecArray | undefined {
-  let last: RegExpExecArray | undefined
-  for (const match of text.matchAll(pattern)) last = match
-  return last
 }
 
 export function redactDurableText(value: unknown): RedactedText {
@@ -679,20 +691,28 @@ function redact(value: unknown, maximumLength: number, complete = true, exemptFr
   // cmd's set "NAME=value" is read first, while its closing quote is still in
   // place: an assignment read first would take that quote as part of the
   // value.
-  output = replace(output, quotedCmdAssignment, (...args) => {
-    const matched = args[0]!
-    const quote = args[2] ?? "\""
-    const name = args[3] ?? ""
-    const head = (args[1] ?? "").length + quote.length + name.length
-    const closed = matched.length > head && matched.endsWith(quote)
-    const offset = Number(args.at(-2))
-    const whole = String(args.at(-1))
-    if (closed && offset >= exemptFrom && showsPlainValue(name.replace(/\s*=$/u, ""), matched.slice(head, -quote.length)) && delimitedAt(whole, offset + matched.length)) return matched
-    // A quote that never closed ran to the end of the text; the line break
-    // it ended on is kept.
-    const lineEnd = closed ? "" : /(?:\r\n|\r|\n)$/u.exec(matched)?.[0] ?? ""
-    return `${args[1] ?? ""}${quote}${name}${replacement}${quote}${lineEnd}`
-  })
+  {
+    const matches = cmdMatches(output)
+    if (matches.length > 0) {
+      let result = ""
+      let from = 0
+      for (const cmd of matches) {
+        const matched = `${cmd.set}${cmd.quote}${cmd.name}${cmd.secret}`
+        // A counting value shows only as set "NAME=5": its quote closed right
+        // after it.
+        const plain = cmd.closed && cmd.secret.endsWith(cmd.quote) && cmd.secret.indexOf(cmd.quote) === cmd.secret.length - 1
+        const next = plain && cmd.index >= exemptFrom && showsPlainValue(cmd.name.replace(/\s*=$/u, ""), cmd.secret.slice(0, -1)) && delimitedAt(output, cmd.index + matched.length)
+          ? matched
+          // A quote that never closed ran to the end of the text; the line
+          // break it ended on is kept.
+          : `${cmd.set}${cmd.quote}${cmd.name}${replacement}${cmd.quote}${cmd.closed ? "" : /(?:\r\n|\r|\n)$/u.exec(cmd.secret)?.[0] ?? ""}`
+        if (next !== matched || matched.includes(replacement)) changed = true
+        result += `${output.slice(from, cmd.index)}${next}`
+        from = cmd.index + matched.length
+      }
+      output = `${result}${output.slice(from)}`
+    }
+  }
   // Where what came before a name is out of view, a sensitive word counts as
   // a name wherever it starts, as it did before prefixes were read: main's
   // terminal redactor, holding only from the sensitive word, redacted
@@ -965,7 +985,7 @@ export class TerminalOutputRedactor {
       // A value inside a quote opened before its name is dropped up to that
       // quote's closer, which the replacement's closer stands for.
       if (enclosing !== undefined) {
-        this.#dropping = { kind: "value", state: quotedValueState(enclosing, delimiter, false) }
+        this.#dropping = { kind: "value", state: quotedValueState(enclosing, delimiter) }
         return { shown: `${shown}${replacement}${groupingConstructs[enclosing].closer}`, rest: input.slice(at) }
       }
       // A quoted value, one that opens with a quote ($'…' and $"…" among
