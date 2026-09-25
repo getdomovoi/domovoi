@@ -163,6 +163,30 @@ describe("projectInstructions", () => {
     await expect(projectInstructions(worktree, reader)).resolves.toBeUndefined()
   })
 
+  // A directory between the worktree and an instruction file can be a link to
+  // a directory outside it for the whole read: a junction on Windows, which
+  // needs no privilege, and a directory symlink elsewhere. Only Claude reads
+  // below the root, through .claude/CLAUDE.md and imports; Codex and OpenCode
+  // read root names only.
+  it.each([
+    ["the .claude directory", ".claude", "CLAUDE.md", "top rule\n"],
+    ["an imported docs directory", "docs", "rules.md", "@docs/rules.md\ntop rule\n"],
+  ])("sends Claude nothing from outside through %s linked outside the worktree", async (_label, directory, name, claude) => {
+    const root = await scratch()
+    const worktree = join(root, "worktree")
+    const outside = join(root, "outside")
+    await mkdir(worktree)
+    await mkdir(outside)
+    await writeFile(join(outside, name), "OUTSIDE SECRET\n")
+    await writeFile(join(worktree, "CLAUDE.md"), claude)
+    await symlink(outside, join(worktree, directory), process.platform === "win32" ? "junction" : "dir")
+
+    const text = await projectInstructions(worktree, "claude")
+
+    expect(text).toContain("top rule")
+    expect(text).not.toContain("OUTSIDE SECRET")
+  })
+
   it("reads nothing from a nested repository or from Git metadata", async () => {
     const worktree = await scratch()
     await mkdir(join(worktree, "vendor", "lib", ".git"), { recursive: true })
