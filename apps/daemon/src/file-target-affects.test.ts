@@ -4,7 +4,8 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
-import { fileTargetAffects, hiddenPathForms, hidePaths } from "./file-target-affects.js"
+import { cardDirectory, fileTargetAffects, hiddenPathForms, hidePaths } from "./file-target-affects.js"
+import { namesSecretPath } from "./permission-policy.js"
 
 const scratch: string[] = []
 
@@ -24,11 +25,11 @@ describe("fileTargetAffects", () => {
     await mkdir(join(workspace, "two"))
     await symlink(join(workspace, "two"), join(workspace, "one"), "junction")
     await expect(fileTargetAffects({ workspace, path: join(workspace, "src", "a.ts") }))
-      .resolves.toEqual({ text: "The file src/a.ts in the session worktree.", redacted: false, sensitive: false })
+      .resolves.toEqual({ text: "The file src/a.ts in the session worktree.", redacted: false, sensitive: false, forms: expect.any(Array) })
     await expect(fileTargetAffects({ workspace, path: "a.ts", cwd: join(workspace, "src") }))
-      .resolves.toEqual({ text: "The file src/a.ts in the session worktree.", redacted: false, sensitive: false })
+      .resolves.toEqual({ text: "The file src/a.ts in the session worktree.", redacted: false, sensitive: false, forms: expect.any(Array) })
     await expect(fileTargetAffects({ workspace, path: join(workspace, "one", "file") }))
-      .resolves.toEqual({ text: "The file two/file in the session worktree.", redacted: false, sensitive: false })
+      .resolves.toEqual({ text: "The file two/file in the session worktree.", redacted: false, sensitive: false, forms: expect.any(Array) })
   })
 
   it("says when the file is outside the worktree, and the link that leads there", async () => {
@@ -39,18 +40,19 @@ describe("fileTargetAffects", () => {
       text: `The file ${join(await realpath(outside), "notes.txt")}, outside the session worktree, through a link at out/notes.txt.`,
       redacted: false,
       sensitive: false,
+      forms: expect.any(Array),
     })
     const plain = resolve(outside, "..", "elsewhere.txt")
     await expect(fileTargetAffects({ workspace, path: plain }))
-      .resolves.toEqual({ text: `The file ${plain}, outside the session worktree.`, redacted: false, sensitive: false })
+      .resolves.toEqual({ text: `The file ${plain}, outside the session worktree.`, redacted: false, sensitive: false, forms: expect.any(Array) })
   })
 
   it("hides a credential path and redacts a secret in any other", async () => {
     const workspace = await directory("domovoi-affects-secret-")
     await expect(fileTargetAffects({ workspace, path: join(workspace, ".env") }))
-      .resolves.toEqual({ text: "The file [REDACTED] in the session worktree.", redacted: false, sensitive: true })
+      .resolves.toEqual({ text: "The file [REDACTED] in the session worktree.", redacted: false, sensitive: true, forms: expect.any(Array) })
     await expect(fileTargetAffects({ workspace, path: join(workspace, "ghp_abcdefghijklmnop.txt") }))
-      .resolves.toEqual({ text: "The file [REDACTED].txt in the session worktree.", redacted: true, sensitive: false })
+      .resolves.toEqual({ text: "The file [REDACTED].txt in the session worktree.", redacted: true, sensitive: false, forms: expect.any(Array) })
   })
 
   // Ruled for #541 and applied here: a file hidden as [REDACTED] is a credential
@@ -60,7 +62,7 @@ describe("fileTargetAffects", () => {
     await mkdir(join(workspace, ".ssh"))
     await symlink(join(workspace, ".ssh"), join(workspace, "cfg"), "junction")
     await expect(fileTargetAffects({ workspace, path: join(workspace, "cfg", "config") }))
-      .resolves.toEqual({ text: "The file [REDACTED] in the session worktree.", redacted: false, sensitive: true })
+      .resolves.toEqual({ text: "The file [REDACTED] in the session worktree.", redacted: false, sensitive: true, forms: expect.any(Array) })
   })
 
   // Final check after fc428aba: the hide decision judges every spelling the
@@ -133,15 +135,152 @@ describe("fileTargetAffects", () => {
 
     // No credential name anywhere on the chain: the card names the file.
     await expect(fileTargetAffects({ workspace, path: at("c1", "a") }))
-      .resolves.toEqual({ text: "The file c1/public.txt in the session worktree.", redacted: false, sensitive: false })
+      .resolves.toEqual({ text: "The file c1/public.txt in the session worktree.", redacted: false, sensitive: false, forms: expect.any(Array) })
     await expect(fileTargetAffects({ workspace, path: at("c2", "x", "notes.txt") }))
-      .resolves.toEqual({ text: "The file c2/real/notes.txt in the session worktree.", redacted: false, sensitive: false })
+      .resolves.toEqual({ text: "The file c2/real/notes.txt in the session worktree.", redacted: false, sensitive: false, forms: expect.any(Array) })
+  })
+
+  // Final check after 3fd053db: the worktree, the request's directory and the
+  // file can each be reached through links, and a credential name can sit on
+  // any of those spellings. The set of spellings is built once
+  // (hiddenPathForms); the card is judged on exactly that set and hides exactly
+  // that set, so no spelling is judged and not hidden, or hidden and not judged.
+  it("judges and hides one set of spellings through the worktree, the request directory and the file", async () => {
+    const base = await directory("domovoi-affects-closed-set-")
+    const at = (...parts: string[]) => join(base, ...parts)
+    const real = await realpath(base)
+    for (const folder of [
+      ["w1", "public-workspace"], ["w2", ".ssh"], ["w0", "real-workspace"],
+      ["d1", "ws", "work"], ["d2", "ws", ".ssh"], ["d0", "ws", "work"],
+      ["t1", "ws"], ["t0", "ws"],
+    ]) await mkdir(at(...folder), { recursive: true })
+    await writeFile(at("w1", "public-workspace", "public.txt"), "hello")
+    await writeFile(at("w0", "real-workspace", "public.txt"), "hello")
+    await writeFile(at("d1", "ws", "work", "a.txt"), "hello")
+    await writeFile(at("d0", "ws", "work", "a.txt"), "hello")
+    await writeFile(at("t1", "ws", "public.txt"), "hello")
+    await writeFile(at("t0", "ws", "public.txt"), "hello")
+    // Directory links are junctions, which Windows makes without admin rights
+    // and writes with an absolute target; file links are plain symlinks.
+    const links: Array<[target: string, link: string[], type?: "junction"]> = [
+      // Codex's case: the worktree is entry -> .env -> public-workspace.
+      ["public-workspace", ["w1", ".env"], "junction"],
+      [".env", ["w1", "entry"], "junction"],
+      [at("w2", ".ssh"), ["w2", "entry"], "junction"],
+      ["real-workspace", ["w0", "mid"], "junction"],
+      ["mid", ["w0", "entry"], "junction"],
+      // The request runs in run -> .env -> work.
+      ["work", ["d1", "ws", ".env"], "junction"],
+      [".env", ["d1", "ws", "run"], "junction"],
+      [at("d2", "ws", ".ssh"), ["d2", "ws", "run"], "junction"],
+      ["work", ["d0", "ws", "mid"], "junction"],
+      ["mid", ["d0", "ws", "run"], "junction"],
+      // The file is alias -> .env -> public.txt.
+      ["public.txt", ["t1", "ws", ".env"]],
+      [".env", ["t1", "ws", "alias"]],
+      ["public.txt", ["t0", "ws", "second"]],
+      ["second", ["t0", "ws", "first"]],
+    ]
+    for (const [target, link, type] of links) await symlink(target, at(...link), type)
+    // The path a link leads to, as the link writes it, with the rest after it.
+    const through = async (link: string[], rest: string) => {
+      const target = await readlink(at(...link))
+      const leads = isAbsolute(target) ? target : `${dirname(at(...link))}${sep}${target}`
+      return rest === "" ? leads : `${leads}${sep}${rest}`
+    }
+    type Row = {
+      label: string
+      request: { workspace: string; path: string; cwd?: string }
+      hops: Array<[link: string[], rest: string]>
+    }
+    const rows: Row[] = [
+      {
+        label: "worktree through a link, first hop .env, file named by its real path",
+        request: { workspace: at("w1", "entry"), path: join(real, "w1", "public-workspace", "public.txt") },
+        hops: [[["w1", "entry"], "public.txt"], [["w1", ".env"], "public.txt"]],
+      },
+      {
+        label: "worktree through a link to .ssh, file named from the worktree",
+        request: { workspace: at("w2", "entry"), path: "notes.txt" },
+        hops: [[["w2", "entry"], "notes.txt"]],
+      },
+      {
+        label: "request directory through a link, first hop .env, file named by its real path",
+        request: { workspace: at("d1", "ws"), path: join(real, "d1", "ws", "work", "a.txt"), cwd: at("d1", "ws", "run") },
+        hops: [[["d1", "ws", "run"], "a.txt"], [["d1", "ws", ".env"], "a.txt"]],
+      },
+      {
+        label: "request directory through a link to .ssh, file named from it",
+        request: { workspace: at("d2", "ws"), path: "k.txt", cwd: at("d2", "ws", "run") },
+        hops: [[["d2", "ws", "run"], "k.txt"]],
+      },
+      {
+        label: "file through alias -> .env -> public.txt",
+        request: { workspace: at("t1", "ws"), path: at("t1", "ws", "alias") },
+        hops: [[["t1", "ws", "alias"], ""], [["t1", "ws", ".env"], ""]],
+      },
+    ]
+    const missed: string[] = []
+    const shown = (text: string) => text.split(real).join("<real>").split(base).join("<base>")
+    for (const { label, request, hops } of rows) {
+      const affects = await fileTargetAffects(request)
+      if (!affects.sensitive || !affects.text.startsWith("The file [REDACTED]")) missed.push(`${label}: ${shown(affects.text)}`)
+      const forms = await hiddenPathForms(request)
+      for (const [link, rest] of hops) {
+        const alias = await through(link, rest)
+        if (hidePaths(`Edit ${alias} now`, forms) !== "Edit [REDACTED] now") missed.push(`${label}: ${shown(alias)} shown`)
+      }
+    }
+    expect(missed).toEqual([])
+
+    // Controls: the same shapes with no credential name anywhere.
+    const controls = [
+      { request: { workspace: at("w0", "entry"), path: join(real, "w0", "real-workspace", "public.txt") }, text: "The file public.txt in the session worktree." },
+      { request: { workspace: at("d0", "ws"), path: join(real, "d0", "ws", "work", "a.txt"), cwd: at("d0", "ws", "run") }, text: "The file work/a.txt in the session worktree." },
+      { request: { workspace: at("t0", "ws"), path: at("t0", "ws", "first") }, text: "The file public.txt in the session worktree." },
+    ]
+    for (const { request, text } of controls) {
+      await expect(fileTargetAffects(request)).resolves.toMatchObject({ text, redacted: false, sensitive: false })
+    }
+
+    // The structure: the card is judged on exactly the set it hides.
+    for (const request of [...rows.map((row) => row.request), ...controls.map((control) => control.request)]) {
+      const affects = await fileTargetAffects(request)
+      const forms = await hiddenPathForms(request)
+      expect(affects.forms).toEqual(forms)
+      expect(affects.sensitive).toBe(forms.some(namesSecretPath))
+    }
+    // The directory line too.
+    for (const request of rows.map((row) => row.request)) {
+      const line = await cardDirectory({ directory: request.cwd ?? request.workspace, workspace: request.workspace })
+      const forms = await hiddenPathForms({ workspace: request.workspace, path: request.cwd ?? request.workspace })
+      expect(line.forms).toEqual(forms)
+      expect(line.hidden).toBe(forms.some(namesSecretPath))
+    }
+  })
+
+  // A link to its own parent spells the path without end (loop, loop/loop,
+  // ...). The set is bounded, and a set that could not be closed is judged as
+  // naming a credential path, so the card fails closed as a hard gate.
+  it("judges a path whose spellings cannot be closed as a credential path", async () => {
+    const workspace = await directory("domovoi-affects-spell-loop-")
+    await writeFile(join(workspace, "file.txt"), "hello")
+    await symlink(workspace, join(workspace, "loop"), "junction")
+    const request = { workspace, path: join(workspace, "loop", "file.txt") }
+    await expect(fileTargetAffects(request)).resolves.toMatchObject({
+      text: "The file [REDACTED] in the session worktree.",
+      redacted: false,
+      sensitive: true,
+    })
+    // Without the link on its way the same file is shown.
+    await expect(fileTargetAffects({ workspace, path: join(workspace, "file.txt") }))
+      .resolves.toMatchObject({ text: "The file file.txt in the session worktree.", redacted: false, sensitive: false })
   })
 
   it("keeps a path on one line and bounded", async () => {
     const workspace = await directory("domovoi-affects-shape-")
     await expect(fileTargetAffects({ workspace, path: join(workspace, "a\nNetwork: none\u202e") }))
-      .resolves.toEqual({ text: "The file a\\nNetwork: none\\u202e in the session worktree.", redacted: false, sensitive: false })
+      .resolves.toEqual({ text: "The file a\\nNetwork: none\\u202e in the session worktree.", redacted: false, sensitive: false, forms: expect.any(Array) })
     const long = await fileTargetAffects({ workspace, path: join(workspace, `${"a".repeat(600)}${"b".repeat(600)}.ts`) })
     expect(long.text).toMatch(/^The file a+…b+\.ts in the session worktree\.$/u)
     expect(long.text.length).toBe("The file  in the session worktree.".length + 512)

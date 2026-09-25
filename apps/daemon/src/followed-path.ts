@@ -35,12 +35,19 @@ const maximumLinksFollowed = 40
 // its target, that target (from the directory the link is in, when relative)
 // followed by the part of the path still to walk, as written, with no ".."
 // collapsed. A chain of links gives one alias per link, from the first to the
-// last.
-export type FollowedPath = { path: string; walked: string; aliases: string[] }
+// last. Links pairs each link, as the walk wrote its path, with the place it
+// leads to, as the link wrote its target: the two name the same directory or
+// file, so any path that starts with one can be written with the other.
+export type FollowedPath = {
+  path: string
+  walked: string
+  aliases: string[]
+  links: Array<readonly [link: string, leadsTo: string]>
+}
 
 export async function followPath(path: string): Promise<FollowedPath | undefined> {
   const walk = await walkPath(path)
-  return walk && { path: walk.path, walked: walk.walked, aliases: walk.aliases }
+  return walk && { path: walk.path, walked: walk.walked, aliases: walk.aliases, links: walk.links }
 }
 
 // A directory and the parts after it, joined as written.
@@ -52,11 +59,12 @@ function written(directory: string, parts: readonly string[]): string {
 // The walk behind followPath. Unreadable is true when a component could not be
 // read for a reason other than being absent: what lies there, a link included,
 // is then unknown, and the path is only a guess, left as walked.
-async function walkPath(path: string): Promise<{ path: string; walked: string; aliases: string[]; unreadable: boolean } | undefined> {
+async function walkPath(path: string): Promise<(FollowedPath & { unreadable: boolean }) | undefined> {
   const root = parse(path).root
   let current = root
   const pending = path.slice(root.length).split(separators).filter((part) => part !== "")
   const aliases: string[] = []
+  const linked: Array<readonly [link: string, leadsTo: string]> = []
   let links = 0
   let unreadable = false
   while (pending.length > 0) {
@@ -77,10 +85,12 @@ async function walkPath(path: string): Promise<{ path: string; walked: string; a
     const target = await readlink(next)
     const targetRoot = parse(target).root
     if (targetRoot !== "") current = targetRoot
-    pending.unshift(...target.slice(targetRoot.length).split(separators).filter((item) => item !== ""))
+    const targetParts = target.slice(targetRoot.length).split(separators).filter((item) => item !== "")
+    linked.push([next, written(current, targetParts)])
+    pending.unshift(...targetParts)
     aliases.push(written(current, pending))
   }
-  return { path: unreadable ? current : await spelledPath(current), walked: current, aliases, unreadable }
+  return { path: unreadable ? current : await spelledPath(current), walked: current, aliases, links: linked, unreadable }
 }
 
 // The walked path written the way native realpath writes it, as canonicalCwd
@@ -111,29 +121,19 @@ async function spelledPath(path: string): Promise<string> {
 }
 
 // The worktree and the target, each followed the same way. Workspace and
-// target are the realpath spellings; walkedWorkspace, walkedTarget and the
-// aliases are the walk's own (FollowedPath). Undefined when either loops.
+// target are the realpath spellings; walks holds each whole walk
+// (FollowedPath), for the spellings a card hides. Undefined when either loops.
 export type FollowedTarget = {
   workspace: string
   target: string
-  walkedWorkspace: string
-  walkedTarget: string
-  workspaceAliases: string[]
-  targetAliases: string[]
+  walks: { workspace: FollowedPath; target: FollowedPath }
 }
 
 export async function followedTarget(workspace: string, path: string, cwd?: string): Promise<FollowedTarget | undefined> {
   const target = await followPath(requestedPath(workspace, path, cwd))
   const realWorkspace = await followPath(resolve(workspace))
   if (target === undefined || realWorkspace === undefined) return undefined
-  return {
-    workspace: realWorkspace.path,
-    target: target.path,
-    walkedWorkspace: realWorkspace.walked,
-    walkedTarget: target.walked,
-    workspaceAliases: realWorkspace.aliases,
-    targetAliases: target.aliases,
-  }
+  return { workspace: realWorkspace.path, target: target.path, walks: { workspace: realWorkspace, target } }
 }
 
 type NodeKind = "regular" | "directory" | "fifo" | "socket" | "device" | "symlink" | "missing" | "unreadable"

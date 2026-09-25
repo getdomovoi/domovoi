@@ -1,6 +1,6 @@
-import { isAbsolute, join, relative, resolve, sep } from "node:path"
+import { isAbsolute, join, parse, relative, resolve, sep } from "node:path"
 
-import { followedTarget, followPath, requestedPath } from "./followed-path.js"
+import { followedTarget, followPath, requestedPath, type FollowedPath, type FollowedTarget } from "./followed-path.js"
 import { namesSecretPath } from "./permission-policy.js"
 import { redactDurableText } from "./secret-redaction.js"
 
@@ -46,21 +46,33 @@ function within(workspace: string, target: string): string | undefined {
 // keeps only where the file is.
 const hiddenPath = { text: "[REDACTED]", redacted: false }
 
+// One path on a card: the file or directory, the worktree, and the directory
+// the request runs in.
+type CardPath = { workspace: string; path: string; cwd?: string | undefined }
+
+// A card judges a path on exactly the spellings it hides, and hides exactly
+// the spellings it judges: both read the one set pathSpellings builds (final
+// check after 3fd053db). Forms is that set.
+
 // The directory line of a card: the directory the request runs in. It is
-// persisted and sent like the file path, so a directory that names a
-// credential store, or one the durable redaction changes, is hidden whole and
-// the line keeps only where it is, in the form #541 uses (hiddenDirectory in
-// approval-facts.ts). Hidden is true then, and the card is a hard gate.
-export function cardDirectory(input: { directory: string; workspace: string }): { text: string; hidden: boolean } {
+// persisted and sent like the file path, so a directory any spelling of which
+// names a credential store, or one the durable redaction changes, is hidden
+// whole and the line keeps only where it is, in the form #541 uses
+// (hiddenDirectory in approval-facts.ts). Hidden is true then, and the card is
+// a hard gate.
+export async function cardDirectory(input: { directory: string; workspace: string }): Promise<{ text: string; hidden: boolean; forms: string[] }> {
+  const spellings = await pathSpellings({ workspace: input.workspace, path: input.directory })
+  const { forms } = spellings
+  if (!namesCredential(spellings) && !redactDurableText(input.directory).redacted) {
+    return { text: input.directory, hidden: false, forms }
+  }
   const workspace = resolve(input.workspace)
   const directory = resolve(workspace, input.directory)
-  if (!namesSecretPath(input.directory) && !namesSecretPath(directory) && !redactDurableText(input.directory).redacted) {
-    return { text: input.directory, hidden: false }
-  }
   const inside = directory === workspace || within(workspace, directory) !== undefined
   return {
     text: inside ? "[REDACTED] in the session worktree" : "[REDACTED], outside the session worktree",
     hidden: true,
+    forms,
   }
 }
 
@@ -70,32 +82,23 @@ export function cardDirectory(input: { directory: string; workspace: string }): 
 // the card is then a hard gate too (ruled for #541), so no standing rule is
 // made or used for a file the person cannot see.
 //
-// Every spelling the walk produces is judged, as #541 judges the requested
-// path, each hop and the final target: the path as given and as requested,
-// the lexical path, the path after each link (followedTarget's aliases), the
-// walked path and the realpath target. A credential name in any of them hides
-// the file, even when the file it leads to is public, since the card's text
-// may name the path that way (final check after fc428aba).
-export async function fileTargetAffects(input: {
-  workspace: string
-  path: string
-  cwd?: string | undefined
-}): Promise<{ text: string; redacted: boolean; sensitive: boolean }> {
+// Sensitive is judged on every spelling in the set, as #541 judges the
+// requested path, each hop and the final target, and more: a credential name
+// in any spelling of the file, of the worktree it lies in, or of the directory
+// the request runs in hides the file, even when the file itself is public,
+// since the card's text may name it that way.
+export async function fileTargetAffects(input: CardPath): Promise<{ text: string; redacted: boolean; sensitive: boolean; forms: string[] }> {
   const lexicalTarget = resolve(input.workspace, input.cwd ?? ".", input.path)
-  const followed = await followedTarget(input.workspace, input.path, input.cwd)
-  const hide = [
-    input.path,
-    requestedPath(input.workspace, input.path, input.cwd),
-    lexicalTarget,
-    ...(followed ? [...followed.targetAliases, followed.walkedTarget, followed.target] : []),
-  ].some(namesSecretPath)
+  const spellings = await pathSpellings(input)
+  const { forms, followed } = spellings
+  const hide = namesCredential(spellings)
   const shown = (path: string) => hide ? hiddenPath : shownPath(path)
   const lexical = within(resolve(input.workspace), lexicalTarget)
   const real = followed ? within(followed.workspace, followed.target) : lexical
   if (real !== undefined) {
     // The file the edit reaches, which is the one a rule made here names.
     const name = shown(real)
-    return { text: `The file ${name.text} in the session worktree.`, redacted: name.redacted, sensitive: hide }
+    return { text: `The file ${name.text} in the session worktree.`, redacted: name.redacted, sensitive: hide, forms }
   }
   if (lexical !== undefined && followed) {
     const destination = shown(followed.target)
@@ -104,10 +107,11 @@ export async function fileTargetAffects(input: {
       text: `The file ${destination.text}, outside the session worktree, through a link at ${link.text}.`,
       redacted: destination.redacted || link.redacted,
       sensitive: hide,
+      forms,
     }
   }
   const name = shown(lexicalTarget)
-  return { text: `The file ${name.text}, outside the session worktree.`, redacted: name.redacted, sensitive: hide }
+  return { text: `The file ${name.text}, outside the session worktree.`, redacted: name.redacted, sensitive: hide, forms }
 }
 
 // The path from a directory to a target, with "/", when one can be written:
@@ -136,62 +140,147 @@ function writtenBelow(root: string, rest: string): string {
   return `${root.endsWith(sep) ? root : `${root}${sep}`}${rest.split("/").join(sep)}`
 }
 
-// Every form in which a card's text can name a path it hides (ruled
-// 2026-09-24): as written, from the request's directory, where it really leads
-// (as realpath writes it, as walked, and after each link on the way), and each
-// of those relative to the worktree, both as given and as it really
-// lies, and each relative form joined to either worktree root again. The path
-// from the request's directory counts too, from the directory as given and
-// from where it really lies (round 10). Each relative form is written with "/"
-// and with "\", bare and after "./".
-export async function hiddenPathForms(input: {
-  workspace: string
-  path: string
-  cwd?: string | undefined
-}): Promise<string[]> {
+// How many directories a path goes down from its filesystem root.
+function depth(path: string): number {
+  return path.slice(parse(path).root.length).split(sep).filter((step) => step !== "").length
+}
+
+// The number of ".." steps a relative form, written with "/", starts with.
+function climbs(path: string): number {
+  const steps = path.split("/")
+  const down = steps.findIndex((step) => step !== "..")
+  return down === -1 ? steps.length : down
+}
+
+// A path is closed under the pairs of spellings its walks found for one place
+// (FollowedPath.links, and each walked path beside its realpath spelling):
+// where it starts with one of a pair, it is written with the other as well,
+// again and again, since each link on a way can be written either way. A link
+// that leads to its own parent can spell without end, so each set is bounded,
+// and so is the whole set of forms; past a bound the set is not complete, and
+// the card is judged as naming a credential path.
+const maximumSpellings = 256
+const maximumForms = 50_000
+
+function sameSpellings(
+  pairs: ReadonlyArray<readonly [string, string]>,
+  seeds: readonly string[],
+): { spellings: string[]; complete: boolean } {
+  const found = new Set(seeds)
+  let frontier = seeds.filter((path) => isAbsolute(path))
+  const prefix = (path: string) => path.endsWith(sep) ? path : `${path}${sep}`
+  while (frontier.length > 0) {
+    const next: string[] = []
+    for (const path of frontier) {
+      for (const [one, other] of pairs) {
+        for (const [from, to] of [[one, other], [other, one]] as const) {
+          const swapped = path === from ? to : path.startsWith(prefix(from)) ? `${prefix(to)}${path.slice(prefix(from).length)}` : undefined
+          if (swapped === undefined || found.has(swapped)) continue
+          if (found.size >= maximumSpellings) return { spellings: [...found], complete: false }
+          found.add(swapped)
+          next.push(swapped)
+        }
+      }
+    }
+    frontier = next
+  }
+  return { spellings: [...found], complete: true }
+}
+
+// The one set a card both judges and hides for a path: every form in which its
+// text can name it (ruled 2026-09-24, closed after 3fd053db).
+//
+// Target spellings: the path as given, as requested from the request's
+// directory, the lexical path, the path after each link on the way (each link
+// target as the link spelled it, with the rest still to walk), the walked path
+// and the realpath target.
+//
+// Roots, in two places: the worktree, and the directory the request runs in.
+// Each place is spelled as given, resolved, as realpath writes it, as walked,
+// and after each link on the way to it.
+//
+// Every absolute spelling, of the target and of each root, is closed under
+// the links the three walks crossed (sameSpellings). Every target spelling is
+// then listed as it is, and relative to every root of each place: below the
+// root with ".." collapsed and as written, and above it with ".." where that
+// does not climb to the filesystem root. Each relative form is joined again to
+// every root of the same place, and written with "/" and with "\", bare and
+// after "./". A relative form is not joined to the other place's roots, which
+// would spell a path that is not there.
+export type PathSpellings = { forms: string[]; complete: boolean }
+
+async function pathSpellings(input: CardPath): Promise<PathSpellings & { followed: FollowedTarget | undefined }> {
   const workspace = resolve(input.workspace)
   const followed = await followedTarget(input.workspace, input.path, input.cwd)
   const lexical = resolve(workspace, input.cwd ?? ".", input.path)
-  // Where the path really leads is written as realpath writes it, as the walk
-  // wrote it at the end, and as it stood after each link on the way (each
-  // link target as the link spelled it, with the rest still to walk); a text
-  // can name any of them (final checks after 8181baf4 and 59484617). The
-  // worktree's own spellings, its aliases included, are roots.
-  const aliases = followed ? followed.targetAliases : []
-  const absolute = [
+  const directoryGiven = input.cwd === undefined
+    ? input.workspace
+    : isAbsolute(input.cwd) ? input.cwd : `${input.workspace}${sep}${input.cwd}`
+  const directory = resolve(workspace, input.cwd ?? ".")
+  const directoryWalk = await followPath(directory)
+  const targetWalk = followed?.walks.target
+  const workspaceWalk = followed?.walks.workspace
+  const walks = [targetWalk, workspaceWalk, directoryWalk].flatMap((walk) => walk ?? [])
+  const pairs = walks.flatMap((walk) => [...walk.links, [walk.walked, walk.path] as const])
+  const spelled = (paths: readonly string[]) => sameSpellings(pairs, [...new Set(paths)])
+  const walkSpellings = (walk: FollowedPath | undefined) => walk ? [...walk.aliases, walk.walked, walk.path] : []
+  const targets = spelled([
     input.path,
     requestedPath(input.workspace, input.path, input.cwd),
     lexical,
-    ...(followed ? [followed.target, followed.walkedTarget, ...aliases] : []),
-  ]
-  const roots = [
-    workspace,
-    ...(followed ? [followed.workspace, followed.walkedWorkspace, ...followed.workspaceAliases] : []),
-  ]
-  const inside = absolute.flatMap((path) => roots.flatMap((root) => within(root, path) ?? []))
-  // The same, with a link target's ".." kept as the link wrote it.
-  const writtenInside = absolute.flatMap((path) => roots.flatMap((root) => writtenWithin(root, path) ?? []))
-  const directory = resolve(workspace, input.cwd ?? ".")
-  const realDirectory = followed ? await followPath(directory) : undefined
-  const directories = [directory, ...(realDirectory ? [realDirectory.path, realDirectory.walked] : [])]
-  const fromDirectory = [
-    from(directory, lexical),
-    ...(followed && realDirectory !== undefined
-      ? [from(realDirectory.path, followed.target), from(realDirectory.walked, followed.walkedTarget)]
-      : []),
-    ...aliases.flatMap((alias) => directories.map((spelling) => from(spelling, alias))),
-  ].flatMap((path) => path ?? [])
-  const relativeForms = [...inside, ...writtenInside, ...fromDirectory].flatMap((path) => {
-    const backslashed = path.split("/").join("\\")
-    return [path, `./${path}`, backslashed, `.\\${backslashed}`]
-  })
-  const forms = new Set([
-    ...absolute,
-    ...relativeForms,
-    ...inside.flatMap((path) => roots.map((root) => join(root, path))),
-    ...writtenInside.flatMap((path) => roots.map((root) => writtenBelow(root, path))),
+    ...walkSpellings(targetWalk),
   ])
-  return [...forms].filter((form) => form !== "" && form !== "." && form !== sep)
+  const places = [
+    spelled([input.workspace, workspace, ...walkSpellings(workspaceWalk)]),
+    spelled([directoryGiven, directory, ...walkSpellings(directoryWalk)]),
+  ]
+  const forms = new Set(targets.spellings)
+  const finished = (complete: boolean) => ({
+    forms: [...forms].filter((form) => form !== "" && form !== "." && form !== sep),
+    complete,
+    followed,
+  })
+  if (!targets.complete || places.some((place) => !place.complete)) {
+    for (const place of places) for (const root of place.spellings) forms.add(root)
+    return finished(false)
+  }
+  for (const { spellings: roots } of places) {
+    // Each relative form of a target from any root of this place, collapsed or
+    // as written, and whether it climbs.
+    const relatives = new Map<string, "collapsed" | "written">()
+    for (const root of roots) {
+      if (!isAbsolute(root)) continue
+      for (const target of targets.spellings) {
+        if (!isAbsolute(target)) continue
+        const collapsed = from(root, target)
+        if (collapsed !== undefined && climbs(collapsed) < depth(root) && !relatives.has(collapsed)) relatives.set(collapsed, "collapsed")
+        const written = writtenWithin(root, target)
+        if (written !== undefined && !relatives.has(written)) relatives.set(written, "written")
+      }
+    }
+    for (const [path, kind] of relatives) {
+      const backslashed = path.split("/").join("\\")
+      for (const form of [path, `./${path}`, backslashed, `.\\${backslashed}`]) forms.add(form)
+      for (const other of roots) {
+        if (!isAbsolute(other)) continue
+        if (kind === "written") forms.add(writtenBelow(other, path))
+        else if (climbs(path) < depth(other)) forms.add(join(other, path))
+      }
+      if (forms.size > maximumForms) return finished(false)
+    }
+  }
+  return finished(true)
+}
+
+// The judge every card path goes through: a credential name in any form of
+// the set, or a set that could not be closed.
+function namesCredential(spellings: PathSpellings): boolean {
+  return !spellings.complete || spellings.forms.some(namesSecretPath)
+}
+
+// The set a card judges and hides for one path (pathSpellings).
+export async function hiddenPathForms(input: CardPath): Promise<string[]> {
+  return (await pathSpellings(input)).forms
 }
 
 function escapedPattern(text: string): string {

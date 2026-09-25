@@ -13812,6 +13812,171 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  // Final check after 3fd053db, Codex's case: the session worktree is reached
+  // as entry -> .env -> public-workspace, the request names a public file by
+  // its real path, and the reason names it through the .env hop. That spelling
+  // is judged and hidden like any other, so the card is a hard gate, makes no
+  // standing rule, and no copy of it names the file.
+  it("hides a file the worktree's own link hop names as a credential path", async () => {
+    const base = await mkdtemp(join(tmpdir(), "domovoi-card-worktree-hop-"))
+    scratchDirectories.push(base)
+    const realBase = await realpath(base)
+    await mkdir(join(base, "public-workspace"))
+    await writeFile(join(base, "public-workspace", "public.txt"), "hello")
+    await symlink("public-workspace", join(base, ".env"), "junction")
+    await symlink(".env", join(base, "entry"), "junction")
+    const workspacePath = join(base, "entry")
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code",
+      model: "sonnet",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.state = "idle"
+    session.workspacePath = workspacePath
+    session.providerThreadId = "thread-worktree-hop"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "claude-code",
+        id: "sonnet",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-worktree-hop"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const auditLog = { append: vi.fn(), query: vi.fn(), export: vi.fn() }
+    const errors: unknown[] = []
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      auditLog,
+      errorSink: (entry) => { errors.push(entry) },
+      agents: { "claude-code": agent },
+      workspaceService: checkpointingWorkspace(),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const received: string[] = []
+    socket.on("message", (data: WebSocket.RawData) => { received.push(data.toString()) })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    type Card = { id: string; providerRequestId?: number; risk: string; affects: string; operation: string; command: string }
+    type Copy = { approvals: Card[]; approvalRules: unknown[]; thread: Array<{ kind: string; operation?: string }> }
+    const current = async () => (await rpc("workspace.get", {})).result as Copy
+    // No client frame, saved copy, audit entry or reported error names the
+    // file, through the hop or otherwise.
+    const neverNamed = () => {
+      const copies = [
+        ...received,
+        JSON.stringify(store.save.mock.calls),
+        JSON.stringify(auditLog.append.mock.calls),
+        JSON.stringify(errors),
+      ]
+      for (const copy of copies) {
+        for (const form of [".env/public.txt", ".env\\\\public.txt", "public.txt"]) expect(copy).not.toContain(form)
+      }
+    }
+
+    await rpc("session.send", { sessionId: session.id, prompt: "Edit the file", client: "desktop" })
+    listener!({
+      type: "approval-requested",
+      threadId: session.providerThreadId,
+      turnId: "turn-worktree-hop",
+      requestId: 701,
+      command: "Edit",
+      cwd: workspacePath,
+      reason: `Edit ${join(base, ".env", "public.txt")}`,
+      path: join(realBase, "public-workspace", "public.txt"),
+    })
+    // The second card names nothing in its text; the file alone decides.
+    listener!({
+      type: "approval-requested",
+      threadId: session.providerThreadId,
+      turnId: "turn-worktree-hop",
+      requestId: 702,
+      command: "Edit",
+      cwd: workspacePath,
+      reason: "Update the greeting",
+      path: join(realBase, "public-workspace", "public.txt"),
+    })
+    await vi.waitFor(async () => expect((await current()).approvals).toHaveLength(2), { timeout: 3_000 })
+    const card = async (requestId: number) => (await current()).approvals.find((item) => item.providerRequestId === requestId)!
+    expect(await card(701)).toMatchObject({
+      risk: "hard-gate",
+      affects: "The file [REDACTED] in the session worktree.",
+      operation: "Edit [REDACTED]",
+      command: "Edit",
+    })
+    expect(await card(702)).toMatchObject({
+      risk: "hard-gate",
+      affects: "The file [REDACTED] in the session worktree.",
+      operation: "Update the greeting",
+      command: "Edit",
+    })
+    neverNamed()
+
+    for (const requestId of [701, 702]) {
+      const approvalId = (await card(requestId)).id
+      await expect(rpc("approval.resolve", { approvalId, decision: "always-project", revision: 0, client: "desktop" }))
+        .resolves.toMatchObject({ error: { message: "Hard-gate approvals cannot create standing rules" } })
+      await expect(rpc("approval.resolve", { approvalId, decision: "allow-once", revision: 0, client: "desktop" }))
+        .resolves.not.toHaveProperty("error")
+      expect(agent.resolveApproval).toHaveBeenCalledWith(requestId, "allow-once")
+    }
+    const receipts = (copy: Copy) => copy.thread.filter((item) => item.kind === "receipt").map((item) => item.operation)
+    const after = await current()
+    expect(after.approvalRules).toEqual([])
+    expect(receipts(after)).toEqual(["Edit [REDACTED]", "Update the greeting"])
+    const lastSaved = store.save.mock.calls.at(-1)![0] as Copy
+    expect(lastSaved.approvalRules).toEqual([])
+    expect(receipts(lastSaved)).toEqual(["Edit [REDACTED]", "Update the greeting"])
+    neverNamed()
+    socket.close()
+  })
+
   it("forgets a file card's requested path when the card leaves without an answer", async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-file-target-leaves-"))
     scratchDirectories.push(workspacePath)
