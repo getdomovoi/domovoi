@@ -109,7 +109,9 @@ matched as written, at its real path, and in the forms the path classifier compa
 is also matched relative to the worktree and relative to the directory the request runs in, each
 as given and as it really lies, so `src/.env` or `.env` for a hidden `src/.env` requested from
 `src` is replaced; each relative form with "/" or "\" and with or without a leading "./". A name
-that only starts with the path, such as `.env.example` beside a hidden `.env`, is kept. A hidden
+that only starts with the path, such as `.env.example` beside a hidden `.env`, is kept. The text is
+not split into words first, so a hidden name that holds a comma, a space, a quote or a colon, such
+as `src/.env,prod`, is replaced whole. A hidden
 directory at the start of a longer path is replaced, and a shell word that decodes into the path
 through quotes or escapes is replaced whole. An execution record whose command words hold the path
 is hidden. This holds for new, settled, sealed and saved cards, in workspace.get, workspace.changed,
