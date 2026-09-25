@@ -4,12 +4,14 @@
 // host's pair into the app's resources. The app copies that directory under
 // the profile when it installs the login service, so the service never points
 // into the app bundle. Node is verified against its published sha256 before it
-// is unpacked; the daemon is proved runnable by asking it for its version.
-import { createHash } from "node:crypto"
+// is unpacked, and the program kept is the one unpacked from that archive; the
+// daemon is proved runnable by asking it for its version and by loading its
+// entry under that program.
+import { createHash, randomBytes } from "node:crypto"
 import { createReadStream, createWriteStream } from "node:fs"
-import { access, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm } from "node:fs/promises"
+import { access, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, stat, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve, sep } from "node:path"
+import { dirname, join, relative, resolve, sep } from "node:path"
 import { pipeline } from "node:stream/promises"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
@@ -47,7 +49,8 @@ async function exists(path) {
 }
 
 // Downloads the archive once into the cache, refusing to keep bytes whose
-// digest is not the pinned one. A cached file is re-verified every time.
+// digest is not the pinned one. A cached file is re-verified every time, and
+// removed when it fails, so a poisoned cache cannot refuse every later run.
 export async function fetchNodeArchive({ target, cacheDirectory, download }) {
   await mkdir(cacheDirectory, { recursive: true })
   const cached = join(cacheDirectory, target.archive)
@@ -57,7 +60,13 @@ export async function fetchNodeArchive({ target, cacheDirectory, download }) {
     // kept only if its digest is the pinned one.
     if (!(await exists(staging)) || (await sha256Of(staging)) !== target.sha256) {
       await rm(staging, { force: true })
-      await download(new URL(target.archive, nodeDistribution).href, staging)
+      try {
+        await download(new URL(target.archive, nodeDistribution).href, staging)
+      } catch (error) {
+        // Bytes from a failed download were never verified; none stay cached.
+        await rm(staging, { force: true })
+        throw error
+      }
     }
     const digest = await sha256Of(staging)
     if (digest !== target.sha256) {
@@ -67,7 +76,10 @@ export async function fetchNodeArchive({ target, cacheDirectory, download }) {
     await rename(staging, cached)
   }
   const digest = await sha256Of(cached)
-  if (digest !== target.sha256) throw new Error(`${cached} has sha256 ${digest}, pinned ${target.sha256}. Delete it and run again.`)
+  if (digest !== target.sha256) {
+    await rm(cached, { force: true })
+    throw new Error(`${cached} had sha256 ${digest}, pinned ${target.sha256}. It was removed; run again to download it.`)
+  }
   return cached
 }
 
@@ -87,12 +99,23 @@ export async function downloadOverHttps(url, destination) {
 }
 
 // tar reads .tar.gz, .tar.xz and .zip alike on macOS, Linux and Windows 10+.
+// Returns the program's path and the sha256 of the program as it came out of
+// the verified archive; proveDaemonRuns refuses to run anything else.
 export async function unpackNode({ archive, target, destination, run = execute }) {
+  // The member digest below is only as good as the archive tar reads, so the
+  // archive is verified again here rather than trusted from the fetch.
+  const archiveDigest = await sha256Of(archive)
+  if (archiveDigest !== target.sha256) throw new Error(`${archive} has sha256 ${archiveDigest}, pinned ${target.sha256}. Nothing was unpacked.`)
   const staging = await mkdtemp(join(tmpdir(), "domovoi-node-"))
+  let sha256
   try {
     await run("tar", ["-xf", archive, "-C", staging])
     const [top] = await readdir(staging)
     if (!top) throw new Error(`${archive} unpacked to nothing`)
+    const member = join(staging, top, target.nodeExecutable)
+    const program = await lstat(member).catch(() => undefined)
+    if (!program?.isFile()) throw new Error(`${archive} holds no ${target.nodeExecutable}`)
+    sha256 = await sha256Of(member)
     await rm(destination, { recursive: true, force: true })
     await mkdir(resolve(destination, ".."), { recursive: true })
     await rename(join(staging, top), destination)
@@ -100,7 +123,6 @@ export async function unpackNode({ archive, target, destination, run = execute }
     await rm(staging, { recursive: true, force: true })
   }
   const executable = join(destination, target.nodeExecutable)
-  if (!(await exists(executable))) throw new Error(`${archive} holds no ${target.nodeExecutable}`)
   // Only the program ships. npm, corepack, headers and docs are most of the
   // archive and the service never runs them.
   for (const entry of await readdir(destination)) {
@@ -112,7 +134,7 @@ export async function unpackNode({ archive, target, destination, run = execute }
       if (entry !== "node") await rm(join(destination, "bin", entry), { recursive: true, force: true })
     }
   }
-  return executable
+  return { executable, sha256 }
 }
 
 // The vendor's agent binary is not shipped; the daemon runs the person's own
@@ -140,19 +162,31 @@ export async function deployDaemon({ repositoryRoot, destination, run = execute 
   // pnpm also links the package to its source in the repository from inside
   // the store. Nothing in the shipped tree may point outside it: the copy
   // would carry a link to a path that does not exist on the person's machine.
-  await removeExternalLinks(join(destination, "node_modules"), destination)
+  await removeExternalLinks(destination, destination)
   return join(destination, "dist", "index.js")
 }
 
+// Removes links that resolve outside root and rewrites the rest relative to
+// their own directory. An absolute link (a Windows junction is always one), or
+// a relative one that climbs out of root and back in by its name, names the
+// staging path; a verbatim copy would carry that name to a machine where it
+// points outside the copy. Returns the number of links removed.
 export async function removeExternalLinks(path, root) {
-  const { realpath } = await import("node:fs/promises")
   const inside = `${await realpath(root)}${sep}`
   let removed = 0
   for (const entry of await readdir(path, { withFileTypes: true })) {
     const child = join(path, entry.name)
     if (entry.isSymbolicLink()) {
       const target = await realpath(child).catch(() => undefined)
-      if (target === undefined || !target.startsWith(inside)) { await rm(child, { force: true }); removed += 1 }
+      if (target === undefined || !target.startsWith(inside)) { await rm(child, { force: true }); removed += 1; continue }
+      const contained = relative(await realpath(dirname(child)), target)
+      if ((await readlink(child)) === contained) continue
+      const type = (await stat(target)).isDirectory() ? "dir" : "file"
+      await rm(child, { force: true })
+      // Windows refuses a relative directory link without the symlink
+      // privilege. The link is then gone rather than absolute; the proof on
+      // that platform's packaging job fails if the daemon needed it.
+      try { await symlink(contained, child, type) } catch { removed += 1 }
     } else if (entry.isDirectory()) {
       removed += await removeExternalLinks(child, root)
     }
@@ -206,11 +240,32 @@ export async function pruneDaemonRuntime(root, { platform, arch }) {
   return removed
 }
 
+// Run by the pinned program with the entry and a nonce: imports the entry as
+// its command line would load it, then prints the nonce. The entry runs its
+// command line on import, and --version is the one answer that starts nothing.
+const entryLoadCheck = [
+  'import { pathToFileURL } from "node:url"',
+  "const [program, entry, nonce] = process.argv",
+  'process.argv = [program, entry, "--version"]',
+  "await import(pathToFileURL(entry).href)",
+  "process.stdout.write(`\\ndomovoi-entry-loaded ${nonce}\\n`)",
+].join("\n")
+
 // The installer cannot prove the entry's imports resolve; running it can.
-export async function proveDaemonRuns({ nodeExecutable, daemonEntry, expectedVersion, run = execute }) {
+// Three separate facts: the program is the one unpacked from the verified
+// archive (its digest, checked before anything runs), the entry answers with
+// the daemon's version, and the entry loads under that program (a nonce only
+// the load check prints, so a program that ignores its arguments cannot pass).
+export async function proveDaemonRuns({ nodeExecutable, nodeSha256, daemonEntry, expectedVersion, run = execute }) {
+  const digest = await sha256Of(nodeExecutable)
+  if (digest !== nodeSha256) throw new Error(`${nodeExecutable} has sha256 ${digest}; the program unpacked from the verified archive has sha256 ${nodeSha256}. Nothing was run.`)
   const { stdout } = await run(nodeExecutable, [daemonEntry, "--version"], { timeout: 30_000 })
   const printed = String(stdout).trim()
   if (printed !== expectedVersion) throw new Error(`${daemonEntry} printed version ${JSON.stringify(printed)}, expected ${expectedVersion}`)
+  const nonce = randomBytes(16).toString("hex")
+  const { stdout: loaded } = await run(nodeExecutable, ["--input-type=module", "--eval", entryLoadCheck, "--", daemonEntry, nonce], { timeout: 30_000 })
+  const last = String(loaded).trim().split(/\r?\n/).at(-1)
+  if (last !== `domovoi-entry-loaded ${nonce}`) throw new Error(`${daemonEntry} did not load under ${nodeExecutable}: the load check printed ${JSON.stringify(String(loaded).trim())}`)
   return printed
 }
 
@@ -235,15 +290,15 @@ export async function prepareDaemonRuntime({
   const target = runtimeTarget(platform, arch)
   const output = join(desktopRoot, "daemon-runtime", target.key)
   const archive = await fetchNodeArchive({ target, cacheDirectory: join(desktopRoot, ".cache", "node"), download })
-  const nodeExecutable = await unpackNode({ archive, target, destination: join(output, "node"), run })
+  const { executable: nodeExecutable, sha256: nodeSha256 } = await unpackNode({ archive, target, destination: join(output, "node"), run })
   const daemonEntry = await deployDaemon({ repositoryRoot, destination: join(output, "daemon"), run })
   const pruned = await pruneDaemonRuntime(join(output, "daemon"), { platform, arch })
   log(`pruned ${pruned.files} entries, ${(pruned.bytes / 1048576).toFixed(1)} MB, the runtime never loads on ${target.key}`)
   const manifest = JSON.parse(await readFile(join(repositoryRoot, "apps/daemon/package.json"), "utf8"))
   const host = platform === process.platform && arch === process.arch
   if (host) {
-    await proveDaemonRuns({ nodeExecutable, daemonEntry, expectedVersion: manifest.version, run })
-    log(`${daemonEntry} --version printed ${manifest.version} under ${nodeExecutable}`)
+    await proveDaemonRuns({ nodeExecutable, nodeSha256, daemonEntry, expectedVersion: manifest.version, run })
+    log(`${nodeExecutable} is the program from the verified archive (sha256 ${nodeSha256}); ${daemonEntry} loaded under it and --version printed ${manifest.version}`)
   } else {
     log(`${target.key} is not this host, so ${daemonEntry} was not run; the packaging job on that platform proves it`)
   }

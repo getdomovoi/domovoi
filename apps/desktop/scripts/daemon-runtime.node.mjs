@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, sep } from "node:path"
 import test from "node:test"
 
 import { fetchNodeArchive, nodePins, nodeVersion, proveDaemonRuns, runtimeTarget, sha256Of } from "./daemon-runtime.mjs"
@@ -34,10 +34,135 @@ test("keeps no archive whose digest is not the pinned one", async () => {
   }
 })
 
-test("proves the daemon runs by its version, and refuses any other answer", async () => {
-  const run = async () => ({ stdout: "0.0.1\n" })
-  assert.equal(await proveDaemonRuns({ nodeExecutable: "/n", daemonEntry: "/d", expectedVersion: "0.0.1", run }), "0.0.1")
-  await assert.rejects(proveDaemonRuns({ nodeExecutable: "/n", daemonEntry: "/d", expectedVersion: "0.0.2", run }), /printed version "0.0.1", expected 0.0.2/)
+// The entry these proofs load: the daemon answers --version and starts nothing else.
+const versionEntry = 'if (process.argv[2] === "--version") process.stdout.write("0.0.1\\n")\n'
+
+async function fixture(prefix, files) {
+  const root = await mkdtemp(join(tmpdir(), prefix))
+  for (const [name, body] of Object.entries(files)) await writeFile(join(root, name), body)
+  return root
+}
+
+test("proves the daemon runs by its version under the pinned program, and refuses any other answer", async () => {
+  const root = await fixture("domovoi-runtime-prove-", { "index.mjs": versionEntry })
+  try {
+    // The Node running this test stands in for the unpacked program; its digest is the member digest.
+    const program = { nodeExecutable: process.execPath, nodeSha256: await sha256Of(process.execPath) }
+    const daemonEntry = join(root, "index.mjs")
+    assert.equal(await proveDaemonRuns({ ...program, daemonEntry, expectedVersion: "0.0.1" }), "0.0.1")
+    await assert.rejects(proveDaemonRuns({ ...program, daemonEntry, expectedVersion: "0.0.2" }), /printed version "0.0.1", expected 0.0.2/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("refuses to run a program that is not the one unpacked from the verified archive", async () => {
+  const root = await fixture("domovoi-runtime-fake-node-", { node: "a fake node that prints any version", "index.mjs": versionEntry })
+  try {
+    const calls = []
+    const run = async (...args) => { calls.push(args); return { stdout: "0.0.1\n" } }
+    const pinnedMember = createHash("sha256").update("the node program in the verified archive").digest("hex")
+    await assert.rejects(
+      proveDaemonRuns({ nodeExecutable: join(root, "node"), nodeSha256: pinnedMember, daemonEntry: join(root, "index.mjs"), expectedVersion: "0.0.1", run }),
+      /the program unpacked from the verified archive has sha256 [0-9a-f]{64}\. Nothing was run/,
+    )
+    assert.deepEqual(calls, [])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("refuses a version answer from a program that never loaded the daemon entry", async () => {
+  const root = await fixture("domovoi-runtime-ignored-entry-", { node: "prints the version, ignores its arguments", "index.mjs": 'throw new Error("the entry does not load")\n' })
+  try {
+    const nodeExecutable = join(root, "node")
+    // Prints the expected version whatever it is asked, as Codex's fake did.
+    const run = async () => ({ stdout: "0.0.1\n" })
+    await assert.rejects(
+      proveDaemonRuns({ nodeExecutable, nodeSha256: await sha256Of(nodeExecutable), daemonEntry: join(root, "index.mjs"), expectedVersion: "0.0.1", run }),
+      /did not load under/,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("refuses a daemon entry that throws when the pinned program loads it", async () => {
+  const root = await fixture("domovoi-runtime-throwing-entry-", { "index.mjs": 'process.stdout.write("0.0.1\\n")\nthrow new Error("the entry does not load")\n' })
+  try {
+    await assert.rejects(
+      proveDaemonRuns({ nodeExecutable: process.execPath, nodeSha256: await sha256Of(process.execPath), daemonEntry: join(root, "index.mjs"), expectedVersion: "0.0.1" }),
+      /the entry does not load/,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("unpacks only a verified archive and reports the digest of the program it unpacked", async () => {
+  const { unpackNode } = await import("./daemon-runtime.mjs")
+  const { mkdir, readdir } = await import("node:fs/promises")
+  const root = await fixture("domovoi-runtime-unpack-", { "node.tar.gz": "archive bytes" })
+  try {
+    const archive = join(root, "node.tar.gz")
+    const target = { ...runtimeTarget("darwin", "arm64"), sha256: await sha256Of(archive) }
+    const calls = []
+    // Stands in for tar: lays out the archive's top directory in the staging directory.
+    const run = async (file, args) => {
+      calls.push(file)
+      const top = join(args[args.indexOf("-C") + 1], "node-v24.21.0-darwin-arm64")
+      await mkdir(join(top, "bin"), { recursive: true })
+      await mkdir(join(top, "include"), { recursive: true })
+      await writeFile(join(top, "bin", "node"), "the node program")
+      await writeFile(join(top, "bin", "npm"), "npm")
+      await writeFile(join(top, "LICENSE"), "licence")
+      return { stdout: "" }
+    }
+    const destination = join(root, "out", "node")
+    const unpacked = await unpackNode({ archive, target, destination, run })
+    assert.equal(unpacked.executable, join(destination, "bin", "node"))
+    assert.equal(unpacked.sha256, createHash("sha256").update("the node program").digest("hex"))
+    assert.deepEqual((await readdir(destination, { recursive: true })).map((p) => p.replaceAll("\\", "/")).sort(), ["LICENSE", "bin", "bin/node"])
+
+    await writeFile(archive, "archive bytes changed after the download was verified")
+    await assert.rejects(unpackNode({ archive, target, destination, run }), /pinned [0-9a-f]{64}\. Nothing was unpacked/)
+    assert.deepEqual(calls, ["tar"])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("removes a cached archive whose digest is not the pinned one, so the next run downloads again", async () => {
+  const cache = await mkdtemp(join(tmpdir(), "domovoi-node-cache-poisoned-"))
+  try {
+    const target = runtimeTarget("darwin", "arm64")
+    await writeFile(join(cache, target.archive), "poisoned")
+    let downloads = 0
+    const download = async () => { downloads += 1 }
+    const refused = await fetchNodeArchive({ target, cacheDirectory: cache, download }).then(() => undefined, (error) => error)
+    assert.match(String(refused), /sha256 [0-9a-f]{64}, pinned bed7eea5/)
+    assert.equal(downloads, 0)
+    await assert.rejects(readFile(join(cache, target.archive)), { code: "ENOENT" })
+    assert.match(refused.message, /It was removed; run again to download it\./)
+  } finally {
+    await rm(cache, { recursive: true, force: true })
+  }
+})
+
+test("keeps no partial archive when the download fails", async () => {
+  const { readdir } = await import("node:fs/promises")
+  const cache = await mkdtemp(join(tmpdir(), "domovoi-node-cache-partial-"))
+  try {
+    const target = runtimeTarget("darwin", "arm64")
+    const download = async (_url, destination) => {
+      await writeFile(destination, "half an archive")
+      throw new Error("connection reset")
+    }
+    await assert.rejects(fetchNodeArchive({ target, cacheDirectory: cache, download }), /connection reset/)
+    assert.deepEqual(await readdir(cache), [])
+  } finally {
+    await rm(cache, { recursive: true, force: true })
+  }
 })
 
 test("drops links with nothing behind them and links that leave the shipped tree, and keeps the rest", async () => {
@@ -110,5 +235,53 @@ test("keeps the conpty files a Windows package needs", async () => {
     assert.deepEqual(await readdir(join(root, "node_modules/node-pty/third_party/conpty")), ["conpty.dll"])
   } finally {
     await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("rewrites every link that stays inside the shipped tree so a verbatim copy resolves inside the copy", async () => {
+  const { removeExternalLinks } = await import("./daemon-runtime.mjs")
+  const { cp, lstat, mkdir, readdir, realpath, symlink } = await import("node:fs/promises")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-internal-links-"))
+  const elsewhere = await mkdtemp(join(tmpdir(), "domovoi-runtime-copied-"))
+  try {
+    const shipped = join(root, "daemon")
+    await mkdir(join(shipped, "node_modules", "real"), { recursive: true })
+    await mkdir(join(shipped, "node_modules", ".pnpm", "node_modules"), { recursive: true })
+    await mkdir(join(shipped, "dist"), { recursive: true })
+    await writeFile(join(shipped, "node_modules", "real", "index.js"), "module")
+    await writeFile(join(shipped, "dist", "index.js"), "entry")
+    // Absolute links into the staging tree, as a junction or pnpm leaves them.
+    await symlink(join(shipped, "node_modules", "real"), join(shipped, "node_modules", ".pnpm", "node_modules", "absolute-directory"), "dir")
+    await symlink(join(shipped, "dist", "index.js"), join(shipped, "dist", "absolute-file.js"), "file")
+    // Relative, but it climbs out of the tree and back in by the staging directory's name.
+    await symlink(join("..", "..", "daemon", "node_modules", "real"), join(shipped, "node_modules", "reentering"), "dir")
+
+    assert.equal(await removeExternalLinks(shipped, shipped), 0)
+    const copy = join(elsewhere, "runtime")
+    await cp(shipped, copy, { recursive: true, verbatimSymlinks: true })
+    await rm(root, { recursive: true, force: true })
+
+    const inside = `${await realpath(copy)}${sep}`
+    const links = []
+    const walk = async (directory) => {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name)
+        if (entry.isSymbolicLink()) links.push(path)
+        else if (entry.isDirectory()) await walk(path)
+      }
+    }
+    await walk(copy)
+    assert.deepEqual(links.map((path) => path.slice(copy.length + 1).replaceAll("\\", "/")).sort(), [
+      "dist/absolute-file.js", "node_modules/.pnpm/node_modules/absolute-directory", "node_modules/reentering",
+    ])
+    for (const link of links) {
+      assert.ok((await lstat(link)).isSymbolicLink())
+      const target = await realpath(link).catch((error) => `unresolved: ${error.code}`)
+      assert.ok(target.startsWith(inside), `${link} resolves to ${target}, outside the copy`)
+    }
+    assert.equal(await readFile(join(copy, "node_modules", "reentering", "index.js"), "utf8"), "module")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+    await rm(elsewhere, { recursive: true, force: true })
   }
 })
