@@ -93,22 +93,10 @@ export const transportCandidatesSchema = z.array(transportCandidateSchema).max(1
 
 export type TransportCandidate = z.infer<typeof transportCandidateSchema>
 
-export type TransportSelection = {
-  // Compatibility input only. No value can enable an unimplemented relay.
-  relayAvailable?: boolean
-}
-
 export function orderedTransports(candidates: TransportCandidate[]): TransportCandidate[] {
   return [...transportCandidatesSchema.parse(candidates)].sort(
     (left, right) => transportPreference.indexOf(left.kind) - transportPreference.indexOf(right.kind),
   )
-}
-
-export function selectTransport(
-  candidates: TransportCandidate[],
-  _options: TransportSelection = {},
-): TransportCandidate | undefined {
-  return usableTransports(candidates)[0]
 }
 
 // Display ordering may retain unavailable entries. Every dialer must use this

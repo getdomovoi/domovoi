@@ -1,5 +1,9 @@
 import { waitForDaemon } from "./test-wait-for.js"
-import { describe, expect, it, vi } from "vitest"
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
@@ -11,10 +15,17 @@ import {
   SubagentRegistry,
   domovoiOpenCodeConfig,
   openCodeAgentFor,
+  openCodeMessageId,
+  OpenCodeMessageIdsExhaustedError,
+  openCodeMessageOrder,
   type OpenCodeClient,
   type OpenCodeEvent,
   type OpenCodeFactory,
 } from "./opencode.js"
+import { removeScratchDirectories } from "./test-scratch.js"
+
+const scratchDirectories: string[] = []
+afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
 
 class EventStream implements AsyncIterable<OpenCodeEvent> {
   #events: OpenCodeEvent[] = []
@@ -88,6 +99,7 @@ function harness() {
       delete: vi.fn(async () => ({ data: true })),
       abort: vi.fn(async () => ({ data: true })),
       promptAsync: vi.fn(async () => ({ data: undefined })),
+      messages: vi.fn(async (_options?: unknown): Promise<{ data: unknown; response?: Response }> => ({ data: [] })),
     },
     event: {
       subscribe: vi.fn(async () => ({ stream })),
@@ -662,6 +674,452 @@ describe("KiloSdkAdapter", () => {
   })
 })
 
+describe("repository instruction files", () => {
+  it.each([
+    ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory)],
+    ["Kilo", (factory: OpenCodeFactory) => new KiloSdkAdapter(factory)],
+  ])("sends %s the worktree's AGENTS.md itself, since project configuration stays off", async (_name, create) => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-opencode-instructions-"))
+    scratchDirectories.push(worktree)
+    await writeFile(join(worktree, "AGENTS.md"), "Shared agent rule\n")
+    await writeFile(join(worktree, "CLAUDE.md"), "Claude only rule\n")
+    const { client, factory } = harness()
+    const adapter = create(factory)
+
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: worktree, prompt: "Hello", runtime: runtime("build") })
+
+    expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        system: expect.stringMatching(/^Instructions from: .*AGENTS\.md\nShared agent rule/),
+      }),
+    }))
+    expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({
+      body: expect.objectContaining({ system: expect.not.stringContaining("Claude only rule") }),
+    }))
+    await adapter.close()
+  })
+
+  it("sends no system text for a worktree without instruction files", async () => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-opencode-bare-"))
+    scratchDirectories.push(worktree)
+    const { client, factory } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: worktree, prompt: "Hello", runtime: runtime("build") })
+
+    expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({
+      body: expect.not.objectContaining({ system: expect.anything() }),
+    }))
+    await adapter.close()
+  })
+})
+
+describe("an interrupted turn's end that arrives late", () => {
+  it("does not complete the turn sent after the interrupt", async () => {
+    const { factory, stream } = harness()
+    let id = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: first, sessionID: threadId, role: "user" } } })
+    await adapter.interruptTurn(threadId, first)
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+
+    // The server ends the aborted run before it takes the next prompt, so its
+    // idle comes before the new turn's own user message.
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(events.filter((event) => event.type === "turn-completed")).toEqual([])
+
+    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
+    })))
+    await adapter.close()
+  })
+
+  // Only an interrupt arms the wait for the new turn's own messages. Without
+  // one, the first idle or error ends the turn, even before any message.
+  it("ends a turn on a session error that comes before its user message when nothing was interrupted", async () => {
+    const { factory, stream } = harness()
+    let id = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "ProviderAuthError", data: { message: "no key" } } } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({ turnId, turn: expect.objectContaining({ status: "failed" }) }),
+    })))
+    await adapter.close()
+  })
+
+  it("waits for the new turn's messages only until the interrupted run's end has come", async () => {
+    const { factory, stream } = harness()
+    let id = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    await adapter.interruptTurn(threadId, first)
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    const third = await adapter.interruptTurn(threadId, second).then(() =>
+      adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Three", runtime: runtime("build") }))
+    void third
+    events.length = 0
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "UnknownError", data: { message: "boom" } } } })
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(1))
+    await adapter.close()
+  })
+
+  // A run that ends through the processor's halt publishes an error and then
+  // sets the session idle. Both belong to the interrupted run.
+  it("ignores both the error and the idle an interrupted run ends with", async () => {
+    const { factory, stream } = harness()
+    let id = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    await adapter.interruptTurn(threadId, first)
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "MessageAbortedError", data: { message: "aborted" } } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(events.filter((event) => event.type === "turn-completed")).toEqual([])
+
+    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
+    })))
+    await adapter.close()
+  })
+
+  // The error can end the interrupted turn while it still holds the slot. The
+  // idle that follows still belongs to it and must not end the next turn.
+  it("ignores the idle that follows an error which ended the interrupted turn itself", async () => {
+    const { factory, stream } = harness()
+    let id = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: first, sessionID: threadId, role: "user" } } })
+    await adapter.interruptTurn(threadId, first)
+
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "MessageAbortedError", data: { message: "aborted" } } } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({ turnId: first, turn: expect.objectContaining({ status: "failed" }) }),
+    })))
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(1)
+
+    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
+    })))
+    expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(2)
+    await adapter.close()
+  })
+
+  // A subagent's idle ends its task tool call. It is not the interrupted run's
+  // end, so it must leave the interrupt record for the parent's own idle.
+  it("keeps the interrupt record through a subagent's idle", async () => {
+    const { factory, stream } = harness()
+    let id = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: first, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "session.created", properties: { sessionID: "ses_child", info: { id: "ses_child", parentID: threadId, directory: "/worktree" } } })
+    await adapter.interruptTurn(threadId, first)
+
+    stream.emit({ type: "session.idle", properties: { sessionID: "ses_child" } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(events.filter((event) => event.type === "turn-completed")).toEqual([])
+
+    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
+    })))
+    expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(1)
+    await adapter.close()
+  })
+})
+
+describe("message ids", () => {
+  it.each([
+    ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory)],
+    ["Kilo", (factory: OpenCodeFactory) => new KiloSdkAdapter(factory)],
+  ])("sends %s ascending msg_ ids, the only message ids its server accepts", async (_name, create) => {
+    const { client, factory } = harness()
+    const adapter = create(factory)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    const steered = await adapter.steerTurn(threadId, first, "Also")
+    const ids = client.session.promptAsync.mock.calls.map((call) => (call as unknown as [{ body: { messageID: string } }])[0].body.messageID)
+
+    expect(ids).toHaveLength(2)
+    for (const id of ids) expect(id).toMatch(/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
+    expect(ids[0]).toBe(first)
+    expect(ids[1]).toBe(steered.providerMessageId)
+    expect(ids[1]! > ids[0]!).toBe(true)
+    await adapter.close()
+  })
+})
+
+describe("openCodeMessageId", () => {
+  it("encodes the time exactly as the servers do", () => {
+    // Ids the installed opencode 1.18.32 and kilo 7.7.6 servers made, with the
+    // creation time each reported for that message.
+    for (const [serverPrefix, created] of [
+      ["0cc7b53c0001", 1_790_137_029_568],
+      ["0cc7b5486001", 1_790_137_029_766],
+      ["0cc7b57f9001", 1_790_137_030_649],
+      ["0cc7b57fd001", 1_790_137_030_653],
+      ["0cc7b5f49001", 1_790_137_032_521],
+      ["0cc7b625d001", 1_790_137_033_309],
+    ] as const) {
+      expect(openCodeMessageOrder(created)).toBe(serverPrefix)
+    }
+  })
+
+  it("keeps rising when the clock steps back", () => {
+    const now = Date.now() + 60_000
+    const before = openCodeMessageId(now)
+    const after = openCodeMessageId(now - 5_000)
+
+    expect(after > before).toBe(true)
+  })
+
+  it("moves to the next millisecond instead of spilling the counter into the time", () => {
+    const now = Date.now() + 120_000
+    const ids = Array.from({ length: 4_097 }, () => openCodeMessageId(now))
+
+    for (let index = 1; index < ids.length; index += 1) expect(ids[index]! > ids[index - 1]!).toBe(true)
+    expect(ids.at(-1)!.slice(4, 16)).toBe(openCodeMessageOrder(now + 1, 1))
+  })
+
+  it("sorts after an id it is told to follow", () => {
+    const later = `msg_${openCodeMessageOrder(Date.now() + 600_000, 7)}zzzzzzzzzzzzzz`
+
+    expect(openCodeMessageId(Date.now(), later) > later).toBe(true)
+  })
+
+  // The servers keep 48 bits of order. Nothing sorts after the last value, so
+  // an id is refused there instead of wrapping to zero and sorting first.
+  it("refuses to follow an id at the last 48-bit order instead of wrapping to zero", () => {
+    const last = "msg_ffffffffffffAAAAAAAAAAAAAA"
+
+    expect(() => openCodeMessageId(Date.now(), last)).toThrow(OpenCodeMessageIdsExhaustedError)
+  })
+
+  it("keeps making ids for other sessions after one session's ids ran out", () => {
+    expect(() => openCodeMessageId(Date.now(), "msg_fffffffffffeAAAAAAAAAAAAAA")).not.toThrow()
+    const next = openCodeMessageId(Date.now())
+
+    expect(next.slice(4, 16) < "ffffffffffff").toBe(true)
+  })
+})
+
+describe("message order across processes", () => {
+  it("resumes after the newest message the server already holds", async () => {
+    const { client, factory } = harness()
+    const history = `msg_${openCodeMessageOrder(Date.now() + 3_600_000)}AAAAAAAAAAAAAA`
+    client.session.messages.mockResolvedValueOnce({ data: [{ info: { id: history } }] })
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId: "open-session", cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+
+    expect(client.session.messages).toHaveBeenCalledWith(expect.objectContaining({
+      path: { id: "open-session" },
+      query: expect.objectContaining({ directory: "/worktree" }),
+    }))
+    expect(turnId > history).toBe(true)
+    await adapter.close()
+  })
+
+  it("refuses a turn in a session whose history holds the last message order", async () => {
+    const { client, factory } = harness()
+    client.session.messages.mockResolvedValueOnce({ data: [{ info: { id: "msg_ffffffffffffAAAAAAAAAAAAAA" } }] })
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })
+    await expect(adapter.startTurn({ threadId: "open-session", cwd: "/worktree", prompt: "Go", runtime: runtime("build") }))
+      .rejects.toThrow("OpenCode session has used the last message id the server can order, so it cannot take another message")
+    expect(client.session.promptAsync).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("resumes after the greatest id in the whole history, not the newest by time", async () => {
+    const { client, factory } = harness()
+    const base = Date.now() + 10_800_000
+    // A clock that stepped back gave the later-created message the lower id.
+    const newerByTime = `msg_${openCodeMessageOrder(base)}CCCCCCCCCCCCCC`
+    const greatest = `msg_${openCodeMessageOrder(base + 5_000)}DDDDDDDDDDDDDD`
+    client.session.messages
+      .mockResolvedValueOnce({ data: [{ info: { id: newerByTime } }], response: new Response(null, { headers: { "x-next-cursor": "page-2" } }) })
+      .mockResolvedValueOnce({ data: [{ info: { id: greatest } }], response: new Response(null) })
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId: "open-session", cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+
+    expect(client.session.messages).toHaveBeenCalledTimes(2)
+    expect(client.session.messages).toHaveBeenLastCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ before: "page-2" }),
+    }))
+    expect(turnId > greatest).toBe(true)
+    await adapter.close()
+  })
+
+  it.each([
+    ["the same cursor twice in a row", ["page-2", "page-2"]],
+    ["a cursor that comes back after another page", ["page-2", "page-3", "page-2"]],
+  ])("refuses to resume when the history repeats %s", async (_label, cursors) => {
+    const { client, factory } = harness()
+    for (const cursor of cursors) {
+      client.session.messages.mockResolvedValueOnce({ data: [{ info: { id: "msg_000000000001AAAAAAAAAAAAAA" } }], response: new Response(null, { headers: { "x-next-cursor": cursor } }) })
+    }
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await expect(adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") }))
+      .rejects.toThrow("OpenCode session history repeated a page")
+    await adapter.close()
+  })
+
+  it("reads the whole history at once when a full page comes back without a cursor", async () => {
+    const { client, factory } = harness()
+    const base = Date.now() + 18_000_000
+    const page = Array.from({ length: 200 }, (_, index) => ({ info: { id: `msg_${openCodeMessageOrder(base, index + 1)}GGGGGGGGGGGGGG` } }))
+    const unread = `msg_${openCodeMessageOrder(base + 60_000)}HHHHHHHHHHHHHH`
+    client.session.messages
+      .mockResolvedValueOnce({ data: page, response: new Response(null) })
+      .mockResolvedValueOnce({ data: [...page, { info: { id: unread } }], response: new Response(null) })
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId: "open-session", cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+
+    expect(client.session.messages).toHaveBeenCalledTimes(2)
+    const fallback = client.session.messages.mock.calls[1]![0] as { query: Record<string, unknown> }
+    expect(fallback.query).not.toHaveProperty("limit")
+    expect(fallback.query).not.toHaveProperty("before")
+    expect(turnId > unread).toBe(true)
+    await adapter.close()
+  })
+
+  it("refuses to resume when the whole-history read after a full page fails", async () => {
+    const { client, factory } = harness()
+    const page = Array.from({ length: 200 }, (_, index) => ({ info: { id: `msg_${openCodeMessageOrder(Date.now(), index + 1)}JJJJJJJJJJJJJJ` } }))
+    client.session.messages
+      .mockResolvedValueOnce({ data: page, response: new Response(null) })
+      .mockRejectedValueOnce(new Error("history unavailable"))
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await expect(adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") }))
+      .rejects.toThrow("history unavailable")
+    await adapter.close()
+  })
+
+  it("ends normally on a short last page without a cursor", async () => {
+    const { client, factory } = harness()
+    client.session.messages.mockResolvedValueOnce({ data: [{ info: { id: "msg_000000000001KKKKKKKKKKKKKK" } }], response: new Response(null) })
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })
+    expect(client.session.messages).toHaveBeenCalledTimes(1)
+    await adapter.close()
+  })
+
+  it("counts a message another client creates while the history is being read", async () => {
+    const { client, factory, stream } = harness()
+    const base = Date.now() + 14_400_000
+    const inHistory = `msg_${openCodeMessageOrder(base)}EEEEEEEEEEEEEE`
+    const midScan = `msg_${openCodeMessageOrder(base + 9_000)}FFFFFFFFFFFFFF`
+    client.session.messages.mockImplementationOnce(async () => {
+      // Like the server's event stream, an event reaches only a subscriber that
+      // is already listening.
+      if (client.event.subscribe.mock.calls.length > 0) {
+        stream.emit({ type: "message.updated", properties: { info: { id: midScan, sessionID: "open-session", role: "user" } } })
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      return { data: [{ info: { id: inHistory } }], response: new Response(null) }
+    })
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId: "open-session", cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+
+    expect(turnId > midScan).toBe(true)
+    await adapter.close()
+  })
+
+  it("refuses a resume that was stopped while the history was being read", async () => {
+    const { client, factory } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    client.session.messages.mockImplementationOnce(async () => {
+      await adapter.stopThread("open-session")
+      return { data: [], response: new Response(null) }
+    })
+
+    await expect(adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") }))
+      .rejects.toThrow("OpenCode session stopped while resuming")
+    await expect(adapter.startTurn({ threadId: "open-session", cwd: "/worktree", prompt: "Go", runtime: runtime("build") }))
+      .rejects.toThrow("is not loaded")
+    await adapter.close()
+  })
+
+  it("follows a message the server made after the last prompt", async () => {
+    const { factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    const reply = `msg_${openCodeMessageOrder(Date.now() + 7_200_000)}BBBBBBBBBBBBBB`
+    stream.emit({ type: "message.updated", properties: { info: { id: reply, sessionID: threadId, role: "assistant", parentID: first } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+
+    expect(second > reply).toBe(true)
+    await adapter.close()
+  })
+})
+
 describe("subagents and current permission events", () => {
   it.each([
     ["OpenCode", domovoiOpenCodeConfig],
@@ -1151,6 +1609,60 @@ describe("subagents and current permission events", () => {
     })
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(events).not.toContainEqual(expect.objectContaining({ type: "approval-requested" }))
+    await adapter.close()
+  })
+})
+
+describe("Kilo legacy repository configuration", () => {
+  it.each([
+    [".kilo/mcp.json"],
+    [".kilocode/mcp.json"],
+    [".kilocodemodes"],
+  ])("refuses a Kilo session before Kilo can load the worktree's %s", async (file) => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-kilo-legacy-"))
+    scratchDirectories.push(worktree)
+    await mkdir(join(worktree, file, ".."), { recursive: true })
+    await writeFile(join(worktree, file), "{}\n")
+    const { client, factory } = harness()
+    const adapter = new KiloSdkAdapter(factory)
+
+    await expect(adapter.startThread({ cwd: worktree, runtime: runtime("build") }))
+      .rejects.toThrow(`Kilo would load ${file} from this worktree`)
+    await expect(adapter.resumeThread({ threadId: "kilo-thread", cwd: worktree, runtime: runtime("build") }))
+      .rejects.toThrow(`Kilo would load ${file} from this worktree`)
+    expect(client.session.create).not.toHaveBeenCalled()
+    expect(client.session.get).not.toHaveBeenCalled()
+    expect(client.event.subscribe).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("refuses a Kilo turn once the worktree gains a legacy MCP file", async () => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-kilo-legacy-turn-"))
+    scratchDirectories.push(worktree)
+    const { client, factory } = harness()
+    const adapter = new KiloSdkAdapter(factory)
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+    await mkdir(join(worktree, ".kilo"))
+    await writeFile(join(worktree, ".kilo", "mcp.json"), "{}\n")
+
+    await expect(adapter.startTurn({ threadId, cwd: worktree, prompt: "Hello", runtime: runtime("build") }))
+      .rejects.toThrow("Kilo would load .kilo/mcp.json from this worktree")
+    expect(client.session.promptAsync).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("leaves OpenCode sessions in a worktree with Kilo legacy files alone", async () => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-opencode-kilo-files-"))
+    scratchDirectories.push(worktree)
+    await mkdir(join(worktree, ".kilo"))
+    await writeFile(join(worktree, ".kilo", "mcp.json"), "{}\n")
+    const { client, factory } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: worktree, prompt: "Hello", runtime: runtime("build") })
+
+    expect(client.session.promptAsync).toHaveBeenCalledOnce()
     await adapter.close()
   })
 })

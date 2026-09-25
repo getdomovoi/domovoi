@@ -25,6 +25,7 @@ import {
 } from "./test-hidden-names.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForDaemon } from "./test-wait-for.js"
+import type { WorkspaceService } from "./workspace.js"
 
 // Every approval the daemon holds, saves or sends is judged the same way: the
 // directory as written and at its real path, every operand of the command and
@@ -44,6 +45,15 @@ afterEach(async () => {
 
 type Approval = WorkspaceSnapshot["approvals"][number]
 
+// A person's allow takes a snapshot checkpoint before the decision is saved
+// (J34), so these gates need a worktree that can take one.
+function checkpointingWorkspace(): WorkspaceService {
+  return {
+    inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(), restore: vi.fn(), checkpoint: vi.fn(),
+    snapshot: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
+  }
+}
+
 function rpc(socket: WebSocket, method: string, params: Record<string, unknown> = {}) {
   const id = ++requestId
   return new Promise<{ result?: unknown; error?: { code: number; message: string } }>((resolve, reject) => {
@@ -62,8 +72,6 @@ async function setup(
   files: (directory: string) => Promise<void> = async () => {},
   rules: (directory: string) => Promise<WorkspaceSnapshot["approvalRules"]> = async () => [],
   options: {
-    // Cards saved before the daemon starts.
-    saved?: (directory: string) => Approval[]
     // Load the snapshot object itself, so the test holds the live copy.
     live?: boolean
     // Keep the worktree path as the temporary directory gave it, which can be
@@ -84,7 +92,9 @@ async function setup(
   session.workspacePath = directory
   session.providerThreadId = "thread-settle"
   delete session.activeTurnId
-  snapshot.approvals = options.saved?.(directory) ?? []
+  // Saved cards expire when the daemon starts (ruled 2026-09-24, #604), so
+  // every card here is raised live.
+  snapshot.approvals = []
   snapshot.approvalRules = await rules(directory)
   let listener: ((event: AgentEvent) => void) | undefined
   const agent = {
@@ -104,6 +114,7 @@ async function setup(
     port: 0,
     store: options.live ? { load: () => snapshot, save: vi.fn(), close: vi.fn() } : store,
     agents: { "claude-code": agent },
+    workspaceService: checkpointingWorkspace(),
     errorSink,
   })
   daemons.push(daemon)
@@ -143,6 +154,7 @@ async function setup(
 function savedCard(directory: string, providerRequestId: number): Approval {
   return {
     id: `approval-saved-${providerRequestId}`,
+    revision: 0,
     sessionId: demoWorkspace.sessions[0]!.id,
     risk: "normal",
     operation: "List files",
@@ -159,6 +171,29 @@ function savedCard(directory: string, providerRequestId: number): Approval {
     requestedAt: "2026-09-24T00:00:00.000Z",
     execution: resolveCommandExecution({ command: "ls" }),
   }
+}
+
+// A worktree with the files setup writes, for settling a saved card's text
+// directly, without a daemon: saved cards expire when the daemon starts
+// (ruled 2026-09-24, #604).
+async function savedRoot(files: (directory: string) => Promise<void> = async () => {}): Promise<string> {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "domovoi-settle-")))
+  roots.push(directory)
+  await writeFile(join(directory, "notes.txt"), "")
+  await writeFile(join(directory, ".env"), "")
+  await files(directory)
+  return directory
+}
+
+// Each card settled from its saved text, as the daemon settles a card it
+// holds no request for (savedSettlementInput), by provider request id.
+async function settleSaved(cards: readonly Approval[], root: string): Promise<Map<number, Approval>> {
+  const settled = new Map<number, Approval>()
+  for (const saved of cards) {
+    const { approval } = await settleApproval(savedSettlementInput(saved, root, undefined, () => saved.risk))
+    settled.set(saved.providerRequestId!, approval)
+  }
+  return settled
 }
 
 describe("approval settlement", () => {
@@ -196,10 +231,11 @@ describe("approval settlement", () => {
       return approval!
     })
     await writeFile(join(directory, "package.json"), JSON.stringify({ scripts: { show: "cat link.txt" } }))
-    await expect(rpc(socket, "approval.resolve", { approvalId: waiting.id, decision: "allow-once", client: "cli" }))
+    await expect(rpc(socket, "approval.resolve", { approvalId: waiting.id, decision: "allow-once", revision: waiting.revision, client: "cli" }))
       .resolves.toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
-    expect(await card(21)).toMatchObject({ id: waiting.id, risk: "hard-gate" })
-    await expect(rpc(socket, "approval.resolve", { approvalId: waiting.id, decision: "always-project", client: "cli" }))
+    const rewritten = await card(21)
+    expect(rewritten).toMatchObject({ id: waiting.id, risk: "hard-gate", revision: waiting.revision + 1 })
+    await expect(rpc(socket, "approval.resolve", { approvalId: waiting.id, decision: "always-project", revision: rewritten!.revision, client: "cli" }))
       .resolves.toMatchObject({ error: { message: "Hard-gate approvals cannot create standing rules" } })
     expect(agent.resolveApproval).not.toHaveBeenCalled()
   })
@@ -281,7 +317,7 @@ describe("approval settlement", () => {
     await rm(join(directory, "package.json"))
     await symlink(join(directory, ".aws", "package.json"), join(directory, "package.json"))
     const sent = notices.length
-    const answer = await rpc(socket, "approval.resolve", { approvalId: waiting.id, decision: "allow-once", client: "cli" })
+    const answer = await rpc(socket, "approval.resolve", { approvalId: waiting.id, decision: "allow-once", revision: waiting.revision, client: "cli" })
     const refreshed = await card(42)
     expect(notices.slice(sent).join("\n")).not.toContain(".aws")
     expect(JSON.stringify(refreshed)).not.toContain(".aws")
@@ -290,27 +326,38 @@ describe("approval settlement", () => {
     expect(agent.resolveApproval).not.toHaveBeenCalled()
   })
 
-  // Load: a card read back from disk goes through the same settlement, at the
-  // real paths on disk now, before any client sees it.
-  it("settles a saved card when the daemon starts, at the real path of its directory", async () => {
-    const { card, store } = await setup(async (root) => {
+  // Saved cards expire when the daemon starts (ruled 2026-09-24, #604). What
+  // the load tests protected is checked on a live card settled again before an
+  // Allow, and on a saved card's text settled through savedSettlementInput,
+  // the path a card without a held request still takes.
+  it("settles a card again before an Allow, at the real path of its directory", async () => {
+    const { directory, socket, emit, card, store, agent } = await setup(async (root) => {
       await mkdir(join(root, ".aws"))
-      await symlink(join(root, ".aws"), join(root, "plain"))
-    }, undefined, { saved: (root) => [savedCard(join(root, "plain"), 51)] })
-    const loaded = await card(51)
-    expect(loaded).toMatchObject({ risk: "hard-gate", directory: "[REDACTED] in the session worktree" })
-    expect(JSON.stringify(loaded)).not.toContain("plain")
+      await mkdir(join(root, "plain"))
+    })
+    emit({ requestId: 51, command: "ls", reason: "List files", cwd: join(directory, "plain") })
+    const waiting = await waitForDaemon(async () => {
+      const found = await card(51)
+      expect(found).toMatchObject({ risk: "normal", directory: join(directory, "plain") })
+      return found!
+    })
+    await rm(join(directory, "plain"), { recursive: true })
+    await symlink(join(directory, ".aws"), join(directory, "plain"))
+    await expect(rpc(socket, "approval.resolve", { approvalId: waiting.id, decision: "allow-once", revision: waiting.revision, client: "cli" }))
+      .resolves.toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
+    const settled = await card(51)
+    expect(settled).toMatchObject({ risk: "hard-gate", directory: "[REDACTED] in the session worktree", revision: waiting.revision + 1 })
+    expect(JSON.stringify(settled)).not.toContain("plain")
     expect(JSON.stringify(store.load().approvals)).not.toContain("plain")
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
   })
 
   // Every save and broadcast checks the live list against what settlement
   // produced: an approval changed in place is sealed, not sent as it is.
   it("seals an approval written into the snapshot without settlement", async () => {
-    const { directory, snapshot, emit, card, errorSink } = await setup(undefined, undefined, {
-      live: true,
-      saved: (root) => [savedCard(root, 61)],
-    })
-    expect(await card(61)).toMatchObject({ risk: "normal", directory })
+    const { directory, snapshot, emit, card, errorSink } = await setup(undefined, undefined, { live: true })
+    emit({ requestId: 61, command: "ls", reason: "List files" })
+    await waitForDaemon(async () => expect(await card(61)).toMatchObject({ risk: "normal", directory }))
     const live = snapshot.approvals.find((approval) => approval.providerRequestId === 61)!
     live.directory = join(directory, ".aws")
     emit({ requestId: 62, command: "ls" })
@@ -325,6 +372,53 @@ describe("approval settlement", () => {
     }))
   })
 
+  it("settles a new file card at the real path of its file", async () => {
+    const { emit, card, store } = await setup(async (root) => {
+      await mkdir(join(root, ".aws"))
+      await writeFile(join(root, ".aws", "credentials"), "")
+      await rm(join(root, "notes.txt"))
+      await symlink(join(root, ".aws", "credentials"), join(root, "notes.txt"))
+    })
+    emit({ requestId: 71, command: "Edit", reason: "Edit a file", path: "notes.txt" })
+    const hidden = { risk: "hard-gate", affects: "The file [REDACTED] in the session worktree." }
+    await waitForDaemon(async () => expect(await card(71)).toMatchObject(hidden))
+    expect(store.load().approvals.find((approval) => approval.providerRequestId === 71)).toMatchObject(hidden)
+  })
+
+  it("refuses the Allow of a waiting file card whose file became a link into a store", async () => {
+    const { directory, socket, emit, card, agent } = await setup()
+    emit({ requestId: 72, command: "Edit", reason: "Edit a file", path: "notes.txt" })
+    const waiting = await waitForDaemon(async () => {
+      const found = await card(72)
+      expect(found).toMatchObject({ risk: "normal", affects: "The file notes.txt in the session worktree." })
+      return found!
+    })
+    await mkdir(join(directory, ".aws"))
+    await writeFile(join(directory, ".aws", "credentials"), "")
+    await rm(join(directory, "notes.txt"))
+    await symlink(join(directory, ".aws", "credentials"), join(directory, "notes.txt"))
+    await expect(rpc(socket, "approval.resolve", { approvalId: waiting.id, decision: "allow-once", revision: waiting.revision, client: "cli" }))
+      .resolves.toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
+    expect(await card(72)).toMatchObject({ risk: "hard-gate", affects: "The file [REDACTED] in the session worktree." })
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+  })
+
+  it("sends no path from a changed file line in another format", async () => {
+    const { directory, snapshot, emit, card, notices } = await setup(undefined, undefined, { live: true })
+    emit({ requestId: 73, command: "ls", reason: "List files" })
+    await waitForDaemon(async () => expect(await card(73)).toMatchObject({ risk: "normal" }))
+    const live = snapshot.approvals.find((approval) => approval.providerRequestId === 73)!
+    live.affects = `Reads ${join(directory, ".aws", "credentials")} when it runs.`
+    const sent = notices.length
+    emit({ requestId: 74, command: "ls" })
+    await waitForDaemon(async () => expect(await card(74)).toBeDefined())
+    expect(notices.length).toBeGreaterThan(sent)
+    expect(notices.slice(sent).join("\n")).not.toContain(".aws")
+    const sealed = await card(73)
+    expect(sealed).toMatchObject({ risk: "hard-gate" })
+    expect(sealed!.affects).not.toContain(".aws")
+  })
+
   // A saved card names its file only in its file line. That file is judged on
   // disk at load and again at Allow. The request gave no command, so its
   // record says so.
@@ -337,50 +431,6 @@ describe("approval settlement", () => {
       execution: { state: "unresolved", reason: "command-missing" },
     }
   }
-
-  it("settles a saved card at the real path of its file when the daemon starts", async () => {
-    const { card, store } = await setup(async (root) => {
-      await mkdir(join(root, ".aws"))
-      await writeFile(join(root, ".aws", "credentials"), "")
-      await rm(join(root, "notes.txt"))
-      await symlink(join(root, ".aws", "credentials"), join(root, "notes.txt"))
-    }, undefined, { saved: (root) => [savedFileCard(root, 71)] })
-    expect(await card(71)).toMatchObject({ risk: "hard-gate", affects: "The file [REDACTED] in the session worktree." })
-    expect(store.load().approvals.find((approval) => approval.providerRequestId === 71))
-      .toMatchObject({ risk: "hard-gate", affects: "The file [REDACTED] in the session worktree." })
-  })
-
-  it("refuses the Allow of a saved card whose file became a link into a store", async () => {
-    const { directory, socket, card, agent } = await setup(undefined, undefined, { saved: (root) => [savedFileCard(root, 72)] })
-    const loaded = await card(72)
-    expect(loaded).toMatchObject({ risk: "normal", affects: "The file notes.txt in the session worktree." })
-    await mkdir(join(directory, ".aws"))
-    await writeFile(join(directory, ".aws", "credentials"), "")
-    await rm(join(directory, "notes.txt"))
-    await symlink(join(directory, ".aws", "credentials"), join(directory, "notes.txt"))
-    await expect(rpc(socket, "approval.resolve", { approvalId: loaded!.id, decision: "allow-once", client: "cli" }))
-      .resolves.toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
-    expect(await card(72)).toMatchObject({ risk: "hard-gate", affects: "The file [REDACTED] in the session worktree." })
-    expect(agent.resolveApproval).not.toHaveBeenCalled()
-  })
-
-  it("sends no path from a changed file line in another format", async () => {
-    const { directory, snapshot, emit, card, notices } = await setup(undefined, undefined, {
-      live: true,
-      saved: (root) => [savedCard(root, 73)],
-    })
-    expect(await card(73)).toMatchObject({ risk: "normal" })
-    const live = snapshot.approvals.find((approval) => approval.providerRequestId === 73)!
-    live.affects = `Reads ${join(directory, ".aws", "credentials")} when it runs.`
-    const sent = notices.length
-    emit({ requestId: 74, command: "ls" })
-    await waitForDaemon(async () => expect(await card(74)).toBeDefined())
-    expect(notices.length).toBeGreaterThan(sent)
-    expect(notices.slice(sent).join("\n")).not.toContain(".aws")
-    const sealed = await card(73)
-    expect(sealed).toMatchObject({ risk: "hard-gate" })
-    expect(sealed!.affects).not.toContain(".aws")
-  })
 
   // A saved file line is read back only when it parses one way into the three
   // forms a card writes, and that parse renders back to the same line. A file
@@ -437,46 +487,44 @@ describe("approval settlement", () => {
       .map((line) => ({ ...savedFileCard(root, line.id), affects: line.affects }))
   }
 
-  async function expectSealed(card: (id: number) => Promise<Approval | undefined>, store: SqliteWorkspaceStore, outside: string) {
-    const persisted = store.load().approvals
+  function expectSealed(settled: Map<number, Approval>, outside: string) {
     for (const line of wordedLines(outside)) {
-      const loaded = await card(line.id)
+      const loaded = settled.get(line.id)
       expect(loaded, line.affects).toMatchObject({ risk: "hard-gate" })
       expect(loaded!.affects, line.affects).toMatch(/^The file \[REDACTED\](?: in the session worktree|, outside the session worktree)\.$/u)
       expect(JSON.stringify(loaded), line.affects).not.toContain("tricky")
-      const saved = persisted.find((approval) => approval.providerRequestId === line.id)
-      expect(saved, line.affects).toMatchObject({ risk: "hard-gate", affects: loaded!.affects })
-      expect(JSON.stringify(saved), line.affects).not.toContain("tricky")
     }
   }
 
   it("seals a saved file line whose file name holds the line's own wording", async () => {
     const outside = await outsideDirectory()
-    const { card, store } = await setup(async (root) => {
+    const root = await savedRoot(async (root) => {
       await symlink(join(outside, "plain.txt"), join(root, "plain-link"))
       for (const line of wordedLines(outside)) {
         const path = line.path(root, outside)
         if (line.id >= 86) await symlink(join(outside, "plain.txt"), path)
         else await writeFile(path, "")
       }
-    }, undefined, { saved: (root) => wordedCards(root, outside) })
-    await expectSealed(card, store, outside)
+    })
+    const settled = await settleSaved(wordedCards(root, outside), root)
+    expectSealed(settled, outside)
     for (const line of plainLines(outside)) {
-      expect(await card(line.id), line.affects).toMatchObject({ risk: "normal", affects: line.affects })
+      expect(settled.get(line.id), line.affects).toMatchObject({ risk: "normal", affects: line.affects })
     }
   })
 
   it("seals a saved file line whose worded file name became a link into a credential file", async () => {
     const outside = await outsideDirectory()
-    const { card, store } = await setup(async (root) => {
+    const root = await savedRoot(async (root) => {
       await mkdir(join(root, ".aws"))
       await writeFile(join(root, ".aws", "credentials"), "")
       await symlink(join(outside, "plain.txt"), join(root, "plain-link"))
       for (const line of wordedLines(outside)) await symlink(join(root, ".aws", "credentials"), line.path(root, outside))
-    }, undefined, { saved: (root) => wordedCards(root, outside) })
-    await expectSealed(card, store, outside)
+    })
+    const settled = await settleSaved(wordedCards(root, outside), root)
+    expectSealed(settled, outside)
     for (const line of plainLines(outside)) {
-      expect(await card(line.id), line.affects).toMatchObject({ risk: "normal", affects: line.affects })
+      expect(settled.get(line.id), line.affects).toMatchObject({ risk: "normal", affects: line.affects })
     }
   })
 })
@@ -528,13 +576,12 @@ describe("a card's own text when the card hides a path", () => {
     expect(JSON.stringify(audit)).not.toMatch(leak)
   })
 
-  it("shows [REDACTED] for the path on a saved card at load", async () => {
-    const { card, store } = await setup(undefined, undefined, {
-      saved: (root) => [{ ...savedCard(root, 311), command, operation: reason }, savedCard(root, 312)],
-    })
-    expect(await card(311)).toMatchObject(hidden)
-    expect(await card(312)).toMatchObject({ command: "ls", operation: "List files" })
-    expect(JSON.stringify(store.load().approvals)).not.toMatch(leak)
+  it("shows [REDACTED] for the path on a saved card's text settled again", async () => {
+    const root = await savedRoot()
+    const settled = await settleSaved([{ ...savedCard(root, 311), command, operation: reason }, savedCard(root, 312)], root)
+    expect(settled.get(311)).toMatchObject(hidden)
+    expect(settled.get(312)).toMatchObject({ command: "ls", operation: "List files" })
+    expect(JSON.stringify([...settled.values()])).not.toMatch(leak)
   })
 
   it("shows [REDACTED] for the path on a card sealed when its lookups stall", async () => {
@@ -558,7 +605,7 @@ describe("a card's own text when the card hides a path", () => {
       await writeFile(join(root, "src", ".env"), "")
     })
     vi.spyOn(fs.realpath, "native").mockImplementation((() => {}) as never)
-    const reason = "Edit src/.env ./src/.env src\\.env .env; leave x.env.example, app.envrc.md and src/index.ts alone"
+    const reason = "Edit src/.env ./src/.env src\\.env .env; leave x.envy.txt, app.envrc.md and src/index.ts alone"
     emit({ requestId: 331, command: "Edit", reason, cwd: join(directory, "src"), path: ".env" })
     const sealed = await vi.waitFor(async () => {
       const found = await card(331)
@@ -568,7 +615,7 @@ describe("a card's own text when the card hides a path", () => {
     expect(sealed).toMatchObject({
       risk: "hard-gate",
       command: "Edit",
-      operation: "Edit [REDACTED] [REDACTED] [REDACTED] [REDACTED]; leave x.env.example, app.envrc.md and src/index.ts alone",
+      operation: "Edit [REDACTED] [REDACTED] [REDACTED] [REDACTED]; leave x.envy.txt, app.envrc.md and src/index.ts alone",
       execution: { state: "unresolved", reason: "sensitive-content" },
     })
   })
@@ -642,7 +689,7 @@ describe("a card's own text when the card hides a path", () => {
     ]).toEqual([])
 
     for (const card of (await current()).approvals) {
-      expect((await rpc(socket, "approval.resolve", { approvalId: card.id, decision: "allow-once", client: "cli" })).error).toBeUndefined()
+      expect((await rpc(socket, "approval.resolve", { approvalId: card.id, decision: "allow-once", revision: card.revision, client: "cli" })).error).toBeUndefined()
     }
     const operations = [...expected.values()].map((text) => text.operation)
     const receipts = (copy: WorkspaceSnapshot) => copy.thread.flatMap((item) => item.kind === "receipt" ? [item.operation] : [])
@@ -752,7 +799,7 @@ describe("a card's own text when the card hides a path", () => {
     expect(saved.find((approval) => approval.providerRequestId === 1001)).toMatchObject(shown[1001])
     expect(saved.find((approval) => approval.providerRequestId === 1002)).toMatchObject(shown[1002])
 
-    const always = await rpc(socket, "approval.resolve", { approvalId: second.id, decision: "always-project", client: "cli" })
+    const always = await rpc(socket, "approval.resolve", { approvalId: second.id, decision: "always-project", revision: second.revision, client: "cli" })
     expect(always.error?.message).toBe("Hard-gate approvals cannot create standing rules")
     for (const approval of [first, second]) {
       expect((await rpc(socket, "approval.resolve", { approvalId: approval.id, decision: "deny", client: "cli" })).error).toBeUndefined()
@@ -822,6 +869,7 @@ describe("a saved card whose record path moved into a store", () => {
     "shell.entries.source(package-script).sourceDigest": { notAPath: "a sha256 digest" },
     "shell.entries.parts.argv": "path",
     "workspace-file-tool.cwd": "path",
+    "workspace-file-tool.path": "path",
   }
 
   // The file a card names sits on the card, not in the record, and is judged
@@ -895,6 +943,16 @@ describe("a saved card whose record path moved into a store", () => {
       moves: "notes.txt",
     },
     {
+      id: 108,
+      field: "workspace-file-tool.path",
+      prepare: async (row) => {
+        await mkdir(join(row, "sub"))
+        await writeFile(join(row, "sub", "notes.txt"), "")
+      },
+      request: (row) => ({ cwd: row, command: "Edit", path: "sub/notes.txt" }),
+      moves: "sub/notes.txt",
+    },
+    {
       id: 107,
       field: cardFileField,
       prepare: (row) => writeFile(join(row, "notes.txt"), ""),
@@ -904,7 +962,9 @@ describe("a saved card whose record path moved into a store", () => {
   ]
 
   it("hard-gates and hides the record for every path field the record schema allows", async () => {
-    const fields = stringFields(executionRecordSchema as unknown as SchemaNode, "")
+    // A kind can have several members (a file tool's workspace and file
+    // scopes); a field is named once however many members hold it.
+    const fields = [...new Set(stringFields(executionRecordSchema as unknown as SchemaNode, ""))]
     expect(fields.sort()).toEqual(Object.keys(recordStringFields).sort())
     for (const [field, kind] of Object.entries(recordStringFields)) {
       if (kind === "path") expect(rows.some((row) => row.field === field), `no row moves ${field}`).toBe(true)
@@ -912,7 +972,7 @@ describe("a saved card whose record path moved into a store", () => {
     expect(rows.some((row) => row.field === cardFileField)).toBe(true)
 
     const cards: Approval[] = []
-    const { card, store } = await setup(async (root) => {
+    const root = await savedRoot(async (root) => {
       for (const row of rows) {
         const directory = join(root, `row-${row.id}`)
         await mkdir(directory)
@@ -921,6 +981,7 @@ describe("a saved card whose record path moved into a store", () => {
         const { approval } = await settleApproval({
           approval: {
             id: `approval-moved-${row.id}`,
+            revision: 0,
             sessionId: demoWorkspace.sessions[0]!.id,
             machine: "macbook-pro-m3",
             agent: "claude-code / sonnet",
@@ -946,17 +1007,14 @@ describe("a saved card whose record path moved into a store", () => {
         await rename(from, into)
         await symlink(into, from)
       }
-    }, undefined, { saved: () => cards })
+    })
 
-    const persisted = store.load().approvals
+    const settled = await settleSaved(cards, root)
     for (const row of rows) {
       const label = `${row.field} (row ${row.id})`
-      const loaded = await card(row.id)
+      const loaded = settled.get(row.id)
       expect.soft(loaded, label).toMatchObject({ risk: "hard-gate", execution: { state: "unresolved", reason: "sensitive-content" } })
       expect.soft(JSON.stringify(loaded), label).not.toContain(".aws")
-      const saved = persisted.find((approval) => approval.providerRequestId === row.id)
-      expect.soft(saved, label).toMatchObject({ risk: "hard-gate", execution: { state: "unresolved", reason: "sensitive-content" } })
-      expect.soft(JSON.stringify(saved), label).not.toContain(".aws")
     }
   })
 })
@@ -965,7 +1023,7 @@ describe("a saved card whose record path moved into a store", () => {
 // card saved in an older format, with a reach line or any other line in its
 // place, cannot be resolved again as its request was: the file it named may
 // lead into a store since, and nothing on the card says which file to judge.
-// It is sealed at load and stays sealed in the store and when settled again.
+// It is sealed when settled from its saved text, and stays sealed when settled again.
 // A card whose file line reads back as a clean file is kept as it was.
 describe("a saved file-scoped tool card without a file line", () => {
   // affects is the line the card is saved with in place of its file line;
@@ -988,7 +1046,7 @@ describe("a saved file-scoped tool card without a file line", () => {
   it("seals each one after its file moved into a store, and keeps a clean Read card", async () => {
     expect(sealed.map((row) => row.tool)).toContain("Read")
     const cards: Approval[] = []
-    const { directory: root, card, store } = await setup(async (root) => {
+    const root = await savedRoot(async (root) => {
       for (const row of rows) {
         const directory = join(root, `row-${row.id}`)
         await mkdir(directory)
@@ -996,6 +1054,7 @@ describe("a saved file-scoped tool card without a file line", () => {
         const { approval } = await settleApproval({
           approval: {
             id: `approval-tool-${row.id}`,
+            revision: 0,
             sessionId: demoWorkspace.sessions[0]!.id,
             machine: "macbook-pro-m3",
             agent: "claude-code / sonnet",
@@ -1018,9 +1077,9 @@ describe("a saved file-scoped tool card without a file line", () => {
         await rename(join(directory, "notes.txt"), into)
         await symlink(into, join(directory, "notes.txt"))
       }
-    }, undefined, { saved: () => cards })
+    })
 
-    const persisted = store.load().approvals
+    const settled = await settleSaved(cards, root)
     const sealedCard = {
       risk: "hard-gate",
       directory: "[REDACTED] in the session worktree",
@@ -1028,20 +1087,15 @@ describe("a saved file-scoped tool card without a file line", () => {
     }
     for (const row of sealed) {
       const label = `${row.tool}: ${row.affects} (row ${row.id})`
-      const loaded = await card(row.id)
+      const loaded = settled.get(row.id)
       expect.soft(loaded, label).toMatchObject(sealedCard)
       expect.soft(JSON.stringify(loaded), label).not.toMatch(/\.aws|notes\.txt|row-/u)
-      const saved = persisted.find((approval) => approval.providerRequestId === row.id)
-      expect.soft(saved, label).toMatchObject(sealedCard)
-      expect.soft(JSON.stringify(saved), label).not.toMatch(/\.aws|notes\.txt|row-/u)
-      const again = await settleApproval(savedSettlementInput(saved!, root, undefined, () => "normal"))
+      const again = await settleApproval(savedSettlementInput(loaded!, root, undefined, () => "normal"))
       expect.soft(again.approval, label).toMatchObject(sealedCard)
     }
 
     const kept = cards.find((approval) => approval.providerRequestId === control.id)!
     const { risk, directory, affects, execution } = kept
-    expect(await card(control.id)).toMatchObject({ risk, directory, affects, execution })
-    expect(persisted.find((approval) => approval.providerRequestId === control.id))
-      .toMatchObject({ risk, directory, affects, execution })
+    expect(settled.get(control.id)).toMatchObject({ risk, directory, affects, execution })
   })
 })

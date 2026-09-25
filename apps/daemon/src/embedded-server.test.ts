@@ -58,6 +58,27 @@ describe("createAuthenticatedEmbeddedRuntime", () => {
     expect(runtime).toEqual({ client, server })
   })
 
+  it("sets extra child environment only for the spawn", async () => {
+    const name = "DOMOVOI_TEST_DISABLE_PROJECT_CONFIG"
+    delete process.env[name]
+    let spawned: string | undefined
+    await createAuthenticatedEmbeddedRuntime({
+      passwordEnvironment,
+      usernameEnvironment,
+      username: "agent",
+      environment: { [name]: "1" },
+      config: {},
+      startServer: async () => {
+        spawned = process.env[name]
+        return { url: "http://127.0.0.1:4096", close: vi.fn() }
+      },
+      createClient: () => ({}),
+    })
+
+    expect(spawned).toBe("1")
+    expect(process.env[name]).toBeUndefined()
+  })
+
   it("closes the server when authenticated client creation fails", async () => {
     const server = { url: "http://127.0.0.1:4096", close: vi.fn() }
 

@@ -210,9 +210,11 @@ describe("approvalFacts", () => {
         sensitive: true,
       },
       {
+        // Owner ruling (merge with #545): a file tool's card names the
+        // resolved target, the file the edit really reaches.
         name: "a dangling link to a missing file inside the worktree",
         path: "later",
-        affects: () => "The file later in the session worktree.",
+        affects: () => "The file not-yet.txt in the session worktree.",
         sensitive: false,
       },
       {
@@ -329,9 +331,11 @@ describe("approvalFacts", () => {
     expect(approvalFacts({ workspace: tree, path: out, scope: undefined, resolved: await resolveApprovalPath(tree, out) }).affects)
       .toBe(`The file ${join(outside, "hosts")}, outside the session worktree, through a link at link-to-etc/hosts.`)
 
+    // Owner ruling (merge with #545): a link that stays inside names the
+    // resolved target, the file the edit really reaches.
     const within = join(tree, "link-to-src", "index.ts")
     expect(approvalFacts({ workspace: tree, path: within, scope: undefined, resolved: await resolveApprovalPath(tree, within) }).affects)
-      .toBe("The file link-to-src/index.ts in the session worktree.")
+      .toBe("The file src/index.ts in the session worktree.")
   })
 
   // Round 12: a hidden file under a subdirectory, requested from a nested

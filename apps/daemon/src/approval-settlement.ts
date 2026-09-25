@@ -28,14 +28,14 @@ import { pathHider } from "./approval-path-text.js"
 import {
   canonicalPath,
   commandOperands,
-  isCredentialPath,
   operandsAtCredentialPaths,
   realPathLookupBudgetMs,
   textOperands,
 } from "./credential-stores.js"
 import { resolutionReadsFilePath, resolveExecution } from "./execution-resolution.js"
+import { cardDirectory, hidePaths, namesCredential, pathSpellings } from "./file-target-affects.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
-import { namesSecretPath } from "./permission-policy.js"
+import { isFileToolCommand, namesSecretPath } from "./permission-policy.js"
 import { redactDurableCommand, redactDurableText } from "./secret-redaction.js"
 import { executionContainsSecret } from "./workspace-redaction.js"
 
@@ -55,6 +55,12 @@ import { executionContainsSecret } from "./workspace-redaction.js"
 // again from the card's saved lines, and a record that differs, or any path
 // that reaches a credential store, makes it a hard gate with the record
 // hidden.
+//
+// Every path on a new or held card (its file, its directory and a path the
+// provider blocked on) is also judged on #545's closed set of spellings
+// (pathSpellings in file-target-affects.ts); a hidden path's forms are replaced
+// with hidePaths before this module's own hider runs, and a set that hit its
+// bound hides the card's command and operation whole.
 
 export type Approval = WorkspaceSnapshot["approvals"][number]
 
@@ -74,6 +80,8 @@ export type ApprovalRequest = Readonly<{
   command?: string | undefined
   reason?: string | undefined
   blockedPath?: string | undefined
+  // The provider tool behind a request that is not a shell command.
+  tool?: string | undefined
 }>
 
 export type SavedCard = Readonly<{
@@ -178,7 +186,7 @@ async function operandsAtRealCredentialPaths(
   base: string | undefined,
   deadline: OperationDeadline,
 ): Promise<{ reach: boolean; paths: string[] }> {
-  const found = await operandsAtCredentialPaths(operands, base, deadline)
+  const found = await operandsAtCredentialPaths(operands, base, deadline, namesSecretPath)
   const paths: string[] = []
   for (const { operand, real } of found) {
     const relative = !isAbsolute(operand) && !/^~(?:[/\\]|$)/u.test(operand)
@@ -213,8 +221,9 @@ function sealedCard(input: SettlementInput): SettledApproval {
       ? []
       : hiddenFilePaths({ path: request.path, workspace: request.workspace, cwd: request.cwd, resolved: undefined })),
     ...(saved === undefined ? [] : affectsLinePaths(redactDurableText(saved.affects).value)),
-    ...commandOperands(command).filter(isCredentialPath),
-    ...textOperands(operation).filter(isCredentialPath),
+    ...(request.blockedPath === undefined ? [] : [request.blockedPath]),
+    ...commandOperands(command).filter(namesSecretPath),
+    ...textOperands(operation).filter(namesSecretPath),
   ])
   return mint({
     ...input.approval,
@@ -228,7 +237,7 @@ function sealedCard(input: SettlementInput): SettledApproval {
   })
 }
 
-type ResolutionRequest = { cwd: string; command?: string; filePath?: string; blockedPath?: string }
+type ResolutionRequest = { cwd: string; command?: string; filePath?: string; blockedPath?: string; tool?: string }
 
 // What a card read back from disk gives resolveExecution: its saved directory
 // and command, and for a file or read tool the file its saved line names,
@@ -256,6 +265,7 @@ function heldResolutionRequest(request: ApprovalRequest): ResolutionRequest {
     ...(request.command === undefined ? {} : { command: request.command }),
     ...(request.path === undefined ? {} : { filePath: request.path }),
     ...(request.blockedPath === undefined ? {} : { blockedPath: request.blockedPath }),
+    ...(request.tool === undefined ? {} : { tool: request.tool }),
   }
 }
 
@@ -277,14 +287,22 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
   const realDirectory = directoryHidden ? undefined : await canonicalPath(written, undefined, deadline)
   const realWorkspace = await canonicalPath(request.workspace, undefined, deadline)
   const workspaceOnDisk = typeof realWorkspace === "string" ? realWorkspace : request.workspace
-  const directory = directoryHidden
+  const judgedDirectory = directoryHidden
     ? { text: saved!.directory, redacted: false, sensitive: true }
     : approvalDirectory({ directory: request.cwd ?? request.workspace, workspace: request.workspace, canonical: realDirectory })
+  // The directory's closed spelling set (#545): a secret name in any spelling
+  // hides it too, and its forms are hidden in the card's text.
+  const spelledDirectory = directoryHidden
+    ? undefined
+    : await cardDirectory({ directory: request.cwd ?? request.workspace, workspace: request.workspace }, deadline)
+  const directory = spelledDirectory?.hidden === true && !judgedDirectory.sensitive
+    ? { text: spelledDirectory.text, redacted: judgedDirectory.redacted, sensitive: true }
+    : judgedDirectory
 
   // Operands of the command, and of each script body from its package's
   // directory, each as written and at its real path.
   const operands = approvalOperands(request.command, execution)
-  const operandsName = operands.some(isCredentialPath)
+  const operandsName = operands.some(namesSecretPath)
   const reached = [await operandsAtRealCredentialPaths(
     requestOperands(request.command, execution),
     typeof realDirectory === "string" ? realDirectory : undefined,
@@ -300,6 +318,20 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
     namesSecretPath(path) || namesSecretPath(join(workspaceOnDisk, path))
   ))
 
+  // The file's closed spelling set (#545), judged with the rest of the file's
+  // facts, and hidden in the card's text whenever the file is.
+  const fileSpellings = request.path === undefined
+    ? undefined
+    : await pathSpellings({ workspace: request.workspace, path: request.path, cwd: request.cwd }, deadline)
+  // The path a provider blocked on is never drawn on the card; when any
+  // spelling of it names a credential path, or the durable redaction changes
+  // it, the card hides it and is a hard gate.
+  const blockedSpellings = request.blockedPath === undefined
+    ? undefined
+    : await pathSpellings({ workspace: request.workspace, path: request.blockedPath, cwd: request.cwd }, deadline)
+  const blockedHidden = request.blockedPath !== undefined && blockedSpellings !== undefined
+    && (namesCredential(blockedSpellings) || redactDurableText(request.blockedPath).redacted)
+
   let facts: { affects: string; network: string; redacted: boolean; sensitive: boolean; hiddenPaths: string[] }
   if (request.path !== undefined) {
     facts = approvalFacts({
@@ -308,6 +340,7 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
       cwd: request.cwd,
       scope: input.scope,
       resolved: await resolveApprovalPath(request.workspace, request.path, request.cwd, deadline),
+      spellings: fileSpellings,
     })
   } else if (saved !== undefined) {
     // The saved line is all that is left of the request's file, so the file it
@@ -329,11 +362,29 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
   // A lookup that ran out of time gave no answer to trust.
   deadline.throwIfExpired()
 
-  const command = redactDurableCommand(request.command ?? commandUnavailable)
-  const operation = redactDurableText(request.reason ?? "Run a command")
+  // The exact forms #545 hides, from each closed set the card hides: the
+  // file, the directory and the blocked path. A set that hit its bound cannot
+  // be hidden form by form, so the card's text is hidden whole.
+  const fileHidden = facts.redacted || facts.sensitive
+  const spelledForms = [
+    ...(fileHidden && fileSpellings !== undefined ? fileSpellings.forms : []),
+    ...(directory.sensitive && spelledDirectory !== undefined ? spelledDirectory.forms : []),
+    ...(blockedHidden ? blockedSpellings!.forms : []),
+  ]
+  const hidesWhole = fileSpellings?.complete === false
+    || spelledDirectory?.complete === false
+    || blockedSpellings?.complete === false
+  const shownForms = [...spelledForms, ...spelledForms.map((form) => redactDurableText(form).value)]
+  // #545's forms go first, on the text as the agent gave it and again after
+  // the durable redaction; #541's hider then runs on what is left.
+  const spelled = (text: string) => hidesWhole ? "[REDACTED]" : hidePaths(text, spelledForms)
+  const commandCopy = redactDurableCommand(spelled(request.command ?? commandUnavailable))
+  const operationCopy = redactDurableText(spelled(request.reason ?? "Run a command"))
+  const command = { ...commandCopy, value: hidesWhole ? commandCopy.value : hidePaths(commandCopy.value, shownForms) }
+  const operation = { ...operationCopy, value: hidesWhole ? operationCopy.value : hidePaths(operationCopy.value, shownForms) }
   // A secret file the agent's own text names is judged by the same
   // classifier, and hidden, even when no request field names it.
-  const textPaths = textOperands(operation.value).filter(isCredentialPath)
+  const textPaths = textOperands(operation.value).filter(namesSecretPath)
   // Each path the card hides is replaced in its own text too, and a record
   // that holds one in a command word is hidden.
   const hider = pathHider([
@@ -341,11 +392,20 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
       ? directoryPaths(request, typeof realDirectory === "string" ? realDirectory : undefined)
       : []),
     ...facts.hiddenPaths,
-    ...operands.filter(isCredentialPath),
+    ...operands.filter(namesSecretPath),
     ...reached.flatMap(({ paths }) => paths),
     ...textPaths,
   ])
-  const recordHoldsHiddenPath = executionRecordText(execution).some(hider.holds)
+  const recordHoldsHiddenPath = executionRecordText(execution)
+    .some((word) => hider.holds(word) || (spelledForms.length > 0 && hidePaths(word, spelledForms) !== word))
+  // A file tool's record names its file, so a card that hides the file shows
+  // no record, resolved or not (#545).
+  const fileToolRequest = request.path !== undefined
+    && request.tool === undefined
+    && request.command !== undefined
+    && isFileToolCommand(request.command)
+  const recordNamesHiddenFile = fileHidden
+    && (fileToolRequest || (execution.state === "resolved" && execution.record.kind === "workspace-file-tool"))
   const recordSecret = executionContainsSecret(execution)
   const sensitive = command.redacted
     || operation.redacted
@@ -356,6 +416,8 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
     || operandsName
     || operandsReach
     || textPaths.length > 0
+    || blockedHidden
+    || hidesWhole
     || recordNames
     || recordSecret
     || (execution.state === "unresolved" && execution.reason === "sensitive-content")
@@ -367,6 +429,7 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
     || recordNames
     || recordSecret
     || recordHoldsHiddenPath
+    || recordNamesHiddenFile
     || !recordMatches
     || (saved !== undefined && sensitive)
   const approval = mint({
@@ -442,8 +505,8 @@ export function sealedApproval(approval: Approval, workspace: string | undefined
   const hider = pathHider([
     ...(directoryWasHidden ? [] : [approval.directory]),
     ...affectsLinePaths(redactDurableText(approval.affects).value),
-    ...commandOperands(command).filter(isCredentialPath),
-    ...textOperands(operation).filter(isCredentialPath),
+    ...commandOperands(command).filter(namesSecretPath),
+    ...textOperands(operation).filter(namesSecretPath),
   ])
   return mint({
     ...approval,
@@ -455,6 +518,14 @@ export function sealedApproval(approval: Approval, workspace: string | undefined
     network: redactDurableText(approval.network).value,
     execution: hiddenExecution,
   })
+}
+
+// A settled card under the next revision: the daemon rewrote it, so an Allow
+// given to the card as it was is refused (approval.resolve compares the
+// revision the client showed). Only a settled card is carried forward.
+export function nextRevision(approval: SettledApproval): SettledApproval {
+  if (!minted.has(approval)) throw new TypeError("Only an approval settleApproval made can take a new revision")
+  return mint({ ...approval, revision: approval.revision + 1 })
 }
 
 type WorkspaceOf = (approval: Approval) => string | undefined

@@ -31,6 +31,7 @@ function input(workspace: string, overrides: Partial<SettlementInput> = {}): Set
   return {
     approval: {
       id: "approval-ledger",
+      revision: 0,
       sessionId: "session-ledger",
       machine: "machine",
       agent: "claude-code / sonnet",
@@ -150,7 +151,10 @@ describe("settleApproval hides the paths it hides in the card's own text", () =>
     expect(approval).toMatchObject({
       risk: "hard-gate",
       directory: "[REDACTED] in the session worktree",
-      command: "cat [REDACTED] && ls [REDACTED]",
+      // Hiding composes as #545's exact forms first, then #541's hider
+      // (ruled for the merge with #545): the exact directory form is replaced
+      // and the separator after it stays.
+      command: "cat [REDACTED] && ls [REDACTED]/",
       operation: "Inspect [REDACTED]",
     })
   })
@@ -256,7 +260,10 @@ describe("settleApproval hides a secret file named only in the card's own text",
     expect(approval).toMatchObject({
       risk: "hard-gate",
       command: "Edit",
-      operation: "Edit src/index.ts to load [REDACTED]. Check ([REDACTED]), '[REDACTED]', [REDACTED]'s header and [REDACTED], not src/app.ts.",
+      // Union classifier (ruled 2026-09-25): the #545 file name pattern reads
+      // "src/private.pem's" whole as a secret file, so the possessive is hidden
+      // with it. Over-hiding is accepted.
+      operation: "Edit src/index.ts to load [REDACTED]. Check ([REDACTED]), '[REDACTED]', [REDACTED] header and [REDACTED], not src/app.ts.",
     })
     expect(JSON.stringify(approval)).not.toContain("private.pem")
   })
@@ -270,15 +277,18 @@ describe("settleApproval hides a secret file named only in the card's own text",
   })
 
   // Over-hiding is accepted: the .env family rule reads a template name such
-  // as .env.example as a secret file, so the text shows it hidden.
+  // as .env.example as a secret file, so the text shows it hidden. The
+  // control x.envy.txt holds ".env" inside a longer name that neither side's
+  // classifier reads as secret (x.env.example is secret under the union ruled
+  // 2026-09-25).
   it("hides every name the classifier reads as a secret file, a template's included", async () => {
     const workspace = await sourceTree()
     const { approval } = await settle(workspace, {
       command: "Edit",
       path: "src/index.ts",
-      reason: "Edit src/index.ts from .env.example and x.env.example",
+      reason: "Edit src/index.ts from .env.example and x.envy.txt",
     })
-    expect(approval).toMatchObject({ risk: "hard-gate", operation: "Edit src/index.ts from [REDACTED] and x.env.example" })
+    expect(approval).toMatchObject({ risk: "hard-gate", operation: "Edit src/index.ts from [REDACTED] and x.envy.txt" })
   })
 
   it("replaces a secret file that only the operation names on a sealed card", async () => {

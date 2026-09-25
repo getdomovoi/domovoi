@@ -46,6 +46,7 @@ describe("a hidden file name in a settled card's own text", () => {
       const { approval } = await settleApproval({
         approval: {
           id: `approval-path-text-${index}`,
+          revision: 0,
           sessionId: "session-path-text",
           machine: "machine",
           agent: "claude-code / sonnet",

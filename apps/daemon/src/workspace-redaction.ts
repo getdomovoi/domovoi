@@ -10,7 +10,8 @@ import {
   executionRecordText,
 } from "./approval-facts.js"
 import { pathHider } from "./approval-path-text.js"
-import { commandOperands, isCredentialPath, textOperands } from "./credential-stores.js"
+import { commandOperands, textOperands } from "./credential-stores.js"
+import { namesSecretPath } from "./permission-policy.js"
 import {
   redactDurableCommand,
   redactDurableOutput,
@@ -50,8 +51,8 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
         ? [approval.directory, ...(workspace === undefined ? [] : [resolve(workspace, approval.directory)])]
         : []),
       ...(affectsLine.sensitive ? affectsLinePaths(affects.value) : []),
-      ...commandOperands(command.value).filter(isCredentialPath),
-      ...textOperands(operation.value).filter(isCredentialPath),
+      ...commandOperands(command.value).filter(namesSecretPath),
+      ...textOperands(operation.value).filter(namesSecretPath),
     ])
     const commandText = hider.hide(command.value)
     const operationText = hider.hide(operation.value)
@@ -100,7 +101,7 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
       const operation = redactDurableText(item.operation).value
       return {
         ...item,
-        operation: pathHider(textOperands(operation).filter(isCredentialPath)).hide(operation),
+        operation: pathHider(textOperands(operation).filter(namesSecretPath)).hide(operation),
         ...(item.explanation === undefined
           ? {}
           : { explanation: redactDurableText(item.explanation).value }),

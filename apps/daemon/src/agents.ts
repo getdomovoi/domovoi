@@ -33,6 +33,8 @@ export type AgentEvent =
       path?: string
       blockedPath?: string
       reason?: string
+      /** The provider tool, when the request is neither a shell command nor a file tool. */
+      tool?: string
     }
   | {
       type: "policy-refused"

@@ -214,23 +214,31 @@ export function realPathNamesSecret(path: RealPath, names: (path: string) => boo
 // Whether any of these command operands reaches a credential store or a
 // secret file at its real path, each relative operand read from cwd. The
 // lookups share one deadline, the request's when it gives one.
-export async function operandsReachCredentialPath(operands: readonly string[], cwd: string | undefined, deadline?: OperationDeadline): Promise<boolean> {
-  return (await operandsAtCredentialPaths(operands, cwd, deadline)).length > 0
+export async function operandsReachCredentialPath(
+  operands: readonly string[],
+  cwd: string | undefined,
+  deadline?: OperationDeadline,
+  names: (path: string) => boolean = isCredentialPath,
+): Promise<boolean> {
+  return (await operandsAtCredentialPaths(operands, cwd, deadline, names)).length > 0
 }
 
 // Each of these command operands whose real path names a credential store or
 // a secret file, with that real path, each relative operand read from cwd.
+// Names is the judge; callers outside this module pass the union judge,
+// namesSecretPath, which this module cannot import.
 export async function operandsAtCredentialPaths(
   operands: readonly string[],
   cwd: string | undefined,
   deadline?: OperationDeadline,
+  names: (path: string) => boolean = isCredentialPath,
 ): Promise<{ operand: string; real: RealPath }[]> {
   const clock = deadline ?? OperationDeadline.start(realPathLookupBudgetMs)
   try {
     const found: { operand: string; real: RealPath }[] = []
     for (const operand of new Set(operands)) {
       const real = await canonicalPath(operand, cwd, clock)
-      if (realPathNamesSecret(real)) found.push({ operand, real })
+      if (realPathNamesSecret(real, names)) found.push({ operand, real })
     }
     return found
   } finally {

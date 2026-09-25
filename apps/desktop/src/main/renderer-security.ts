@@ -50,13 +50,16 @@ export function resolveRendererTarget(options: {
 // The daemon's default origin list names the packaged app and the web client's
 // port. A development renderer is served by Vite on whatever port it took, so
 // the desktop names that origin itself rather than widening a shipped default.
-// An operator who set the list keeps it.
-export function developmentDaemonEnvironment(
+// An operator who set the list keeps it. The origin is returned as an override
+// the daemon adds on top of process.env, not as a copy of process.env: the
+// daemon reads a copy as given, so a reconnect from a fresh copy would lose the
+// inherited bearer the first acquisition took out of process.env.
+export function developmentDaemonOverrides(
   environment: NodeJS.ProcessEnv,
   target: RendererTarget,
-): NodeJS.ProcessEnv {
-  if (target.kind !== "url" || environment.DOMOVOI_ALLOWED_ORIGINS !== undefined) return environment
-  return { ...environment, DOMOVOI_ALLOWED_ORIGINS: new URL(target.url).origin }
+): Record<string, string> {
+  if (target.kind !== "url" || environment.DOMOVOI_ALLOWED_ORIGINS !== undefined) return {}
+  return { DOMOVOI_ALLOWED_ORIGINS: new URL(target.url).origin }
 }
 
 export function isTrustedRendererFrameUrl(frameUrl: string, target: RendererTarget): boolean {

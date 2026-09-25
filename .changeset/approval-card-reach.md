@@ -16,7 +16,17 @@ account can except credential stores and secret files, and writes nothing; in Bu
 in the session worktree. A file path on the
 card is redacted like the command, and a secret in it makes the gate a hard gate. Its control
 characters show as escapes, and a long path is shortened in the middle. Inside or outside the
-worktree is decided on the real path, so a link out of the worktree names where it leads.
+worktree is decided on the real path, so a link out of the worktree names where it leads. A file
+tool's card names the file the edit really reaches, so a link that stays inside the worktree names
+its target.
+
+Each path a card holds (its file, the directory the request runs in, and a path the provider
+blocked on) is also judged on every spelling the daemon derives for it: as given, resolved, after
+each link, and relative to the worktree and the request's directory. A secret name in any spelling
+hides the path in every one of them and makes the card a hard gate; a path with more spellings than
+the daemon checks hides the card's command and operation whole. A directory that the durable secret
+redaction changes is hidden whole. A name with `.env.` inside it, such as `x.env.example`, is a
+secret file name too.
 
 One path classifier decides whether a path names a credential store or a secret file. It compares
 path components after Unicode NFKC normalization with full case folding and without
@@ -109,7 +119,7 @@ matched as written, at its real path, and in the forms the path classifier compa
 is also matched relative to the worktree and relative to the directory the request runs in, each
 as given and as it really lies, so `src/.env` or `.env` for a hidden `src/.env` requested from
 `src` is replaced; each relative form with "/" or "\" and with or without a leading "./". A name
-that only starts with the path, such as `x.env.example` beside a hidden `x.env`, is kept. The text is
+that only starts with the path, such as `x.envy.txt` beside a hidden `x.env`, is kept. The text is
 not split into words first, so a hidden name that holds a comma, a space, a quote or a colon, such
 as `src/.env,prod`, is replaced whole. A secret file that only the agent's text names, such as
 `src/private.pem` in the operation of a card for `src/index.ts`, is judged by the same classifier,

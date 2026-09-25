@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 
+import { pairingAddressSchema } from "@getdomovoi/protocol"
+
 import { certificateHostNames, pairingAddressFor } from "./pairing-address.js"
 
 // Real certificates, generated for this test with openssl and trusted by
@@ -31,6 +33,113 @@ CIJLSMT7VIa02MpOFxWtYPHxCTD1T82O+xp2XcO8AiEA+YQNQz4psfsndicZGoRs
 t+NFfYwmc7wvHFbdEZFfo4g=
 -----END CERTIFICATE-----
 `
+
+// Thirty names, generated with openssl for the bound on a problem's length.
+const thirtyNames = `-----BEGIN CERTIFICATE-----
+MIIGHTCCBcKgAwIBAgIUeLuAFdE5PuMn2vEpI0Yqp1IBqAAwCgYIKoZIzj0EAwIw
+LjEsMCoGA1UEAwwjaG9zdC0wMS5leGFtcGxlLXRhaWxuZXQtbmFtZS50cy5uZXQw
+HhcNMjYwOTIzMjE1MDI5WhcNMzYwOTIwMjE1MDI5WjAuMSwwKgYDVQQDDCNob3N0
+LTAxLmV4YW1wbGUtdGFpbG5ldC1uYW1lLnRzLm5ldDBZMBMGByqGSM49AgEGCCqG
+SM49AwEHA0IABALS8zjE+WzscgQKPAqFOhEbj7M+IBhJtwFZ2sCwHPgQNFsquVsW
+97tRpHv0zRoRGanBS+YoylkSN89IOT8OdTmjggS8MIIEuDAdBgNVHQ4EFgQUwWm+
+34X+Xsr8rcsNM4B//okWtyowHwYDVR0jBBgwFoAUwWm+34X+Xsr8rcsNM4B//okW
+tyowDwYDVR0TAQH/BAUwAwEB/zCCBGMGA1UdEQSCBFowggRWgiNob3N0LTAxLmV4
+YW1wbGUtdGFpbG5ldC1uYW1lLnRzLm5ldIIjaG9zdC0wMi5leGFtcGxlLXRhaWxu
+ZXQtbmFtZS50cy5uZXSCI2hvc3QtMDMuZXhhbXBsZS10YWlsbmV0LW5hbWUudHMu
+bmV0giNob3N0LTA0LmV4YW1wbGUtdGFpbG5ldC1uYW1lLnRzLm5ldIIjaG9zdC0w
+NS5leGFtcGxlLXRhaWxuZXQtbmFtZS50cy5uZXSCI2hvc3QtMDYuZXhhbXBsZS10
+YWlsbmV0LW5hbWUudHMubmV0giNob3N0LTA3LmV4YW1wbGUtdGFpbG5ldC1uYW1l
+LnRzLm5ldIIjaG9zdC0wOC5leGFtcGxlLXRhaWxuZXQtbmFtZS50cy5uZXSCI2hv
+c3QtMDkuZXhhbXBsZS10YWlsbmV0LW5hbWUudHMubmV0giNob3N0LTEwLmV4YW1w
+bGUtdGFpbG5ldC1uYW1lLnRzLm5ldIIjaG9zdC0xMS5leGFtcGxlLXRhaWxuZXQt
+bmFtZS50cy5uZXSCI2hvc3QtMTIuZXhhbXBsZS10YWlsbmV0LW5hbWUudHMubmV0
+giNob3N0LTEzLmV4YW1wbGUtdGFpbG5ldC1uYW1lLnRzLm5ldIIjaG9zdC0xNC5l
+eGFtcGxlLXRhaWxuZXQtbmFtZS50cy5uZXSCI2hvc3QtMTUuZXhhbXBsZS10YWls
+bmV0LW5hbWUudHMubmV0giNob3N0LTE2LmV4YW1wbGUtdGFpbG5ldC1uYW1lLnRz
+Lm5ldIIjaG9zdC0xNy5leGFtcGxlLXRhaWxuZXQtbmFtZS50cy5uZXSCI2hvc3Qt
+MTguZXhhbXBsZS10YWlsbmV0LW5hbWUudHMubmV0giNob3N0LTE5LmV4YW1wbGUt
+dGFpbG5ldC1uYW1lLnRzLm5ldIIjaG9zdC0yMC5leGFtcGxlLXRhaWxuZXQtbmFt
+ZS50cy5uZXSCI2hvc3QtMjEuZXhhbXBsZS10YWlsbmV0LW5hbWUudHMubmV0giNo
+b3N0LTIyLmV4YW1wbGUtdGFpbG5ldC1uYW1lLnRzLm5ldIIjaG9zdC0yMy5leGFt
+cGxlLXRhaWxuZXQtbmFtZS50cy5uZXSCI2hvc3QtMjQuZXhhbXBsZS10YWlsbmV0
+LW5hbWUudHMubmV0giNob3N0LTI1LmV4YW1wbGUtdGFpbG5ldC1uYW1lLnRzLm5l
+dIIjaG9zdC0yNi5leGFtcGxlLXRhaWxuZXQtbmFtZS50cy5uZXSCI2hvc3QtMjcu
+ZXhhbXBsZS10YWlsbmV0LW5hbWUudHMubmV0giNob3N0LTI4LmV4YW1wbGUtdGFp
+bG5ldC1uYW1lLnRzLm5ldIIjaG9zdC0yOS5leGFtcGxlLXRhaWxuZXQtbmFtZS50
+cy5uZXSCI2hvc3QtMzAuZXhhbXBsZS10YWlsbmV0LW5hbWUudHMubmV0MAoGCCqG
+SM49BAMCA0kAMEYCIQCYTs7IU7aj7kNez7GM4ZMezQVVgvTkdHCWr2z4abDgowIh
+ANJ+5NnKvR9pysWc4WcT72EO/pxvdG/9w15K3uyfLZs3
+-----END CERTIFICATE-----
+`
+
+// Generated with openssl for review of 9ce73cda. The first names
+// "example.com/path", a DNS entry that is no host name; the second names a
+// valid 139-character host, longer than a label on the wire may be.
+const pathName = `-----BEGIN CERTIFICATE-----
+MIIBbzCCARWgAwIBAgIURgz7KuQcB5qVHI1vkNJnnlwBwRgwCgYIKoZIzj0EAwIw
+DzENMAsGA1UEAwwEdGVzdDAeFw0yNjA5MjQwNjAzNTNaFw0zNjA5MjEwNjAzNTNa
+MA8xDTALBgNVBAMMBHRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQANlim
+mapmVdlMR2VGNwISSDsuehRSy//BQ2ZriBJvcvFGs/mOyrqYiFXhcXWqJaVXl9Vk
+xZCRCVh5/1EdfxVWo08wTTAbBgNVHREEFDASghBleGFtcGxlLmNvbS9wYXRoMA8G
+A1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFCCLk4PqZEd/K5BH7V+OS+cJSiVWMAoG
+CCqGSM49BAMCA0gAMEUCIBw6GmF+DXM2q6HuoI2yikwhtHX3jHZKahdVRI3+1vKf
+AiEArY0HXhpIEIoQYN6fX2C+tRKM9m5/HtuTO+vlTURrW2o=
+-----END CERTIFICATE-----
+`
+const longName = `-----BEGIN CERTIFICATE-----
+MIIB8TCCAZagAwIBAgIUYStdrWjoJw5Urbi/lcKPMLbsKEYwCgYIKoZIzj0EAwIw
+DzENMAsGA1UEAwwEdGVzdDAeFw0yNjA5MjQwNjAzNTNaFw0zNjA5MjEwNjAzNTNa
+MA8xDTALBgNVBAMMBHRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAT/WTrm
+c3smp1D6Aa5z/nwZAlqHCRavK0wZhKGks0rzZMUTcLsyW+yfXIVxYHX9qpTqPIkG
+SMYK2oAYxGZt2RRko4HPMIHMMIGZBgNVHREEgZEwgY6CgYthYWFhYWFhYWFhYWFh
+YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh
+YWEuYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJi
+YmJiYmJiYmJiYmJiYmJiYmJiLmNjY2NjY2MubmV0MA8GA1UdEwEB/wQFMAMBAf8w
+HQYDVR0OBBYEFBM1lWBp4iAMPZSaHh9C8/U4ejhZMAoGCCqGSM49BAMCA0kAMEYC
+IQDy+9eYtDf5gswEGBeoMP3hB2Acx/L3wrs3tYSQcoFCHwIhAPM7LpWFRTWVGFI2
++7T+oXkxdOHWF42i5+Ym6w5KbU5q
+-----END CERTIFICATE-----
+`
+// Generated with openssl for round 2 review of b7867afa: an IP literal as a
+// DNS entry alone, the same with a matching IP entry, and a name with one
+// final dot.
+const ipAsName = `-----BEGIN CERTIFICATE-----
+MIIBijCCAS+gAwIBAgIUDLJY93IGe+dn3Iv1BM8dNnBZkOswCgYIKoZIzj0EAwIw
+DzENMAsGA1UEAwwEdGVzdDAeFw0yNjA5MjQwNjI1MDFaFw0zNjA5MjEwNjI1MDFa
+MA8xDTALBgNVBAMMBHRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQcHkih
+zOVxF9WxXY2Tig7/CIvcTx46lcs/U1TOr6QF4La8Jeoyt/PT+tL3StMqsdrMvhya
+mFoxddIIXWB0KkIzo2kwZzAdBgNVHQ4EFgQUto1l4lYMz+KuHIA2Paf10SvQUaAw
+HwYDVR0jBBgwFoAUto1l4lYMz+KuHIA2Paf10SvQUaAwDwYDVR0TAQH/BAUwAwEB
+/zAUBgNVHREEDTALggkxOTIuMC4yLjEwCgYIKoZIzj0EAwIDSQAwRgIhAMg8Qw5h
+aLEB0GxQBrG7oSNWTbXcLu8qgecJhS3p03/zAiEA5I5TeV4phMjI/9s4MEZZkcaD
+ezH6QUD6hbBtrH9Xpkg=
+-----END CERTIFICATE-----
+`
+const ipAsNameAndAddress = `-----BEGIN CERTIFICATE-----
+MIIBjjCCATWgAwIBAgIUBXDIBgAjVX8ItFMVbI9YCNx+yEQwCgYIKoZIzj0EAwIw
+DzENMAsGA1UEAwwEdGVzdDAeFw0yNjA5MjQwNjI1MDFaFw0zNjA5MjEwNjI1MDFa
+MA8xDTALBgNVBAMMBHRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATa/xn7
+BcAvivjfa5vDa5VpH3R/GwWCyvd3DKC9w+beU4F8S/P7ZjusWVSquL9dMjF5NntU
+tuHmyfKkE6pvrdsYo28wbTAdBgNVHQ4EFgQUsKP9z1asAKzG4y4vEO/d68DTvTAw
+HwYDVR0jBBgwFoAUsKP9z1asAKzG4y4vEO/d68DTvTAwDwYDVR0TAQH/BAUwAwEB
+/zAaBgNVHREEEzARggkxOTIuMC4yLjGHBMAAAgEwCgYIKoZIzj0EAwIDRwAwRAIg
+YizZGg19bYdbHLrq66V5RImWZoNKBAri5CmIfmrOtE8CICogp5v94QMoQt4ptBw9
+cP/Rfe8wTTpBMp48963BzrY5
+-----END CERTIFICATE-----
+`
+const finalDot = `-----BEGIN CERTIFICATE-----
+MIIBjTCCATKgAwIBAgIUEbxni67UFmUUbsjpp1adjkWz+ncwCgYIKoZIzj0EAwIw
+DzENMAsGA1UEAwwEdGVzdDAeFw0yNjA5MjQwNjI1MDFaFw0zNjA5MjEwNjI1MDFa
+MA8xDTALBgNVBAMMBHRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARxmVUo
+2wBgEK2yjLvrhOKtLpSBlSXFqsF44gIgeEPznttfgYE4n0ITKccx8ZJ3WjrREtgt
+0If1fX3HX7qkTxSSo2wwajAdBgNVHQ4EFgQUqcY01PFVE6B5BmH5Nj8M58DSA38w
+HwYDVR0jBBgwFoAUqcY01PFVE6B5BmH5Nj8M58DSA38wDwYDVR0TAQH/BAUwAwEB
+/zAXBgNVHREEEDAOggxleGFtcGxlLmNvbS4wCgYIKoZIzj0EAwIDSQAwRgIhAIA5
+CedgDrDitKL535ml7sXgAgkV3LCOgeBF3DX00eS/AiEAxVvv733pOkG3URljXIvU
+3y5v3c2Lp5NiNwzm3N4Izuw=
+-----END CERTIFICATE-----
+`
+const longHost = `${"a".repeat(63)}.${"b".repeat(63)}.ccccccc.net`
 
 describe("the address a pairing code tells a device to dial", () => {
   it("is the loopback listener itself when there is no certificate", () => {
@@ -81,5 +190,88 @@ describe("the address a pairing code tells a device to dial", () => {
 
   it("keeps wildcard names out, since they name no single host", () => {
     expect(certificateHostNames("")).toEqual([])
+  })
+
+  it("keeps every problem within the wire's bound, however many names the certificate carries", () => {
+    expect(certificateHostNames(thirtyNames)).toHaveLength(30)
+    const result = pairingAddressFor({ host: "100.80.185.103", port: 47831, tls: { certPath: "/c" } }, () => thirtyNames)
+    expect(result).toEqual({ problem: expect.stringContaining("more than one host") })
+    expect(pairingAddressSchema.safeParse(result).success).toBe(true)
+    expect((result as { problem: string }).problem).toContain("host-01.example-tailnet-name.ts.net")
+    expect((result as { problem: string }).problem).toContain("and 27 more")
+    const longPath = `/${"deep/".repeat(200)}daemon.crt`
+    const unreadable = pairingAddressFor({ host: "100.80.185.103", port: 47831, tls: { certPath: longPath } }, () => { throw new Error("ENOENT") })
+    expect(pairingAddressSchema.safeParse(unreadable).success).toBe(true)
+  })
+
+  it("says only this machine can reach a TLS listener bound to loopback", () => {
+    expect(pairingAddressFor({ host: "127.0.0.1", port: 47831, tls: { certPath: "/c" } }, () => oneName)).toEqual({
+      url: "wss://djs-test.raptor-pompano.ts.net:47831/rpc",
+      label: "djs-test.raptor-pompano.ts.net",
+      loopback: true,
+    })
+  })
+
+  // Review of 9ce73cda (P2): a DNS entry that is no host name gave a URL whose
+  // host the certificate does not name, so TLS would fail on the device.
+  it("does not carry a certificate entry that is no host name", () => {
+    expect(certificateHostNames(pathName)).toEqual([])
+    const result = pairingAddressFor({ host: "100.80.185.103", port: 47831, tls: { certPath: "/c" } }, () => pathName)
+    expect(result).toEqual({ problem: expect.stringContaining("names no host") })
+  })
+
+  // Review of 9ce73cda (P2): a valid host longer than a label may be keeps its
+  // URL, and goes without the label, so the code can still be issued.
+  it("keeps a long host's URL and leaves out a label the wire cannot carry", () => {
+    expect(longHost).toHaveLength(139)
+    const result = pairingAddressFor({ host: "100.80.185.103", port: 47831, tls: { certPath: "/c" } }, () => longName)
+    expect(result).toEqual({ url: `wss://${longHost}:47831/rpc`, loopback: false })
+    expect(pairingAddressSchema.safeParse(result).success).toBe(true)
+  })
+
+  // Review of 9ce73cda (P2): all of 127.0.0.0/8 and IPv4-mapped loopback
+  // answer only this machine.
+  it.each(["127.0.0.2", "127.255.255.254", "::ffff:127.0.0.1", "localhost"])("says a TLS listener on %s answers only this machine", (host) => {
+    expect(pairingAddressFor({ host, port: 47831, tls: { certPath: "/c" } }, () => oneName)).toMatchObject({ loopback: true })
+  })
+
+  // Round 2 review of b7867afa (P2): TLS checks an IP address only against
+  // the certificate's IP entries, so an IP literal written as a DNS entry is
+  // dialable only when an IP entry names it too.
+  it("does not carry an IP literal the certificate names only as a DNS entry", () => {
+    expect(certificateHostNames(ipAsName)).toEqual([])
+    expect(pairingAddressFor({ host: "100.80.185.103", port: 47831, tls: { certPath: "/c" } }, () => ipAsName))
+      .toEqual({ problem: expect.stringContaining("names no host") })
+  })
+
+  it("carries an IP literal the certificate also names as an IP entry", () => {
+    expect(pairingAddressFor({ host: "100.80.185.103", port: 47831, tls: { certPath: "/c" } }, () => ipAsNameAndAddress)).toEqual({
+      url: "wss://192.0.2.1:47831/rpc",
+      label: "192.0.2.1",
+      loopback: false,
+    })
+  })
+
+  // Round 2 review of b7867afa (P2): one final dot passes TLS, so it is a
+  // name a device can dial.
+  it("carries a name that ends in one final dot", () => {
+    const result = pairingAddressFor({ host: "100.80.185.103", port: 47831, tls: { certPath: "/c" } }, () => finalDot)
+    expect(result).toEqual({ url: "wss://example.com.:47831/rpc", label: "example.com.", loopback: false })
+    expect(pairingAddressSchema.safeParse(result).success).toBe(true)
+  })
+
+  // Round 2 review of b7867afa (P2): an IPv4-mapped address outside
+  // 127.0.0.0/8 is not loopback, whatever its hex digits begin with.
+  it("says a TLS listener on ::ffff:7.240.0.1 is reachable from elsewhere", () => {
+    expect(pairingAddressFor({ host: "::ffff:7.240.0.1", port: 47831, tls: { certPath: "/c" } }, () => oneName)).toMatchObject({ loopback: false })
+  })
+
+  // Without a certificate the wire takes ws:// only on 127.0.0.1, ::1 and
+  // localhost, so another loopback address gets the no-certificate problem
+  // rather than a URL the device would refuse.
+  it.each(["127.0.0.2", "::ffff:127.0.0.1"])("gives a plain listener on %s a problem the wire accepts", (host) => {
+    const result = pairingAddressFor({ host, port: 47831 }, () => { throw new Error("no certificate") })
+    expect(result).toEqual({ problem: expect.stringContaining("serves no certificate") })
+    expect(pairingAddressSchema.safeParse(result).success).toBe(true)
   })
 })

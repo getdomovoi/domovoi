@@ -1,5 +1,4 @@
-import { lstat, readlink } from "node:fs/promises"
-import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path"
+import { isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import type { ExecutionResolution } from "@getdomovoi/protocol"
 
@@ -12,7 +11,8 @@ import {
   unreadablePath,
   type RealPath,
 } from "./credential-stores.js"
-import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
+import { followPath, requestedPath } from "./followed-path.js"
+import { OperationDeadline } from "./operation-deadline.js"
 import { namesSecretPath } from "./permission-policy.js"
 import { redactDurableText } from "./secret-redaction.js"
 
@@ -91,54 +91,10 @@ export type ResolvedApprovalPath = Readonly<{
   directory?: string
 }>
 
-// The path as the request gave it, relative to the directory the request runs
-// in, before anything is collapsed: ".." is applied only after the links
-// before it are followed, as the filesystem does.
-function requestedPath(workspace: string, path: string, cwd: string | undefined): string {
-  if (isAbsolute(path)) return path
-  const base = cwd === undefined ? workspace : isAbsolute(cwd) ? cwd : `${workspace}${sep}${cwd}`
-  return `${base}${sep}${path}`
-}
-
-const separators = process.platform === "win32" ? /[\\/]+/u : /\/+/u
-// Linux's bound on links followed in one lookup (macOS stops at 32).
-const maximumLinksFollowed = 40
-
-// Walk the path one component at a time from its root. A link, including one
-// whose target does not exist yet, is replaced by its target before the rest
-// of the path is read; ".." then leaves the directory the link led to. A
-// component that does not exist is kept as written. Every link followed is
-// recorded. Undefined when the links loop past the bound. Every lookup ends at
-// the deadline.
-async function followPath(path: string, deadline: OperationDeadline): Promise<{ target: string; hops: string[] } | undefined> {
-  const root = parse(path).root
-  let current = root
-  const pending = path.slice(root.length).split(separators).filter((part) => part !== "")
-  const hops: string[] = []
-  let links = 0
-  while (pending.length > 0) {
-    const part = pending.shift()!
-    if (part === ".") continue
-    if (part === "..") { current = dirname(current); continue }
-    const next = join(current, part)
-    let isLink = false
-    try { isLink = (await beforeDeadline(lstat(next), deadline)).isSymbolicLink() } catch (error) {
-      if (deadline.signal.aborted) throw error
-      /* absent or unreadable: kept as written */
-    }
-    if (!isLink) { current = next; continue }
-    if (++links > maximumLinksFollowed) return undefined
-    const target = await beforeDeadline(readlink(next), deadline)
-    hops.push(next, target, isAbsolute(target) ? target : join(current, target))
-    const targetRoot = parse(target).root
-    if (targetRoot !== "") current = targetRoot
-    pending.unshift(...target.slice(targetRoot.length).split(separators).filter((item) => item !== ""))
-  }
-  return { target: current, hops }
-}
-
 // Where the path really leads, and where the worktree really is, each followed
-// the same way. Undefined when either loops, and then the lexical answer stands.
+// the same way, by the one walk execution resolution uses too (followPath in
+// followed-path.ts). Target and workspace are written as native realpath
+// writes them. Undefined when either loops, and then the lexical answer stands.
 // A lookup that runs out of time or fails gives the lexical answer with a real
 // path that could not be read, so the card treats the path as a credential path.
 // The lookups end at the request's deadline when it gives one.
@@ -156,11 +112,11 @@ export async function resolveApprovalPath(
     if (followed === undefined || realWorkspace === undefined) return undefined
     const realDirectory = await followPath(requestDirectory(workspace, cwd), clock)
     return {
-      target: followed.target,
-      workspace: realWorkspace.target,
+      target: followed.path,
+      workspace: realWorkspace.path,
       hops: followed.hops,
       canonical: await canonicalPath(requested, undefined, clock),
-      ...(realDirectory === undefined ? {} : { directory: realDirectory.target }),
+      ...(realDirectory === undefined ? {} : { directory: realDirectory.path }),
     }
   } catch {
     return { target: resolve(requested), workspace: resolve(workspace), hops: [], canonical: unreadablePath }
@@ -185,7 +141,10 @@ function affectedFile(input: {
   const lexical = within(resolve(input.workspace), target)
   const real = input.resolved ? within(input.resolved.workspace, input.resolved.target) : lexical
   if (real !== undefined) {
-    const name = shown(lexical ?? real)
+    // The file the edit really reaches, which is the one a standing rule made
+    // from the card names (owner ruling: a file tool's card shows its resolved
+    // target).
+    const name = shown(real)
     return { text: fileLine({ form: "inside", file: name.text }), redacted: name.redacted }
   }
   if (lexical !== undefined && input.resolved) {
@@ -267,8 +226,17 @@ export function approvalDirectory(input: { directory: string; workspace: string 
     return { text: hiddenDirectory(inside), redacted: false, sensitive: true }
   }
   const copy = redactDurableText(input.directory)
-  return { text: copy.value, redacted: copy.redacted, sensitive: false }
+  if (!copy.redacted) return { text: copy.value, redacted: false, sensitive: false }
+  // A directory the durable redaction changes is hidden whole too, as #545's
+  // card hides it (ruled 2026-09-25): the line keeps only where it is.
+  const inside = workspace !== undefined && (directory === workspace || within(workspace, directory) !== undefined)
+  return { text: hiddenDirectory(inside), redacted: true, sensitive: true }
 }
+
+// The closed set of spellings #545 judges a file path by (pathSpellings in
+// file-target-affects.ts), when the caller read it: a secret name in any of
+// them, or a set that hit its bound, hides the file too.
+export type FileSpellings = Readonly<{ forms: readonly string[]; complete: boolean }>
 
 export function approvalFacts(input: {
   path?: string
@@ -277,12 +245,16 @@ export function approvalFacts(input: {
   cwd?: string | undefined
   scope: ApprovalScope | undefined
   resolved?: ResolvedApprovalPath | undefined
+  spellings?: FileSpellings | undefined
 }): { affects: string; network: string; redacted: boolean; sensitive: boolean; hiddenPaths: string[] } {
   const scope = input.scope ?? unrestrictedApprovalScope
   if (input.path === undefined) {
     return { affects: scope.command, network: scope.network, redacted: false, sensitive: false, hiddenPaths: [] }
   }
-  const sensitive = fileNamesSecret({ path: input.path, workspace: input.workspace, cwd: input.cwd, resolved: input.resolved })
+  const spelledSecret = input.spellings !== undefined
+    && (!input.spellings.complete || input.spellings.forms.some(namesSecretPath))
+  const sensitive = spelledSecret
+    || fileNamesSecret({ path: input.path, workspace: input.workspace, cwd: input.cwd, resolved: input.resolved })
   const file = affectedFile({ path: input.path, workspace: input.workspace, cwd: input.cwd, resolved: input.resolved, hide: sensitive })
   return {
     affects: file.text,

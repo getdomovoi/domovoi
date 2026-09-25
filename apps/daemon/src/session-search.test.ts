@@ -40,8 +40,10 @@ async function connect(daemon: DomovoiDaemon) {
   }
 }
 
-async function start() {
+async function start(titles: readonly string[] = []) {
   const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals = []
+  titles.forEach((title, index) => { snapshot.sessions[index]!.title = title })
   const daemon = new DomovoiDaemon({ port: 0, store: new SqliteWorkspaceStore(":memory:", snapshot) })
   daemons.push(daemon)
   await daemon.start()
@@ -93,4 +95,13 @@ describe("session.search", () => {
     const refused = await phone("session.search", { query: "webhooks" })
     expect((refused.error as { message: string }).message).toMatch(/A phone or tablet credential may only/)
   })
+
+  it("matches without regard to case across scripts, as Unicode folds case", async () => {
+    const { snapshot, call } = await start(["ΟΣ migration", "Straße cleanup", "ﬁle watcher"])
+    const [greek, german, ligature] = snapshot.sessions
+    for (const [query, session] of [["Σ", greek], ["σ", greek], ["ς", greek], ["ος", greek], ["οσ", greek], ["STRASSE", german], ["strasse", german], ["file", ligature]] as const) {
+      expect(ids(await call("session.search", { query })), query).toContainEqual([session!.id, "title"])
+    }
+  })
 })
+

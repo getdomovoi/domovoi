@@ -424,7 +424,9 @@ describe("negative controls", () => {
     { path: ".docker/Dockerfile", affects: "The file .docker/Dockerfile in the session worktree." },
     { path: "pem", affects: "The file pem in the session worktree." },
     { path: "key.txt", affects: "The file key.txt in the session worktree." },
-    { path: "src/process.env.HOME.ts", affects: "The file src/process.env.HOME.ts in the session worktree." },
+    // ".env." inside a name is a secret file name under the union ruled
+    // 2026-09-25, so the control keeps ".env" inside a name without it.
+    { path: "src/process.envHOME.ts", affects: "The file src/process.envHOME.ts in the session worktree." },
     {
       path: `${home}/.domovoi/worktrees/x/file.ts`,
       affects: `The file ${home}/.domovoi/worktrees/x/file.ts, outside the session worktree.`,

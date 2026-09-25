@@ -1,4 +1,6 @@
-import { randomUUID } from "node:crypto"
+import { randomBytes } from "node:crypto"
+import { lstat } from "node:fs/promises"
+import { join } from "node:path"
 
 import {
   createOpencodeClient,
@@ -10,6 +12,7 @@ import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/proto
 import type { AgentAdapter, AgentEvent } from "./agents.js"
 import { normalizeProviderUsage } from "./usage.js"
 import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
+import { projectInstructions } from "./project-instructions.js"
 
 type OpenCodeResult<T> = { data?: T; error?: unknown }
 
@@ -36,6 +39,13 @@ export type OpenCodeClient = {
     promptAsync(
       options: MethodOptions<OpencodeSdkClient["session"]["promptAsync"]>,
     ): Promise<OpenCodeResult<unknown>>
+    // `before` pages backwards through a session (opencode 1.18, kilo 7.7);
+    // the next page's cursor comes back in the X-Next-Cursor header.
+    messages(options: {
+      path: { id: string }
+      query: { directory: string; limit?: number; before?: string }
+      throwOnError: true
+    }): Promise<OpenCodeResult<unknown> & { response?: Response }>
   }
   event: {
     subscribe(options?: MethodOptions<OpencodeSdkClient["event"]["subscribe"]>): Promise<unknown>
@@ -69,16 +79,29 @@ export type OpenCodeFactory = () => Promise<{
 export type OpenCodeAdapterIdentity = {
   providerId: string
   providerName: string
+  heldBackRepositoryFiles?: readonly string[]
 }
 
 type Session = {
   threadId: string
   cwd: string
   runtime: Runtime
+  // The newest message id this session is known to hold. The next prompt's id
+  // must sort after it.
+  newestMessageId?: string
   // Changes each time the thread is loaded, so a reply that settles after an
   // unload cannot leave anything behind for the next load.
   generation: number
   activeTurnId?: string
+  // Set once the server shows the active turn's own messages. The server ends
+  // an aborted run before it takes the next prompt, so after an interrupt an
+  // idle or error that comes before them is the interrupted turn's, not this
+  // one's.
+  activeTurnStarted?: true
+  // The turn an interrupt was sent for, until the first idle after it (an
+  // error before that idle is the same run's). Only an interrupt arms the wait
+  // above; without one, the first idle or error ends the active turn as before.
+  interruptedTurnId?: string
   assistantMessageTurnIds: Map<string, string>
   toolPhases: Map<string, string>
 }
@@ -184,6 +207,58 @@ type PendingSessionLoad = {
   cancelled: boolean
 }
 
+// OpenCode and Kilo refuse a message id that does not start with "msg" and
+// order a session's messages by id. This is their ascending scheme: "msg_",
+// the low 48 bits of milliseconds times 4096 plus a per-millisecond counter as
+// twelve hex digits, then fourteen random base62 characters.
+const base62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+const orderMask = 0xffff_ffff_ffffn
+const orderedMessageId = /^msg_([0-9a-f]{12})/u
+let lastOrder = 0n
+const historyPageSize = 200
+const maximumHistoryPages = 1_000
+
+export function openCodeMessageOrder(milliseconds: number, counter = 1): string {
+  return ((BigInt(milliseconds) * 0x1000n + BigInt(counter)) & orderMask).toString(16).padStart(12, "0")
+}
+
+// The session already holds an id at the last order the servers can store,
+// so no id can sort after it.
+export class OpenCodeMessageIdsExhaustedError extends Error {
+  constructor() {
+    super("No message id sorts after the session's newest one")
+    this.name = "OpenCodeMessageIdsExhaustedError"
+  }
+}
+
+// Each id sorts after the last one this process made, even when the clock
+// steps back or a millisecond runs out of counter values, and after `after`,
+// the newest id the session is known to hold. Past the 48-bit order an id is
+// refused rather than masked, because a masked id wraps to zero and sorts
+// first. The process-wide order follows the clock only; a session's floor
+// raises that session's id, never every other session's.
+export function openCodeMessageId(now = Date.now(), after?: string): string {
+  const clock = BigInt(`0x${openCodeMessageOrder(now)}`)
+  let order = clock > lastOrder ? clock : lastOrder + 1n
+  // The servers' own ids wrap here too (about every 795 days); follow the clock.
+  if (order > orderMask) order = clock
+  lastOrder = order
+  const floor = after === undefined ? undefined : orderedMessageId.exec(after)?.[1]
+  if (floor !== undefined && order <= BigInt(`0x${floor}`)) order = BigInt(`0x${floor}`) + 1n
+  if (order > orderMask) throw new OpenCodeMessageIdsExhaustedError()
+  const random = Array.from(randomBytes(14), (byte) => base62[byte % 62]).join("")
+  return `msg_${order.toString(16).padStart(12, "0")}${random}`
+}
+
+export function nextOpenCodeMessageId(after?: string): string {
+  return openCodeMessageId(Date.now(), after)
+}
+
+function laterMessageId(current: string | undefined, candidate: unknown): string | undefined {
+  if (typeof candidate !== "string" || !orderedMessageId.test(candidate)) return current
+  return current === undefined || candidate > current ? candidate : current
+}
+
 export function openCodeAgentFor(runtime: Runtime): string {
   if (runtime.permissionMode === "ask") return "domovoi-ask"
   if (runtime.permissionMode === "plan") return "plan"
@@ -194,7 +269,7 @@ export function openCodeAgentFor(runtime: Runtime): string {
 export class OpenCodeSdkAdapter implements AgentAdapter {
   readonly permissionCapabilities = { ask: "read-only", buildAuto: "pre-execution" } as const
   readonly #factory: OpenCodeFactory
-  readonly #id: () => string
+  readonly #id: (after?: string) => string
   readonly #identity: OpenCodeAdapterIdentity
   #runtime: Awaited<ReturnType<OpenCodeFactory>> | undefined
   #connection: Promise<void> | undefined
@@ -213,7 +288,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
   constructor(
     factory: OpenCodeFactory = defaultOpenCodeFactory,
-    id: () => string = randomUUID,
+    id: (after?: string) => string = nextOpenCodeMessageId,
     identity: OpenCodeAdapterIdentity = { providerId: "opencode", providerName: "OpenCode" },
   ) {
     this.#factory = factory
@@ -283,6 +358,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   }
 
   async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
+    await this.#refuseHeldBackRepositoryFiles(cwd)
     const client = await this.#client()
     const action = `${this.#identity.providerName} session creation`
     const created = requireSession(
@@ -316,6 +392,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     runtime: Runtime
   }): Promise<void> {
     if (this.#sessions.has(threadId)) return
+    await this.#refuseHeldBackRepositoryFiles(cwd)
     const pending = { cwd, cancelled: false }
     this.#pendingSessionLoads.set(threadId, pending)
     try {
@@ -332,7 +409,22 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       if (session.id !== threadId) {
         throw new Error(`${this.#identity.providerName} did not resume the requested session`)
       }
+      // Listen first, then read the history: a message another client creates
+      // while the pages are read still raises the high-water mark.
       await this.#loadSession(threadId, cwd, runtime, pending)
+      try {
+        const greatest = await this.#greatestMessageId(client, threadId, cwd)
+        const loaded = this.#sessions.get(threadId)
+        if (pending.cancelled || !loaded) {
+          throw new Error(`${this.#identity.providerName} session stopped while resuming`)
+        }
+        const newest = laterMessageId(loaded.newestMessageId, greatest)
+        if (newest !== undefined) loaded.newestMessageId = newest
+      } catch (error) {
+        const loaded = this.#sessions.get(threadId)
+        if (loaded) this.#unloadSession(loaded)
+        throw error
+      }
     } finally {
       if (this.#pendingSessionLoads.get(threadId) === pending) {
         this.#pendingSessionLoads.delete(threadId)
@@ -348,9 +440,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   }): Promise<string> {
     const session = this.#requireSession(threadId)
     this.#retryFailedRefusals(threadId)
-    const turnId = this.#id()
+    const turnId = this.#nextMessageId(session)
     session.runtime = runtime
     session.activeTurnId = turnId
+    delete session.activeTurnStarted
     try {
       await this.#sendPrompt(session, turnId, prompt, runtime)
     } catch (error) {
@@ -365,7 +458,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     if (session.activeTurnId !== turnId) {
       throw new Error(`${this.#identity.providerName} turn is no longer active`)
     }
-    const providerMessageId = this.#id()
+    const providerMessageId = this.#nextMessageId(session)
     await this.#sendPrompt(session, providerMessageId, prompt, session.runtime)
     return { providerMessageId }
   }
@@ -374,11 +467,19 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const session = this.#requireSession(threadId)
     if (session.activeTurnId !== turnId) return
     const client = await this.#client()
-    unwrap(await client.session.abort({
-      path: { id: threadId },
-      query: { directory: session.cwd },
-      throwOnError: true,
-    }), `${this.#identity.providerName} turn interruption`)
+    // Armed before the abort is sent, because the run's end can arrive before
+    // the abort's own answer.
+    session.interruptedTurnId = turnId
+    try {
+      unwrap(await client.session.abort({
+        path: { id: threadId },
+        query: { directory: session.cwd },
+        throwOnError: true,
+      }), `${this.#identity.providerName} turn interruption`)
+    } catch (error) {
+      if (session.interruptedTurnId === turnId) delete session.interruptedTurnId
+      throw error
+    }
   }
 
   async stopThread(threadId: string): Promise<void> {
@@ -461,6 +562,87 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#runtime?.server.close()
     this.#runtime = undefined
     await this.#connection
+  }
+
+  async #refuseHeldBackRepositoryFiles(cwd: string): Promise<void> {
+    for (const file of this.#identity.heldBackRepositoryFiles ?? []) {
+      try {
+        await lstat(join(cwd, file))
+      } catch {
+        continue
+      }
+      throw new Error(
+        `${this.#identity.providerName} would load ${file} from this worktree, and that file can start programs or change agent permissions. `
+        + "Domovoi does not load repository-brought configuration until a trust gate ships. "
+        + `Remove ${file} from this worktree or use another provider here.`,
+      )
+    }
+  }
+
+  // The servers page a session newest-first by creation time, and a clock that
+  // stepped back can leave an older message with a greater id, so the whole
+  // history is read for its greatest id.
+  // A repeated cursor means the pages cannot be trusted to cover the history,
+  // so the resume is refused. A full page with no cursor may be a server that
+  // does not page; the whole history is then read in one request.
+  async #greatestMessageId(client: OpenCodeClient, threadId: string, cwd: string): Promise<string | undefined> {
+    let greatest: string | undefined
+    let before: string | undefined
+    const seenCursors = new Set<string>()
+    for (let page = 0; page < maximumHistoryPages; page += 1) {
+      const result = await client.session.messages({
+        path: { id: threadId },
+        query: { directory: cwd, limit: historyPageSize, ...(before === undefined ? {} : { before }) },
+        throwOnError: true,
+      })
+      const messages = this.#historyMessages(result)
+      for (const message of messages) greatest = laterMessageId(greatest, asRecord(asRecord(message)?.info)?.id)
+      const next = result.response?.headers.get("x-next-cursor") ?? undefined
+      if (!next) {
+        if (messages.length < historyPageSize) return greatest
+        return this.#greatestInWholeHistory(client, threadId, cwd, greatest)
+      }
+      if (seenCursors.has(next)) {
+        throw new Error(`${this.#identity.providerName} session history repeated a page, so it cannot be resumed`)
+      }
+      seenCursors.add(next)
+      before = next
+    }
+    throw new Error(`${this.#identity.providerName} session history is too long to resume`)
+  }
+
+  async #greatestInWholeHistory(
+    client: OpenCodeClient,
+    threadId: string,
+    cwd: string,
+    greatest: string | undefined,
+  ): Promise<string | undefined> {
+    const result = await client.session.messages({
+      path: { id: threadId },
+      query: { directory: cwd },
+      throwOnError: true,
+    })
+    let whole = greatest
+    for (const message of this.#historyMessages(result)) whole = laterMessageId(whole, asRecord(asRecord(message)?.info)?.id)
+    return whole
+  }
+
+  #historyMessages(result: OpenCodeResult<unknown>): unknown[] {
+    const messages = unwrap(result, `${this.#identity.providerName} session history`)
+    return Array.isArray(messages) ? messages : []
+  }
+
+  #nextMessageId(session: Session): string {
+    let id: string
+    try {
+      id = this.#id(session.newestMessageId)
+    } catch (error) {
+      if (!(error instanceof OpenCodeMessageIdsExhaustedError)) throw error
+      throw new Error(`${this.#identity.providerName} session has used the last message id the server can order, so it cannot take another message`, { cause: error })
+    }
+    const newest = laterMessageId(session.newestMessageId, id)
+    if (newest !== undefined) session.newestMessageId = newest
+    return id
   }
 
   async #client(): Promise<OpenCodeClient> {
@@ -576,8 +758,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     prompt: string,
     runtime: Runtime,
   ): Promise<void> {
+    await this.#refuseHeldBackRepositoryFiles(session.cwd)
     const client = await this.#client()
     const model = openCodeModel(runtime.model)
+    const system = await projectInstructions(session.cwd, "opencode")
     ensureSuccess(await client.session.promptAsync({
       path: { id: session.threadId },
       query: { directory: session.cwd },
@@ -585,6 +769,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         messageID: messageId,
         agent: openCodeAgentFor(runtime),
         ...(model ? { model } : {}),
+        ...(system ? { system } : {}),
         parts: [{ type: "text", text: prompt }],
       },
       throwOnError: true,
@@ -669,6 +854,11 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
     if (event.type === "message.updated") {
       const info = asRecord(properties.info)
+      if (session.activeTurnId !== undefined && (info?.id === session.activeTurnId || info?.parentID === session.activeTurnId)) {
+        session.activeTurnStarted = true
+      }
+      const newest = laterMessageId(session.newestMessageId, info?.id)
+      if (newest !== undefined) session.newestMessageId = newest
       if (info?.role === "assistant" && typeof info.id === "string") {
         const turnId = subagentTurn
           ? subagentTurn.turnId
@@ -741,9 +931,22 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
     // A subagent finishing or failing ends its task tool call, not the turn.
     if (subagent) return
+    if (event.type === "session.error" || event.type === "session.idle") {
+      const interrupted = session.interruptedTurnId
+      // An interrupted run can end with an error and then an idle (the
+      // processor's halt publishes both), so the record lasts until the idle.
+      if (event.type === "session.idle") delete session.interruptedTurnId
+      // The interrupted run's own end, arriving after the next turn took the
+      // slot and before that turn's messages. It ends nothing.
+      if (interrupted !== undefined && session.activeTurnId !== interrupted && !session.activeTurnStarted) return
+    }
     if (event.type === "session.error") {
       const error = asRecord(properties.error)
+      const interrupted = session.interruptedTurnId
       this.#complete(session, "failed", errorMessage(error, this.#identity.providerName))
+      // The error can end the interrupted turn itself. Its idle is still to
+      // come, so the record stays until that idle.
+      if (interrupted !== undefined) session.interruptedTurnId = interrupted
       return
     }
     if (event.type === "session.idle") this.#complete(session, "completed")
@@ -816,7 +1019,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         turn: { id: turnId, status, ...(error ? { error } : {}) },
       },
     })
+    if (session.interruptedTurnId === session.activeTurnId) delete session.interruptedTurnId
     delete session.activeTurnId
+    delete session.activeTurnStarted
     session.toolPhases.clear()
     // A subagent's request cannot outlive the turn that started it. Refuse it
     // on the provider and forget it, so a later answer to its card does nothing.
@@ -1005,6 +1210,7 @@ function isOpenCodeClient(value: unknown): value is OpenCodeClient {
     && typeof session.delete === "function"
     && typeof session.abort === "function"
     && typeof session.promptAsync === "function"
+    && typeof session.messages === "function"
     && event
     && typeof event.subscribe === "function"
     && typeof client.postSessionIdPermissionsPermissionId === "function"
@@ -1092,6 +1298,7 @@ const defaultOpenCodeFactory: OpenCodeFactory = async () => {
     passwordEnvironment: "OPENCODE_SERVER_PASSWORD",
     usernameEnvironment: "OPENCODE_SERVER_USERNAME",
     username: "opencode",
+    environment: { OPENCODE_DISABLE_PROJECT_CONFIG: "1" },
     config: domovoiOpenCodeConfig,
     startServer: createOpencodeServer,
     createClient: createOpencodeClient,

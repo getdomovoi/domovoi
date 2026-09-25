@@ -55,6 +55,7 @@ type StoredAuditEntry = {
   actor_name: string | null
   actor_reference: string | null
   actor_connection_id: string | null
+  actor_credential: string | null
   action: string
   outcome: string
   session_id: string | null
@@ -69,12 +70,18 @@ export class SqliteAuditLog implements AuditLog {
   #maximumPreAuthEntries: number
   // Rows per retention class, counted once at open and kept current by this
   // writer, so an append under the cap does not walk the class's index to
-  // learn there is nothing to prune. The count only decides whether to look;
-  // the prune itself deletes by position in the index, so a count left high
-  // by a caller's rolled-back transaction deletes nothing and is recounted.
+  // learn there is nothing to prune. The prune removes as many of the oldest
+  // rows as the count says are past the bound, so the count must be exact.
   #retained = new Map<"activity" | "pre-auth", number>()
+  // The last row this writer appended per class: its sequence and its entry
+  // id. If a caller's rollback took it away, the count above is stale and is
+  // recounted before it is trusted. The id is checked as well as the
+  // sequence, because SQLite hands a rolled-back sequence out again and the
+  // other class may now hold a row at it.
+  #lastAppended = new Map<"activity" | "pre-auth", { sequence: number | bigint, id: string }>()
   #insert: StatementSync | undefined
   #prune: StatementSync | undefined
+  #appendedRow: StatementSync | undefined
 
   constructor(database: DatabaseSync, options: SqliteAuditLogOptions = {}) {
     this.#database = database
@@ -91,6 +98,7 @@ export class SqliteAuditLog implements AuditLog {
         actor_name TEXT,
         actor_reference TEXT,
         actor_connection_id TEXT,
+        actor_credential TEXT,
         action TEXT NOT NULL,
         outcome TEXT NOT NULL,
         session_id TEXT,
@@ -109,6 +117,9 @@ export class SqliteAuditLog implements AuditLog {
     }
     if (!columns.some(({ name }) => name === "actor_connection_id")) {
       this.#database.exec("ALTER TABLE audit_log ADD COLUMN actor_connection_id TEXT")
+    }
+    if (!columns.some(({ name }) => name === "actor_credential")) {
+      this.#database.exec("ALTER TABLE audit_log ADD COLUMN actor_credential TEXT")
     }
     if (!columns.some(({ name }) => name === "retention_class")) {
       // Keep legacy history intact. There was no durable classification to
@@ -140,6 +151,15 @@ export class SqliteAuditLog implements AuditLog {
     })
 
     const maximum = retention === "pre-auth" ? this.#maximumPreAuthEntries : this.#maximumEntries
+    const lastAppended = this.#lastAppended.get(retention)
+    if (lastAppended !== undefined) {
+      this.#appendedRow ??= this.#database.prepare(
+        "SELECT 1 AS present FROM audit_log WHERE sequence = ? AND id = ? AND retention_class = ?",
+      )
+      if (this.#appendedRow.get(lastAppended.sequence, lastAppended.id, retention) === undefined) {
+        this.#retained.delete(retention)
+      }
+    }
     const retained = this.#retainedCount(retention)
     // A quarantine must become durable with its receipt, not before it.
     // A savepoint nests under the caller's transaction when one exists;
@@ -148,17 +168,18 @@ export class SqliteAuditLog implements AuditLog {
     try {
       this.#insert ??= this.#database.prepare(`
         INSERT INTO audit_log (
-          id, occurred_at, actor_kind, actor_name, actor_reference, actor_connection_id,
+          id, occurred_at, actor_kind, actor_name, actor_reference, actor_connection_id, actor_credential,
           action, outcome, session_id, project_id, target, detail, retention_class
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      this.#insert.run(
+      const inserted = this.#insert.run(
         entry.id,
         entry.occurredAt,
         entry.actor.kind,
         auditActorName(entry.actor),
         auditActorReference(entry.actor),
         entry.actor.kind === "client" ? entry.actor.connectionId ?? null : null,
+        entry.actor.kind === "client" ? entry.actor.credential ?? null : null,
         entry.action,
         entry.outcome,
         entry.sessionId ?? null,
@@ -169,20 +190,24 @@ export class SqliteAuditLog implements AuditLog {
       )
       // Sequence numbers are shared by both classes and may have gaps. Prune
       // by the retained row count within this class, never by MAX(sequence).
+      // The count is exact (a rollback is caught above), so only the oldest
+      // rows past the bound are removed, found from the front of the index
+      // instead of by walking the bound's worth of rows on every append.
       let pruned = 0
-      if (retained + 1 > maximum) {
+      const excess = retained + 1 - maximum
+      if (excess > 0) {
         this.#prune ??= this.#database.prepare(`
           DELETE FROM audit_log
-          WHERE retention_class = ? AND sequence <= (
+          WHERE sequence IN (
             SELECT sequence FROM audit_log WHERE retention_class = ?
-            ORDER BY sequence DESC LIMIT 1 OFFSET ?
+            ORDER BY sequence ASC LIMIT ?
           )
         `)
-        pruned = Number(this.#prune.run(retention, retention, maximum).changes)
+        pruned = Number(this.#prune.run(retention, excess).changes)
       }
       this.#database.exec("RELEASE domovoi_audit_append")
-      if (retained + 1 > maximum && pruned === 0) this.#retained.delete(retention)
-      else this.#retained.set(retention, Math.min(retained + 1, maximum))
+      this.#retained.set(retention, retained + 1 - pruned)
+      this.#lastAppended.set(retention, { sequence: inserted.lastInsertRowid, id: entry.id })
     } catch (error) {
       this.#database.exec("ROLLBACK TO domovoi_audit_append")
       this.#database.exec("RELEASE domovoi_audit_append")
@@ -290,7 +315,7 @@ export class SqliteAuditLog implements AuditLog {
     }
     const where = conditions.length === 0 ? "" : `WHERE ${conditions.join(" AND ")}`
     const statement = this.#database.prepare(`
-      SELECT id, occurred_at, actor_kind, actor_name, actor_reference, actor_connection_id,
+      SELECT id, occurred_at, actor_kind, actor_name, actor_reference, actor_connection_id, actor_credential,
         action, outcome, session_id, project_id, target, detail
       FROM audit_log
       ${where}
@@ -344,6 +369,7 @@ function sanitizeAuditActor(actor: AuditActor): AuditActor {
           ? {}
           : { clientId: sanitizeAuditText(actor.clientId, 128) }),
         ...(actor.connectionId === undefined ? {} : { connectionId: actor.connectionId }),
+        ...(actor.credential === undefined ? {} : { credential: actor.credential }),
       }
     case "provider":
       return {
@@ -394,6 +420,7 @@ function storedAuditActor(row: StoredAuditEntry): unknown {
         client: row.actor_name,
         ...(row.actor_reference === null ? {} : { clientId: row.actor_reference }),
         ...(row.actor_connection_id === null ? {} : { connectionId: row.actor_connection_id }),
+        ...(row.actor_credential === null ? {} : { credential: row.actor_credential }),
       }
     case "provider":
       return {
