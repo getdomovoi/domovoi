@@ -7235,12 +7235,18 @@ export class DomovoiDaemon {
             // A file hidden now is hidden in the card's text from this revision
             // on, as written and as the durable redaction left it.
             if (hidesFile && workspaceRoot !== undefined) {
-              // The forms the card was judged on are the ones it hides.
-              const { forms } = currentAffects
+              // The forms the card was judged on are the ones it hides; a set
+              // that hit its bound hides the text whole.
+              const { forms, complete } = currentAffects
                 ?? await fileTargetAffects({ workspace: workspaceRoot, path: keptTarget.filePath, cwd: keptTarget.cwd })
-              const shownForms = [...forms, ...forms.map((form) => redactDurableText(form).value)]
-              approval.operation = hidePaths(approval.operation, shownForms)
-              approval.command = hidePaths(approval.command, shownForms)
+              if (complete) {
+                const shownForms = [...forms, ...forms.map((form) => redactDurableText(form).value)]
+                approval.operation = hidePaths(approval.operation, shownForms)
+                approval.command = hidePaths(approval.command, shownForms)
+              } else {
+                approval.operation = "[REDACTED]"
+                approval.command = "[REDACTED]"
+              }
             }
             approval.revision += 1
             if (currentAffects !== undefined) approval.affects = currentAffects.text
@@ -9178,7 +9184,7 @@ export class DomovoiDaemon {
       const directoryCopy = await cardDirectory({ directory: requestCwd, workspace: workspaceRoot })
       const affectsCopy = fileTarget
         ? await fileTargetAffects({ workspace: workspaceRoot, path: fileTarget.filePath, cwd: fileTarget.cwd })
-        : { text: "Files and processes in the session worktree.", redacted: false, sensitive: false, forms: [] }
+        : { text: "Files and processes in the session worktree.", redacted: false, sensitive: false, forms: [], complete: true }
       // The path Claude Code blocked on is never drawn on the card. When it
       // names a credential file, or the durable redaction changes it, the card
       // hides it the way the Affects line would.
@@ -9194,9 +9200,14 @@ export class DomovoiDaemon {
         ...(directoryCopy.hidden ? directoryCopy.forms : []),
         ...(blockedCopy !== undefined && hidesBlockedPath ? blockedCopy.forms : []),
       ]
-      const shownCommand = hidePaths(command ?? "Command details unavailable", hiddenForms)
+      // A path whose spellings hit their bound cannot be hidden form by form,
+      // so the operation and command are hidden whole (final check after
+      // e8f7a4d3). Such a path is also judged as a credential path, which
+      // hides its line and makes the card a hard gate.
+      const hidesWhole = !affectsCopy.complete || !directoryCopy.complete || blockedCopy?.complete === false
+      const shownCommand = hidesWhole ? "[REDACTED]" : hidePaths(command ?? "Command details unavailable", hiddenForms)
       const commandCopy = redactDurableCommand(shownCommand)
-      const reasonCopy = redactDurableText(hidePaths(event.reason ?? "Run a command", hiddenForms))
+      const reasonCopy = redactDurableText(hidesWhole ? "[REDACTED]" : hidePaths(event.reason ?? "Run a command", hiddenForms))
       const containsSecret = commandCopy.redacted
         || reasonCopy.redacted
         || directoryCopy.hidden

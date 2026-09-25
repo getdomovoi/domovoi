@@ -13368,6 +13368,16 @@ describe("DomovoiDaemon", () => {
     await symlink(".env", join(workspacePath, "pub", "pubalias"))
     await symlink("public.txt", join(workspacePath, "pub", "second"))
     await symlink("second", join(workspacePath, "pub", "first"))
+    // Nine nested links, each beside the directory it leads to, spell a file
+    // 2^9 ways, past the bound on spellings (final check after e8f7a4d3).
+    let deepest = workspacePath
+    for (let level = 1; level <= 9; level += 1) {
+      await mkdir(join(deepest, `deepd${level}`))
+      await symlink(`deepd${level}`, join(deepest, `deepa${level}`), "junction")
+      deepest = join(deepest, `deepd${level}`)
+    }
+    await writeFile(join(deepest, ".env"), "TOKEN=1")
+    const deep = (kinds: string) => join(workspacePath, ...[...kinds].map((kind, level) => `deep${kind}${level + 1}`), ".env")
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
     session.runtime = {
@@ -13463,6 +13473,8 @@ describe("DomovoiDaemon", () => {
       "hop2",
       "pubalias",
       "pub/.env",
+      "deepa",
+      "deepd",
       join(workspacePath, "pub", ".env"),
       join(realWorkspace, "pub", ".env"),
     ]
@@ -13562,7 +13574,15 @@ describe("DomovoiDaemon", () => {
       reason: `Edit ${join(workspacePath, "pub", "first")}, which is pub/second`,
       path: join(workspacePath, "pub", "first"),
     })
-    await vi.waitFor(async () => expect(await cards()).toHaveLength(10), { timeout: 3_000 })
+    // A credential file with more spellings than the bound, named in some of
+    // them: the card's text is hidden whole.
+    listener!({
+      ...request,
+      requestId: 511,
+      reason: `Edit ${deep("aaaaaaaaa")}, also ${deep("ddddddddd")}, ${deep("adadadada")} and ${deep("dadadadad")}`,
+      path: deep("aaaaaaaaa"),
+    })
+    await vi.waitFor(async () => expect(await cards()).toHaveLength(11), { timeout: 3_000 })
 
     expect(await card(501)).toMatchObject({
       risk: "hard-gate",
@@ -13604,6 +13624,12 @@ describe("DomovoiDaemon", () => {
       operation: "Edit [REDACTED], which is [REDACTED] or [REDACTED]",
       command: "Edit",
     })
+    expect(await card(511)).toMatchObject({
+      risk: "hard-gate",
+      affects: "The file [REDACTED] in the session worktree.",
+      operation: "[REDACTED]",
+      command: "[REDACTED]",
+    })
     expect(await card(510)).toMatchObject({
       risk: "normal",
       affects: "The file pub/public.txt in the session worktree.",
@@ -13625,7 +13651,7 @@ describe("DomovoiDaemon", () => {
     await expect(rpc("approval.resolve", { approvalId: (await card(503)).id, decision: "allow-once", revision: 0, client: "desktop" }))
       .resolves.not.toHaveProperty("error")
     expect(agent.resolveApproval).toHaveBeenCalledWith(503, "allow-once")
-    for (const requestId of [501, 502, 504, 507, 508, 509]) {
+    for (const requestId of [501, 502, 504, 507, 508, 509, 511]) {
       await expect(rpc("approval.resolve", { approvalId: (await card(requestId)).id, decision: "allow-once", revision: 0, client: "desktop" }))
         .resolves.not.toHaveProperty("error")
       expect(agent.resolveApproval).toHaveBeenCalledWith(requestId, "allow-once")
@@ -13643,6 +13669,8 @@ describe("DomovoiDaemon", () => {
     ]))
     // Cards 507, 508 and 509 read the same once hidden; each has its receipt.
     expect(receipts.filter((operation) => operation === "Edit [REDACTED], which is [REDACTED] or [REDACTED]")).toHaveLength(3)
+    // Card 511's text was hidden whole, and so is its receipt.
+    expect(receipts).toContain("[REDACTED]")
     neverNamed()
     socket.close()
   })
