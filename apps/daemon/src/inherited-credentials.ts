@@ -67,8 +67,9 @@ function canonicalMissingPath(directory: string): string {
 
 // Undefined when the profile cannot be named: an invalid DOMOVOI_PROFILE_DIR,
 // a symlink loop, an unreadable path, or a directory that exists but whose
-// canonical path cannot then be read. Nothing is kept for it or filled into
-// it, and the settings parse or the profile claim reports the problem.
+// canonical path cannot then be read or leads to another directory. Nothing
+// is kept for it or filled into it, and the settings parse or the profile
+// claim reports the problem.
 function profileIdentity(profileSetting: string | undefined, homeDirectory: string): ProfileIdentity | undefined {
   try {
     const directory = profileDirectory(profileLocation(homeDirectory, configuredProfileDirectory(profileSetting, homeDirectory)))
@@ -86,7 +87,14 @@ function profileIdentity(profileSetting: string | undefined, homeDirectory: stri
     // The directory exists, so a canonical path that cannot be read, even with
     // ENOENT, is not a missing profile. It throws to the outer catch and the
     // profile gets nothing, rather than matching a bearer pinned by path.
-    return { kind: "inode", dev: stats.dev, ino: stats.ino, path: realpathSync.native(directory) }
+    const path = realpathSync.native(directory)
+    // A symlink retargeted between the stat and the lookup would pair one
+    // directory's inode with another's path, and the same switch later would
+    // match that pair. The canonical path must lead to the directory the stat
+    // saw; if it does not, or cannot be read, the profile is not named.
+    const resolved = statSync(path, { bigint: true })
+    if (resolved.dev !== stats.dev || resolved.ino !== stats.ino) return undefined
+    return { kind: "inode", dev: stats.dev, ino: stats.ino, path }
   } catch {
     return undefined
   }

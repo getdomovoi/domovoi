@@ -1,5 +1,6 @@
 import type { BigIntStats, PathLike, StatSyncOptions, Stats } from "node:fs"
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
+import { rmSync, symlinkSync } from "node:fs"
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -14,11 +15,17 @@ const statOverrides = vi.hoisted(() => new Map<string, { dev: bigint; ino: bigin
 // throw, or another path to report. It stands in for a directory removed,
 // made unreadable or looped between the stat and the lookup.
 const realpathOverrides = vi.hoisted(() => new Map<string, { code: string } | { path: string }>())
+// Run once, right after the next stat of one path returns. It stands in for
+// a symlink retargeted between that stat and the canonical-path lookup.
+const afterStat = vi.hoisted(() => new Map<string, () => void>())
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>()
   const statSync = ((path: PathLike, options?: StatSyncOptions) => {
     const stats = actual.statSync(path, options)
+    const hook = afterStat.get(resolve(String(path)))
+    afterStat.delete(resolve(String(path)))
+    hook?.()
     const override = statOverrides.get(resolve(String(path)))
     if (override === undefined || stats === undefined) return stats
     return Object.assign(stats as BigIntStats | Stats, override)
@@ -55,6 +62,7 @@ beforeEach(async () => {
 afterEach(async () => {
   statOverrides.clear()
   realpathOverrides.clear()
+  afterStat.clear()
   resetKeptCredentialsForTests()
   for (const name of names) {
     const value = saved[name]
@@ -156,6 +164,57 @@ describe("kept inherited credentials", () => {
     captureInheritedCredentials(() => home)
     await mkdir(profile)
     realpathOverrides.set(profile, { path: join(root, "elsewhere") })
+
+    expect(Object.hasOwn(withInheritedCredentials(process.env, home), "DOMOVOI_AUTH_TOKEN")).toBe(false)
+  })
+
+  // A profile named by a symlink that is retargeted between the stat and the
+  // canonical-path lookup would be pinned by one directory's inode and the
+  // other's path. The same switch at lookup would then match that mixed
+  // identity and hand the bearer to the directory the link now names.
+  it.runIf(process.platform !== "win32")("hands out no bearer when the profile symlink is switched between the stat and the canonical-path lookup", async () => {
+    const home = join(root, "home")
+    const first = join(root, "first")
+    const second = join(root, "second")
+    const link = join(root, "profile")
+    await mkdir(home)
+    await mkdir(first)
+    await mkdir(second)
+    await symlink(first, link)
+    const switchTo = (target: string) => () => {
+      rmSync(link)
+      symlinkSync(target, link)
+    }
+
+    process.env.DOMOVOI_PROFILE_DIR = link
+    process.env.DOMOVOI_AUTH_TOKEN = "placeholder-kept-value"
+    afterStat.set(link, switchTo(second))
+    captureInheritedCredentials(() => home)
+    expect(afterStat.has(link)).toBe(false)
+
+    switchTo(first)()
+    afterStat.set(link, switchTo(second))
+    expect(Object.hasOwn(withInheritedCredentials(process.env, home), "DOMOVOI_AUTH_TOKEN")).toBe(false)
+    expect(afterStat.has(link)).toBe(false)
+  })
+
+  // The same mixed identity without a race: the canonical path names a
+  // directory other than the one the stat saw, or one that cannot be read.
+  it.each([
+    ["another directory", true],
+    ["a path that no longer exists", false],
+  ])("hands out no bearer when the canonical path names %s", async (_label, exists) => {
+    const home = join(root, "home")
+    const profile = join(root, "profile")
+    const other = join(root, "other")
+    await mkdir(home)
+    await mkdir(profile)
+    if (exists) await mkdir(other)
+
+    process.env.DOMOVOI_PROFILE_DIR = profile
+    process.env.DOMOVOI_AUTH_TOKEN = "placeholder-kept-value"
+    realpathOverrides.set(profile, { path: other })
+    captureInheritedCredentials(() => home)
 
     expect(Object.hasOwn(withInheritedCredentials(process.env, home), "DOMOVOI_AUTH_TOKEN")).toBe(false)
   })
