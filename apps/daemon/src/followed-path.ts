@@ -118,6 +118,15 @@ function fileTargetUnreadable(identity: FileTargetIdentity): boolean {
   return identity.entry.kind === "unreadable" || identity.realPath === undefined || identity.target.kind === "unreadable"
 }
 
+// Whether the file a reading reaches has more than one name (lstat nlink > 1,
+// which NTFS reports too). Its other names share its bytes and may lie
+// anywhere, outside the worktree included, and moving one of them changes
+// nothing a reading holds, so no reading can vouch for the file (ruled
+// 2026-09-24). A directory always has several links and is not counted.
+export function fileTargetHasOtherNames(identity: FileTargetIdentity): boolean {
+  return identity.target.kind === "regular" && Number(identity.target.nlink) > 1
+}
+
 function sameNode(one: NodeIdentity, other: NodeIdentity): boolean {
   return one.kind === other.kind && one.dev === other.dev && one.ino === other.ino && one.nlink === other.nlink
 }

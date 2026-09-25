@@ -1,10 +1,10 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { chmod, link, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
-import { fileTargetChanged, fileTargetIdentity } from "./followed-path.js"
+import { fileTargetChanged, fileTargetHasOtherNames, fileTargetIdentity } from "./followed-path.js"
 
 const scratch: string[] = []
 
@@ -17,6 +17,35 @@ async function directory(prefix: string): Promise<string> {
   scratch.push(path)
   return path
 }
+
+describe("fileTargetHasOtherNames", () => {
+  // Ruled 2026-09-24: a file with another name is never released, since a move
+  // of that name leaves every field of the reading as it was.
+  it("marks a file with another name, wherever that name moves, and nothing else", async () => {
+    const workspace = await directory("domovoi-identity-names-")
+    const outside = await directory("domovoi-identity-names-outside-")
+    await writeFile(join(workspace, "single.json"), "{}")
+    await writeFile(join(workspace, "twin.json"), "{}")
+    await link(join(workspace, "twin.json"), join(workspace, "other.json"))
+    await mkdir(join(workspace, "folder"))
+    // A directory junction, which Windows makes without admin rights.
+    await symlink(workspace, join(workspace, "through"), "junction")
+
+    expect(fileTargetHasOtherNames(await fileTargetIdentity(workspace, "single.json", workspace))).toBe(false)
+    expect(fileTargetHasOtherNames(await fileTargetIdentity(workspace, "absent.json", workspace))).toBe(false)
+    expect(fileTargetHasOtherNames(await fileTargetIdentity(workspace, "folder", workspace))).toBe(false)
+    const before = await fileTargetIdentity(workspace, "twin.json", workspace)
+    expect(fileTargetHasOtherNames(before)).toBe(true)
+    // Through a link, the file it leads to is the one counted.
+    expect(fileTargetHasOtherNames(await fileTargetIdentity(workspace, join("through", "twin.json"), workspace))).toBe(true)
+    expect(fileTargetHasOtherNames(await fileTargetIdentity(workspace, join("through", "single.json"), workspace))).toBe(false)
+
+    await rename(join(workspace, "other.json"), join(outside, "other.json"))
+    const after = await fileTargetIdentity(workspace, "twin.json", workspace)
+    expect(fileTargetChanged(before, after)).toBe(false)
+    expect(fileTargetHasOtherNames(after)).toBe(true)
+  })
+})
 
 describe("fileTargetChanged", () => {
   it("keeps an unchanged file and a path that stays empty, and counts a new entry as a change", async () => {

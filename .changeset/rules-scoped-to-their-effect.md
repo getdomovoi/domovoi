@@ -46,8 +46,11 @@ or emergency stop, or expired.
 
 A file-tool target that is a file with more than one hard link stays unresolved: its other names
 share its bytes and may lie outside the worktree, so no standing rule applies to it and its card
-offers no Always. A target replaced by such a link while its card waits is refused when the card
-is answered, with the file-target text above. A file that does not exist yet is unaffected. An
+offers no Always. Domovoi never releases an edit to such a file: moving one of its other names
+changes nothing Domovoi reads at the file, so Allow once is refused with "This file has other names
+Domovoi cannot check, so Domovoi will not release the edit.", both for a file that had another name
+when its card was raised and for one that gained a name while the card waited (that card is also
+rewritten under its next revision). A file that does not exist yet is unaffected. An
 existing target that is not a regular file (a directory, FIFO, socket or device) stays unresolved
 the same way, read with lstat only, so a FIFO is never opened; a regular file replaced by one while
 its card waits is refused when the card is answered.

@@ -219,7 +219,12 @@ import {
 } from "./permission-policy.js"
 import { resolveExecution } from "./execution-resolution.js"
 import { cardDirectory, fileTargetAffects, hiddenPathForms, hidePaths } from "./file-target-affects.js"
-import { fileTargetChanged, fileTargetIdentity, type FileTargetIdentity } from "./followed-path.js"
+import {
+  fileTargetChanged,
+  fileTargetHasOtherNames,
+  fileTargetIdentity,
+  type FileTargetIdentity,
+} from "./followed-path.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger, type TurnUsage } from "./usage.js"
 import { usageIdentity } from "./usage-accounting.js"
@@ -1302,6 +1307,10 @@ export type DaemonErrorSink = (entry: DaemonErrorEntry) => void
 // which would name the file: the shape #541 gives a card whose record holds a
 // credential path, so every saved and sent copy stays free of the path.
 const hiddenApprovalExecution = { state: "unresolved", reason: "sensitive-content" } as const
+
+// Ruled 2026-09-24: Domovoi never releases an edit to a file with more than
+// one name. The card still shows; every Allow for it is refused with this.
+const fileTargetOtherNamesMessage = "This file has other names Domovoi cannot check, so Domovoi will not release the edit."
 
 // All closed terminal records together: sixteen full records at the replay
 // budget, 1,048,576 characters, the same figure as the WebSocket high-water
@@ -7107,6 +7116,8 @@ export class DomovoiDaemon {
         const packageScript = approvedRecord?.kind === "shell" && approvedRecord.entries.some(
           (entry) => entry.source.kind === "package-script",
         )
+        // Whether the file, as read for this Allow, has another name.
+        let targetHasOtherNames = false
         if (
           params.decision !== "deny"
           && params.decision !== "deny-explain"
@@ -7129,6 +7140,7 @@ export class DomovoiDaemon {
           const currentIdentity = fileTarget === undefined || workspaceRoot === undefined
             ? undefined
             : await fileTargetIdentity(workspaceRoot, fileTarget.filePath, fileTarget.cwd)
+          targetHasOtherNames = currentIdentity !== undefined && fileTargetHasOtherNames(currentIdentity)
           const currentExecution = workspaceRoot === undefined || cwd === undefined
             ? { state: "unresolved" as const, reason: "cwd-outside-project" as const }
             : fileTool !== undefined
@@ -7213,7 +7225,9 @@ export class DomovoiDaemon {
             approval.risk = currentRisk
             await this.#persistSnapshot()
             this.#broadcastSnapshot()
-            this.#error(socket, request.id, invalidParams, changedCardMessage)
+            // A file that gained another name while its card waited is refused
+            // for that, as the rewritten card will be.
+            this.#error(socket, request.id, invalidParams, targetHasOtherNames ? fileTargetOtherNamesMessage : changedCardMessage)
             return
           }
           resolvedApprovalExecution = currentExecution.state === "resolved" ? currentExecution : undefined
@@ -7225,6 +7239,10 @@ export class DomovoiDaemon {
             invalidParams,
             "Unresolved commands cannot create standing rules",
           )
+          return
+        }
+        if (targetHasOtherNames) {
+          this.#error(socket, request.id, invalidParams, fileTargetOtherNamesMessage)
           return
         }
         const project = this.#snapshot.project

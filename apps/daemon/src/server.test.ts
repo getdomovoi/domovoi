@@ -12046,9 +12046,11 @@ describe("DomovoiDaemon", () => {
     scratchDirectories.push(workspacePath, outside)
     await mkdir(join(workspacePath, "src"), { recursive: true })
     await writeFile(join(outside, "credentials.json"), "{}")
-    for (const name of ["ruled.json", "once.json", "always.json", "plain.json"]) {
+    for (const name of ["ruled.json", "once.json", "always.json", "plain.json", "twin.json"]) {
       await writeFile(join(workspacePath, "src", name), "{}")
     }
+    // Round 9 finding 2: this file's other name starts inside the worktree.
+    await link(join(workspacePath, "src", "twin.json"), join(workspacePath, "twin-other.json"))
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
     session.runtime = {
@@ -12137,11 +12139,14 @@ describe("DomovoiDaemon", () => {
       socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
       return response
     }
-    type Card = { id: string; providerRequestId?: number; execution: { state: string; reason?: string } }
+    type Card = { id: string; providerRequestId?: number; revision: number; execution: { state: string; reason?: string } }
     const cards = async () => ((await rpc("workspace.get", {})).result as { approvals: Card[] }).approvals
+    // Ruled 2026-09-24: Domovoi never releases an edit to a file with more
+    // than one name.
+    const otherNames = "This file has other names Domovoi cannot check, so Domovoi will not release the edit."
 
     await rpc("session.send", { sessionId: session.id, prompt: "Edit the config", client: "desktop" })
-    const files = { 51: "ruled.json", 52: "once.json", 53: "always.json", 54: "plain.json" } as const
+    const files = { 51: "ruled.json", 52: "once.json", 53: "always.json", 54: "plain.json", 55: "twin.json" } as const
     for (const [requestId, name] of Object.entries(files)) {
       listener!({
         type: "approval-requested",
@@ -12153,29 +12158,43 @@ describe("DomovoiDaemon", () => {
         path: join(workspacePath, "src", name),
       })
     }
-    await vi.waitFor(async () => expect(await cards()).toHaveLength(4), { timeout: 3_000 })
+    await vi.waitFor(async () => expect(await cards()).toHaveLength(5), { timeout: 3_000 })
     const waiting = await cards()
     const card = (requestId: number) => waiting.find((candidate) => candidate.providerRequestId === requestId)!
 
-    // The standing rule does not reach the linked file; it gets a card instead.
+    // The standing rule does not reach the linked file; it gets a card, which
+    // offers no Always and refuses Allow once.
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(51, expect.anything())
     expect(card(51).execution).toEqual({ state: "unresolved", reason: "unsupported-syntax" })
     await expect(rpc("approval.resolve", { approvalId: card(51).id, decision: "always-project", revision: 0, client: "desktop" }))
       .resolves.toMatchObject({ error: { message: "Unresolved commands cannot create standing rules" } })
+    await expect(rpc("approval.resolve", { approvalId: card(51).id, decision: "allow-once", revision: 0, client: "desktop" }))
+      .resolves.toMatchObject({ error: { message: otherNames } })
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(51, expect.anything())
     for (const requestId of [52, 53, 54]) expect(card(requestId).execution.state).toBe("resolved")
+    expect(card(55).execution).toEqual({ state: "unresolved", reason: "unsupported-syntax" })
 
-    // While the cards wait, two targets are replaced by links to the outside file.
+    // While the cards wait, two targets are replaced by links to the outside
+    // file, and the other name of a third moves out of the worktree. That move
+    // leaves the file's device, inode, kind and link count as they were.
     for (const name of ["once.json", "always.json"]) {
       await unlink(join(workspacePath, "src", name))
       await link(join(outside, "credentials.json"), join(workspacePath, "src", name))
     }
+    await rename(join(workspacePath, "twin-other.json"), join(outside, "twin-other.json"))
     for (const [requestId, decision] of [[52, "allow-once"], [53, "always-project"]] as const) {
       await expect(rpc("approval.resolve", { approvalId: card(requestId).id, decision, revision: 0, client: "desktop" }))
-        .resolves.toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
+        .resolves.toMatchObject({ error: { message: otherNames } })
       expect(agent.resolveApproval).not.toHaveBeenCalledWith(requestId, expect.anything())
-      expect((await cards()).find((candidate) => candidate.id === card(requestId).id)!.execution)
-        .toEqual({ state: "unresolved", reason: "unsupported-syntax" })
+      expect((await cards()).find((candidate) => candidate.id === card(requestId).id))
+        .toMatchObject({ revision: 1, execution: { state: "unresolved", reason: "unsupported-syntax" } })
     }
+    // The rewritten card is refused again at the revision it now shows.
+    await expect(rpc("approval.resolve", { approvalId: card(52).id, decision: "allow-once", revision: 1, client: "desktop" }))
+      .resolves.toMatchObject({ error: { message: otherNames } })
+    await expect(rpc("approval.resolve", { approvalId: card(55).id, decision: "allow-once", revision: 0, client: "desktop" }))
+      .resolves.toMatchObject({ error: { message: otherNames } })
+    for (const requestId of [52, 55]) expect(agent.resolveApproval).not.toHaveBeenCalledWith(requestId, expect.anything())
 
     await expect(rpc("approval.resolve", { approvalId: card(54).id, decision: "allow-once", revision: 0, client: "desktop" }))
       .resolves.not.toHaveProperty("error")
@@ -12329,11 +12348,15 @@ describe("DomovoiDaemon", () => {
       .resolves.not.toHaveProperty("error")
     expect(agent.resolveApproval).toHaveBeenCalledWith(61, "allow-once")
 
-    // An unresolved card whose file did not change allows once at its revision.
+    // A card whose file did not change, and still has another name, is never
+    // released (ruled 2026-09-24).
     const kept = await card(62)
     await expect(rpc("approval.resolve", { approvalId: kept.id, decision: "allow-once", revision: 0, client: "desktop" }))
-      .resolves.not.toHaveProperty("error")
-    expect(agent.resolveApproval).toHaveBeenCalledWith(62, "allow-once")
+      .resolves.toMatchObject({
+        error: { message: "This file has other names Domovoi cannot check, so Domovoi will not release the edit." },
+      })
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(62, expect.anything())
+    expect(await card(62)).toMatchObject({ revision: 0 })
     const rules = ((await rpc("workspace.get", {})).result as { approvalRules: unknown[] }).approvalRules
     expect(rules).toEqual([])
     socket.close()
@@ -12652,7 +12675,11 @@ describe("DomovoiDaemon", () => {
       const name = `${row.origin} ${row.swap}`
       const answer = await rpc("approval.resolve", { approvalId: shown.id, decision: "allow-once", revision: 0, client: "desktop" })
       // Soft, so one run reports every row that lets the Allow through.
-      expect.soft({ name, refusal: (answer.error as { message?: string } | undefined)?.message }).toEqual({ name, refusal: changed })
+      // A file given another name is refused with its own text (ruled 2026-09-24).
+      const refusal = row.swap === "hard-link"
+        ? "This file has other names Domovoi cannot check, so Domovoi will not release the edit."
+        : changed
+      expect.soft({ name, refusal: (answer.error as { message?: string } | undefined)?.message }).toEqual({ name, refusal })
       expect.soft({ name, released: agent.resolveApproval.mock.calls.some(([requestId]) => requestId === row.requestId) })
         .toEqual({ name, released: false })
       expect.soft({ name, revision: (await card(row.requestId))?.revision }).toEqual({ name, revision: 1 })
