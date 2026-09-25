@@ -34,11 +34,11 @@ overrides:
   js-yaml@4: ^4.3.2
 
 catalog:
-  "@vitest/coverage-v8": ^5.0.0
+  "@vitest/coverage-v8": ^5.0.1
   typescript: ^5.9.2
-  vite: ^8.2.2
-  vitest: ^5.0.0
-  zod: ^4.5.2
+  vite: ^8.3.0
+  vitest: ^5.0.1
+  zod: ^4.6.5
 
 minimumReleaseAgeExclude:
   - '@expo/cli@57.0.22'
