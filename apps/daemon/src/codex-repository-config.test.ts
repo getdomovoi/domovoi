@@ -46,7 +46,7 @@ afterEach(() => {
 })
 
 function repository(files: Record<string, string>): string {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "domovoi-codex-config-")))
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "domovoi-codex-config-")))
   directories.push(root)
   execFileSync("git", ["init", "-q", root])
   for (const [path, text] of Object.entries(files)) {
@@ -155,7 +155,7 @@ function linkedWorktree(committed: Record<string, string>, mainOnly: Record<stri
   git(main, "add", "-A")
   git(main, "commit", "-q", "--allow-empty", "-m", "initial")
   write(main, mainOnly)
-  const parent = realpathSync(mkdtempSync(join(tmpdir(), "domovoi-codex-worktree-")))
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "domovoi-codex-worktree-")))
   directories.push(parent)
   const worktree = join(parent, "session")
   git(main, "worktree", "add", "-q", "-b", "domovoi/session", worktree)
