@@ -14,10 +14,11 @@ configuration checks pass and the service-operation lease is held, and before th
 claimed, so a refused install never stops the desktop's in-app daemon. A rejected release stops the
 install with nothing claimed or written.
 
-`readDaemonServiceStatus` and `removeDaemonService` treat a Windows task under Domovoi's name as
-Domovoi's only when `service.json` holds a Domovoi registration and the task runs that file. Any
-other task is reported as not installed and is neither stopped nor deleted
-(`WindowsTaskNotDomovoiError`).
+`readDaemonServiceStatus`, `removeDaemonService`, `domovoid service status` and
+`domovoid service remove` treat a Windows task under Domovoi's name as Domovoi's only when
+`service.json` holds a Domovoi registration and the task runs that file. Any other task is reported
+as not installed and is neither stopped nor deleted (`WindowsTaskNotDomovoiError`). An install from
+before the runtime was recorded stays removable.
 
 The Windows logon task, from the desktop and from `domovoid service install` alike, always runs the
 daemon entry through the named Node runtime, and a runtime, entry or configuration path that

@@ -18,6 +18,7 @@ import {
   serviceRemovalPlan,
   serviceStatus,
   servicePlan,
+  type CapturedRun,
   type ServiceCommandDependencies,
   type ServiceEffects,
 } from "./install.js"
@@ -33,6 +34,22 @@ function configuration(homeDirectory: string, platform: string) {
 const linux = { platform: "linux", execPath: "/usr/local/bin/domovoid", home: "/home/dl", configuration: configuration("/home/dl", "linux") }
 const darwin = { platform: "darwin", execPath: "/usr/local/bin/domovoid", home: "/Users/dl", uid: 501, configuration: configuration("/Users/dl", "darwin") }
 const windows = { platform: "win32", execPath: "C:\\Program Files\\Domovoi\\domovoid.exe", user: "dl", home: "C:\\Users\\dl", configuration: configuration("C:\\Users\\dl", "win32") }
+// Ruled 2026-09-25: Windows status and removal first read the task's action
+// and service.json to check that Domovoi registered the task. This answers
+// that read with a Domovoi registration and leaves every other script to the
+// test.
+function registeredWindowsTask(answer: (command: string, args: string[]) => Promise<CapturedRun> | CapturedRun): Partial<ServiceEffects> {
+  const configurationPath = "C:\\Users\\dl\\.domovoi\\service.json"
+  const action = { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\Program Files\\Domovoi\\dist\\index.js" --service-config "${configurationPath}"`, enabled: true, state: 4 }
+  return {
+    readConfiguration: vi.fn(() => windows.configuration),
+    capture: vi.fn(async (command: string, args: string[]) => {
+      const script = command === "schtasks" ? "" : Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+      if (script.includes("domovoi-task-action:")) return { code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}\r\n` }
+      return answer(command, args)
+    }),
+  }
+}
 const windowsScript = {
   platform: "win32",
   execPath: "C:\\Program Files\\Domovoi\\dist\\index.js",
@@ -472,35 +489,38 @@ describe("serviceStatus", () => {
   })
 
   it.each(["Status: Wird ausgeführt", "Statut : En cours"])("reads numeric Windows state instead of localized schtasks output %j", async (localized) => {
-    const dependencies = effects({
-      capture: vi.fn(async (command, args) => {
-        if (command === "schtasks") return { code: 0, stdout: `${localized}\r\n` }
-        expect(command).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
-        expect(args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
-        const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
-        expect(script).toContain("[int]$task.State")
-        expect(script).not.toMatch(/\$task\.(?:Enabled|Stop)|DeleteTask/)
-        return { code: 0, stdout: "domovoi-task:4\r\n" }
-      }),
-    })
-    await expect(serviceStatus({ platform: "win32" }, dependencies)).resolves.toEqual({
+    const dependencies = effects(registeredWindowsTask((command, args) => {
+      if (command === "schtasks") return { code: 0, stdout: `${localized}\r\n` }
+      expect(command).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+      expect(args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
+      const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+      expect(script).toContain("[int]$task.State")
+      expect(script).not.toMatch(/\$task\.(?:Enabled|Stop)|DeleteTask/)
+      return { code: 0, stdout: "domovoi-task:4\r\n" }
+    }))
+    await expect(serviceStatus({ platform: "win32", home: "C:\\Users\\dl" }, dependencies)).resolves.toEqual({
       installed: true,
       running: true,
       detail: "Domovoi daemon is running",
     })
-    expect(dependencies.capture).toHaveBeenCalledOnce()
+    // The ownership read, then the state read; neither is schtasks text.
+    expect(dependencies.capture).toHaveBeenCalledTimes(2)
+    for (const [command, args] of vi.mocked(dependencies.capture).mock.calls) {
+      expect(command).not.toBe("schtasks")
+      expect(Buffer.from(args.at(-1)!, "base64").toString("utf16le")).not.toMatch(/\$task\.Enabled\s*=|\$task\.Stop|DeleteTask/)
+    }
     expect(dependencies.run).not.toHaveBeenCalled()
     expect(dependencies.remove).not.toHaveBeenCalled()
   })
 
   it.each(["1", "2", "3", "missing"])("reports the Windows task answer %j without claiming it is running", async (state) => {
-    const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: `domovoi-task:${state}\r\n` })) })
+    const dependencies = effects(registeredWindowsTask(() => ({ code: 0, stdout: `domovoi-task:${state}\r\n` })))
     await expect(serviceStatus(windows, dependencies)).resolves.toMatchObject({ installed: state !== "missing", running: false })
   })
 
   it.each(["domovoi-task:0", "domovoi-task:deleted", "domovoi-task:5", "Status: Running", "", "domovoi-task:4\ndomovoi-task:3"])(
     "refuses an unknown or ambiguous Windows task state %j", async (stdout) => {
-      const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout })) })
+      const dependencies = effects(registeredWindowsTask(() => ({ code: 0, stdout })))
       await expect(serviceStatus(windows, dependencies)).rejects.toThrow("Task Scheduler")
     },
   )

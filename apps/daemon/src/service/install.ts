@@ -165,10 +165,10 @@ function windowsTaskCommand(execPath: string, runtime: string | undefined): stri
 // action's program and arguments each time the task runs, and schtasks has no
 // way to write a literal percent sign. A path that contains one could run a
 // file other than the one checked, so it is refused before anything changes.
-// Placeholder copy: the text needs an owner ruling.
+// Text ruled 2026-09-25.
 export class WindowsTaskPercentSignError extends Error {
   constructor(readonly path: string) {
-    super(`[copy pending owner ruling] ${path} contains a percent sign, which Task Scheduler reads as an environment variable when the task runs. No service files were changed.`)
+    super(`${path} contains a percent sign, which Task Scheduler reads as an environment variable when the task runs. No service files were changed.`)
     this.name = "WindowsTaskPercentSignError"
   }
 }
@@ -391,16 +391,18 @@ export function installService(
 }
 
 // Security review round 1 (#574): any program can register a Windows task
-// under Domovoi's task name. The desktop reports or changes the task only once
-// it is Domovoi's: service.json holds a Domovoi registration, and the task runs
-// that file in the shape servicePlan writes, a runtime and an entry (or one
-// program), then --service-config and the saved configuration path.
-export type ServiceOwnershipOptions = { verifyWindowsTaskOwner?: boolean }
+// under Domovoi's task name. Status and removal, from the desktop and the CLI
+// alike (ruled 2026-09-25), report or change the task only once it is
+// Domovoi's: service.json holds a Domovoi registration, and the task runs that
+// file in the shape servicePlan writes, a runtime and an entry (or one
+// program), then --service-config and the saved configuration path. The
+// runtime service.json may record is not required, so an install from before
+// that record stays removable.
 
-// Placeholder copy: the text needs an owner ruling.
+// Text ruled 2026-09-25.
 export class WindowsTaskNotDomovoiError extends Error {
   constructor(readonly taskName: string) {
-    super(`[copy pending owner ruling] A Windows task named "${taskName}" exists, but Domovoi did not register it. Nothing was stopped or deleted.`)
+    super(`A Windows task named "${taskName}" exists, but Domovoi did not register it. Nothing was stopped or deleted.`)
     this.name = "WindowsTaskNotDomovoiError"
   }
 }
@@ -453,14 +455,13 @@ async function removeWithDeadline(
   effects: RemovalEffects,
   deadline: OperationDeadline,
   progress: RemovalProgress,
-  options: ServiceOwnershipOptions,
 ): Promise<ServiceRemovalResult> {
   const plan = serviceRemovalPlan(target)
   const home = assertHome(target.home)
   deadline.throwIfExpired()
   // Read before anything is stopped, so a task Domovoi did not register is
   // left running and registered.
-  if (plan.kind === "task" && options.verifyWindowsTaskOwner && await windowsTaskOwner(home, effects, deadline) === "other") {
+  if (plan.kind === "task" && await windowsTaskOwner(home, effects, deadline) === "other") {
     throw new WindowsTaskNotDomovoiError(displayName)
   }
   const before = effects.removalSnapshot(home, target.platform)
@@ -513,10 +514,9 @@ async function removeWithDeadline(
 export function removeService(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
   effects: RemovalEffects,
-  options: ServiceOwnershipOptions = {},
 ): Promise<ServiceRemovalResult> {
   const progress: RemovalProgress = { managerHoldsDeadline: false }
-  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline, progress, options)).catch((cause: unknown) => {
+  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline, progress)).catch((cause: unknown) => {
     // The outer deadline can expire before the manager adapter settles. It
     // needs the same actionable task-specific error, not a bare timer failure.
     if (progress.managerHoldsDeadline && !(cause instanceof WindowsTaskRemovalError)) {
@@ -530,7 +530,6 @@ async function statusWithDeadline(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
   effects: Pick<ServiceEffects, "capture" | "exists" | "supervisorStatus" | "readConfiguration">,
   deadline: OperationDeadline,
-  options: ServiceOwnershipOptions,
 ): Promise<ServiceStatus> {
   if (target.platform === "linux") {
     const supervisor = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(assertHome(target.home)))
@@ -577,9 +576,9 @@ async function statusWithDeadline(
   }
 
   if (target.platform === "win32") {
-    if (options.verifyWindowsTaskOwner && await windowsTaskOwner(assertHome(target.home), effects, deadline) === "other") {
-      // Placeholder copy: the text needs an owner ruling.
-      return { installed: false, running: false, detail: `[copy pending owner ruling] a task named ${displayName} exists, but Domovoi did not register it` }
+    if (await windowsTaskOwner(assertHome(target.home), effects, deadline) === "other") {
+      // Text ruled 2026-09-25.
+      return { installed: false, running: false, detail: `a task named ${displayName} exists, but Domovoi did not register it` }
     }
     const state = await readWindowsTaskState(displayName, effects, deadline)
     const installed = state !== "missing"
@@ -599,9 +598,8 @@ async function statusWithDeadline(
 export function serviceStatus(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
   effects: Pick<ServiceEffects, "capture" | "exists" | "claimServiceOperation" | "supervisorStatus" | "readConfiguration">,
-  options: ServiceOwnershipOptions = {},
 ): Promise<ServiceStatus> {
-  return serviceOperation(effects, (deadline) => statusWithDeadline(target, effects, deadline, options))
+  return serviceOperation(effects, (deadline) => statusWithDeadline(target, effects, deadline))
 }
 
 const usage = `Usage: domovoid service install

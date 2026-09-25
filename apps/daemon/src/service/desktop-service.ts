@@ -135,17 +135,13 @@ export async function installDaemonService(
 export function readDaemonServiceStatus(
   dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),
 ): Promise<DaemonServiceStatus> {
-  // Security review round 1: a Windows task under Domovoi's name is reported
-  // only once service.json and the task's action show Domovoi registered it.
-  return serviceStatus(target(dependencies), dependencies, { verifyWindowsTaskOwner: true })
+  return serviceStatus(target(dependencies), dependencies)
 }
 
 export async function removeDaemonService(
   dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),
 ): Promise<DaemonServiceRemovalResult> {
-  // Security review round 1: a Windows task Domovoi did not register is
-  // neither stopped nor deleted.
-  const removed = await removeService(target(dependencies), dependencies, { verifyWindowsTaskOwner: true })
+  const removed = await removeService(target(dependencies), dependencies)
   const recovery = {
     profileRecovery: removed.profileRecovery,
     ...(removed.profileRecoveryDetail === undefined ? {} : { profileRecoveryDetail: removed.profileRecoveryDetail }),
