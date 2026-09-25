@@ -39,6 +39,15 @@ describe("WSL service installation", () => {
     expect(stored.wsl).toMatchObject({ distribution: "Ubuntu", linuxUser: "test" })
   })
 
+  // Ruled 2026-09-24 (A): the install records the guest runtime and daemon
+  // entry it installed; an update's rollback starts only those.
+  it("records the installed guest runtime and daemon entry in service.json", async () => {
+    const deps = dependencies()
+    expect(await runServiceCommand(["service", "install"], deps)).toBe(0)
+    const stored = parseServiceConfiguration(deps.write.mock.calls[0]![1]!)
+    expect(stored.serviceRuntime).toEqual({ executable: "/usr/bin/node", entry: "/opt/domovoi/index.js" })
+  })
+
   it("refuses missing Windows interop without writing or falling back", async () => {
     const deps = dependencies()
     delete (deps.environment as Record<string, string | undefined>).WSL_INTEROP

@@ -595,6 +595,9 @@ describe("runServiceCommand", () => {
       machineIdentityPath: at("machine.json"),
       advertiseHost: "studio.example.com",
       allowedOrigins: ["https://domovoi.example.com"],
+      // Ruled 2026-09-24 (A): a service that runs a script through a named
+      // runtime records both, so an update can put back only those.
+      ...("runtime" in target ? { serviceRuntime: { executable: target.runtime, entry: target.execPath } } : {}),
     })
     const launch = target.platform === "win32"
       ? vi.mocked(dependencies.run).mock.calls[0]?.[1].join(" ")

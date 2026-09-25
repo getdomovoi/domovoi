@@ -7,11 +7,11 @@ import { profileLocation } from "../profile-directory.js"
 import { localOwnerRemovalReceiptPath } from "../local-owner-removal.js"
 import { z } from "zod"
 
-import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration } from "./configuration.js"
+import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration, type ServiceRuntimeRecord } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceCommand, ServiceCommandDependencies, ServiceEffects } from "./install.js"
 import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, type InFlight, type ServiceSwap } from "./update-outcome.js"
-import { isDomovoiServiceProgram } from "./restore-target.js"
+import { hasDomovoiServiceShape, isRecordedServiceProgram } from "./restore-target.js"
 import { serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
 import { installedWslTask, type WslInstallation } from "./wsl-registration.js"
 import { removeWindowsTask, WindowsTaskRemovalError, type WindowsTaskRemovalPlan } from "./windows-task.js"
@@ -77,20 +77,32 @@ function wslUpdateIntentText(previous: ServiceConfiguration, next: ServiceConfig
 }
 
 // The configuration as it is saved and read back, so two can be compared
-// whatever order their fields were built in.
+// whatever order their fields were built in. The runtime record is left out:
+// it names the runtime that last reported ready, which an update changes on
+// its own, and is checked against what is started instead.
 function asSaved(configuration: ServiceConfiguration): ServiceConfiguration {
-  return parseServiceConfiguration(serializeServiceConfiguration(configuration))
+  const { serviceRuntime: _record, ...settings } = parseServiceConfiguration(serializeServiceConfiguration(configuration))
+  return settings
 }
 
 // The program the guest task runs for a saved runtime, as installedWslTask
-// builds it, checked as every restore target is (security review round 2):
-// the runtime, one daemon entry, and the supervise flag with this
-// configuration.
+// builds it.
+function guestProgram(wsl: WslInstallation, configurationPath: string) {
+  return { execPath: wsl.executable, args: [...wsl.args, "--service-supervise", configurationPath] }
+}
+
+const guestShape = (configurationPath: string) => ({ paths: "posix", flag: "--service-supervise", configurationPath }) as const
+
+// Checked as every restore target is (security review round 2): the runtime,
+// one daemon entry, and the supervise flag with this configuration.
 function domovoiGuestRuntime(wsl: WslInstallation, configurationPath: string): boolean {
-  return isDomovoiServiceProgram(
-    { execPath: wsl.executable, args: [...wsl.args, "--service-supervise", configurationPath] },
-    { paths: "posix", flag: "--service-supervise", configurationPath },
-  )
+  return hasDomovoiServiceShape(guestProgram(wsl, configurationPath), guestShape(configurationPath))
+}
+
+// Security review round 3, ruled 2026-09-24 (A): a guest runtime a failed step
+// registers and starts again must be exactly the one service.json records.
+function recordedGuestRuntime(wsl: WslInstallation, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): boolean {
+  return isRecordedServiceProgram(guestProgram(wsl, configurationPath), guestShape(configurationPath), recorded)
 }
 
 // An update changes only the guest runtime, and writes it in the shape an
@@ -205,12 +217,20 @@ export function prepareWslUpdate(
     }
     if (!previous.wsl || !previous.registrationId) throw new Error("No saved WSL service registration; no systemd action was attempted")
     // The old task is registered and started again on a failed step, so the
-    // saved runtime must be a Domovoi guest runtime (security review round 2).
-    // A crafted intent record was refused above with its own fixed cause.
-    if (!domovoiGuestRuntime(previous.wsl, path)) throw new DaemonServiceUpdateError("changed-outside")
+    // runtime it runs must be exactly the one service.json records (security
+    // review rounds 2 and 3, ruled 2026-09-24 A), whether it comes from
+    // service.json or from the record of an interrupted update. A crafted
+    // intent record of any other kind was refused above with its own cause.
+    const recorded = saved.serviceRuntime
+    if (!recorded || !recordedGuestRuntime(previous.wsl, path, recorded)) throw new DaemonServiceUpdateError("changed-outside")
     const registrationId = previous.registrationId
     const old = installedWslTask(previous.wsl, registrationId, path)
-    const updated = { ...previous, wsl: { ...previous.wsl, executable: runtime.nodePath, args: [runtime.daemonEntryPath] } }
+    // service.json keeps naming the previous runtime as the one that last
+    // reported ready until the new one has; an update interrupted before then
+    // still starts from it.
+    const restored = { ...previous, serviceRuntime: recorded }
+    const updated = { ...restored, wsl: { ...previous.wsl, executable: runtime.nodePath, args: [runtime.daemonEntryPath] } }
+    const ready = { ...updated, serviceRuntime: { executable: runtime.nodePath, entry: runtime.daemonEntryPath } }
     const next = installedWslTask(updated.wsl, registrationId, path)
     const candidates = [old.removal, next.removal,
       ...(interrupted?.wsl ? [installedWslTask(interrupted.wsl, registrationId, path).removal] : [])]
@@ -269,13 +289,23 @@ export function prepareWslUpdate(
           await releaseWhenSettled(lease, inFlight)
         }
         await startIn(deadline)(next)
-        // The new service has reported ready; only now is the update done.
+        // The new service has reported ready; only now is the update done,
+        // and service.json records its runtime. The new daemon holds the
+        // profile, so this write, like the intent record's, is made without
+        // it. If it fails, the record of the update is kept as it is: the
+        // next update starts from the previous runtime service.json still
+        // records.
+        try {
+          await writeIn(deadline)(path, serializeServiceConfiguration(ready))
+        } catch {
+          return { name: next.name, configurationPath: path }
+        }
         await settleIntentIn(deadline)("next")
         return { name: next.name, configurationPath: path }
       },
       restore: async (deadline) => {
         await removeRegisteredTask(candidates, effects, deadline)
-        await writeIn(deadline)(path, serializeServiceConfiguration(previous))
+        await writeIn(deadline)(path, serializeServiceConfiguration(restored))
         await startIn(deadline)(old)
         // The previous service has reported ready, so the restore worked. A
         // record that cannot be removed is left for later cleanup, marked as
@@ -316,9 +346,13 @@ export async function runWslServiceCommand(verb: string, dependencies: ServiceCo
       throw new Error("Remove the existing systemd registration before installing the WSL service")
     }
     const wsl = await discover(dependencies, deadline)
+    // Ruled 2026-09-24 (A): the guest runtime and daemon entry installed are
+    // recorded, so an update puts back only those. A guest install with no
+    // separate entry has nothing an update could put back, and records nothing.
     const configuration = { ...createServiceConfiguration(dependencies.environment ?? {}, {
       platform: "linux", homeDirectory: home, workingDirectory: dependencies.workingDirectory ?? process.cwd(),
-    }), registrationId: randomUUID(), wsl }
+    }), registrationId: randomUUID(), wsl,
+    ...(dependencies.runtime === undefined ? {} : { serviceRuntime: { executable: dependencies.runtime, entry: dependencies.execPath } }) }
     const task = installedWslTask(wsl, configuration.registrationId, path)
     const contents = serializeServiceConfiguration(configuration)
     const profile = profileLocation(home, configuration.profileDirectory)

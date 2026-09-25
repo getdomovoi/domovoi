@@ -8,6 +8,7 @@ import {
   removeDaemonService,
   type DaemonServiceDependencies,
 } from "../public.js"
+import { parseServiceConfiguration } from "./configuration.js"
 import type { ServiceEffects } from "./install.js"
 
 // The desktop installs a service that runs the Node and daemon it ships, so
@@ -82,6 +83,22 @@ describe("installDaemonService", () => {
     await expect(installDaemonService({ runtime }, effects)).rejects.toBeInstanceOf(ProfileAlreadyOwnedError)
     expect(effects.write).not.toHaveBeenCalled()
     expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  // Ruled 2026-09-24 (A): the install records the runtime and daemon entry it
+  // installed in its own service.json; an update's rollback starts only those.
+  it("records the installed runtime and daemon entry in service.json on every platform", async () => {
+    const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime\\daemon\\index.js" }
+    for (const [platform, home, shipped] of [
+      ["darwin", "/Users/dl", runtime],
+      ["linux", "/home/dl", runtime],
+      ["win32", "C:\\Users\\dl", windowsRuntime],
+    ] as const) {
+      const effects = dependencies({ platform, home })
+      const installed = await installDaemonService({ runtime: shipped }, effects)
+      const written = vi.mocked(effects.write).mock.calls.find(([path]) => path === installed.configurationPath)![1]
+      expect(parseServiceConfiguration(written).serviceRuntime).toEqual({ executable: shipped.nodePath, entry: shipped.daemonEntryPath })
+    }
   })
 
   it("runs a Windows logon task through the shipped node.exe", async () => {

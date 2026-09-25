@@ -1,5 +1,7 @@
 import { posix, win32 } from "node:path"
 
+import type { ServiceRuntimeRecord } from "./configuration.js"
+
 // Security review round 2 (20c23ba7): an update puts back what the service ran
 // before, read from a plist, a unit, a task action or a saved WSL runtime that
 // this user's account can change. What it names is registered and started on
@@ -25,11 +27,23 @@ function plainPath(path: string | undefined, paths: DomovoiServiceShape["paths"]
   return posix.isAbsolute(path) && posix.normalize(path) === path
 }
 
-export function isDomovoiServiceProgram({ execPath, args }: ServiceProgram, shape: DomovoiServiceShape): boolean {
+export function hasDomovoiServiceShape({ execPath, args }: ServiceProgram, shape: DomovoiServiceShape): boolean {
   const [entry, flag, configurationPath, ...rest] = args
   return rest.length === 0
     && plainPath(execPath, shape.paths)
     && plainPath(entry, shape.paths)
     && flag === shape.flag
     && configurationPath === shape.configurationPath
+}
+
+// Security review round 3 (3364a577): any absolute runtime and entry had that
+// shape, /usr/bin/env and an unrelated program included. Ruled 2026-09-24 (A):
+// what is put back must also be exactly the runtime and daemon entry recorded
+// in service.json (serviceRuntime), compared as written, with no case folding
+// or further normalization. Without that record nothing is put back.
+export function isRecordedServiceProgram(program: ServiceProgram, shape: DomovoiServiceShape, recorded: ServiceRuntimeRecord | undefined): boolean {
+  return recorded !== undefined
+    && hasDomovoiServiceShape(program, shape)
+    && program.execPath === recorded.executable
+    && program.args[0] === recorded.entry
 }

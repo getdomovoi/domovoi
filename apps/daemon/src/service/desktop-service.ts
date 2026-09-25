@@ -154,9 +154,11 @@ export type DaemonServiceUpdateOptions = {
 // Ruled 2026-09-23: "Update the service" moves the installed service to the
 // runtime the app now ships, in place, on each platform. The runtime is
 // checked first and nothing is changed before that passes. The saved service
-// configuration (profile, host, port, TLS) is kept; for a WSL guest service
-// it records the guest runtime, so that one field changes. If the swap fails,
-// the previous service is put back and started, and the error says so.
+// configuration (profile, host, port, TLS) is kept; the runtime it records
+// (serviceRuntime, and a WSL guest's saved runtime) changes to the new one.
+// If the swap fails, the previous service is put back and started, and the
+// error says so. Ruled 2026-09-24 (A): only exactly the runtime service.json
+// records is put back; an install without that record is refused.
 export async function updateDaemonService(
   options: DaemonServiceUpdateOptions,
   dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),

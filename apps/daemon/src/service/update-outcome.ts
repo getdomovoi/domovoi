@@ -13,8 +13,10 @@ import type { claimServiceOperation } from "./operation-lease.js"
 export type DaemonServiceUpdateOutcome =
   | "not-installed"
   // Ruled 2026-09-24: the service is there, but its plist, unit, task action
-  // or saved WSL runtime is not in the shape a Domovoi install writes, so it
-  // is not put back or replaced. A missing service stays "not-installed".
+  // or saved WSL runtime is not in the shape a Domovoi install writes, or does
+  // not run exactly the runtime service.json records, or service.json records
+  // none, so it is not put back or replaced. A missing service stays
+  // "not-installed".
   | "changed-outside"
   | "nothing-changed"
   | "swap-failed-restored"

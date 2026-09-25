@@ -13,10 +13,13 @@ reports ready. If any step fails, a timeout included, the previous service is pu
 own time budget and must report ready too; the error says which way that went, or that nothing
 was changed. The saved configuration is read under the service-operation lease, a restore waits
 for any write still pending, an unreadable owner record fails the update, and the WSL update
-record is read only as a private regular file that matches the saved registration. The previous
-plist, unit, task action or WSL guest runtime is put back only in the shape a Domovoi install
-writes (absolute runtime and daemon entry, then the saved configuration path); any other shape is
-refused before anything changes, with the outcome `changed-outside`: "The installed service file
-was changed outside Domovoi, so Domovoi will not update it. Remove the service and install it
-again to replace it." A service that is not installed keeps the outcome `not-installed` and its
-own words.
+record is read only as a private regular file that matches the saved registration. An install now
+records the Node executable and daemon entry it installed in service.json (`serviceRuntime`), and
+an update records the new ones once they are written, or for a WSL guest once the new service
+reports ready. The previous plist, unit, task action or WSL guest runtime is put back only in the
+shape a Domovoi install writes (absolute runtime and daemon entry, then the saved configuration
+path) and only when its runtime and entry are exactly the ones service.json records. Anything
+else, and any install whose service.json has no such record, is refused before anything changes,
+with the outcome `changed-outside`: "The installed service file was changed outside Domovoi, so
+Domovoi will not update it. Remove the service and install it again to replace it." A service
+that is not installed keeps the outcome `not-installed` and its own words.
