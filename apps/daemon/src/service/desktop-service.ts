@@ -15,7 +15,12 @@ import {
   type ServiceStatus,
 } from "./install.js"
 
-export { WindowsTaskNotDomovoiError, WindowsTaskPercentSignError } from "./install.js"
+export {
+  DaemonServiceHandoffError,
+  WindowsTaskArgumentVariableError,
+  WindowsTaskNotDomovoiError,
+  WindowsTaskPercentSignError,
+} from "./install.js"
 
 // The desktop's way to keep the daemon running after the app quits: a per-user
 // service (a launchd agent, a systemd user unit or a Windows logon task) that

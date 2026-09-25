@@ -44,7 +44,9 @@ function manager(platform: "linux" | "darwin" | "win32") {
         serviceRuntime: { executable: "C:\\Domovoi\\node.exe", entry: "C:\\Domovoi\\index.js" },
       })) }
       : {}),
-    capture: vi.fn(async (_command, args) => {
+    capture: vi.fn(async (command, args) => {
+      // Round 2: launchd removal first asks which plist the loaded job came from.
+      if (command === "launchctl") return { code: 0, stdout: "\tpath = /home/operator/Library/LaunchAgents/sh.domovoi.domovoid.plist\n\tstate = running\n" }
       const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
       if (script.includes("domovoi-task-action:")) {
         const configurationPath = serviceConfigurationPath("C:\\Users\\operator", "win32")

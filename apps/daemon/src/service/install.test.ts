@@ -449,7 +449,7 @@ describe("serviceStatus", () => {
 
   it.each(["running", "not running", "spawn scheduled"])("reports the launch agent's runtime state %j", async (state) => {
     const dependencies = effects({
-      capture: vi.fn(async () => ({ code: 0, stdout: `gui/501/sh.domovoi.domovoid = {\n\tstate = ${state}\n}\n` })),
+      capture: vi.fn(async () => ({ code: 0, stdout: `gui/501/sh.domovoi.domovoid = {\n\tpath = /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\n\tstate = ${state}\n}\n` })),
     })
     await expect(serviceStatus(darwin, dependencies)).resolves.toEqual({
       installed: true,
@@ -461,7 +461,7 @@ describe("serviceStatus", () => {
   it("does not borrow a nested launchd state for the agent", async () => {
     const dependencies = effects({ capture: vi.fn(async () => ({
       code: 0,
-      stdout: "gui/501/sh.domovoi.domovoid = {\n\tresource coalition = {\n\t\tstate = active\n\t}\n\tstate = not running\n}\n",
+      stdout: "gui/501/sh.domovoi.domovoid = {\n\tpath = /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\n\tresource coalition = {\n\t\tstate = active\n\t}\n\tstate = not running\n}\n",
     })) })
     await expect(serviceStatus(darwin, dependencies)).resolves.toMatchObject({ installed: true, running: false })
   })
@@ -548,6 +548,28 @@ describe("serviceStatus", () => {
 
     await expect(serviceStatus({ platform: "linux", home: "/home/dl" }, dependencies))
       .rejects.toThrow("Failed to connect to bus")
+  })
+})
+
+// Security review round 2 on #574, finding 2: the CLI reports and stops a
+// launchd or systemd job only when Domovoi's own file is there.
+describe("the CLI and a same-named job with no Domovoi file", () => {
+  it("status reports no launch agent, whatever launchctl says is loaded", async () => {
+    const dependencies = command({
+      ...darwin, execPath: darwin.execPath,
+      exists: vi.fn(async () => false),
+      capture: vi.fn(async () => ({ code: 0, stdout: "\tpath = /Users/dl/Library/LaunchAgents/other.plist\n\tstate = running\n" })),
+    })
+    expect(await runServiceCommand(["service", "status"], dependencies)).toBe(1)
+    expect(dependencies.stdout).toHaveBeenCalledWith("not installed, not running: no launch agent at /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\n")
+  })
+
+  it("remove asks no manager to stop a job when Domovoi's unit is not there", async () => {
+    for (const target of [darwin, linux]) {
+      const dependencies = command({ ...target, exists: vi.fn(async () => false), capture: vi.fn(async () => ({ code: 0, stdout: "active\n" })) })
+      expect(await runServiceCommand(["service", "remove"], dependencies)).toBe(0)
+      expect(dependencies.run).not.toHaveBeenCalled()
+    }
   })
 })
 
