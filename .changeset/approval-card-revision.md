@@ -60,3 +60,14 @@ the saved store. A directory that names a credential store, or one the durable r
 shows as "[REDACTED] in the session worktree" or "[REDACTED], outside the session worktree", the
 card is a hard gate, and a resolved execution record, which names the directory, is replaced as
 above and kept in memory for the reading on Allow.
+
+A card's operation and command lines hide each path the card hides: a credential file, a file
+whose path the redaction changes, a hidden directory, and a path Claude Code blocked on that names
+a credential file or that the redaction changes (such a card is a hard gate too). The exact path is
+replaced with [REDACTED] wherever it stands whole, as written, from the request's directory, where
+it really leads, and relative to the worktree, and the rest of the agent's text stays. A name that
+only starts with the path, such as `.env.example` beside a hidden `.env`, is kept. The lines reach
+`workspace.get`, `workspace.changed`, the saved store, the approval receipt and the error log in
+that form. A file hidden only when the card is read again is hidden in the card's text from that
+revision on. A package script whose command line hides a path is read again on Allow from the
+command as the provider sent it, kept in memory until the card leaves.

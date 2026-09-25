@@ -218,7 +218,7 @@ import {
   permissionPolicyRefusalFor,
 } from "./permission-policy.js"
 import { resolveExecution } from "./execution-resolution.js"
-import { cardDirectory, fileTargetAffects } from "./file-target-affects.js"
+import { cardDirectory, fileTargetAffects, hiddenPathForms, hidePaths } from "./file-target-affects.js"
 import { fileTargetChanged, fileTargetIdentity, type FileTargetIdentity } from "./followed-path.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger, type TurnUsage } from "./usage.js"
@@ -1394,6 +1394,11 @@ export class DomovoiDaemon {
   // hiddenApprovalExecution and the record is kept here alone, for the
   // package script reading at approval.resolve.
   #hiddenApprovalExecutions = new Map<string, WorkspaceSnapshot["approvals"][number]["execution"]>()
+  // The command of a waiting card whose command line hides a path, exactly as
+  // the provider sent it, keyed by approval id. The card's own line no longer
+  // resolves to what runs, so the package script reading at approval.resolve
+  // reads this instead. It names the hidden path, so it is kept here alone.
+  #hiddenApprovalCommands = new Map<string, string>()
   #persistenceFailures = 0
   #persistenceUnavailable = false
   #snapshotPersistenceTail: Promise<void> = Promise.resolve()
@@ -1906,7 +1911,11 @@ export class DomovoiDaemon {
   // The waiting cards whose requested file path or hidden directory is held
   // in memory, for checking that no path outlives its card.
   get fileApprovalTargetIds(): readonly string[] {
-    return [...this.#fileApprovalTargets.keys(), ...this.#hiddenApprovalExecutions.keys()]
+    return [...new Set([
+      ...this.#fileApprovalTargets.keys(),
+      ...this.#hiddenApprovalExecutions.keys(),
+      ...this.#hiddenApprovalCommands.keys(),
+    ])]
   }
 
   async start(signal?: AbortSignal): Promise<{ host: string; port: number }> {
@@ -2340,9 +2349,10 @@ export class DomovoiDaemon {
   // forgetting its paths, they are trimmed to the waiting cards whenever cards
   // are removed and whenever state is saved or broadcast.
   #forgetDepartedFileApprovalTargets(): void {
-    if (this.#fileApprovalTargets.size === 0 && this.#hiddenApprovalExecutions.size === 0) return
+    const held = [this.#fileApprovalTargets, this.#hiddenApprovalExecutions, this.#hiddenApprovalCommands]
+    if (held.every((kept) => kept.size === 0)) return
     const waiting = new Set(this.#snapshot.approvals.map((approval) => approval.id))
-    for (const kept of [this.#fileApprovalTargets, this.#hiddenApprovalExecutions]) {
+    for (const kept of held) {
       for (const approvalId of kept.keys()) {
         if (!waiting.has(approvalId)) kept.delete(approvalId)
       }
@@ -7074,6 +7084,9 @@ export class DomovoiDaemon {
         }
         const requestedFile = this.#fileApprovalTargets.get(approval.id)
         const hiddenDirectoryExecution = this.#hiddenApprovalExecutions.get(approval.id)
+        // The command as the provider sent it, when the card's line hides a
+        // path in it.
+        const requestCommand = this.#hiddenApprovalCommands.get(approval.id) ?? approval.command
         // A card that hides its file or its directory is answered for the
         // record the daemon kept, not the placeholder every copy of the card
         // carries.
@@ -7128,7 +7141,7 @@ export class DomovoiDaemon {
                 })
               : await resolveExecution({
                   workspaceRoot,
-                  command: approval.command,
+                  command: requestCommand,
                   cwd,
                 })
           // The card names the file as it is read now, so the line the person
@@ -7144,7 +7157,7 @@ export class DomovoiDaemon {
               permissionMode: approval.mode,
               auto: false,
             },
-            command: approval.command,
+            command: requestCommand,
             reason: approval.operation,
             execution: currentExecution,
           })
@@ -7187,6 +7200,14 @@ export class DomovoiDaemon {
             const hidesDirectory = !hidesFile && hiddenDirectoryExecution !== undefined
             if (hidesDirectory) this.#hiddenApprovalExecutions.set(approval.id, currentExecution)
             approval.execution = hidesFile || hidesDirectory ? { ...hiddenApprovalExecution } : currentExecution
+            // A file hidden now is hidden in the card's text from this revision
+            // on, as written and as the durable redaction left it.
+            if (hidesFile && workspaceRoot !== undefined) {
+              const forms = await hiddenPathForms({ workspace: workspaceRoot, path: keptTarget.filePath, cwd: keptTarget.cwd })
+              const shownForms = [...forms, ...forms.map((form) => redactDurableText(form).value)]
+              approval.operation = hidePaths(approval.operation, shownForms)
+              approval.command = hidePaths(approval.command, shownForms)
+            }
             approval.revision += 1
             if (currentAffects !== undefined) approval.affects = currentAffects.text
             approval.risk = currentRisk
@@ -7431,6 +7452,7 @@ export class DomovoiDaemon {
         }
         this.#fileApprovalTargets.delete(approval.id)
         this.#hiddenApprovalExecutions.delete(approval.id)
+        this.#hiddenApprovalCommands.delete(approval.id)
         const runTurnId = session?.activeTurnId
         if (allows && approval.itemId && runTurnId) {
           this.#dropApprovedRunsOutside(approval.sessionId, runTurnId)
@@ -9101,17 +9123,36 @@ export class DomovoiDaemon {
         ...(event.reason ? { reason: event.reason } : {}),
         execution,
       })
-      const commandCopy = redactDurableCommand(command ?? "Command details unavailable")
-      const reasonCopy = redactDurableText(event.reason ?? "Run a command")
-      const directoryCopy = cardDirectory({ directory: requestCwd, workspace: session.workspacePath ?? project.path })
+      const workspaceRoot = session.workspacePath ?? project.path
+      const directoryCopy = cardDirectory({ directory: requestCwd, workspace: workspaceRoot })
       const affectsCopy = fileTarget
-        ? await fileTargetAffects({ workspace: session.workspacePath ?? project.path, path: fileTarget.filePath, cwd: fileTarget.cwd })
+        ? await fileTargetAffects({ workspace: workspaceRoot, path: fileTarget.filePath, cwd: fileTarget.cwd })
         : { text: "Files and processes in the session worktree.", redacted: false, sensitive: false }
+      // The path Claude Code blocked on is never drawn on the card. When it
+      // names a credential file, or the durable redaction changes it, the card
+      // hides it the way the Affects line would.
+      const blockedCopy = event.blockedPath === undefined
+        ? undefined
+        : await fileTargetAffects({ workspace: workspaceRoot, path: event.blockedPath, cwd: requestCwd })
+      const hidesBlockedPath = blockedCopy !== undefined && (blockedCopy.redacted || blockedCopy.sensitive)
+      // Ruled 2026-09-24: the operation and command lines hide each path the
+      // card hides, in every form, and keep the rest of the agent's text.
+      const hiddenForms = [
+        ...(fileTarget !== undefined && (affectsCopy.redacted || affectsCopy.sensitive)
+          ? await hiddenPathForms({ workspace: workspaceRoot, path: fileTarget.filePath, cwd: fileTarget.cwd })
+          : []),
+        ...(directoryCopy.hidden ? await hiddenPathForms({ workspace: workspaceRoot, path: requestCwd }) : []),
+        ...(hidesBlockedPath ? await hiddenPathForms({ workspace: workspaceRoot, path: event.blockedPath!, cwd: requestCwd }) : []),
+      ]
+      const shownCommand = hidePaths(command ?? "Command details unavailable", hiddenForms)
+      const commandCopy = redactDurableCommand(shownCommand)
+      const reasonCopy = redactDurableText(hidePaths(event.reason ?? "Run a command", hiddenForms))
       const containsSecret = commandCopy.redacted
         || reasonCopy.redacted
         || directoryCopy.hidden
         || affectsCopy.redacted
         || affectsCopy.sensitive
+        || hidesBlockedPath
         || (execution.state === "unresolved" && execution.reason === "sensitive-content")
       const matchingRule = this.#snapshot.approvalRules.find(
         (rule) => !containsSecret
@@ -9215,6 +9256,7 @@ export class DomovoiDaemon {
           this.#fileApprovalTargets.set(approval.id, hidesFile ? { ...fileTarget, hiddenExecution: execution } : fileTarget)
         }
         if (hidesDirectory) this.#hiddenApprovalExecutions.set(approval.id, execution)
+        if (command !== undefined && shownCommand !== command) this.#hiddenApprovalCommands.set(approval.id, command)
         const blocked = blockWorkingPlanForApproval(
           this.#snapshot.workingPlans,
           session.id,

@@ -1,6 +1,6 @@
-import { isAbsolute, relative, resolve, sep } from "node:path"
+import { isAbsolute, join, relative, resolve, sep } from "node:path"
 
-import { followedTarget } from "./followed-path.js"
+import { followedTarget, requestedPath } from "./followed-path.js"
 import { namesSecretPath } from "./permission-policy.js"
 import { redactDurableText } from "./secret-redaction.js"
 
@@ -98,4 +98,56 @@ export async function fileTargetAffects(input: {
   }
   const name = shown(lexicalTarget)
   return { text: `The file ${name.text}, outside the session worktree.`, redacted: name.redacted, sensitive: hide }
+}
+
+// Every form in which a card's text can name a path it hides (ruled
+// 2026-09-24): as written, from the request's directory, where it really leads,
+// and each of those relative to the worktree, both as given and as it really
+// lies, and each relative form joined to either worktree root again.
+export async function hiddenPathForms(input: {
+  workspace: string
+  path: string
+  cwd?: string | undefined
+}): Promise<string[]> {
+  const workspace = resolve(input.workspace)
+  const followed = await followedTarget(input.workspace, input.path, input.cwd)
+  const absolute = [
+    input.path,
+    requestedPath(input.workspace, input.path, input.cwd),
+    resolve(workspace, input.cwd ?? ".", input.path),
+    ...(followed ? [followed.target] : []),
+  ]
+  const roots = [workspace, ...(followed ? [followed.workspace] : [])]
+  const inside = absolute.flatMap((path) => roots.flatMap((root) => within(root, path) ?? []))
+  const forms = new Set([
+    ...absolute,
+    ...inside,
+    // within() names a relative path with "/"; Windows text may use "\".
+    ...inside.map((path) => path.split("/").join(sep)),
+    ...inside.flatMap((path) => roots.map((root) => join(root, path))),
+  ])
+  return [...forms].filter((form) => form !== "" && form !== "." && form !== sep)
+}
+
+function escapedPattern(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")
+}
+
+// Replace each exact form of a hidden path in the agent's text with
+// [REDACTED], and nothing else. A form counts only where it stands as a whole
+// path: not inside a longer name (".env" in "x.env" or ".env.example"), but
+// before a "/" that continues into the hidden directory. The longest form is
+// tried first, so an absolute path is not left half replaced.
+export function hidePaths(text: string, forms: readonly string[]): string {
+  if (forms.length === 0) return text
+  const alternatives = [...new Set(forms)]
+    .filter((form) => form !== "")
+    .sort((one, other) => other.length - one.length)
+    .map(escapedPattern)
+  if (alternatives.length === 0) return text
+  const pattern = new RegExp(
+    `(?<![\\p{L}\\p{N}_.\\-])(?:${alternatives.join("|")})(?![\\p{L}\\p{N}_\\-]|\\.[\\p{L}\\p{N}])`,
+    "gu",
+  )
+  return text.replace(pattern, "[REDACTED]")
 }

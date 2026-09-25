@@ -4,7 +4,7 @@ import { join, resolve } from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
-import { fileTargetAffects } from "./file-target-affects.js"
+import { fileTargetAffects, hiddenPathForms, hidePaths } from "./file-target-affects.js"
 
 const scratch: string[] = []
 
@@ -70,5 +70,36 @@ describe("fileTargetAffects", () => {
     const long = await fileTargetAffects({ workspace, path: join(workspace, `${"a".repeat(600)}${"b".repeat(600)}.ts`) })
     expect(long.text).toMatch(/^The file a+…b+\.ts in the session worktree\.$/u)
     expect(long.text.length).toBe("The file  in the session worktree.".length + 512)
+  })
+})
+
+describe("hidePaths", () => {
+  it("replaces each form of a hidden path where it stands whole, and nothing else", async () => {
+    const workspace = await directory("domovoi-hide-paths-")
+    const real = await realpath(workspace)
+    await mkdir(join(workspace, ".ssh"))
+    await symlink(join(workspace, ".ssh"), join(workspace, "cfg"), "junction")
+    const forms = await hiddenPathForms({ workspace, path: join(workspace, "cfg", "config") })
+    expect(forms).toEqual(expect.arrayContaining([
+      join(workspace, "cfg", "config"),
+      "cfg/config",
+      join(real, ".ssh", "config"),
+      ".ssh/config",
+      join(workspace, ".ssh", "config"),
+    ]))
+    expect(hidePaths(
+      `open ${join(workspace, "cfg", "config")}, cfg/config, ~/.ssh/config and ${join(workspace, ".ssh", "config")}`,
+      forms,
+    )).toBe("open [REDACTED], [REDACTED], ~/[REDACTED] and [REDACTED]")
+    // A longer name that only starts or ends with the path is another file.
+    expect(hidePaths("cfg/config.bak, xcfg/config, cfg/config2 and cfg/config.", forms))
+      .toBe("cfg/config.bak, xcfg/config, cfg/config2 and [REDACTED].")
+    const env = await hiddenPathForms({ workspace, path: ".env", cwd: workspace })
+    expect(hidePaths("cp .env.example .env; source .env", env)).toBe("cp .env.example [REDACTED]; source [REDACTED]")
+    // A hidden directory is replaced where the path continues below it.
+    const directoryForms = await hiddenPathForms({ workspace, path: join(workspace, ".ssh") })
+    expect(hidePaths(`ls ${join(workspace, ".ssh")}/keys .ssh/known_hosts .sshrc`, directoryForms))
+      .toBe("ls [REDACTED]/keys [REDACTED]/known_hosts .sshrc")
+    expect(hidePaths("nothing hidden", [])).toBe("nothing hidden")
   })
 })
