@@ -13,11 +13,11 @@ import { createRequire } from "node:module"
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
-const CHROMIUM_CANDIDATES = [
+export const CHROMIUM_CANDIDATES = [
   process.env.CHROMIUM,
   "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -34,8 +34,8 @@ const DARK = colors.dark
 const LIGHT = colors.light
 const MARK_FRACTION = 0.6
 
-function chromium() {
-  for (const candidate of CHROMIUM_CANDIDATES) {
+export function findChromium(candidates = CHROMIUM_CANDIDATES) {
+  for (const candidate of candidates) {
     try {
       execFileSync("test", ["-x", candidate])
       return candidate
@@ -43,10 +43,10 @@ function chromium() {
       continue
     }
   }
-  throw new Error(`no chromium found, set CHROMIUM to one: tried ${CHROMIUM_CANDIDATES.join(", ")}`)
+  throw new Error(`no chromium found, set CHROMIUM to one: tried ${candidates.join(", ")}`)
 }
 
-function markPage({ size, mark, ink, ground, fraction }) {
+export function markPage({ size, mark, ink, ground, fraction }) {
   const glyph = Math.round(size * fraction)
   const svg = readFileSync(join(root, "design/assets", mark), "utf8")
   const data = `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`
@@ -59,12 +59,8 @@ function markPage({ size, mark, ink, ground, fraction }) {
   </style><span></span>`
 }
 
-function render(page, size, out, { transparent = false } = {}) {
-  const scratch = mkdtempSync(join(tmpdir(), "domovoi-icon-"))
-  const html = join(scratch, "page.html")
-  const shot = join(scratch, "shot.png")
-  writeFileSync(html, page)
-  execFileSync(chromium(), [
+export function chromiumArgs({ html, shot, size, transparent = false }) {
+  return [
     "--headless=new",
     "--disable-gpu",
     "--hide-scrollbars",
@@ -73,14 +69,22 @@ function render(page, size, out, { transparent = false } = {}) {
     ...(transparent ? ["--default-background-color=00000000"] : []),
     `--screenshot=${shot}`,
     `file://${html}`,
-  ])
+  ]
+}
+
+function render(page, size, out, { transparent = false } = {}) {
+  const scratch = mkdtempSync(join(tmpdir(), "domovoi-icon-"))
+  const html = join(scratch, "page.html")
+  const shot = join(scratch, "shot.png")
+  writeFileSync(html, page)
+  execFileSync(findChromium(), chromiumArgs({ html, shot, size, transparent }))
   mkdirSync(dirname(out), { recursive: true })
   copyFileSync(shot, out)
   rmSync(scratch, { recursive: true, force: true })
   console.log(`${out.replace(`${root}/`, "")} ${size}x${size}`)
 }
 
-const targets = [
+export const targets = [
   {
     out: "apps/mobile/assets/icon.png",
     size: 1024,
@@ -119,8 +123,13 @@ const targets = [
   },
 ]
 
-for (const target of targets) {
-  render(markPage({ size: target.size, ...target.page }), target.size, join(root, target.out), {
-    transparent: target.transparent === true,
-  })
+function main() {
+  for (const target of targets) {
+    render(markPage({ size: target.size, ...target.page }), target.size, join(root, target.out), {
+      transparent: target.transparent === true,
+    })
+  }
 }
+
+// Importing the module for its builders must not render: only a direct run touches the assets.
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main()
