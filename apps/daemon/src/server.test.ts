@@ -13516,7 +13516,9 @@ describe("DomovoiDaemon", () => {
     expect(await card(503)).toMatchObject({
       risk: "hard-gate",
       operation: "Build in [REDACTED]",
-      command: "pnpm run build -- [REDACTED]/out",
+      // Only the hidden directory is replaced; the separator after it is the
+      // one join() wrote into the command.
+      command: `pnpm run build -- [REDACTED]${sep}out`,
     })
     expect(await card(504)).toMatchObject({
       risk: "hard-gate",
