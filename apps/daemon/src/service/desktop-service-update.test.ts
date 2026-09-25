@@ -946,11 +946,11 @@ describe("security review round 1", () => {
 // managers bootstrap, restart or /create unrelated programs. Only the shape a
 // Domovoi install writes is put back; anything else is refused before any
 // change. Ruled 2026-09-24: that refusal says the installed service file was
-// changed outside Domovoi; a service that is not there keeps the not-installed
-// words.
+// changed outside Domovoi, and that the service is removed before it is
+// installed again; a service that is not there keeps the not-installed words.
 describe("security review round 2", () => {
   const notInstalled = "No Domovoi service is installed for this user, so there is nothing to update. Install the service first."
-  const changedOutside = "The installed service file was changed outside Domovoi, so Domovoi will not update it. Install the service again to replace it."
+  const changedOutside = "The installed service file was changed outside Domovoi, so Domovoi will not update it. Remove the service and install it again to replace it."
   const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime-2\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index.js" }
   const oldNode = "C:\\Program Files\\Domovoi\\runtime-1\\node.exe"
   const oldEntry = "C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js"

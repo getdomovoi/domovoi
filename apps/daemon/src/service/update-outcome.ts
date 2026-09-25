@@ -31,7 +31,7 @@ function updateMessage(outcome: DaemonServiceUpdateOutcome, cause: unknown, rest
     case "not-installed":
       return "No Domovoi service is installed for this user, so there is nothing to update. Install the service first."
     case "changed-outside":
-      return "The installed service file was changed outside Domovoi, so Domovoi will not update it. Install the service again to replace it."
+      return "The installed service file was changed outside Domovoi, so Domovoi will not update it. Remove the service and install it again to replace it."
     case "nothing-changed":
       return `Domovoi could not update the service: ${detail(cause)}. Nothing was changed, and the service was left as it was.`
     case "swap-failed-restored":

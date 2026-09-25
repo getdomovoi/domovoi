@@ -17,5 +17,6 @@ record is read only as a private regular file that matches the saved registratio
 plist, unit, task action or WSL guest runtime is put back only in the shape a Domovoi install
 writes (absolute runtime and daemon entry, then the saved configuration path); any other shape is
 refused before anything changes, with the outcome `changed-outside`: "The installed service file
-was changed outside Domovoi, so Domovoi will not update it. Install the service again to replace
-it." A service that is not installed keeps the outcome `not-installed` and its own words.
+was changed outside Domovoi, so Domovoi will not update it. Remove the service and install it
+again to replace it." A service that is not installed keeps the outcome `not-installed` and its
+own words.
