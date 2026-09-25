@@ -17,8 +17,10 @@ import {
 
 export {
   DaemonServiceHandoffError,
+  LaunchdJobNotDomovoiError,
   WindowsTaskArgumentVariableError,
   WindowsTaskNotDomovoiError,
+  WindowsTaskPathError,
   WindowsTaskPercentSignError,
 } from "./install.js"
 

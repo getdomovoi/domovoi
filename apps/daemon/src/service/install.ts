@@ -63,6 +63,9 @@ export type ServiceEffects = {
   removalSnapshot: typeof readServiceRemovalSnapshot
   writeRemovalReceipt: typeof writeLocalOwnerRemovalReceipt
   write: (path: string, contents: string, deadline: OperationDeadline) => Promise<void>
+  // Reads a service file back, so a failed install, or an update, can
+  // restore it.
+  read?: (path: string, deadline: OperationDeadline) => Promise<string>
   // The daemon's local owner record: which instance holds the profile, and
   // whether it reports ready.
   readOwner?: (profile: ProfileLocation) => LocalOwnerRecord | undefined
@@ -118,6 +121,17 @@ function launchdJobPath(printed: string): string {
   const path = paths[0]?.[1]?.trim()
   if (paths.length !== 1 || !path) throw new Error("launchctl did not say which file the loaded sh.domovoi.domovoid job came from")
   return path
+}
+
+// Security review round 3 (#574): launchd refuses to bootstrap a label that
+// is still loaded. A job loaded from another plist is not Domovoi's to boot
+// out, so the install stops before the handoff.
+// Placeholder copy: the text needs an owner ruling.
+export class LaunchdJobNotDomovoiError extends Error {
+  constructor(readonly path: string) {
+    super(`[copy pending owner ruling] A job named sh.domovoi.domovoid is loaded from ${path}, which is not Domovoi's launch agent. Nothing was stopped or changed.`)
+    this.name = "LaunchdJobNotDomovoiError"
+  }
 }
 
 function captureFailure(command: string, result: CapturedRun): Error {
@@ -185,6 +199,17 @@ export class WindowsTaskPercentSignError extends Error {
   constructor(readonly path: string) {
     super(`${path} contains a percent sign, which Task Scheduler reads as an environment variable when the task runs. No service files were changed.`)
     this.name = "WindowsTaskPercentSignError"
+  }
+}
+
+// Security review round 3 (#574): status and removal recognise a task only
+// by paths in the plain form Windows reports (plainWindowsPath), so install
+// refuses any other form rather than register a task it could not recognise
+// or remove later. Placeholder copy: the text needs an owner ruling.
+export class WindowsTaskPathError extends Error {
+  constructor(readonly path: string) {
+    super(`[copy pending owner ruling] ${path} is not in the plain form Windows reports for it (no . or .. parts, no doubled or forward slashes, no DEL character), so Domovoi could not recognise the task later. No service files were changed.`)
+    this.name = "WindowsTaskPathError"
   }
 }
 
@@ -261,6 +286,9 @@ export function servicePlan({
       if (path?.includes("$(")) throw new WindowsTaskArgumentVariableError(path)
     }
     const taskCommand = `${windowsTaskCommand(execPath, runtime)} --service-config "${assertExecutable(configurationFile.path, "the service configuration")}"`
+    for (const path of [runtime, execPath, configurationFile.path]) {
+      if (path !== undefined && !plainWindowsPath(path)) throw new WindowsTaskPathError(path)
+    }
     if (taskCommand.length > 262) {
       throw new Error("Windows task command exceeds 262 characters. Install Node and Domovoi at shorter absolute paths before installing the service. No service files were changed.")
     }
@@ -410,9 +438,64 @@ export class DaemonServiceHandoffError extends Error {
   }
 }
 
+type InstallEffects = Pick<ServiceEffects, "write" | "read" | "run" | "capture" | "exists" | "claimProfile" | "remove" | "registeredProfile" | "readOwner" | "readConfiguration">
+
+// Security review round 3 (#574): what the service files held before this
+// install, so a manager that refuses the new definition leaves the record
+// naming what it still runs. Undefined when this caller cannot read files.
+type PreviousFiles = { path: string; contents: string | undefined }[] | undefined
+
+async function readPreviousFiles(plan: ServicePlan, effects: InstallEffects, deadline: OperationDeadline): Promise<PreviousFiles> {
+  const read = effects.read
+  if (!read) return undefined
+  const previous: { path: string; contents: string | undefined }[] = []
+  for (const path of [plan.configuration.path, ...(plan.kind === "file" ? [plan.path] : [])]) {
+    const present = await withinServiceDeadline(deadline, () => effects.exists(path, deadline))
+    previous.push({ path, contents: present ? await withinServiceDeadline(deadline, () => read(path, deadline)) : undefined })
+  }
+  return previous
+}
+
+async function putPreviousFilesBack(previous: NonNullable<PreviousFiles>, effects: InstallEffects, deadline: OperationDeadline, cause: unknown): Promise<void> {
+  try {
+    for (const { path, contents } of previous) {
+      if (contents === undefined) await withinServiceDeadline(deadline, () => effects.remove(path, deadline))
+      else await withinServiceDeadline(deadline, () => effects.write(path, contents, deadline))
+    }
+  } catch (restoreCause) {
+    // Placeholder copy: the text needs an owner ruling.
+    const detail = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim().replace(/\.+$/u, "")
+    throw new Error(`[copy pending owner ruling] ${detail(cause)}. Putting back the previous service files also failed: ${detail(restoreCause)}.`, { cause: restoreCause })
+  }
+}
+
+// The command that makes the manager adopt the new definition. A failure up
+// to and including it leaves the manager on what it ran before; after it, the
+// new definition is the registered one.
+function registersDefinition({ command, args }: ServiceCommand): boolean {
+  return (command === "schtasks" && args[0] === "/create")
+    || (command === "launchctl" && args[0] === "bootstrap")
+    || (command === "systemctl" && args.includes("daemon-reload"))
+}
+
+// Security review round 3 (#574): launchd refuses a bootstrap while the label
+// is loaded. A job loaded from Domovoi's plist is booted out first; one loaded
+// from another plist refuses the install before the handoff. A running job
+// from Domovoi's plist holds the profile, so the profile check refuses it.
+async function launchdCommandsBeforeInstall(target: ServiceTarget, plan: ServicePlan, effects: InstallEffects, deadline: OperationDeadline): Promise<ServiceCommand[]> {
+  if (target.platform !== "darwin" || plan.kind !== "file") return []
+  const job = `gui/${assertUid(target.uid)}/${agentLabel}`
+  const printed = await withinServiceDeadline(deadline, () => effects.capture("launchctl", ["print", job], deadline))
+  if (printed.code === 113 && isMissingServiceFailure("darwin", printed)) return []
+  if (printed.code !== 0) throw captureFailure("launchctl", printed)
+  const loadedFrom = launchdJobPath(printed.stdout)
+  if (loadedFrom !== plan.path) throw new LaunchdJobNotDomovoiError(loadedFrom)
+  return [{ command: "launchctl", args: ["bootout", job] }]
+}
+
 async function installWithDeadline(
   target: ServiceTarget,
-  effects: Pick<ServiceEffects, "write" | "run" | "claimProfile" | "remove" | "registeredProfile" | "readOwner">,
+  effects: InstallEffects,
   deadline: OperationDeadline,
   handoff: (() => Promise<void>) | undefined,
 ): Promise<ServicePlan> {
@@ -422,6 +505,15 @@ async function installWithDeadline(
   deadline.throwIfExpired()
   const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory)
   const previous = effects.registeredProfile?.(target.configuration.homeDirectory, target.platform)
+  // Security review round 3 (#574): schtasks /create /f replaces a task of
+  // the same name, so a task Domovoi did not register refuses the install, by
+  // the same check status and removal use, before anything changes.
+  if (target.platform === "win32" && !target.configuration.wsl
+    && await windowsTaskOwner(assertHome(target.home), effects, deadline) === "other") {
+    throw new WindowsTaskNotDomovoiError(displayName)
+  }
+  const commands = [...await launchdCommandsBeforeInstall(target, plan, effects, deadline), ...plan.commands]
+  const previousFiles = await readPreviousFiles(plan, effects, deadline)
   const leases: ProfileLease[] = []
   try {
     // A profile an earlier registration named is not the in-app daemon's, so
@@ -457,13 +549,24 @@ async function installWithDeadline(
     // prevents Desktop fallback, so release before asking the manager to start.
     if (!deadline.signal.aborted) for (const lease of leases) lease.release()
   }
-  for (const { command, args } of plan.commands) await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
+  const registering = commands.findIndex(registersDefinition)
+  for (const [index, { command, args }] of commands.entries()) {
+    try {
+      await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
+    } catch (cause) {
+      // Security review round 3 (#574): the manager kept what it ran before,
+      // so the files go back to what they were and still name it. A timed-out
+      // command may still register late, so then nothing is put back.
+      if (index <= registering && previousFiles && !deadline.signal.aborted) await putPreviousFilesBack(previousFiles, effects, deadline, cause)
+      throw cause
+    }
+  }
   return plan
 }
 
 export function installService(
   target: ServiceTarget,
-  effects: Pick<ServiceEffects, "write" | "run" | "claimProfile" | "remove" | "claimServiceOperation" | "registeredProfile" | "readOwner">,
+  effects: InstallEffects & Pick<ServiceEffects, "claimServiceOperation">,
   options: { handoff?: () => Promise<void> } = {},
 ): Promise<ServicePlan> {
   return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.handoff))
@@ -828,6 +931,13 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
     writeRemovalReceipt: writeLocalOwnerRemovalReceipt,
     supervisorStatus: async (home) => readGuestSupervisorStatus(home),
     write: writeUnit,
+    // A service file or update record is read only as a bounded private
+    // regular file owned by this user, without following a link, as
+    // service.json is: what it names is registered and started on a rollback.
+    read: async (path, deadline) => {
+      deadline.throwIfExpired()
+      return readLocalProfileFile(path, 64 * 1024)
+    },
     readOwner: readLocalOwnerRecord,
     run: async (command, args, deadline) => {
       const { execFile } = await import("node:child_process")

@@ -13,7 +13,7 @@ import {
 import { createServiceConfiguration, parseServiceConfiguration } from "./configuration.js"
 import type { ServiceEffects } from "./install.js"
 import { ServiceOperationBusyError } from "./operation-lease.js"
-import { DaemonServiceHandoffError, WindowsTaskArgumentVariableError } from "./desktop-service.js"
+import { DaemonServiceHandoffError, LaunchdJobNotDomovoiError, WindowsTaskArgumentVariableError, WindowsTaskPathError } from "./desktop-service.js"
 
 // The desktop installs a service that runs the Node and daemon it ships, so
 // the daemon keeps running after the app quits. It passes the two paths; the
@@ -43,6 +43,13 @@ function dependencies(overrides: Partial<DaemonServiceDependencies & ServiceEffe
     ...overrides,
   }
 }
+
+// Security review round 3: a Windows install first asks Task Scheduler
+// whether a task of the same name exists, through PowerShell under SystemRoot.
+// Windows fakes answer that none does unless a test says otherwise.
+const noTask = () => vi.fn(async () => ({ code: 0, stdout: "domovoi-task:missing\r\n" }))
+beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
+afterEach(() => { vi.unstubAllEnvs() })
 
 describe("installDaemonService", () => {
   it("installs a launch agent that runs the shipped Node on the shipped daemon", async () => {
@@ -98,7 +105,7 @@ describe("installDaemonService", () => {
       ["linux", "/home/dl", runtime],
       ["win32", "C:\\Users\\dl", windowsRuntime],
     ] as const) {
-      const effects = dependencies({ platform, home })
+      const effects = dependencies({ platform, home, ...(platform === "win32" ? { capture: noTask() } : {}) })
       const installed = await installDaemonService({ runtime: shipped }, effects)
       const written = vi.mocked(effects.write).mock.calls.find(([path]) => path === installed.configurationPath)![1]
       expect(parseServiceConfiguration(written).serviceRuntime).toEqual({ executable: shipped.nodePath, entry: shipped.daemonEntryPath })
@@ -106,7 +113,7 @@ describe("installDaemonService", () => {
   })
 
   it("runs a Windows logon task through the shipped node.exe", async () => {
-    const effects = dependencies({ platform: "win32", home: "C:\\Users\\dl", user: "dl" })
+    const effects = dependencies({ platform: "win32", home: "C:\\Users\\dl", user: "dl", capture: noTask() })
     const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime\\daemon\\index.js" }
     expect(await installDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task", name: "Domovoi daemon" })
     const created = vi.mocked(effects.run).mock.calls.find(([, args]) => args[0] === "/create")![1]
@@ -179,7 +186,7 @@ const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime\\node.ex
 const windowsConfigurationPath = "C:\\Users\\dl\\.domovoi\\service.json"
 
 function windowsDependencies(overrides: Partial<DaemonServiceDependencies & ServiceEffects> = {}) {
-  return dependencies({ platform: "win32", home: windowsHome, user: "dl", ...overrides })
+  return dependencies({ platform: "win32", home: windowsHome, user: "dl", capture: noTask(), ...overrides })
 }
 
 function createdTaskCommand(effects: ServiceEffects): string {
@@ -468,5 +475,170 @@ describe("security review round 2: Task Scheduler argument variables", () => {
       expect(effects.claimServiceOperation).not.toHaveBeenCalled()
       expect(effects.run).not.toHaveBeenCalled()
     }
+  })
+})
+
+// Security review round 3 on #574. A stateful fake: files, a Task Scheduler
+// task with its action, and a launchd job that refuses a second bootstrap
+// while its label is loaded, as launchd does.
+function managerFake(platform: "darwin" | "linux" | "win32", start: {
+  files?: Record<string, string>
+  task?: { path: string; arguments: string }
+  job?: { path: string; running: boolean }
+  failing?: string
+} = {}) {
+  const home = platform === "win32" ? windowsHome : platform === "darwin" ? "/Users/dl" : "/home/dl"
+  const files = new Map(Object.entries(start.files ?? {}))
+  let task = start.task
+  let job = start.job
+  const ran: string[] = []
+  const effects = dependencies({
+    platform, home, ...(platform === "win32" ? { user: "dl" } : {}),
+    exists: vi.fn(async (path: string) => files.has(path)),
+    read: vi.fn(async (path: string) => {
+      const text = files.get(path)
+      if (text === undefined) throw Object.assign(new Error(`ENOENT ${path}`), { code: "ENOENT" })
+      return text
+    }),
+    write: vi.fn(async (path: string, contents: string) => { files.set(path, contents) }),
+    remove: vi.fn(async (path: string) => { files.delete(path) }),
+    readConfiguration: vi.fn(() => {
+      const text = files.get(platform === "win32" ? windowsConfigurationPath : `${home}/.domovoi/service.json`)
+      return text === undefined ? undefined : parseServiceConfiguration(text)
+    }),
+    run: vi.fn(async (command: string, args: string[]) => {
+      const line = `${command} ${args[0]}`
+      ran.push(line)
+      if (start.failing === args[0]) throw new Error(`${line} failed`)
+      if (args[0] === "/create") task = { path: `"${args[args.indexOf("/tr") + 1]!.split('" "')[0]!.slice(1)}"`, arguments: args[args.indexOf("/tr") + 1]!.split('" ').slice(1).join('" ') }
+      if (args[0] === "bootout") job = undefined
+      if (args[0] === "bootstrap") {
+        if (job) throw new Error("Bootstrap failed: 5: Input/output error")
+        job = { path: args[2]!, running: true }
+      }
+    }),
+    capture: vi.fn(async (command: string, args: string[]) => {
+      if (command === "launchctl") {
+        return job
+          ? { code: 0, stdout: `\tpath = ${job.path}\n\tstate = ${job.running ? "running" : "not running"}\n` }
+          : { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
+      }
+      const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+      if (!task) return { code: 0, stdout: "domovoi-task:missing\r\n" }
+      if (script.includes("domovoi-task-action:")) return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ ...task, enabled: true, state: 3 })}\r\n` }
+      return { code: 0, stdout: "domovoi-task:3\r\n" }
+    }),
+  })
+  return { effects, files, ran, task: () => task, job: () => job }
+}
+
+describe("security review round 3", () => {
+  beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
+  afterEach(() => { vi.unstubAllEnvs() })
+
+  const oldWindowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime-1\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js" }
+  const oldWindowsConfiguration = JSON.stringify({ ...savedConfiguration, serviceRuntime: { executable: oldWindowsRuntime.nodePath, entry: oldWindowsRuntime.daemonEntryPath } })
+  const oldWindowsTask = { path: `"${oldWindowsRuntime.nodePath}"`, arguments: `"${oldWindowsRuntime.daemonEntryPath}" --service-config "${windowsConfigurationPath}"` }
+
+  // Finding 1: the record must name what the manager registered.
+  it("puts the previous service.json back when the new Windows task cannot be registered", async () => {
+    const fake = managerFake("win32", { files: { [windowsConfigurationPath]: oldWindowsConfiguration }, task: oldWindowsTask, failing: "/create" })
+    await expect(installDaemonService({ runtime: windowsRuntime }, fake.effects)).rejects.toThrow("schtasks /create failed")
+    expect(fake.files.get(windowsConfigurationPath)).toBe(oldWindowsConfiguration)
+    expect(await readDaemonServiceStatus(fake.effects)).toMatchObject({ installed: true })
+  })
+
+  it("says so when the previous service.json cannot be put back either", async () => {
+    const fake = managerFake("win32", { files: { [windowsConfigurationPath]: oldWindowsConfiguration }, task: oldWindowsTask, failing: "/create" })
+    const write = fake.effects.write
+    fake.effects.write = vi.fn(async (path: string, contents: string, deadline) => {
+      if (contents === oldWindowsConfiguration) throw new Error("disk full")
+      await write(path, contents, deadline)
+    })
+    await expect(installDaemonService({ runtime: windowsRuntime }, fake.effects))
+      .rejects.toThrow("schtasks /create failed. Putting back the previous service files also failed: disk full.")
+  })
+
+  it("removes a new service.json when a first Windows task cannot be registered", async () => {
+    const fake = managerFake("win32", { failing: "/create" })
+    await expect(installDaemonService({ runtime: windowsRuntime }, fake.effects)).rejects.toThrow("schtasks /create failed")
+    expect(fake.files.has(windowsConfigurationPath)).toBe(false)
+  })
+
+  it("puts the previous launch agent and service.json back when launchd refuses the new agent", async () => {
+    const agent = "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist"
+    const configuration = "/Users/dl/.domovoi/service.json"
+    const fake = managerFake("darwin", { files: { [agent]: "old agent", [configuration]: "old configuration" }, failing: "bootstrap" })
+    await expect(installDaemonService({ runtime }, fake.effects)).rejects.toThrow("launchctl bootstrap failed")
+    expect(Object.fromEntries(fake.files)).toEqual({ [agent]: "old agent", [configuration]: "old configuration" })
+  })
+
+  it("keeps the new unit and record once systemd has loaded them", async () => {
+    const fake = managerFake("linux", { files: { "/home/dl/.config/systemd/user/domovoid.service": "old unit" }, failing: "--user" })
+    fake.effects.run = vi.fn(async (command: string, args: string[]) => { if (args.includes("enable")) throw new Error("enable failed") })
+    await expect(installDaemonService({ runtime }, fake.effects)).rejects.toThrow("enable failed")
+    expect(fake.files.get("/home/dl/.config/systemd/user/domovoid.service")).not.toBe("old unit")
+  })
+
+  // Finding 2: install refuses what ownership could not recognise later.
+  it("refuses a Windows path that is not in plain form, before the handoff", async () => {
+    for (const [runtimePaths, home] of [
+      [{ ...windowsRuntime, nodePath: "C:\\Program Files\\Domovoi\\..\\Domovoi\\runtime\\node.exe" }, windowsHome],
+      [{ ...windowsRuntime, daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime\\\\daemon\\index.js" }, windowsHome],
+      [{ ...windowsRuntime, daemonEntryPath: "C:\\Program Files\\Domovoi/runtime\\daemon\\index.js" }, windowsHome],
+      [{ ...windowsRuntime, daemonEntryPath: "C:\\Program Files\\Domovoi\\run\x7ftime\\daemon\\index.js" }, windowsHome],
+      [windowsRuntime, "C:\\Users\\d\x7fl"],
+    ] as const) {
+      const releaseInAppDaemon = vi.fn(async () => {})
+      const effects = windowsDependencies({ home })
+      await expect(installDaemonService({ runtime: runtimePaths, releaseInAppDaemon }, effects)).rejects.toBeInstanceOf(WindowsTaskPathError)
+      expect(releaseInAppDaemon).not.toHaveBeenCalled()
+      expect(effects.claimServiceOperation).not.toHaveBeenCalled()
+      expect(effects.run).not.toHaveBeenCalled()
+    }
+  })
+
+  // Finding 3: /create /f must not overwrite a task Domovoi did not register.
+  it("refuses to install over a same-named task Domovoi did not register, before the handoff", async () => {
+    const foreign = { path: "C:\\Tools\\other.exe", arguments: "--serve" }
+    const fake = managerFake("win32", { task: foreign })
+    const releaseInAppDaemon = vi.fn(async () => {})
+    const refused = installDaemonService({ runtime: windowsRuntime, releaseInAppDaemon }, fake.effects)
+    await expect(refused).rejects.toBeInstanceOf(WindowsTaskNotDomovoiError)
+    await expect(refused).rejects.toThrow('A Windows task named "Domovoi daemon" exists, but Domovoi did not register it. Nothing was stopped or deleted.')
+    expect(releaseInAppDaemon).not.toHaveBeenCalled()
+    expect(fake.effects.claimProfile).not.toHaveBeenCalled()
+    expect(fake.ran).toEqual([])
+    expect(fake.files.size).toBe(0)
+    expect(fake.task()).toEqual(foreign)
+  })
+
+  it("reinstalls over the task Domovoi registered", async () => {
+    const fake = managerFake("win32", { files: { [windowsConfigurationPath]: oldWindowsConfiguration }, task: oldWindowsTask })
+    await installDaemonService({ runtime: windowsRuntime }, fake.effects)
+    expect(fake.ran).toEqual(["schtasks /create", "schtasks /run"])
+  })
+
+  // Finding 4: a job still loaded from Domovoi's plist, but not running,
+  // leaves the profile free; launchd would refuse the new bootstrap after the
+  // in-app daemon was released.
+  it("boots out an idle job loaded from Domovoi's plist before bootstrapping the new agent", async () => {
+    const agent = "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist"
+    const fake = managerFake("darwin", { files: { [agent]: "old agent" }, job: { path: agent, running: false } })
+    const releaseInAppDaemon = vi.fn(async () => {})
+    await installDaemonService({ runtime, releaseInAppDaemon }, fake.effects)
+    expect(releaseInAppDaemon).toHaveBeenCalledOnce()
+    expect(fake.ran).toEqual(["launchctl bootout", "launchctl bootstrap"])
+    expect(fake.job()).toEqual({ path: agent, running: true })
+  })
+
+  it("refuses before the handoff when a job under the label is loaded from another plist", async () => {
+    const other = "/Users/dl/Library/LaunchAgents/other.plist"
+    const fake = managerFake("darwin", { job: { path: other, running: false } })
+    const releaseInAppDaemon = vi.fn(async () => {})
+    await expect(installDaemonService({ runtime, releaseInAppDaemon }, fake.effects)).rejects.toBeInstanceOf(LaunchdJobNotDomovoiError)
+    expect(releaseInAppDaemon).not.toHaveBeenCalled()
+    expect(fake.ran).toEqual([])
+    expect(fake.files.size).toBe(0)
   })
 })
