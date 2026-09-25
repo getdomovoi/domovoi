@@ -1,5 +1,6 @@
+import { execFileSync } from "node:child_process"
 import { chmod, link, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { tmpdir, userInfo } from "node:os"
 import { join } from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
@@ -16,6 +17,31 @@ async function directory(prefix: string): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), prefix))
   scratch.push(path)
   return path
+}
+
+// Takes the current user's access to a directory away, and gives it back. On
+// POSIX chmod does it. On Windows chmod only sets the read-only attribute and
+// removes no access, so a deny entry for the user is added with icacls instead,
+// inherited by what the directory holds so that a file in it cannot be read
+// either (ruled 2026-09-24).
+function windowsUser(): string {
+  return process.env.USERNAME ?? userInfo().username
+}
+
+async function lockDirectory(path: string): Promise<void> {
+  if (process.platform === "win32") {
+    execFileSync("icacls", [path, "/deny", `${windowsUser()}:(OI)(CI)(RX)`], { stdio: "ignore" })
+  } else {
+    await chmod(path, 0o000)
+  }
+}
+
+async function unlockDirectory(path: string): Promise<void> {
+  if (process.platform === "win32") {
+    execFileSync("icacls", [path, "/remove:d", windowsUser()], { stdio: "ignore" })
+  } else {
+    await chmod(path, 0o700)
+  }
 }
 
 describe("fileTargetHasOtherNames", () => {
@@ -74,15 +100,14 @@ describe("fileTargetChanged", () => {
   })
 
   // Two unreadable readings match field for field, whatever was replaced
-  // beneath them. On Windows chmod removes no access, so the case cannot be
-  // made there with it.
-  it.skipIf(process.platform === "win32")("counts a target that cannot be read as changed, even against a matching reading", async () => {
+  // beneath them.
+  it("counts a target that cannot be read as changed, even against a matching reading", async () => {
     const workspace = await directory("domovoi-identity-unreadable-")
     const locked = join(workspace, "locked")
     await mkdir(join(locked, "inner"), { recursive: true })
     await writeFile(join(locked, "file.json"), "{}")
     await writeFile(join(workspace, "outside.json"), "{}")
-    await chmod(locked, 0o000)
+    await lockDirectory(locked)
     try {
       const beneath = await fileTargetIdentity(workspace, "locked/file.json", workspace)
       expect(beneath).toMatchObject({ entry: { kind: "unreadable" }, realPath: undefined, target: { kind: "unreadable" } })
@@ -95,7 +120,7 @@ describe("fileTargetChanged", () => {
       expect(through.realPath).toBeUndefined()
       expect(fileTargetChanged(through, await fileTargetIdentity(workspace, "locked/inner/../../outside.json", workspace))).toBe(true)
     } finally {
-      await chmod(locked, 0o700)
+      await unlockDirectory(locked)
     }
   })
 })

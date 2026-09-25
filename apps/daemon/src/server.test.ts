@@ -3,9 +3,10 @@ import { waitForDaemon } from "./test-wait-for.js"
 import { access, chmod, link, mkdir, mkdtemp, realpath, rename, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
+import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { request as httpRequest } from "node:http"
-import { tmpdir } from "node:os"
+import { tmpdir, userInfo } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
@@ -100,6 +101,31 @@ import {
   prepareSessionTransferIntent,
 } from "./session-transfer-package.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
+
+// Takes the current user's access to a directory away, and gives it back. On
+// POSIX chmod does it. On Windows chmod only sets the read-only attribute and
+// removes no access, so a deny entry for the user is added with icacls instead,
+// inherited by what the directory holds so that a file in it cannot be read
+// either (ruled 2026-09-24).
+function windowsUser(): string {
+  return process.env.USERNAME ?? userInfo().username
+}
+
+async function lockDirectory(directory: string): Promise<void> {
+  if (process.platform === "win32") {
+    execFileSync("icacls", [directory, "/deny", `${windowsUser()}:(OI)(CI)(RX)`], { stdio: "ignore" })
+  } else {
+    await chmod(directory, 0o000)
+  }
+}
+
+async function unlockDirectory(directory: string): Promise<void> {
+  if (process.platform === "win32") {
+    execFileSync("icacls", [directory, "/remove:d", windowsUser()], { stdio: "ignore" })
+  } else {
+    await chmod(directory, 0o700)
+  }
+}
 
 const skillSecurityMetadata = {
   manifest: { version: 1 as const, capabilities: [] },
@@ -12712,8 +12738,9 @@ describe("DomovoiDaemon", () => {
   // record, Affects and risk equal too. A target that cannot be read at Allow
   // is refused through the change path, and stays refused while it cannot be
   // read. On Windows chmod only sets the read-only attribute and removes no
-  // access, so the locked directory stays readable there.
-  it.skipIf(process.platform === "win32")("refuses an Allow while the file target cannot be read, even when the unreadable readings match", async () => {
+  // access, so there the directory is locked with a deny entry (ruled
+  // 2026-09-24).
+  it("refuses an Allow while the file target cannot be read, even when the unreadable readings match", async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-file-unreadable-"))
     scratchDirectories.push(workspacePath)
     const rows = [
@@ -12730,10 +12757,10 @@ describe("DomovoiDaemon", () => {
     // Stands for a writer the daemon cannot see: the directory is opened for
     // the replacement alone and locked again.
     const replaceLocked = async (directory: string) => {
-      await chmod(directory, 0o700)
+      await unlockDirectory(directory)
       await writeFile(join(directory, "replacement"), "{\"swapped\":true}")
       await rename(join(directory, "replacement"), join(directory, "notes.json"))
-      await chmod(directory, 0o000)
+      await lockDirectory(directory)
     }
     try {
       const snapshot = structuredClone(demoWorkspace)
@@ -12830,7 +12857,7 @@ describe("DomovoiDaemon", () => {
       await rpc("session.send", { sessionId: session.id, prompt: "Edit the files", client: "desktop" })
       // One directory is locked before its card is raised, so both readings of
       // it are unreadable.
-      await chmod(raised.directory, 0o000)
+      await lockDirectory(raised.directory)
       for (const row of rows) {
         listener!({
           type: "approval-requested",
@@ -12850,7 +12877,7 @@ describe("DomovoiDaemon", () => {
 
       // While the cards wait, the other directory is locked, and both files are
       // replaced beneath their locked directories.
-      await chmod(waiting.directory, 0o000)
+      await lockDirectory(waiting.directory)
       await replaceLocked(waiting.directory)
       await replaceLocked(raised.directory)
 
@@ -12868,7 +12895,7 @@ describe("DomovoiDaemon", () => {
       socket.close()
     } finally {
       // The scratch directory is removed after the test, which needs access.
-      await Promise.all(locked.map((directory) => chmod(directory, 0o700)))
+      for (const directory of locked) await unlockDirectory(directory)
     }
   })
 
