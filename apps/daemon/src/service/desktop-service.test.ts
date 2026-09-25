@@ -13,6 +13,7 @@ import {
 import { createServiceConfiguration, parseServiceConfiguration } from "./configuration.js"
 import type { ServiceEffects } from "./install.js"
 import { ServiceOperationBusyError } from "./operation-lease.js"
+import { DaemonServiceHandoffError, WindowsTaskArgumentVariableError } from "./desktop-service.js"
 
 // The desktop installs a service that runs the Node and daemon it ships, so
 // the daemon keeps running after the app quits. It passes the two paths; the
@@ -36,7 +37,7 @@ function dependencies(overrides: Partial<DaemonServiceDependencies & ServiceEffe
     writeRemovalReceipt: vi.fn(),
     write: vi.fn(async () => {}),
     run: vi.fn(async () => {}),
-    capture: vi.fn(async () => ({ code: 0, stdout: "\tstate = running\n" })),
+    capture: vi.fn(async () => ({ code: 0, stdout: "\tpath = /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\n\tstate = running\n" })),
     exists: vi.fn(async () => true),
     remove: vi.fn(async () => {}),
     ...overrides,
@@ -133,24 +134,28 @@ describe("the handoff from the in-app daemon", () => {
     expect(releaseInAppDaemon).not.toHaveBeenCalled()
   })
 
-  it("releases the in-app daemon exactly once, before the profile is claimed", async () => {
+  // Security review round 2: the profile is checked before the handoff by a
+  // claim that lets it go at once; the service's claim follows the handoff.
+  it("releases the in-app daemon exactly once, before the profile is claimed for the service", async () => {
     const order: string[] = []
     const releaseInAppDaemon = vi.fn(async () => { order.push("release") })
     const effects = dependencies({
-      claimProfile: vi.fn(() => { order.push("claim"); return { release: vi.fn() } }),
+      claimProfile: vi.fn(() => { order.push("claim"); return { release: vi.fn(() => { order.push("claim released") }) } }),
       write: vi.fn(async (path: string) => { order.push(`write ${path}`) }),
     })
     await installDaemonService({ runtime, releaseInAppDaemon }, effects)
     expect(releaseInAppDaemon).toHaveBeenCalledOnce()
-    expect(order[0]).toBe("release")
-    expect(order.indexOf("claim")).toBeGreaterThan(0)
+    expect(order.slice(0, 4)).toEqual(["claim", "claim released", "release", "claim"])
   })
 
   it("stops when the release fails, with nothing claimed or written", async () => {
-    const effects = dependencies()
+    const probe = { release: vi.fn() }
+    const effects = dependencies({ claimProfile: vi.fn(() => probe) })
     const releaseInAppDaemon = vi.fn(async () => { throw new Error("in-app daemon did not stop") })
     await expect(installDaemonService({ runtime, releaseInAppDaemon }, effects)).rejects.toThrow(/did not stop/)
-    expect(effects.claimProfile).not.toHaveBeenCalled()
+    // Only the check's claim, let go before the handoff; none for the service.
+    expect(effects.claimProfile).toHaveBeenCalledOnce()
+    expect(probe.release).toHaveBeenCalledOnce()
     expect(effects.write).not.toHaveBeenCalled()
     expect(effects.run).not.toHaveBeenCalled()
   })
@@ -209,7 +214,8 @@ describe("security review round 1: the handoff waits for the operation lease", (
     })
     await installDaemonService({ runtime, releaseInAppDaemon }, effects)
     expect(releaseInAppDaemon).toHaveBeenCalledOnce()
-    expect(order.slice(0, 3)).toEqual(["operation", "release", "profile"])
+    // Round 2: the profile check's claim, let go at once, precedes the handoff.
+    expect(order.slice(0, 4)).toEqual(["operation", "profile", "release", "profile"])
     expect(order.at(-1)).toBe("operation released")
   })
 })
@@ -269,7 +275,12 @@ function taskScheduler(task: { path: string; arguments: string } | undefined) {
 }
 
 const domovoiTask = { path: `"${windowsRuntime.nodePath}"`, arguments: `"${windowsRuntime.daemonEntryPath}" --service-config "${windowsConfigurationPath}"` }
-const savedConfiguration = { ...createServiceConfiguration({}, { platform: "win32", homeDirectory: windowsHome, workingDirectory: windowsHome }), registrationId: "5f0c7a9e-8a3b-4d1e-9c2f-0a1b2c3d4e5f" }
+// A desktop install records the runtime it installed in service.json.
+const savedConfiguration = {
+  ...createServiceConfiguration({}, { platform: "win32", homeDirectory: windowsHome, workingDirectory: windowsHome }),
+  registrationId: "5f0c7a9e-8a3b-4d1e-9c2f-0a1b2c3d4e5f",
+  serviceRuntime: { executable: windowsRuntime.nodePath, entry: windowsRuntime.daemonEntryPath },
+}
 
 describe("security review round 1: a same-named Windows task is not Domovoi's", () => {
   beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
@@ -313,5 +324,149 @@ describe("security review round 1: a same-named Windows task is not Domovoi's", 
     const effects = windowsDependencies({ capture: scheduler.capture, readConfiguration: vi.fn(() => savedConfiguration) })
     expect(await readDaemonServiceStatus(effects)).toMatchObject({ installed: false, running: false })
     expect(await removeDaemonService(effects)).toMatchObject({ kind: "task" })
+  })
+})
+
+// Security review round 2 on #574: a task that runs any absolute program with
+// the saved service.json path passed as Domovoi's. The task must run the
+// runtime and entry service.json records, compared as written; an install
+// from before that record must run node.exe on a Domovoi daemon entry.
+describe("security review round 2: the task must run Domovoi's runtime", () => {
+  beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
+  afterEach(() => { vi.unstubAllEnvs() })
+
+  const { serviceRuntime: _recorded, ...unrecorded } = savedConfiguration
+  const unrelated = [
+    { path: "C:\\Tools\\other.exe", arguments: `"C:\\Tools\\payload.js" --service-config "${windowsConfigurationPath}"` },
+    { path: "C:\\Tools\\other.exe", arguments: `--service-config "${windowsConfigurationPath}"` },
+  ]
+  const cases = [
+    ...unrelated.map((task) => [task, savedConfiguration] as const),
+    ...unrelated.map((task) => [task, unrecorded] as const),
+    // Recorded: a Domovoi-looking entry that is not the recorded one.
+    [{ path: `"${windowsRuntime.nodePath}"`, arguments: `"C:\\Users\\dl\\AppData\\Roaming\\npm\\node_modules\\@getdomovoi\\daemon\\dist\\index.js" --service-config "${windowsConfigurationPath}"` }, savedConfiguration],
+    // Recorded, differing only in case.
+    [{ path: `"${windowsRuntime.nodePath.toLowerCase()}"`, arguments: `"${windowsRuntime.daemonEntryPath}" --service-config "${windowsConfigurationPath}"` }, savedConfiguration],
+  ] as const
+
+  it("does not report a task that runs anything but that runtime as installed", async () => {
+    for (const [task, saved] of cases) {
+      const scheduler = taskScheduler(task)
+      const effects = windowsDependencies({ capture: scheduler.capture, readConfiguration: vi.fn(() => saved) })
+      expect(await readDaemonServiceStatus(effects), task.path).toMatchObject({ installed: false, running: false })
+    }
+  })
+
+  it("refuses to stop or delete a task that runs anything but that runtime", async () => {
+    for (const [task, saved] of cases) {
+      const scheduler = taskScheduler(task)
+      const effects = windowsDependencies({ capture: scheduler.capture, readConfiguration: vi.fn(() => saved) })
+      await expect(removeDaemonService(effects)).rejects.toBeInstanceOf(WindowsTaskNotDomovoiError)
+      expect(scheduler.state).toMatchObject({ registered: true, stopIssued: false, deleted: false })
+      expect(effects.remove).not.toHaveBeenCalled()
+      expect(effects.claimProfile).not.toHaveBeenCalled()
+    }
+  })
+})
+
+// Security review round 2 on #574, findings 2 to 4.
+describe("security review round 2: a job under Domovoi's label needs Domovoi's file", () => {
+  const agentPath = "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist"
+  const loadedFrom = (path: string) => vi.fn(async () => ({ code: 0, stdout: `\tpath = ${path}\n\tstate = running\n` }))
+
+  it("with no launch agent file, reports nothing installed or running and boots nothing out", async () => {
+    const effects = dependencies({ exists: vi.fn(async () => false), capture: loadedFrom("/Users/dl/Library/LaunchAgents/other.plist") })
+    expect(await readDaemonServiceStatus(effects)).toMatchObject({ installed: false, running: false })
+    await removeDaemonService(effects)
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  it("with no systemd unit file, reports nothing installed or running and stops nothing", async () => {
+    const effects = dependencies({ platform: "linux", home: "/home/dl", exists: vi.fn(async () => false), capture: vi.fn(async () => ({ code: 0, stdout: "active\n" })) })
+    expect(await readDaemonServiceStatus(effects)).toMatchObject({ installed: false, running: false })
+    await removeDaemonService(effects)
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  it("does not report or boot out a job loaded from another plist", async () => {
+    const effects = dependencies({ capture: loadedFrom("/Users/dl/Library/LaunchAgents/other.plist") })
+    expect(await readDaemonServiceStatus(effects)).toMatchObject({ installed: true, running: false })
+    await removeDaemonService(effects)
+    expect(effects.run).not.toHaveBeenCalled()
+    expect(effects.remove).toHaveBeenCalledWith(agentPath, expect.anything())
+  })
+
+  it("reports and boots out the job loaded from Domovoi's plist", async () => {
+    const effects = dependencies({ capture: loadedFrom(agentPath) })
+    expect(await readDaemonServiceStatus(effects)).toMatchObject({ installed: true, running: true })
+    await removeDaemonService(effects)
+    expect(effects.run).toHaveBeenCalledWith("launchctl", ["bootout", "gui/501/sh.domovoi.domovoid"], expect.anything())
+  })
+})
+
+describe("security review round 2: the handoff waits for the profile check", () => {
+  const owner = (kind: "daemon" | "desktop") => ({
+    version: 1 as const, state: "ready" as const, instanceId: "8c1b5a4e-2f3d-4c5b-9a6e-7d8f9a0b1c2d", machineId: `machine-${"a".repeat(32)}`,
+    protocolVersion: "0.7.0", owner: kind, credential: { source: "environment" as const }, url: "ws://127.0.0.1:47831/rpc",
+  })
+  const held = () => vi.fn(() => { throw new ProfileAlreadyOwnedError("/Users/dl/.domovoi") })
+
+  it("never releases the in-app daemon while another daemon owns the profile", async () => {
+    for (const readOwner of [vi.fn(() => owner("daemon")), vi.fn(() => undefined), vi.fn(() => { throw new Error("unreadable") })]) {
+      const releaseInAppDaemon = vi.fn(async () => {})
+      const effects = dependencies({ claimProfile: held(), readOwner })
+      await expect(installDaemonService({ runtime, releaseInAppDaemon }, effects)).rejects.toBeInstanceOf(ProfileAlreadyOwnedError)
+      expect(releaseInAppDaemon).not.toHaveBeenCalled()
+      expect(effects.write).not.toHaveBeenCalled()
+    }
+  })
+
+  it("releases the in-app daemon that owns the profile, once, then claims it", async () => {
+    const order: string[] = []
+    let inApp = true
+    const releaseInAppDaemon = vi.fn(async () => { order.push("release"); inApp = false })
+    const effects = dependencies({
+      readOwner: vi.fn(() => inApp ? owner("desktop") : undefined),
+      claimProfile: vi.fn(() => {
+        order.push("claim")
+        if (inApp) throw new ProfileAlreadyOwnedError("/Users/dl/.domovoi")
+        return { release: vi.fn() }
+      }),
+    })
+    await installDaemonService({ runtime, releaseInAppDaemon }, effects)
+    expect(releaseInAppDaemon).toHaveBeenCalledOnce()
+    expect(order).toEqual(["claim", "release", "claim"])
+  })
+
+  it("says the in-app daemon was stopped when another daemon takes the profile after the handoff", async () => {
+    const releaseInAppDaemon = vi.fn(async () => {})
+    const effects = dependencies({ claimProfile: held(), readOwner: vi.fn(() => owner("desktop")) })
+    const refused = installDaemonService({ runtime, releaseInAppDaemon }, effects)
+    await expect(refused).rejects.toBeInstanceOf(DaemonServiceHandoffError)
+    await expect(refused).rejects.toMatchObject({ cause: expect.any(ProfileAlreadyOwnedError) })
+    expect(releaseInAppDaemon).toHaveBeenCalledOnce()
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+})
+
+describe("security review round 2: Task Scheduler argument variables", () => {
+  // Task Scheduler substitutes $(Arg0) and the like in an action's arguments
+  // when the task runs with parameters.
+  it("refuses $( in any path the task runs, before the handoff", async () => {
+    for (const [runtimePaths, home] of [
+      [{ ...windowsRuntime, daemonEntryPath: "C:\\Program Files\\Domovoi\\$(Arg0)\\index.js" }, windowsHome],
+      [{ ...windowsRuntime, nodePath: "C:\\Program Files\\$(Arg1)\\node.exe" }, windowsHome],
+      [windowsRuntime, "C:\\Users\\$(Arg0)"],
+      [windowsRuntime, "C:\\Users\\$(Anything)"],
+    ] as const) {
+      const releaseInAppDaemon = vi.fn(async () => {})
+      const effects = windowsDependencies({ home })
+      const refused = installDaemonService({ runtime: runtimePaths, releaseInAppDaemon }, effects)
+      await expect(refused).rejects.toBeInstanceOf(WindowsTaskArgumentVariableError)
+      expect(releaseInAppDaemon).not.toHaveBeenCalled()
+      expect(effects.claimServiceOperation).not.toHaveBeenCalled()
+      expect(effects.run).not.toHaveBeenCalled()
+    }
   })
 })

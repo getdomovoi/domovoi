@@ -8,7 +8,7 @@ import { stopGuestSupervisor } from "./supervisor-command.js"
 
 import type { DaemonEnvironment } from "../config.js"
 import { OperationDeadline } from "../operation-deadline.js"
-import { claimProfile, type ProfileLease } from "../profile-lease.js"
+import { claimProfile, ProfileAlreadyOwnedError, type ProfileLease } from "../profile-lease.js"
 import { localOwnerRemovalReceiptPath, writeLocalOwnerRemovalReceipt } from "../local-owner-removal.js"
 import { readServiceRemovalSnapshot, serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration, type ServiceRuntimeRecord } from "./configuration.js"
@@ -113,6 +113,17 @@ function isMissingServiceFailure(platform: string, error: unknown): boolean {
   return false
 }
 
+// Security review round 2 (#574): launchd binds a label to whichever plist
+// was bootstrapped, so a job named sh.domovoi.domovoid is Domovoi's only when
+// launchctl says it came from Domovoi's plist. launchctl indents job fields
+// with one tab. Placeholder copy: the error text needs an owner ruling.
+function launchdJobPath(printed: string): string {
+  const paths = [...printed.matchAll(/^\tpath = ([^\r\n]+)\r?$/gm)]
+  const path = paths[0]?.[1]?.trim()
+  if (paths.length !== 1 || !path) throw new Error("[copy pending owner ruling] launchctl did not say which file the loaded sh.domovoi.domovoid job came from")
+  return path
+}
+
 function captureFailure(command: string, result: CapturedRun): Error {
   const detail = result.stderr?.trim()
   return new Error(detail || `${command} exited with code ${result.code}`)
@@ -173,11 +184,22 @@ function windowsTaskCommand(execPath: string, runtime: string | undefined): stri
 // action's program and arguments each time the task runs, and schtasks has no
 // way to write a literal percent sign. A path that contains one could run a
 // file other than the one checked, so it is refused before anything changes.
-// Placeholder copy: the text needs an owner ruling.
+// Text ruled 2026-09-25.
 export class WindowsTaskPercentSignError extends Error {
   constructor(readonly path: string) {
-    super(`[copy pending owner ruling] ${path} contains a percent sign, which Task Scheduler reads as an environment variable when the task runs. No service files were changed.`)
+    super(`${path} contains a percent sign, which Task Scheduler reads as an environment variable when the task runs. No service files were changed.`)
     this.name = "WindowsTaskPercentSignError"
+  }
+}
+
+// Security review round 2 (#574): Task Scheduler substitutes $(Arg0) through
+// $(Arg32) in an action's arguments when the task runs with parameters, so any
+// $( is refused before anything changes, as the percent sign is.
+// Placeholder copy: the text needs an owner ruling.
+export class WindowsTaskArgumentVariableError extends Error {
+  constructor(readonly path: string) {
+    super(`[copy pending owner ruling] ${path} contains $(, which Task Scheduler reads as a task argument when the task runs. No service files were changed.`)
+    this.name = "WindowsTaskArgumentVariableError"
   }
 }
 
@@ -240,6 +262,7 @@ export function servicePlan({
   if (platform === "win32") {
     for (const path of [runtime, execPath, configurationFile.path]) {
       if (path?.includes("%")) throw new WindowsTaskPercentSignError(path)
+      if (path?.includes("$(")) throw new WindowsTaskArgumentVariableError(path)
     }
     const taskCommand = `${windowsTaskCommand(execPath, runtime)} --service-config "${assertExecutable(configurationFile.path, "the service configuration")}"`
     if (taskCommand.length > 262) {
@@ -366,9 +389,41 @@ async function serviceOperation<T>(effects: Pick<ServiceEffects, "claimServiceOp
 // The file is written before the service manager is asked to load it, and a
 // write that fails stops the install rather than asking the manager to launch
 // with a unit or configuration that is not there.
+// Security review round 2 (#574): the handoff must not stop the in-app daemon
+// when the install would then be refused because another daemon owns the
+// profile. A profile that can be claimed is free, and the probe lets it go at
+// once, so it is claimed for the service only after the handoff. A profile
+// already owned passes only when its owner record names a desktop owner, the
+// in-app daemon the handoff stops. Any other owner, no record, or a record
+// that cannot be read refuses with the profile's own error.
+function checkProfileBeforeHandoff(profile: ProfileLocation, effects: Pick<ServiceEffects, "claimProfile" | "readOwner">): void {
+  let probe: ProfileLease
+  try {
+    probe = effects.claimProfile(profile)
+  } catch (error) {
+    if (!(error instanceof ProfileAlreadyOwnedError)) throw error
+    let record: LocalOwnerRecord | undefined
+    try { record = effects.readOwner?.(profile) } catch { throw error }
+    if (record === undefined || record.state === "none" || record.owner !== "desktop") throw error
+    return
+  }
+  probe.release()
+}
+
+// Another daemon took the profile after the check and after the in-app daemon
+// was stopped. Nothing was claimed or written; the in-app daemon stays
+// stopped, and the desktop can attach to whichever daemon owns the profile.
+// Placeholder copy: the text needs an owner ruling.
+export class DaemonServiceHandoffError extends Error {
+  constructor(cause: ProfileAlreadyOwnedError) {
+    super("[copy pending owner ruling] Another Domovoi daemon took the profile after this app stopped its own daemon. No service was installed and no service files were changed.", { cause })
+    this.name = "DaemonServiceHandoffError"
+  }
+}
+
 async function installWithDeadline(
   target: ServiceTarget,
-  effects: Pick<ServiceEffects, "write" | "run" | "claimProfile" | "remove" | "registeredProfile">,
+  effects: Pick<ServiceEffects, "write" | "run" | "claimProfile" | "remove" | "registeredProfile" | "readOwner">,
   deadline: OperationDeadline,
   handoff: (() => Promise<void>) | undefined,
 ): Promise<ServicePlan> {
@@ -378,19 +433,31 @@ async function installWithDeadline(
   deadline.throwIfExpired()
   const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory)
   const previous = effects.registeredProfile?.(target.configuration.homeDirectory, target.platform)
-  // The handoff (ruled 2026-09-23, option B; moved here in security review
-  // round 1 on #574): the service-operation lease is held, the plan is built
-  // and the saved registration is read, so every check that can refuse has
-  // passed. The caller's in-app daemon lets the profile go only now, once,
-  // and before it is claimed.
-  if (handoff) {
-    await withinServiceDeadline(deadline, handoff)
-    deadline.throwIfExpired()
-  }
   const leases: ProfileLease[] = []
   try {
+    // A profile an earlier registration named is not the in-app daemon's, so
+    // it is claimed before the handoff.
     if (previous && !sameProfileDirectory(previous, profile)) leases.push(effects.claimProfile(previous))
-    leases.push(effects.claimProfile(profile))
+    // The handoff (ruled 2026-09-23, option B; placed by security review
+    // rounds 1 and 2 on #574): the service-operation lease is held, the plan
+    // is built, the saved registration is read, and the profile is free or
+    // held by an in-app daemon, so every check that can refuse has passed.
+    // The caller's in-app daemon lets the profile go only now, once, and
+    // before the profile is claimed for the service.
+    let released = false
+    if (handoff) {
+      checkProfileBeforeHandoff(profile, effects)
+      await withinServiceDeadline(deadline, handoff)
+      deadline.throwIfExpired()
+      released = true
+    }
+    try {
+      leases.push(effects.claimProfile(profile))
+    } catch (cause) {
+      // Another daemon took the profile between the check and this claim.
+      if (released && cause instanceof ProfileAlreadyOwnedError) throw new DaemonServiceHandoffError(cause)
+      throw cause
+    }
     await withinServiceDeadline(deadline, () => effects.remove(localOwnerRemovalReceiptPath(profile), deadline))
     await withinServiceDeadline(deadline, () => effects.write(plan.configuration.path, plan.configuration.contents, deadline))
     if (plan.kind === "file") await withinServiceDeadline(deadline, () => effects.write(plan.path, plan.contents, deadline))
@@ -407,23 +474,28 @@ async function installWithDeadline(
 
 export function installService(
   target: ServiceTarget,
-  effects: Pick<ServiceEffects, "write" | "run" | "claimProfile" | "remove" | "claimServiceOperation" | "registeredProfile">,
+  effects: Pick<ServiceEffects, "write" | "run" | "claimProfile" | "remove" | "claimServiceOperation" | "registeredProfile" | "readOwner">,
   options: { handoff?: () => Promise<void> } = {},
 ): Promise<ServicePlan> {
   return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.handoff))
 }
 
-// Security review round 1 (#574): any program can register a Windows task
-// under Domovoi's task name. The desktop reports or changes the task only once
-// it is Domovoi's: service.json holds a Domovoi registration, and the task runs
-// that file in the shape servicePlan writes, a runtime and an entry (or one
-// program), then --service-config and the saved configuration path.
-export type ServiceOwnershipOptions = { verifyWindowsTaskOwner?: boolean }
+// Security review rounds 1 and 2 (#574): any program can register a Windows
+// task under Domovoi's task name. Status and removal, from the desktop and the
+// CLI alike (ruled 2026-09-25), report or change the task only once it is
+// Domovoi's: service.json holds a Domovoi registration, and the task runs a
+// runtime on an entry with --service-config and that file's path, in the
+// shape servicePlan writes. The runtime and entry must be exactly the ones
+// service.json records (serviceRuntime), compared as written. An install from
+// before that record was written stays removable only under a narrow rule:
+// `domovoid service install` ran process.execPath (node.exe) on process.argv[1],
+// the daemon entry of an npm or pnpm install (@getdomovoi\daemon\dist\index.js)
+// or of a checkout (apps\daemon\dist\index.js). No other program passes.
 
-// Placeholder copy: the text needs an owner ruling.
+// Text ruled 2026-09-25.
 export class WindowsTaskNotDomovoiError extends Error {
   constructor(readonly taskName: string) {
-    super(`[copy pending owner ruling] A Windows task named "${taskName}" exists, but Domovoi did not register it. Nothing was stopped or deleted.`)
+    super(`A Windows task named "${taskName}" exists, but Domovoi did not register it. Nothing was stopped or deleted.`)
     this.name = "WindowsTaskNotDomovoiError"
   }
 }
@@ -436,14 +508,17 @@ function plainWindowsPath(path: string | undefined): boolean {
     && win32.normalize(path) === path
 }
 
-function isDomovoiTaskAction(action: WindowsTaskAction, configurationPath: string): boolean {
+const legacyDaemonEntry = /\\(?:@getdomovoi|apps)\\daemon\\dist\\index\.js$/i
+
+function isDomovoiTaskAction(action: WindowsTaskAction, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): boolean {
   // Task Scheduler may report the program with the quotes schtasks was given.
   const program = /^"([^"]*)"$/.exec(action.path)?.[1] ?? action.path
-  const withEntry = /^"([^"]*)" --service-config "([^"]*)"$/.exec(action.arguments)
-  const alone = /^--service-config "([^"]*)"$/.exec(action.arguments)
-  const paths = withEntry ? [program, withEntry[1]] : [program]
-  const saved = withEntry ? withEntry[2] : alone?.[1]
-  return saved === configurationPath && paths.every(plainWindowsPath)
+  const quoted = /^"([^"]*)" --service-config "([^"]*)"$/.exec(action.arguments)
+  if (!quoted) return false
+  const [, entry = "", saved = ""] = quoted
+  if (saved !== configurationPath || !plainWindowsPath(program) || !plainWindowsPath(entry)) return false
+  if (recorded) return program === recorded.executable && entry === recorded.entry
+  return win32.basename(program).toLowerCase() === "node.exe" && legacyDaemonEntry.test(entry)
 }
 
 async function windowsTaskOwner(
@@ -455,7 +530,7 @@ async function windowsTaskOwner(
   if (action === "missing") return "missing"
   if (!effects.readConfiguration) throw new Error("checking who registered the Windows task needs the saved service configuration")
   const saved = effects.readConfiguration(home, "win32")
-  return saved !== undefined && isDomovoiTaskAction(action, serviceConfigurationPath(home, "win32")) ? "domovoi" : "other"
+  return saved !== undefined && isDomovoiTaskAction(action, serviceConfigurationPath(home, "win32"), saved.serviceRuntime) ? "domovoi" : "other"
 }
 
 export type ServiceUpdateEffects = Pick<ServiceEffects, "write" | "read" | "run" | "capture" | "exists" | "claimProfile" | "claimServiceOperation" | "readOwner">
@@ -689,14 +764,13 @@ async function removeWithDeadline(
   effects: RemovalEffects,
   deadline: OperationDeadline,
   progress: RemovalProgress,
-  options: ServiceOwnershipOptions,
 ): Promise<ServiceRemovalResult> {
   const plan = serviceRemovalPlan(target)
   const home = assertHome(target.home)
   deadline.throwIfExpired()
   // Read before anything is stopped, so a task Domovoi did not register is
   // left running and registered.
-  if (plan.kind === "task" && options.verifyWindowsTaskOwner && await windowsTaskOwner(home, effects, deadline) === "other") {
+  if (plan.kind === "task" && await windowsTaskOwner(home, effects, deadline) === "other") {
     throw new WindowsTaskNotDomovoiError(displayName)
   }
   const before = effects.removalSnapshot(home, target.platform)
@@ -706,7 +780,19 @@ async function removeWithDeadline(
     managerStopped = await removeWindowsTask(plan, effects, deadline) === "removed"
     progress.managerHoldsDeadline = false
   }
-  for (const { command, args } of plan.kind === "file" ? plan.commands : []) {
+  // Security review round 2 (#574): with no Domovoi service file, the same-
+  // named job is not Domovoi's to stop; on launchd, neither is a job loaded
+  // from another plist. Either counts as a manager that stopped nothing.
+  const servicePath = plan.kind === "file" ? plan.path : undefined
+  let ownsJob = servicePath !== undefined && await withinServiceDeadline(deadline, () => effects.exists(servicePath, deadline))
+  if (ownsJob && target.platform === "darwin") {
+    const printed = await withinServiceDeadline(deadline, () => effects.capture("launchctl", ["print", `gui/${assertUid(target.uid)}/${agentLabel}`], deadline))
+    if (printed.code === 0) ownsJob = launchdJobPath(printed.stdout) === servicePath
+    else if (printed.code === 113 && isMissingServiceFailure("darwin", printed)) ownsJob = false
+    else throw captureFailure("launchctl", printed)
+  }
+  if (plan.kind === "file" && !ownsJob) managerStopped = false
+  for (const { command, args } of plan.kind === "file" && ownsJob ? plan.commands : []) {
     try {
       await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
     } catch (error) {
@@ -749,10 +835,9 @@ async function removeWithDeadline(
 export function removeService(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
   effects: RemovalEffects,
-  options: ServiceOwnershipOptions = {},
 ): Promise<ServiceRemovalResult> {
   const progress: RemovalProgress = { managerHoldsDeadline: false }
-  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline, progress, options)).catch((cause: unknown) => {
+  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline, progress)).catch((cause: unknown) => {
     // The outer deadline can expire before the manager adapter settles. It
     // needs the same actionable task-specific error, not a bare timer failure.
     if (progress.managerHoldsDeadline && !(cause instanceof WindowsTaskRemovalError)) {
@@ -766,13 +851,18 @@ async function statusWithDeadline(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
   effects: Pick<ServiceEffects, "capture" | "exists" | "supervisorStatus" | "readConfiguration">,
   deadline: OperationDeadline,
-  options: ServiceOwnershipOptions,
 ): Promise<ServiceStatus> {
   if (target.platform === "linux") {
     const supervisor = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(assertHome(target.home)))
     if (supervisor !== undefined) return supervisor
     const path = unitPath(target.home)
     const installed = await withinServiceDeadline(deadline, () => effects.exists(path, deadline))
+    // Security review round 2 (#574): with no Domovoi unit file, a unit of
+    // the same name is not Domovoi's to report. With the file present, the
+    // name is Domovoi's: ~/.config/systemd/user outranks every other
+    // persistent unit directory, and a transient unit cannot take a name
+    // that has a unit file.
+    if (!installed) return { installed, running: false, detail: `no service file at ${path}` }
     const active = await withinServiceDeadline(deadline, () => effects.capture("systemctl", ["--user", "is-active", unitFile], deadline))
     if (![0, 3, 4].includes(active.code)) throw captureFailure("systemctl", active)
     const state = active.stdout.trim() === "" ? "unknown" : active.stdout.trim()
@@ -786,6 +876,9 @@ async function statusWithDeadline(
   if (target.platform === "darwin") {
     const path = agentPath(target.home)
     const installed = await withinServiceDeadline(deadline, () => effects.exists(path, deadline))
+    // Security review round 2 (#574): with no Domovoi plist, a job under the
+    // label is not Domovoi's to report.
+    if (!installed) return { installed, running: false, detail: `no launch agent at ${path}` }
     const printed = await withinServiceDeadline(deadline, () => effects.capture("launchctl", [
       "print",
       `gui/${assertUid(target.uid)}/${agentLabel}`,
@@ -802,6 +895,8 @@ async function statusWithDeadline(
       const states = [...printed.stdout.matchAll(/^\tstate = ([^\r\n]+)\r?$/gm)]
       state = states[0]?.[1]?.trim()
       if (states.length !== 1 || !state) throw new Error("launchctl did not report one agent runtime state")
+      // A job loaded from another plist is not this agent: it is not loaded.
+      if (launchdJobPath(printed.stdout) !== path) state = undefined
     }
     return {
       installed,
@@ -813,9 +908,9 @@ async function statusWithDeadline(
   }
 
   if (target.platform === "win32") {
-    if (options.verifyWindowsTaskOwner && await windowsTaskOwner(assertHome(target.home), effects, deadline) === "other") {
-      // Placeholder copy: the text needs an owner ruling.
-      return { installed: false, running: false, detail: `[copy pending owner ruling] a task named ${displayName} exists, but Domovoi did not register it` }
+    if (await windowsTaskOwner(assertHome(target.home), effects, deadline) === "other") {
+      // Text ruled 2026-09-25.
+      return { installed: false, running: false, detail: `a task named ${displayName} exists, but Domovoi did not register it` }
     }
     const state = await readWindowsTaskState(displayName, effects, deadline)
     const installed = state !== "missing"
@@ -835,9 +930,8 @@ async function statusWithDeadline(
 export function serviceStatus(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
   effects: Pick<ServiceEffects, "capture" | "exists" | "claimServiceOperation" | "supervisorStatus" | "readConfiguration">,
-  options: ServiceOwnershipOptions = {},
 ): Promise<ServiceStatus> {
-  return serviceOperation(effects, (deadline) => statusWithDeadline(target, effects, deadline, options))
+  return serviceOperation(effects, (deadline) => statusWithDeadline(target, effects, deadline))
 }
 
 const usage = `Usage: domovoid service install

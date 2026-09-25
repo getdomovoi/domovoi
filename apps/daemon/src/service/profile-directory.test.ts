@@ -20,13 +20,27 @@ async function fixture() {
   const configuration = createServiceConfiguration({ DOMOVOI_PROFILE_DIR: profileDirectory }, {
     homeDirectory: home, workingDirectory: home, platform: process.platform,
   })
-  const target = { home, platform: process.platform, uid: 1000, user: "domovoi-test", execPath: join(home, "domovoid"), configuration }
+  // The runtime is named, as the CLI and the desktop name it, so the install
+  // records it and removal can tell the service is Domovoi's.
+  const runtime = join(home, process.platform === "win32" ? "node.exe" : "node")
+  const execPath = join(home, "domovoid.js")
+  const target = { home, platform: process.platform, uid: 1000, user: "domovoi-test", execPath, runtime, configuration }
+  const configurationPath = serviceConfigurationPath(home, process.platform)
+  // Removal first asks which task action or plist the job runs from (security
+  // review rounds 1 and 2); these answer with Domovoi's own.
   const effects = { ...nodeServiceEffects({ userHomeDirectory: home }), run: vi.fn(async () => {}),
-    capture: vi.fn(async (_command: string, args: string[]) => ({ code: 0,
-      stdout: process.platform === "win32"
-        ? `domovoi-task:${Buffer.from(args.at(-1)!, "base64").toString("utf16le").includes("DeleteTask") ? "deleted" : "1"}`
-        : "active",
-    })) }
+    capture: vi.fn(async (command: string, args: string[]) => {
+      if (process.platform === "win32") {
+        const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+        if (script.includes("domovoi-task-action:")) {
+          const action = { path: `"${runtime}"`, arguments: `"${execPath}" --service-config "${configurationPath}"`, enabled: true, state: 1 }
+          return { code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}` }
+        }
+        return { code: 0, stdout: `domovoi-task:${script.includes("DeleteTask") ? "deleted" : "1"}` }
+      }
+      if (command === "launchctl") return { code: 0, stdout: `\tpath = ${join(home, "Library", "LaunchAgents", "sh.domovoi.domovoid.plist")}\n\tstate = running\n` }
+      return { code: 0, stdout: "active" }
+    }) }
   return { home, profileDirectory, target, effects }
 }
 
