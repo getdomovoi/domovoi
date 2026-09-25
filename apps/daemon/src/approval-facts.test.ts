@@ -1,11 +1,12 @@
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { join, relative, resolve, sep } from "node:path"
 
 import { demoWorkspace, type Runtime } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { approvalDirectory, approvalFacts, resolveApprovalPath, unrestrictedApprovalScope } from "./approval-facts.js"
+import { pathHider } from "./approval-path-text.js"
 import { codexApprovalScope } from "./codex.js"
 
 const workspace = join("/", "worktrees", "session-1")
@@ -331,5 +332,59 @@ describe("approvalFacts", () => {
     const within = join(tree, "link-to-src", "index.ts")
     expect(approvalFacts({ workspace: tree, path: within, scope: undefined, resolved: await resolveApprovalPath(tree, within) }).affects)
       .toBe("The file link-to-src/index.ts in the session worktree.")
+  })
+
+  // Round 12: a hidden file under a subdirectory, requested from a nested
+  // directory, stayed in the card's text when named relative to the worktree.
+  // Every depth of file and every place the request can run from, as given
+  // and through a link, with the worktree itself as given and at its real
+  // path. Only the exact hidden path is replaced.
+  it("hides a hidden file however the card's text writes it from the request's directory or the worktree", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "domovoi-approval-forms-"))
+    directories.push(workspace)
+    const real = await realpath(workspace)
+    for (const path of ["src/app", "src/lib", "lib"]) await mkdir(join(workspace, ...path.split("/")), { recursive: true })
+    for (const file of [".env", "src/.env", "src/app/.env"]) await writeFile(join(workspace, ...file.split("/")), "")
+    await symlink(join(workspace, "src"), join(workspace, "via"), "junction")
+    const slashed = (path: string) => path.split(sep).join("/")
+    const cases = [
+      { file: ".env", cwds: [".", "lib", ".."] },
+      { file: "src/.env", cwds: [".", "src", "lib", "via"] },
+      { file: "src/app/.env", cwds: [".", "src/app", "src/lib", "src", "via/app", "via"] },
+    ]
+    const missed: string[] = []
+    for (const { file, cwds } of cases) {
+      const given = join(workspace, ...file.split("/"))
+      const lies = join(real, ...file.split("/"))
+      for (const cwd of cwds) {
+        const cwdGiven = resolve(workspace, cwd)
+        const cwdLies = await realpath(cwdGiven)
+        const relatives = [...new Set([file, slashed(relative(cwdGiven, given)), slashed(relative(cwdLies, lies))])]
+        const written = [
+          given,
+          lies,
+          ...relatives.flatMap((path) => {
+            const backslashed = path.split("/").join("\\")
+            return [path, `./${path}`, backslashed, `.\\${backslashed}`]
+          }),
+        ]
+        const text = `Edit ${written.join(", ")}; leave .env.example, .envrc and src/index.ts alone`
+        const expected = `Edit ${written.map(() => "[REDACTED]").join(", ")}; leave .env.example, .envrc and src/index.ts alone`
+        for (const [shape, request] of Object.entries({
+          "absolute path, absolute cwd": { path: given, cwd: cwdGiven },
+          "absolute path, relative cwd": { path: given, cwd },
+          "relative path, absolute cwd": { path: relative(cwdGiven, given), cwd: cwdGiven },
+          "relative path, relative cwd": { path: relative(cwdGiven, given), cwd },
+        })) {
+          const resolved = await resolveApprovalPath(workspace, request.path, request.cwd)
+          const facts = approvalFacts({ workspace, ...request, scope: undefined, resolved })
+          const shownText = pathHider(facts.hiddenPaths).hide(text)
+          if (!facts.sensitive || shownText !== expected) {
+            missed.push(`${file} from ${cwd} (${shape}): ${shownText.split(real).join("<real>").split(workspace).join("<worktree>")}`)
+          }
+        }
+      }
+    }
+    expect(missed).toEqual([])
   })
 })

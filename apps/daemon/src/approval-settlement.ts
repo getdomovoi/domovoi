@@ -13,6 +13,7 @@ import {
   hiddenAffects,
   hiddenDirectory,
   hiddenFile,
+  hiddenFilePaths,
   inWorktree,
   requestDirectory,
   requestOperands,
@@ -201,7 +202,11 @@ function sealedCard(input: SettlementInput): SettledApproval {
   const command = redactDurableCommand(request.command ?? commandUnavailable).value
   const hider = pathHider([
     ...(directoryWasHidden ? [] : directoryPaths(request, undefined)),
-    ...(request.path === undefined ? [] : [request.path, resolve(request.workspace, request.cwd ?? ".", request.path)]),
+    // The file in every form a new card hides it in, as written only: its
+    // real paths could not be read.
+    ...(request.path === undefined
+      ? []
+      : hiddenFilePaths({ path: request.path, workspace: request.workspace, cwd: request.cwd, resolved: undefined })),
     ...(saved === undefined ? [] : affectsLinePaths(redactDurableText(saved.affects).value)),
     ...commandOperands(command).filter(isCredentialPath),
   ])

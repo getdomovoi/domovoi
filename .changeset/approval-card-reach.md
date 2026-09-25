@@ -105,7 +105,11 @@ nothing on it says which file to judge.
 When a card hides a path (a credential file or store, a hidden directory, or any path on a sealed
 card), that path is replaced with "[REDACTED]" in the card's operation and command lines, and the
 rest of the agent's text stays, so `cat ~/.aws/credentials` shows as `cat [REDACTED]`. The path is
-matched as written, at its real path, and in the forms the path classifier compares, a hidden
+matched as written, at its real path, and in the forms the path classifier compares. A hidden file
+is also matched relative to the worktree and relative to the directory the request runs in, each
+as given and as it really lies, so `src/.env` or `.env` for a hidden `src/.env` requested from
+`src` is replaced; each relative form with "/" or "\" and with or without a leading "./". A name
+that only starts with the path, such as `.env.example` beside a hidden `.env`, is kept. A hidden
 directory at the start of a longer path is replaced, and a shell word that decodes into the path
 through quotes or escapes is replaced whole. An execution record whose command words hold the path
 is hidden. This holds for new, settled, sealed and saved cards, in workspace.get, workspace.changed,

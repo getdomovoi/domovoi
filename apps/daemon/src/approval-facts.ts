@@ -81,12 +81,14 @@ function within(workspace: string, target: string): string | undefined {
 // Where the path really leads, where the worktree really is, and every link
 // followed on the way: each link's own path and its target, as written and as
 // read from the link's directory. Canonical is the real path the filesystem
-// gives, which also reads a name it treats as another as that name.
+// gives, which also reads a name it treats as another as that name. Directory
+// is where the directory the request runs in really is, when it was followed.
 export type ResolvedApprovalPath = Readonly<{
   target: string
   workspace: string
   hops: readonly string[]
   canonical?: RealPath
+  directory?: string
 }>
 
 // The path as the request gave it, relative to the directory the request runs
@@ -152,7 +154,14 @@ export async function resolveApprovalPath(
     const followed = await followPath(requested, clock)
     const realWorkspace = await followPath(resolve(workspace), clock)
     if (followed === undefined || realWorkspace === undefined) return undefined
-    return { target: followed.target, workspace: realWorkspace.target, hops: followed.hops, canonical: await canonicalPath(requested, undefined, clock) }
+    const realDirectory = await followPath(requestDirectory(workspace, cwd), clock)
+    return {
+      target: followed.target,
+      workspace: realWorkspace.target,
+      hops: followed.hops,
+      canonical: await canonicalPath(requested, undefined, clock),
+      ...(realDirectory === undefined ? {} : { directory: realDirectory.target }),
+    }
   } catch {
     return { target: resolve(requested), workspace: resolve(workspace), hops: [], canonical: unreadablePath }
   } finally {
@@ -284,25 +293,67 @@ export function approvalFacts(input: {
   }
 }
 
-// The forms of a hidden file path the card's own text can hold: as written,
-// against the directory the request runs in, where it really leads, and each
-// link on the way that names a credential path.
-function hiddenFilePaths(input: {
+// The path from a directory to a target, with "/", when one can be written:
+// not the directory itself, and not a path of only "." and ".." steps, which
+// would name every parent in the agent's text.
+function pathFrom(directory: string, target: string): string | undefined {
+  const path = relative(directory, target)
+  if (path === "" || isAbsolute(path)) return undefined
+  const steps = path.split(sep)
+  return steps.every((step) => step === "." || step === "..") ? undefined : steps.join("/")
+}
+
+// A form with no name in it, such as "", ".", "/" or "../..", would hide
+// every parent or root in the agent's text.
+function namesNothing(form: string): boolean {
+  return form.split(/[/\\]+/u).every((step) => step === "" || step === "." || step === "..")
+}
+
+// The forms of a hidden file path the card's own text can hold (round 12):
+// as written, against the directory
+// the request runs in, where it really leads, and each link on the way that
+// names a credential path; each absolute form relative to the worktree, both
+// as given and as it really lies, and joined to either worktree root again;
+// and the path from the request's directory, from that directory as given and
+// as it really lies. Each relative form is written with "/" and with "\",
+// bare and after "./". A card sealed before its lookups finished has no real
+// paths, and gives the forms as written.
+export function hiddenFilePaths(input: {
   path: string
   workspace: string
   cwd: string | undefined
   resolved: ResolvedApprovalPath | undefined
 }): string[] {
   const { resolved } = input
-  return [
+  const workspace = resolve(input.workspace)
+  const lexical = resolve(workspace, input.cwd ?? ".", input.path)
+  const absolute = [
     input.path,
-    resolve(input.workspace, input.cwd ?? ".", input.path),
+    requestedPath(input.workspace, input.path, input.cwd),
+    lexical,
     ...(resolved === undefined ? [] : [
       resolved.target,
       ...(typeof resolved.canonical === "string" ? [resolved.canonical] : []),
-      ...resolved.hops.filter(namesSecretPath),
     ]),
   ]
+  const roots = [workspace, ...(resolved === undefined ? [] : [resolved.workspace])]
+  const inside = absolute.filter((path) => isAbsolute(path))
+    .flatMap((path) => roots.flatMap((root) => within(root, path) ?? []))
+  const fromDirectory = [
+    pathFrom(resolve(workspace, input.cwd ?? "."), lexical),
+    ...(resolved?.directory === undefined ? [] : [pathFrom(resolved.directory, resolved.target)]),
+  ].flatMap((path) => path ?? [])
+  const relativeForms = [...inside, ...fromDirectory].flatMap((path) => {
+    const backslashed = path.split("/").join("\\")
+    return [path, `./${path}`, backslashed, `.\\${backslashed}`]
+  })
+  const forms = new Set([
+    ...absolute,
+    ...relativeForms,
+    ...inside.flatMap((path) => roots.map((root) => join(root, path))),
+    ...(resolved === undefined ? [] : resolved.hops.filter(namesSecretPath)),
+  ])
+  return [...forms].filter((form) => !namesNothing(form))
 }
 
 // The paths a file line names, when the card hides that line: the paths it
