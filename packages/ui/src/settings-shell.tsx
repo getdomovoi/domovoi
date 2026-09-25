@@ -1,6 +1,6 @@
 import type { ApprovalRule, ClientKind, PairedDeviceSummary, ProviderRuntime, UpdateStatus } from "@getdomovoi/protocol"
 import { ChevronRightIcon, ExternalLinkIcon } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useEffect, useState, type MouseEvent } from "react"
 
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -109,36 +109,41 @@ function AboutBuildSection({ about }: { about: AboutBuild }) {
   }, [onUpdateStatus])
   const commit = status?.currentSourceCommit?.slice(0, 7)
   const pending = status ? pendingUpdateLine(status) : undefined
+  const openReleasePage = about.onOpenReleasePage
+  // The design's row: facts on the left, the release page as a link on the
+  // right. A link, not a button, so a watching window (its controls disabled
+  // by the read-only fieldset) can still open it. The desktop hands the fixed
+  // address to the browser through the bridge instead of navigating.
   return (
-    <section aria-labelledby="settings-about" className="flex flex-col gap-3 rounded-lg border bg-card p-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <h2 id="settings-about" className="m-0 text-[13px] font-medium">About this build</h2>
-        <span className="font-machine text-[11px] text-muted-foreground">{commit ? `domovoid ${about.version} · ${commit}` : `domovoid ${about.version}`}</span>
-        <span className="flex-1" />
-        <span className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
-          <span aria-hidden className="size-[7px] rounded-full bg-faint" />
-          Not signed
-        </span>
+    <section aria-labelledby="settings-about" className="flex items-start gap-3 rounded-lg border bg-card p-4">
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <h2 id="settings-about" className="m-0 text-[13px] font-medium">About this build</h2>
+          <span className="font-machine text-[10.5px] text-faint">{commit ? `domovoid ${about.version} · ${commit}` : `domovoid ${about.version}`}</span>
+          <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span aria-hidden className="size-[7px] rounded-full bg-faint" />
+            Not signed
+          </span>
+        </div>
+        {pending ? (
+          <>
+            <p className="m-0 text-[11.5px] leading-[1.5] text-muted-foreground">This build is not signed. Get new versions from the release page.</p>
+            <p className="m-0 text-[11.5px] leading-[1.5] text-muted-foreground">{pending}</p>
+          </>
+        ) : (
+          <p className="m-0 text-[11.5px] leading-[1.5] text-muted-foreground">This build is not signed and does not update itself. Get new versions from the release page.</p>
+        )}
       </div>
-      {pending ? (
-        <>
-          <p className="m-0 text-[12px] leading-[1.55] text-muted-foreground">This build is not signed. Get new versions from the release page.</p>
-          <p className="m-0 text-[12px] leading-[1.55] text-muted-foreground">{pending}</p>
-        </>
-      ) : (
-        <p className="m-0 text-[12px] leading-[1.55] text-muted-foreground">This build is not signed and does not update itself. Get new versions from the release page.</p>
-      )}
-      {about.onOpenReleasePage ? (
-        <Button variant="outline" size="sm" className="self-start" onClick={() => void about.onOpenReleasePage?.()}>
-          Release page
-          <ExternalLinkIcon data-icon="inline-end" />
-        </Button>
-      ) : (
-        <a href={releasePageUrl} target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 self-start text-[12px] text-primary underline-offset-2 hover:underline">
-          Release page
-          <ExternalLinkIcon className="size-3.5" />
-        </a>
-      )}
+      <a
+        href={releasePageUrl}
+        target="_blank"
+        rel="noopener"
+        className="flex shrink-0 items-center gap-1.5 pt-px text-[11.5px] text-primary underline-offset-2 hover:underline"
+        {...(openReleasePage ? { onClick: (event: MouseEvent<HTMLAnchorElement>) => { event.preventDefault(); void openReleasePage() } } : {})}
+      >
+        Release page
+        <ExternalLinkIcon className="size-3.5" />
+      </a>
     </section>
   )
 }

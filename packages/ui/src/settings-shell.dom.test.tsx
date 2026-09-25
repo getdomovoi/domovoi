@@ -1,5 +1,5 @@
 import type { ApprovalRule } from "@getdomovoi/protocol"
-import { cleanup, render, screen, within } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
@@ -227,14 +227,16 @@ it("draws no local daemon section for a client that cannot say how the daemon is
 // J10 (2026-09-23): the build says what it is. Unsigned, no self-update,
 // versions come from the release page; the daemon's version and commit in mono.
 it("says the build is not signed and where new versions come from", async () => {
-  const user = userEvent.setup()
   const onOpenReleasePage = vi.fn(async () => true)
   render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", currentSourceCommit: "3f8b01d".padEnd(40, "0"), state: "idle" as const })), onOpenReleasePage }} />)
   const section = screen.getByRole("region", { name: "About this build" })
   expect(await within(section).findByText("domovoid 0.9.4 · 3f8b01d")).toBeTruthy()
   expect(within(section).getByText("Not signed")).toBeTruthy()
   expect(within(section).getByText("This build is not signed and does not update itself. Get new versions from the release page.")).toBeTruthy()
-  await user.click(within(section).getByRole("button", { name: "Release page" }))
+  const link = within(section).getByRole("link", { name: "Release page" })
+  // The desktop hands the fixed address to the bridge; the window itself
+  // does not follow the link.
+  expect(fireEvent.click(link)).toBe(false)
   expect(onOpenReleasePage).toHaveBeenCalledOnce()
 })
 
@@ -268,4 +270,17 @@ it("adds nothing for a quarantined target", async () => {
   expect(await within(section).findByText("domovoid 0.9.4 · 3f8b01d")).toBeTruthy()
   expect(within(section).getByText("This build is not signed and does not update itself. Get new versions from the release page.")).toBeTruthy()
   expect(section.textContent).not.toContain("The daemon reports")
+})
+
+// A watching window changes nothing on the daemon, but reading where new
+// versions come from is not a change, so the release page still opens. The
+// read-only fieldset disables form controls only, so the release page is a
+// link. user-event treats anything inside a disabled fieldset as disabled,
+// which a browser does not do for links, so this clicks with fireEvent.
+it("opens the release page from a watching window", () => {
+  const onOpenReleasePage = vi.fn(async () => true)
+  render(<SettingsShell {...shellProps()} readOnly about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", state: "idle" as const })), onOpenReleasePage }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  fireEvent.click(within(section).getByRole("link", { name: "Release page" }))
+  expect(onOpenReleasePage).toHaveBeenCalledOnce()
 })
