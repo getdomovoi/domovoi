@@ -1,15 +1,35 @@
 import { execFileSync } from "node:child_process"
-import { chmod, link, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import { chmod, link, lstat, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir, userInfo } from "node:os"
 import { join } from "node:path"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { fileTargetChanged, fileTargetHasOtherNames, fileTargetIdentity } from "./followed-path.js"
+import { pathStaysInside } from "./execution-resolution.js"
+import { fileTargetChanged, fileTargetHasOtherNames, fileTargetIdentity, followPath } from "./followed-path.js"
+
+// Runs once, just before the next realpath call, so a test can change the
+// filesystem between the walk and the spelling that follows it.
+const beforeRealpath = vi.hoisted(() => ({ run: undefined as (() => Promise<void>) | undefined }))
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>()
+  return {
+    ...actual,
+    realpath: async (...args: Parameters<typeof actual.realpath>) => {
+      const run = beforeRealpath.run
+      beforeRealpath.run = undefined
+      if (run) await run()
+      return actual.realpath(...args)
+    },
+  }
+})
 
 const scratch: string[] = []
 
 afterEach(async () => {
+  beforeRealpath.run = undefined
   await Promise.all(scratch.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
@@ -43,6 +63,65 @@ async function unlockDirectory(path: string): Promise<void> {
     await chmod(path, 0o700)
   }
 }
+
+describe("followPath", () => {
+  // Native realpath, which canonicalCwd uses for the worktree, writes a path
+  // the way the filesystem stores it: a Windows 8.3 short name such as
+  // RUNNER~1 in its long form, and a name on a case-insensitive filesystem in
+  // its stored case. A followed path must be written the same way, or a file
+  // in the worktree reads as outside it.
+  it("writes the path the way native realpath writes it, missing tail included", async () => {
+    const name = `domovoi-spelling-absent-${randomUUID()}`
+    expect(await followPath(join(tmpdir(), name))).toBe(join(await realpath(tmpdir()), name))
+    expect(await followPath(join(tmpdir(), name, "file.json"))).toBe(join(await realpath(tmpdir()), name, "file.json"))
+
+    const workspace = await directory("domovoi-spelling-")
+    const real = await realpath(workspace)
+    await mkdir(join(workspace, "Mixed"))
+    await writeFile(join(workspace, "Mixed", "Case.json"), "{}")
+    expect(await followPath(join(workspace, "Mixed", "Case.json"))).toBe(join(real, "Mixed", "Case.json"))
+    const caseInsensitive = await lstat(join(workspace, "mIXED")).then(() => true, () => false)
+    if (caseInsensitive) {
+      expect(await followPath(join(workspace, "mIXED", "cASE.json"))).toBe(join(real, "Mixed", "Case.json"))
+      expect(await followPath(join(workspace, "mIXED", "absent", "file.json"))).toBe(join(real, "Mixed", "absent", "file.json"))
+    }
+  })
+
+  // realpath follows links, so a directory swapped for a link after the walk
+  // is followed. The path then leads where the link leads: out of the
+  // worktree here, which leaves the request unresolved, and to a different
+  // real path than an earlier reading, which refuses an Allow.
+  it("fails closed when a link replaces a directory between the walk and the spelling", async () => {
+    const workspace = await directory("domovoi-spelling-swap-")
+    const outside = await directory("domovoi-spelling-swap-outside-")
+    const root = await realpath(workspace)
+    await mkdir(join(workspace, "dir"))
+    await writeFile(join(workspace, "dir", "file.json"), "{}")
+    await writeFile(join(outside, "file.json"), "{}")
+    const swap = async () => {
+      await rename(join(workspace, "dir"), join(workspace, "moved"))
+      await symlink(outside, join(workspace, "dir"), "junction")
+    }
+    const restore = async () => {
+      await rm(join(workspace, "dir"))
+      await rename(join(workspace, "moved"), join(workspace, "dir"))
+    }
+
+    const before = await fileTargetIdentity(workspace, "dir/file.json", workspace)
+    expect(before.realPath).toBe(join(root, "dir", "file.json"))
+    beforeRealpath.run = swap
+    const during = await fileTargetIdentity(workspace, "dir/file.json", workspace)
+    expect(beforeRealpath.run).toBeUndefined()
+    expect(during.realPath).toBe(join(await realpath(outside), "file.json"))
+    expect(fileTargetChanged(before, during)).toBe(true)
+    await restore()
+
+    expect(await pathStaysInside(root, root, "dir/file.json")).toBe(true)
+    beforeRealpath.run = swap
+    expect(await pathStaysInside(root, root, "dir/file.json")).toBe(false)
+    expect(beforeRealpath.run).toBeUndefined()
+  })
+})
 
 describe("fileTargetHasOtherNames", () => {
   // Ruled 2026-09-24: a file with another name is never released, since a move

@@ -1,5 +1,5 @@
-import { lstat, readlink } from "node:fs/promises"
-import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path"
+import { lstat, readlink, realpath } from "node:fs/promises"
+import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path"
 
 // Where a path really leads, read the way the filesystem reads it. This is the
 // resolver #541 wrote for approval facts (resolveApprovalPath in
@@ -23,8 +23,9 @@ const maximumLinksFollowed = 40
 // Walk the path one component at a time from its root. A link, including one
 // whose target does not exist yet, is replaced by its target before the rest
 // of the path is read; ".." then leaves the directory the link led to. A
-// component that does not exist is kept as written. Undefined when the links
-// loop past the bound.
+// component that does not exist is kept as written. What exists is written as
+// native realpath writes it (spelledPath). Undefined when the links loop past
+// the bound.
 export async function followPath(path: string): Promise<string | undefined> {
   return (await walkPath(path))?.path
 }
@@ -58,7 +59,34 @@ async function walkPath(path: string): Promise<{ path: string; unreadable: boole
     if (targetRoot !== "") current = targetRoot
     pending.unshift(...target.slice(targetRoot.length).split(separators).filter((item) => item !== ""))
   }
-  return { path: current, unreadable }
+  return { path: unreadable ? current : await spelledPath(current), unreadable }
+}
+
+// The walked path written the way native realpath writes it, as canonicalCwd
+// writes the worktree. lstat and readlink keep a name as the request spelled
+// it, but a Windows 8.3 short name (RUNNER~1) and a name in another case on a
+// case-insensitive filesystem are aliases, not links, so the walk cannot see
+// them. The deepest part that exists is passed through realpath and the
+// missing rest joined back as walked. The walk has already replaced every
+// link, so this changes only how the path is written, unless a link was put
+// in its place since: realpath then follows it, and the path names where that
+// link leads, which a later reading or the worktree check sees. Any failure
+// other than a missing part keeps the path as walked.
+async function spelledPath(path: string): Promise<string> {
+  if (!isAbsolute(path)) return path
+  const missing: string[] = []
+  let existing = path
+  for (;;) {
+    try {
+      return join(await realpath(existing), ...missing)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      const parent = dirname(existing)
+      if ((code !== "ENOENT" && code !== "ENOTDIR") || parent === existing) return path
+      missing.unshift(basename(existing))
+      existing = parent
+    }
+  }
 }
 
 // The worktree and the target, each followed the same way. Undefined when
