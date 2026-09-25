@@ -352,6 +352,21 @@ function appendCommandOutputRemainders(
   }
 }
 
+// Adds one system line to each session that held one of `expired`, however
+// many cards it held. Wording for both callers ruled 2026-09-24.
+function noteExpiredApprovals(
+  snapshot: WorkspaceSnapshot,
+  expired: WorkspaceSnapshot["approvals"],
+  body: string,
+  createdAt: string,
+): void {
+  const sessionIds = new Set(expired.map((approval) => approval.sessionId))
+  for (const session of snapshot.sessions) {
+    if (!sessionIds.has(session.id)) continue
+    snapshot.thread.push({ id: `system-${randomUUID()}`, sessionId: session.id, kind: "system", body, createdAt })
+  }
+}
+
 function withoutApprovals(
   snapshot: WorkspaceSnapshot,
   predicate: (approval: WorkspaceSnapshot["approvals"][number]) => boolean,
@@ -7681,11 +7696,15 @@ export class DomovoiDaemon {
           this.#snapshot.annotations = restored?.annotations ?? []
           // The project's provider threads were stopped when it was closed,
           // possibly by another daemon process, so its saved cards expire.
-          this.#auditExpiredApprovals(
-            this.#expireStoredApprovals(this.#snapshot, new Date().toISOString()),
-            "project-open",
-            projectId,
+          const expiredAt = new Date().toISOString()
+          const expiredApprovals = this.#expireStoredApprovals(this.#snapshot, expiredAt)
+          noteExpiredApprovals(
+            this.#snapshot,
+            expiredApprovals,
+            "This approval request expired when the project closed. Send a message to continue.",
+            expiredAt,
           )
+          this.#auditExpiredApprovals(expiredApprovals, "project-open", projectId)
           this.#snapshot.queuedSends = []
           this.#loadQueuedSessionSends(false)
           this.#activeAssistantItems.clear()
@@ -10013,19 +10032,15 @@ export class DomovoiDaemon {
         createdAt: recoveredAt,
       })
     }
-    // One line per session whose card expired, however many cards it held.
-    // Wording ruled 2026-09-24.
-    const expiredSessionIds = new Set(expiredApprovals.map((approval) => approval.sessionId))
-    for (const session of candidate.sessions) {
-      if (!expiredSessionIds.has(session.id)) continue
-      candidate.thread.push({
-        id: `system-${randomUUID()}`,
-        sessionId: session.id,
-        kind: "system",
-        body: "Domovoi restarted, so this approval request expired. Send a message to continue.",
-        createdAt: recoveredAt,
-      })
-    }
+    // A session whose turn was interrupted already has a line that says its
+    // cards expired, so the restart line goes only to sessions without one.
+    // Ruled 2026-09-24.
+    noteExpiredApprovals(
+      candidate,
+      expiredApprovals.filter((approval) => !interruptedSessionIds.has(approval.sessionId)),
+      "Domovoi restarted, so this approval request expired. Send a message to continue.",
+      recoveredAt,
+    )
 
     workspaceSnapshotSchema.parse(candidate)
     this.#store.save(candidate)

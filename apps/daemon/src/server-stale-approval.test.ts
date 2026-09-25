@@ -156,12 +156,17 @@ async function connect(daemon: DomovoiDaemon, port: number) {
 const expiredNotice = "Domovoi restarted, so this approval request expired. Send a message to continue."
 const noticesIn = (snapshot: WorkspaceSnapshot) =>
   snapshot.thread.filter((item) => item.kind === "system" && item.body === expiredNotice)
+const projectClosedNotice = "This approval request expired when the project closed. Send a message to continue."
+const projectClosedNoticesIn = (snapshot: WorkspaceSnapshot) =>
+  snapshot.thread.filter((item) => item.kind === "system" && item.body === projectClosedNotice)
+const interruptedTurnLine = "Daemon restart interrupted the active turn."
 
-async function restartedDaemon() {
+async function restartedDaemon(prepare?: (snapshot: WorkspaceSnapshot) => void) {
   const profileDirectory = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-profile-"))
   const liveWorkspace = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-live-"))
   roots.push(profileDirectory, liveWorkspace)
   const { snapshot, liveSessionId } = storedSnapshot(liveWorkspace)
+  prepare?.(snapshot)
   // Each save records whether a client could have been connected when it ran.
   const saves: Array<{ listening: boolean, snapshot: WorkspaceSnapshot }> = []
   // The store closure below reads the daemon that is constructed after it.
@@ -350,6 +355,21 @@ describe("the thread notice for an expired card", () => {
     const second = await start()
     expect(noticesIn(await second.workspace())).toEqual(notices)
   })
+
+  it("gives a session with an active turn and a stored card only the interrupted-turn line", async () => {
+    const { workspace, snapshot } = await restartedDaemon((stored) => {
+      stored.sessions.find((session) => session.id === staleSessionId)!.activeTurnId = "turn-before-restart"
+    })
+
+    const loaded = await workspace()
+    expect(loaded.approvals).toEqual([])
+    const before = new Set(snapshot.thread.map(({ id }) => id))
+    const added = loaded.thread.filter(
+      (item) => item.sessionId === staleSessionId && item.kind === "system" && !before.has(item.id),
+    )
+    expect(added).toEqual([expect.objectContaining({ sessionId: staleSessionId, kind: "system", body: interruptedTurnLine })])
+    expect(noticesIn(loaded)).toEqual([])
+  })
 })
 
 function projectIdFor(root: string): string {
@@ -467,48 +487,78 @@ describe("stored approval cards in another project's saved state", () => {
   })
 
   it("moves a session that was only waiting on a card saved with its project to idle", async () => {
-    const scratch = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-project-"))
-    const liveWorkspace = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-live-"))
-    roots.push(scratch, liveWorkspace)
-    const statePath = join(scratch, "state.sqlite")
-    const rootA = "/code/project-a"
-    const rootB = "/code/project-b"
-    const { snapshot: base } = storedSnapshot(liveWorkspace)
-    const projectA = { ...base.project!, id: projectIdFor(rootA), name: "project-a", path: rootA, branch: "main" }
-    const initial = workspaceSnapshotSchema.parse({
-      ...base,
-      project: projectA,
-      sessions: base.sessions.map((session) => ({
-        ...session,
-        projectId: projectA.id,
-        ...(session.id === staleSessionId ? { state: "idle" } : {}),
-      })),
-      approvals: [],
-    })
-    const provider = freshProviderProcess()
-    const daemon = new DomovoiDaemon({
-      port: 0,
-      profileDirectory: scratch,
-      store: new SqliteWorkspaceStore(statePath, initial),
-      agents: { codex: provider.adapter },
-      workspaceService: projectWorkspaces(),
-      errorSink: vi.fn(),
-    })
-    daemons.push(daemon)
-    const rpc = await connect(daemon, (await daemon.start()).port)
-    const workspace = async () => workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+    const { workspace, provider, switchAwayAndBack } = await projectDaemon()
     provider.request(staleSessionId, { threadId: "thread-billing", itemId: "item-stale", command: "touch stale.txt", reason: "Write a stale file" })
     await vi.waitFor(async () => expect((await workspace()).approvals).toHaveLength(1), { timeout: 5_000 })
     expect((await workspace()).sessions.find((session) => session.id === staleSessionId)?.state).toBe("waiting")
-    const refused = await rpc("project.open", { path: rootB, client: "desktop" })
-    const confirmation = (refused.error as unknown as { data: unknown }).data
-    expect((await rpc("project.open", { path: rootB, client: "desktop", confirmation })).error).toBeUndefined()
 
-    expect((await rpc("project.open", { path: rootA, client: "desktop" })).error).toBeUndefined()
-    const opened = await workspace()
+    const opened = await switchAwayAndBack()
     expect(opened.approvals).toEqual([])
     expect(opened.sessions.find((session) => session.id === staleSessionId)?.state).toBe("idle")
-    // No restart happened here, so the restart notice does not apply.
+    // The project closed; the daemon did not restart. Wording ruled 2026-09-24.
+    const lines = projectClosedNoticesIn(opened)
+    expect(lines).toEqual([expect.objectContaining({ sessionId: staleSessionId, kind: "system", body: projectClosedNotice })])
+    expect(lines[0]).not.toHaveProperty("detail")
+    expect(noticesIn(opened)).toEqual([])
+  })
+
+  it("gives each session one project line, not the restart line, when a reopen in the same daemon run expires its cards", async () => {
+    const { workspace, provider, liveSessionId, liveWorkspace, switchAwayAndBack } = await projectDaemon()
+    provider.request(staleSessionId, { threadId: "thread-billing", itemId: "item-stale", command: "touch stale.txt", reason: "Write a stale file" })
+    provider.request(staleSessionId, { threadId: "thread-billing", itemId: "item-stale-2", command: "touch stale-2.txt", reason: "Write another stale file" })
+    provider.request(liveSessionId, {
+      threadId: liveThreadId, itemId: "item-live", command: "touch generated.txt", reason: "Write a generated file", cwd: liveWorkspace,
+    })
+    await vi.waitFor(async () => expect((await workspace()).approvals).toHaveLength(3), { timeout: 5_000 })
+
+    const opened = await switchAwayAndBack()
+    expect(opened.approvals).toEqual([])
+    expect(projectClosedNoticesIn(opened).map(({ sessionId }) => sessionId).sort())
+      .toEqual([liveSessionId, staleSessionId].sort())
     expect(noticesIn(opened)).toEqual([])
   })
 })
+
+// One daemon run in project A, whose sessions match `storedSnapshot` with no
+// stored card. `switchAwayAndBack` opens project B, which saves A with its
+// cards, then opens A again.
+async function projectDaemon() {
+  const scratch = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-project-"))
+  const liveWorkspace = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-live-"))
+  roots.push(scratch, liveWorkspace)
+  const statePath = join(scratch, "state.sqlite")
+  const rootA = "/code/project-a"
+  const rootB = "/code/project-b"
+  const { snapshot: base, liveSessionId } = storedSnapshot(liveWorkspace)
+  const projectA = { ...base.project!, id: projectIdFor(rootA), name: "project-a", path: rootA, branch: "main" }
+  const initial = workspaceSnapshotSchema.parse({
+    ...base,
+    project: projectA,
+    sessions: base.sessions.map((session) => ({
+      ...session,
+      projectId: projectA.id,
+      ...(session.id === staleSessionId ? { state: "idle" } : {}),
+    })),
+    approvals: [],
+  })
+  const provider = freshProviderProcess()
+  const daemon = new DomovoiDaemon({
+    port: 0,
+    profileDirectory: scratch,
+    store: new SqliteWorkspaceStore(statePath, initial),
+    agents: { codex: provider.adapter },
+    workspaceService: projectWorkspaces(),
+    errorSink: vi.fn(),
+  })
+  daemons.push(daemon)
+  const rpc = await connect(daemon, (await daemon.start()).port)
+  const workspace = async () => workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+  const switchAwayAndBack = async () => {
+    const refused = await rpc("project.open", { path: rootB, client: "desktop" })
+    const confirmation = (refused.error as unknown as { data: unknown }).data
+    expect((await rpc("project.open", { path: rootB, client: "desktop", confirmation })).error).toBeUndefined()
+    expect((await rpc("project.open", { path: rootA, client: "desktop" })).error).toBeUndefined()
+    return workspace()
+  }
+  return { workspace, provider, liveSessionId, liveWorkspace, switchAwayAndBack }
+}
