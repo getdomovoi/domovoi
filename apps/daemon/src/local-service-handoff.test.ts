@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import WebSocket from "ws"
 
+import type { AgentEvent } from "./agents.js"
 import type { AgentAdapter } from "./codex.js"
 import { holdServiceHandoffFence, readLocalServiceHandoffRefusal } from "./local-service-handoff.js"
 import { DomovoiDaemon } from "./server.js"
@@ -44,15 +45,22 @@ async function daemonWith(workspace: WorkspaceSnapshot, agent?: AgentAdapter) {
 // answer, so the dispatch is in flight for as long as the test needs.
 function agentWithHeldTurns(held = true) {
   const pending = heldTurns
+  const listeners: ((event: AgentEvent) => void)[] = []
   const agent = {
     connect: vi.fn(async () => {}), listModels: vi.fn(async () => []),
     startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
     stopThread: vi.fn(async () => {}),
     startTurn: vi.fn(() => held ? new Promise<string>((resolve) => { pending.push(resolve) }) : Promise.resolve("turn-1")),
     steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
-    resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}), close: vi.fn(async () => {}),
+    resolveApproval: vi.fn(),
+    onEvent: vi.fn((listener: (event: AgentEvent) => void) => { listeners.push(listener); return () => {} }),
+    close: vi.fn(async () => {}),
   } satisfies AgentAdapter
-  return { agent, answer: (turnId: string) => pending.shift()?.(turnId) }
+  return {
+    agent,
+    answer: (turnId: string) => pending.shift()?.(turnId),
+    emit: (event: AgentEvent) => { for (const listener of listeners) listener(event) },
+  }
 }
 
 async function readySession(): Promise<{ workspace: WorkspaceSnapshot; sessionId: string; title: string }> {
@@ -182,5 +190,40 @@ describe("the service handoff fence", () => {
     const endpoint = await daemonWith(quiet())
     await expect(holdServiceHandoffFence({ endpoint: { ...endpoint, token: "x".repeat(43) }, timeoutMs: 5_000 })).rejects.toThrow()
     await expect(holdServiceHandoffFence({ endpoint: { url: "http://127.0.0.1:1/rpc", token: endpoint.token }, timeoutMs: 5_000 })).rejects.toThrow()
+  })
+
+  // The owner rule: the switch waits while a gate waits, and interrupts
+  // nothing. A request that arrives with no turn id is not dropped by the turn
+  // check, so the fence itself must keep it from becoming a card. It is held,
+  // not answered: nobody decides it for the person, and it becomes a card once
+  // the fence lifts without a stop.
+  it("raises no gate while held, and raises a turn-less request once the fence lifts", async () => {
+    const { workspace, sessionId } = await readySession()
+    const session = workspace.sessions.find(({ id }) => id === sessionId)!
+    session.runtime.permissionMode = "ask"
+    session.runtime.auto = false
+    const { agent, emit } = agentWithHeldTurns(false)
+    const endpoint = await daemonWith(workspace, agent)
+    const reader = await desktopConnection(endpoint)
+    const fence = await holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })
+    expect(fence).toEqual({ release: expect.any(Function) })
+    emit({ type: "approval-requested", requestId: 41, threadId: "thread-fence", command: "rm -rf build", cwd: session.workspacePath!, reason: "Remove the build output" })
+    // Events for one session are handled in order, so once this later diff
+    // shows, the approval request before it has been handled.
+    emit({ type: "diff-updated", threadId: "thread-fence", diff: "marker" })
+    await waitForDaemon(async () => {
+      const read = await reader("workspace.get", {})
+      expect((read.result as WorkspaceSnapshot).artifacts).toContainEqual(expect.objectContaining({ id: `diff-${sessionId}`, content: "marker" }))
+    })
+    const during = await reader("workspace.get", {})
+    expect((during.result as WorkspaceSnapshot).approvals).toEqual([])
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+
+    if ("release" in fence) fence.release()
+    await waitForDaemon(async () => {
+      const read = await reader("workspace.get", {})
+      expect((read.result as WorkspaceSnapshot).approvals).toMatchObject([{ sessionId, providerRequestId: 41 }])
+    })
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
   })
 })

@@ -1381,6 +1381,12 @@ export class DomovoiDaemon {
   // connection holding the service handoff fence. While it is set no turn is
   // dispatched; it lifts when that connection closes.
   #serviceHandoffFence: RpcOutboundSocket | undefined
+  // Provider approval requests that arrived while the fence was held. None
+  // becomes a card and none is answered: the switch must not proceed past a
+  // waiting gate, and nobody decides one for the person. They are handled in
+  // order once the fence lifts without a stop; a stop drops them with the
+  // provider processes.
+  #fencedApprovalRequests: { provider: string; event: AgentEvent }[] = []
   #stopping = false
   #stopped = false
   #stopPromise: Promise<void> | undefined
@@ -1854,7 +1860,15 @@ export class DomovoiDaemon {
         this.#releaseTerminalOwnership(socket)
         // A stopping daemon keeps the fence: its sockets close before it has
         // finished, and no turn may start in that gap either.
-        if (this.#serviceHandoffFence === socket && !this.#stopping) this.#serviceHandoffFence = undefined
+        if (this.#serviceHandoffFence === socket && !this.#stopping) {
+          this.#serviceHandoffFence = undefined
+          for (const { provider, event } of this.#fencedApprovalRequests.splice(0)) {
+            void this.#mutations.enqueue(
+              this.#resourceForAgentEvent(provider, event),
+              () => this.#handleAgentEvent(provider, event),
+            )
+          }
+        }
       })
       socket.on("error", (error: Error & { code?: string }) => {
         if (error.code !== "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH") {
@@ -8487,6 +8501,13 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "approval-requested") {
+      // Security review round 1 of #576: no gate is raised while the service
+      // handoff fence is held, whatever the request's turn id. Checked again
+      // after the await below, where the fence may have been taken.
+      if (this.#serviceHandoffFence) {
+        this.#fencedApprovalRequests.push({ provider, event })
+        return
+      }
       const project = this.#snapshot.project
       if (!project) return
       const execution = await resolveExecution({
@@ -8496,6 +8517,10 @@ export class DomovoiDaemon {
         ...(event.path === undefined ? {} : { filePath: event.path }),
         ...(event.blockedPath === undefined ? {} : { blockedPath: event.blockedPath }),
       })
+      if (this.#serviceHandoffFence) {
+        this.#fencedApprovalRequests.push({ provider, event })
+        return
+      }
       const decision = permissionDecisionFor({
         runtime: session.runtime,
         ...(event.command ? { command: event.command } : {}),
