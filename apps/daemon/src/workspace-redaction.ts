@@ -10,7 +10,7 @@ import {
   executionRecordText,
 } from "./approval-facts.js"
 import { pathHider } from "./approval-path-text.js"
-import { commandOperands, isCredentialPath } from "./credential-stores.js"
+import { commandOperands, isCredentialPath, textOperands } from "./credential-stores.js"
 import {
   redactDurableCommand,
   redactDurableOutput,
@@ -51,6 +51,7 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
         : []),
       ...(affectsLine.sensitive ? affectsLinePaths(affects.value) : []),
       ...commandOperands(command.value).filter(isCredentialPath),
+      ...textOperands(operation.value).filter(isCredentialPath),
     ])
     const commandText = hider.hide(command.value)
     const operationText = hider.hide(operation.value)
@@ -94,9 +95,12 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
       }
     }
     if (item.kind === "receipt") {
+      // The receipt keeps the card's operation line, so a secret file that
+      // line names is replaced here too.
+      const operation = redactDurableText(item.operation).value
       return {
         ...item,
-        operation: redactDurableText(item.operation).value,
+        operation: pathHider(textOperands(operation).filter(isCredentialPath)).hide(operation),
         ...(item.explanation === undefined
           ? {}
           : { explanation: redactDurableText(item.explanation).value }),

@@ -427,6 +427,22 @@ export function commandOperands(command: string): string[] {
   return [...new Set([...words].flatMap(operandPieces))]
 }
 
+// The paths the agent's own text on a card can name, for the classifier to
+// judge (owner ruling 2026-09-25): each word between spaces, each run in it
+// between characters that are neither name characters nor separators, such as
+// a quote, a comma or a parenthesis, and the text's operands as a shell reads
+// them, for a quoted name that holds a space. Each is read without the quotes
+// and brackets that open it and the quotes, brackets and punctuation that end
+// it, so a sentence around a path stays. A candidate the classifier does not
+// hide is dropped by the caller, so reading too many only costs time.
+export function textOperands(text: string): string[] {
+  const words = text.split(/\s+/u)
+  const runs = words.flatMap((word) => [word, ...word.split(/[^\p{L}\p{M}\p{N}\p{Pc}.\-~/\\]+/u)])
+  const candidates = [...runs, ...commandOperands(text)]
+    .map((candidate) => candidate.replace(/^["'`([{<]+|["'`)\]}>,.;:!?]+$/gu, ""))
+  return [...new Set(candidates)].filter((candidate) => candidate !== "")
+}
+
 // One word, whole and split on "=" and ":", each also without backslash escapes.
 export function operandPieces(word: string): string[] {
   const pieces = [word, ...word.split(/[=:]/u)]

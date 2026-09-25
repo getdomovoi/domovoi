@@ -622,6 +622,62 @@ describe("SqliteWorkspaceStore", () => {
     reopened.close()
   })
 
+  // Owner ruling 2026-09-25 (round 14): a secret file that only a saved
+  // card's operation, or its receipt, names is replaced in that copy too, and
+  // the card becomes a hard gate. An ordinary second path stays.
+  it("hides a secret file that only a saved approval's operation or its receipt names", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-operation-path-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    const approval = legacy.approvals[0]!
+    const session = legacy.sessions.find((candidate) => candidate.id === approval.sessionId)!
+    session.workspacePath = "/worktrees/operation-path"
+    approval.risk = "normal"
+    legacy.approvals = [
+      { ...structuredClone(approval), id: "approval-operation-secret", command: "cat notes.txt", operation: "Read notes.txt and src/private.pem" },
+      { ...structuredClone(approval), id: "approval-operation-ordinary", command: "cat notes.txt", operation: "Read notes.txt and src/index.ts" },
+    ]
+    legacy.thread = [
+      ...legacy.thread,
+      {
+        id: "receipt-operation-secret",
+        sessionId: approval.sessionId,
+        kind: "receipt",
+        decision: "deny",
+        operation: "Edit src/.env,prod with the key in src/private.pem",
+        checkpoint: "unavailable",
+        client: "cli",
+        createdAt: "2026-09-25T00:00:00.000Z",
+      },
+    ]
+    const injected = new DatabaseSync(databasePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const loaded = reopened.load()
+    expect(loaded.approvals).toEqual([
+      expect.objectContaining({ id: "approval-operation-secret", risk: "hard-gate", command: "cat notes.txt", operation: "Read notes.txt and [REDACTED]" }),
+      expect.objectContaining({ id: "approval-operation-ordinary", risk: "normal", command: "cat notes.txt", operation: "Read notes.txt and src/index.ts" }),
+    ])
+    expect(loaded.thread.find((item) => item.id === "receipt-operation-secret"))
+      .toMatchObject({ operation: "Edit [REDACTED] with the key in [REDACTED]" })
+    const readStored = () => {
+      const database = new DatabaseSync(databasePath)
+      const raw = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
+      database.close()
+      return JSON.stringify(raw)
+    }
+    expect(readStored()).not.toMatch(/private\.pem|\.env,prod/u)
+    reopened.save(legacy)
+    expect(readStored()).not.toMatch(/private\.pem|\.env,prod/u)
+    reopened.close()
+  })
+
   it("keeps audit receipts across workspace-store reopen", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
     scratchDirectories.push(scratch)

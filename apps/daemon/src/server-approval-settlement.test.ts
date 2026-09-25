@@ -17,6 +17,7 @@ import { SqliteWorkspaceStore } from "./store.js"
 import {
   cardCommand,
   cardOperation,
+  cardTextControls,
   cardTextFailures,
   createHiddenFile,
   hiddenNamePaths,
@@ -557,7 +558,7 @@ describe("a card's own text when the card hides a path", () => {
       await writeFile(join(root, "src", ".env"), "")
     })
     vi.spyOn(fs.realpath, "native").mockImplementation((() => {}) as never)
-    const reason = "Edit src/.env ./src/.env src\\.env .env; leave .env.example, .envrc and src/index.ts alone"
+    const reason = "Edit src/.env ./src/.env src\\.env .env; leave x.env.example, app.envrc.md and src/index.ts alone"
     emit({ requestId: 331, command: "Edit", reason, cwd: join(directory, "src"), path: ".env" })
     const sealed = await vi.waitFor(async () => {
       const found = await card(331)
@@ -567,7 +568,7 @@ describe("a card's own text when the card hides a path", () => {
     expect(sealed).toMatchObject({
       risk: "hard-gate",
       command: "Edit",
-      operation: "Edit [REDACTED] [REDACTED] [REDACTED] [REDACTED]; leave .env.example, .envrc and src/index.ts alone",
+      operation: "Edit [REDACTED] [REDACTED] [REDACTED] [REDACTED]; leave x.env.example, app.envrc.md and src/index.ts alone",
       execution: { state: "unresolved", reason: "sensitive-content" },
     })
   })
@@ -588,7 +589,7 @@ describe("a card's own text when the card hides a path", () => {
     }, undefined, { asGiven: true })
     const real = await realpath(directory)
     const slashed = (path: string) => path.split(sep).join("/")
-    const controls = ".env.example, .envrc and src/index.ts"
+    const controls = cardTextControls
     const cases = [
       { file: ".env", cwds: [".", "lib", ".."] },
       { file: "src/.env", cwds: [".", "src", "lib", "via"] },
@@ -709,6 +710,64 @@ describe("a card's own text when the card hides a path", () => {
     expect(receipts(await current())).toHaveLength(expected.size)
     found.push(...receiptFailures(await current(), "receipt in workspace.get"), ...receiptFailures(store.load(), "receipt in store.load"))
     expect(found, `seed ${run.seed}, ${run.cases} cases, ${paths.length - made.size} names refused by the filesystem`).toEqual([])
+  })
+
+  // Round 14, owner ruling 2026-09-25: a second secret file that only the
+  // agent's text names stayed in the card and its receipt. It is replaced in
+  // every copy, and a card whose text names one is a hard gate that takes no
+  // standing rule. An ordinary second path stays, and its card is not a hard
+  // gate.
+  it("shows [REDACTED] for a secret file only the card's text names, in every copy and the receipt", async () => {
+    const { socket, emit, card, store, notices } = await setup(async (root) => {
+      await mkdir(join(root, "src"))
+      for (const file of [".env,prod", "private.pem", "index.ts", "app.ts"]) await writeFile(join(root, "src", file), "")
+    })
+    const leak = /private\.pem|\.env,prod/u
+    const sent = notices.length
+    emit({ requestId: 1001, command: "Edit", path: "src/.env,prod", reason: "Edit src/.env,prod with the key in src/private.pem; leave src/index.ts alone" })
+    emit({ requestId: 1002, command: "Edit", path: "src/index.ts", reason: "Edit src/index.ts to load src/private.pem" })
+    emit({ requestId: 1003, command: "Edit", path: "src/index.ts", reason: "Edit src/index.ts to match src/app.ts" })
+    const shown = {
+      1001: { risk: "hard-gate", operation: "Edit [REDACTED] with the key in [REDACTED]; leave src/index.ts alone" },
+      1002: { risk: "hard-gate", operation: "Edit src/index.ts to load [REDACTED]" },
+    }
+    const cards = await waitForDaemon(async () => {
+      const found = await Promise.all([1001, 1002, 1003].map(card))
+      expect(found.every((approval) => approval !== undefined)).toBe(true)
+      return found as Approval[]
+    })
+    const [first, second, ordinary] = cards as [Approval, Approval, Approval]
+    expect(first).toMatchObject(shown[1001])
+    expect(second).toMatchObject(shown[1002])
+    expect(ordinary.risk).not.toBe("hard-gate")
+    expect(ordinary.operation).toBe("Edit src/index.ts to match src/app.ts")
+    expect(JSON.stringify([first, second])).not.toMatch(leak)
+
+    await waitForDaemon(async () => {
+      const last = (JSON.parse(notices.at(-1)!) as { params: WorkspaceSnapshot }).params
+      expect(last.approvals).toHaveLength(3)
+    })
+    expect(notices.slice(sent).join("\n")).not.toMatch(leak)
+    const saved = store.load().approvals
+    expect(saved.find((approval) => approval.providerRequestId === 1001)).toMatchObject(shown[1001])
+    expect(saved.find((approval) => approval.providerRequestId === 1002)).toMatchObject(shown[1002])
+
+    const always = await rpc(socket, "approval.resolve", { approvalId: second.id, decision: "always-project", client: "cli" })
+    expect(always.error?.message).toBe("Hard-gate approvals cannot create standing rules")
+    for (const approval of [first, second]) {
+      expect((await rpc(socket, "approval.resolve", { approvalId: approval.id, decision: "deny", client: "cli" })).error).toBeUndefined()
+    }
+    const receipt = (copy: WorkspaceSnapshot, approval: Approval) => copy.thread.find(
+      (item) => item.kind === "receipt" && item.id.startsWith(`receipt-${approval.id}-`),
+    )
+    const current = (await rpc(socket, "workspace.get")).result as WorkspaceSnapshot
+    for (const copy of [current, store.load()]) {
+      expect(receipt(copy, first)).toMatchObject({ operation: shown[1001].operation })
+      expect(receipt(copy, second)).toMatchObject({ operation: shown[1002].operation })
+    }
+    expect(JSON.stringify(store.load())).not.toMatch(leak)
+    expect(notices.join("\n")).not.toMatch(leak)
+    expect(JSON.stringify(store.auditLog.query({ limit: 100 }).entries)).not.toMatch(leak)
   })
 })
 

@@ -213,6 +213,94 @@ describe("settleApproval hides the paths it hides in the card's own text", () =>
   })
 })
 
+// Owner ruling 2026-09-25 (round 14): a secret file path that only the
+// agent's own text names is judged by the same classifier and replaced too,
+// and it makes the card a hard gate. A path the classifier does not hide stays.
+describe("settleApproval hides a secret file named only in the card's own text", () => {
+  function settle(workspace: string, request: Partial<SettlementInput["request"]>, deadline?: OperationDeadline) {
+    return settleApproval(input(workspace, { request: { workspace, cwd: workspace, ...request } }), deadline)
+  }
+
+  async function sourceTree(): Promise<string> {
+    const workspace = await worktree()
+    await mkdir(join(workspace, "src"))
+    for (const file of [".env,prod", "private.pem", "index.ts", "app.ts"]) await writeFile(join(workspace, "src", file), "")
+    return workspace
+  }
+
+  it("replaces a second secret file that only the operation names", async () => {
+    const workspace = await sourceTree()
+    const { approval, sensitive } = await settle(workspace, {
+      command: "Edit",
+      path: "src/.env,prod",
+      reason: "Edit src/.env,prod with the key in src/private.pem; leave src/index.ts alone",
+    })
+    expect(sensitive).toBe(true)
+    expect(approval).toMatchObject({
+      risk: "hard-gate",
+      command: "Edit",
+      operation: "Edit [REDACTED] with the key in [REDACTED]; leave src/index.ts alone",
+    })
+    expect(JSON.stringify(approval)).not.toMatch(/private\.pem|\.env,prod/u)
+  })
+
+  it("makes an ordinary file's card a hard gate when its text names a secret file, however prose writes it", async () => {
+    const workspace = await sourceTree()
+    const absolute = join(workspace, "src", "private.pem")
+    const { approval, sensitive } = await settle(workspace, {
+      command: "Edit",
+      path: "src/index.ts",
+      reason: `Edit src/index.ts to load src/private.pem. Check (src/private.pem), 'src/private.pem', src/private.pem's header and ${absolute}, not src/app.ts.`,
+    })
+    expect(sensitive).toBe(true)
+    expect(approval).toMatchObject({
+      risk: "hard-gate",
+      command: "Edit",
+      operation: "Edit src/index.ts to load [REDACTED]. Check ([REDACTED]), '[REDACTED]', [REDACTED]'s header and [REDACTED], not src/app.ts.",
+    })
+    expect(JSON.stringify(approval)).not.toContain("private.pem")
+  })
+
+  it("keeps a second ordinary path in the text, and the card is not a hard gate", async () => {
+    const workspace = await sourceTree()
+    const reason = "Edit src/index.ts to match src/app.ts and README.md."
+    const { approval, sensitive } = await settle(workspace, { command: "Edit", path: "src/index.ts", reason })
+    expect(sensitive).toBe(false)
+    expect(approval).toMatchObject({ risk: "normal", command: "Edit", operation: reason })
+  })
+
+  // Over-hiding is accepted: the .env family rule reads a template name such
+  // as .env.example as a secret file, so the text shows it hidden.
+  it("hides every name the classifier reads as a secret file, a template's included", async () => {
+    const workspace = await sourceTree()
+    const { approval } = await settle(workspace, {
+      command: "Edit",
+      path: "src/index.ts",
+      reason: "Edit src/index.ts from .env.example and x.env.example",
+    })
+    expect(approval).toMatchObject({ risk: "hard-gate", operation: "Edit src/index.ts from [REDACTED] and x.env.example" })
+  })
+
+  it("replaces a secret file that only the operation names on a sealed card", async () => {
+    const workspace = await sourceTree()
+    const deadline = OperationDeadline.start(1)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const { approval } = await settle(workspace, {
+      command: "cat notes.txt",
+      reason: "Read notes.txt and src/private.pem",
+    }, deadline)
+    expect(approval).toMatchObject({ risk: "hard-gate", command: "cat notes.txt", operation: "Read notes.txt and [REDACTED]" })
+  })
+
+  it("replaces a secret file that only the operation names on a saved card read back from disk", async () => {
+    const workspace = await sourceTree()
+    const { approval: ordinary } = await settle(workspace, { command: "ls", reason: "List files" })
+    const saved: Approval = { ...ordinary, command: "ls", operation: "List files next to src/private.pem" }
+    const { approval } = await settleApproval(savedSettlementInput(saved, workspace, undefined, () => "normal"))
+    expect(approval).toMatchObject({ risk: "hard-gate", command: "ls", operation: "List files next to [REDACTED]" })
+  })
+})
+
 // A card read back from disk names its file only in the saved line. The file
 // it names is judged on disk now: a link there can lead into a store since.
 describe("settleApproval for a saved file line", () => {

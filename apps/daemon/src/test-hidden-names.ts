@@ -110,8 +110,11 @@ const writings: readonly ((path: string) => string)[] = [
   (path) => `${path}:`,
 ]
 
-// The negative controls: none is a path the card hides, so each stays.
-export const cardTextControls = ".env.example, .envrc and src/index.ts"
+// The negative controls: none is a path the card hides, so each stays. Each
+// holds a hidden name's text inside a longer name. ".env.example" and ".envrc"
+// are secret file names to the classifier, which judges the card's own text
+// since round 14, so they are not controls here.
+export const cardTextControls = "x.env.example, app.envrc.md and src/index.ts"
 
 // The operation and command lines for these paths, the last one at the end of
 // the text. The same call with "[REDACTED]" for each path gives the text the
