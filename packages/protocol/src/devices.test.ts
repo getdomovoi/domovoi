@@ -7,6 +7,7 @@ import {
   deviceCurrentResultSchema,
   deviceIssueCodeParamsSchema,
   deviceIssueCodeResultSchema,
+  webAppUrlSchema,
   deviceLabelMismatchSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
@@ -161,6 +162,40 @@ describe("devicePairParamsSchema", () => {
     expect(deviceIssueCodeResultSchema.safeParse({ ...issued, pairingAddress: { url: "wss://a.example.ts.net:47831/rpc" } }).success).toBe(false)
     expect(deviceIssueCodeResultSchema.safeParse({ ...issued, pairingAddress: { problem: "" } }).success).toBe(false)
     expect(deviceIssueCodeResultSchema.safeParse(issued).success).toBe(false)
+  })
+
+  it("names the web app address a code can be opened at, when the daemon has one", () => {
+    const issued = {
+      code: "hearth-quiet-ember-42",
+      expiresAt: "2026-08-31T12:03:00.000Z",
+      pairingAddress: { url: "ws://127.0.0.1:47831/rpc", loopback: true },
+    }
+    expect(deviceIssueCodeResultSchema.parse(issued)).toEqual(issued)
+    for (const webAppUrl of ["https://app.domovoi.dev/connect", "http://localhost:5173/", "https://studio.tailnet.example/"]) {
+      expect(deviceIssueCodeResultSchema.parse({ ...issued, webAppUrl })).toEqual({ ...issued, webAppUrl })
+      expect(webAppUrlSchema.parse(webAppUrl)).toBe(webAppUrl)
+    }
+    for (const webAppUrl of [
+      "", "/connect", "app.domovoi.dev", "ftp://app.domovoi.dev/", "javascript:alert(1)",
+      "https://person:secret@app.domovoi.dev/", "https://app.domovoi.dev/#code",
+      `https://app.domovoi.dev/${"a".repeat(2_048)}`,
+    ]) {
+      expect(webAppUrlSchema.safeParse(webAppUrl).success, webAppUrl).toBe(false)
+      expect(deviceIssueCodeResultSchema.safeParse({ ...issued, webAppUrl }).success, webAppUrl).toBe(false)
+    }
+  })
+
+  // The URL parser strips or encodes these on its own, so the address that
+  // parses is not the text that was configured. The raw text is refused first.
+  it("refuses raw whitespace and control characters in the web app address", () => {
+    for (const webAppUrl of [
+      " https://app.domovoi.dev/", "https://app.domovoi.dev/ ", "https://app.domovoi.dev/con nect",
+      "https://app.domovoi.dev/\tconnect", "https://app.domovoi.dev/connect\r\n", "https://app.domovoi.dev/\nconnect",
+      "https://app.domovoi.dev/\u0000", "https://app.domovoi.dev/\u007f", "https://app.domovoi.dev/\u0085",
+      "https://app.domovoi.dev/\u00a0", "https://app.domovoi.dev/\u2028",
+    ]) {
+      expect(webAppUrlSchema.safeParse(webAppUrl).success, JSON.stringify(webAppUrl)).toBe(false)
+    }
   })
 
   it("reports client access from the authenticated device", () => {

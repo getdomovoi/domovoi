@@ -161,18 +161,21 @@ const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
 type TestRpcResponse<M extends RpcMethod> = Record<string, unknown> & { result: RpcResult<M> }
 
+// Turns and approval cards belong to the provider process that raised them:
+// startup recovery interrupts every stored turn and expires every stored card.
+// A test that needs them live holds them back from the stored snapshot and
+// restores them after start, as if this daemon's providers had raised them.
 function deferLiveTurns(snapshot: typeof demoWorkspace): () => void {
   const turns = snapshot.sessions.flatMap((session) => session.activeTurnId
     ? [{ sessionId: session.id, state: session.state, activeTurnId: session.activeTurnId }]
     : [])
-  const affected = new Set(turns.map(({ sessionId }) => sessionId))
-  const approvals = snapshot.approvals.filter((approval) => affected.has(approval.sessionId))
+  const approvals = snapshot.approvals
   for (const turn of turns) {
     const session = snapshot.sessions.find(({ id }) => id === turn.sessionId)!
     session.state = "idle"
     delete session.activeTurnId
   }
-  snapshot.approvals = snapshot.approvals.filter((approval) => !affected.has(approval.sessionId))
+  snapshot.approvals = []
   return () => {
     for (const turn of turns) {
       const session = snapshot.sessions.find(({ id }) => id === turn.sessionId)!
@@ -448,6 +451,7 @@ describe("DomovoiDaemon", () => {
 
   it("awaits async long-history persistence without starving timers", async () => {
     const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals = []
     snapshot.thread = Array.from({ length: 4_000 }, (_, index) => ({
       id: `long-history-${index}`,
       sessionId: snapshot.sessions[0]!.id,
@@ -1726,6 +1730,7 @@ describe("DomovoiDaemon", () => {
 
   it.each([false, true])("returns real evidence with file associations opt-in = %s without persisting it", async (includeFileAssociations) => {
     const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals = []
     const session = snapshot.sessions[0]!
     session.workspacePath = "/worktrees/session-evidence"
     snapshot.thread = snapshot.thread.filter((item) => item.sessionId !== session.id)
@@ -2044,6 +2049,7 @@ describe("DomovoiDaemon", () => {
 
   it("aborts timed-out evidence without accepting a late result", async () => {
     const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals = []
     const session = snapshot.sessions[0]!
     session.workspacePath = "/worktrees/session-evidence"
     let observedSignal: AbortSignal | undefined
@@ -3794,6 +3800,7 @@ describe("DomovoiDaemon", () => {
       body: `Message ${index}`,
       createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, index)).toISOString(),
     }))
+    snapshot.approvals = []
     snapshot.annotations = []
     const agent = {
       connect: vi.fn(async () => {}),
@@ -6959,6 +6966,7 @@ describe("DomovoiDaemon", () => {
     })
     expect(execution.state).toBe("resolved")
     snapshot.approvals[0]!.execution = execution
+    const raiseApprovals = deferLiveTurns(snapshot)
     const agent = {
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => codexModels()),
@@ -6974,12 +6982,13 @@ describe("DomovoiDaemon", () => {
     } satisfies AgentAdapter
     const daemon = new DomovoiDaemon({
       port: 0,
-      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
       agents: { "claude-code": agent },
       workspaceService: checkpointingWorkspace(),
     })
     running.push(daemon)
     const address = await daemon.start()
+    raiseApprovals()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
@@ -7054,6 +7063,7 @@ describe("DomovoiDaemon", () => {
       command: approval.command,
     })
     await writeFile(manifestPath, JSON.stringify({ scripts: { test: "vitest run --changed" } }))
+    const raiseApprovals = deferLiveTurns(snapshot)
     const agent = {
       connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
@@ -7063,11 +7073,12 @@ describe("DomovoiDaemon", () => {
     } satisfies AgentAdapter
     const daemon = new DomovoiDaemon({
       port: 0,
-      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
       agents: { "claude-code": agent },
     })
     running.push(daemon)
     const address = await daemon.start()
+    raiseApprovals()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
@@ -7256,12 +7267,16 @@ describe("DomovoiDaemon", () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.approvals[0]!.risk = "normal"
     snapshot.approvals[0]!.requestedAt = "2026-09-10T12:00:00.000Z"
+    // Read before start: once raised, the array is the daemon's live state.
+    const { id: approvalId, sessionId: approvalSessionId } = snapshot.approvals[0]!
+    const raiseApprovals = deferLiveTurns(snapshot)
     const daemon = new DomovoiDaemon({
       port: 0,
-      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
     })
     running.push(daemon)
     const address = await daemon.start()
+    raiseApprovals()
     const connect = async () => {
       const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
       await new Promise<void>((resolve, reject) => {
@@ -7307,7 +7322,7 @@ describe("DomovoiDaemon", () => {
     let resolved
     try {
       resolved = await first.request(3, "approval.resolve", {
-        approvalId: snapshot.approvals[0]!.id,
+        approvalId,
         decision: "always-project",
         revision: 0,
         client: "desktop",
@@ -7331,7 +7346,7 @@ describe("DomovoiDaemon", () => {
       },
     })
     await expect(first.request(4, "session.history", {
-      sessionId: snapshot.approvals[0]!.sessionId,
+      sessionId: approvalSessionId,
       categories: ["approvals"],
     })).resolves.toMatchObject({
       result: { items: expect.arrayContaining([expect.objectContaining({
@@ -7822,6 +7837,7 @@ describe("DomovoiDaemon", () => {
     }
     session.workspacePath = "/worktrees/session-billing"
     session.providerThreadId = "provider-thread-billing"
+    snapshot.approvals = []
     snapshot.thread = []
     snapshot.annotations = []
     snapshot.workingPlans = []
@@ -8338,12 +8354,14 @@ describe("DomovoiDaemon", () => {
   it("rejects an unexplained denial and records a supplied explanation", async () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.activeSessionId = "session-onboarding"
+    const raiseApprovals = deferLiveTurns(snapshot)
     const daemon = new DomovoiDaemon({
       port: 0,
-      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
     })
     running.push(daemon)
     const address = await daemon.start()
+    raiseApprovals()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", () => resolve())
@@ -10225,6 +10243,7 @@ describe("DomovoiDaemon", () => {
 
   it("forks a checkpoint idempotently without mutating the source selection", async () => {
     const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals = []
     const source = snapshot.sessions.find((session) => session.id === "session-audit")!
     source.workspacePath = "/worktrees/session-audit"
     source.providerThreadId = "source-provider-thread"

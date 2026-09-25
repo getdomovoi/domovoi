@@ -34,9 +34,9 @@ function pendingApproval(worktree = true): WorkspaceSnapshot {
   else delete session.workspacePath
   session.providerThreadId = "thread-billing"
   delete session.activeTurnId
-  // A session without a worktree cannot start a turn, so its gate can only be
-  // one stored before this daemon started.
-  snapshot.approvals = worktree ? [] : [{ ...demoWorkspace.approvals[0]!, sessionId: "session-billing", risk: "normal", providerRequestId: 41 }]
+  // Every gate here is raised after start: a stored one expires when the
+  // daemon starts.
+  snapshot.approvals = []
   return workspaceSnapshotSchema.parse(snapshot)
 }
 
@@ -77,9 +77,15 @@ async function start(options: { worktree?: boolean, checkpoint?: () => Promise<{
   })
   expect((await rpc("system.hello", { client: "phone", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken })).error).toBeUndefined()
   const snapshot = async () => workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+  // A session without a worktree cannot start a turn, so its provider raises
+  // the gate on the thread without one.
+  if (options.worktree === false) {
+    emit({ type: "approval-requested", requestId: 41, threadId: "thread-billing", itemId: "call_migrate", command: "pnpm migrate" })
+    await waitForDaemon(async () => expect((await snapshot()).approvals).toHaveLength(1))
+    return { provider, workspaceService, rpc, snapshot, approvalId: (await snapshot()).approvals[0]!.id, emit: (event: AgentEvent) => emit(event) }
+  }
   // The gate arrives the way a provider raises it: inside a running turn,
   // naming the item the command belongs to.
-  if (options.worktree === false) return { provider, workspaceService, rpc, snapshot, approvalId: (await snapshot()).approvals[0]!.id, emit: (event: AgentEvent) => emit(event) }
   const sent = await rpc("session.send", { sessionId: "session-billing", prompt: "run the migrations", client: "phone" }); expect(sent.error?.message).toBeUndefined()
   emit({ type: "approval-requested", requestId: 41, threadId: "thread-billing", turnId: "turn-billing", itemId: "call_migrate", command: "pnpm migrate" })
   await waitForDaemon(async () => expect((await snapshot()).approvals).toHaveLength(1))
