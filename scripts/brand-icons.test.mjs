@@ -1,11 +1,11 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 import { pathToFileURL } from "node:url"
 
-import { chromiumArgs, findChromium, markPage, targets } from "./brand-icons.mjs"
+import { chromiumArgs, findChromium, markPage, render, targets } from "./brand-icons.mjs"
 
 const scratch = join(tmpdir(), "domovoi-icon-test", "page dir")
 const html = join(scratch, "page.html")
@@ -58,5 +58,55 @@ test("a directory is not taken for a browser executable", () => {
 })
 
 test("a missing browser names every path it tried", () => {
-  assert.throws(() => findChromium([join(tmpdir(), "domovoi-no-such-browser")]), /domovoi-no-such-browser/)
+  const directory = mkdtempSync(join(tmpdir(), "domovoi-icon-missing-"))
+  try {
+    const missing = join(directory, "no-such-browser")
+    assert.throws(() => findChromium([missing]), (error) => error.message.includes(missing))
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+// Node stands in for the browser on every platform: `--` hands the browser arguments to the
+// stand-in script instead of letting Node parse them as its own options.
+function standIn(source) {
+  return { file: process.execPath, args: ["-e", source, "--"] }
+}
+
+test("a browser that fails leaves no scratch files and writes no asset", () => {
+  const directory = mkdtempSync(join(tmpdir(), "domovoi-icon-render-"))
+  try {
+    const scratchRoot = join(directory, "scratch")
+    const out = join(directory, "out", "icon.png")
+    assert.throws(() =>
+      render("<p>page</p>", 16, out, { browser: standIn("process.exit(3)"), scratchRoot }),
+    )
+    assert.deepEqual(readdirSync(scratchRoot), [])
+    assert.equal(existsSync(out), false)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("a browser that hangs is stopped at the render time limit", () => {
+  const directory = mkdtempSync(join(tmpdir(), "domovoi-icon-render-"))
+  try {
+    const scratchRoot = join(directory, "scratch")
+    const out = join(directory, "out", "icon.png")
+    const started = Date.now()
+    assert.throws(
+      () =>
+        render("<p>page</p>", 16, out, {
+          browser: standIn("setInterval(() => {}, 1000)"),
+          scratchRoot,
+          timeoutMs: 500,
+        }),
+      /ETIMEDOUT|timed out/i,
+    )
+    assert.ok(Date.now() - started < 10_000)
+    assert.deepEqual(readdirSync(scratchRoot), [])
+    assert.equal(existsSync(out), false)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })

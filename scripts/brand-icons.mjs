@@ -98,15 +98,32 @@ export function chromiumArgs({ html, shot, size, transparent = false }) {
   ]
 }
 
-function render(page, size, out, { transparent = false } = {}) {
-  const scratch = mkdtempSync(join(tmpdir(), "domovoi-icon-"))
-  const html = join(scratch, "page.html")
-  const shot = join(scratch, "shot.png")
-  writeFileSync(html, page)
-  execFileSync(findChromium(), chromiumArgs({ html, shot, size, transparent }))
-  mkdirSync(dirname(out), { recursive: true })
-  copyFileSync(shot, out)
-  rmSync(scratch, { recursive: true, force: true })
+// One render takes a second or two. A browser that has not written its screenshot by this limit
+// is stuck, and a stuck run should fail with a message rather than wait forever.
+export const RENDER_TIMEOUT_MS = 60_000
+
+export function render(
+  page,
+  size,
+  out,
+  { transparent = false, browser, scratchRoot = tmpdir(), timeoutMs = RENDER_TIMEOUT_MS } = {},
+) {
+  const { file, args = [] } = browser ?? { file: findChromium() }
+  mkdirSync(scratchRoot, { recursive: true })
+  const scratch = mkdtempSync(join(scratchRoot, "domovoi-icon-"))
+  try {
+    const html = join(scratch, "page.html")
+    const shot = join(scratch, "shot.png")
+    writeFileSync(html, page)
+    execFileSync(file, [...args, ...chromiumArgs({ html, shot, size, transparent })], {
+      timeout: timeoutMs,
+      killSignal: "SIGKILL",
+    })
+    mkdirSync(dirname(out), { recursive: true })
+    copyFileSync(shot, out)
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
   console.log(`${relative(root, out)} ${size}x${size}`)
 }
 
