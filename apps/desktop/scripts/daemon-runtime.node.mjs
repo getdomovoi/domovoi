@@ -437,3 +437,61 @@ test("refuses a linked runtime tree root named with a trailing separator", async
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test("the final check refuses a link that climbs back through another link while its text resolves in place", async () => {
+  const { assertShippedTreeContained } = await import("./daemon-runtime.mjs")
+  const { mkdir, symlink } = await import("node:fs/promises")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-dotdot-"))
+  try {
+    const tree = join(root, "darwin-arm64")
+    await mkdir(join(tree, "a"), { recursive: true })
+    await mkdir(join(tree, "c"))
+    await mkdir(join(tree, "darwin-arm64", "q"), { recursive: true })
+    await writeFile(join(tree, "darwin-arm64", "x"), "module")
+    await symlink(join("..", "c"), join(tree, "a", "L"), "dir")
+    await symlink(join("darwin-arm64", "q"), join(tree, "M"), "dir")
+    // Read as text, L/.. undoes L; the kernel leaves from c's parent instead,
+    // so the path passes the tree's parent and comes back in by its name.
+    await symlink(["L", "..", "..", "darwin-arm64", "M", "..", "x"].join(sep), join(tree, "a", "link"), "file")
+    const refused = await assertShippedTreeContained(tree).then(() => undefined, (error) => error)
+    assert.ok(refused instanceof Error, "the final check passed a link that climbs back through another link")
+    assert.match(refused.message, /[\\/]a[\\/]link -> /)
+    assert.doesNotMatch(refused.message, /[\\/]a[\\/]L -> |[\\/]M -> /)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("writes a link to its own directory as . so the final check passes it", async () => {
+  const { assertShippedTreeContained, removeExternalLinks } = await import("./daemon-runtime.mjs")
+  const { mkdir, readlink, symlink } = await import("node:fs/promises")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-self-dir-"))
+  try {
+    const tree = join(root, "daemon")
+    const directory = join(tree, "node_modules", "pkg")
+    await mkdir(directory, { recursive: true })
+    await symlink(directory, join(directory, "self"), "dir")
+    assert.equal(await removeExternalLinks(tree, tree), 0)
+    assert.equal(await readlink(join(directory, "self")), ".")
+    assert.equal(await assertShippedTreeContained(tree), 1)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("keeps a package link to the tree root itself, and the final check passes it", async () => {
+  const { assertShippedTreeContained, removeExternalLinks } = await import("./daemon-runtime.mjs")
+  const { mkdir, readlink, symlink } = await import("node:fs/promises")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-root-self-link-"))
+  try {
+    const tree = join(root, "daemon")
+    const scope = join(tree, "node_modules", "@getdomovoi")
+    await mkdir(scope, { recursive: true })
+    await symlink(join("..", ".."), join(scope, "daemon"), "dir")
+    assert.equal(await removeExternalLinks(tree, tree), 0)
+    assert.equal(await readlink(join(scope, "daemon")), join("..", ".."))
+    assert.equal(await assertShippedTreeContained(tree), 1)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

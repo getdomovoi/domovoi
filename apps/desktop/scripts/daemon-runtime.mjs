@@ -182,10 +182,25 @@ export async function deployDaemon({ repositoryRoot, destination, run = execute 
 // Each entry is read with lstat when it is acted on, not from the listing: a
 // file can become a link between the two. That narrows the race without
 // closing it; assertShippedTreeContained is the check that decides.
+// The one form a shipped link may take: the path from the link's real
+// directory to its real target. Every component is a real directory, so the
+// kernel reads the text exactly as it is written, and a copy under another
+// root name resolves the same way. A link to its own directory is ".", not
+// the empty text relative() gives, which macOS would store as an empty link.
+async function canonicalLinkText(link, target) {
+  return relative(await realpath(dirname(link)), target) || "."
+}
+
+// The root itself is inside: a package may link to the tree it ships in.
+async function insideTree(root) {
+  const real = await realpath(root)
+  return (target) => target === real || target.startsWith(`${real}${sep}`)
+}
+
 export async function removeExternalLinks(path, root) {
   // Resolved first: lstat follows a link named with a trailing separator.
   await refuseLinkedRoot(resolve(root))
-  const inside = `${await realpath(root)}${sep}`
+  const inside = await insideTree(root)
   let removed = 0
   for (const name of await readdir(path)) {
     const child = join(path, name)
@@ -193,8 +208,8 @@ export async function removeExternalLinks(path, root) {
     if (entry === undefined) continue
     if (entry.isSymbolicLink()) {
       const target = await realpath(child).catch(() => undefined)
-      if (target === undefined || !target.startsWith(inside)) { await rm(child, { force: true }); removed += 1; continue }
-      const contained = relative(await realpath(dirname(child)), target)
+      if (target === undefined || !inside(target)) { await rm(child, { force: true }); removed += 1; continue }
+      const contained = await canonicalLinkText(child, target)
       if ((await readlink(child)) === contained) continue
       const type = (await stat(target)).isDirectory() ? "dir" : "file"
       await rm(child, { force: true })
@@ -235,7 +250,8 @@ async function refuseLinkedRoot(root) {
 // The check that decides whether the runtime ships: every link in the final
 // tree is relative, stays inside the tree at every step of its path (so a
 // verbatim copy elsewhere resolves the same way), resolves to something inside
-// the tree now, and names that target directly from its real directory. Throws naming each link that fails; returns the number
+// the tree now, and is exactly the path from its real directory to that
+// target. Throws naming each link that fails; returns the number
 // of links checked.
 //
 // Ruled limit (owner, 2026-09-25): another process running as the same user
@@ -247,7 +263,7 @@ async function refuseLinkedRoot(root) {
 export async function assertShippedTreeContained(root) {
   const base = resolve(root)
   await refuseLinkedRoot(base)
-  const inside = `${await realpath(base)}${sep}`
+  const inside = await insideTree(base)
   const failures = []
   let links = 0
   const walk = async (directory) => {
@@ -269,14 +285,13 @@ export async function assertShippedTreeContained(root) {
       if (leaves) { failures.push(`${child} -> ${raw} climbs out of the tree`); continue }
       const target = await realpath(child).catch(() => undefined)
       if (target === undefined) { failures.push(`${child} -> ${raw} resolves to nothing`); continue }
-      if (!target.startsWith(inside)) { failures.push(`${child} -> ${raw} resolves to ${target}, outside the tree`); continue }
-      // The link text alone cannot show the real path stays inside: through
-      // another link it can pass the tree's parent and come back in by the
-      // root's own name, which dangles once the root is renamed. Only the
-      // canonical form removeExternalLinks writes passes: the text, read from
-      // the link's real directory, names the target directly.
-      const named = resolve(await realpath(dirname(child)), raw)
-      if (named !== target) failures.push(`${child} -> ${raw} does not name its target directly: it reaches ${target} by way of ${named}`)
+      if (!inside(target)) { failures.push(`${child} -> ${raw} resolves to ${target}, outside the tree`); continue }
+      // Read as text, the path can look contained while the kernel, which
+      // follows each link before the next "..", passes the tree's parent and
+      // comes back in by the root's own name; renamed, that link dangles or
+      // reaches a decoy. Only the exact text removeExternalLinks writes passes.
+      const canonical = await canonicalLinkText(child, target)
+      if (raw !== canonical) failures.push(`${child} -> ${raw} is not the direct path to its target ${target}; it would be ${canonical}`)
     }
   }
   await walk(base)
