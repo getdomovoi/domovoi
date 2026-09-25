@@ -19,6 +19,39 @@ async function directory(prefix: string): Promise<string> {
   return path
 }
 
+// The matcher hidePaths replaced in 1b6aef0f, as it was at e8f7a4d3: one
+// "u" pattern over every form, longest first. hidePaths must hide exactly
+// what this hid. Each pattern is built once per set of forms, since building
+// it costs far more than running it.
+const patternsByForms = new Map<string, RegExp>()
+
+function hidePathsByPattern(text: string, forms: readonly string[]): string {
+  if (forms.length === 0) return text
+  const alternatives = [...new Set(forms)]
+    .filter((form) => form !== "")
+    .sort((one, other) => other.length - one.length)
+    .map((form) => form.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"))
+  if (alternatives.length === 0) return text
+  const key = alternatives.join("\0")
+  const pattern = patternsByForms.get(key) ?? new RegExp(
+    `(?<![\\p{L}\\p{N}_.\\-])(?:${alternatives.join("|")})(?![\\p{L}\\p{N}_\\-]|\\.[\\p{L}\\p{N}])`,
+    "gu",
+  )
+  patternsByForms.set(key, pattern)
+  return text.replace(pattern, "[REDACTED]")
+}
+
+// A small seeded generator (mulberry32), so a failing text can be found again.
+function seeded(seed: number): () => number {
+  let state = seed >>> 0
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0
+    let mixed = Math.imul(state ^ (state >>> 15), state | 1)
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61)
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296
+  }
+}
+
 describe("fileTargetAffects", () => {
   it("names the file an edit reaches inside the worktree", async () => {
     const workspace = await directory("domovoi-affects-inside-")
@@ -469,5 +502,67 @@ describe("hidePaths", () => {
       }
     }
     expect(missed).toEqual([])
+  })
+
+  // Final check after 1b6aef0f: the text is read by code point, as the "u"
+  // pattern hidePaths replaced read it. A lone surrogate is one unit, so the
+  // form after it is still tried, and an astral letter or digit before a form
+  // makes it the end of a longer name.
+  it("hides a form after a lone surrogate", () => {
+    const forms = [".env", "cfg/.env"]
+    expect(hidePaths("\uD800.env, \uDBFF.env, \uDC00.env and x\uD800cfg/.env", forms))
+      .toBe("\uD800[REDACTED], \uDBFF[REDACTED], \uDC00[REDACTED] and x\uD800[REDACTED]")
+  })
+
+  it("keeps a longer name that ends in a form after an astral letter or digit", () => {
+    const forms = [".env", "cfg/.env"]
+    expect(hidePaths("\u{10000}.env, a\u{10000}.env, \u{1D7D8}.env and \u{10000}cfg/.env", forms))
+      .toBe("\u{10000}.env, a\u{10000}.env, \u{1D7D8}.env and \u{10000}cfg/[REDACTED]")
+    expect(hidePaths("\u{1F600}.env", forms)).toBe("\u{1F600}[REDACTED]")
+  })
+
+  it("hides exactly what the pattern it replaced hid", () => {
+    const random = seeded(545)
+    const pick = <Item>(items: readonly Item[]): Item => items[Math.floor(random() * items.length)]!
+    // Forms that are prefixes of each other, share a first character, are
+    // written with either separator, hold astral characters, or start or end
+    // with a lone surrogate.
+    const pool = [
+      ".env", ".env/keys", ".e", "e", "env", "en", ".env.local",
+      "cfg/.env", "cfg\\.env", "cfg", "cf", "./.env", ".\\.env", "../.env", "..\\.env",
+      "/w/cfg/.env", "/w/cfg", "/w", "/", "\\w\\cfg\\.env",
+      "\u{10000}/.env", "\u{1F600}.env", "\u{1F600}", "a\u{10000}b/.env",
+      ".env\uD800", "\uDC00.env", "x\uD800y/.env",
+    ]
+    const pieces = [
+      "a", "Z", "7", "é", "_", "-", ".", "..", "/", "\\", " ", ",", "x", "e", "nv", "l",
+      "\u{10000}", "\u{1F600}", "\u{1D7D8}", "\uD800", "\uDBFF", "\uDC00", "\uDFFF",
+      ...pool, ...pool,
+    ]
+    const formSets = Array.from({ length: 64 }, () => pool.filter(() => random() < 0.4))
+    const differing: string[] = []
+    for (let run = 0; run < 20_000 && differing.length < 10; run += 1) {
+      const forms = pick(formSets)
+      let text = ""
+      const count = 1 + Math.floor(random() * 24)
+      for (let piece = 0; piece < count; piece += 1) text += pick(pieces)
+      const expected = hidePathsByPattern(text, forms)
+      const shown = hidePaths(text, forms)
+      if (shown !== expected) {
+        differing.push(`${JSON.stringify(text)} with ${JSON.stringify(forms)}: ${JSON.stringify(shown)}, pattern ${JSON.stringify(expected)}`)
+      }
+    }
+    expect(differing).toEqual([])
+  })
+
+  // Final check after 1b6aef0f: 4,096 forms, the most a card holds, that
+  // agree with the text for thousands of units at every place and never end
+  // whole. Matching them is bounded; past the bound the text is hidden whole,
+  // as a card whose spellings hit their bound is. The same forms still hide
+  // one that stands whole in an ordinary text.
+  it("hides the text whole when matching would take more than its bound", () => {
+    const forms = Array.from({ length: 4096 }, (_, count) => `${"a/".repeat(count + 1)}x`)
+    expect(hidePaths("/a".repeat(5_500), forms)).toBe("[REDACTED]")
+    expect(hidePaths("cat a/a/x and a/b/x", forms)).toBe("cat [REDACTED] and a/b/x")
   })
 })
