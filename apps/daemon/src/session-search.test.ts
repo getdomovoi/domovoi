@@ -42,6 +42,7 @@ async function connect(daemon: DomovoiDaemon) {
 
 async function start(titles: readonly string[] = []) {
   const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals = []
   titles.forEach((title, index) => { snapshot.sessions[index]!.title = title })
   const daemon = new DomovoiDaemon({ port: 0, store: new SqliteWorkspaceStore(":memory:", snapshot) })
   daemons.push(daemon)
