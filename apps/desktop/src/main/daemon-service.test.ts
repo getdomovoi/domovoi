@@ -446,6 +446,29 @@ describe("staging the shipped runtime under the profile", () => {
     })
   })
 
+  // Final check on #576: removing the staging directory is cleanup. It must
+  // not replace the error that stopped a publish, nor turn a completed publish
+  // into a reported failure.
+  const stagingRemoveFails = async (path: string) => {
+    if (path.includes(".staging-")) throw new Error("simulated staging remove failure")
+    await rm(path, { recursive: true, force: true })
+  }
+
+  it("reports a completed publish as done when removing the staging directory fails", async () => {
+    await withScratch(async ({ resources, home }) => {
+      const runtime = await stage({ resources, home, version: "0.9.4", remove: stagingRemoveFails })
+      expect(runtime).toEqual(daemonRuntimeLayoutUnder(join(home, ".domovoi", "runtime", "0.9.4")))
+      expect(await readFile(runtime.daemonEntryPath, "utf8")).toBe("daemon")
+    })
+  })
+
+  it("keeps the error that stopped the publish when removing the staging directory fails", async () => {
+    await withScratch(async ({ resources, home }) => {
+      await expect(stage({ resources, home, version: "0.9.4", remove: stagingRemoveFails, copy: async () => { throw new Error("disk full") } }))
+        .rejects.toThrow("disk full")
+    })
+  })
+
   it("names the missing shipped part before copying anything", async () => {
     await withScratch(async ({ resources, home }) => {
       const nodePath = daemonRuntimeLayout(resources, platform).nodePath

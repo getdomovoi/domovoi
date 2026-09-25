@@ -254,7 +254,10 @@ export async function stageDaemonRuntime(input: {
     await restoreVersionPath(fs, { destination, aside, failed, hadEarlier: earlier === "directory", asideMoved })
     throw cause
   } finally {
-    await fs.remove(staging)
+    // Cleanup only: a staging directory left behind is disk space. Its
+    // failure must not replace the publish's own error, nor turn a completed
+    // publish into a reported failure.
+    await fs.remove(staging).catch(() => {})
   }
   if (earlier === "directory") {
     // The new copy is in place. An earlier copy left behind here is only
