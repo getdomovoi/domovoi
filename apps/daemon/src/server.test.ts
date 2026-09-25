@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { request as httpRequest } from "node:http"
 import { tmpdir, userInfo } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { dirname, join, relative, resolve, sep } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
 import WebSocket from "ws"
@@ -13541,6 +13541,171 @@ describe("DomovoiDaemon", () => {
       "Claude requested permissions to use Edit on [REDACTED]",
     ]))
     neverNamed()
+    socket.close()
+  })
+
+  // Round 10: a hidden file below the worktree root, named from the directory
+  // the request runs in, stayed in the card's text. Each depth of file, from
+  // the root, its own directory, a sibling and a parent, as given and through
+  // a link, on a file card and on a command blocked on the file, in every copy
+  // of the card.
+  it("hides a hidden file in card text however it is written from where the request runs", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-card-forms-"))
+    scratchDirectories.push(workspacePath)
+    const realWorkspace = await realpath(workspacePath)
+    for (const path of ["src/app", "src/lib", "lib"]) await mkdir(join(workspacePath, ...path.split("/")), { recursive: true })
+    await writeFile(join(workspacePath, "src", "index.ts"), "export {}\n")
+    for (const file of [".env", "src/.env", "src/app/.env"]) await writeFile(join(workspacePath, ...file.split("/")), "TOKEN=1")
+    await symlink(join(workspacePath, "src"), join(workspacePath, "via"), "junction")
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code",
+      model: "sonnet",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.state = "idle"
+    session.workspacePath = workspacePath
+    session.providerThreadId = "thread-card-forms"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "claude-code",
+        id: "sonnet",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-card-forms"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      auditLog: { append: vi.fn(), query: vi.fn(), export: vi.fn() },
+      agents: { "claude-code": agent },
+      workspaceService: checkpointingWorkspace(),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    type Card = { id: string; providerRequestId?: number; operation: string; command: string }
+    type Copy = { approvals: Card[]; thread: Array<{ kind: string; operation?: string }> }
+    const changes: Copy[] = []
+    socket.on("message", (data: WebSocket.RawData) => {
+      const message = JSON.parse(data.toString()) as { method?: string; params?: Copy }
+      if (message.method === "workspace.changed" && message.params) changes.push(message.params)
+    })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    const current = async () => (await rpc("workspace.get", {})).result as Copy
+    const saved = () => store.save.mock.calls.at(-1)![0] as Copy
+
+    await rpc("session.send", { sessionId: session.id, prompt: "Edit the files", client: "desktop" })
+    const slashed = (path: string) => path.split(sep).join("/")
+    const controls = ".env.example .envrc src/index.ts"
+    const cases = [
+      { file: ".env", cwds: [".", "lib", ".."] },
+      { file: "src/.env", cwds: [".", "src", "lib", "via"] },
+      { file: "src/app/.env", cwds: [".", "src/app", "src/lib", "src", "via/app", "via"] },
+    ]
+    const expected = new Map<number, { label: string; operation: string; command: string }>()
+    let requestId = 600
+    for (const { file, cwds } of cases) {
+      const given = join(workspacePath, ...file.split("/"))
+      const lies = join(realWorkspace, ...file.split("/"))
+      for (const cwd of cwds) {
+        const cwdGiven = resolve(workspacePath, cwd)
+        const cwdLies = await realpath(cwdGiven)
+        const relatives = [...new Set([file, slashed(relative(cwdGiven, given)), slashed(relative(cwdLies, lies))])]
+        const written = [
+          given,
+          lies,
+          ...relatives.flatMap((path) => {
+            const backslashed = path.split("/").join("\\")
+            return [path, `./${path}`, backslashed, `.\\${backslashed}`]
+          }),
+        ]
+        const named = written.join(" ")
+        const hidden = written.map(() => "[REDACTED]").join(" ")
+        const base = { type: "approval-requested", threadId: session.providerThreadId, turnId: "turn-card-forms", cwd: cwdGiven } as const
+        // The file card whose Affects line hides the file.
+        listener!({ ...base, requestId: ++requestId, reason: `Edit ${named}; leave ${controls}`, command: "Edit", path: given })
+        expected.set(requestId, { label: `file card for ${file} from ${cwd}`, operation: `Edit ${hidden}; leave ${controls}`, command: "Edit" })
+        // A command Claude Code blocked on the file.
+        listener!({
+          ...base,
+          requestId: ++requestId,
+          reason: `Read ${named}`,
+          command: `cat ${named} ${controls}`,
+          blockedPath: given,
+        })
+        expected.set(requestId, { label: `blocked command on ${file} from ${cwd}`, operation: `Read ${hidden}`, command: `cat ${hidden} ${controls}` })
+      }
+    }
+    await vi.waitFor(async () => expect((await current()).approvals).toHaveLength(expected.size), { timeout: 5_000 })
+
+    // Every card whose text differs from what it should show, in one list.
+    const missed = (copy: Copy, where: string) => copy.approvals.flatMap((card) => {
+      const text = expected.get(card.providerRequestId!)!
+      return card.operation === text.operation && card.command === text.command
+        ? []
+        : [`${where}, ${text.label}: ${card.operation} | ${card.command}`
+            .split(realWorkspace).join("<real>").split(workspacePath).join("<worktree>")]
+    })
+    await vi.waitFor(() => expect(changes.at(-1)?.approvals).toHaveLength(expected.size), { timeout: 3_000 })
+    expect([
+      ...missed(await current(), "workspace.get"),
+      ...missed(changes.at(-1)!, "workspace.changed"),
+      ...missed(saved(), "store.save"),
+    ]).toEqual([])
+
+    for (const card of (await current()).approvals) {
+      await expect(rpc("approval.resolve", { approvalId: card.id, decision: "allow-once", revision: 0, client: "desktop" }))
+        .resolves.not.toHaveProperty("error")
+    }
+    const operations = [...expected.values()].map((text) => text.operation)
+    const receipts = (copy: Copy) => copy.thread.filter((item) => item.kind === "receipt").map((item) => item.operation)
+    expect(receipts(await current())).toEqual(expect.arrayContaining(operations))
+    expect(receipts(saved())).toEqual(expect.arrayContaining(operations))
     socket.close()
   })
 

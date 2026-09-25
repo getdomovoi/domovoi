@@ -65,7 +65,10 @@ A card's operation and command lines hide each path the card hides: a credential
 whose path the redaction changes, a hidden directory, and a path Claude Code blocked on that names
 a credential file or that the redaction changes (such a card is a hard gate too). The exact path is
 replaced with [REDACTED] wherever it stands whole, as written, from the request's directory, where
-it really leads, and relative to the worktree, and the rest of the agent's text stays. A name that
+it really leads, and relative to the worktree, and the rest of the agent's text stays. The path
+relative to the request's directory counts too, from that directory as given and as it really
+lies, so `.env` or `../src/.env` for a hidden `src/.env` is replaced. Each relative form is
+replaced with "/" or "\" and with or without a leading "./". A name that
 only starts with the path, such as `.env.example` beside a hidden `.env`, is kept. The lines reach
 `workspace.get`, `workspace.changed`, the saved store, the approval receipt and the error log in
 that form. A file hidden only when the card is read again is hidden in the card's text from that

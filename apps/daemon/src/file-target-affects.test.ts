@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { join, relative, resolve, sep } from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
@@ -101,5 +101,52 @@ describe("hidePaths", () => {
     expect(hidePaths(`ls ${join(workspace, ".ssh")}/keys .ssh/known_hosts .sshrc`, directoryForms))
       .toBe("ls [REDACTED]/keys [REDACTED]/known_hosts .sshrc")
     expect(hidePaths("nothing hidden", [])).toBe("nothing hidden")
+  })
+
+  // Round 10: a hidden file under a subdirectory, named from the request's
+  // directory, was left in the card's text. Every depth of file and every
+  // place the request can run from, as given and through a link.
+  it("replaces a hidden file however it is written from the request's directory or the worktree", async () => {
+    const workspace = await directory("domovoi-hide-forms-")
+    const real = await realpath(workspace)
+    for (const path of ["src/app", "src/lib", "lib"]) await mkdir(join(workspace, ...path.split("/")), { recursive: true })
+    await symlink(join(workspace, "src"), join(workspace, "via"), "junction")
+    const slashed = (path: string) => path.split(sep).join("/")
+    const cases = [
+      { file: ".env", cwds: [".", "lib", ".."] },
+      { file: "src/.env", cwds: [".", "src", "lib", "via"] },
+      { file: "src/app/.env", cwds: [".", "src/app", "src/lib", "src", "via/app", "via"] },
+    ]
+    const missed: string[] = []
+    for (const { file, cwds } of cases) {
+      const given = join(workspace, ...file.split("/"))
+      const lies = join(real, ...file.split("/"))
+      for (const cwd of cwds) {
+        const cwdGiven = resolve(workspace, cwd)
+        const cwdLies = await realpath(cwdGiven)
+        const relatives = [...new Set([file, slashed(relative(cwdGiven, given)), slashed(relative(cwdLies, lies))])]
+        const written = [
+          given,
+          lies,
+          ...relatives.flatMap((path) => {
+            const backslashed = path.split("/").join("\\")
+            return [path, `./${path}`, backslashed, `.\\${backslashed}`]
+          }),
+        ]
+        const text = `Edit ${written.join(", ")}; leave .env.example, .envrc and src/index.ts alone`
+        const expected = `Edit ${written.map(() => "[REDACTED]").join(", ")}; leave .env.example, .envrc and src/index.ts alone`
+        for (const [shape, request] of Object.entries({
+          "absolute path, absolute cwd": { path: given, cwd: cwdGiven },
+          "absolute path, relative cwd": { path: given, cwd },
+          "relative path, relative cwd": { path: relative(cwdGiven, given), cwd },
+        })) {
+          const shownText = hidePaths(text, await hiddenPathForms({ workspace, ...request }))
+          if (shownText !== expected) {
+            missed.push(`${file} from ${cwd} (${shape}): ${shownText.split(real).join("<real>").split(workspace).join("<worktree>")}`)
+          }
+        }
+      }
+    }
+    expect(missed).toEqual([])
   })
 })

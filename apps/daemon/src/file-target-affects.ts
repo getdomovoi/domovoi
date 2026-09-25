@@ -1,6 +1,6 @@
 import { isAbsolute, join, relative, resolve, sep } from "node:path"
 
-import { followedTarget, requestedPath } from "./followed-path.js"
+import { followedTarget, followPath, requestedPath } from "./followed-path.js"
 import { namesSecretPath } from "./permission-policy.js"
 import { redactDurableText } from "./secret-redaction.js"
 
@@ -100,10 +100,23 @@ export async function fileTargetAffects(input: {
   return { text: `The file ${name.text}, outside the session worktree.`, redacted: name.redacted, sensitive: hide }
 }
 
+// The path from a directory to a target, with "/", when one can be written:
+// not the directory itself, and not a path of only "." and ".." steps, which
+// would name every parent in the agent's text.
+function from(directory: string, target: string): string | undefined {
+  const path = relative(directory, target)
+  if (path === "" || isAbsolute(path)) return undefined
+  const steps = path.split(sep)
+  return steps.every((step) => step === "." || step === "..") ? undefined : steps.join("/")
+}
+
 // Every form in which a card's text can name a path it hides (ruled
 // 2026-09-24): as written, from the request's directory, where it really leads,
 // and each of those relative to the worktree, both as given and as it really
-// lies, and each relative form joined to either worktree root again.
+// lies, and each relative form joined to either worktree root again. The path
+// from the request's directory counts too, from the directory as given and
+// from where it really lies (round 10). Each relative form is written with "/"
+// and with "\", bare and after "./".
 export async function hiddenPathForms(input: {
   workspace: string
   path: string
@@ -111,19 +124,28 @@ export async function hiddenPathForms(input: {
 }): Promise<string[]> {
   const workspace = resolve(input.workspace)
   const followed = await followedTarget(input.workspace, input.path, input.cwd)
+  const lexical = resolve(workspace, input.cwd ?? ".", input.path)
   const absolute = [
     input.path,
     requestedPath(input.workspace, input.path, input.cwd),
-    resolve(workspace, input.cwd ?? ".", input.path),
+    lexical,
     ...(followed ? [followed.target] : []),
   ]
   const roots = [workspace, ...(followed ? [followed.workspace] : [])]
   const inside = absolute.flatMap((path) => roots.flatMap((root) => within(root, path) ?? []))
+  const directory = resolve(workspace, input.cwd ?? ".")
+  const realDirectory = followed ? await followPath(directory) : undefined
+  const fromDirectory = [
+    from(directory, lexical),
+    ...(followed && realDirectory !== undefined ? [from(realDirectory, followed.target)] : []),
+  ].flatMap((path) => path ?? [])
+  const relativeForms = [...inside, ...fromDirectory].flatMap((path) => {
+    const backslashed = path.split("/").join("\\")
+    return [path, `./${path}`, backslashed, `.\\${backslashed}`]
+  })
   const forms = new Set([
     ...absolute,
-    ...inside,
-    // within() names a relative path with "/"; Windows text may use "\".
-    ...inside.map((path) => path.split("/").join(sep)),
+    ...relativeForms,
     ...inside.flatMap((path) => roots.map((root) => join(root, path))),
   ])
   return [...forms].filter((form) => form !== "" && form !== "." && form !== sep)
