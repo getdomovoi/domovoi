@@ -15,7 +15,9 @@ import {
 } from "../public.js"
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
 import { nodeServiceEffects, type CapturedRun, type ServiceEffects } from "./install.js"
+import { withinServiceDeadline } from "./deadline.js"
 import { launchdPlist, systemdUnit } from "./units.js"
+import { runServiceUpdate, trackInFlight } from "./update-outcome.js"
 import { installedWslTask } from "./wsl-registration.js"
 import { wslUpdateIntentPath } from "./wsl-install.js"
 
@@ -1317,4 +1319,64 @@ describe("security review round 3", () => {
 it("names each outcome the desktop can tell apart", () => {
   expect(new DaemonServiceUpdateError("not-installed")).toBeInstanceOf(Error)
   expect(new DaemonServiceUpdateError("nothing-changed", new Error("x")).message).toMatch(nothingChanged)
+})
+
+// Security review of #577, which carries this update code at 4c57454f: the
+// restore started once a fixed 10-second wait ran out, with a service-manager
+// call from the swap still running. The restore must never start while such a
+// call may still act. These cases wait past that 10 seconds on a fake clock.
+describe("security review of #577: the restore waits for manager calls", () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it("the review's probe: a late manager call settles before the restore starts", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    const events: string[] = []
+    const lease = { release: vi.fn(() => { events.push("lease released") }) }
+    const tracked = trackInFlight({
+      delayed: () => new Promise<void>((resolve) => setTimeout(() => { events.push("late manager call settled"); resolve() }, 11_200)),
+    })
+    const outcome = runServiceUpdate(() => lease, 50, async () => ({
+      swap: async (deadline) => {
+        await withinServiceDeadline(deadline, () => tracked.effects.delayed())
+        return "swapped"
+      },
+      restore: async () => { events.push("restore started") },
+    }), tracked.inFlight).catch((error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(11_300)
+    expect(await outcome).toMatchObject({ outcome: "swap-failed-restored" })
+    expect(events).toEqual(["late manager call settled", "restore started", "lease released"])
+  })
+
+  it("a launch agent bootstrap that outlives the swap by 11 seconds settles before any restore step", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    const effects = fake("darwin", "/Users/dl", { updateBudgetMs: 50 })
+    const { run, capture, write } = effects
+    let bootstraps = 0
+    let pending = false
+    const during: string[] = []
+    effects.run = vi.fn(async (command: string, args: string[], deadline) => {
+      if (pending) during.push(`${command} ${args.join(" ")}`)
+      if (args[0] === "bootstrap" && ++bootstraps === 1) {
+        pending = true
+        // A manager call that outlives its deadline and ignores the abort.
+        await new Promise((resolve) => setTimeout(resolve, 11_200))
+        pending = false
+      }
+      await run(command, args, deadline)
+    })
+    effects.capture = vi.fn(async (command: string, args: string[], deadline) => {
+      if (pending) during.push(`${command} ${args.join(" ")}`)
+      return capture(command, args, deadline)
+    })
+    effects.write = vi.fn(async (path: string, contents: string, deadline) => {
+      if (pending) during.push(`write ${path}`)
+      await write(path, contents, deadline)
+    })
+    const outcome = updateDaemonService({ runtime }, effects).catch((error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(11_300)
+    expect(await outcome).toMatchObject({ outcome: "swap-failed-restored" })
+    expect(during, "no restore step may run while the first bootstrap is still running").toEqual([])
+    expect(effects.files.get(agent)).toBe(oldAgent)
+    expect(effects.serviceLease.release).toHaveBeenCalledOnce()
+  })
 })
