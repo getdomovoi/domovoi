@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto"
 import { once } from "node:events"
 import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
@@ -15,16 +16,17 @@ import {
 import type { AgentAdapter, AgentEvent, ProviderApprovalDecision } from "./agents.js"
 import type { AuditLog } from "./audit-log.js"
 import { DomovoiDaemon } from "./server.js"
-import type { WorkspaceStore } from "./store.js"
+import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import type { WorkspaceService } from "./workspace.js"
 
 // A stored approval card outlives the provider process that raised it. The
 // provider numbers its requests with a per-process counter, so after a daemon
 // restart a new live request in another session can carry the same number as
-// a card loaded from the store. Startup expires every stored card, so a
-// decision on the stale card cannot reach the other session's live request,
-// and the agent asks again if it still needs approval.
+// a card loaded from the store. Startup, and reopening a project's saved
+// state, expire every stored card, so a decision on the stale card cannot
+// reach the other session's live request. The agent asks again when the
+// session continues.
 
 function checkpointingWorkspace(): WorkspaceService {
   return {
@@ -269,5 +271,190 @@ describe("stored approval cards after a restart", () => {
     expect(provider.live.has(1)).toBe(true)
     const after = await workspace()
     expect(after.approvals.map(({ id }) => id)).toEqual([liveCard.id])
+  })
+
+  it("does not send a decision for a stored card while startup resumes an archive", async () => {
+    const profileDirectory = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-profile-"))
+    const liveWorkspace = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-live-"))
+    roots.push(profileDirectory, liveWorkspace)
+    const { snapshot } = storedSnapshot(liveWorkspace)
+    const archiving = snapshot.sessions.find((session) => session.id === staleSessionId)!
+    archiving.state = "archiving"
+    archiving.archiveRequestedAt = "2026-09-24T11:00:00.000Z"
+    const provider = freshProviderProcess()
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      profileDirectory,
+      store: { load: () => structuredClone(workspaceSnapshotSchema.parse(snapshot)), save: vi.fn(), close: vi.fn() },
+      agents: { codex: provider.adapter },
+      workspaceService: checkpointingWorkspace(),
+      errorSink: vi.fn(),
+    })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+
+    expect(provider.adapter.resolveApproval).not.toHaveBeenCalled()
+    const rpc = await connect(daemon, port)
+    const after = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+    expect(after.approvals).toEqual([])
+  })
+})
+
+function projectIdFor(root: string): string {
+  return `project-${createHash("sha256").update(root).digest("hex").slice(0, 12)}`
+}
+
+// Every path opens as its own repository, named after its last segment.
+function projectWorkspaces(): WorkspaceService {
+  return {
+    ...checkpointingWorkspace(),
+    inspect: vi.fn(async (path: string) => ({ root: path, name: basename(path), branch: "main", head: "a".repeat(40) })),
+  }
+}
+
+describe("stored approval cards in another project's saved state", () => {
+  it("expires a card saved with a project when that project opens after a restart", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-project-"))
+    const liveWorkspace = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-live-"))
+    roots.push(scratch, liveWorkspace)
+    const statePath = join(scratch, "state.sqlite")
+    const rootA = "/code/project-a"
+    const rootB = "/code/project-b"
+    const { snapshot: base, liveSessionId } = storedSnapshot(liveWorkspace)
+    const projectA = { ...base.project!, id: projectIdFor(rootA), name: "project-a", path: rootA, branch: "main" }
+    const initial = workspaceSnapshotSchema.parse({
+      ...base,
+      project: projectA,
+      sessions: base.sessions.map((session) => ({
+        ...session,
+        projectId: projectA.id,
+        ...(session.id === staleSessionId ? { state: "idle" } : {}),
+      })),
+      approvals: [],
+    })
+
+    // First process: project A's provider raises request 1 on a session with
+    // no active turn, then the person switches to project B, which saves A
+    // with its card.
+    const firstProvider = freshProviderProcess()
+    const first = new DomovoiDaemon({
+      port: 0,
+      profileDirectory: scratch,
+      store: new SqliteWorkspaceStore(statePath, initial),
+      agents: { codex: firstProvider.adapter },
+      workspaceService: projectWorkspaces(),
+      errorSink: vi.fn(),
+    })
+    daemons.push(first)
+    const firstRpc = await connect(first, (await first.start()).port)
+    const firstWorkspace = async () => workspaceSnapshotSchema.parse((await firstRpc("workspace.get", {})).result)
+    expect(firstProvider.request(staleSessionId, {
+      threadId: "thread-billing",
+      itemId: "item-stale",
+      command: "touch stale.txt",
+      reason: "Write a stale file",
+    })).toBe(1)
+    await vi.waitFor(async () => {
+      expect((await firstWorkspace()).approvals.map(({ providerRequestId }) => providerRequestId)).toEqual([1])
+    }, { timeout: 5_000 })
+    const staleCardId = (await firstWorkspace()).approvals[0]!.id
+    const refused = await firstRpc("project.open", { path: rootB, client: "desktop" })
+    const confirmation = (refused.error as unknown as { data: unknown }).data
+    expect((await firstRpc("project.open", { path: rootB, client: "desktop", confirmation })).error).toBeUndefined()
+    await first.stop()
+
+    // Second process: it starts in project B, then the person opens A again.
+    const { append, auditLog } = recordingAuditLog()
+    const secondProvider = freshProviderProcess()
+    const second = new DomovoiDaemon({
+      port: 0,
+      profileDirectory: scratch,
+      store: new SqliteWorkspaceStore(statePath, initial),
+      auditLog,
+      agents: { codex: secondProvider.adapter },
+      workspaceService: projectWorkspaces(),
+      errorSink: vi.fn(),
+    })
+    daemons.push(second)
+    const rpc = await connect(second, (await second.start()).port)
+    const workspace = async () => workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+    expect((await workspace()).project?.path).toBe(rootB)
+    const reopened = await rpc("project.open", { path: rootA, client: "desktop" })
+    expect(reopened.error).toBeUndefined()
+    expect((await workspace()).project?.id).toBe(projectA.id)
+
+    // A live request in this process carries the stale card's id.
+    expect(secondProvider.request(liveSessionId, {
+      threadId: liveThreadId,
+      itemId: "item-live",
+      command: "touch generated.txt",
+      reason: "Write a generated file",
+      cwd: liveWorkspace,
+    })).toBe(1)
+    const liveCard = await vi.waitFor(async () => {
+      const card = (await workspace()).approvals.find((approval) => approval.sessionId === liveSessionId)
+      expect(card).toBeDefined()
+      return card!
+    }, { timeout: 5_000 })
+    const allowed = await rpc("approval.resolve", { approvalId: staleCardId, decision: "allow-once", client: "desktop" })
+    await rpc("session.archive", { sessionId: staleSessionId, client: "desktop" })
+
+    expect(secondProvider.released).toEqual([])
+    expect(secondProvider.live.has(1)).toBe(true)
+    expect(allowed.error).toMatchObject({ message: "Approval does not exist" })
+    const after = await workspace()
+    expect(after.approvals.map(({ id }) => id)).toEqual([liveCard.id])
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      actor: { kind: "daemon", component: "project-open" },
+      action: "approval.expired",
+      outcome: "cancelled",
+      sessionId: staleSessionId,
+      projectId: projectA.id,
+      target: staleCardId,
+    }))
+  })
+
+  it("moves a session that was only waiting on a card saved with its project to idle", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-project-"))
+    const liveWorkspace = await mkdtemp(join(tmpdir(), "domovoi-stale-approval-live-"))
+    roots.push(scratch, liveWorkspace)
+    const statePath = join(scratch, "state.sqlite")
+    const rootA = "/code/project-a"
+    const rootB = "/code/project-b"
+    const { snapshot: base } = storedSnapshot(liveWorkspace)
+    const projectA = { ...base.project!, id: projectIdFor(rootA), name: "project-a", path: rootA, branch: "main" }
+    const initial = workspaceSnapshotSchema.parse({
+      ...base,
+      project: projectA,
+      sessions: base.sessions.map((session) => ({
+        ...session,
+        projectId: projectA.id,
+        ...(session.id === staleSessionId ? { state: "idle" } : {}),
+      })),
+      approvals: [],
+    })
+    const provider = freshProviderProcess()
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      profileDirectory: scratch,
+      store: new SqliteWorkspaceStore(statePath, initial),
+      agents: { codex: provider.adapter },
+      workspaceService: projectWorkspaces(),
+      errorSink: vi.fn(),
+    })
+    daemons.push(daemon)
+    const rpc = await connect(daemon, (await daemon.start()).port)
+    const workspace = async () => workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+    provider.request(staleSessionId, { threadId: "thread-billing", itemId: "item-stale", command: "touch stale.txt", reason: "Write a stale file" })
+    await vi.waitFor(async () => expect((await workspace()).approvals).toHaveLength(1), { timeout: 5_000 })
+    expect((await workspace()).sessions.find((session) => session.id === staleSessionId)?.state).toBe("waiting")
+    const refused = await rpc("project.open", { path: rootB, client: "desktop" })
+    const confirmation = (refused.error as unknown as { data: unknown }).data
+    expect((await rpc("project.open", { path: rootB, client: "desktop", confirmation })).error).toBeUndefined()
+
+    expect((await rpc("project.open", { path: rootA, client: "desktop" })).error).toBeUndefined()
+    const opened = await workspace()
+    expect(opened.approvals).toEqual([])
+    expect(opened.sessions.find((session) => session.id === staleSessionId)?.state).toBe("idle")
   })
 })

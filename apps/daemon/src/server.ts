@@ -7679,6 +7679,13 @@ export class DomovoiDaemon {
           this.#snapshot.artifacts = restored?.artifacts ?? []
           this.#snapshot.workingPlans = restored?.workingPlans ?? []
           this.#snapshot.annotations = restored?.annotations ?? []
+          // The project's provider threads were stopped when it was closed,
+          // possibly by another daemon process, so its saved cards expire.
+          this.#auditExpiredApprovals(
+            this.#expireStoredApprovals(this.#snapshot, new Date().toISOString()),
+            "project-open",
+            projectId,
+          )
           this.#snapshot.queuedSends = []
           this.#loadQueuedSessionSends(false)
           this.#activeAssistantItems.clear()
@@ -9909,6 +9916,9 @@ export class DomovoiDaemon {
   }
 
   async #recoverSessionArchives(): Promise<void> {
+    // Every card present now was read from storage: this runs before the
+    // listener opens. A card a resumed thread raises later has a new id.
+    const storedApprovalIds = new Set(this.#snapshot.approvals.map((approval) => approval.id))
     for (const session of this.#snapshot.sessions.filter(
       (candidate) => candidate.state === "archiving",
     )) {
@@ -9916,7 +9926,7 @@ export class DomovoiDaemon {
         `session:${session.id}`,
         async () => {
           try {
-            await this.#archiveSession(session.id)
+            await this.#archiveSession(session.id, undefined, storedApprovalIds)
           } catch (error) {
             this.#reportError(`Domovoi could not resume archive cleanup for ${session.id}`, error)
           }
@@ -9925,13 +9935,50 @@ export class DomovoiDaemon {
     }
   }
 
-  // Every stored approval card expires here, not only those of interrupted
-  // turns. A card's providerRequestId was issued by a provider process that is
-  // gone, and providers number requests from a fresh counter per process, so
-  // the same id can name a new live request in another session. Answering or
-  // denying the stale card would then decide that request. This runs before
-  // the listener opens, so no client can act on a stale card; the agent asks
-  // again if it still needs approval.
+  // A stored approval card cannot be answered. Its providerRequestId was
+  // issued to a provider process or thread that is gone: the daemon restarted,
+  // or the card's project was closed and its provider threads stopped.
+  // Providers number requests from a fresh counter per process, so the same id
+  // can name a new live request in another session, and answering or denying
+  // the stale card would decide that request. So every card read back from
+  // storage expires: it leaves `snapshot`, its plan blockers clear, and a
+  // session that was only waiting on it goes idle, the state a denied card
+  // leaves. The agent asks again when the session continues. The expired cards
+  // are returned for the caller to audit.
+  #expireStoredApprovals(snapshot: WorkspaceSnapshot, expiredAt: string): WorkspaceSnapshot["approvals"] {
+    const expired = snapshot.approvals
+    if (expired.length === 0) return []
+    const expiredIds = new Set(expired.map((approval) => approval.id))
+    snapshot.approvals = []
+    snapshot.workingPlans = clearWorkingPlanApprovalBlockers(snapshot.workingPlans, expiredIds, expiredAt).plans
+    for (const session of snapshot.sessions) {
+      if (session.state !== "waiting" || session.activeTurnId) continue
+      if (!expired.some((approval) => approval.sessionId === session.id)) continue
+      session.state = "idle"
+      session.updatedAt = expiredAt
+    }
+    return expired
+  }
+
+  #auditExpiredApprovals(
+    approvals: WorkspaceSnapshot["approvals"],
+    component: "startup-recovery" | "project-open",
+    projectId: string | undefined,
+  ): void {
+    for (const approval of approvals) {
+      this.#appendAudit({
+        actor: { kind: "daemon", component },
+        action: "approval.expired",
+        outcome: "cancelled",
+        sessionId: approval.sessionId,
+        ...(projectId ? { projectId } : {}),
+        target: approval.id,
+      })
+    }
+  }
+
+  // Runs before the listener opens, so no client can act on a stored card
+  // before it expires.
   #recoverInterruptedTurns(): void {
     const interrupted = this.#snapshot.sessions.filter(
       (session) => session.state !== "archiving"
@@ -9946,20 +9993,11 @@ export class DomovoiDaemon {
     const recoveredAt = new Date().toISOString()
     const candidate = structuredClone(this.#snapshot)
     const recoveredTurns: Array<{ sessionId: string; turnId: string }> = []
-    const expiredApprovals = [...candidate.approvals]
+    const expiredApprovals = this.#expireStoredApprovals(candidate, recoveredAt)
     const interruptedSessionIds = new Set(interrupted.map((session) => session.id))
 
     for (const session of candidate.sessions) {
-      if (!interruptedSessionIds.has(session.id) || !session.activeTurnId) {
-        // A session that was only waiting on an expired card has nothing left
-        // to wait for; it goes idle the way a denied card leaves it.
-        if (session.state === "waiting"
-          && expiredApprovals.some((approval) => approval.sessionId === session.id)) {
-          session.state = "idle"
-          session.updatedAt = recoveredAt
-        }
-        continue
-      }
+      if (!interruptedSessionIds.has(session.id) || !session.activeTurnId) continue
       recoveredTurns.push({ sessionId: session.id, turnId: session.activeTurnId })
       session.state = "idle"
       session.updatedAt = recoveredAt
@@ -9976,16 +10014,6 @@ export class DomovoiDaemon {
       })
     }
 
-    const expiredApprovalIds = new Set(expiredApprovals.map((approval) => approval.id))
-    candidate.approvals = candidate.approvals.filter(
-      (approval) => !expiredApprovalIds.has(approval.id),
-    )
-    candidate.workingPlans = clearWorkingPlanApprovalBlockers(
-      candidate.workingPlans,
-      expiredApprovalIds,
-      recoveredAt,
-    ).plans
-
     workspaceSnapshotSchema.parse(candidate)
     this.#store.save(candidate)
     this.#snapshot = candidate
@@ -10000,19 +10028,18 @@ export class DomovoiDaemon {
         target: recovered.turnId,
       })
     }
-    for (const approval of expiredApprovals) {
-      this.#appendAudit({
-        actor: { kind: "daemon", component: "startup-recovery" },
-        action: "approval.expired",
-        outcome: "cancelled",
-        sessionId: approval.sessionId,
-        ...(candidate.project ? { projectId: candidate.project.id } : {}),
-        target: approval.id,
-      })
-    }
+    this.#auditExpiredApprovals(expiredApprovals, "startup-recovery", candidate.project?.id)
   }
 
-  async #archiveSession(sessionId: string, client?: ClientKind): Promise<void> {
+  // `storedApprovalIds` names cards read from storage when startup resumes an
+  // archive. They are removed like any other card, but the provider is not
+  // told: the process that raised them is gone, and the fresh provider could
+  // hold a live request under the same id.
+  async #archiveSession(
+    sessionId: string,
+    client?: ClientKind,
+    storedApprovalIds?: ReadonlySet<string>,
+  ): Promise<void> {
     const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
     if (!session || session.state === "archived") return
     this.#holdQueuedSessionSend(sessionId, "The session was archived before the queued send could release.")
@@ -10041,7 +10068,7 @@ export class DomovoiDaemon {
     const unresolvedApprovalIds = new Set<string>()
     for (const approval of approvals) {
       try {
-        if (approval.providerRequestId !== undefined) {
+        if (approval.providerRequestId !== undefined && !storedApprovalIds?.has(approval.id)) {
           await this.#agents.require(session.runtime.provider).resolveApproval(
             approval.providerRequestId,
             "deny",

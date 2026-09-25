@@ -7227,6 +7227,8 @@ describe("DomovoiDaemon", () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.approvals[0]!.risk = "normal"
     snapshot.approvals[0]!.requestedAt = "2026-09-10T12:00:00.000Z"
+    // Read before start: once raised, the array is the daemon's live state.
+    const { id: approvalId, sessionId: approvalSessionId } = snapshot.approvals[0]!
     const raiseApprovals = deferLiveTurns(snapshot)
     const daemon = new DomovoiDaemon({
       port: 0,
@@ -7280,7 +7282,7 @@ describe("DomovoiDaemon", () => {
     let resolved
     try {
       resolved = await first.request(3, "approval.resolve", {
-        approvalId: snapshot.approvals[0]!.id,
+        approvalId,
         decision: "always-project",
         client: "desktop",
       })
@@ -7303,7 +7305,7 @@ describe("DomovoiDaemon", () => {
       },
     })
     await expect(first.request(4, "session.history", {
-      sessionId: snapshot.approvals[0]!.sessionId,
+      sessionId: approvalSessionId,
       categories: ["approvals"],
     })).resolves.toMatchObject({
       result: { items: expect.arrayContaining([expect.objectContaining({
