@@ -468,6 +468,76 @@ describe("approval settlement", () => {
   })
 })
 
+// Owner ruling, late 2026-09-24: a path the card hides is replaced in the
+// card's operation and command lines wherever the card's text goes, and only
+// that path; an ordinary card keeps the agent's text.
+describe("a card's own text when the card hides a path", () => {
+  const command = "cat ~/.aws/credentials"
+  const reason = "Read ~/.aws/credentials"
+  const leak = /~\/\.aws|\.aws\/credentials/u
+  const hidden = { risk: "hard-gate", command: "cat [REDACTED]", operation: "Read [REDACTED]" }
+
+  it("shows [REDACTED] for the path in workspace.get, workspace.changed, the store, the receipt and the audit log", async () => {
+    const { socket, emit, card, store, notices } = await setup()
+    const sent = notices.length
+    emit({ requestId: 301, command, reason })
+    emit({ requestId: 302, command: "cat notes.txt", reason: "Read notes.txt" })
+    const secret = await waitForDaemon(async () => {
+      const found = await card(301)
+      expect(found).toBeDefined()
+      return found!
+    })
+    const ordinary = await waitForDaemon(async () => {
+      const found = await card(302)
+      expect(found).toBeDefined()
+      return found!
+    })
+    expect(secret).toMatchObject(hidden)
+    expect(JSON.stringify(secret)).not.toMatch(leak)
+    expect(ordinary).toMatchObject({ command: "cat notes.txt", operation: "Read notes.txt" })
+
+    const changed = notices.slice(sent).join("\n")
+    expect(changed).toContain("cat [REDACTED]")
+    expect(changed).not.toMatch(leak)
+    const saved = store.load().approvals
+    expect(saved.find((approval) => approval.providerRequestId === 301)).toMatchObject(hidden)
+    expect(saved.find((approval) => approval.providerRequestId === 302))
+      .toMatchObject({ command: "cat notes.txt", operation: "Read notes.txt" })
+
+    expect((await rpc(socket, "approval.resolve", { approvalId: secret.id, decision: "deny", client: "cli" })).error).toBeUndefined()
+    const thread = ((await rpc(socket, "workspace.get")).result as WorkspaceSnapshot).thread
+    expect(thread.find((item) => item.kind === "receipt" && item.id.startsWith(`receipt-${secret.id}-`)))
+      .toMatchObject({ operation: "Read [REDACTED]" })
+    expect(JSON.stringify(store.load())).not.toMatch(leak)
+    expect(notices.join("\n")).not.toMatch(leak)
+    const audit = store.auditLog.query({ limit: 100 }).entries
+    expect(audit.map((entry) => entry.action)).toEqual(expect.arrayContaining(["provider.approval-requested", "approval.resolve"]))
+    expect(JSON.stringify(audit)).not.toMatch(leak)
+  })
+
+  it("shows [REDACTED] for the path on a saved card at load", async () => {
+    const { card, store } = await setup(undefined, undefined, {
+      saved: (root) => [{ ...savedCard(root, 311), command, operation: reason }, savedCard(root, 312)],
+    })
+    expect(await card(311)).toMatchObject(hidden)
+    expect(await card(312)).toMatchObject({ command: "ls", operation: "List files" })
+    expect(JSON.stringify(store.load().approvals)).not.toMatch(leak)
+  })
+
+  it("shows [REDACTED] for the path on a card sealed when its lookups stall", async () => {
+    const { emit, card } = await setup()
+    vi.spyOn(fs.realpath, "native").mockImplementation((() => {}) as never)
+    emit({ requestId: 321, command, reason })
+    const sealed = await vi.waitFor(async () => {
+      const found = await card(321)
+      expect(found).toBeDefined()
+      return found!
+    }, { timeout: 3_500, interval: 50 })
+    expect(sealed).toMatchObject({ ...hidden, execution: { state: "unresolved", reason: "sensitive-content" } })
+    expect(JSON.stringify(sealed)).not.toMatch(leak)
+  })
+})
+
 // A saved card's execution record is not trusted at load: every path it can
 // hold, moved by a link into a store after the card was saved, makes the card
 // a hard gate with the record hidden.

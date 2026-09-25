@@ -26,6 +26,7 @@ describe("approvalFacts", () => {
       network: unrestrictedApprovalScope.network,
       redacted: false,
       sensitive: false,
+      hiddenPaths: [],
     })
     expect(unrestrictedApprovalScope.network).not.toMatch(/no .*network/i)
   })

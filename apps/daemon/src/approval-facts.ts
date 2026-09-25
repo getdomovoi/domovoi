@@ -268,12 +268,61 @@ export function approvalFacts(input: {
   cwd?: string | undefined
   scope: ApprovalScope | undefined
   resolved?: ResolvedApprovalPath | undefined
-}): { affects: string; network: string; redacted: boolean; sensitive: boolean } {
+}): { affects: string; network: string; redacted: boolean; sensitive: boolean; hiddenPaths: string[] } {
   const scope = input.scope ?? unrestrictedApprovalScope
-  if (input.path === undefined) return { affects: scope.command, network: scope.network, redacted: false, sensitive: false }
+  if (input.path === undefined) {
+    return { affects: scope.command, network: scope.network, redacted: false, sensitive: false, hiddenPaths: [] }
+  }
   const sensitive = fileNamesSecret({ path: input.path, workspace: input.workspace, cwd: input.cwd, resolved: input.resolved })
   const file = affectedFile({ path: input.path, workspace: input.workspace, cwd: input.cwd, resolved: input.resolved, hide: sensitive })
-  return { affects: file.text, network: scope.network, redacted: file.redacted, sensitive }
+  return {
+    affects: file.text,
+    network: scope.network,
+    redacted: file.redacted,
+    sensitive,
+    hiddenPaths: sensitive ? hiddenFilePaths({ path: input.path, workspace: input.workspace, cwd: input.cwd, resolved: input.resolved }) : [],
+  }
+}
+
+// The forms of a hidden file path the card's own text can hold: as written,
+// against the directory the request runs in, where it really leads, and each
+// link on the way that names a credential path.
+function hiddenFilePaths(input: {
+  path: string
+  workspace: string
+  cwd: string | undefined
+  resolved: ResolvedApprovalPath | undefined
+}): string[] {
+  const { resolved } = input
+  return [
+    input.path,
+    resolve(input.workspace, input.cwd ?? ".", input.path),
+    ...(resolved === undefined ? [] : [
+      resolved.target,
+      ...(typeof resolved.canonical === "string" ? [resolved.canonical] : []),
+      ...resolved.hops.filter(namesSecretPath),
+    ]),
+  ]
+}
+
+// The paths a file line names, when the card hides that line: the paths it
+// reads back as, and any word in it that names a credential path.
+export function affectsLinePaths(affects: string): string[] {
+  const paths = affects.startsWith(fileLineStart) ? savedFilePaths(affects) : undefined
+  const words = affects.split(/\s+/u)
+    .flatMap((word) => [word, word.replace(/[.,;]+$/u, "")])
+    .filter((word) => operandPieces(word).some(namesSecretPath))
+  return [...(Array.isArray(paths) ? paths : []), ...words]
+}
+
+// The text a resolved execution record holds that came from the command:
+// each command word and each package script argument.
+export function executionRecordText(execution: ExecutionResolution): string[] {
+  if (execution.state !== "resolved" || execution.record.kind !== "shell") return []
+  return execution.record.entries.flatMap((entry) => [
+    ...entry.parts.flatMap((part) => part.argv),
+    ...(entry.source.kind === "package-script" ? entry.source.arguments : []),
+  ])
 }
 
 // A credential file is a hard gate whether the agent named it or any link on
@@ -347,7 +396,8 @@ export function executionRecordPaths(execution: ExecutionResolution): string[] {
 }
 
 // Whether a resolved execution record holds a credential path in a field the
-// card does not show. The command words stay the agent's own text.
+// card does not show. A command word that holds a path the card hides is
+// judged where the card's own text is, with executionRecordText.
 export function executionNamesCredentialPath(execution: ExecutionResolution): boolean {
   return executionRecordPaths(execution).some(namesSecretPath)
 }
@@ -412,23 +462,28 @@ export function savedRequestPath(affects: string): string | undefined {
 // credential path. A line that names a file it cannot read back as a path
 // throws, so the card is sealed. A line that names no file, such as a
 // provider's reach, is judged by its words.
+// With the line, the paths it hides, in the forms the card's own text can
+// hold them.
 export async function savedApprovalAffects(
   affects: string,
   workspace: string,
   deadline: OperationDeadline,
-): Promise<{ text: string; sensitive: boolean }> {
-  if (affects === hiddenAffectsLine) return { text: affects, sensitive: true }
+): Promise<{ text: string; sensitive: boolean; hiddenPaths: string[] }> {
+  if (affects === hiddenAffectsLine) return { text: affects, sensitive: true, hiddenPaths: [] }
   const line = approvalAffects(affects)
-  if (line.sensitive || !affects.startsWith("The file ")) return line
+  if (line.sensitive) return { ...line, hiddenPaths: affectsLinePaths(affects) }
+  if (!affects.startsWith("The file ")) return { ...line, hiddenPaths: [] }
   const paths = savedFilePaths(affects)
   if (paths === undefined) throw new Error("A saved file line does not name a file Domovoi can check")
   const hidden = { text: hiddenFile(savedInWorktree(affects)), sensitive: true }
-  if (paths === "hidden") return hidden
+  if (paths === "hidden") return { ...hidden, hiddenPaths: [] }
   for (const path of paths) {
     const resolved = await resolveApprovalPath(workspace, path, undefined, deadline)
-    if (fileNamesSecret({ path, workspace, cwd: undefined, resolved })) return hidden
+    if (fileNamesSecret({ path, workspace, cwd: undefined, resolved })) {
+      return { ...hidden, hiddenPaths: paths.flatMap((each) => hiddenFilePaths({ path: each, workspace, cwd: undefined, resolved: each === path ? resolved : undefined })) }
+    }
   }
-  return line
+  return { ...line, hiddenPaths: [] }
 }
 
 export function hiddenFile(inside: boolean): string {

@@ -574,6 +574,54 @@ describe("SqliteWorkspaceStore", () => {
     reopened.close()
   })
 
+  // A saved approval whose command or operation line names a path the card
+  // hides keeps the rest of its text, with only that path replaced, on load
+  // and on every save.
+  it("hides a hidden path in a saved approval's command and operation lines", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-legacy-text-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    const approval = legacy.approvals[0]!
+    const session = legacy.sessions.find((candidate) => candidate.id === approval.sessionId)!
+    session.workspacePath = "/worktrees/legacy-text"
+    approval.risk = "normal"
+    legacy.approvals = [
+      { ...structuredClone(approval), id: "approval-command-path", command: "cat ~/.aws/credentials", operation: "Read ~/.aws/credentials" },
+      {
+        ...structuredClone(approval),
+        id: "approval-directory-path",
+        directory: "/home/u/.ssh",
+        command: "ls /home/u/.ssh",
+        operation: "List /home/u/.ssh",
+      },
+      { ...structuredClone(approval), id: "approval-ordinary-text", command: "cat notes.txt", operation: "Read notes.txt" },
+    ]
+    const injected = new DatabaseSync(databasePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    expect(reopened.load().approvals).toEqual([
+      expect.objectContaining({ id: "approval-command-path", risk: "hard-gate", command: "cat [REDACTED]", operation: "Read [REDACTED]" }),
+      expect.objectContaining({ id: "approval-directory-path", risk: "hard-gate", command: "ls [REDACTED]", operation: "List [REDACTED]" }),
+      expect.objectContaining({ id: "approval-ordinary-text", risk: "normal", command: "cat notes.txt", operation: "Read notes.txt" }),
+    ])
+    const readStored = () => {
+      const database = new DatabaseSync(databasePath)
+      const raw = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
+      database.close()
+      return JSON.stringify(raw)
+    }
+    expect(readStored()).not.toMatch(/\.aws|\.ssh/u)
+    reopened.save(legacy)
+    expect(readStored()).not.toMatch(/\.aws|\.ssh/u)
+    reopened.close()
+  })
+
   it("keeps audit receipts across workspace-store reopen", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
     scratchDirectories.push(scratch)

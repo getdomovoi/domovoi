@@ -101,3 +101,13 @@ saved card for a file or read tool, such as Edit or Read, whose resolution reads
 its Affects line is not a file
 line that reads back as a path, such as a provider's reach line or an older daemon's wording, since
 nothing on it says which file to judge.
+
+When a card hides a path (a credential file or store, a hidden directory, or any path on a sealed
+card), that path is replaced with "[REDACTED]" in the card's operation and command lines, and the
+rest of the agent's text stays, so `cat ~/.aws/credentials` shows as `cat [REDACTED]`. The path is
+matched as written, at its real path, and in the forms the path classifier compares, a hidden
+directory at the start of a longer path is replaced, and a shell word that decodes into the path
+through quotes or escapes is replaced whole. An execution record whose command words hold the path
+is hidden. This holds for new, settled, sealed and saved cards, in workspace.get, workspace.changed,
+the store and approval receipts. A relative word under a directory that is itself a credential path
+is replaced only when it exists there, so a program name such as `ls` stays.

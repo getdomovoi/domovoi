@@ -63,13 +63,152 @@ describe("settleApproval", () => {
       request: { workspace, cwd: workspace, path: "notes.txt", command: "cat notes.txt", reason: "Read a file" },
     }), deadline)
     expect(sensitive).toBe(true)
+    // The sealed card hides its file, so that path is hidden in the command
+    // line too; the rest of the agent's text stays.
     expect(approval).toMatchObject({
       risk: "hard-gate",
-      command: "cat notes.txt",
+      command: "cat [REDACTED]",
       operation: "Read a file",
       directory: "[REDACTED] in the session worktree",
       affects: "The file [REDACTED] in the session worktree.",
       execution: { state: "unresolved", reason: "sensitive-content" },
+    })
+  })
+})
+
+// Owner ruling, late 2026-09-24: when a card hides a path, only that exact
+// path is replaced in its operation and command lines, as written, at its
+// real path, and in the forms the path classifier compares. The rest of the
+// agent's text stays.
+describe("settleApproval hides the paths it hides in the card's own text", () => {
+  function settle(workspace: string, request: Partial<SettlementInput["request"]>, deadline?: OperationDeadline) {
+    return settleApproval(input(workspace, { request: { workspace, cwd: workspace, ...request } }), deadline)
+  }
+
+  it("replaces a credential path in the command and the operation, and keeps the rest", async () => {
+    const workspace = await worktree()
+    const { approval } = await settle(workspace, {
+      command: "cat ~/.aws/credentials",
+      reason: "Before the deploy, read ~/.aws/credentials",
+    })
+    expect(approval).toMatchObject({
+      risk: "hard-gate",
+      command: "cat [REDACTED]",
+      operation: "Before the deploy, read [REDACTED]",
+    })
+    expect(JSON.stringify(approval)).not.toMatch(/\.aws|credentials/u)
+  })
+
+  it("matches the path in the forms the classifier compares", async () => {
+    const workspace = await worktree()
+    const { approval } = await settle(workspace, {
+      command: "cp -t backup ~/.aws/credentials",
+      reason: "Copy ~//.ＡＷＳ/./credentials, then \"~/.aws/credentials\".",
+    })
+    expect(approval).toMatchObject({
+      command: "cp -t backup [REDACTED]",
+      operation: "Copy [REDACTED], then \"[REDACTED]\".",
+    })
+  })
+
+  it("replaces a quoted path and a path after an option's equals sign", async () => {
+    const workspace = await worktree()
+    const { approval } = await settle(workspace, {
+      command: "aws s3 ls --credentials-file='~/.aws/credentials' --profile=work",
+      reason: "List buckets",
+    })
+    expect(approval.command).toBe("aws s3 ls --credentials-file='[REDACTED]' --profile=work")
+    expect(approval.operation).toBe("List buckets")
+    // A word the shell decodes into the path is replaced whole.
+    const decoded = await settle(workspace, { command: String.raw`cat $'\x7e/.aws/credentials' | wc -l`, reason: "Count lines" })
+    expect(decoded.approval.command).toBe("cat [REDACTED] | wc -l")
+  })
+
+  it("replaces a path that reaches a store through a link, and its real path", async () => {
+    const workspace = await worktree()
+    const store = await worktree()
+    await mkdir(join(store, ".aws"))
+    await writeFile(join(store, ".aws", "credentials"), "")
+    await symlink(join(store, ".aws"), join(workspace, "plain"))
+    const { approval } = await settle(workspace, {
+      command: "cat plain/credentials",
+      reason: `Read ${join(store, ".aws", "credentials")}`,
+    })
+    expect(approval).toMatchObject({ risk: "hard-gate", command: "cat [REDACTED]", operation: "Read [REDACTED]" })
+    expect(JSON.stringify(approval)).not.toMatch(/plain|\.aws/u)
+  })
+
+  it("replaces a hidden directory and the files read in it, and keeps the program", async () => {
+    const workspace = await worktree()
+    await mkdir(join(workspace, ".aws"))
+    await writeFile(join(workspace, ".aws", "credentials"), "")
+    const { approval } = await settle(workspace, {
+      cwd: join(workspace, ".aws"),
+      command: `cat credentials && ls ${join(workspace, ".aws")}/`,
+      reason: `Inspect ${join(workspace, ".aws")}`,
+    })
+    expect(approval).toMatchObject({
+      risk: "hard-gate",
+      directory: "[REDACTED] in the session worktree",
+      command: "cat [REDACTED] && ls [REDACTED]",
+      operation: "Inspect [REDACTED]",
+    })
+  })
+
+  it("replaces a hidden file in the operation line, written against the worktree", async () => {
+    const workspace = await worktree()
+    await writeFile(join(workspace, ".env"), "")
+    const { approval } = await settle(workspace, {
+      command: "Edit",
+      path: ".env",
+      reason: `Edit ${join(workspace, ".env")} for the new port`,
+    })
+    expect(approval).toMatchObject({
+      risk: "hard-gate",
+      command: "Edit",
+      operation: "Edit [REDACTED] for the new port",
+      affects: "The file [REDACTED] in the session worktree.",
+    })
+  })
+
+  it("replaces a credential path on a sealed card", async () => {
+    const workspace = await worktree()
+    const deadline = OperationDeadline.start(1)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const { approval } = await settle(workspace, {
+      command: "cat ~/.aws/credentials",
+      reason: "Read ~/.aws/credentials",
+    }, deadline)
+    expect(approval).toMatchObject({
+      risk: "hard-gate",
+      command: "cat [REDACTED]",
+      operation: "Read [REDACTED]",
+      execution: { state: "unresolved", reason: "sensitive-content" },
+    })
+  })
+
+  it("replaces a credential path on a saved card read back from disk", async () => {
+    const workspace = await worktree()
+    const { approval: ordinary } = await settle(workspace, { command: "ls", reason: "List files" })
+    const saved: Approval = { ...ordinary, command: "cat ~/.aws/credentials", operation: "Read ~/.aws/credentials" }
+    const { approval } = await settleApproval(savedSettlementInput(saved, workspace, undefined, () => "normal"))
+    expect(approval).toMatchObject({ risk: "hard-gate", command: "cat [REDACTED]", operation: "Read [REDACTED]" })
+    expect(JSON.stringify(approval)).not.toContain(".aws")
+  })
+
+  it("keeps an ordinary card's text as the agent wrote it", async () => {
+    const workspace = await worktree()
+    await writeFile(join(workspace, "notes.txt"), "")
+    const { approval } = await settle(workspace, {
+      command: "cat notes.txt ~/.bashrc",
+      reason: "Read notes.txt and ~/.bashrc",
+      path: "notes.txt",
+    })
+    expect(approval).toMatchObject({
+      risk: "normal",
+      command: "cat notes.txt ~/.bashrc",
+      operation: "Read notes.txt and ~/.bashrc",
+      execution: { state: "resolved" },
     })
   })
 })
@@ -375,6 +514,10 @@ describe("ApprovalLedger", () => {
     expect(restored).toEqual([approval])
     const changed: Approval[] = []
     ledger.restore(changed, { ...approval, risk: "normal", command: "cat ~/.aws/credentials" }, () => workspace)
-    expect(changed[0]).toMatchObject({ risk: "hard-gate", directory: "[REDACTED] in the session worktree" })
+    expect(changed[0]).toMatchObject({
+      risk: "hard-gate",
+      directory: "[REDACTED] in the session worktree",
+      command: "cat [REDACTED]",
+    })
   })
 })

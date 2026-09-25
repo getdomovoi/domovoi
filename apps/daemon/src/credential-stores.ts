@@ -130,6 +130,22 @@ export function isCredentialPath(path: string): boolean {
     || wholeStores.some((root) => namesWholeStore(written, root) || namesWholeStore(collapsed, root))
 }
 
+// The forms two path texts are compared in when a card hides a path in its
+// own text: the classifier's components, as written and with ".." applied, a
+// leading "~" read as the home directory, and whether the path starts at a
+// root. A path with no components, such as "." or "/", has no form.
+export function pathKeys(path: string): string[] {
+  const expanded = /^~(?:[/\\]|$)/u.test(path) ? `${homedir()}${path.slice(1)}` : path
+  const root = /^[/\\]/u.test(comparable(expanded)) ? "/" : ""
+  const { written, collapsed } = pathComponents(expanded)
+  return [...new Set([written, collapsed].filter((parts) => parts.length > 0).map((parts) => `${root}${parts.join("/")}`))]
+}
+
+// Whether one character separates path components in the classifier's form.
+export function isPathSeparator(character: string): boolean {
+  return /^[/\\]+$/u.test(comparable(character))
+}
+
 // Longer than any path the system resolves.
 const maximumResolvedPathLength = 4096
 
@@ -199,12 +215,24 @@ export function realPathNamesSecret(path: RealPath, names: (path: string) => boo
 // secret file at its real path, each relative operand read from cwd. The
 // lookups share one deadline, the request's when it gives one.
 export async function operandsReachCredentialPath(operands: readonly string[], cwd: string | undefined, deadline?: OperationDeadline): Promise<boolean> {
+  return (await operandsAtCredentialPaths(operands, cwd, deadline)).length > 0
+}
+
+// Each of these command operands whose real path names a credential store or
+// a secret file, with that real path, each relative operand read from cwd.
+export async function operandsAtCredentialPaths(
+  operands: readonly string[],
+  cwd: string | undefined,
+  deadline?: OperationDeadline,
+): Promise<{ operand: string; real: RealPath }[]> {
   const clock = deadline ?? OperationDeadline.start(realPathLookupBudgetMs)
   try {
+    const found: { operand: string; real: RealPath }[] = []
     for (const operand of new Set(operands)) {
-      if (realPathNamesSecret(await canonicalPath(operand, cwd, clock))) return true
+      const real = await canonicalPath(operand, cwd, clock)
+      if (realPathNamesSecret(real)) found.push({ operand, real })
     }
-    return false
+    return found
   } finally {
     if (deadline === undefined) clock.clear()
   }
@@ -325,11 +353,32 @@ function ansiCQuoted(characters: readonly string[], start: number): QuotedText {
 export type ShellReading = "posix" | "backslash-literal"
 
 export function shellWords(command: string, reading: ShellReading = "posix"): string[] {
+  return shellWordSpans(command, reading).map(({ text }) => text)
+}
+
+// Each shell word with where it is written in the command: start and end are
+// string offsets, and text is the word as the shell decodes it.
+export type ShellWordSpan = Readonly<{ text: string; start: number; end: number }>
+
+export function shellWordSpans(command: string, reading: ShellReading = "posix"): ShellWordSpan[] {
   const escapes = reading === "posix"
-  const words: string[] = []
+  const words: ShellWordSpan[] = []
   let word = ""
   let inWord = false
+  let wordStart = 0
   const characters = [...command]
+  const offsets: number[] = []
+  let offset = 0
+  for (const character of characters) {
+    offsets.push(offset)
+    offset += character.length
+  }
+  offsets.push(offset)
+  const at = (index: number) => offsets[Math.min(index, characters.length)]!
+  const begin = (index: number) => {
+    if (!inWord) wordStart = index
+    inWord = true
+  }
   let index = 0
   while (index < characters.length) {
     const character = characters[index]!
@@ -340,8 +389,8 @@ export function shellWords(command: string, reading: ShellReading = "posix"): st
       continue
     }
     if (escapes && character === "\\" && next !== undefined) {
+      begin(index)
       word += character + next
-      inWord = true
       index += 2
       continue
     }
@@ -350,22 +399,22 @@ export function shellWords(command: string, reading: ShellReading = "posix"): st
     else if (character === "'") quoted = singleQuoted(characters, index + 1)
     else if (character === "\"") quoted = doubleQuoted(characters, index + 1, escapes)
     if (quoted !== undefined) {
+      begin(index)
       word += quoted.text
-      inWord = true
       index = quoted.end
       continue
     }
     if (/[\s;|&<>()`]/u.test(character)) {
-      if (inWord) words.push(word)
+      if (inWord) words.push({ text: word, start: at(wordStart), end: at(index) })
       word = ""
       inWord = false
     } else {
+      begin(index)
       word += character
-      inWord = true
     }
     index += 1
   }
-  if (inWord) words.push(word)
+  if (inWord) words.push({ text: word, start: at(wordStart), end: at(index) })
   return words
 }
 

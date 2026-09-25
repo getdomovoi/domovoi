@@ -1,6 +1,16 @@
+import { resolve } from "node:path"
+
 import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { approvalAffects, approvalDirectory, executionNamesCredentialPath } from "./approval-facts.js"
+import {
+  affectsLinePaths,
+  approvalAffects,
+  approvalDirectory,
+  executionNamesCredentialPath,
+  executionRecordText,
+} from "./approval-facts.js"
+import { pathHider } from "./approval-path-text.js"
+import { commandOperands, isCredentialPath } from "./credential-stores.js"
 import {
   redactDurableCommand,
   redactDurableOutput,
@@ -26,24 +36,35 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
     const operation = redactDurableText(approval.operation)
     // A directory saved before it was classified is hidden here too, judged
     // as written; its location is read against the session worktree.
-    const directory = approvalDirectory({
-      directory: approval.directory,
-      workspace: sanitized.sessions.find((session) => session.id === approval.sessionId)?.workspacePath
-        ?? sanitized.project?.path,
-    })
+    const workspace = sanitized.sessions.find((session) => session.id === approval.sessionId)?.workspacePath
+      ?? sanitized.project?.path
+    const directory = approvalDirectory({ directory: approval.directory, workspace })
     const affects = redactDurableText(approval.affects)
     // A file line saved before its path was classified is judged here too.
     const affectsLine = approvalAffects(affects.value)
     const network = redactDurableText(approval.network)
+    // Each path the card hides, judged as written, is replaced in its own
+    // command and operation lines, and a record that holds one is hidden.
+    const hider = pathHider([
+      ...(directory.sensitive
+        ? [approval.directory, ...(workspace === undefined ? [] : [resolve(workspace, approval.directory)])]
+        : []),
+      ...(affectsLine.sensitive ? affectsLinePaths(affects.value) : []),
+      ...commandOperands(command.value).filter(isCredentialPath),
+    ])
+    const commandText = hider.hide(command.value)
+    const operationText = hider.hide(operation.value)
+    const pathsHidden = commandText !== command.value || operationText !== operation.value
     const unsafeExecution = executionContainsSecret(approval.execution)
+      || executionRecordText(approval.execution).some(hider.holds)
     return {
       ...approval,
       risk: command.redacted || operation.redacted || directory.redacted || directory.sensitive
-        || affects.redacted || affectsLine.sensitive || network.redacted || unsafeExecution
+        || affects.redacted || affectsLine.sensitive || network.redacted || unsafeExecution || pathsHidden
         ? "hard-gate"
         : approval.risk,
-      command: command.value,
-      operation: operation.value,
+      command: commandText,
+      operation: operationText,
       directory: directory.text,
       affects: affectsLine.text,
       network: network.value,

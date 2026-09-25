@@ -1,12 +1,15 @@
-import { dirname, join, resolve } from "node:path"
+import { lstat } from "node:fs/promises"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 
 import type { ExecutionResolution, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import {
+  affectsLinePaths,
   approvalDirectory,
   approvalFacts,
   approvalOperands,
   executionRecordPaths,
+  executionRecordText,
   hiddenAffects,
   hiddenDirectory,
   hiddenFile,
@@ -20,14 +23,16 @@ import {
   unrestrictedApprovalScope,
   type ApprovalScope,
 } from "./approval-facts.js"
+import { pathHider } from "./approval-path-text.js"
 import {
   canonicalPath,
+  commandOperands,
   isCredentialPath,
-  operandsReachCredentialPath,
+  operandsAtCredentialPaths,
   realPathLookupBudgetMs,
 } from "./credential-stores.js"
 import { resolutionReadsFilePath, resolveExecution } from "./execution-resolution.js"
-import { OperationDeadline } from "./operation-deadline.js"
+import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { namesSecretPath } from "./permission-policy.js"
 import { redactDurableCommand, redactDurableText } from "./secret-redaction.js"
 import { executionContainsSecret } from "./workspace-redaction.js"
@@ -39,7 +44,8 @@ import { executionContainsSecret } from "./workspace-redaction.js"
 // resolves the execution, reads every operand from the command and from that
 // execution, judges every path the card or its record holds as written and at
 // its real path, makes the card a hard gate when any of them is a credential
-// path, and hides each such path. A request whose lookups do not finish in
+// path, and hides each such path, on its own lines and where the card's
+// command and operation lines name it. A request whose lookups do not finish in
 // time is a hard gate with every path hidden. A card read back from disk
 // trusts no path in its saved execution record: the execution is resolved
 // again from the card's saved lines, and a record that differs, or any path
@@ -137,22 +143,73 @@ function savedDirectoryHidden(saved: SavedCard | undefined): boolean {
   return saved !== undefined && saved.directory.includes("[REDACTED]")
 }
 
+// The forms of the directory a request runs in that the card's own text can
+// hold: as written, against the worktree, and at its real path.
+function directoryPaths(request: ApprovalRequest, real: string | undefined): string[] {
+  return [
+    request.cwd ?? request.workspace,
+    requestDirectory(request.workspace, request.cwd),
+    resolve(request.workspace, request.cwd ?? "."),
+    ...(real === undefined ? [] : [real]),
+  ]
+}
+
+async function existsBefore(path: string, deadline: OperationDeadline): Promise<boolean> {
+  try {
+    await beforeDeadline(lstat(path), deadline)
+    return true
+  } catch (error) {
+    if (deadline.signal.aborted) throw error
+    return false
+  }
+}
+
+// Whether any operand reaches a credential path at its real path, read from
+// base, and the operands the card hides with their real paths. Under a base
+// that is itself a credential path every relative word reaches one; there a
+// relative operand is a hidden path only when it exists, so a program name
+// such as "ls" stays in the text.
+async function operandsAtRealCredentialPaths(
+  operands: readonly string[],
+  base: string | undefined,
+  deadline: OperationDeadline,
+): Promise<{ reach: boolean; paths: string[] }> {
+  const found = await operandsAtCredentialPaths(operands, base, deadline)
+  const paths: string[] = []
+  for (const { operand, real } of found) {
+    const relative = !isAbsolute(operand) && !/^~(?:[/\\]|$)/u.test(operand)
+    if (relative && base !== undefined && namesSecretPath(base) && !await existsBefore(join(base, operand), deadline)) continue
+    paths.push(operand, ...(typeof real === "string" ? [real] : []))
+  }
+  return { reach: found.length > 0, paths }
+}
+
 // A card whose paths could not be judged: a hard gate, with the directory,
 // the file and the execution record hidden. The command and operation lines
-// stay the agent's own text, redacted as always.
+// stay the agent's own text, redacted as always, with each path the card
+// hides replaced: the directory, the file, the saved file line's paths, and
+// every operand that names a credential path as written.
 function sealedCard(input: SettlementInput): SettledApproval {
   const { request, saved } = input
   const scope = input.scope ?? unrestrictedApprovalScope
   const directoryInside = inWorktree(request.workspace, request.cwd ?? request.workspace)
-  const directory = saved !== undefined && savedDirectoryHidden(saved) ? saved.directory : hiddenDirectory(directoryInside)
+  const directoryWasHidden = savedDirectoryHidden(saved)
+  const directory = saved !== undefined && directoryWasHidden ? saved.directory : hiddenDirectory(directoryInside)
   const affects = request.path !== undefined
     ? hiddenFile(inWorktree(request.workspace, resolve(request.workspace, request.cwd ?? ".", request.path)))
     : saved !== undefined ? hiddenAffects(redactDurableText(saved.affects).value) : scope.command
+  const command = redactDurableCommand(request.command ?? commandUnavailable).value
+  const hider = pathHider([
+    ...(directoryWasHidden ? [] : directoryPaths(request, undefined)),
+    ...(request.path === undefined ? [] : [request.path, resolve(request.workspace, request.cwd ?? ".", request.path)]),
+    ...(saved === undefined ? [] : affectsLinePaths(redactDurableText(saved.affects).value)),
+    ...commandOperands(command).filter(isCredentialPath),
+  ])
   return mint({
     ...input.approval,
     risk: "hard-gate",
-    operation: redactDurableText(input.request.reason ?? "Run a command").value,
-    command: redactDurableCommand(input.request.command ?? commandUnavailable).value,
+    operation: hider.hide(redactDurableText(request.reason ?? "Run a command").value),
+    command: hider.hide(command),
     directory,
     affects,
     network: saved !== undefined ? redactDurableText(saved.network).value : scope.network,
@@ -217,22 +274,22 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
   // directory, each as written and at its real path.
   const operands = approvalOperands(request.command, execution)
   const operandsName = operands.some(isCredentialPath)
-  let operandsReach = await operandsReachCredentialPath(
+  const reached = [await operandsAtRealCredentialPaths(
     requestOperands(request.command, execution),
     typeof realDirectory === "string" ? realDirectory : undefined,
     deadline,
-  )
+  )]
   for (const script of scriptOperands(execution)) {
-    if (operandsReach) break
-    operandsReach = await operandsReachCredentialPath(script.operands, join(workspaceOnDisk, dirname(script.manifest)), deadline)
+    reached.push(await operandsAtRealCredentialPaths(script.operands, join(workspaceOnDisk, dirname(script.manifest)), deadline))
   }
+  const operandsReach = reached.some(({ reach }) => reach)
 
   // The record's own paths are relative to the worktree's real path.
   const recordNames = executionRecordPaths(execution).some((path) => (
     namesSecretPath(path) || namesSecretPath(join(workspaceOnDisk, path))
   ))
 
-  let facts: { affects: string; network: string; redacted: boolean; sensitive: boolean }
+  let facts: { affects: string; network: string; redacted: boolean; sensitive: boolean; hiddenPaths: string[] }
   if (request.path !== undefined) {
     facts = approvalFacts({
       path: request.path,
@@ -247,7 +304,13 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
     const affects = redactDurableText(saved.affects)
     const line = await savedApprovalAffects(affects.value, request.workspace, deadline)
     const network = redactDurableText(saved.network)
-    facts = { affects: line.text, network: network.value, redacted: affects.redacted || network.redacted, sensitive: line.sensitive }
+    facts = {
+      affects: line.text,
+      network: network.value,
+      redacted: affects.redacted || network.redacted,
+      sensitive: line.sensitive,
+      hiddenPaths: line.hiddenPaths,
+    }
   } else {
     facts = approvalFacts({ workspace: request.workspace, cwd: request.cwd, scope: input.scope })
   }
@@ -257,6 +320,17 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
 
   const command = redactDurableCommand(request.command ?? commandUnavailable)
   const operation = redactDurableText(request.reason ?? "Run a command")
+  // Each path the card hides is replaced in its own text too, and a record
+  // that holds one in a command word is hidden.
+  const hider = pathHider([
+    ...(directory.sensitive && !directoryHidden
+      ? directoryPaths(request, typeof realDirectory === "string" ? realDirectory : undefined)
+      : []),
+    ...facts.hiddenPaths,
+    ...operands.filter(isCredentialPath),
+    ...reached.flatMap(({ paths }) => paths),
+  ])
+  const recordHoldsHiddenPath = executionRecordText(execution).some(hider.holds)
   const recordSecret = executionContainsSecret(execution)
   const sensitive = command.redacted
     || operation.redacted
@@ -276,13 +350,14 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
   const hideRecord = directory.sensitive
     || recordNames
     || recordSecret
+    || recordHoldsHiddenPath
     || !recordMatches
     || (saved !== undefined && sensitive)
   const approval = mint({
     ...input.approval,
     risk: sensitive || !recordMatches ? "hard-gate" : input.risk(execution),
-    operation: operation.value,
-    command: command.value,
+    operation: hider.hide(operation.value),
+    command: hider.hide(command.value),
     directory: directory.text,
     affects: facts.affects,
     network: facts.network,
@@ -345,12 +420,19 @@ export function sealedApproval(approval: Approval, workspace: string | undefined
   if (workspace !== undefined) {
     return sealedCard(savedSettlementInput(approval, workspace, undefined, () => "hard-gate"))
   }
+  const directoryWasHidden = approval.directory.includes("[REDACTED]")
+  const command = redactDurableCommand(approval.command).value
+  const hider = pathHider([
+    ...(directoryWasHidden ? [] : [approval.directory]),
+    ...affectsLinePaths(redactDurableText(approval.affects).value),
+    ...commandOperands(command).filter(isCredentialPath),
+  ])
   return mint({
     ...approval,
     risk: "hard-gate",
-    operation: redactDurableText(approval.operation).value,
-    command: redactDurableCommand(approval.command).value,
-    directory: approval.directory.includes("[REDACTED]") ? approval.directory : hiddenDirectory(false),
+    operation: hider.hide(redactDurableText(approval.operation).value),
+    command: hider.hide(command),
+    directory: directoryWasHidden ? approval.directory : hiddenDirectory(false),
     affects: hiddenAffects(redactDurableText(approval.affects).value),
     network: redactDurableText(approval.network).value,
     execution: hiddenExecution,
