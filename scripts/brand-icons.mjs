@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Generates the app icon, the Android adaptive foreground, the splash screens and the favicon
-// from assets/mark*.svg. Nothing here is hand drawn: geometry comes from Domovoi App Icon.dc.html
+// from design/assets/mark*.svg. Nothing here is hand drawn: geometry comes from Domovoi App Icon.dc.html
 // (mark at 60% of the tile, full-bleed square, no baked radius, no glow, no shadow, no alpha)
 // and the colours come from design/design_system_domovoi/tokens/colors.css.
 //
@@ -10,9 +10,19 @@
 
 import { execFileSync } from "node:child_process"
 import { createRequire } from "node:module"
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from "node:fs"
+import {
+  accessSync,
+  constants,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { dirname, join, relative, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
@@ -36,8 +46,11 @@ const MARK_FRACTION = 0.6
 
 export function findChromium(candidates = CHROMIUM_CANDIDATES) {
   for (const candidate of candidates) {
+    // statSync and accessSync work on every platform, unlike a shelled `test -x`, and a
+    // directory (a CHROMIUM pointing at the .app bundle) passes an execute check but cannot run.
     try {
-      execFileSync("test", ["-x", candidate])
+      if (!statSync(candidate).isFile()) continue
+      accessSync(candidate, constants.X_OK)
       return candidate
     } catch {
       continue
@@ -59,16 +72,29 @@ export function markPage({ size, mark, ink, ground, fraction }) {
   </style><span></span>`
 }
 
+// The render must not touch the network or a real browser profile. Headless mode already runs
+// on a temporary profile it deletes on exit; an explicit fresh --user-data-dir made Brave 1.95
+// hang before the screenshot, so none is passed. The background services that phone home are
+// off, every host name fails to resolve, and all traffic goes to a proxy on a closed port, so
+// anything that still starts cannot fetch.
 export function chromiumArgs({ html, shot, size, transparent = false }) {
   return [
     "--headless=new",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-networking",
+    "--disable-component-update",
+    "--disable-sync",
+    "--disable-extensions",
+    "--host-resolver-rules=MAP * ~NOTFOUND",
+    "--proxy-server=http://127.0.0.1:9",
     "--disable-gpu",
     "--hide-scrollbars",
     "--force-device-scale-factor=1",
     `--window-size=${size},${size}`,
     ...(transparent ? ["--default-background-color=00000000"] : []),
     `--screenshot=${shot}`,
-    `file://${html}`,
+    pathToFileURL(html).href,
   ]
 }
 
@@ -81,7 +107,7 @@ function render(page, size, out, { transparent = false } = {}) {
   mkdirSync(dirname(out), { recursive: true })
   copyFileSync(shot, out)
   rmSync(scratch, { recursive: true, force: true })
-  console.log(`${out.replace(`${root}/`, "")} ${size}x${size}`)
+  console.log(`${relative(root, out)} ${size}x${size}`)
 }
 
 export const targets = [
