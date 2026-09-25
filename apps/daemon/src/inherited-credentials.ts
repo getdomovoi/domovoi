@@ -13,10 +13,13 @@ import { configuredProfileDirectory, profileDirectory, profileLocation } from ".
 // falling through to a different credential.
 //
 // The kept values belong to the profile directory the process environment
-// named when it carried them, pinned at that moment by device and inode. A
-// profile path that later leads somewhere else, such as a retargeted symlink,
-// is another profile. A directory that does not exist yet is pinned by its
-// canonical path until it first matches, then by device and inode. Only a
+// named when it carried them, pinned at that moment by device, inode and
+// canonical path. A profile path that later leads somewhere else, such as a
+// retargeted symlink, is another profile, and so is a directory at another
+// path that reports the same device and inode, as a new directory can when a
+// filesystem such as ext4 gives it the inode number of one just deleted. A
+// directory that does not exist yet is pinned by its canonical path until it
+// first matches, then by device, inode and canonical path. Only a
 // later read of process.env itself for the same profile gets the values back.
 // Another profile loads its own credential, and an environment the caller
 // built itself is read as given.
@@ -24,7 +27,7 @@ import { configuredProfileDirectory, profileDirectory, profileLocation } from ".
 const inheritedNames = ["DOMOVOI_AUTH_TOKEN", "DOMOVOI_CREDENTIAL_PATH", "DOMOVOI_RELAY_CREDENTIAL_FILE"] as const
 
 type ProfileIdentity =
-  | { kind: "inode"; dev: bigint; ino: bigint }
+  | { kind: "inode"; dev: bigint; ino: bigint; path: string }
   | { kind: "path"; path: string }
 
 type KeptCredentials = {
@@ -33,6 +36,13 @@ type KeptCredentials = {
 }
 
 const kept: KeptCredentials[] = []
+
+// Test-only. Each test file shares this module across its tests, and a test
+// that deletes its profile directory would otherwise leave an entry pinned to
+// a directory that no longer exists.
+export function resetKeptCredentialsForTests(): void {
+  kept.length = 0
+}
 
 function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === "ENOENT"
@@ -61,9 +71,13 @@ function canonicalMissingPath(directory: string): string {
 function profileIdentity(profileSetting: string | undefined, homeDirectory: string): ProfileIdentity | undefined {
   try {
     const directory = profileDirectory(profileLocation(homeDirectory, configuredProfileDirectory(profileSetting, homeDirectory)))
+    // Birth time is not part of the identity. Where statx is unavailable,
+    // libuv reports the change time as birth time, and the change time moves
+    // whenever a file is added to the directory, so the daemon writing its own
+    // credential would make the profile stop matching itself.
     try {
       const stats = statSync(directory, { bigint: true })
-      return { kind: "inode", dev: stats.dev, ino: stats.ino }
+      return { kind: "inode", dev: stats.dev, ino: stats.ino, path: realpathSync.native(directory) }
     } catch (error) {
       if (!isMissing(error)) return undefined
       return { kind: "path", path: canonicalMissingPath(directory) }
@@ -74,7 +88,7 @@ function profileIdentity(profileSetting: string | undefined, homeDirectory: stri
 }
 
 function sameIdentity(left: ProfileIdentity, right: ProfileIdentity): boolean {
-  if (left.kind === "inode" && right.kind === "inode") return left.dev === right.dev && left.ino === right.ino
+  if (left.kind === "inode" && right.kind === "inode") return left.dev === right.dev && left.ino === right.ino && left.path === right.path
   return left.kind === "path" && right.kind === "path" && left.path === right.path
 }
 
@@ -116,13 +130,7 @@ function keptFor(environment: NodeJS.ProcessEnv, homeDirectory: string): KeptCre
   if (identity === undefined) return undefined
   const entry = kept.find((candidate) => sameIdentity(candidate.identity, identity))
   if (entry || identity.kind !== "inode") return entry
-  let path: string
-  try {
-    path = realpathSync.native(profileDirectory(profileLocation(homeDirectory, configuredProfileDirectory(environment.DOMOVOI_PROFILE_DIR, homeDirectory))))
-  } catch {
-    return undefined
-  }
-  const pending = kept.find((candidate) => candidate.identity.kind === "path" && candidate.identity.path === path)
+  const pending = kept.find((candidate) => candidate.identity.kind === "path" && candidate.identity.path === identity.path)
   if (pending) pending.identity = identity
   return pending
 }

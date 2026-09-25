@@ -14,6 +14,7 @@ import {
   type ProductionDaemonHandle,
   type ProductionDaemonRuntime,
 } from "./production-daemon.js"
+import { resetKeptCredentialsForTests } from "./inherited-credentials.js"
 import { MachineCredentialStore, type MachineKeyring } from "./machine-credentials.js"
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { DomovoiDaemon, type DaemonServerOptions } from "./server.js"
@@ -24,6 +25,9 @@ const running: ProductionDaemonHandle[] = []
 
 afterEach(async () => {
   await Promise.allSettled(running.splice(0).map((daemon) => daemon.stop()))
+  // A kept bearer is pinned to a profile directory this hook is about to
+  // delete. Forget it so no later test can match it.
+  resetKeptCredentialsForTests()
   await removeScratchDirectories(roots)
 })
 
