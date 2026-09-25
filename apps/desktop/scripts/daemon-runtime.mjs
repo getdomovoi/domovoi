@@ -183,6 +183,7 @@ export async function deployDaemon({ repositoryRoot, destination, run = execute 
 // file can become a link between the two. That narrows the race without
 // closing it; assertShippedTreeContained is the check that decides.
 export async function removeExternalLinks(path, root) {
+  await refuseLinkedRoot(root)
   const inside = `${await realpath(root)}${sep}`
   let removed = 0
   for (const name of await readdir(path)) {
@@ -222,13 +223,29 @@ export async function removeDanglingLinks(path) {
   return removed
 }
 
+// A tree root that is a link would make its target the base every check
+// measures against, so a tree outside the runtime directory would pass.
+async function refuseLinkedRoot(root) {
+  const entry = await lstat(root)
+  if (entry.isSymbolicLink()) throw new Error(`${root} is a symbolic link. The runtime tree root must be a real directory; nothing was checked.`)
+  if (!entry.isDirectory()) throw new Error(`${root} is not a directory. Nothing was checked.`)
+}
+
 // The check that decides whether the runtime ships: every link in the final
 // tree is relative, stays inside the tree at every step of its path (so a
 // verbatim copy elsewhere resolves the same way), and resolves to something
 // inside the tree now. Throws naming each link that fails; returns the number
 // of links checked.
+//
+// Ruled limit (owner, 2026-09-25): another process running as the same user
+// on the build machine during packaging is outside the threat model; it could
+// already change these scripts or the finished app. Such a process can still
+// race this walk. A directory replaced by a link after its lstat is followed,
+// and that link is not reported. The walk reads each entry once and does not
+// try to close that race.
 export async function assertShippedTreeContained(root) {
   const base = resolve(root)
+  await refuseLinkedRoot(base)
   const inside = `${await realpath(base)}${sep}`
   const failures = []
   let links = 0

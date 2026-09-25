@@ -377,3 +377,22 @@ test("the final check refuses a shipped tree with any link that leaves it, and p
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test("refuses a runtime tree root that is itself a link, before walking it", async () => {
+  const { assertShippedTreeContained, removeExternalLinks } = await import("./daemon-runtime.mjs")
+  const { mkdir, symlink } = await import("node:fs/promises")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-root-link-"))
+  try {
+    // The root link points at a tree outside the runtime directory that holds
+    // no links at all, so a walk from the resolved root finds nothing wrong.
+    const outside = join(root, "outside")
+    await mkdir(join(outside, "node", "bin"), { recursive: true })
+    await writeFile(join(outside, "node", "bin", "node"), "a program from outside the build")
+    const runtime = join(root, "runtime")
+    await symlink(outside, runtime, "dir")
+    await assert.rejects(assertShippedTreeContained(runtime), /runtime is a symbolic link/)
+    await assert.rejects(removeExternalLinks(runtime, runtime), /runtime is a symbolic link/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
