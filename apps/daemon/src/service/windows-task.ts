@@ -130,8 +130,8 @@ const windowsTaskActionSchema = z.object({
 export type WindowsTaskAction = z.infer<typeof windowsTaskActionSchema>
 
 // The program and arguments the task runs now, read through the typed Task
-// Scheduler API, so an update can register the same command again if the new
-// one does not run.
+// Scheduler API, so a caller can tell whether Domovoi registered it, and so
+// an update can register the same command again if the new one does not run.
 export async function readWindowsTaskAction(name: string, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<WindowsTaskAction | "missing"> {
   const command = taskCommand(windowsPowerShellPath(), name, `
 if ($task.Definition.Actions.Count -ne 1) { throw 'The task does not run exactly one program' }

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { ProfileAlreadyOwnedError } from "../profile-lease.js"
 import {
@@ -6,10 +6,13 @@ import {
   installDaemonService,
   readDaemonServiceStatus,
   removeDaemonService,
+  WindowsTaskNotDomovoiError,
+  WindowsTaskPercentSignError,
   type DaemonServiceDependencies,
 } from "../public.js"
-import { parseServiceConfiguration } from "./configuration.js"
+import { createServiceConfiguration, parseServiceConfiguration } from "./configuration.js"
 import type { ServiceEffects } from "./install.js"
+import { ServiceOperationBusyError } from "./operation-lease.js"
 
 // The desktop installs a service that runs the Node and daemon it ships, so
 // the daemon keeps running after the app quits. It passes the two paths; the
@@ -161,5 +164,154 @@ describe("readDaemonServiceStatus and removeDaemonService", () => {
       kind: "file", path: "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist", profileRecovery: "not-needed",
     })
     expect(effects.run).toHaveBeenCalledWith("launchctl", ["bootout", "gui/501/sh.domovoi.domovoid"], expect.anything())
+  })
+})
+
+// Security review round 1 on #574. Each case below was a refusal, a command
+// line or a report the review showed wrong at b61813a2.
+const windowsHome = "C:\\Users\\dl"
+const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime\\daemon\\index.js" }
+const windowsConfigurationPath = "C:\\Users\\dl\\.domovoi\\service.json"
+
+function windowsDependencies(overrides: Partial<DaemonServiceDependencies & ServiceEffects> = {}) {
+  return dependencies({ platform: "win32", home: windowsHome, user: "dl", ...overrides })
+}
+
+function createdTaskCommand(effects: ServiceEffects): string {
+  const created = vi.mocked(effects.run).mock.calls.find(([, args]) => args[0] === "/create")![1]
+  return created[created.indexOf("/tr") + 1]!
+}
+
+describe("security review round 1: the handoff waits for the operation lease", () => {
+  it("never releases the in-app daemon when another service operation holds the lease", async () => {
+    const releaseInAppDaemon = vi.fn(async () => {})
+    const effects = dependencies({ claimServiceOperation: vi.fn(() => { throw new ServiceOperationBusyError("/Users/dl/.domovoi/service-operation-lease.sqlite") }) })
+    await expect(installDaemonService({ runtime, releaseInAppDaemon }, effects)).rejects.toBeInstanceOf(ServiceOperationBusyError)
+    expect(releaseInAppDaemon).not.toHaveBeenCalled()
+    expect(effects.claimProfile).not.toHaveBeenCalled()
+    expect(effects.write).not.toHaveBeenCalled()
+  })
+
+  it("never releases the in-app daemon when the saved registration cannot be read", async () => {
+    const releaseInAppDaemon = vi.fn(async () => {})
+    const effects = dependencies({ registeredProfile: vi.fn(() => { throw new Error("service.json is not a Domovoi service configuration") }) })
+    await expect(installDaemonService({ runtime, releaseInAppDaemon }, effects)).rejects.toThrow(/not a Domovoi service configuration/)
+    expect(releaseInAppDaemon).not.toHaveBeenCalled()
+    expect(effects.claimProfile).not.toHaveBeenCalled()
+  })
+
+  it("releases once, inside the operation lease and before the profile is claimed", async () => {
+    const order: string[] = []
+    const releaseInAppDaemon = vi.fn(async () => { order.push("release") })
+    const effects = dependencies({
+      claimServiceOperation: vi.fn(() => { order.push("operation"); return { release: vi.fn(() => { order.push("operation released") }) } }),
+      claimProfile: vi.fn(() => { order.push("profile"); return { release: vi.fn() } }),
+    })
+    await installDaemonService({ runtime, releaseInAppDaemon }, effects)
+    expect(releaseInAppDaemon).toHaveBeenCalledOnce()
+    expect(order.slice(0, 3)).toEqual(["operation", "release", "profile"])
+    expect(order.at(-1)).toBe("operation released")
+  })
+})
+
+describe("security review round 1: the Windows task command", () => {
+  // Task Scheduler expands %NAME% in an action's program and arguments when
+  // the task runs, so a path that contains a percent sign would not name the
+  // file that was checked.
+  it("refuses a percent sign in any path the task runs, before the handoff", async () => {
+    for (const [runtimePaths, home] of [
+      [{ ...windowsRuntime, nodePath: "C:\\Program Files\\%ODD%\\node.exe" }, windowsHome],
+      [{ ...windowsRuntime, daemonEntryPath: "C:\\Program Files\\Domovoi\\%ODD%\\index.js" }, windowsHome],
+      [windowsRuntime, "C:\\Users\\%ODD%"],
+    ] as const) {
+      const releaseInAppDaemon = vi.fn(async () => {})
+      const effects = windowsDependencies({ home })
+      const refused = installDaemonService({ runtime: runtimePaths, releaseInAppDaemon }, effects)
+      await expect(refused).rejects.toBeInstanceOf(WindowsTaskPercentSignError)
+      await expect(refused).rejects.toThrow(/percent sign/)
+      expect(releaseInAppDaemon).not.toHaveBeenCalled()
+      expect(effects.claimServiceOperation).not.toHaveBeenCalled()
+      expect(effects.write).not.toHaveBeenCalled()
+      expect(effects.run).not.toHaveBeenCalled()
+    }
+  })
+
+  it("runs an extensionless daemon entry through the shipped node.exe", async () => {
+    const effects = windowsDependencies()
+    const extensionless = { ...windowsRuntime, daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime\\daemon\\domovoid" }
+    await installDaemonService({ runtime: extensionless }, effects)
+    expect(createdTaskCommand(effects)).toBe(
+      `"${extensionless.nodePath}" "${extensionless.daemonEntryPath}" --service-config "${windowsConfigurationPath}"`,
+    )
+  })
+})
+
+// A fake Task Scheduler behind the PowerShell bridge: one task, with the
+// program and arguments it runs, whether it is enabled and running.
+function taskScheduler(task: { path: string; arguments: string } | undefined) {
+  const state = { registered: task !== undefined, enabled: true, running: true, stopIssued: false, deleted: false }
+  const capture = vi.fn(async (_command: string, args: string[]) => {
+    const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+    if (!state.registered) return { code: 0, stdout: "domovoi-task:missing\r\n" }
+    if (script.includes("domovoi-task-action:")) {
+      return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ path: task!.path, arguments: task!.arguments, enabled: state.enabled, state: state.running ? 4 : state.enabled ? 3 : 1 })}\r\n` }
+    }
+    if (script.includes("$task.Enabled = $false")) { state.enabled = false; state.stopIssued = true }
+    if (script.includes("$task.Stop(0)")) state.running = false
+    if (script.includes("$folder.DeleteTask(")) {
+      state.registered = false
+      state.deleted = true
+      return { code: 0, stdout: "domovoi-task:deleted\r\n" }
+    }
+    return { code: 0, stdout: `domovoi-task:${state.running ? 4 : state.enabled ? 3 : 1}\r\n` }
+  })
+  return { state, capture }
+}
+
+const domovoiTask = { path: `"${windowsRuntime.nodePath}"`, arguments: `"${windowsRuntime.daemonEntryPath}" --service-config "${windowsConfigurationPath}"` }
+const savedConfiguration = { ...createServiceConfiguration({}, { platform: "win32", homeDirectory: windowsHome, workingDirectory: windowsHome }), registrationId: "5f0c7a9e-8a3b-4d1e-9c2f-0a1b2c3d4e5f" }
+
+describe("security review round 1: a same-named Windows task is not Domovoi's", () => {
+  beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
+  afterEach(() => { vi.unstubAllEnvs() })
+
+  it("does not report a task with no Domovoi registration as installed", async () => {
+    for (const [task, saved] of [
+      [{ path: "C:\\Tools\\other.exe", arguments: "--serve" }, undefined],
+      [domovoiTask, undefined],
+      [{ path: "C:\\Tools\\other.exe", arguments: "--serve" }, savedConfiguration],
+      [{ ...domovoiTask, arguments: `"${windowsRuntime.daemonEntryPath}" --service-config "C:\\Users\\dl\\elsewhere.json"` }, savedConfiguration],
+    ] as const) {
+      const scheduler = taskScheduler(task)
+      const effects = windowsDependencies({ capture: scheduler.capture, readConfiguration: vi.fn(() => saved) })
+      expect(await readDaemonServiceStatus(effects)).toMatchObject({ installed: false, running: false })
+    }
+  })
+
+  it("refuses to stop or delete a task with no Domovoi registration", async () => {
+    const scheduler = taskScheduler({ path: "C:\\Tools\\other.exe", arguments: "--serve" })
+    const effects = windowsDependencies({ capture: scheduler.capture, readConfiguration: vi.fn(() => undefined) })
+    const refused = removeDaemonService(effects)
+    await expect(refused).rejects.toBeInstanceOf(WindowsTaskNotDomovoiError)
+    await expect(refused).rejects.toThrow(/Domovoi did not register/)
+    expect(scheduler.state).toMatchObject({ registered: true, enabled: true, running: true, stopIssued: false, deleted: false })
+    expect(effects.remove).not.toHaveBeenCalled()
+    expect(effects.claimProfile).not.toHaveBeenCalled()
+  })
+
+  it("reports and removes the task Domovoi registered", async () => {
+    const scheduler = taskScheduler(domovoiTask)
+    const effects = windowsDependencies({ capture: scheduler.capture, readConfiguration: vi.fn(() => savedConfiguration) })
+    expect(await readDaemonServiceStatus(effects)).toMatchObject({ installed: true, running: true })
+    expect(await removeDaemonService(effects)).toMatchObject({ kind: "task", name: "Domovoi daemon" })
+    expect(scheduler.state).toMatchObject({ registered: false, deleted: true })
+    expect(effects.remove).toHaveBeenCalledWith(windowsConfigurationPath, expect.anything())
+  })
+
+  it("still reports and removes nothing when no task is registered", async () => {
+    const scheduler = taskScheduler(undefined)
+    const effects = windowsDependencies({ capture: scheduler.capture, readConfiguration: vi.fn(() => savedConfiguration) })
+    expect(await readDaemonServiceStatus(effects)).toMatchObject({ installed: false, running: false })
+    expect(await removeDaemonService(effects)).toMatchObject({ kind: "task" })
   })
 })

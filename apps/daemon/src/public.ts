@@ -33,4 +33,6 @@ export {
   type DaemonServiceUpdateOptions,
   type DaemonServiceUpdateOutcome,
   type RuntimeFileState,
+  WindowsTaskNotDomovoiError,
+  WindowsTaskPercentSignError,
 } from "./service/desktop-service.js"
