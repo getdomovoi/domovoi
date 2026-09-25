@@ -1,6 +1,6 @@
 import { WebSocket } from "ws"
 
-import { buildVersion, protocolVersion } from "@getdomovoi/protocol"
+import { buildVersion, maximumRpcMessageBytes, protocolVersion } from "@getdomovoi/protocol"
 
 import { OperationDeadline, OperationDeadlineExceededError } from "./operation-deadline.js"
 
@@ -167,6 +167,39 @@ export async function callDaemonOnce(input: {
     // caller clears its deadline, keeping an answered CLI process alive. Drop
     // the transport on both outcomes, including an unfinished TLS handshake.
     socket.terminate()
+  }
+}
+
+// One bounded exchange whose connection stays open after the reply, for a
+// call whose effect lasts as long as the connection does (the service handoff
+// fence). The caller closes it; a refusal or an expired deadline closes it
+// here. The reply limit is the daemon's own message limit, because the daemon
+// broadcasts on this socket while it is held and a larger frame would close it.
+export async function callDaemonHeld(input: {
+  target: CliRpcTarget
+  token: string
+  method: string
+  params: Record<string, unknown>
+  deadline: OperationDeadline
+}): Promise<{ result: unknown; close: () => void }> {
+  input.deadline.throwIfExpired()
+  const address = describedAddress(input.target)
+  const socket = new WebSocket(endpointUrl(input.target), {
+    headers: { authorization: `Bearer ${input.token}` },
+    maxPayload: maximumRpcMessageBytes,
+    followRedirects: false,
+  })
+  socket.on("error", () => {})
+  try {
+    await awaitOpen(socket, input.deadline, address)
+    await exchange(socket, input.deadline, address, helloRequestId, "system.hello", {
+      client: "cli", clientVersion: buildVersion, protocolVersion,
+    })
+    const result = await exchange(socket, input.deadline, address, callRequestId, input.method, input.params)
+    return { result, close: () => socket.terminate() }
+  } catch (error) {
+    socket.terminate()
+    throw error
   }
 }
 

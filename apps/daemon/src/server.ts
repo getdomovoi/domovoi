@@ -32,6 +32,7 @@ import {
   daemonShuttingDownErrorCode,
   isRefusedWithoutPersistence,
   phoneAndTabletRpcMethods,
+  serviceHandoffRefusal,
   demoWorkspace,
   maximumTerminalOutputChunkCharacters,
   terminalOutputBatchDelayMilliseconds,
@@ -286,6 +287,11 @@ export const maximumAuthenticationPayloadBytes = 4 * 1_024
 // so it stops accepting work that would deepen the gap.
 export const persistenceFailureThreshold = 3
 export const persistenceUnavailableContext = "Domovoi can no longer persist state"
+// COPY PLACEHOLDER (security review round 1 of #576, awaiting the owner's
+// ruling): the answer to a turn asked for while the desktop holds the service
+// handoff fence. The state is true; the words are not approved.
+export const serviceHandoffFencedMessage =
+  "[Copy pending] The daemon is moving to or from the login service, so no new turn starts until the switch finishes or stops. Nothing is interrupted."
 export const persistenceUnavailableMessage =
   "Daemon cannot persist state, so changes are refused"
 
@@ -1371,6 +1377,10 @@ export class DomovoiDaemon {
   #inFlightProviderThreads = new Map<string, string>()
   #emergencyStopTail: Promise<unknown> = Promise.resolve()
   #emergencyStopInProgress = false
+  // J24 (security review round 1 of #576): the loopback daemon-credential
+  // connection holding the service handoff fence. While it is set no turn is
+  // dispatched; it lifts when that connection closes.
+  #serviceHandoffFence: RpcOutboundSocket | undefined
   #stopping = false
   #stopped = false
   #stopPromise: Promise<void> | undefined
@@ -1842,6 +1852,9 @@ export class DomovoiDaemon {
         this.#rpcClients.delete(socket)
         this.#rpcOutbound.forget(socket)
         this.#releaseTerminalOwnership(socket)
+        // A stopping daemon keeps the fence: its sockets close before it has
+        // finished, and no turn may start in that gap either.
+        if (this.#serviceHandoffFence === socket && !this.#stopping) this.#serviceHandoffFence = undefined
       })
       socket.on("error", (error: Error & { code?: string }) => {
         if (error.code !== "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH") {
@@ -3824,6 +3837,9 @@ export class DomovoiDaemon {
         || request.method === "fleet.forget"
         || request.method === "device.revokeCurrent"
         || request.method === "system.emergencyStop"
+        // Answered at once: queued behind a dispatch it would only learn late
+        // what the in-flight set already says.
+        || request.method === "system.serviceHandoffFence"
     } catch {
       return false
     }
@@ -4641,6 +4657,31 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(result),
+        })
+        return
+      }
+      if (method === "system.serviceHandoffFence") {
+        const peer = this.#socketSources.get(socket)
+        const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1"
+        if (!loopback || socket instanceof DaemonRelaySocket || authenticatedActor?.kind !== "client"
+          || this.#deviceCredentials.has(socket)) {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, "The service handoff fence requires a loopback local-owner connection")
+          return
+        }
+        if (this.#serviceHandoffFence) {
+          this.#error(socket, request.id, invalidParams, "A service handoff fence is already held")
+          return
+        }
+        // Checked and set in one synchronous step: session.send checks the
+        // fence in the same step that marks its dispatch in flight, so either
+        // the fence sees the dispatch or the dispatch sees the fence.
+        const refusal = this.#serviceHandoffRefusal()
+        if (refusal === undefined) this.#serviceHandoffFence = socket
+        else this.#amendPendingAudit(socket, request.id, { outcome: "denied" })
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(refusal === undefined ? { outcome: "fenced" } : { outcome: "refused", refusal }),
         })
         return
       }
@@ -7745,6 +7786,10 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Emergency stop is in progress")
           return
         }
+        if (this.#serviceHandoffFence) {
+          this.#error(socket, request.id, invalidParams, serviceHandoffFencedMessage)
+          return
+        }
         this.#emergencyBlockedThreads.delete(emergencyThread)
         this.#inFlightProviderThreads.set(emergencyThread, session.id)
         let agent: AgentAdapter
@@ -8964,6 +9009,19 @@ export class DomovoiDaemon {
     return [...this.#commandOutputRedactors]
       .filter(([key]) => key.startsWith(prefix))
       .map(([key, stream]) => ({ key, itemId: stream.itemId, remainder: stream.redactor.peek() }))
+  }
+
+  // The renderer's check, applied to what the daemon itself holds: turns with
+  // an active id, dispatches not yet answered by the provider, and waiting
+  // gates. A dispatch in flight is named as a running turn.
+  #serviceHandoffRefusal(): string | undefined {
+    const dispatching = new Set(this.#inFlightProviderThreads.values())
+    return serviceHandoffRefusal({
+      sessions: this.#snapshot.sessions.map((session) => session.activeTurnId || dispatching.has(session.id)
+        ? { ...session, state: "active" as const, activeTurnId: session.activeTurnId ?? "dispatching" }
+        : session),
+      approvals: this.#snapshot.approvals,
+    })
   }
 
   #enqueueEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
