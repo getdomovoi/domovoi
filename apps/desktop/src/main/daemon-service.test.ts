@@ -363,6 +363,42 @@ describe("staging the shipped runtime under the profile", () => {
     })
   })
 
+  // Security review round 2 of #576. A durable rename renames, then flushes
+  // the directory, and the flush can throw after the move is done. The rule:
+  // a staging that reports failure leaves the version path as it was before,
+  // the earlier copy there or nothing there. What moved is read back from the
+  // disk, not inferred from which call threw.
+  const syncFailsAfter = (step: string) => async (from: string, to: string) => {
+    await rename(from, to)
+    if (from.includes(step) || to.includes(step)) throw new Error("simulated directory sync failure")
+  }
+
+  it("puts the earlier copy back when the flush after moving it aside fails", async () => {
+    await withScratch(async ({ resources, home }) => {
+      const earlier = join(home, ".domovoi", "runtime", "0.9.4")
+      await mkdir(join(earlier, "daemon", "dist"), { recursive: true })
+      await writeFile(join(earlier, "daemon", "dist", "index.js"), "earlier")
+      await expect(stage({ resources, home, version: "0.9.4", rename: syncFailsAfter(".previous-") })).rejects.toThrow("simulated directory sync failure")
+      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
+      expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual(["0.9.4"])
+    })
+  })
+
+  it("does not leave the new copy published when the flush after publishing it fails", async () => {
+    await withScratch(async ({ resources, home }) => {
+      const earlier = join(home, ".domovoi", "runtime", "0.9.4")
+      await mkdir(join(earlier, "daemon", "dist"), { recursive: true })
+      await writeFile(join(earlier, "daemon", "dist", "index.js"), "earlier")
+      await expect(stage({ resources, home, version: "0.9.4", rename: syncFailsAfter(".staging-") })).rejects.toThrow("simulated directory sync failure")
+      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
+      expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual(["0.9.4"])
+    })
+    await withScratch(async ({ resources, home }) => {
+      await expect(stage({ resources, home, version: "0.9.4", rename: syncFailsAfter(".staging-") })).rejects.toThrow("simulated directory sync failure")
+      expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual([])
+    })
+  })
+
   it("names the missing shipped part before copying anything", async () => {
     await withScratch(async ({ resources, home }) => {
       const nodePath = daemonRuntimeLayout(resources, platform).nodePath

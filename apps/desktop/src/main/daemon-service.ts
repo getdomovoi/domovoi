@@ -214,7 +214,13 @@ async function runtimeRoot(fs: RuntimeFileSystem, pathApi: typeof posix, home: s
 // half-shipped app or a redirected profile installs nothing. The copy is made
 // in a fresh directory beside the destination. An earlier copy of the same
 // version is moved aside, the new one renamed into place, and only then the
-// earlier one deleted: a failed rename puts it back, so it is never lost.
+// earlier one deleted.
+//
+// Security review round 2: a durable rename moves, then flushes the directory,
+// and the flush can throw after the move is done. The rule: a staging that
+// reports failure leaves the version path as it was before, with the earlier
+// copy there or nothing there. What moved is read back from the disk, never
+// inferred from which call threw.
 export async function stageDaemonRuntime(input: {
   resourcesPath: string
   home: string
@@ -237,26 +243,34 @@ export async function stageDaemonRuntime(input: {
   try {
     await fs.copy(shippedRoot, staging)
     if (earlier === "directory") await fs.rename(destination, aside)
-    try {
-      await fs.rename(staging, destination)
-    } catch (cause) {
-      // If putting it back fails too, the earlier copy stays at `aside`, and
-      // the failure reported is the one that stopped the publish.
-      if (earlier === "directory") await fs.rename(aside, destination).catch(() => {})
-      throw cause
-    }
-    if (earlier === "directory") {
-      // The new copy is in place. An earlier copy left behind here is only
-      // disk space, never something the service runs.
-      await fs.remove(aside).catch(() => {})
-    }
+    await fs.rename(staging, destination)
+  } catch (cause) {
+    await restoreVersionPath(fs, { destination, aside, hadEarlier: earlier === "directory" })
+    throw cause
   } finally {
     await fs.remove(staging)
+  }
+  if (earlier === "directory") {
+    // The new copy is in place. An earlier copy left behind here is only
+    // disk space, never something the service runs.
+    await fs.remove(aside).catch(() => {})
   }
   return {
     nodePath: input.platform === "win32" ? pathApi.join(destination, "node", "node.exe") : pathApi.join(destination, "node", "bin", "node"),
     daemonEntryPath: pathApi.join(destination, "daemon", "dist", "index.js"),
   }
+}
+
+// Undo whatever part of a failed publish completed. The version path was
+// either the earlier copy or empty before; a directory there now that is not
+// the earlier copy is the new one, published by a rename whose flush threw.
+// Each step's error is ignored and the next state read from disk instead. If
+// the earlier copy cannot be put back, it stays at `aside`.
+async function restoreVersionPath(fs: RuntimeFileSystem, paths: { destination: string; aside: string; hadEarlier: boolean }): Promise<void> {
+  const settled = async (step: () => Promise<void>) => { try { await step() } catch { /* read back below */ } }
+  if (paths.hadEarlier && await fs.entry(paths.aside) === "missing") return
+  if (await fs.entry(paths.destination) !== "missing") await settled(() => fs.remove(paths.destination))
+  if (paths.hadEarlier && await fs.entry(paths.destination) === "missing") await settled(() => fs.rename(paths.aside, paths.destination))
 }
 
 function message(cause: unknown): string {
