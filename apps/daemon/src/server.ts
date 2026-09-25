@@ -1226,6 +1226,8 @@ export type DaemonServerOptions = {
   host?: string
   port?: number
   allowedOrigins?: string[]
+  // The web app a pairing code can be opened in, when the owner set one.
+  webAppUrl?: string
   statePath?: string
   manageStateDirectoryPermissions?: boolean
   store?: WorkspaceStore
@@ -1349,6 +1351,7 @@ export class DomovoiDaemon {
   readonly host: string
   readonly requestedPort: number
   readonly allowedOrigins: ReadonlySet<string>
+  readonly #webAppUrl: string | undefined
   #http: HttpServer | undefined
   #websocket: WebSocketServer | undefined
   #rpcClients = new Set<RpcOutboundSocket>()
@@ -1579,6 +1582,7 @@ export class DomovoiDaemon {
     if (!isLoopbackHost(this.host) && !options.allowRemoteTransport) {
       throw new Error("Non-loopback listeners require explicit protected-transport opt-in")
     }
+    this.#webAppUrl = options.webAppUrl
     this.allowedOrigins = new Set(
       options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://", "domovoi-app://desktop"],
     )
@@ -6194,6 +6198,7 @@ export class DomovoiDaemon {
           result: rpcMethods[method].result.parse({
             ...this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
             pairingAddress: this.#pairingAddress(),
+            ...(this.#webAppUrl ? { webAppUrl: this.#webAppUrl } : {}),
           }),
         })
         return

@@ -61,4 +61,18 @@ describe("the address an issued pairing code names", () => {
     // The code itself is still issued: the problem is the address, not the pairing.
     expect(issued.code).toMatch(/\w+-\w+/)
   })
+
+  it("carries the web app address when the daemon has one, and omits it otherwise", async () => {
+    const configured = new DomovoiDaemon({ port: 0, statePath: ":memory:", webAppUrl: "https://app.domovoi.dev/connect" })
+    daemons.push(configured)
+    await configured.start()
+    const withAddress = deviceIssueCodeResultSchema.parse((await (await owner(configured))("device.issueCode", { targetClient: "phone" })).result)
+    expect(withAddress.webAppUrl).toBe("https://app.domovoi.dev/connect")
+
+    const unset = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
+    daemons.push(unset)
+    await unset.start()
+    const without = (await (await owner(unset))("device.issueCode", { targetClient: "phone" })).result as Record<string, unknown>
+    expect(without).not.toHaveProperty("webAppUrl")
+  })
 })

@@ -199,6 +199,7 @@ export async function createProductionDaemonWithDependencies(
       host: config.host,
       port: config.port,
       ...(config.allowedOrigins ? { allowedOrigins: config.allowedOrigins } : {}),
+      ...(config.webAppUrl ? { webAppUrl: config.webAppUrl } : {}),
       authToken,
       ...(relay ? { relayStaticKey: relay.privateKey,
         relayRecovery: { identity: relay.identity, ...(relay.successor ? { successor: relay.successor } : {}) },
