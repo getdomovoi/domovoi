@@ -5163,7 +5163,7 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, invalidParams, "Terminal belongs to another session")
             return
           }
-          if (this.#ownsTerminal(existing, socket)) {
+          if (this.#ownsTerminal(params.terminalId, existing, socket)) {
             existing.process.resize(params.cols, params.rows)
             existing.cols = params.cols
             existing.rows = params.rows
@@ -5408,7 +5408,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (!this.#ownsTerminal(terminal, socket)) {
+        if (!this.#ownsTerminal(params.terminalId, terminal, socket)) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
@@ -5428,7 +5428,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (!this.#ownsTerminal(terminal, socket)) {
+        if (!this.#ownsTerminal(params.terminalId, terminal, socket)) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
@@ -5450,7 +5450,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (!this.#ownsTerminal(terminal, socket)) {
+        if (!this.#ownsTerminal(params.terminalId, terminal, socket)) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
@@ -10629,13 +10629,14 @@ export class DomovoiDaemon {
 
   // A connection that authenticated as the owning client holds the terminal,
   // so the owner's reconnect is not refused as another client's.
-  #ownsTerminal(terminal: ActiveTerminal, socket: RpcOutboundSocket): boolean {
+  #ownsTerminal(terminalId: string, terminal: ActiveTerminal, socket: RpcOutboundSocket): boolean {
     if (terminal.ownerSocket === socket) return true
     const key = this.#terminalClientKey(socket)
     if (key === undefined || terminal.ownerKey !== key) return false
-    // Wherever ownership moves, the new owner also hears the terminal.
+    // Wherever ownership moves, the new owner also hears the terminal, from
+    // the same boundary as any other connection that joins.
     terminal.ownerSocket = socket
-    terminal.audience.add(socket)
+    this.#joinTerminalAudience(terminalId, terminal, socket)
     if (terminal.reapTimer !== undefined) {
       clearTimeout(terminal.reapTimer)
       terminal.reapTimer = undefined
@@ -10648,7 +10649,7 @@ export class DomovoiDaemon {
     if (key === undefined) return
     for (const [terminalId, terminal] of this.#terminals) {
       if (terminal.ownerSocket !== undefined || terminal.ownerKey !== key) continue
-      this.#ownsTerminal(terminal, socket)
+      this.#ownsTerminal(terminalId, terminal, socket)
       this.#notifyTerminalAudience(terminal, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
         terminalId,
         owner: terminal.owner,
@@ -10666,6 +10667,8 @@ export class DomovoiDaemon {
       terminal.watchers.delete(socket)
       if (terminal.ownerSocket !== socket) continue
       if (sameClient) {
+        // No record is read here, so output still waiting in the batch goes on
+        // to the same client's other connection rather than being cut off.
         terminal.ownerSocket = sameClient
         terminal.audience.add(sameClient)
         continue

@@ -153,6 +153,23 @@ describe("terminal ownership across a reconnect", () => {
     await vi.waitFor(() => expect(outputTo(second.notifications)).toContain("after the handoff"), { timeout: 2_000 })
   })
 
+  it("hands a reopened pane on the owner's new connection each line once, in the record or live", async () => {
+    const { connect, create, emit } = await terminalDaemon(60)
+    const first = await connect("desktop-owner")
+    expect((await create(first.rpc, "desktop-owner")).error).toBeUndefined()
+    for (let round = 0; round < 5; round += 1) {
+      const next = await connect("desktop-owner")
+      // Printed and still waiting in the output batch when the pane reopens.
+      emit(`line-${round}\r\n`)
+      const reopened = await create(next.rpc, "desktop-owner")
+      emit(`after-${round}\r\n`)
+      await vi.waitFor(() => expect(outputTo(next.notifications)).toContain(`after-${round}`), { timeout: 2_000 })
+      const seen = `${String(reopened.result?.buffer)}${outputTo(next.notifications)}`
+      expect(seen.split(`line-${round}\r\n`).length - 1, `round ${round}`).toBe(1)
+      expect(seen.split(`after-${round}\r\n`).length - 1, `round ${round}`).toBe(1)
+    }
+  })
+
   it("sends output to a connection of the owner that types before reopening its pane", async () => {
     const graceMs = 60
     const { connect, create, input, emit } = await terminalDaemon(graceMs)
