@@ -112,11 +112,11 @@ function isMissingServiceFailure(platform: string, error: unknown): boolean {
 // Security review round 2 (#574): launchd binds a label to whichever plist
 // was bootstrapped, so a job named sh.domovoi.domovoid is Domovoi's only when
 // launchctl says it came from Domovoi's plist. launchctl indents job fields
-// with one tab. Placeholder copy: the error text needs an owner ruling.
+// with one tab. Text ruled 2026-09-25.
 function launchdJobPath(printed: string): string {
   const paths = [...printed.matchAll(/^\tpath = ([^\r\n]+)\r?$/gm)]
   const path = paths[0]?.[1]?.trim()
-  if (paths.length !== 1 || !path) throw new Error("[copy pending owner ruling] launchctl did not say which file the loaded sh.domovoi.domovoid job came from")
+  if (paths.length !== 1 || !path) throw new Error("launchctl did not say which file the loaded sh.domovoi.domovoid job came from")
   return path
 }
 
@@ -191,10 +191,10 @@ export class WindowsTaskPercentSignError extends Error {
 // Security review round 2 (#574): Task Scheduler substitutes $(Arg0) through
 // $(Arg32) in an action's arguments when the task runs with parameters, so any
 // $( is refused before anything changes, as the percent sign is.
-// Placeholder copy: the text needs an owner ruling.
+// Text ruled 2026-09-25.
 export class WindowsTaskArgumentVariableError extends Error {
   constructor(readonly path: string) {
-    super(`[copy pending owner ruling] ${path} contains $(, which Task Scheduler reads as a task argument when the task runs. No service files were changed.`)
+    super(`${path} contains $(, which Task Scheduler reads as a task argument when the task runs. No service files were changed.`)
     this.name = "WindowsTaskArgumentVariableError"
   }
 }
@@ -402,10 +402,10 @@ function checkProfileBeforeHandoff(profile: ProfileLocation, effects: Pick<Servi
 // Another daemon took the profile after the check and after the in-app daemon
 // was stopped. Nothing was claimed or written; the in-app daemon stays
 // stopped, and the desktop can attach to whichever daemon owns the profile.
-// Placeholder copy: the text needs an owner ruling.
+// Text ruled 2026-09-25.
 export class DaemonServiceHandoffError extends Error {
   constructor(cause: ProfileAlreadyOwnedError) {
-    super("[copy pending owner ruling] Another Domovoi daemon took the profile after this app stopped its own daemon. No service was installed and no service files were changed.", { cause })
+    super("Another Domovoi daemon took the profile after this app stopped its own daemon. No service was installed and no service files were changed.", { cause })
     this.name = "DaemonServiceHandoffError"
   }
 }
