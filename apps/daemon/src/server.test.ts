@@ -13354,6 +13354,11 @@ describe("DomovoiDaemon", () => {
     await mkdir(join(workspacePath, "OutsideCase"))
     await writeFile(join(workspacePath, "OutsideCase", ".env"), "TOKEN=1")
     await symlink(join(workspacePath, "outsidecase"), join(workspacePath, "through"), "junction")
+    // A chain of two links into a credential store (final check after
+    // 59484617): hop1 leads to hop2 as an absolute path, hop2 to .ssh as a
+    // relative one.
+    await symlink(join(workspacePath, "hop2"), join(workspacePath, "hop1"), "junction")
+    await symlink(".ssh", join(workspacePath, "hop2"), "junction")
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
     session.runtime = {
@@ -13445,6 +13450,8 @@ describe("DomovoiDaemon", () => {
       ".aws",
       "outsidecase",
       "OutsideCase",
+      "hop1",
+      "hop2",
     ]
     const neverNamed = () => {
       const copies = [
@@ -13520,7 +13527,15 @@ describe("DomovoiDaemon", () => {
       reason: `Edit ${join(workspacePath, "through", ".env")}, which is ${join(workspacePath, "outsidecase", ".env")} or outsidecase/.env`,
       path: join(workspacePath, "through", ".env"),
     })
-    await vi.waitFor(async () => expect(await cards()).toHaveLength(7), { timeout: 3_000 })
+    // A credential file reached through the two-link chain, named at the
+    // first link's target, where the second link still lies ahead.
+    listener!({
+      ...request,
+      requestId: 508,
+      reason: `Edit ${join(workspacePath, "hop1", "config")}, which is ${join(workspacePath, "hop2", "config")} or hop2/config`,
+      path: join(workspacePath, "hop1", "config"),
+    })
+    await vi.waitFor(async () => expect(await cards()).toHaveLength(8), { timeout: 3_000 })
 
     expect(await card(501)).toMatchObject({
       risk: "hard-gate",
@@ -13551,6 +13566,11 @@ describe("DomovoiDaemon", () => {
       operation: "Edit [REDACTED], which is [REDACTED] or [REDACTED]",
       command: "Edit",
     })
+    expect(await card(508)).toMatchObject({
+      risk: "hard-gate",
+      operation: "Edit [REDACTED], which is [REDACTED] or [REDACTED]",
+      command: "Edit",
+    })
     neverNamed()
 
     // A card whose file becomes hidden when it is read again hides it in its
@@ -13566,7 +13586,7 @@ describe("DomovoiDaemon", () => {
     await expect(rpc("approval.resolve", { approvalId: (await card(503)).id, decision: "allow-once", revision: 0, client: "desktop" }))
       .resolves.not.toHaveProperty("error")
     expect(agent.resolveApproval).toHaveBeenCalledWith(503, "allow-once")
-    for (const requestId of [501, 502, 504, 507]) {
+    for (const requestId of [501, 502, 504, 507, 508]) {
       await expect(rpc("approval.resolve", { approvalId: (await card(requestId)).id, decision: "allow-once", revision: 0, client: "desktop" }))
         .resolves.not.toHaveProperty("error")
       expect(agent.resolveApproval).toHaveBeenCalledWith(requestId, "allow-once")
@@ -13582,6 +13602,8 @@ describe("DomovoiDaemon", () => {
       "Claude requested permissions to use Edit on [REDACTED]",
       "Edit [REDACTED], which is [REDACTED] or [REDACTED]",
     ]))
+    // Cards 507 and 508 read the same once hidden; each has its receipt.
+    expect(receipts.filter((operation) => operation === "Edit [REDACTED], which is [REDACTED] or [REDACTED]")).toHaveLength(2)
     neverNamed()
     socket.close()
   })

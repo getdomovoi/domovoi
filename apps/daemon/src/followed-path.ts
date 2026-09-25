@@ -26,25 +26,37 @@ const maximumLinksFollowed = 40
 // component that does not exist is kept as written. Undefined when the links
 // loop past the bound.
 //
-// The result is written two ways. Walked is the path as the walk wrote it,
-// each link target spelled as the link wrote it. Path is the same place
-// written as native realpath writes it (spelledPath), which is what the
-// worktree check and a reading compare. Both are spellings Domovoi itself
-// derives, so a path it hides is hidden in either (hiddenPathForms).
-export type FollowedPath = { path: string; walked: string }
+// The result is written several ways, each a spelling Domovoi itself derives,
+// so a path it hides is hidden in every one (hiddenPathForms). Path is the
+// place written as native realpath writes it (spelledPath), which is what the
+// worktree check and a reading compare. Walked is the path as the walk wrote
+// it at the end, each link target spelled as the link wrote it. Aliases are
+// the full paths the walk produced on the way: after each link is replaced by
+// its target, that target (from the directory the link is in, when relative)
+// followed by the part of the path still to walk, as written, with no ".."
+// collapsed. A chain of links gives one alias per link, from the first to the
+// last.
+export type FollowedPath = { path: string; walked: string; aliases: string[] }
 
 export async function followPath(path: string): Promise<FollowedPath | undefined> {
   const walk = await walkPath(path)
-  return walk && { path: walk.path, walked: walk.walked }
+  return walk && { path: walk.path, walked: walk.walked, aliases: walk.aliases }
+}
+
+// A directory and the parts after it, joined as written.
+function written(directory: string, parts: readonly string[]): string {
+  if (parts.length === 0) return directory
+  return `${directory.endsWith(sep) ? directory : `${directory}${sep}`}${parts.join(sep)}`
 }
 
 // The walk behind followPath. Unreadable is true when a component could not be
 // read for a reason other than being absent: what lies there, a link included,
 // is then unknown, and the path is only a guess, left as walked.
-async function walkPath(path: string): Promise<{ path: string; walked: string; unreadable: boolean } | undefined> {
+async function walkPath(path: string): Promise<{ path: string; walked: string; aliases: string[]; unreadable: boolean } | undefined> {
   const root = parse(path).root
   let current = root
   const pending = path.slice(root.length).split(separators).filter((part) => part !== "")
+  const aliases: string[] = []
   let links = 0
   let unreadable = false
   while (pending.length > 0) {
@@ -66,8 +78,9 @@ async function walkPath(path: string): Promise<{ path: string; walked: string; u
     const targetRoot = parse(target).root
     if (targetRoot !== "") current = targetRoot
     pending.unshift(...target.slice(targetRoot.length).split(separators).filter((item) => item !== ""))
+    aliases.push(written(current, pending))
   }
-  return { path: unreadable ? current : await spelledPath(current), walked: current, unreadable }
+  return { path: unreadable ? current : await spelledPath(current), walked: current, aliases, unreadable }
 }
 
 // The walked path written the way native realpath writes it, as canonicalCwd
@@ -98,15 +111,29 @@ async function spelledPath(path: string): Promise<string> {
 }
 
 // The worktree and the target, each followed the same way. Workspace and
-// target are the realpath spellings; walkedWorkspace and walkedTarget are the
-// walk's own. Undefined when either loops.
-export type FollowedTarget = { workspace: string; target: string; walkedWorkspace: string; walkedTarget: string }
+// target are the realpath spellings; walkedWorkspace, walkedTarget and the
+// aliases are the walk's own (FollowedPath). Undefined when either loops.
+export type FollowedTarget = {
+  workspace: string
+  target: string
+  walkedWorkspace: string
+  walkedTarget: string
+  workspaceAliases: string[]
+  targetAliases: string[]
+}
 
 export async function followedTarget(workspace: string, path: string, cwd?: string): Promise<FollowedTarget | undefined> {
   const target = await followPath(requestedPath(workspace, path, cwd))
   const realWorkspace = await followPath(resolve(workspace))
   if (target === undefined || realWorkspace === undefined) return undefined
-  return { workspace: realWorkspace.path, target: target.path, walkedWorkspace: realWorkspace.walked, walkedTarget: target.walked }
+  return {
+    workspace: realWorkspace.path,
+    target: target.path,
+    walkedWorkspace: realWorkspace.walked,
+    walkedTarget: target.walked,
+    workspaceAliases: realWorkspace.aliases,
+    targetAliases: target.aliases,
+  }
 }
 
 type NodeKind = "regular" | "directory" | "fifo" | "socket" | "device" | "symlink" | "missing" | "unreadable"

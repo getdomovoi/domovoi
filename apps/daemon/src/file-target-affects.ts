@@ -110,10 +110,26 @@ function from(directory: string, target: string): string | undefined {
   return steps.every((step) => step === "." || step === "..") ? undefined : steps.join("/")
 }
 
+// The rest of a path after a root, as written, with "/": ".." and "." are
+// kept, since a link's target can hold them and the text can name the path
+// that way. Undefined outside the root, and for a rest of only "." and ".."
+// steps.
+function writtenWithin(root: string, path: string): string | undefined {
+  const prefix = root.endsWith(sep) ? root : `${root}${sep}`
+  if (!path.startsWith(prefix)) return undefined
+  const steps = path.slice(prefix.length).split(sep).filter((step) => step !== "")
+  return steps.length === 0 || steps.every((step) => step === "." || step === "..") ? undefined : steps.join("/")
+}
+
+// A root and a rest from writtenWithin, joined without collapsing "..".
+function writtenBelow(root: string, rest: string): string {
+  return `${root.endsWith(sep) ? root : `${root}${sep}`}${rest.split("/").join(sep)}`
+}
+
 // Every form in which a card's text can name a path it hides (ruled
 // 2026-09-24): as written, from the request's directory, where it really leads
-// (as walked and as realpath writes it), and each of those relative to the
-// worktree, both as given and as it really
+// (as realpath writes it, as walked, and after each link on the way), and each
+// of those relative to the worktree, both as given and as it really
 // lies, and each relative form joined to either worktree root again. The path
 // from the request's directory counts too, from the directory as given and
 // from where it really lies (round 10). Each relative form is written with "/"
@@ -126,26 +142,36 @@ export async function hiddenPathForms(input: {
   const workspace = resolve(input.workspace)
   const followed = await followedTarget(input.workspace, input.path, input.cwd)
   const lexical = resolve(workspace, input.cwd ?? ".", input.path)
-  // Where the path really leads is written both as the walk wrote it (each
-  // link target as the link spelled it) and as realpath writes it; a text can
-  // name either (final check after 8181baf4).
+  // Where the path really leads is written as realpath writes it, as the walk
+  // wrote it at the end, and as it stood after each link on the way (each
+  // link target as the link spelled it, with the rest still to walk); a text
+  // can name any of them (final checks after 8181baf4 and 59484617). The
+  // worktree's own spellings, its aliases included, are roots.
+  const aliases = followed ? followed.targetAliases : []
   const absolute = [
     input.path,
     requestedPath(input.workspace, input.path, input.cwd),
     lexical,
-    ...(followed ? [followed.target, followed.walkedTarget] : []),
+    ...(followed ? [followed.target, followed.walkedTarget, ...aliases] : []),
   ]
-  const roots = [workspace, ...(followed ? [followed.workspace, followed.walkedWorkspace] : [])]
+  const roots = [
+    workspace,
+    ...(followed ? [followed.workspace, followed.walkedWorkspace, ...followed.workspaceAliases] : []),
+  ]
   const inside = absolute.flatMap((path) => roots.flatMap((root) => within(root, path) ?? []))
+  // The same, with a link target's ".." kept as the link wrote it.
+  const writtenInside = absolute.flatMap((path) => roots.flatMap((root) => writtenWithin(root, path) ?? []))
   const directory = resolve(workspace, input.cwd ?? ".")
   const realDirectory = followed ? await followPath(directory) : undefined
+  const directories = [directory, ...(realDirectory ? [realDirectory.path, realDirectory.walked] : [])]
   const fromDirectory = [
     from(directory, lexical),
     ...(followed && realDirectory !== undefined
       ? [from(realDirectory.path, followed.target), from(realDirectory.walked, followed.walkedTarget)]
       : []),
+    ...aliases.flatMap((alias) => directories.map((spelling) => from(spelling, alias))),
   ].flatMap((path) => path ?? [])
-  const relativeForms = [...inside, ...fromDirectory].flatMap((path) => {
+  const relativeForms = [...inside, ...writtenInside, ...fromDirectory].flatMap((path) => {
     const backslashed = path.split("/").join("\\")
     return [path, `./${path}`, backslashed, `.\\${backslashed}`]
   })
@@ -153,6 +179,7 @@ export async function hiddenPathForms(input: {
     ...absolute,
     ...relativeForms,
     ...inside.flatMap((path) => roots.map((root) => join(root, path))),
+    ...writtenInside.flatMap((path) => roots.map((root) => writtenBelow(root, path))),
   ])
   return [...forms].filter((form) => form !== "" && form !== "." && form !== sep)
 }

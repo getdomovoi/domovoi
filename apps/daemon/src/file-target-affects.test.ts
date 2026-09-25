@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, relative, resolve, sep } from "node:path"
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
@@ -121,6 +121,71 @@ describe("hidePaths", () => {
     ]))
     expect(hidePaths(`Edit ${join(workspace, "outsidecase", ".env")} or outsidecase/.env`, forms))
       .toBe("Edit [REDACTED] or [REDACTED]")
+  })
+
+  // Final check after 59484617: each link on the way is its own alias. The
+  // path it leads to, joined with the rest of the request still to walk,
+  // names the hidden file too, for a chain of any length, whether the link is
+  // in the directory part or is the last part, and whether its target is
+  // relative or absolute. Each alias must be hidden as the link spells it,
+  // from either spelling of the worktree, and relative to the worktree.
+  it("hides the path after every link of a chain, as each link spells it", async () => {
+    const workspace = await directory("domovoi-hide-chain-")
+    const real = await realpath(workspace)
+    const at = (...parts: string[]) => join(workspace, ...parts)
+    await mkdir(at("real"))
+    await writeFile(at("real", ".env"), "TOKEN=1")
+    await mkdir(at(".ssh"))
+    for (const folder of ["ddir", "edir"]) await mkdir(at(folder))
+    // Junctions, which Windows makes without admin rights, and which it writes
+    // with an absolute target whatever target it is given.
+    const links: Array<[target: string, link: string]> = [
+      [at("real"), "a1"],
+      [".ssh", "b1"],
+      [at("c2"), "c1"],
+      ["real", "c2"],
+      ["ddir", "d1"],
+      [`..${sep}.ssh`, join("ddir", "keys")],
+      ["e2", "e1"],
+      [at("edir"), "e2"],
+      [`..${sep}.ssh`, join("edir", "keys")],
+      [at("f2"), "f1"],
+      [at("f3"), "f2"],
+      [at("real"), "f3"],
+    ]
+    for (const [target, link] of links) await symlink(target, at(link), "junction")
+    // The path a link leads to, as the link writes it, with the rest after it.
+    const through = async (link: string, rest: string) => {
+      const target = await readlink(at(link))
+      const base = isAbsolute(target) ? target : `${dirname(at(link))}${sep}${target}`
+      return rest === "" ? base : `${base}${sep}${rest}`
+    }
+    const chains = [
+      { label: "1 link, absolute, directory part", path: "a1/.env", hops: [["a1", ".env"]] },
+      { label: "1 link, relative, last part", path: "b1", hops: [["b1", ""]] },
+      { label: "2 links, absolute then relative, directory part", path: "c1/.env", hops: [["c1", ".env"], ["c2", ".env"]] },
+      { label: "2 links, relative, directory then last part", path: "d1/keys", hops: [["d1", "keys"], ["ddir/keys", ""]] },
+      { label: "3 links, relative, absolute, relative last part", path: "e1/keys", hops: [["e1", "keys"], ["e2", "keys"], ["edir/keys", ""]] },
+      { label: "3 links, absolute, directory part", path: "f1/.env", hops: [["f1", ".env"], ["f2", ".env"], ["f3", ".env"]] },
+    ]
+    const missed: string[] = []
+    for (const { label, path, hops } of chains) {
+      const forms = await hiddenPathForms({ workspace, path: at(...path.split("/")) })
+      for (const [link, rest] of hops) {
+        const alias = await through(join(...link!.split("/")), rest!)
+        const fromRoot = alias.startsWith(`${workspace}${sep}`) ? alias.slice(workspace.length + 1) : undefined
+        const written = [
+          alias,
+          ...(fromRoot === undefined ? [] : [`${real}${sep}${fromRoot}`, fromRoot.split(sep).join("/")]),
+        ]
+        for (const text of written) {
+          if (hidePaths(`Edit ${text} now`, forms) !== "Edit [REDACTED] now") {
+            missed.push(`${label}: ${text.split(real).join("<real>").split(workspace).join("<worktree>")}`)
+          }
+        }
+      }
+    }
+    expect(missed).toEqual([])
   })
 
   // Round 10: a hidden file under a subdirectory, named from the request's

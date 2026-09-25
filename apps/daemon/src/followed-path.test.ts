@@ -97,6 +97,8 @@ describe("followPath", () => {
     const walkedRoot = (await followPath(workspace))!.walked
     const followed = await followPath(join(workspace, "link", "file.json"))
     expect(followed?.walked).toBe(join(walkedRoot, "stored", "file.json"))
+    // The full path right after the link, in the link's own spelling.
+    expect(followed?.aliases).toContain(join(workspace, "stored", "file.json"))
     const identity = await fileTargetIdentity(workspace, join("link", "file.json"), workspace)
     expect(identity.walkedPath).toBe(followed?.walked)
     expect(identity.realPath).toBe(followed?.path)
