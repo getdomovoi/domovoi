@@ -33,10 +33,16 @@ import {
 // CRLF, every construct the table lets open inside it, escapes, table syntax
 // that is plain there, and heredocs (<<EOF, <<'EOF', <<-EOF) inside $(…); it
 // may never close. A construct added to the table is generated with no change
-// here, and a test fails if the generator misses one.
+// here, and a test fails if the generator misses one. A value may also begin
+// with another name and its separator, or a separator alone, nested up to
+// twice, with a line break where that syntax allows whitespace; a JSON or
+// name: value may start on the next line; terminal formatting may follow the
+// separator; and a -D property's or flag's = may have spaces around it (found
+// by the differential fuzz of #598).
 // Every input is redacted whole, split at every point into two reads, split
 // into three reads at points drawn from the value's syntax characters or at
-// random, and cut into random reads with idle beats between some. The checks:
+// random, and cut into random reads with idle beats between some, half the
+// time with one inside the name's syntax. The checks:
 // - no letter or digit of a secret value may show, unless the ruling shows
 //   it: after a prefixed name, the word right before the sensitive name counts
 //   (total, has, max, min, count, is, enable) and the value is a complete plain
@@ -67,7 +73,9 @@ type Step = string | "idle"
 type Rule = "hide" | "show" | "plain"
 // longName: a name longer than the terminal carries, which the terminal is
 // held to main on.
-type Case = { shape: string, text: string, value?: string, rule: Rule, kept: readonly string[], longName?: boolean }
+// nameSpan: where the name and its syntax sit, from its flag dashes or -D to
+// the value, so a read can be cut inside it with an idle beat.
+type Case = { shape: string, text: string, value?: string, rule: Rule, kept: readonly string[], longName?: boolean, nameSpan?: readonly [number, number] }
 
 function random(seed: number): () => number {
   let state = seed >>> 0
@@ -88,6 +96,10 @@ const countingWords = ["total", "has", "max", "min", "count", "is", "enable"]
 // Words that are neither counting words nor part of a sensitive name.
 const otherWords = ["db", "x", "npm", "config", "my", "app", "limit", "service", "ci", "prod"]
 const separators = ["_", ".", "-"]
+// Terminal formatting a program may print between a name's separator and its
+// value.
+const formatting = ["\u001b[0m", "\u001b[1m", "\u001b[32m", "\u001b[2K"]
+const lineBreaks = ["\n", "\r\n", "\r"]
 
 // What may sit inside a quoted value besides letters. An escape is a
 // backslash and the character it escapes, so a value never ends in a lone
@@ -291,8 +303,31 @@ function generatePrefixed(next: () => number): Case {
   // it, so the quote is left off too.
   const closed = !opener || (substitutionClosed && chance(0.8))
   if (opener && !closed) features.push("unclosed-quote")
-  const quoted = `${opener}${value}${closed ? close : ""}`
   const space = () => chance(0.2) ? " " : ""
+  // Found by the differential fuzz of #598: a value may begin with another
+  // name and its separator, or a separator alone, nested up to twice, whose
+  // own value is the secret (-DGITHUB_TOKEN ==Password: value). Where the
+  // inner syntax allows whitespace, it may be a line break.
+  const gap = (fallback: string): string => {
+    if (chance(0.3)) { features.push("cross-line"); return pick(lineBreaks) }
+    return fallback
+  }
+  let nested = ""
+  if (!enclosed && form !== "json-mixed") {
+    for (let depth = 0; depth < 2 && chance(0.12); depth += 1) {
+      const inner = pick(sensitiveNames)
+      features.push("nested")
+      nested = `${pick([
+        `${inner}=`, `${inner}=${gap(" ")}`, `--${inner}${gap(" ")}`, `--${inner}=`, `-D${inner}=`, `${inner}:${gap(" ")}`,
+        `"${inner}":`, "=", ":", `/${inner}:`,
+      ])}${nested}`
+    }
+  }
+  // Terminal formatting after the separator, and spaces around a -D
+  // property's or a flag's =.
+  const ansi = () => chance(0.08) ? (features.push("ansi"), pick(formatting)) : ""
+  const spaced = () => chance(0.15) ? (features.push("spaced-equals"), pick([" ", "  "])) : ""
+  const quoted = `${nested}${opener}${value}${closed ? close : ""}`
   const before = chance(0.05) ? (features.push("filler-near-carry"), `${pick([" ", "a"]).repeat(236 + Math.floor(next() * 40))} `) : ""
 
   let text: string
@@ -301,21 +336,21 @@ function generatePrefixed(next: () => number): Case {
   // delimiter or the end of the text right after it.
   let complete = closed && substitutionClosed
   switch (form) {
-    case "assignment": text = `${name}${space()}=${space()}${quoted}`; break
+    case "assignment": text = `${name}${space()}=${space()}${ansi()}${quoted}`; break
     case "export": text = `export ${name}=${quoted}`; break
     case "env": text = `$env:${name}=${quoted}`; break
     case "set": text = `set ${name}=${quoted}`; break
     case "cmd-set": complete = enclosedClosed; text = `set ${close}${name}=${value}${enclosedCloser}`; break
     case "echo-enclosed": complete = enclosedClosed; text = `echo ${close}${name}=${value}${enclosedCloser} -s`; kept = [" -s"]; break
-    case "json": text = `{"${name}":${space()}${quoted}}`; break
+    case "json": text = `{"${name}":${gap(space())}${quoted}}`; break
     case "json-mixed": text = `{"${name}":"${value}","safe":"visible"}`; kept = [`"safe":"visible"}`]; complete = true; break
-    case "structured": text = `${name}:${space() || " "}${quoted}`; break
+    case "structured": text = `${name}:${gap(space() || " ")}${ansi()}${quoted}`; break
     case "flag-space": text = `curl --${name} ${quoted} -s`; kept = [" -s"]; break
-    case "flag-equals": text = `curl --${name}=${quoted} -s`; kept = [" -s"]; break
+    case "flag-equals": text = `curl --${name}${spaced()}=${spaced()}${ansi()}${quoted} -s`; kept = [" -s"]; break
     case "single-dash-space": text = `tool -${name} ${quoted} -s`; kept = [" -s"]; break
-    case "single-dash-equals": text = `tool -${name}=${quoted} -s`; kept = [" -s"]; break
+    case "single-dash-equals": text = `tool -${name}${spaced()}=${spaced()}${quoted} -s`; kept = [" -s"]; break
     case "slash-colon": text = `tool /${name}:${quoted} -s`; kept = [" -s"]; break
-    default: text = `java -D${name}=${quoted} -jar app.jar`; kept = [" -jar app.jar"]; break
+    default: text = `java -D${name}${spaced()}=${spaced()}${ansi()}${quoted} -jar app.jar`; kept = [" -jar app.jar"]; break
   }
   const following = chance(0.15) ? (features.push("following-line"), pick(["\nvisible output\n", "\r\nvisible output\r\n"])) : ""
   const ending = following ? "" : pick(["\r\n", "\n", ""])
@@ -325,8 +360,10 @@ function generatePrefixed(next: () => number): Case {
   if (!complete) kept = []
 
   let rule: Rule
-  if (prefixed && counting && plain && complete) rule = "show"
+  // Formatting or another name before the value makes it no plain value.
+  if (prefixed && counting && plain && complete && nested === "" && !features.includes("ansi")) rule = "show"
   else rule = "hide"
+  const nameAt = text.indexOf(name)
   return {
     shape: [`${prefixed ? "prefixed" : "unprefixed"}-${form}`, ...[...new Set(features)].sort()].join("+"),
     text: `${before}${text}${ending}${following}`,
@@ -334,6 +371,7 @@ function generatePrefixed(next: () => number): Case {
     rule,
     kept,
     longName: name.length > 200,
+    nameSpan: [before.length + Math.max(0, nameAt - 2), before.length + text.indexOf(value, nameAt + name.length)],
   }
 }
 
@@ -352,17 +390,25 @@ function generate(next: () => number): Case {
   return next() < 0.15 ? generatePlain(next) : generatePrefixed(next)
 }
 
-function cut(text: string, next: () => number): Step[] {
+// Half the time one cut falls inside the name's syntax, from its flag dashes
+// or -D to its value, with an idle beat after it, as a name split by an idle
+// beat (found by the differential fuzz of #598).
+function cut(text: string, next: () => number, nameSpan?: readonly [number, number]): Step[] {
   const cuts = new Set<number>()
   const count = Math.floor(next() * 6)
   for (let index = 0; index < count; index += 1) cuts.add(1 + Math.floor(next() * Math.max(1, text.length - 1)))
+  let inName: number | undefined
+  if (nameSpan !== undefined && nameSpan[1] - nameSpan[0] > 1 && next() < 0.5) {
+    inName = nameSpan[0] + 1 + Math.floor(next() * (nameSpan[1] - nameSpan[0] - 1))
+    cuts.add(inName)
+  }
   const points = [...cuts].sort((left, right) => left - right)
   const steps: Step[] = []
   let from = 0
   for (const point of points) {
     if (point <= from || point >= text.length) continue
     steps.push(text.slice(from, point))
-    if (next() < 0.3) steps.push("idle")
+    if (next() < 0.3 || point === inName) steps.push("idle")
     from = point
   }
   steps.push(text.slice(from))
@@ -431,7 +477,7 @@ function readings(item: Case, next: () => number): Step[][] {
       all.push([text.slice(0, first), text.slice(first, second), text.slice(second)])
     }
   }
-  all.push(cut(text, next))
+  all.push(cut(text, next, item.nameSpan))
   return all
 }
 
@@ -606,7 +652,8 @@ function show(step: Step): string {
 function family(item: Case): string {
   const features = item.shape.split("+")
   const kept = features.filter((feature) => feature.startsWith("quote-") || feature === "unclosed-quote" || feature === "unclosed-enclosure" || feature.startsWith("enclosed-") || feature === "value-wide" || feature === "long-prefix"
-    || feature === "value-substitution" || feature === "unclosed-substitution" || feature.startsWith("outer-") || feature.startsWith("in-word-"))
+    || feature === "value-substitution" || feature === "unclosed-substitution" || feature.startsWith("outer-") || feature.startsWith("in-word-")
+    || feature === "nested" || feature === "cross-line" || feature === "ansi" || feature === "spaced-equals")
   return [features[0], ...kept].join("+")
 }
 

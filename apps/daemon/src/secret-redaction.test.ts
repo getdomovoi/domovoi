@@ -889,3 +889,93 @@ describe("quotes in the middle of a word and around a name", () => {
     expect(shown).toMatch(/\r\n$/u)
   })
 })
+
+// Found by the differential fuzz of #598 (terminal-redaction-differential on
+// main) against main's own code: a value main hid that this branch showed.
+// - A -D property with spaces after its =, as in java -DPassword= value. Main
+//   hid it only when a read ended inside the name and left -D behind; it is
+//   now hidden whole too.
+// - A name and separator inside a value, whose own value runs on past the
+//   outer value's end, as in -DGITHUB_TOKEN ==Password: value. Main read the
+//   inner name; this branch read the outer value as one shell word, to its
+//   delimiter, and never looked inside it.
+// - A name: or name= at the end of a record, whose value is on the next line.
+//   The durable redactors read the value across the line break; the stream
+//   read the records apart.
+describe("names inside a value, and values after a line break or spaced =", () => {
+  function run(reads: readonly string[]): string {
+    const redactor = new TerminalOutputRedactor()
+    return reads.map((read) => read === "idle" ? redactor.flush() : redactor.push(read)).join("") + redactor.flush()
+  }
+  function stream(reads: readonly string[]): string {
+    const redactor = new DurableOutputRedactor()
+    return reads.map((read) => redactor.push(read)).join("") + redactor.flush()
+  }
+  function splits(text: string): string[][] {
+    const all: string[][] = []
+    for (let first = 1; first < text.length; first += 1) {
+      all.push([text.slice(0, first), text.slice(first)])
+      for (let second = first + 1; second < text.length; second += 1) {
+        all.push([text.slice(0, first), text.slice(first, second), text.slice(second)])
+      }
+    }
+    return all
+  }
+
+  type Row = { text: string, expected: string }
+  const rows: Row[] = [
+    { text: "java -DPassword= zqxjwvk -jar app.jar\n", expected: "java -DPassword= [REDACTED] -jar app.jar\n" },
+    { text: "java -Dpassword=  \u001b[0m\"zqx jwvk\" -jar app.jar\n", expected: "java -Dpassword=  [REDACTED] -jar app.jar\n" },
+    { text: "java -DAPI_KEY=  'zqx\\'jwvk' -jar app.jar\n", expected: "java -DAPI_KEY=  '[REDACTED]' -jar app.jar\n" },
+    { text: "java -Dx.token =  zqxjwvk -jar app.jar\n", expected: "java -Dx.token =  [REDACTED] -jar app.jar\n" },
+    { text: "java -DGITHUB_TOKEN ==Password: zqxjwvk -jar app.jar\n", expected: "java -DGITHUB_TOKEN =[REDACTED] [REDACTED] -jar app.jar\n" },
+    { text: "curl --GITHUB_TOKEN\r=\"GITHUB_TOKEN\":API_KEY= zqxjwvk -s\n", expected: "curl --GITHUB_TOKEN\r=\"[REDACTED]\" [REDACTED] -s\n" },
+    { text: "java -Dtoken=Password:\nzqxjwvk -jar app.jar\n", expected: "java -Dtoken=[REDACTED]\n[REDACTED] -jar app.jar\n" },
+    { text: "X_TOKEN:\nzqxjwvk -s\n", expected: "X_TOKEN:\n[REDACTED] -s\n" },
+    { text: "x.password:\r\n  \"zqx jwvk\" -s\n", expected: "x.password:\r\n  \"[REDACTED]\" -s\n" },
+    { text: "export NPM_TOKEN=\nzqxjwvk -s\n", expected: "export NPM_TOKEN=\n[REDACTED] -s\n" },
+  ]
+
+  it.each(rows)("hides $text whole in the durable redactors", ({ text, expected }) => {
+    expect(redactDurableCommand(text).value).toBe(expected)
+    expect(redactDurableOutput(text).value).toBe(expected)
+    expect(redactDurableText(text).value).toBe(expected)
+  })
+
+  // The terminal holds a read from the last sensitive name in it, so where a
+  // read ends after an inner name, that name is shown as a name and its value
+  // hidden, as main shows it: java -Dtoken=Password:\n[REDACTED]. The value
+  // never shows, and what follows it is kept.
+  it.each(rows)("hides $text in every two- and three-read split of the terminal", ({ text, expected }) => {
+    expect(run([text])).toBe(expected)
+    const kept = expected.slice(expected.lastIndexOf("[REDACTED]") + "[REDACTED]".length).replace(/^["']/u, "")
+    const wrong = splits(text).map((reads) => ({ reads, shown: run(reads) }))
+      .filter(({ shown }) => /zq|qx|xj|jw|wv|vk/u.test(shown) || !shown.endsWith(kept))
+      .map(({ reads, shown }) => `${JSON.stringify(reads)} -> ${JSON.stringify(shown)}`)
+    expect(wrong).toEqual([])
+  })
+
+  it.each(rows)("hides $text in every two- and three-read split of the durable stream", ({ text, expected }) => {
+    const wrong = splits(text).filter((reads) => stream(reads) !== expected).map((reads) => `${JSON.stringify(reads)} -> ${JSON.stringify(stream(reads))}`)
+    expect(wrong).toEqual([])
+  })
+
+  // Split by an idle beat before the value, where main still hides it: the
+  // terminal has lost what came before, and the name inside the value, read
+  // after the beat, still hides its own value.
+  it.each([
+    ["java -", "Dtoken=Password:\nzqxjwvk -jar app.jar\n"],
+    ["java -DGITHUB_TOKEN =", "=Password: zqxjwvk -jar app.jar\n"],
+    ["curl --GITHUB_TOKEN\r=\"GITHUB_", "TOKEN\":API_KEY= zqxjwvk -s\n"],
+  ])("hides the value of %j, idle, %j", (before, after) => {
+    const shown = run([before, "idle", after])
+    expect(shown).not.toMatch(/zq|qx|xj|jw|wv|vk/u)
+  })
+
+  // A quote that never closes holds the value open across reads, on to where
+  // a quote arrives (owner ruling in #539).
+  it("hides an unclosed single-quoted property value split across reads", () => {
+    const shown = run(["java -DPassword=  'zqx\\'jwvk", "mq -jar app.jar"])
+    expect(shown).not.toMatch(/zq|qx|xj|jw|wv|vk|mq/u)
+  })
+})

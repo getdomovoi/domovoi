@@ -394,8 +394,10 @@ function cmdMatches(text: string): CmdMatch[] {
   }
   return matches
 }
+// Spaces may follow the =, as they may an assignment's: java -DPassword= value
+// is hidden as main hid it once a read left -D behind.
 const javaSystemProperty: ValuePattern = {
-  start: new RegExp(String.raw`(?:(?<![A-Za-z0-9_.-])-D${namePrefix}|-D)${sensitiveName}\s*=${valueStart}`, "giu"),
+  start: new RegExp(String.raw`(?:(?<![A-Za-z0-9_.-])-D${namePrefix}|-D)${sensitiveName}\s*=\s*${valueStart}`, "giu"),
   delimiter: valueDelimiter,
 }
 
@@ -404,29 +406,91 @@ const javaSystemProperty: ValuePattern = {
 // undefined when the value ended within the text. enclosing: a quote opened
 // right before the name and still open at the value, as in set "NAME=value"
 // or echo "NAME=a b": the value is read inside it and ends at its closer.
-type ValueMatch = { index: number, prefix: string, secret: string, open: ValueState | undefined, enclosing: GroupingName | undefined }
+// inner: names inside the value, each with a separator, whose own values run
+// on past the value before them, in order; end: where the last of them ends,
+// or the value's own end; open is then where the last one's reading stood.
+type ValueMatch = {
+  index: number, prefix: string, secret: string, open: ValueState | undefined, enclosing: GroupingName | undefined,
+  inner: readonly ValueMatch[], end: number,
+}
 
 function valueStartState(delimiter: RegExp, enclosing: GroupingName | undefined): ValueState {
   return enclosing === undefined ? startValue(delimiter) : quotedValueState(enclosing, delimiter)
 }
 
+// The patterns whose names are looked for inside a value, each with its own
+// copy of the pattern, so a search inside a value leaves the outer search's
+// place alone.
+const valuePatterns: readonly ValuePattern[] = [assignment, structuredAssignment, secretFlag, javaSystemProperty]
+const innerStarts = valuePatterns.map((pattern) => ({ pattern, start: new RegExp(pattern.start.source, pattern.start.flags) }))
+
+// One pattern's match, read to the end of its value.
+function readMatch(pattern: ValuePattern, text: string, match: RegExpExecArray): ValueMatch {
+  const valueAt = match.index + match[0].length
+  // The whole name, from its first character: a pattern that starts at the
+  // sensitive word, as where what came before is out of view, may begin in
+  // the middle of it.
+  let nameStart = match.index
+  while (nameStart > 0 && match.index - nameStart < 1_024 && /[A-Za-z0-9_.-]/u.test(text[nameStart - 1]!)) nameStart -= 1
+  const quote = openNameQuote(`${text.slice(nameStart, match.index)}${match[0]}`, text[nameStart - 1])
+  const enclosing = quote === undefined ? undefined : quoteNamed(quote)
+  const read = readValue(text, valueAt, valueStartState(pattern.delimiter, enclosing))
+  const end = read.end < 0 ? text.length : read.end
+  return { index: match.index, prefix: match[0], secret: text.slice(valueAt, end), open: read.end < 0 ? read.state : undefined, enclosing, inner: [], end }
+}
+
+// Where each inner pattern next matches at or after a point, remembered for
+// one search over a text: the points only move forward, so each pattern scans
+// the text once.
+type InnerSearch = Map<RegExp, { from: number, match: RegExpExecArray | null }>
+
+function nextInner(search: InnerSearch, start: RegExp, text: string, from: number): RegExpExecArray | null {
+  const known = search.get(start)
+  if (known !== undefined && known.from <= from && (known.match === null || known.match.index >= from)) return known.match
+  start.lastIndex = from
+  const match = start.exec(text)
+  search.set(start, { from, match })
+  return match
+}
+
+// A name and separator inside a value whose own value runs on past the value,
+// as in -DGITHUB_TOKEN ==Password: value, where the value is =Password: and
+// Password's value comes after it (found by the differential fuzz of #598).
+// Each such name extends what is hidden to its own value's end, and names
+// inside that value are looked for in turn.
+function withInnerValues(outer: ValueMatch, text: string, search: InnerSearch): ValueMatch {
+  if (outer.open !== undefined) return outer
+  const inner: ValueMatch[] = []
+  let from = outer.index + outer.prefix.length
+  let end = outer.end
+  for (;;) {
+    let furthest: ValueMatch | undefined
+    for (const { pattern, start } of innerStarts) {
+      for (let match = nextInner(search, start, text, from); match !== null && match.index < end; match = nextInner(search, start, text, match.index + 1)) {
+        const read = readMatch(pattern, text, match)
+        if (read.end > end && (furthest === undefined || read.end > furthest.end)) furthest = read
+        if (read.open !== undefined) break
+      }
+    }
+    if (furthest === undefined) break
+    inner.push(furthest)
+    from = end
+    end = furthest.end
+    if (furthest.open !== undefined) break
+  }
+  if (inner.length === 0) return outer
+  return { ...outer, inner, end, open: inner.at(-1)!.open }
+}
+
 function valueMatches(pattern: ValuePattern, text: string): ValueMatch[] {
   const matches: ValueMatch[] = []
+  const search: InnerSearch = new Map()
   const start = pattern.start
   start.lastIndex = 0
   for (let match = start.exec(text); match !== null; match = start.exec(text)) {
-    const valueAt = match.index + match[0].length
-    // The whole name, from its first character: a pattern that starts at the
-    // sensitive word, as where what came before is out of view, may begin in
-    // the middle of it.
-    let nameStart = match.index
-    while (nameStart > 0 && match.index - nameStart < 1_024 && /[A-Za-z0-9_.-]/u.test(text[nameStart - 1]!)) nameStart -= 1
-    const quote = openNameQuote(`${text.slice(nameStart, match.index)}${match[0]}`, text[nameStart - 1])
-    const enclosing = quote === undefined ? undefined : quoteNamed(quote)
-    const read = readValue(text, valueAt, valueStartState(pattern.delimiter, enclosing))
-    const end = read.end < 0 ? text.length : read.end
-    matches.push({ index: match.index, prefix: match[0], secret: text.slice(valueAt, end), open: read.end < 0 ? read.state : undefined, enclosing })
-    start.lastIndex = end
+    const read = withInnerValues(readMatch(pattern, text, match), text, search)
+    matches.push(read)
+    start.lastIndex = read.end
   }
   return matches
 }
@@ -444,6 +508,23 @@ function hiddenValue(prefix: string, secret: string, enclosing: GroupingName | u
   return `${prefix}${replacement}${lineEnd}`
 }
 
+// A match hidden whole: its value, then for each inner name whose value runs on
+// past it, what lies between them (the inner name's separator and spaces,
+// never value text) and the inner value hidden in turn. Where an inner value
+// starts inside the value before it, the rest of it becomes one replacement.
+function hiddenMatch(match: ValueMatch, text: string): string {
+  let hidden = hiddenValue(match.prefix, match.secret, match.enclosing)
+  let shownTo = match.index + match.prefix.length + match.secret.length
+  for (const inner of match.inner) {
+    const valueAt = inner.index + inner.prefix.length
+    hidden += valueAt >= shownTo
+      ? `${text.slice(shownTo, valueAt)}${hiddenValue("", inner.secret, inner.enclosing)}`
+      : replacement
+    shownTo = inner.end
+  }
+  return hidden
+}
+
 // A value these patterns hide that is still open at the end of the text: a
 // quote or substitution that has not closed, or, with words, a word holding a
 // substitution that no delimiter has ended yet. start: where its match
@@ -451,7 +532,7 @@ function hiddenValue(prefix: string, secret: string, enclosing: GroupingName | u
 // value; state: where its reading stands.
 type OpenValue = { start: number, valueStart: number, shown: string, state: ValueState }
 
-const openValuePatterns = [assignment, structuredAssignment, secretFlag, javaSystemProperty]
+const openValuePatterns = valuePatterns
 
 // words: also count a word holding a substitution as open, as the terminal
 // does, since the rest of that word may still arrive.
@@ -464,11 +545,14 @@ function openValue(text: string, words: boolean): OpenValue | undefined {
     if (match === undefined || state === undefined) continue
     if (state.stack.length === 0 && !(words && state.nested)) continue
     if (found !== undefined && found.start <= match.index) continue
-    const quote = state.word ? undefined : quoteAt(match.secret)
-    const shown = match.enclosing !== undefined
-      ? `${replacement}${groupingConstructs[match.enclosing].closer}`
+    // The value still open is the last inner one's, when a name inside the
+    // value took its value on past it.
+    const last = match.inner.at(-1) ?? match
+    const quote = state.word ? undefined : quoteAt(last.secret)
+    const shown = last.enclosing !== undefined
+      ? `${replacement}${groupingConstructs[last.enclosing].closer}`
       : quote === undefined ? replacement : `${quote.opener}${replacement}${quote.closer}`
-    found = { start: match.index, valueStart: text.length - match.secret.length, shown, state }
+    found = { start: match.index, valueStart: text.length - last.secret.length, shown, state }
   }
   const cmd = cmdMatches(text).at(-1)
   const state = cmd?.open
@@ -511,6 +595,26 @@ export function appendDurableOutput(current: string | undefined, addition: strin
 }
 
 const longRecordOmitted = "[Long command output line omitted]\n"
+
+// Whether a record ends with a name and its separator, its value still to
+// come on a later line, as in X_TOKEN:\n or {"x-token":\n. The patterns read
+// whitespace, line breaks included, between a separator and its value, so the
+// durable redactors hide that value when they see the records together.
+const awaitingValue = valuePatterns.map((pattern) => new RegExp(pattern.start.source, pattern.start.flags))
+
+function awaitsValue(record: string): boolean {
+  const last = record.trimEnd().at(-1)
+  if (last === undefined || !/[=:A-Za-z0-9_.-]/u.test(last)) return false
+  // A value would start where the record ends.
+  const probe = `${record}x`
+  return awaitingValue.some((start) => {
+    start.lastIndex = 0
+    for (let match = start.exec(probe); match !== null; match = start.exec(probe)) {
+      if (match.index + match[0].length === record.length) return true
+    }
+    return false
+  })
+}
 
 // A quoted value or substitution that is still open when its record ends goes
 // on into the next record: that record is dropped up to where the value ends,
@@ -555,6 +659,12 @@ export class DurableOutputRedactor {
       let newline = combined.indexOf("\n")
       while (newline >= 0) {
         const record = combined.slice(0, newline + 1)
+        // A record whose name awaits its value on a later line waits for the
+        // records after it, and is redacted with them.
+        if (record.length <= maximumStreamingOutputBufferLength && awaitsValue(record)) {
+          newline = combined.indexOf("\n", newline + 1)
+          continue
+        }
         combined = combined.slice(newline + 1)
         if (record.length > maximumStreamingOutputBufferLength) {
           emitted = appendDurableOutput(emitted, longRecordOmitted)
@@ -672,7 +782,7 @@ function redact(value: unknown, maximumLength: number, complete = true, exemptFr
     let result = ""
     let from = 0
     for (const match of matches) {
-      const matched = `${match.prefix}${match.secret}`
+      const matched = input.slice(match.index, match.end)
       const next = replacer(match, input)
       if (next !== matched || matched.includes(replacement)) changed = true
       result += `${input.slice(from, match.index)}${next}`
@@ -685,8 +795,8 @@ function redact(value: unknown, maximumLength: number, complete = true, exemptFr
   const valueReplacer = (match: ValueMatch, whole: string) => {
     const { prefix, secret, index: offset } = match
     const matched = `${prefix}${secret}`
-    if (offset >= exemptFrom && showsPlainValue(prefix, secret, whole[offset - 1]) && delimitedAt(whole, offset + matched.length)) return matched
-    return hiddenValue(prefix, secret, match.enclosing)
+    if (match.inner.length === 0 && offset >= exemptFrom && showsPlainValue(prefix, secret, whole[offset - 1]) && delimitedAt(whole, offset + matched.length)) return matched
+    return hiddenMatch(match, whole)
   }
   // cmd's set "NAME=value" is read first, while its closing quote is still in
   // place: an assignment read first would take that quote as part of the
@@ -718,9 +828,9 @@ function redact(value: unknown, maximumLength: number, complete = true, exemptFr
   // terminal redactor, holding only from the sensitive word, redacted
   // Dpassword=... after a flush left -D behind.
   if (exemptFrom > 0) {
-    output = replaceValues(output, lostContextAssignment, (match) => {
-      if (match.index >= exemptFrom) return `${match.prefix}${match.secret}`
-      return hiddenValue(match.prefix, match.secret, match.enclosing)
+    output = replaceValues(output, lostContextAssignment, (match, whole) => {
+      if (match.index >= exemptFrom) return whole.slice(match.index, match.end)
+      return hiddenMatch(match, whole)
     })
   }
   output = replaceValues(output, assignment, valueReplacer)
@@ -857,6 +967,10 @@ export class TerminalOutputRedactor {
   // value's closing quote is dropped too, since the replacement's own closing
   // quote has already taken its place, and so is the rest of a substitution.
   #dropping: Dropping | undefined
+  // The end of the value being dropped, as far as the carry reaches, so a
+  // name and separator at its end (TOKEN=…Password: value) still hide the
+  // value that follows it.
+  #dropped = ""
   // Set when text before a name was emitted without the name. After a flush
   // in the middle of a line, a counting value is not shown until the next line
   // break; after a name that outgrew the carry, not within the rest of that
@@ -890,6 +1004,7 @@ export class TerminalOutputRedactor {
       if (combined.length - start > terminalRedactionCarryCharacters) {
         this.#carry = ""
         this.#dropping = { kind: "value", state: open.state }
+        this.#dropped = combined.slice(open.valueStart).slice(-terminalRedactionCarryCharacters)
         this.#settle(combined)
         return `${lead}${hideOpenValue(combined, open, false, exemptFrom)}`
       }
@@ -907,6 +1022,7 @@ export class TerminalOutputRedactor {
       // the replacement, and drop the rest of it as it arrives.
       this.#carry = ""
       this.#dropping = this.#startDropping(hold.value, hold.syntax ?? "", hold.flag ?? false, hold.word ?? "", hold.enclosing)
+      this.#dropped = hold.value.slice(-terminalRedactionCarryCharacters)
       this.#settle(combined)
       return `${lead}${redactStreamText(combined, false, exemptFrom)}`
     }
@@ -940,7 +1056,17 @@ export class TerminalOutputRedactor {
       // A value that so far is only $ is quoted when a quote comes next, and
       // a substitution when ( does.
       const read = readValue(input, 0, dropping.state)
-      if (read.end >= 0) return end(read.end)
+      this.#dropped = `${this.#dropped}${input.slice(0, read.end < 0 ? input.length : read.end)}`.slice(-terminalRedactionCarryCharacters)
+      if (read.end >= 0) {
+        // A name and separator at the value's end: its own value comes next,
+        // and is dropped as the rest of a name that outgrew the carry is.
+        const inner = this.#holdFrom(this.#dropped)
+        this.#dropped = ""
+        if (inner.value === undefined) return end(read.end)
+        this.#dropping = this.#startDropping(inner.value, inner.syntax ?? "", inner.flag ?? false, inner.word ?? "", inner.enclosing)
+        this.#dropped = inner.value
+        return { shown: "", rest: input.slice(read.end) }
+      }
       this.#dropping = { kind: "value", state: read.state }
       return { shown: "", rest: "" }
     }
@@ -957,8 +1083,10 @@ export class TerminalOutputRedactor {
       }
       if (grown && !endsInSensitiveName.test(word)) return end(at, input.slice(0, at))
       grown = false
-      if (character === "\r" || character === "\n") return end(at, input.slice(0, at))
-      if (character === " " || character === "\t") {
+      // A line break is whitespace here, as the patterns read it: a name's
+      // value may start on the next line (found by the differential fuzz of
+      // #598).
+      if (character === " " || character === "\t" || character === "\r" || character === "\n") {
         spaced = true
         continue
       }
@@ -984,6 +1112,7 @@ export class TerminalOutputRedactor {
       const delimiter = structured ? closedValueDelimiter : valueDelimiter
       // A value inside a quote opened before its name is dropped up to that
       // quote's closer, which the replacement's closer stands for.
+      this.#dropped = ""
       if (enclosing !== undefined) {
         this.#dropping = { kind: "value", state: quotedValueState(enclosing, delimiter) }
         return { shown: `${shown}${replacement}${groupingConstructs[enclosing].closer}`, rest: input.slice(at) }
@@ -1022,7 +1151,10 @@ export class TerminalOutputRedactor {
     this.#carry = ""
     const exemptFrom = this.#exemptFrom(remainder)
     const open = remainder === "" ? undefined : openValue(remainder, false)
-    if (open) this.#dropping = { kind: "value", state: open.state }
+    if (open) {
+      this.#dropping = { kind: "value", state: open.state }
+      this.#dropped = remainder.slice(open.valueStart).slice(-terminalRedactionCarryCharacters)
+    }
     const output = remainder === ""
       ? ""
       : open

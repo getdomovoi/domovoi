@@ -46,4 +46,9 @@ before a name (an idle flush in the middle of it, or a name longer than it carri
 value still opens, so a `set "NAME=value"` split there may hide the output that follows until
 another quote arrives. A deeply nested value read one
 character at a time now costs each read only what that read holds, rather than a copy of the whole
-nesting.
+nesting. A `-D` property may have spaces after its `=`, so `java -DPassword= value` is hidden. A
+name and separator inside a value, as in `-DGITHUB_TOKEN ==Password: value`, hide the value that
+follows them too, even past the end of the value they sit in. A name and separator at the end of a
+line, as in `X_TOKEN:` or `{"x-token":`, hide the first value on the next line in the command
+output stream as they already did in stored output and the terminal, so that stream holds such a
+line until the next one arrives.
