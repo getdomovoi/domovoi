@@ -945,9 +945,12 @@ describe("security review round 1", () => {
 // change. Crafted private files and a crafted task action made the fake
 // managers bootstrap, restart or /create unrelated programs. Only the shape a
 // Domovoi install writes is put back; anything else is refused before any
-// change, as a service that is not Domovoi's.
+// change. Ruled 2026-09-24: that refusal says the installed service file was
+// changed outside Domovoi; a service that is not there keeps the not-installed
+// words.
 describe("security review round 2", () => {
   const notInstalled = "No Domovoi service is installed for this user, so there is nothing to update. Install the service first."
+  const changedOutside = "The installed service file was changed outside Domovoi, so Domovoi will not update it. Install the service again to replace it."
   const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime-2\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index.js" }
   const oldNode = "C:\\Program Files\\Domovoi\\runtime-1\\node.exe"
   const oldEntry = "C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js"
@@ -993,7 +996,7 @@ describe("security review round 2", () => {
       await planted(effects, agent, crafted)
       failFirst(effects, (args) => args[0] === "bootstrap")
       const refused = updateDaemonService({ runtime }, effects)
-      await expect(refused).rejects.toMatchObject({ outcome: "not-installed", message: notInstalled })
+      await expect(refused).rejects.toMatchObject({ outcome: "changed-outside", message: changedOutside })
       expect(effects.run).not.toHaveBeenCalled()
       expect(effects.write).not.toHaveBeenCalled()
       expect(effects.order).toEqual([])
@@ -1014,7 +1017,7 @@ describe("security review round 2", () => {
       await planted(effects, unit, crafted)
       failFirst(effects, (args) => args[1] === "restart")
       const refused = updateDaemonService({ runtime }, effects)
-      await expect(refused).rejects.toMatchObject({ outcome: "not-installed", message: notInstalled })
+      await expect(refused).rejects.toMatchObject({ outcome: "changed-outside", message: changedOutside })
       expect(effects.run).not.toHaveBeenCalled()
       expect(effects.write).not.toHaveBeenCalled()
       expect(effects.order).toEqual([])
@@ -1043,7 +1046,7 @@ describe("security review round 2", () => {
       })
       failFirst(effects, (args) => args[0] === "/run")
       const refused = updateDaemonService({ runtime: windowsRuntime }, effects)
-      await expect(refused).rejects.toMatchObject({ outcome: "not-installed", message: notInstalled })
+      await expect(refused).rejects.toMatchObject({ outcome: "changed-outside", message: changedOutside })
       expect(effects.run).not.toHaveBeenCalled()
       expect(effects.order).toEqual(["read task action"])
     }
@@ -1086,8 +1089,25 @@ describe("security review round 2", () => {
         if (script(args).includes("RegisterTaskDefinition") && ++registrations === 1) return { code: 1, stdout: "", stderr: "Access is denied" }
         return capture(command, args, deadline)
       })
-      await expect(updateDaemonService({ runtime }, effects)).rejects.toMatchObject({ outcome: "not-installed", message: notInstalled })
+      await expect(updateDaemonService({ runtime }, effects)).rejects.toMatchObject({ outcome: "changed-outside", message: changedOutside })
       expect(effects.order).toEqual([])
+    }
+  })
+
+  // Control for the ruling above: a service that is simply not there keeps
+  // the approved not-installed words on every platform.
+  it("keeps the not-installed words when the service is missing rather than changed", async () => {
+    const missingAgent = fake("darwin", "/Users/dl")
+    missingAgent.files.delete(agent)
+    const missingUnit = fake("linux", "/home/dl")
+    missingUnit.files.delete(unit)
+    const missingTask = fake("win32", "C:\\Users\\dl")
+    missingTask.capture = vi.fn(async () => ({ code: 0, stdout: "domovoi-task:missing\n" }))
+    const noRecord = fake("linux", "/home/dl", {}, null)
+    for (const [effects, asked] of [[missingAgent, runtime], [missingUnit, runtime], [missingTask, windowsRuntime], [noRecord, runtime]] as const) {
+      await expect(updateDaemonService({ runtime: asked }, effects)).rejects.toMatchObject({ outcome: "not-installed", message: notInstalled })
+      expect(effects.run).not.toHaveBeenCalled()
+      expect(effects.write).not.toHaveBeenCalled()
     }
   })
 

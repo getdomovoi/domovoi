@@ -12,6 +12,10 @@ import type { claimServiceOperation } from "./operation-lease.js"
 // live only here.
 export type DaemonServiceUpdateOutcome =
   | "not-installed"
+  // Ruled 2026-09-24: the service is there, but its plist, unit, task action
+  // or saved WSL runtime is not in the shape a Domovoi install writes, so it
+  // is not put back or replaced. A missing service stays "not-installed".
+  | "changed-outside"
   | "nothing-changed"
   | "swap-failed-restored"
   | "swap-and-restore-failed"
@@ -26,6 +30,8 @@ function updateMessage(outcome: DaemonServiceUpdateOutcome, cause: unknown, rest
   switch (outcome) {
     case "not-installed":
       return "No Domovoi service is installed for this user, so there is nothing to update. Install the service first."
+    case "changed-outside":
+      return "The installed service file was changed outside Domovoi, so Domovoi will not update it. Install the service again to replace it."
     case "nothing-changed":
       return `Domovoi could not update the service: ${detail(cause)}. Nothing was changed, and the service was left as it was.`
     case "swap-failed-restored":

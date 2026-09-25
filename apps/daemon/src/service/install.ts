@@ -441,10 +441,11 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
       const read = effects.read
       const previous = await withinServiceDeadline(readDeadline, () => read(plan.path, readDeadline))
       // Put back on a failed step, so it must be a Domovoi service file.
-      // Security review round 2: anything else is not Domovoi's service.
+      // Security review round 2: anything else is not Domovoi's service, and
+      // is said to be changed outside Domovoi (ruled 2026-09-24).
       const program = (target.platform === "linux" ? systemdUnitProgram : launchdPlistProgram)(previous)
       if (!program || !isDomovoiServiceProgram(program, { paths: "posix", flag: "--service-config", configurationPath: plan.configuration.path })) {
-        throw new DaemonServiceUpdateError("not-installed")
+        throw new DaemonServiceUpdateError("changed-outside")
       }
 
       if (target.platform === "linux") {
@@ -529,7 +530,7 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
     const previous = await readWindowsTaskAction(displayName, effects, readDeadline)
     if (previous === "missing") throw new DaemonServiceUpdateError("not-installed")
     const previousCommand = domovoiTaskCommand(previous, plan.configuration.path)
-    if (previousCommand === undefined) throw new DaemonServiceUpdateError("not-installed")
+    if (previousCommand === undefined) throw new DaemonServiceUpdateError("changed-outside")
     const restoreCommands = plan.commands.map((command) => command.args[0] !== "/create" ? command : {
       ...command,
       args: command.args.map((arg, index) => command.args[index - 1] === "/tr" ? previousCommand : arg),

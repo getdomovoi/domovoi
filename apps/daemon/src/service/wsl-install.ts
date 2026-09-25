@@ -206,7 +206,8 @@ export function prepareWslUpdate(
     if (!previous.wsl || !previous.registrationId) throw new Error("No saved WSL service registration; no systemd action was attempted")
     // The old task is registered and started again on a failed step, so the
     // saved runtime must be a Domovoi guest runtime (security review round 2).
-    if (!domovoiGuestRuntime(previous.wsl, path)) throw new DaemonServiceUpdateError("not-installed")
+    // A crafted intent record was refused above with its own fixed cause.
+    if (!domovoiGuestRuntime(previous.wsl, path)) throw new DaemonServiceUpdateError("changed-outside")
     const registrationId = previous.registrationId
     const old = installedWslTask(previous.wsl, registrationId, path)
     const updated = { ...previous, wsl: { ...previous.wsl, executable: runtime.nodePath, args: [runtime.daemonEntryPath] } }
