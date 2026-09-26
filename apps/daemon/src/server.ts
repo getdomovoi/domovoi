@@ -324,6 +324,9 @@ export const persistenceUnavailableContext = "Domovoi can no longer persist stat
 // answer to a turn asked for while the desktop holds the service handoff fence.
 export const serviceHandoffFencedMessage =
   "The daemon is moving to or from the login service, so no new turn starts until the switch finishes or stops. Nothing is interrupted."
+// The fence's refusal while an emergency stop runs. The stop clears turns and
+// gates before it saves its state, so the turn and gate check finds nothing.
+export const serviceHandoffStopRefusal = "An emergency stop is still running."
 export const persistenceUnavailableMessage =
   "Daemon cannot persist state, so changes are refused"
 
@@ -2154,6 +2157,7 @@ export class DomovoiDaemon {
     const failures: unknown[] = []
     try {
       await fleetStopped
+      await this.#settleEmergencyStops()
       await this.#providerRefresh
       try {
         await withTimeout(
@@ -2204,6 +2208,8 @@ export class DomovoiDaemon {
     try { await this.#machineCredentials?.close(keyringShutdown) }
     catch (error) { failures.push(error) }
     finally { keyringShutdown.clear() }
+    // A stop asked for just before shutdown may have been queued since.
+    await this.#settleEmergencyStops()
     try {
       await this.#store.close()
     } catch (error) {
@@ -2230,6 +2236,20 @@ export class DomovoiDaemon {
     }
     this.#stopped = true
     if (failures.length > 0) throw new AggregateError(failures, "Domovoi shutdown failed")
+  }
+
+  // Security review of #628: a shutdown (stopOwned, a signal, a service
+  // replace) can meet an emergency stop still saving its state. The stop
+  // finishes first, its save included, so its record is written or its
+  // failure reported before the store closes. No extra deadline: the stop's
+  // provider calls carry their own, and its save is awaited as shutdown's is.
+  // The tail never rejects.
+  async #settleEmergencyStops(): Promise<void> {
+    let tail: Promise<unknown>
+    do {
+      tail = this.#emergencyStopTail
+      await tail
+    } while (tail !== this.#emergencyStopTail)
   }
 
   #dispatch(socket: RpcOutboundSocket, raw: string): void {
@@ -9817,8 +9837,10 @@ export class DomovoiDaemon {
 
   // The renderer's check, applied to what the daemon itself holds: turns with
   // an active id, dispatches not yet answered by the provider, and waiting
-  // gates. A dispatch in flight is named as a running turn.
+  // gates. A dispatch in flight is named as a running turn. An emergency stop
+  // refuses first until it has finished, its save included, failed or not.
   #serviceHandoffRefusal(): string | undefined {
+    if (this.#emergencyStopInProgress) return serviceHandoffStopRefusal
     const dispatching = new Set(this.#inFlightProviderThreads.values())
     return serviceHandoffRefusal({
       sessions: this.#snapshot.sessions.map((session) => session.activeTurnId || dispatching.has(session.id)
