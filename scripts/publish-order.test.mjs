@@ -1,17 +1,63 @@
 import assert from "node:assert/strict"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
+import { fileURLToPath } from "node:url"
 
 import { checkPublishOrder, evaluatePublishOrder } from "./publish-order.mjs"
-import { publishablePackages } from "./release-artifacts.mjs"
+import { publishDependencies, publishablePackages } from "./release-artifacts.mjs"
+import { collectWorkspacePackages } from "./version-lockstep.mjs"
 
 const protocol = { kind: "publish", name: "@getdomovoi/protocol", version: "0.1.0", tag: "latest", access: "public" }
 const daemon = { kind: "publish", name: "@getdomovoi/daemon", version: "0.1.0", tag: "latest", access: "public" }
+const credentialStore = { kind: "publish", name: "@getdomovoi/credential-store", version: "0.1.0", tag: "latest", access: "public" }
+const cli = { kind: "publish", name: "@getdomovoi/cli", version: "0.1.0", tag: "latest", access: "public" }
 
 test("the daemon depends on the protocol, so the protocol publishes first", () => {
-  assert.deepEqual(publishablePackages, ["@getdomovoi/protocol", "@getdomovoi/daemon"])
+  assert.deepEqual(publishDependencies["@getdomovoi/daemon"], ["@getdomovoi/protocol"])
+  assert.ok(publishablePackages.indexOf("@getdomovoi/protocol") < publishablePackages.indexOf("@getdomovoi/daemon"))
+})
+
+// Changesets publishes every workspace package that is not private, so the
+// release set is read from the manifests rather than trusted from a list.
+test("publishes every public workspace package, after the workspace packages it needs at runtime", async () => {
+  const root = fileURLToPath(new URL("../", import.meta.url))
+  const { packages, failures } = await collectWorkspacePackages(root)
+  assert.deepEqual(failures, [])
+  const manifests = await Promise.all(packages.map(async ({ path }) => JSON.parse(await readFile(join(root, path), "utf8"))))
+  const workspace = new Set(manifests.map((manifest) => manifest.name))
+  const expected = Object.fromEntries(manifests.filter((manifest) => !manifest.private).map((manifest) => [
+    manifest.name,
+    ["dependencies", "optionalDependencies", "peerDependencies"]
+      .flatMap((field) => Object.keys(manifest[field] ?? {}))
+      .filter((name) => workspace.has(name))
+      .sort(),
+  ]))
+  assert.deepEqual([...publishablePackages].sort(), Object.keys(expected).sort())
+  for (const manifest of manifests.filter((entry) => !entry.private)) {
+    assert.deepEqual(manifest.publishConfig, { access: "public", provenance: true }, `${manifest.name} publishes publicly with provenance`)
+  }
+  for (const name of publishablePackages) {
+    assert.deepEqual([...(publishDependencies[name] ?? [])].sort(), expected[name], `${name} runtime workspace dependencies`)
+    for (const dependency of expected[name]) {
+      assert.ok(publishablePackages.indexOf(dependency) < publishablePackages.indexOf(name), `${dependency} is listed before ${name}`)
+    }
+  }
+})
+
+test("accepts the chunks Changesets plans for independent packages", () => {
+  assert.deepEqual(evaluatePublishOrder([[protocol, credentialStore], [daemon, cli]]), [])
+})
+
+test("reports the CLI in the same chunk as the credential store it depends on", () => {
+  assert.deepEqual(evaluatePublishOrder([[protocol], [credentialStore, daemon, cli]]), [
+    "@getdomovoi/credential-store must publish in a chunk before @getdomovoi/cli",
+  ])
+})
+
+test("accepts a retry that publishes only the CLI", () => {
+  assert.deepEqual(evaluatePublishOrder([[cli]]), [])
 })
 
 test("accepts the protocol in a chunk before the daemon", () => {

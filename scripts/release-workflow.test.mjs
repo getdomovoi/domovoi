@@ -42,7 +42,7 @@ test("publishing verifies downloaded bytes and creates the canonical bootstrap r
   const github = steps.findIndex((step) => step.run === "pnpm release:github")
   assert.ok(verify >= 0 && verify < publish, "verify the artifact after download, before npm admission")
   assert.ok(preflight > verify && preflight < publish, "known GitHub conflicts must refuse before npm is immutable")
-  assert.ok(github > publish, "bootstrap needs a v<version> release after both packages publish")
+  assert.ok(github > publish, "bootstrap needs a v<version> release after every package publishes")
   assert.equal(release.jobs.publish.environment, "npm")
   assert.equal(release.jobs.publish.permissions["id-token"], "write")
 })

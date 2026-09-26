@@ -7,7 +7,7 @@ import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
 import { verifyRelease } from "./release-plan.mjs"
 
 export function requirePublishedArtifact(pkg, published) {
-  if (published?.name !== pkg.name || published.version !== pkg.version) throw new Error(`${pkg.name}@${pkg.version} is not yet on npm; retry after both packages publish`)
+  if (published?.name !== pkg.name || published.version !== pkg.version) throw new Error(`${pkg.name}@${pkg.version} is not yet on npm; retry after every package publishes`)
   if (!published.dist?.integrity?.split(/\s+/u).includes(pkg.integrity)) throw new Error(`${pkg.name} npm integrity differs from this release; do not overwrite or republish it`)
   if (!published.dist.attestations?.provenance?.predicateType || !published.dist.attestations?.url) {
     throw new Error(`${pkg.name} has no npm provenance reference; do not announce an unattested release`)

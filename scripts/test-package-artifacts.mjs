@@ -101,6 +101,12 @@ const contracts = [
     ],
     exports: [".", "./internal"],
   },
+  {
+    selector: "@getdomovoi/cli",
+    requiredFiles: ["README.md", "LICENSE", "package.json", "dist/index.js"],
+    exports: [],
+    engines: ">=22.13.0",
+  },
 ]
 
 for (const contract of contracts) {
@@ -109,6 +115,7 @@ for (const contract of contracts) {
   assert.equal(manifest.private, undefined, `${contract.selector} must be publishable`)
   assert.equal(manifest.license, "Apache-2.0")
   assert.equal(manifest.publishConfig?.access, "public")
+  assert.equal(manifest.publishConfig?.provenance, true, `${contract.selector} must publish with npm provenance`)
   assert.equal(manifest.homepage, "https://domovoi.sh")
   assert.equal(manifest.engines?.node, contract.engines ?? (contract.selector === "@getdomovoi/daemon" ? ">=22.13.0" : ">=22"))
   assert.ok(manifest.description, `${contract.selector} must describe itself for the registry`)

@@ -70,6 +70,73 @@ test("inventory refuses missing integrity, broken edges and conflicting bytes fo
   }
 })
 
+// pnpm-lock.yaml v9 as parsed: importers by workspace path, registry
+// packages by name@version, and snapshots holding the edges.
+function workspaceLockFixture() {
+  const resolution = { integrity }
+  return {
+    lockfileVersion: "9.0",
+    importers: {
+      "apps/cli": { dependencies: {
+        "@getdomovoi/credential-store": { specifier: "workspace:*", version: "link:../../packages/credential-store" },
+        ws: { specifier: "^8.18.3", version: "8.18.3" },
+      } },
+      "packages/credential-store": { dependencies: {
+        "@napi-rs/keyring": { specifier: "^2.0.0", version: "2.0.0" },
+      } },
+      "apps/daemon": { dependencies: { "not-in-cli": { specifier: "1.0.0", version: "1.0.0" } } },
+    },
+    packages: {
+      "ws@8.18.3": { resolution },
+      "@napi-rs/keyring@2.0.0": { resolution },
+      "@napi-rs/keyring-darwin-arm64@2.0.0": { resolution, os: ["darwin"], cpu: ["arm64"] },
+      "@napi-rs/keyring-linux-x64-gnu@2.0.0": { resolution, os: ["linux"], cpu: ["x64"] },
+      "not-in-cli@1.0.0": { resolution },
+    },
+    snapshots: {
+      "ws@8.18.3": {},
+      "@napi-rs/keyring@2.0.0": { optionalDependencies: {
+        "@napi-rs/keyring-darwin-arm64": "2.0.0", "@napi-rs/keyring-linux-x64-gnu": "2.0.0",
+      } },
+      "@napi-rs/keyring-darwin-arm64@2.0.0": {},
+      "@napi-rs/keyring-linux-x64-gnu@2.0.0": {},
+      "not-in-cli@1.0.0": {},
+    },
+  }
+}
+const credentialStoreArtifact = { "@getdomovoi/credential-store": { version: "1.0.0", integrity: `sha512-${Buffer.alloc(64, 3).toString("base64")}` } }
+
+test("a package without a runtime lock takes its inventory from the pnpm lock, across platforms and workspace links", () => {
+  assert.equal(typeof release.workspaceSbomComponents, "function", "CLI and credential store inventories come from pnpm-lock.yaml")
+  const components = release.workspaceSbomComponents(workspaceLockFixture(), "apps/cli", {
+    MIT: [{ name: "ws", versions: ["8.18.3"] }],
+    "Apache-2.0": [{ name: "@getdomovoi/credential-store", versions: ["1.0.0"] }],
+  }, credentialStoreArtifact)
+  assert.deepEqual(components.map((c) => `${c.name}@${c.version}`), [
+    "@getdomovoi/credential-store@1.0.0", "@napi-rs/keyring@2.0.0", "@napi-rs/keyring-darwin-arm64@2.0.0",
+    "@napi-rs/keyring-linux-x64-gnu@2.0.0", "ws@8.18.3",
+  ])
+  assert.deepEqual(components[0].hashes, [{ alg: "SHA-512", content: "03".repeat(64) }])
+  assert.deepEqual(components[0].licenses, [{ license: { id: "Apache-2.0" } }])
+  assert.deepEqual(components[4].hashes, [{ alg: "SHA-512", content: "01".repeat(64) }])
+  assert.deepEqual(components[4].licenses, [{ license: { id: "MIT" } }])
+  assert.deepEqual(components[1].licenses, [])
+})
+
+test("a pnpm lock inventory refuses missing integrity, an unknown importer and an unreleased workspace link", () => {
+  const mutations = [
+    [(lock) => { delete lock.packages["ws@8.18.3"].resolution.integrity }, "apps/cli", credentialStoreArtifact],
+    [(lock) => { delete lock.snapshots["ws@8.18.3"] }, "apps/cli", credentialStoreArtifact],
+    [() => {}, "apps/missing", credentialStoreArtifact],
+    [() => {}, "apps/cli", {}],
+  ]
+  for (const [mutate, importer, firstParty] of mutations) {
+    const lock = workspaceLockFixture()
+    mutate(lock)
+    assert.throws(() => release.workspaceSbomComponents(lock, importer, {}, firstParty), /pnpm lock/)
+  }
+})
+
 test("release refuses independently repacked protocol bytes even when name and version match", () => {
   assert.equal(typeof release.verifyProtocolArtifact, "function")
   const lock = lockedFixture()
@@ -216,6 +283,23 @@ test("the real release SBOM covers every packed runtime coordinate, not just thi
   const { validateCycloneDx } = await import("./cyclonedx-validation.mjs")
   validateCycloneDx(document)
   validateCycloneDx(protocolDocument)
+  const sha512 = async (file) => createHash("sha512").update(await readFile(file)).digest("hex")
+  const credentialStoreArchive = join(output, `getdomovoi-credential-store-${manifest.version}.tgz`)
+  const cliArchive = join(output, `getdomovoi-cli-${manifest.version}.tgz`)
+  for (const archiveFile of [credentialStoreArchive, cliArchive]) {
+    const inventory = JSON.parse(await readFile(archiveFile.replace(/\.tgz$/, ".sbom.json"), "utf8"))
+    validateCycloneDx(inventory)
+    assert.equal(inventory.components.some((c) => c.name.includes("claude-agent-sdk")), false, `${archiveFile} is not described by the daemon graph`)
+    assert.ok(inventory.components.some((c) => c.name.startsWith("@napi-rs/keyring-")), `${archiveFile} lists keyring binaries for every platform`)
+    assert.equal(inventory.metadata.properties.find((p) => p.name === "domovoi:sbom:pnpm-lock-sha256").value,
+      createHash("sha256").update(await readFile(new URL("../pnpm-lock.yaml", import.meta.url))).digest("hex"))
+  }
+  const cliInventory = JSON.parse(await readFile(cliArchive.replace(/\.tgz$/, ".sbom.json"), "utf8"))
+  for (const [name, archiveFile] of [["@getdomovoi/credential-store", credentialStoreArchive], ["@getdomovoi/protocol", protocolArchive]]) {
+    const component = cliInventory.components.find((c) => c.name === name)
+    assert.deepEqual(component?.hashes, [{ alg: "SHA-512", content: await sha512(archiveFile) }], `the CLI inventory names the released ${name} bytes`)
+    assert.deepEqual(component.licenses, [{ license: { id: "Apache-2.0" } }])
+  }
   const checksums = await readFile(join(output, "SHA256SUMS"), "utf8")
   for (const line of checksums.trim().split("\n")) {
     const [digest, file] = line.split("  ")
