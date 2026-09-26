@@ -244,8 +244,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     access ? { state: "client", admission: access,
       resolveEndpoint: (deadline) => prepareFleetEndpoint({ ...accessInputs.current, ...access, deadline }),
     } : { state: "disabled" }, relayPinStorage)
-  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, revokeDevice, rotateDevice, renameDevice } = home
+  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, updateStatus, revokeDevice, rotateDevice, renameDevice } = home
   const homeSkillInventory = home.getSkillInventory
+  const homeVersion = home.snapshot?.machine.version
+  const openReleasePage = windowBridge?.openReleasePage
+  const about = useMemo(() => attached || homeVersion === undefined ? undefined : {
+    version: homeVersion,
+    onUpdateStatus: updateStatus,
+    ...(openReleasePage ? { onOpenReleasePage: openReleasePage } : {}),
+  }, [attached, homeVersion, updateStatus, openReleasePage])
   const {
     activateSession,
     archiveSession,
@@ -1333,7 +1340,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             providers={snapshot.machine.providers}
             secrets={providerSecrets}
             readOnly={watching}
-            {...(localDaemon && !attached ? { localDaemon } : {})}
+            {...(localDaemon && !attached ? { localDaemon: { ...localDaemon, ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}) } } : {})}
+            about={about}
             {...(attached || clientKind !== "desktop" ? {} : {
               pairing: {
                 connected: home.connected,

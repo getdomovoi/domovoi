@@ -29,6 +29,8 @@ describe("createDesktopWindowBridge", () => {
     await expect(bridge.openExternal({ editor: "system", path: "/project" })).resolves.toBe(true)
     expect(target.invoke).toHaveBeenCalledWith("domovoi:clipboard-write", "copy me")
     expect(target.invoke).toHaveBeenCalledWith("domovoi:open-external", { editor: "system", path: "/project" })
+    await expect(bridge.openReleasePage?.()).resolves.toBe(true)
+    expect(target.invoke).toHaveBeenCalledWith("domovoi:open-release-page")
     expect(bridge).not.toHaveProperty("ipcRenderer")
     expect(bridge).not.toHaveProperty("shell")
     expect(bridge).not.toHaveProperty("clipboard")
