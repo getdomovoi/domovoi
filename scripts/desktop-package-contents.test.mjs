@@ -10,8 +10,11 @@ const desktopRequire = createRequire(join(desktopRoot, "package.json"))
 const builderRequire = createRequire(desktopRequire.resolve("electron-builder"))
 const { getConfig } = builderRequire("app-builder-lib/out/util/config/config.js")
 const { FileMatcher, getFileMatchers, getNodeModuleFileMatcher } = builderRequire("app-builder-lib/out/fileMatcher.js")
+const { getCollectorByPackageManager, PM } = builderRequire("app-builder-lib/out/node-module-collector/index.js")
+const { TmpDir } = builderRequire("temp-file")
 
 const sdkName = "@anthropic-ai/claude-agent-sdk"
+const repositoryRoot = fileURLToPath(new URL("../", import.meta.url))
 
 function sdkManifest() {
   const daemonRequire = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
@@ -64,6 +67,37 @@ test("the desktop app ships the SDK library and none of its agent binaries", asy
       }
     }
   }
+})
+
+// Every package electron-builder would copy into app.asar, by the same
+// collector it runs, before the files exclusions apply.
+async function productionTree(directory, packageName) {
+  const temporary = new TmpDir()
+  try {
+    const collector = getCollectorByPackageManager(PM.PNPM, join(repositoryRoot, directory), temporary)
+    const { nodeModules } = await collector.getNodeModules({ packageName })
+    const names = new Set()
+    const visit = (modules) => { for (const module of modules) { names.add(module.name); visit(module.dependencies ?? []) } }
+    visit(nodeModules)
+    return names
+  } finally {
+    await temporary.cleanup()
+  }
+}
+
+// Vite inlines the renderer into out/renderer, so a package only the renderer
+// uses would sit unused in node_modules. The main process's own graph, the
+// daemon and the credential store, may share a package with the renderer.
+test("the desktop app copies no package that only the renderer bundle uses", { timeout: 60_000 }, async () => {
+  const { rendererBundlePackages } = await import("./renderer-bundle-packages.mjs")
+  const packaged = await productionTree("apps/desktop", "@getdomovoi/desktop")
+  const mainSide = new Set([
+    ...await productionTree("apps/daemon", "@getdomovoi/daemon"),
+    ...await productionTree("packages/credential-store", "@getdomovoi/credential-store"),
+  ])
+  const rendererOnly = ["@getdomovoi/ui", ...await rendererBundlePackages(repositoryRoot)].filter((name) => !mainSide.has(name))
+  assert.ok(rendererOnly.includes("react") && rendererOnly.includes("lucide-react"), "the renderer bundle is read")
+  assert.deepEqual(rendererOnly.filter((name) => packaged.has(name)), [], "renderer-only packages electron-builder would copy")
 })
 
 // electron-builder deletes Electron's LICENSE and LICENSES.chromium.html from a
