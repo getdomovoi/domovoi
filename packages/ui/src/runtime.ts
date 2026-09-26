@@ -1,7 +1,5 @@
 import type { ProviderModel, ProviderRuntime, Runtime } from "@getdomovoi/protocol"
 
-const fallbackReasoningOptions = ["low", "medium", "high"] as const
-
 const providerNames: Readonly<Record<string, string>> = {
   "claude-code": "Claude Code",
   codex: "Codex",
@@ -9,10 +7,6 @@ const providerNames: Readonly<Record<string, string>> = {
   opencode: "OpenCode",
   grok: "Grok CLI",
   kilo: "Kilo Code",
-}
-
-export function reasoningOptionsFor(model?: ProviderModel): readonly string[] {
-  return model ? model.supportedReasoningEfforts : fallbackReasoningOptions
 }
 
 export function selectRuntimeModel(runtime: Runtime, model: ProviderModel): Runtime {

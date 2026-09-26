@@ -7,7 +7,6 @@ import {
   preferredSessionProvider,
   providerCanStartSession,
   providerStatusLabel,
-  reasoningOptionsFor,
   requiresProviderHandoff,
   selectRuntimeModel,
 } from "./runtime"
@@ -43,11 +42,6 @@ describe("selectRuntimeModel", () => {
       model: "gpt-5.6-luna",
       reasoning: "medium",
     })
-  })
-
-  it("preserves an explicit empty reasoning catalog", () => {
-    expect(reasoningOptionsFor(model([]))).toEqual([])
-    expect(reasoningOptionsFor()).toEqual(["low", "medium", "high"])
   })
 
   it("requires a handoff only when the provider changes", () => {

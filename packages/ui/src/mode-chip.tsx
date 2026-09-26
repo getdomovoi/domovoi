@@ -5,7 +5,6 @@ import { useRef, useState } from "react"
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu"
 import { Switch } from "./components/ui/switch"
@@ -59,8 +58,8 @@ export function ModeChip({
           FloatingSurface, which positions absolutely and was cut off by an
           ancestor, losing the first rows: Plan and Ask were unreachable on a
           real screen while every test passed, because jsdom has no layout. The
-          effort chip beside it never had the problem, so this uses the same
-          portalled primitive it does. */}
+          portalled dropdown primitive renders outside the composer, where
+          nothing clips it. */}
       <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-[300px] p-0">
         <div className="border-b px-3 py-2 text-eyebrow font-medium tracking-[.13em] text-faint">MODE FOR THE NEXT TURN</div>
         <div role="listbox" aria-label="Permission modes">
@@ -121,68 +120,6 @@ export function ModeChip({
             onCheckedChange={(checked) => onSetRuntime(withAuto(runtime, checked))}
           />
         </label>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
-
-// What the Think chip knows about the model's efforts. "None" is a claim the
-// chip may only make after a read that answered; a read still running or one
-// that failed says that instead.
-export type ReasoningCatalog =
-  | { status: "loading" }
-  | { status: "ready", options: readonly string[] }
-  | { status: "failed", message: string }
-
-// v2 draws no reasoning control. The runtime carries one and the model
-// reports which efforts it takes, so the chip stays, plain, beside the mode.
-export function ThinkChip({
-  runtime,
-  catalog,
-  pending,
-  onSetRuntime,
-  onRetry,
-}: {
-  runtime: Runtime
-  catalog: ReasoningCatalog
-  pending: boolean
-  onSetRuntime: (runtime: Runtime) => void
-  onRetry?: (() => void) | undefined
-}) {
-  const options = catalog.status === "ready" ? catalog.options : []
-  const none = catalog.status === "ready" && options.length === 0
-  const title = catalog.status === "loading"
-    ? "Reading which reasoning efforts this model reports."
-    : catalog.status === "failed"
-      ? `The model list could not be read: ${catalog.message}`
-      : none
-        ? "This model reports no reasoning efforts to choose from."
-        : undefined
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={`Think: ${runtime.reasoning}`}
-          disabled={pending || catalog.status === "loading" || none}
-          {...(title ? { title } : {})}
-          className="flex items-center gap-1.5 rounded-full px-2.5 py-[5px] font-machine text-mono-xs text-muted-foreground disabled:cursor-not-allowed disabled:opacity-45"
-        >
-          Think: {runtime.reasoning}
-          <ChevronDownIcon className="size-3 text-faint" />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start">
-        {catalog.status === "failed" ? (
-          <>
-            <p className="m-0 max-w-[32ch] px-2 py-1.5 text-[11px] leading-snug text-destructive">{catalog.message}</p>
-            {onRetry ? <DropdownMenuItem onSelect={onRetry}>Read the model list again</DropdownMenuItem> : null}
-          </>
-        ) : options.map((reasoning) => (
-          <DropdownMenuItem key={reasoning} disabled={pending} onSelect={() => onSetRuntime({ ...runtime, reasoning })}>
-            {reasoning === runtime.reasoning ? <CheckIcon /> : null}{reasoning}
-          </DropdownMenuItem>
-        ))}
       </DropdownMenuContent>
     </DropdownMenu>
   )

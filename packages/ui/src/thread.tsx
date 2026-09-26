@@ -845,6 +845,10 @@ export function Thread({
   const [sendError, setSendError] = useState("")
   const [recoveryError, setRecoveryError] = useState("")
   const [runtimeError, setRuntimeError] = useState("")
+  // An effort changed while a turn runs: the daemon stores it at once and the
+  // provider gets it with the next send, so the running turn keeps the effort
+  // it started with. Keyed to that turn, so the note ends when the turn does.
+  const [effortWaiting, setEffortWaiting] = useState<{ sessionId: string, turnId: string, from: string }>()
   const [restartPending, setRestartPending] = useState(false)
   const [restartError, setRestartError] = useState("")
   const archiveReadOnly = sessionIsArchiveReadOnly(active)
@@ -891,9 +895,7 @@ export function Thread({
       setAttachmentError(cause instanceof Error ? cause.message : "Terminal output could not be read from the clipboard")
     }
   }
-  // The Think chip offers what the current model reports. The catalog is read
-  // once per provider change; a read that fails leaves the chip shut with its
-  // reason rather than offering a guess. Hooks sit above the no-session return.
+  // Hooks sit above the no-session return.
   // The editor answers a shortcut as well as its control, because a long prompt
   // usually starts at the keyboard.
   useEffect(() => {
@@ -1167,14 +1169,29 @@ export function Thread({
     if (watching || runtimePending) return
     setRuntimePending(true)
     setRuntimeError("")
+    const sessionId = active.id
+    const turnId = active.activeTurnId
+    const from = active.runtime.reasoning
     try {
       await onSetRuntime(runtime)
+      if (turnId && runtime.reasoning !== from) {
+        setEffortWaiting((current) => current?.sessionId === sessionId && current.turnId === turnId
+          ? current
+          : { sessionId, turnId, from })
+      }
     } catch (cause) {
       setRuntimeError(cause instanceof Error ? cause.message : "The runtime could not be updated")
     } finally {
       setRuntimePending(false)
     }
   }
+
+  const waitingEffort = effortWaiting
+    && effortWaiting.sessionId === active.id
+    && effortWaiting.turnId === active.activeTurnId
+    && active.runtime.reasoning !== effortWaiting.from
+    ? active.runtime.reasoning
+    : undefined
 
   const forkRuntime = async (runtime: Runtime, checkpointId: string, requestId: string) => {
     if (watching || runtimePending || forkReason) return
@@ -1589,8 +1606,13 @@ export function Thread({
                 onChange={(runtime) => void updateRuntime(runtime)}
                 onFork={forkRuntime}
               />
-              {/* v2's mode chip sits beside the model. Think has no drawing in
-                  v2; the runtime carries it, so it stays as a plain chip here. */}
+              {waitingEffort ? (
+                <span role="status" aria-label="Reasoning change waiting" className="font-machine text-mono-xs whitespace-nowrap text-faint">
+                  reasoning {waitingEffort} from the next turn
+                </span>
+              ) : null}
+              {/* v2's mode chip sits beside the model. Reasoning effort is a
+                  group inside the model menu, not a chip of its own. */}
               <ModeChip runtime={active.runtime} pending={runtimePending || readOnly} onSetRuntime={(runtime) => void updateRuntime(runtime)} />
               {/* v2 opens the machine surfaces from the row itself, on Changes.
                   It is the only control here that looks at the machine rather
