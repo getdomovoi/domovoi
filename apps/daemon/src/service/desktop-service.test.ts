@@ -13,7 +13,7 @@ import {
 import { createServiceConfiguration, parseServiceConfiguration } from "./configuration.js"
 import type { ServiceEffects } from "./install.js"
 import { ServiceOperationBusyError } from "./operation-lease.js"
-import { DaemonServiceHandoffError, LaunchdJobNotDomovoiError, WindowsTaskArgumentVariableError, WindowsTaskPathError } from "./desktop-service.js"
+import { DaemonServiceHandoffError, LaunchdJobNotDomovoiError, SystemdPathCharacterError, WindowsTaskArgumentVariableError, WindowsTaskPathError } from "./desktop-service.js"
 
 // The desktop installs a service that runs the Node and daemon it ships, so
 // the daemon keeps running after the app quits. It passes the two paths; the
@@ -715,5 +715,29 @@ describe("security review round 5 (install)", () => {
     await expect(installDaemonService({ runtime }, fake.effects)).rejects.toThrow("launchctl bootout failed")
     expect(fake.job()).toEqual({ path: agent, running: false })
     expect(fake.ran).toEqual(["launchctl bootout"])
+  })
+})
+
+// Security review round 5: systemd expands $ variables and % specifiers in
+// ExecStart, and whether it undoes the doubling in the executable slot is not
+// certain, so a Linux path with either is refused.
+describe("security review round 5 (systemd paths)", () => {
+  it("refuses $ or % in any path the unit runs, before the handoff", async () => {
+    for (const [runtimePaths, home, character] of [
+      [{ ...runtime, nodePath: "/opt/do$main/node" }, "/home/dl", "$"],
+      [{ ...runtime, daemonEntryPath: "/opt/domovoi/%h/index.js" }, "/home/dl", "%"],
+      [runtime, "/home/d$l", "$"],
+      [runtime, "/home/d%l", "%"],
+    ] as const) {
+      const releaseInAppDaemon = vi.fn(async () => {})
+      const effects = dependencies({ platform: "linux", home })
+      const refused = installDaemonService({ runtime: runtimePaths, releaseInAppDaemon }, effects)
+      await expect(refused).rejects.toBeInstanceOf(SystemdPathCharacterError)
+      await expect(refused).rejects.toThrow(`contains ${character}`)
+      expect(releaseInAppDaemon).not.toHaveBeenCalled()
+      expect(effects.claimServiceOperation).not.toHaveBeenCalled()
+      expect(effects.write).not.toHaveBeenCalled()
+      expect(effects.run).not.toHaveBeenCalled()
+    }
   })
 })

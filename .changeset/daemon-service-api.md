@@ -34,7 +34,9 @@ The Windows logon task, from the desktop and from `domovoid service install` ali
 daemon entry through the named Node runtime, and a runtime, entry or configuration path that
 contains a percent sign is refused (`WindowsTaskPercentSignError`), because Task Scheduler expands
 `%NAME%` when the task runs. A path that contains `$(` is refused (`WindowsTaskArgumentVariableError`),
-because Task Scheduler substitutes `$(Arg0)` and the like in task arguments. A path that is not in the plain form
+because Task Scheduler substitutes `$(Arg0)` and the like in task arguments. On Linux, a runtime, entry or
+configuration path that contains `$` or `%` is refused (`SystemdPathCharacterError`), because systemd
+expands variables and specifiers in `ExecStart`. A path that is not in the plain form
 Windows reports (`.` or `..` parts, doubled or forward slashes, a DEL character) is refused
 (`WindowsTaskPathError`), because Domovoi could not recognise that task later. Install refuses a
 same-named task Domovoi did not register (`WindowsTaskNotDomovoiError`) rather than replace it.

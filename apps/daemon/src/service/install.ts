@@ -213,6 +213,22 @@ export class WindowsTaskPathError extends Error {
   }
 }
 
+// Security review round 5 (#574): systemd expands $ variables and %
+// specifiers in ExecStart. The unit doubles them, but whether systemd undoes
+// that in the executable slot is not certain, so a path that contains one is
+// refused before anything changes, as on Windows. A backslash is left to the
+// unit's quoting: the non-native systemd safety tests install with a Windows
+// host's own paths, and refusing it here would make them unrunnable there.
+// Placeholder copy: the text needs an owner ruling.
+const systemdExpansions: Record<string, string> = { "$": "a variable", "%": "a specifier" }
+
+export class SystemdPathCharacterError extends Error {
+  constructor(readonly path: string, readonly character: string) {
+    super(`[copy pending owner ruling] ${path} contains ${character}, which systemd reads as ${systemdExpansions[character] ?? "a special character"} when the service starts. No service files were changed.`)
+    this.name = "SystemdPathCharacterError"
+  }
+}
+
 // Security review round 2 (#574): Task Scheduler substitutes $(Arg0) through
 // $(Arg32) in an action's arguments when the task runs with parameters, so any
 // $( is refused before anything changes, as the percent sign is.
@@ -257,6 +273,10 @@ export function servicePlan({
   const program = runtime === undefined ? execPath : runtime
   const args = runtime === undefined ? serviceArgs : [execPath, ...serviceArgs]
   if (platform === "linux") {
+    for (const path of [runtime, execPath, configurationFile.path]) {
+      const character = path === undefined ? undefined : [...path].find((c) => c in systemdExpansions)
+      if (path !== undefined && character !== undefined) throw new SystemdPathCharacterError(path, character)
+    }
     return {
       configuration: configurationFile,
       kind: "file",

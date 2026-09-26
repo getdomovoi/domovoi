@@ -18,6 +18,7 @@ import {
 export {
   DaemonServiceHandoffError,
   LaunchdJobNotDomovoiError,
+  SystemdPathCharacterError,
   WindowsTaskArgumentVariableError,
   WindowsTaskNotDomovoiError,
   WindowsTaskPathError,
