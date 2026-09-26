@@ -434,11 +434,16 @@
       ],
       "evidence": [
         "Keep Domovoi running after I quit",
+        "It owns every session here.",
+        "The daemon on this machine is not running. Its supervisor gave up"
+      ],
+      "presence": [
+        "Keep Domovoi running after I quit",
         "It owns every session here."
       ],
-      "missing": {
+      "partial": {
         "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J24 and J37; Settings has no daemon section and the desktop cannot install or remove the login service"
+        "reason": "the section draws the real ownership state (inside this app, installed service, another window) and the per-platform WHAT TURNING IT ON WRITES facts; Install and Remove are locked with the by-hand command because the app ships no daemon runtime a service could point at (ND9, ruled: bundle a runtime, daemon lane exports the installer first); the supervisor gave-up state, pid and uptime need a status the window cannot read"
       }
     },
     {
@@ -473,12 +478,8 @@
       ],
       "evidence": [
         "About this build",
-        "Checks run only while this machine's update policy allows them."
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J10; Settings does not say the build is unsigned or how update checks run"
-      }
+        "This build is not signed and does not update itself."
+      ]
     },
     {
       "id": "settings.pairing",
@@ -1823,6 +1824,11 @@
       "id": "thread.session-notice",
       "since": "2026-09-23",
       "note": "Branch name and files-never-merged count come from sessionSummary.branch and unmergedFiles (daemon lane, #568); a part the daemon did not report is left out rather than guessed."
+    },
+    {
+      "id": "settings.about-build",
+      "since": "2026-09-23",
+      "note": "Not signed is fixed copy for M1 (ND6); scripts/unsigned-build.mjs fails the release invariants once a signing build runs on an automatic trigger while the line stays. The update-checks line (Checks run only while this machine's update policy allows them) belongs to the design's later signed state and is not drawn. The About Domovoi menu dialog is not drawn; it is app-menu work."
     }
   ],
   "annotations": [

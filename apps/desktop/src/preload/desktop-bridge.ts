@@ -184,6 +184,7 @@ export function createDesktopWindowBridge(
       await ipc.invoke("domovoi:open-external", externalRequest(request, platform)),
       "external editor",
     ),
+    openReleasePage: async () => booleanResult(await ipc.invoke("domovoi:open-release-page"), "release page"),
     onDeepLink: (listener) => {
       const handler = (_event: unknown, sessionId: unknown) => {
         if (typeof sessionId === "string" && sessionIdPattern.test(sessionId)) listener(sessionId)
