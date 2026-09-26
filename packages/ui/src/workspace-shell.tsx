@@ -1340,7 +1340,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             providers={snapshot.machine.providers}
             secrets={providerSecrets}
             readOnly={watching}
-            {...(localDaemon && !attached ? { localDaemon } : {})}
+            {...(localDaemon && !attached ? { localDaemon: { ...localDaemon, ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}) } } : {})}
             about={about}
             {...(attached || clientKind !== "desktop" ? {} : {
               pairing: {
