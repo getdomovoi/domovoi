@@ -16,8 +16,10 @@ import { createServiceConfiguration, parseServiceConfiguration, serializeService
 import { readLocalProfileFile } from "../local-owner-record.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
-import { launchdPlist, systemdUnit } from "./units.js"
-import { readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
+import { launchdPlist, launchdPlistProgram, systemdUnit, systemdUnitProgram } from "./units.js"
+import { isRecordedServiceProgram } from "./restore-target.js"
+import { readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
+import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, within, type InFlight, type ServiceSwap } from "./update-outcome.js"
 import { readLocalOwnerRecord, type LocalOwnerRecord } from "../local-owner-record.js"
 import { readGuestSupervisorStatus } from "./supervisor-command.js"
 import { profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
@@ -222,6 +224,18 @@ export class WindowsTaskPathError extends Error {
 // Text ruled 2026-09-25.
 const systemdExpansions: Record<string, string> = { "$": "a variable", "%": "a specifier" }
 
+export function refuseSystemdPath(path: string): void {
+  const character = [...path].find((c) => c in systemdExpansions)
+  if (character !== undefined) throw new SystemdPathCharacterError(path, character)
+}
+
+// Task Scheduler expands %NAME% and substitutes $( in an action's program and
+// arguments when the task runs (security review rounds 1 and 2 on #574).
+export function refuseTaskSchedulerExpansion(value: string): void {
+  if (value.includes("%")) throw new WindowsTaskPercentSignError(value)
+  if (value.includes("$(")) throw new WindowsTaskArgumentVariableError(value)
+}
+
 export class SystemdPathCharacterError extends Error {
   constructor(readonly path: string, readonly character: string) {
     super(`${path} contains ${character}, which systemd reads as ${systemdExpansions[character] ?? "a special character"} when the service starts. No service files were changed.`)
@@ -274,8 +288,7 @@ export function servicePlan({
   const args = runtime === undefined ? serviceArgs : [execPath, ...serviceArgs]
   if (platform === "linux") {
     for (const path of [runtime, execPath, configurationFile.path]) {
-      const character = path === undefined ? undefined : [...path].find((c) => c in systemdExpansions)
-      if (path !== undefined && character !== undefined) throw new SystemdPathCharacterError(path, character)
+      if (path !== undefined) refuseSystemdPath(path)
     }
     return {
       configuration: configurationFile,
@@ -388,8 +401,15 @@ async function writeUnit(path: string, contents: string, deadline: OperationDead
   try {
     // Never truncate the last complete configuration. Exclusive creation gives
     // this install a private inode, including when the old file was writable.
-    await withinServiceDeadline(deadline, () => writeFile(staging, contents, { flag: "wx", mode: 0o600, signal: deadline.signal }))
-    await withinServiceDeadline(deadline, () => rename(staging, path))
+    // The write and the rename are awaited to their end rather than raced
+    // against the deadline, so this settles only once the file is known to be
+    // published or not; a caller that ran out of time (withinServiceDeadline)
+    // can wait for it before restoring. The write honours the abort signal,
+    // and no rename starts after the deadline.
+    deadline.throwIfExpired()
+    await writeFile(staging, contents, { flag: "wx", mode: 0o600, signal: deadline.signal })
+    deadline.throwIfExpired()
+    await rename(staging, path)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw error
     try {
@@ -700,6 +720,259 @@ async function windowsTaskOwner(
   if (!effects.readConfiguration) throw new Error("checking who registered the Windows task needs the saved service configuration")
   const saved = effects.readConfiguration(home, "win32")
   return saved !== undefined && isDomovoiTaskAction(action, serviceConfigurationPath(home, "win32"), saved.serviceRuntime) ? "domovoi" : "other"
+}
+
+export type ServiceUpdateEffects = Pick<ServiceEffects, "write" | "read" | "run" | "capture" | "exists" | "claimProfile" | "claimServiceOperation" | "readOwner">
+
+export type ServiceUpdateWaits = {
+  // How long a stopped service's daemon has to let the profile go.
+  profileWaitMs: number
+  // How long a started service has to report ready.
+  readinessWaitMs: number
+  // The budget of the swap, and separately of the restore.
+  budgetMs: number
+}
+
+// The command a Domovoi logon task runs, as servicePlan writes it, rebuilt
+// from the task's action; undefined for an action of any other shape, or one
+// that runs anything but the runtime and entry service.json records, which is
+// never registered again (security review rounds 2 and 3). Task Scheduler may
+// report the program with the quotes schtasks was given, so one pair is
+// dropped.
+function domovoiTaskCommand(action: WindowsTaskAction, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): string | undefined {
+  const execPath = /^"([^"]*)"$/.exec(action.path)?.[1] ?? action.path
+  const quoted = /^"([^"]*)" --service-config "([^"]*)"$/.exec(action.arguments)
+  if (!quoted) return undefined
+  const [, entry = "", saved = ""] = quoted
+  const program = { execPath, args: [entry, "--service-config", saved] }
+  if (!isRecordedServiceProgram(program, { paths: "win32", flag: "--service-config", configurationPath }, recorded)) return undefined
+  // Security review round 5: a failed step registers this command again, so
+  // it must pass the refusals an install applies to a new one. A recorded
+  // path with %, $( or a form Windows would not report refuses the update
+  // before anything changes.
+  try {
+    for (const path of [execPath, entry, configurationPath]) refuseWindowsTaskPath(path)
+  } catch (cause) {
+    throw new DaemonServiceUpdateError("nothing-changed", cause)
+  }
+  return `"${execPath}" "${entry}" --service-config "${configurationPath}"`
+}
+
+// The install's refusals for one Windows task path (security review rounds
+// 1 to 3 on #574), for a path that did not come through servicePlan.
+function refuseWindowsTaskPath(path: string): void {
+  refuseTaskSchedulerExpansion(path)
+  if (!plainWindowsPath(path)) throw new WindowsTaskPathError(path)
+}
+
+// Ruled 2026-09-23: an update swaps the installed service to a new runtime in
+// place. The saved service configuration is kept as it is; the service
+// definition changes. What the service ran before is read first, so any
+// failed step, a timeout included, puts it back. A start counts only once the
+// daemon reports ready, after the swap and after a restore alike. The caller
+// runs this under the service-operation lease (runServiceUpdate), with effects
+// tracked by trackInFlight.
+export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits, inFlight: InFlight) {
+  return async (readDeadline: OperationDeadline): Promise<ServiceSwap<ServicePlan>> => {
+    const plan = servicePlan(target)
+    const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory)
+    const registrationId = target.configuration.registrationId
+    // Ruled 2026-09-24 (A): the runtime service.json records is the only one a
+    // failed step may start again. The swap records the new runtime with the
+    // new definition (plan.configuration); the restore puts both back.
+    const recorded = target.configuration.serviceRuntime
+    const previousConfiguration = serializeServiceConfiguration(target.configuration)
+    const readOwner = effects.readOwner
+    if (!readOwner) throw new Error("the update needs to read the daemon's owner record")
+    const runIn = (deadline: OperationDeadline) => (command: ServiceCommand) => withinServiceDeadline(deadline, () => effects.run(command.command, command.args, deadline))
+    const writeIn = (deadline: OperationDeadline) => (path: string, contents: string) => withinServiceDeadline(deadline, () => effects.write(path, contents, deadline))
+    // Every instance seen, from the one running now on; none of them can
+    // count as a new start.
+    const instances = new OwnerInstances(readOwner, profile)
+    await instances.note(readDeadline)
+    // Starts a service definition and waits for its daemon to report ready.
+    const startIn = (deadline: OperationDeadline) => async (commands: readonly ServiceCommand[]) => {
+      await instances.note(deadline)
+      for (const command of commands) await runIn(deadline)(command)
+      await instances.waitUntilReady(registrationId, waits.readinessWaitMs, deadline)
+    }
+    // Holds the profile once the stopped daemon lets it go, for the step given
+    // and until every call it started has settled.
+    const whileHeldIn = (deadline: OperationDeadline, stoppedInstance: string | undefined) => async (step: () => Promise<void>) => {
+      const lease = await claimProfileAfterStop(effects.claimProfile, readOwner, profile, stoppedInstance, waits.profileWaitMs, deadline)
+      try {
+        await step()
+      } finally {
+        await releaseWhenSettled(lease, inFlight)
+      }
+    }
+
+    if (plan.kind === "file") {
+      if (!await withinServiceDeadline(readDeadline, () => effects.exists(plan.path, readDeadline))) throw new DaemonServiceUpdateError("not-installed")
+      if (!effects.read) throw new Error("the update needs to read the installed service file")
+      const read = effects.read
+      const previous = await withinServiceDeadline(readDeadline, () => read(plan.path, readDeadline))
+      // Put back on a failed step, so it must be a Domovoi service file that
+      // runs exactly the runtime service.json records. Security review rounds
+      // 2 and 3: anything else is not Domovoi's service, and is said to be
+      // changed outside Domovoi (ruled 2026-09-24).
+      const program = (target.platform === "linux" ? systemdUnitProgram : launchdPlistProgram)(previous)
+      if (!program || !isRecordedServiceProgram(program, { paths: "posix", flag: "--service-config", configurationPath: plan.configuration.path }, recorded)) {
+        throw new DaemonServiceUpdateError("changed-outside")
+      }
+      // Security review round 6: a failed step starts the old unit again, so
+      // its runtime and entry must pass the refusals an install applies.
+      if (target.platform === "linux") {
+        try {
+          for (const path of [program.execPath, program.args[0] ?? ""]) refuseSystemdPath(path)
+        } catch (cause) {
+          throw new DaemonServiceUpdateError("nothing-changed", cause)
+        }
+      }
+
+      if (target.platform === "linux") {
+        // The running daemon holds the profile across its own restart, so the
+        // profile is not claimed here, for the unit or for service.json.
+        const reload = { command: "systemctl", args: ["--user", "daemon-reload"] }
+        const restart = { command: "systemctl", args: ["--user", "restart", unitFile] }
+        return {
+          swap: async (deadline) => {
+            try {
+              await writeIn(deadline)(plan.path, plan.contents)
+            } catch (cause) {
+              // The unit is replaced by rename, so a write that failed on its
+              // own left the old one. A write the deadline cut short may still
+              // rename the new unit into place: that is a failed swap, and the
+              // restore runs once the write has settled.
+              if (deadline.signal.aborted) throw cause
+              throw new DaemonServiceUpdateError("nothing-changed", cause)
+            }
+            await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
+            await runIn(deadline)(reload)
+            await startIn(deadline)([restart])
+            return plan
+          },
+          restore: async (deadline) => {
+            await writeIn(deadline)(plan.path, previous)
+            await writeIn(deadline)(plan.configuration.path, previousConfiguration)
+            await runIn(deadline)(reload)
+            await startIn(deadline)([restart])
+          },
+        }
+      }
+
+      // launchd: the agent is booted out, so its daemon lets the profile go.
+      // The profile is held while the new agent is written, then released
+      // before the new agent starts and claims it.
+      const domain = `gui/${assertUid(target.uid)}`
+      const job = `${domain}/${agentLabel}`
+      const bootout = { command: "launchctl", args: ["bootout", job] }
+      const bootstrap = { command: "launchctl", args: ["bootstrap", domain, plan.path] }
+      const stoppedInstance = currentInstance(readOwner, profile)
+      const loaded = async (deadline: OperationDeadline) => {
+        const printed = await withinServiceDeadline(deadline, () => effects.capture("launchctl", ["print", job], deadline))
+        if (printed.code === 0) return true
+        if (printed.code === 113 && isMissingServiceFailure("darwin", printed)) return false
+        throw captureFailure("launchctl", printed)
+      }
+      // Security review round 5: the plist the loaded job came from, or
+      // undefined when none is loaded. launchd binds the label to whichever
+      // plist was bootstrapped, so a job from another plist is never booted
+      // out, by the swap or by the restore.
+      const loadedFrom = async (deadline: OperationDeadline) => {
+        const printed = await withinServiceDeadline(deadline, () => effects.capture("launchctl", ["print", job], deadline))
+        if (printed.code === 113 && isMissingServiceFailure("darwin", printed)) return undefined
+        if (printed.code !== 0) throw captureFailure("launchctl", printed)
+        return launchdJobPath(printed.stdout)
+      }
+      const bootoutIn = (deadline: OperationDeadline) => async () => {
+        const from = await loadedFrom(deadline)
+        if (from === undefined) return
+        if (from !== plan.path) throw new DaemonServiceUpdateError("nothing-changed", new LaunchdJobNotDomovoiError(from))
+        try {
+          await runIn(deadline)(bootout)
+        } catch (cause) {
+          if (isMissingServiceFailure("darwin", cause)) return
+          // The refusal may still stop the agent, and a job listed right after
+          // it can unload a moment later, so it is watched for a while.
+          // Still loaded then, it stopped nothing; unloaded, it stopped the
+          // previous service, which is put back.
+          const unloaded = await within(waits.profileWaitMs, deadline, async () => !await loaded(deadline))
+          if (!unloaded) throw new DaemonServiceUpdateError("nothing-changed", cause)
+          throw cause
+        }
+      }
+      let wroteNew = false
+      return {
+        swap: async (deadline) => {
+          await bootoutIn(deadline)()
+          await whileHeldIn(deadline, stoppedInstance)(async () => {
+            wroteNew = true
+            await writeIn(deadline)(plan.path, plan.contents)
+            await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
+          })
+          await startIn(deadline)([bootstrap])
+          return plan
+        },
+        restore: async (deadline) => {
+          const from = await loadedFrom(deadline)
+          if (from !== undefined && from !== plan.path) throw new LaunchdJobNotDomovoiError(from)
+          if (from !== undefined) await runIn(deadline)(bootout)
+          if (wroteNew) {
+            await writeIn(deadline)(plan.path, previous)
+            await writeIn(deadline)(plan.configuration.path, previousConfiguration)
+          }
+          await startIn(deadline)([bootstrap])
+        },
+      }
+    }
+
+    // The Windows logon task: stopped (and disabled) through Task Scheduler,
+    // the profile held while it lets go and service.json records the new
+    // runtime, then registered again with the new command, which enables it,
+    // and run.
+    const previous = await readWindowsTaskAction(displayName, effects, readDeadline)
+    if (previous === "missing") throw new DaemonServiceUpdateError("not-installed")
+    const previousCommand = domovoiTaskCommand(previous, plan.configuration.path, recorded)
+    if (previousCommand === undefined) throw new DaemonServiceUpdateError("changed-outside")
+    const restoreCommands = plan.commands.map((command) => command.args[0] !== "/create" ? command : {
+      ...command,
+      args: command.args.map((arg, index) => command.args[index - 1] === "/tr" ? previousCommand : arg),
+    })
+    const stoppedInstance = currentInstance(readOwner, profile)
+    let wroteNew = false
+    return {
+      swap: async (deadline) => {
+        try {
+          await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
+        } catch (cause) {
+          // A refused stop may have changed nothing: the task still enabled,
+          // running the command it ran before. Then the service was left as
+          // it was, and there is nothing to put back.
+          const now = await readWindowsTaskAction(displayName, effects, deadline).catch(() => undefined)
+          if (now !== undefined && now !== "missing" && now.enabled && now.state === 4
+            && now.path === previous.path && now.arguments === previous.arguments) {
+            throw new DaemonServiceUpdateError("nothing-changed", cause)
+          }
+          throw cause
+        }
+        await whileHeldIn(deadline, stoppedInstance)(async () => {
+          wroteNew = true
+          await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
+        })
+        await startIn(deadline)(plan.commands)
+        return plan
+      },
+      restore: async (deadline) => {
+        // Whatever instance the swap left running is stopped first: Task
+        // Scheduler ignores a run while one runs, and a late start of the new
+        // runtime must not pass for the previous service.
+        await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
+        if (wroteNew) await writeIn(deadline)(plan.configuration.path, previousConfiguration)
+        await startIn(deadline)(restoreCommands)
+      },
+    }
+  }
 }
 
 // A service that was never installed is not an error to remove: the end state

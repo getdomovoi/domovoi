@@ -107,6 +107,19 @@ export async function readWindowsTaskState(name: string, effects: Pick<ServiceEf
   throw new Error(`Task Scheduler did not report a known task state (state ${state})`)
 }
 
+// Stops the task and waits until Task Scheduler reports it disabled and
+// stopped (1), without deleting it. Missing means there was nothing to stop.
+export async function stopWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<"stopped" | "missing"> {
+  let state = await taskResult(plan.stop, effects, deadline)
+  if (state === "missing") return "missing"
+  while (state === "2" || state === "4") {
+    await withinServiceDeadline(deadline, () => delay(100, undefined, { signal: deadline.signal }))
+    state = await taskResult(plan.inspect, effects, deadline)
+  }
+  if (state !== "1") throw new Error(`Task Scheduler did not confirm a disabled, stopped task (state ${state})`)
+  return "stopped"
+}
+
 // The program and arguments, whether the task is enabled, and its state.
 const windowsTaskActionSchema = z.object({
   path: z.string().min(1),
@@ -117,7 +130,8 @@ const windowsTaskActionSchema = z.object({
 export type WindowsTaskAction = z.infer<typeof windowsTaskActionSchema>
 
 // The program and arguments the task runs now, read through the typed Task
-// Scheduler API, so a caller can tell whether Domovoi registered it.
+// Scheduler API, so a caller can tell whether Domovoi registered it, and so
+// an update can register the same command again if the new one does not run.
 export async function readWindowsTaskAction(name: string, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<WindowsTaskAction | "missing"> {
   const command = taskCommand(windowsPowerShellPath(), name, `
 if ($task.Definition.Actions.Count -ne 1) { throw 'The task does not run exactly one program' }
