@@ -528,10 +528,10 @@ it("reads the service back when the answer to a removal cannot be read, and neve
     .mockResolvedValueOnce({ installed: false, running: false, detail: "" })
   const section = daemonSection("outside", { remove, status })
   const button = within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" })
-  // The last line has no approved wording yet: the removal may or may not
-  // have finished, so the approved "gone, but the removal did not finish"
-  // would claim more than is known.
-  for (const fact of ["The LaunchAgent is still installed but not running.", "Whether the LaunchAgent is installed is not known from here.", "[Copy pending] The LaunchAgent is not installed."]) {
+  // The last line was approved by fetzy on 2026-09-25: the removal may or may
+  // not have finished, so "gone, but the removal did not finish" would claim
+  // more than is known.
+  for (const fact of ["The LaunchAgent is still installed but not running.", "Whether the LaunchAgent is installed is not known from here.", "The LaunchAgent is not installed."]) {
     await user.click(button)
     expect(await within(section).findByText(fact)).toBeTruthy()
     expect(section.textContent).not.toContain("Nothing changed.")
@@ -546,4 +546,46 @@ it("says it cannot tell what changed when there is no way to read the service ba
   await user.click(within(section).getByRole("button", { name: "Install" }))
   expect(await within(section).findByText("Whether the LaunchAgent is installed is not known from here.")).toBeTruthy()
   expect(section.textContent).not.toContain("Nothing changed.")
+})
+
+// Ruled by fetzy on 2026-09-25. An answer this window could not read, whose
+// read-back shows the change happened in whole or in part, must not be headed
+// "Could not install" or "Could not remove". The header's words are pending;
+// the drafts below are the placeholders.
+it("heads an unreadable answer by what the read-back shows, never 'Could not' after a change that happened", async () => {
+  const user = userEvent.setup()
+  const unreadable = vi.fn(async () => { throw new Error("Desktop returned an invalid service outcome") })
+  for (const [owner, button, read, header] of [
+    ["app", "Install", { installed: true, running: true }, "[Copy pending] Could not confirm the install"],
+    ["app", "Install", { installed: true, running: false }, "[Copy pending] Could not confirm the install"],
+    ["app", "Install", { installed: false, running: false }, "Could not install the service"],
+    ["app", "Install", null, "Could not install the service"],
+    ["outside", "Unload and delete the LaunchAgent", { installed: false, running: false }, "[Copy pending] Could not confirm the removal"],
+    ["outside", "Unload and delete the LaunchAgent", { installed: true, running: false }, "[Copy pending] Could not confirm the removal"],
+    ["outside", "Unload and delete the LaunchAgent", { installed: true, running: true }, "Could not remove the service"],
+    ["outside", "Unload and delete the LaunchAgent", null, "Could not remove the service"],
+  ] as const) {
+    const status = vi.fn(async () => read ? { ...read, detail: "" } : { unavailable: "launchctl could not be run" })
+    const section = daemonSection(owner, { install: unreadable, remove: unreadable, status })
+    await user.click(within(section).getByRole("button", { name: button }))
+    expect(await within(section).findByText(header)).toBeTruthy()
+    if (header.startsWith("[Copy pending]")) {
+      expect(section.textContent).not.toContain("Could not install the service")
+      expect(section.textContent).not.toContain("Could not remove the service")
+    }
+    cleanup()
+  }
+})
+
+// Ruled by fetzy on 2026-09-25: a daemon this app did not start, when the
+// service is known not installed, is named as what it is. The label, the
+// status command and the lock reason stay.
+it("says the login service is not installed when a daemon outside the app runs and the service is known absent", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to a daemon outside this app", detail: "", owner: "outside", serviceInstalled: false, platform: "darwin" }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(section.textContent).toContain("The login service is not installed. This daemon was started outside any app and runs until it is stopped.")
+  expect(section.textContent).not.toContain("This app cannot tell whether that daemon is the installed service.")
+  expect(within(section).getByText("Not started here")).toBeTruthy()
+  expect(within(section).getByText("domovoid service status")).toBeTruthy()
+  expect(section.textContent).toContain("Install and Remove are off: this app did not start that daemon.")
 })

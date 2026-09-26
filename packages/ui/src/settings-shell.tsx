@@ -72,7 +72,7 @@ type ServicePhase =
   | { kind: "waits"; refusal: string }
   | { kind: "unchecked"; message: string }
   | { kind: "not-attached"; message: string }
-  | { kind: "failed"; action: "install" | "remove"; message: string; still: string }
+  | { kind: "failed"; action: "install" | "remove"; message: string; still: string; header?: string | undefined }
 
 const profileRecoverCommand = "domovoid profile recover --confirm-no-supervisor"
 
@@ -108,11 +108,22 @@ async function readServiceBack(status: (() => Promise<DaemonServiceStatusReport>
 // Review round 3 of #576: what is still true after an answer this window could
 // not read. Only the read-back speaks; the daemon's state is not known here.
 function unknownAnswerStill(kind: string, action: "install" | "remove", service: FailedOutcome["service"]): string {
-  // COPY PLACEHOLDER (awaiting the owner's ruling): a removal whose answer was
-  // unreadable and whose read-back shows no service. "Gone, but the removal
-  // did not finish" would claim more than is known.
-  if (action === "remove" && service?.installed === false) return `[Copy pending] The ${kind} is not installed.`
+  // Approved by fetzy on 2026-09-25: a removal whose answer was unreadable and
+  // whose read-back shows no service. "Gone, but the removal did not finish"
+  // would claim more than is known.
+  if (action === "remove" && service?.installed === false) return `The ${kind} is not installed.`
   return readBackFact(kind, action, service)
+}
+
+// Ruled 2026-09-25: an unreadable answer whose read-back shows the change
+// happened, in whole or in part, is not headed "Could not install" or "Could
+// not remove". COPY PLACEHOLDER: the owner's wording is pending; these are
+// the drafts.
+function unknownAnswerHeader(action: "install" | "remove", service: FailedOutcome["service"]): string | undefined {
+  if (!service || service.installed === null) return undefined
+  const happened = action === "install" ? service.installed : !(service.installed && service.running)
+  if (!happened) return undefined
+  return action === "install" ? "[Copy pending] Could not confirm the install" : "[Copy pending] Could not confirm the removal"
 }
 
 // What is still true after a failed install or removal. The approved lines
@@ -164,7 +175,8 @@ function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: N
     } catch (cause) {
       // The desktop may have finished the change before its answer failed
       // here, so what changed is read back rather than assumed.
-      setPhase({ kind: "failed", action, message: cause instanceof Error ? cause.message : "The desktop did not answer.", still: unknownAnswerStill(service.kind, action, await readServiceBack(live.status)) })
+      const readBack = await readServiceBack(live.status)
+      setPhase({ kind: "failed", action, message: cause instanceof Error ? cause.message : "The desktop did not answer.", still: unknownAnswerStill(service.kind, action, readBack), header: unknownAnswerHeader(action, readBack) })
     }
   }
   const on = daemon.owner === "outside" && daemon.serviceInstalled === true
@@ -244,7 +256,7 @@ function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: N
       ) : null}
       {phase.kind === "failed" ? (
         <div className="flex flex-col gap-1.5 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] text-danger-foreground" role="alert">
-          <span className="font-medium">{phase.action === "install" ? "Could not install the service" : "Could not remove the service"}</span>
+          <span className="font-medium">{phase.header ?? (phase.action === "install" ? "Could not install the service" : "Could not remove the service")}</span>
           <span className="font-machine text-[10.5px] opacity-80">{phase.message}</span>
           <span>{phase.still}</span>
           <span>To finish by hand, run this in a terminal.</span>
@@ -267,7 +279,10 @@ function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: N
         </ul>
       </div>}
       {!live || unknown ? <div className="flex flex-col gap-1.5 rounded-md border border-info-border bg-info-background px-3 py-2 text-[11.5px] text-info-foreground">
-        {unknown ? <span>This app cannot tell whether that daemon is the installed service. To check by hand, run this in a terminal.</span> : <>
+        {unknown ? <span>{daemon.serviceInstalled === false
+          // Approved by fetzy on 2026-09-25 for a service known not installed.
+          ? "The login service is not installed. This daemon was started outside any app and runs until it is stopped. To check by hand, run this in a terminal."
+          : "This app cannot tell whether that daemon is the installed service. To check by hand, run this in a terminal."}</span> : <>
           <span>{on ? "Removing the service from this window is not built yet." : "Installing the service from this window is not built yet."}</span>
           <span>To finish by hand, run this in a terminal.</span>
         </>}

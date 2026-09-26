@@ -233,6 +233,12 @@ export async function stageDaemonRuntime(input: {
   const destination = profileRuntimeDirectory(input.home, input.version, input.platform)
   const shippedRoot = pathApi.join(input.resourcesPath, runtimeDirectory)
   await checkShippedRuntime(fs, pathApi, shippedRoot, input.platform)
+  // Stated limit, ruled by fetzy on 2026-09-25: the checks above hold against
+  // a profile that is already redirected, not against a process running as
+  // the same user that swaps ~/.domovoi or its runtime directory for a link
+  // between these checks and the copy. Such a process already acts as the
+  // person, so it is outside the threat model (as with the build-machine
+  // ruling on #577).
   const root = await runtimeRoot(fs, pathApi, input.home)
   const earlier = await fs.entry(destination)
   if (earlier !== "missing" && earlier !== "directory") {
