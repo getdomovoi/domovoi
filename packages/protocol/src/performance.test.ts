@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest"
 import {
   boundedClientThread,
-  maximumClientSnapshotThreadItems,
   maximumEffectiveClientThreadItems,
   maximumRenderedPreviewStages,
-  maximumRenderedThreadItems,
   maximumSessionHistoryPageItems,
   performanceBudgets,
   performanceLimitsFor,
@@ -42,9 +40,7 @@ describe("boundedClientThread", () => {
       effectiveClientThreadItems: 80,
       renderedPreviewStages: 1,
     })
-    expect(maximumClientSnapshotThreadItems).toBe(performanceBudgets.memory.clientSnapshotThreadItems)
     expect(maximumSessionHistoryPageItems).toBe(performanceBudgets.longThreads.historyPageItems)
-    expect(maximumRenderedThreadItems).toBe(performanceBudgets.longThreads.renderedThreadItems)
     expect(maximumRenderedPreviewStages).toBe(performanceBudgets.largePreviews.renderedStages)
   })
 })

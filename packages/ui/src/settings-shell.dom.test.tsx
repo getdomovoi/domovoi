@@ -115,7 +115,7 @@ it("says what a rule match does not cover", async () => {
   expect(screen.getByText(/dependency binaries may still change/u)).toBeTruthy()
 })
 
-it("says a file-tool rule covers the worktree, not one path", async () => {
+it("says a worktree-wide file-tool rule no longer matches", async () => {
   const fileRule: ApprovalRule = {
     ...activeRule,
     id: "rule-3",
@@ -135,8 +135,32 @@ it("says a file-tool rule covers the worktree, not one path", async () => {
   }
   render(<SettingsShell {...shellProps()} approvalRules={[fileRule]} />)
 
-  expect(screen.getByText(/matches that tool anywhere inside the worktree/u)).toBeTruthy()
+  expect(screen.getByText(/made for the whole worktree no longer matches anything/u)).toBeTruthy()
   expect(screen.queryByText(/Matches command and package-script text only/u)).toBeNull()
+})
+
+it("says a file-tool rule covers one file", async () => {
+  const fileRule: ApprovalRule = {
+    ...activeRule,
+    id: "rule-4",
+    command: "Edit",
+    execution: {
+      state: "resolved",
+      digest: `sha256:${"c".repeat(64)}`,
+      record: {
+        version: 1,
+        cwd: ".",
+        kind: "workspace-file-tool",
+        coverage: "tool-and-file",
+        tool: "Edit",
+        scope: "file",
+        path: "src/index.ts",
+      },
+    },
+  }
+  render(<SettingsShell {...shellProps()} approvalRules={[fileRule]} />)
+
+  expect(screen.getByText(/matches that tool on one file/u)).toBeTruthy()
 })
 
 it("announces a retired legacy rule before its approval card returns", async () => {
@@ -455,4 +479,14 @@ it("does not say quitting stops the daemon, or that no session runs, when the re
   expect(await within(section).findByText(/This app is connected to a daemon it did not start/)).toBeTruthy()
   expect(section.textContent).not.toContain("Quitting Domovoi now stops the daemon")
   expect(section.textContent).not.toContain("no session is running")
+})
+
+// Another Domovoi window holds the daemon: quitting this one does not stop it,
+// so the section keeps that window's own line.
+it("keeps the other window's line for a daemon another Domovoi window started", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the daemon another Domovoi Desktop started", detail: "That app owns the daemon and stops it when it quits.", owner: "other-app", platform: "darwin" }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(section.textContent).toContain("That app owns the daemon and stops it when it quits.")
+  expect(section.textContent).not.toContain("Quitting Domovoi stops the daemon")
+  expect(section.textContent).not.toContain("Quitting this app leaves the daemon and its sessions running.")
 })

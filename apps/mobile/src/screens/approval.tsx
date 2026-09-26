@@ -130,9 +130,10 @@ export function ApprovalScreen({
         />
         {/* A rule, not an execution: the gate answered for the fourth time is
             the one a person wants to stop answering. The daemon refuses a
-            standing rule on a hard gate, so the button is absent there rather
+            standing rule on a hard gate, and for a request it could not
+            resolve (ruled 2026-09-24), so the button is absent there rather
             than present and refused. */}
-        {approval.risk === "hard-gate" ? null : (
+        {approval.risk === "hard-gate" || approval.execution.state !== "resolved" ? null : (
           <View className="gap-1">
             <Button
               title="Always allow this"

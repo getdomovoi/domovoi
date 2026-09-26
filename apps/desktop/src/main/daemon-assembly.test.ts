@@ -28,12 +28,15 @@ describe("desktop daemon assembly", () => {
           .filter((name) => name.length > 0 && !name.startsWith("type "))
         for (const name of values) {
           // Route verification, the handoff check and the handoff fence talk
-          // to an existing home owner; none can construct or acquire a daemon. The login-service calls (J24, ruled 2026-09-23)
-          // hand the daemon to the platform's service manager; none constructs
-          // one here. Neither the constructor nor factory is allowed.
+          // to an existing home owner; none can construct or acquire a daemon.
+          // Credential capture only takes the inherited credentials out of
+          // process.env. The login-service calls (J24, ruled 2026-09-23) hand
+          // the daemon to the platform's service manager; none constructs one
+          // here. Neither the constructor nor factory is allowed.
           if (![
             "acquireLocalDaemon",
             "verifyLocalFleetClientRoute",
+            "captureInheritedCredentials",
             "readLocalServiceHandoffRefusal",
             "holdServiceHandoffFence",
             "installDaemonService",

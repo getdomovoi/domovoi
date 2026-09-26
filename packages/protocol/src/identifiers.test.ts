@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest"
 import {
   deviceCredentialSchema,
   deviceClaimParamsSchema,
-  machineCredentialSchema,
 } from "./devices.js"
 import { machineIdSchema as fleetMachineIdSchema } from "./fleet.js"
 import { fleetEnrollParamsSchema, fleetForgetParamsSchema } from "./fleet-enrollment.js"
@@ -70,7 +69,6 @@ describe("re-exports", () => {
     expect(schemaClientIdentityIdSchema).toBe(clientIdentityIdSchema)
     expect(fleetMachineIdSchema).toBe(machineIdSchema)
     expect(deviceCredentialSchema).toBe(credentialSchema)
-    expect(machineCredentialSchema).toBe(credentialSchema)
   })
 })
 

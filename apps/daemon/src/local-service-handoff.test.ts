@@ -77,6 +77,25 @@ async function readySession(): Promise<{ workspace: WorkspaceSnapshot; sessionId
 
 type Reply = { result?: unknown; error?: { code: number; message: string } }
 
+// A daemon expires every approval read back from storage at startup (#604),
+// so a waiting gate has to be raised live: the provider asks, in ask mode.
+async function daemonWithLiveGate(): Promise<{ endpoint: { url: string; token: string }; waiting: WorkspaceSnapshot }> {
+  const { workspace, sessionId } = await readySession()
+  const session = workspace.sessions.find(({ id }) => id === sessionId)!
+  session.runtime.permissionMode = "ask"
+  session.runtime.auto = false
+  const { agent, emit } = agentWithHeldTurns(false)
+  const endpoint = await daemonWith(workspace, agent)
+  const reader = await desktopConnection(endpoint)
+  emit({ type: "approval-requested", requestId: 7, threadId: "thread-fence", command: "rm -rf build", cwd: session.workspacePath!, reason: "Remove the build output" })
+  const waiting = await waitForDaemon(async () => {
+    const read = (await reader("workspace.get", {})).result as WorkspaceSnapshot
+    expect(read.approvals).toMatchObject([{ sessionId, providerRequestId: 7 }])
+    return read
+  })
+  return { endpoint, waiting }
+}
+
 // A desktop connection on the daemon credential, hello already answered.
 async function desktopConnection(endpoint: { url: string; token: string }) {
   const socket = new WebSocket(endpoint.url, { headers: { authorization: `Bearer ${endpoint.token}` } })
@@ -115,12 +134,9 @@ describe("the desktop's own check before a service handoff", () => {
   })
 
   it("names a waiting gate from the daemon's own workspace, as the renderer would", async () => {
-    const workspace = quiet()
-    const session = workspace.sessions[0]!
-    workspace.approvals = [{ ...demoWorkspace.approvals[0]!, sessionId: session.id }]
-    const endpoint = await daemonWith(workspace)
+    const { endpoint, waiting } = await daemonWithLiveGate()
     const refusal = await readLocalServiceHandoffRefusal({ endpoint, timeoutMs: 5_000 })
-    expect(refusal).toBe(serviceHandoffRefusal(workspace))
+    expect(refusal).toBe(serviceHandoffRefusal(waiting))
     expect(refusal).toContain("1 gate is waiting")
   })
 
@@ -172,10 +188,8 @@ describe("the service handoff fence", () => {
   })
 
   it("answers the refusal instead of a fence while a gate waits", async () => {
-    const workspace = quiet()
-    workspace.approvals = [{ ...demoWorkspace.approvals[0]!, sessionId: workspace.sessions[0]!.id }]
-    const endpoint = await daemonWith(workspace)
-    await expect(holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })).resolves.toEqual({ refusal: serviceHandoffRefusal(workspace) })
+    const { endpoint, waiting } = await daemonWithLiveGate()
+    await expect(holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })).resolves.toEqual({ refusal: serviceHandoffRefusal(waiting) })
   })
 
   it("holds one fence at a time", async () => {

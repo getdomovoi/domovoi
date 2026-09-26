@@ -111,6 +111,28 @@ describe("RpcOutboundBackpressure", () => {
     expect(scheduler.pending).toHaveLength(0)
   })
 
+  // The resync is built when the client drains. A snapshot the daemon cannot
+  // send is not replaced with an unchecked one: the client reconnects instead.
+  it("closes a draining client whose resync cannot be built", () => {
+    const scheduler = manualScheduler()
+    const socket = new FakeSocket()
+    socket.bufferedAmount = 100
+    const policy = new RpcOutboundBackpressure({
+      highWaterBytes: 100,
+      lowWaterBytes: 25,
+      schedule: scheduler.schedule,
+      cancel: scheduler.cancel,
+    })
+
+    expect(policy.notify(socket, "workspace.changed", "snapshot", () => undefined)).toBe(false)
+    socket.bufferedAmount = 0
+    scheduler.runNext()
+
+    expect(socket.sent).toEqual([])
+    expect(socket.close).toHaveBeenCalledWith(retryableSlowClientCloseCode, retryableSlowClientCloseReason)
+    expect(policy.retainedClientCount).toBe(0)
+  })
+
   it("closes after the bounded poll budget when a client never drains", () => {
     const scheduler = manualScheduler()
     const socket = new FakeSocket()

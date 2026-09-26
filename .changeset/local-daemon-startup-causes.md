@@ -1,0 +1,6 @@
+---
+"@getdomovoi/daemon": patch
+"@getdomovoi/desktop": patch
+---
+
+Desktop no longer reports every in-app daemon startup failure as an invalid profile. `acquireLocalDaemon` names three causes the owner can act on: `port-in-use` when another program holds the daemon's port, `state-locked` when another process holds the profile's state database (SQLite busy or locked), and `identity-mismatch` when the stored workspace belongs to another machine identity. Other failures keep `profile-invalid`. Every startup failure is now written to the error sink with its redacted cause, so Desktop's log keeps it. A port already in use now refuses at once instead of waiting out the startup deadline, because the WebSocket server's copy of the listen error no longer throws before `start()` can reject, and stopping a daemon whose listener never started no longer fails, so the profile lease is released and the next attempt in the same process can start. A Desktop owner record left `stopping` by a Desktop that quit before its daemon finished stopping is retired when the next launch holds the profile lease, so that launch starts instead of being refused as unreachable. After the daemon is listening, a later error from its WebSocket server is written to the error sink instead of being dropped.

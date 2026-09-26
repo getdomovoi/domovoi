@@ -18,9 +18,11 @@ async function skipFirstRun(user: ReturnType<typeof userEvent.setup>) {
 }
 const settle = () => act(async () => { for (let index = 0; index < 8; index += 1) await Promise.resolve() })
 
-function bridge(install: () => Promise<{ ok: true; kind: "file"; target: string; daemonRunning: boolean }>): DesktopWindowBridge {
+// Without an install, the bridge offers no login service, as a desktop that
+// ships no daemon runtime does.
+function bridge(install?: () => Promise<{ ok: true; kind: "file"; target: string; daemonRunning: boolean }>, platform: DesktopWindowBridge["platform"] = "darwin"): DesktopWindowBridge {
   return {
-    platform: "darwin",
+    platform,
     getRpcEndpoint: async () => ({ url: "ws://127.0.0.1:47831/rpc", token: "t" }),
     captureAnnotation: async () => { throw new Error("not in this test") },
     notify: async () => true,
@@ -35,7 +37,7 @@ function bridge(install: () => Promise<{ ok: true; kind: "file"; target: string;
     minimize: () => {},
     maximize: () => {},
     close: () => {},
-    daemonService: { status: async () => ({ installed: false, running: false, detail: "" }), install, remove: async () => ({ ok: true, kind: "file", target: "/p", daemonRunning: true }) },
+    ...(install ? { daemonService: { status: async () => ({ installed: false, running: false, detail: "" }), install, remove: async () => ({ ok: true as const, kind: "file" as const, target: "/p", daemonRunning: true }) } } : {}),
   }
 }
 
@@ -112,4 +114,18 @@ it("keeps a daemon outside the app unnamed when the service status cannot be rea
   const section = await screen.findByRole("region", { name: "Daemon on this machine" })
   expect(within(section).getByText("Not started here")).toBeTruthy()
   expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(true)
+})
+
+// J24: the desktop's daemon copy names the owner but not the platform; the
+// shell takes the platform from the window bridge, so Settings can name the
+// service this machine's installer writes.
+it("draws the daemon section with the window's platform", async () => {
+  const localDaemon = { title: "Running Domovoi inside this app", detail: "This app started the local daemon and stops it when the app quits.", owner: "app" as const }
+  render(<WorkspaceShell windowBridge={bridge(undefined, "linux")} localDaemon={localDaemon} />)
+  await act(async () => { completeHandshake(harness.socket(0)) })
+  await settle()
+  await userEvent.setup().click(screen.getByRole("button", { name: "Settings" }))
+  const section = await screen.findByRole("region", { name: "Daemon on this machine" })
+  expect(section.textContent).toContain("~/.config/systemd/user/domovoid.service")
+  expect(screen.queryByRole("region", { name: /local daemon/iu })).toBeNull()
 })

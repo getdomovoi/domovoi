@@ -62,8 +62,12 @@ describe("grouping sessions for the drawer", () => {
     expect(groups[0]!.sessions[0]!.note).toBe("moved to another machine")
   })
 
-  it("leaves archived sessions out entirely", () => {
-    expect(groupSessions(snapshotWith([session({ id: "s1", state: "archived" })]))).toEqual([])
+  // I69, 2026-09-23: an archived session stays listed, under QUIET, so its
+  // thread can be read and its row can say what archive did.
+  it("keeps archived sessions listed under quiet, marked archived", () => {
+    const groups = groupSessions(snapshotWith([session({ id: "s1", state: "archived" })]))
+    expect(groups[0]!.id).toBe("quiet")
+    expect(groups[0]!.sessions[0]).toMatchObject({ note: "archived", archived: true, running: false })
   })
 
   it("shows no empty group", () => {
