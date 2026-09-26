@@ -12,3 +12,9 @@ stays held through it, as before.
 Daemon shutdown now waits for an emergency stop that is still running, its state save included,
 before it closes the store. A handoff that stops the daemon under a fence taken before the stop
 no longer loses the stop's record.
+
+An emergency stop now writes a durable intent to the daemon's store before it acts, and clears it
+once its state is saved. If the process ends before that save (a crash, a kill, a quit deadline),
+the next start on the same store records `Emergency stop requested by <client>.` on each session
+the stop touched before it accepts any connection. Startup recovery already ends the interrupted
+turns and expires the waiting gates. A start whose save of that record fails does not open.

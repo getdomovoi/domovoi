@@ -1997,6 +1997,7 @@ export class DomovoiDaemon {
     signal?.throwIfAborted()
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.())
     this.#recoverInterruptedTurns()
+    this.#recoverEmergencyStops()
     // Startup recovery expired every saved card (ruled 2026-09-24, #604), so
     // from here on every approval in the snapshot came out of settlement, and
     // saves and broadcasts seal any that did not.
@@ -9941,6 +9942,18 @@ export class DomovoiDaemon {
     }
     for (const approval of this.#snapshot.approvals) affectedSessionIds.add(approval.sessionId)
     for (const terminal of this.#terminals.values()) affectedSessionIds.add(terminal.sessionId)
+    // Security review round 2 of #628: durable before the first effect, so a
+    // restart on this store finishes a stop the process did not live to save.
+    // A stop is never refused for want of it.
+    try {
+      this.#store.emergencyStops?.begin({ version: 1, stopId, client, requestedAt, sessionIds: [...affectedSessionIds] })
+    } catch (error) {
+      failures.push({
+        target: "persistence",
+        message: this.#emergencyFailureMessage(error, "Emergency state persistence failed"),
+      })
+      this.#reportError("Domovoi could not persist emergency stop state", error)
+    }
 
     const cancellation = new Error("Emergency stop requested")
     const cancelledMutations = this.#mutations.cancelAll(cancellation)
@@ -10105,14 +10118,25 @@ export class DomovoiDaemon {
       })
     }
 
+    let saved = false
     try {
       await this.#saveAgentState(false)
+      saved = true
     } catch (error) {
       failures.push({
         target: "persistence",
         message: this.#emergencyFailureMessage(error, "Emergency state persistence failed"),
       })
       this.#reportError("Domovoi could not persist emergency stop state", error)
+    }
+    // The record is on disk. A failed save keeps the intent, so a restart
+    // records the stop; an intent left by a failed clear is found recorded.
+    if (saved) {
+      try {
+        this.#store.emergencyStops?.clear(stopId)
+      } catch (error) {
+        this.#reportError("Domovoi could not clear an emergency stop intent", error)
+      }
     }
     const result: SystemEmergencyStopResult = {
       snapshot: workspaceSnapshotForClient(this.#snapshot),
@@ -10478,6 +10502,41 @@ export class DomovoiDaemon {
       })
     }
     this.#auditExpiredApprovals(expiredApprovals, "startup-recovery", candidate.project?.id)
+  }
+
+  // Security review round 2 of #628: a stop whose intent outlived its process
+  // is finished here, before the listener opens, so no RPC and no handoff
+  // fence meets it half done. Recovery above has already ended the turns the
+  // stop was stopping and expired the gates it was denying; what is left is
+  // the stop's record on each session it touched. A stop already recorded
+  // (its own save, or a later one, landed) is not recorded again. A failed
+  // save here fails startup and keeps the intent for the next one.
+  #recoverEmergencyStops(): void {
+    const journal = this.#store.emergencyStops
+    const intents = journal?.pending() ?? []
+    if (!journal || intents.length === 0) return
+    const candidate = structuredClone(this.#snapshot)
+    for (const intent of intents) {
+      const lineId = (sessionId: string) => `system-${intent.stopId}-${sessionId}`
+      const recorded = candidate.thread.some((item) => item.kind === "system"
+        && (item.detail?.startsWith(`${intent.stopId}:`) || item.id.startsWith(`system-${intent.stopId}-`)))
+      if (recorded) continue
+      for (const sessionId of intent.sessionIds) {
+        const session = candidate.sessions.find(({ id }) => id === sessionId)
+        if (!session || sessionIsReadOnly(session)) continue
+        candidate.thread.push({
+          id: lineId(sessionId),
+          sessionId,
+          kind: "system",
+          body: `Emergency stop requested by ${intent.client}.`,
+          createdAt: intent.requestedAt,
+        })
+      }
+    }
+    workspaceSnapshotSchema.parse(candidate)
+    this.#store.save(candidate)
+    this.#snapshot = candidate
+    for (const intent of intents) journal.clear(intent.stopId)
   }
 
   // `storedApprovalIds` names cards read from storage when startup resumes an

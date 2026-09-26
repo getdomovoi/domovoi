@@ -775,6 +775,80 @@ describe("the service handoff fence and an emergency stop", () => {
       await reopened.close()
     }
   })
+
+  // Security review round 2 of #628: the process can end without
+  // DomovoiDaemon.stop() (a crash, a kill, the desktop's quit bound) while a
+  // stop saves its state. The stop leaves a durable intent before it acts, and
+  // a restart on the same store finishes it before the daemon accepts RPC.
+  it("finishes a stop cut off before its save when the daemon restarts on the same store, before it accepts RPC", async () => {
+    const { workspace, sessionId } = await readySession()
+    const session = workspace.sessions.find(({ id }) => id === sessionId)!
+    session.runtime.permissionMode = "ask"
+    session.runtime.auto = false
+    const statePath = join(await mkdtemp(join(tmpdir(), "domovoi-fence-state-")), "workspace.sqlite")
+    scratchDirectories.push(dirname(statePath))
+    const stopLine = { sessionId, kind: "system", body: "Emergency stop requested by desktop." }
+    const stopRecorded = (snapshot: WorkspaceSnapshot) => snapshot.thread.some((item) => item.kind === "system" && item.body.startsWith("Emergency stop requested"))
+    const onFile = async (wrap: (store: SqliteWorkspaceStore) => SqliteWorkspaceStore = (store) => store) => {
+      const profileDirectory = await mkdtemp(join(tmpdir(), "domovoi-fence-"))
+      scratchDirectories.push(profileDirectory)
+      const { agent, emit } = agentWithHeldTurns(false)
+      const daemon = new DomovoiDaemon({
+        port: 0, store: wrap(new SqliteWorkspaceStore(statePath, workspace)), profileDirectory, agent,
+        skillCatalog: { list: async () => [], read: async () => { throw new Error("No skills here") } },
+      })
+      daemons.push(daemon)
+      return { daemon, agent, emit }
+    }
+    const endpointOf = (address: { host: string; port: number }, daemon: DomovoiDaemon) => ({ url: `ws://${address.host}:${address.port}/rpc`, token: daemon.authToken })
+
+    // The first daemon raises a gate, then a stop runs and is cut off at its
+    // save: that save never reaches the file, as if the process had ended.
+    const saves = heldSaves()
+    const first = await onFile(saves.wrap)
+    const reader = await desktopConnection(endpointOf(await first.daemon.start(), first.daemon))
+    first.emit({ type: "approval-requested", requestId: 7, threadId: "thread-fence", command: "rm -rf build", cwd: session.workspacePath!, reason: "Remove the build output" })
+    await waitForDaemon(async () => {
+      const read = (await reader("workspace.get", {})).result as WorkspaceSnapshot
+      expect(read.approvals).toMatchObject([{ sessionId, providerRequestId: 7 }])
+    })
+    const save = saves.hold(stopRecorded)
+    void reader("system.emergencyStop", { client: "desktop" })
+    try {
+      await save.reached
+
+      // A restart whose finishing save fails does not open: no RPC, so no
+      // fence, before the stop is finished.
+      const failing = await onFile((store) => {
+        const saveSync = store.save.bind(store)
+        store.save = (snapshot) => {
+          if (stopRecorded(snapshot)) throw new Error("The finishing save failed")
+          saveSync(snapshot)
+        }
+        return store
+      })
+      await expect(failing.daemon.start()).rejects.toThrow("The finishing save failed")
+      await failing.daemon.stop().catch(() => {})
+
+      const second = await onFile()
+      const endpoint = endpointOf(await second.daemon.start(), second.daemon)
+      const after = (await (await desktopConnection(endpoint))("workspace.get", {})).result as WorkspaceSnapshot
+      expect(after.thread).toContainEqual(expect.objectContaining(stopLine))
+      expect(after.approvals).toEqual([])
+      expect(after.sessions.find(({ id }) => id === sessionId)).not.toHaveProperty("activeTurnId")
+      await expect(holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })).resolves.toEqual({ release: expect.any(Function) })
+      await second.daemon.stop()
+
+      // Finished once: a later restart records nothing more.
+      const third = await onFile()
+      const again = (await (await desktopConnection(endpointOf(await third.daemon.start(), third.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+      expect(again.thread.filter((item) => item.kind === "system" && item.sessionId === sessionId && item.body === stopLine.body)).toHaveLength(1)
+      await third.daemon.stop()
+    } finally {
+      // The first daemon's save fails, so it writes nothing over the file.
+      save.release("fails")
+    }
+  })
 })
 
 // A narrow text check on the approval-requested handler, not proof. It
