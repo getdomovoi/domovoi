@@ -381,6 +381,15 @@ export class DesktopDaemonService {
       if (attached.kind === "refused") {
         return { ok: false, reason: "installed-not-attached", kind: installed.kind, target, message: attached.message }
       }
+      // Security review round 9: reaching a daemon is not proof the service
+      // took over. Another app's daemon, or one started by hand while the
+      // service is stopped, answers the attach too. Success needs a daemon
+      // outside any app and the service read back installed and running.
+      if (attached.kind !== "attached" || attached.owner !== "daemon" || !(await this.#serviceRuns())) {
+        // COPY PLACEHOLDER (awaiting the owner's ruling): the detail under the
+        // approved "Installed, but this window could not reach the daemon".
+        return { ok: false, reason: "installed-not-attached", kind: installed.kind, target, message: "[Copy pending] The daemon this window reached is not the running service." }
+      }
       return { ok: true, kind: installed.kind, target, configurationPath: installed.configurationPath, daemonRunning: true }
     } finally {
       fence?.release()
@@ -441,6 +450,15 @@ export class DesktopDaemonService {
       return "release" in fence ? fence : { ok: false, reason: "refused", message: fence.refusal }
     } catch (cause) {
       return { ok: false, reason: "check-failed", message: message(cause) }
+    }
+  }
+
+  async #serviceRuns(): Promise<boolean> {
+    try {
+      const status = await this.deps.status()
+      return status.installed === true && status.running
+    } catch {
+      return false
     }
   }
 

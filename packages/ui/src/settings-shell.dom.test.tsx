@@ -385,7 +385,7 @@ it("draws the daemon section for a daemon inside this app, with Install locked a
 })
 
 it("draws the installed service as running, with what it wrote", () => {
-  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", serviceInstalled: true, platform: "linux" }} />)
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "linux" }} />)
   const section = screen.getByRole("region", { name: "Daemon on this machine" })
   expect(within(section).getByText("Running")).toBeTruthy()
   expect(section.textContent).toContain("Quitting this app leaves the daemon and its sessions running.")
@@ -431,7 +431,7 @@ it("says what the installer refused, and that nothing changed", async () => {
 it("removes the installed service and says the daemon is back inside this app", async () => {
   const user = userEvent.setup()
   const remove = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", profileRecovery: "not-needed" as const, daemonRunning: true }))
-  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, platform: "darwin", service: { install: vi.fn(), remove } }} />)
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "darwin", service: { install: vi.fn(), remove } }} />)
   const section = screen.getByRole("region", { name: "Daemon on this machine" })
   await user.click(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
   expect(remove).toHaveBeenCalledOnce()
@@ -443,7 +443,7 @@ it("removes the installed service and says the daemon is back inside this app", 
 // true. The lines were approved by fetzy on 2026-09-23.
 function daemonSection(owner: "app" | "outside", service: { install?: () => Promise<unknown>; remove?: () => Promise<unknown>; status?: () => Promise<unknown>; refusal?: string }) {
   render(<SettingsShell {...shellProps()} localDaemon={{
-    title: owner === "outside" ? "Connected to the installed Domovoi service" : "Running Domovoi inside this app", detail: "", owner, ...(owner === "outside" ? { serviceInstalled: true } : {}), platform: "darwin",
+    title: owner === "outside" ? "Connected to the installed Domovoi service" : "Running Domovoi inside this app", detail: "", owner, ...(owner === "outside" ? { serviceInstalled: true, serviceRunning: true } : {}), platform: "darwin",
     service: { install: (service.install ?? vi.fn()) as never, remove: (service.remove ?? vi.fn()) as never, ...(service.status ? { status: service.status as never } : {}), ...(service.refusal ? { refusal: service.refusal } : {}) },
   }} />)
   return screen.getByRole("region", { name: "Daemon on this machine" })
@@ -533,7 +533,7 @@ it("names the Linux unit the installer writes and no lingering it does not turn 
 // Native Windows runs the logon task unsupervised; only the WSL task has the
 // crash supervisor, so nothing restarts a crashed daemon before the next sign-in.
 it("names the Windows logon task the installer registers and says nothing restarts it", () => {
-  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", serviceInstalled: true, platform: "win32" }} />)
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "win32" }} />)
   const section = screen.getByRole("region", { name: "Daemon on this machine" })
   expect(section.textContent).toContain('Task Scheduler task "Domovoi daemon"')
   expect(section.textContent).toContain("Nothing restarts it until you next sign in.")
@@ -762,4 +762,26 @@ it("draws About at the bottom of the daemon card, and on its own without the car
   render(<SettingsShell {...shellProps()} about={about} />)
   expect(screen.queryByRole("region", { name: "Daemon on this machine" })).toBeNull()
   expect(screen.getByRole("region", { name: "About this build" })).toBeTruthy()
+})
+
+// Security review round 9 of #576: the service reads back installed but not
+// running while a daemon outside the app answers. That daemon is not the
+// service, so the section does not call it Running or promise a restart after
+// a crash; the installed service keeps Remove live.
+it("does not call a daemon outside the app the running service while the service is stopped", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{
+    title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: false, platform: "darwin",
+    service: { install: vi.fn() as never, remove: vi.fn() as never },
+  }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(within(section).queryByText("Running")).toBeNull()
+  expect(within(section).getByText("Not started here")).toBeTruthy()
+  expect(section.textContent).toContain("A daemon this app did not start. Quitting this app leaves it running.")
+  expect(section.textContent).not.toContain("launchd starts it again.")
+  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(false)
+  expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
+  expect(section.textContent).toContain("Install is off: the service is already installed.")
+  expect(section.textContent).not.toContain("Install and Remove are off")
+  expect(section.textContent).not.toContain("This app cannot tell whether that daemon is the installed service.")
+  expect(section.textContent).toContain("[Copy pending] The login service is installed but not running.")
 })

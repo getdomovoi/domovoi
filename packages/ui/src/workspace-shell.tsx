@@ -229,6 +229,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // status read. A daemon outside the app is drawn as the service only when
   // this says so; an unreadable or unverified status leaves it unnamed.
   const [serviceInstalled, setServiceInstalled] = useState<boolean | undefined>(undefined)
+  // Whether the service itself runs, from the same read (security review
+  // round 9). Unknown whenever the installed fact is unknown.
+  const [serviceRunning, setServiceRunning] = useState<boolean | undefined>(undefined)
   // Reads are numbered and only the newest one's answer is kept, so a read
   // that started before an install or a removal cannot answer after the read
   // that followed it and put the old fact back (security review round 4).
@@ -240,11 +243,16 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     try {
       const status = await service.status()
       if (generation === serviceStatusGeneration.current) {
-        setServiceInstalled("installed" in status && status.installed !== null ? status.installed : undefined)
+        const read = "installed" in status && status.installed !== null ? status : undefined
+        setServiceInstalled(read ? read.installed ?? undefined : undefined)
+        setServiceRunning(read?.running)
       }
       return status
     } catch (cause) {
-      if (generation === serviceStatusGeneration.current) setServiceInstalled(undefined)
+      if (generation === serviceStatusGeneration.current) {
+        setServiceInstalled(undefined)
+        setServiceRunning(undefined)
+      }
       throw cause
     }
   }, [windowBridge])
@@ -1409,6 +1417,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               ...localDaemon,
               ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}),
               ...(localDaemon.serviceInstalled === undefined && serviceInstalled !== undefined ? { serviceInstalled } : {}),
+              ...(localDaemon.serviceRunning === undefined && serviceRunning !== undefined ? { serviceRunning } : {}),
               ...(windowBridge?.daemonService && !watching ? { service: {
                 install: () => changeService("install", () => windowBridge.daemonService!.install()),
                 remove: () => changeService("remove", () => windowBridge.daemonService!.remove()),

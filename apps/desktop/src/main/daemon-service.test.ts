@@ -201,6 +201,34 @@ describe("DesktopDaemonService after security review round 1", () => {
   })
 })
 
+// Security review round 9 of #576: reaching a daemon after the install is
+// not proof the service took over. Another app's daemon, or one started by
+// hand while the service is stopped, answers the attach just as well. The
+// install reports success only when the attached daemon is the one a daemon
+// outside any app runs and the service reads back installed and running.
+describe("DesktopDaemonService install, round 9", () => {
+  it("reports success only when the attached daemon is the running service's", async () => {
+    const ok = harness()
+    await expect(ok.service.install()).resolves.toMatchObject({ ok: true })
+
+    for (const [label, attach, status] of [
+      ["another app's daemon", { kind: "attached", owner: "desktop", url: "ws://127.0.0.1:47831/rpc", token: "t" }, { installed: true, running: true, detail: "" }],
+      ["a stopped service", attachedToService, { installed: true, running: false, detail: "not loaded" }],
+      ["a service that reads back not installed", attachedToService, { installed: false, running: false, detail: "" }],
+      ["a service whose state is unknown", attachedToService, { installed: null, running: false, detail: "" }],
+    ] as const) {
+      const partial = harness({ status: vi.fn(async () => status) })
+      vi.mocked(partial.deps.daemon.attachOnly).mockImplementationOnce(async () => attach as never)
+      const outcome = await partial.service.install()
+      expect(outcome, label).toMatchObject({ ok: false, reason: "installed-not-attached", kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist" })
+      expect(partial.deps.daemon.restart, label).not.toHaveBeenCalled()
+    }
+
+    const unreadable = harness({ status: vi.fn(async () => { throw new Error("launchctl could not be run") }) })
+    await expect(unreadable.service.install()).resolves.toMatchObject({ ok: false, reason: "installed-not-attached" })
+  })
+})
+
 // The race the order test above cannot see: the stop drops the renderer's
 // socket, and the renderer reconnects while the installer still holds the
 // profile. The real DesktopDaemon with a scripted seam shows what that

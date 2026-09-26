@@ -33,6 +33,10 @@ export type LocalDaemonDescription = {
   // Whether the login service is installed is its own fact. A daemon started
   // outside the app is only drawn as the service when a source reports it.
   serviceInstalled?: boolean | undefined
+  // Whether the service itself runs, from the same read. Only then is a
+  // daemon outside the app drawn as the running service (security review
+  // round 9): a daemon answering is not proof the service runs.
+  serviceRunning?: boolean | undefined
   platform?: "darwin" | "linux" | "win32" | undefined
   // Present on a desktop that ships a daemon runtime and can install the
   // login service. The refusal names the work in flight; while it is set the
@@ -185,7 +189,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
   // failed install can leave the service installed while the daemon is back
   // inside this app; Remove is live then.
   const installed = daemon.serviceInstalled === true
-  const on = daemon.owner === "outside" && installed
+  const on = daemon.owner === "outside" && installed && daemon.serviceRunning === true
   const unknown = daemon.owner === "outside" && !on
   const state = on
     ? { label: "Running", tone: "bg-success", line: "Quitting this app leaves the daemon and its sessions running." }
@@ -202,9 +206,9 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
   const command = unknown ? "domovoid service status" : installed ? "domovoid service remove" : "domovoid service install"
   const lockReason = busy
     ? (phase.kind === "installing" ? "Both wait until the install finishes." : "Both wait until the removal finishes.")
-    : unknown
-      ? "Install and Remove are off: this app did not start that daemon."
-      : installed ? "Install is off: the service is already installed." : "Remove is off: nothing is installed."
+    : installed
+      ? "Install is off: the service is already installed."
+      : unknown ? "Install and Remove are off: this app did not start that daemon." : "Remove is off: nothing is installed."
   const installLocked = !live || installed || unknown || busy || Boolean(live.refusal)
   const removeLocked = !live || !installed || busy || Boolean(live.refusal)
   return (
@@ -269,7 +273,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{phase.action === "install" ? "domovoid service install" : "domovoid service remove"}</span>
         </div>
       ) : null}
-      {unknown ? null : <div className="flex flex-col gap-1.5">
+      {unknown && !installed ? null : <div className="flex flex-col gap-1.5">
         <span className="text-[10.5px] tracking-[0.13em] text-faint">{installed ? "WHAT IT WROTE" : "WHAT TURNING IT ON WRITES"}</span>
         <ul className="m-0 flex list-none flex-col gap-1.5 p-0 text-[11.5px]">
           {facts.map((fact) => (
@@ -288,7 +292,12 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
         {unknown ? <span>{daemon.serviceInstalled === false
           // Approved by fetzy on 2026-09-25 for a service known not installed.
           ? "The login service is not installed. This daemon was started outside any app and runs until it is stopped. To check by hand, run this in a terminal."
-          : "This app cannot tell whether that daemon is the installed service. To check by hand, run this in a terminal."}</span> : <>
+          : installed
+            // COPY PLACEHOLDER (security review round 9, awaiting the owner's
+            // ruling): the service reads back installed but not running, so
+            // the daemon outside the app is not the service.
+            ? "[Copy pending] The login service is installed but not running. This daemon was started outside any app and runs until it is stopped. To check by hand, run this in a terminal."
+            : "This app cannot tell whether that daemon is the installed service. To check by hand, run this in a terminal."}</span> : <>
           <span>{installed ? "Removing the service from this window is not built yet." : "Installing the service from this window is not built yet."}</span>
           <span>To finish by hand, run this in a terminal.</span>
         </>}

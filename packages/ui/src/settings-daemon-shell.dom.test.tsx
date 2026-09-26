@@ -303,7 +303,10 @@ it.each(failureCases)("refreshes the owner after a failed $action (read-back $se
   await settle()
   expect(onLocalDaemonChanged).toHaveBeenCalledTimes(refreshes ? 1 : 0)
   const section = opened.section()
-  const running = ownerAfter.owner === "outside" && service?.installed === true
+  // Security review round 9: the service is drawn as Running, with the
+  // manager restarting it after a crash, only while the service itself runs.
+  // A daemon outside the app answering is not proof of that.
+  const running = ownerAfter.owner === "outside" && service?.installed === true && service.running
   const toggle = ownerAfter.owner === "app" ? "Off" : running ? "Running" : "Not started here"
   const quitLine = ownerAfter.owner === "app"
     ? "Quitting Domovoi stops the daemon and every session on it."
@@ -315,9 +318,11 @@ it.each(failureCases)("refreshes the owner after a failed $action (read-back $se
   // live whenever the service reads back installed, and nothing says nothing
   // is installed then. (This walk first tied Remove to the owner as well, so
   // it expected the bug.)
+  expect(section.textContent?.includes("launchd starts it again.")).toBe(running)
   const installed = service?.installed === true
   expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(!installed)
   if (installed) {
+    expect(section.textContent).toContain("Install is off: the service is already installed.")
     expect(section.textContent).not.toContain("nothing is installed")
     expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
   }
