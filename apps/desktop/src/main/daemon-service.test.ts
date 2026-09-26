@@ -242,7 +242,9 @@ describe("updating the service in place", () => {
     const { service, deps, calls } = harness()
     await expect(service.update()).resolves.toEqual({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/Users/dana/.domovoi/service.json", daemonRunning: true })
     expect(deps.update).toHaveBeenCalledWith({ runtime })
-    expect(calls).toEqual(["hold", "stage", "update", "attach", "release"])
+    // Owner ruling 2026-09-26 (#577, A): the daemon's fence, taken right
+    // before the service restarts, as install and remove take it.
+    expect(calls).toEqual(["stage", "fence", "hold", "update", "attach", "unfence", "release"])
     expect(deps.daemon.stopOwned).not.toHaveBeenCalled()
     expect(deps.daemon.restart).not.toHaveBeenCalled()
   })
@@ -275,6 +277,45 @@ describe("updating the service in place", () => {
     const { service, deps } = harness()
     vi.mocked(deps.daemon.attachOnly).mockImplementationOnce(async () => ({ kind: "refused", reason: "owner-unreachable", message: "The daemon did not answer" }) as never)
     await expect(service.update()).resolves.toEqual({ ok: false, reason: "installed-not-attached", kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", message: "The daemon did not answer" })
+  })
+
+  // Owner ruling 2026-09-26 (#577, A): a turn can start after the first read,
+  // so the update takes the daemon's fence right before the service restarts.
+  it("takes the daemon's fence before the update, and updates nothing when it refuses or cannot be taken", async () => {
+    const refused = harness()
+    vi.mocked(refused.deps.fence).mockImplementationOnce(async () => ({ refusal: "1 turn is running (Fix login)." }))
+    await expect(refused.service.update()).resolves.toEqual({ ok: false, reason: "refused", message: "1 turn is running (Fix login)." })
+    expect(refused.deps.update).not.toHaveBeenCalled()
+    expect(refused.calls).toEqual(["stage"])
+    const unfenced = harness()
+    vi.mocked(unfenced.deps.fence).mockImplementationOnce(async () => { throw new Error("The daemon closed the connection") })
+    await expect(unfenced.service.update()).resolves.toEqual({ ok: false, reason: "check-failed", message: "The daemon closed the connection" })
+    expect(unfenced.deps.update).not.toHaveBeenCalled()
+    expect(unfenced.calls).toEqual(["stage"])
+  })
+
+  it("releases the fence when the update fails", async () => {
+    const { service, calls } = harness({ update: vi.fn(async () => { throw new Error("launchctl bootstrap exited 5") }) })
+    await expect(service.update()).resolves.toMatchObject({ ok: false, reason: "update-failed" })
+    expect(calls).toEqual(["stage", "fence", "hold", "unfence", "release"])
+  })
+
+  // Owner ruling 2026-09-26 (#577, A), as security review round 9 of #576
+  // ruled for install: reaching a daemon after the update is not proof the
+  // updated service runs it.
+  it("reports success only when the attached daemon is the running service's", async () => {
+    for (const [label, attach, status] of [
+      ["another app's daemon", { kind: "attached", owner: "desktop", url: "ws://127.0.0.1:47831/rpc", token: "t" }, { installed: true, running: true, detail: "" }],
+      ["a daemon of this app", { kind: "owned", url: "ws://127.0.0.1:47831/rpc", token: "t" }, { installed: true, running: true, detail: "" }],
+      ["a stopped service", attachedToService, { installed: true, running: false, detail: "not loaded" }],
+      ["a service whose state is unknown", attachedToService, { installed: null, running: false, detail: "" }],
+    ] as const) {
+      const partial = harness({ status: vi.fn(async () => status) })
+      vi.mocked(partial.deps.daemon.attachOnly).mockImplementationOnce(async () => attach as never)
+      await expect(partial.service.update(), label).resolves.toEqual({ ok: false, reason: "installed-not-attached", kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", message: "The daemon this window reached is not the running service." })
+    }
+    const unreadable = harness({ status: vi.fn(async () => { throw new Error("launchctl could not be run") }) })
+    await expect(unreadable.service.update()).resolves.toMatchObject({ ok: false, reason: "installed-not-attached" })
   })
 
   it("refuses an update while another service change runs", async () => {

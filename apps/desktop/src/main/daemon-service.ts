@@ -475,14 +475,21 @@ export class DesktopDaemonService {
     if (this.#busy) return { ok: false, reason: "busy", message: "A service change is already in progress." }
     this.#busy = true
     let held = false
+    let fence: { release: () => void } | undefined
     try {
       const refused = await this.#refusal()
       if (refused) return refused
-      held = true
-      this.deps.daemon.beginHandoff()
       let updated: DaemonServiceInstallResult
       try {
         const runtime = await this.deps.stageRuntime("update")
+        // Owner ruling 2026-09-26 (#577, A): the daemon's own fence, taken
+        // right before the service restarts, as install and remove take it.
+        // The read above is only a snapshot; a turn can start after it.
+        const fenced = await this.#fence()
+        if (!("release" in fenced)) return fenced
+        fence = fenced
+        held = true
+        this.deps.daemon.beginHandoff()
         updated = await this.deps.update({ runtime })
       } catch (cause) {
         const missing = runtimeMissing(cause)
@@ -499,8 +506,14 @@ export class DesktopDaemonService {
       if (attached.kind === "refused") {
         return { ok: false, reason: "installed-not-attached", kind: updated.kind, target, message: attached.message }
       }
+      // As security review round 9 ruled for install: reaching a daemon is not
+      // proof the updated service runs it.
+      if (attached.kind !== "attached" || attached.owner !== "daemon" || !(await this.#serviceRuns())) {
+        return { ok: false, reason: "installed-not-attached", kind: updated.kind, target, message: "The daemon this window reached is not the running service." }
+      }
       return { ok: true, kind: updated.kind, target, configurationPath: updated.configurationPath, daemonRunning: true }
     } finally {
+      fence?.release()
       if (held) this.deps.daemon.endHandoff()
       this.#busy = false
     }
