@@ -716,9 +716,8 @@ secure, where its credential came from, and `start()` and `stop()`. `start()` re
 host, port, and WebSocket URL. The handle also carries `authToken` for an embedding client; treat
 it as a root credential and never log it or persist another copy.
 
-The package retains `@getdomovoi/daemon/internal` as an inert artifact-compatibility entry point.
-It does not expose the raw server constructor or a supported runtime API. Daemon tests import the
-source server module directly.
+`@getdomovoi/daemon` is the package's only entry point. It does not expose the raw server
+constructor; daemon tests import the source server module directly.
 
 ## Bundle restore claims
 

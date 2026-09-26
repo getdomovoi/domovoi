@@ -12,7 +12,7 @@
     "pretest": "pnpm --filter @getdomovoi/protocol build",
     "prestart": "pnpm --filter @getdomovoi/protocol build",
     "pretypecheck": "pnpm --filter @getdomovoi/protocol build",
-    "test": "pnpm deps:check && vitest run && jest",
+    "test": "pnpm deps:check && vitest run --coverage && jest --coverage",
     "typecheck": "tsc --noEmit",
     "deps:check": "node scripts/deps-check.mjs"
   },

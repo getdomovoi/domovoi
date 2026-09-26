@@ -7,7 +7,13 @@ import test from "node:test"
 
 const commit = "a".repeat(40)
 const version = "0.1.0-alpha.0"
-const names = ["@getdomovoi/protocol", "@getdomovoi/daemon"]
+const directories = {
+  "@getdomovoi/protocol": "packages/protocol",
+  "@getdomovoi/credential-store": "packages/credential-store",
+  "@getdomovoi/daemon": "apps/daemon",
+  "@getdomovoi/cli": "apps/cli",
+}
+const names = Object.keys(directories)
 const digest = (bytes, algorithm = "sha256", encoding = "hex") => createHash(algorithm).update(bytes).digest(encoding)
 
 export async function releaseFixture(t) {
@@ -19,8 +25,7 @@ export async function releaseFixture(t) {
   }
   await put("pnpm-workspace.yaml", "packages:\n  - packages/*\n  - apps/*\n")
   const sums = []
-  for (const [index, name] of names.entries()) {
-    const directory = index === 0 ? "packages/protocol" : "apps/daemon"
+  for (const [name, directory] of Object.entries(directories)) {
     await put(`${directory}/package.json`, { name, version, publishConfig: { access: "public", provenance: true } })
     await put(`${directory}/CHANGELOG.md`, `# ${name}\n\n## ${version}\n\nReviewed changes.\n`)
     const stem = `${name.slice(1).replace("/", "-")}-${version}`
@@ -53,6 +58,18 @@ test("the packed plan uses reviewed bytes, ordered packages and the alpha tag", 
     assert.equal(entry.tarball.integrity, `sha256-${digest(original, "sha256", "base64")}`)
   }
   assert.deepEqual(await verify(), result)
+})
+
+// release:github compares this value with npm's dist.integrity, which is the
+// Subresource Integrity form of the tarball: sha512- and the base64 digest.
+test("records each archive's integrity in the form npm reports", async (t) => {
+  const { root, prepare } = await releaseFixture(t)
+  const result = await prepare()
+  assert.equal(result.packages.length, names.length)
+  for (const pkg of result.packages) {
+    const bytes = await readFile(join(root, "release", pkg.archive))
+    assert.equal(pkg.integrity, `sha512-${digest(bytes, "sha512", "base64")}`, pkg.name)
+  }
 })
 
 test("a changed archive refuses before a publish plan is written", async (t) => {
@@ -96,11 +113,11 @@ for (const mutation of [
   })
 }
 
-test("a retry can publish only the missing daemon while keeping both release artifacts", async (t) => {
+test("a retry can publish only the missing daemon while keeping every release artifact", async (t) => {
   const { plan, put, prepare } = await releaseFixture(t)
-  plan.plan.shift()
+  plan.plan = plan.plan.filter(([entry]) => entry.name === "@getdomovoi/daemon")
   await put("release/publish-plan.json", plan)
   const result = await prepare()
   assert.deepEqual(result.packages.map((entry) => entry.name), names)
-  assert.equal(result.files.length, 5)
+  assert.equal(result.files.length, names.length * 2 + 1)
 })

@@ -33,4 +33,10 @@ module.exports = {
   // first test, not inside it. Jest appends this to the preset's own setup
   // files, so they are not listed again here.
   setupFiles: ["<rootDir>/jest.setup.js"],
+  // Coverage runs from the test script (jest --coverage), as vitest's does, so
+  // a focused run reports only its tests. Screens are measured here and the
+  // logic under vitest, each against its own floor.
+  collectCoverageFrom: ["src/**/*.tsx", "!src/**/*.test.tsx"],
+  coverageReporters: ["text-summary"],
+  coverageThreshold: { global: { statements: 70, branches: 72, functions: 64, lines: 73 } },
 }

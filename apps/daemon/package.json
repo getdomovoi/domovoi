@@ -23,10 +23,6 @@
     ".": {
       "types": "./dist/public.d.ts",
       "import": "./dist/public.js"
-    },
-    "./internal": {
-      "types": "./dist/server.d.ts",
-      "import": "./dist/server.js"
     }
   },
   "files": [
@@ -44,7 +40,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "pretest": "pnpm --filter @getdomovoi/protocol build && pnpm build",
-    "test": "vitest run && pnpm test:dist",
+    "test": "vitest run --coverage && pnpm test:dist",
     "test:dist": "pnpm build && node test-dist.mjs",
     "typecheck": "tsc --noEmit"
   },

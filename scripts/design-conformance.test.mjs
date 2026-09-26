@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { checkConformance, checkV2Manifest, designCopy } from "./design-conformance.mjs"
+import { checkConformance, checkV2Manifest, designCopy, designScriptCopy } from "./design-conformance.mjs"
 
 // A small design in the .dc.html shape: literal copy in the template, copy
 // under aria-label, a binding that is not copy, and sample data.
@@ -150,6 +150,102 @@ test("absent-in-file evidence holds when the named file lacks the string, and a 
   assert.ok(!result.failures.some((line) => line.includes("titlebar.mark:")))
   assert.ok(result.failures.some((line) => line.includes("humanRead names nope")))
   assert.equal(result.humanRead.length, 2)
+})
+
+// The v2 designs build most of their prose in the data script and draw it
+// through a binding, the way the desktop palette draws its commands.
+const scriptDesign = `<x-dc>
+<helmet></helmet>
+<div>
+  <div>Search commands</div>
+  <div>{{ command.label }}</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;default&quot;:&quot;dark mode&quot;}}">
+class Component extends DCLogic {
+  // the palette's commands, drawn through {{ command.label }}; it's "not copy"
+  commands = [
+    { label: "Read the audit log", meta: "on this machine", k: "success" },
+    { label: 'Pair a phone or tablet', screen: "pair-phone" },
+  ]
+  style = { border: "1px solid var(--line)", transition: "opacity 120ms ease", font: "ui-monospace, SFMono-Regular, monospace" }
+  row = "display: flex; gap: 7px; border: 1px solid" + tone + "px; padding: 0"
+  edge = "border: 1px solid" + tone
+  key = mac ? "\\u2318" : "Ctrl"
+  note = \`\${count} sessions open\`
+  hint = "Search commands"
+  quoted = "Say \\"stop\\" to end it"
+}
+</script>`
+
+async function scriptFixture(inventory) {
+  const root = await mkdtemp(join(tmpdir(), "design-conformance-script-"))
+  await mkdir(join(root, "design"), { recursive: true })
+  await mkdir(join(root, "src"), { recursive: true })
+  await writeFile(join(root, "design", "Palette.dc.html"), scriptDesign)
+  await writeFile(join(root, "src", "palette.tsx"), "export const placeholder = \"Search commands\"\nexport const audit = \"Read the audit log\"\n")
+  await writeFile(join(root, "inventory.json"), JSON.stringify({
+    design: "design/Palette.dc.html",
+    sha256: createHash("sha256").update(scriptDesign).digest("hex"),
+    derivedOn: "2026-09-26",
+    sources: ["src/**/*.tsx"],
+    elements: [],
+    ...inventory,
+  }))
+  return root
+}
+
+const palette = { id: "palette", name: "Command palette", where: "over the shell", copy: ["Search commands"], evidence: ["Search commands"] }
+
+test("script copy is the prose the data script holds, not identifiers, style values, interpolations, comments or template copy", () => {
+  assert.deepEqual(designScriptCopy(scriptDesign), ["Read the audit log", "on this machine", "Pair a phone or tablet", "Say \"stop\" to end it"])
+  assert.deepEqual(designScriptCopy(design), [])
+})
+
+test("copy the data script holds that nothing claims fails, so an element cannot pass as built while its drawn copy is absent", async () => {
+  const root = await scriptFixture({ elements: [palette] })
+  const result = await checkConformance(root, "inventory.json")
+  assert.ok(result.failures.some((line) => line.includes("unclaimed script copy") && line.includes("\"Pair a phone or tablet\"")))
+  assert.ok(result.failures.some((line) => line.includes("unclaimed script copy") && line.includes("\"Read the audit log\"")))
+  assert.equal(result.scriptCopy, 4)
+})
+
+test("script copy is claimed like template copy, and a palette whose commands are not in source is partial, not built", async () => {
+  const root = await scriptFixture({
+    sample: ["Say \"stop\" to end it"],
+    elements: [{
+      ...palette,
+      copy: ["Search commands", "Read the audit log", "on this machine", "Pair a phone or tablet"],
+      presence: ["Search commands"],
+      evidence: ["Read the audit log", "Pair a phone or tablet"],
+      partial: { since: "2026-09-26", reason: "one of two commands" },
+    }],
+  })
+  const result = await checkConformance(root, "inventory.json")
+  assert.deepEqual(result.failures, [])
+  assert.equal(result.partial.length, 1)
+})
+
+test("a dated script backlog names the strings not yet classified, and a stale, claimed or undated entry fails", async () => {
+  const backlog = { since: "2026-09-26", reason: "script copy not yet classified", strings: ["Read the audit log", "on this machine", "Pair a phone or tablet", "Say \"stop\" to end it"] }
+  const listed = await checkConformance(await scriptFixture({ elements: [palette], scriptBacklog: backlog }), "inventory.json")
+  assert.deepEqual(listed.failures, [])
+  assert.equal(listed.scriptBacklog, 4)
+
+  const wrong = await checkConformance(await scriptFixture({
+    elements: [{ ...palette, copy: ["Search commands", "Read the audit log"] }],
+    scriptBacklog: { reason: "no date", strings: [...backlog.strings, "Old command"] },
+  }), "inventory.json")
+  assert.ok(wrong.failures.some((line) => line.includes("scriptBacklog needs since")))
+  assert.ok(wrong.failures.some((line) => line.includes("scriptBacklog lists \"Old command\"") && line.includes("no longer")))
+  assert.ok(wrong.failures.some((line) => line.includes("scriptBacklog lists \"Read the audit log\"") && line.includes("palette")))
+
+  const template = await checkConformance(await scriptFixture({
+    elements: [{ ...palette, copy: [] }],
+    scriptBacklog: { ...backlog, strings: [...backlog.strings, "Search commands"] },
+  }), "inventory.json")
+  assert.ok(template.failures.some((line) => line.includes("scriptBacklog lists \"Search commands\"") && line.includes("no longer")))
+  assert.ok(template.failures.some((line) => line.includes("unclaimed copy \"Search commands\"")))
 })
 
 test("v2 manifest requires all design inventories, approved exceptions, and scoped desktop and phone contracts", async () => {

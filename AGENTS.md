@@ -21,7 +21,8 @@ Root scripts in `package.json`:
 Targeted forms:
 
 - `pnpm --filter @getdomovoi/<protocol|daemon|ui|web|desktop> typecheck`
-- `cd <package directory> && npx vitest run <file> --reporter=dot`
+- `cd <package directory> && npx vitest run <file> --reporter=dot`. Coverage and its floors run
+  from each package's `test` script (`vitest run --coverage`), not from a focused run.
 - `node --test scripts/<name>.test.mjs`
 
 `packages/protocol` exports `dist/`. The daemon and `packages/ui` resolve `@getdomovoi/protocol`

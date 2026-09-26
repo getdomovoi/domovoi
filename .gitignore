@@ -11,7 +11,11 @@ coverage/
 !.env.example
 release/
 apps/daemon/runtime/
+apps/desktop/build/notices/
 /domovoi*Handoff.zip
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# Backups that agent-wiring tools leave beside the instruction files.
+*.bak-*

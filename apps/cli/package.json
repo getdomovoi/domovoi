@@ -24,16 +24,16 @@
   ],
   "scripts": {
     "build": "tsup",
+    "prepack": "pnpm run build",
     "predev": "pnpm --filter @getdomovoi/protocol build",
     "dev": "tsx src/index.ts",
     "pretest": "pnpm --filter @getdomovoi/protocol build && pnpm build",
-    "test": "vitest run",
+    "test": "vitest run --coverage",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@getdomovoi/credential-store": "workspace:*",
     "@getdomovoi/protocol": "workspace:*",
-    "@napi-rs/keyring": "^2.0.0",
     "ws": "^8.18.3",
     "zod": "catalog:"
   },
@@ -44,5 +44,9 @@
     "tsx": "^4.23.13",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }

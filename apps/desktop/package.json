@@ -27,7 +27,7 @@
     "predev:real": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
     "dev:real": "node scripts/dev-loop.mjs real",
     "dev:desktop:real": "pnpm dev:real",
-    "prepackage": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build && node scripts/prepare-daemon-runtime.mjs",
+    "prepackage": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build && node scripts/prepare-daemon-runtime.mjs && node ../../scripts/third-party-notices.mjs",
     "package": "electron-vite build && electron-builder --config electron-builder.cjs --publish never && node scripts/package-smoke.mjs",
     "prepackage:linux": "pnpm prepackage",
     "package:linux": "electron-vite build && electron-builder --config electron-builder.cjs --linux --publish never",
@@ -35,7 +35,7 @@
     "package:mac": "electron-vite build && electron-builder --config electron-builder.cjs --mac --publish never",
     "prepackage:win": "pnpm prepackage",
     "package:win": "electron-vite build && electron-builder --config electron-builder.cjs --win --publish never",
-    "test": "node scripts/signing.node.mjs && node --test scripts/daemon-runtime.node.mjs && vitest run",
+    "test": "node scripts/signing.node.mjs && node --test scripts/daemon-runtime.node.mjs && vitest run --coverage",
     "test:launch": "node --test scripts/launch-smoke-args.node.mjs && electron-vite build && node scripts/launch-smoke.mjs && node scripts/fleet-origin-smoke.mjs && node scripts/fleet-client-smoke.mjs",
     "test:package": "node scripts/package-smoke.mjs",
     "typecheck": "tsc --noEmit"

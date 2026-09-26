@@ -78,6 +78,49 @@ describe("daemon assertion waits", () => {
     await expect(waitForFixtureStartup("The keyring fixture", () => {})).rejects.toMatchObject({ cause: failure })
   })
 
+  // A fixture that has exited cannot become ready, so waiting out the budget
+  // only replaces what it printed with "did not start".
+  it("stops at once when the fixture can no longer start, and says what it printed", async () => {
+    const outcome = await Promise.race([
+      waitForFixtureStartup("The service fixture", () => { throw new Error("The owner record is not ready") }, {
+        output: () => "stderr: DOMOVOI_PORT must be an integer from 0 through 65535",
+        stopped: () => "exited with code 1",
+      }).then(() => "started", (error: unknown) => error),
+      new Promise((resolve) => setTimeout(resolve, 1_000, "still waiting")),
+    ])
+
+    expect(outcome).toBeInstanceOf(Error)
+    expect((outcome as Error).message).toContain("The service fixture stopped before it started: exited with code 1")
+    expect((outcome as Error).message).toContain("DOMOVOI_PORT must be an integer from 0 through 65535")
+  })
+
+  it("prints what the fixture wrote when its startup budget expires", async () => {
+    const failure = new Error("The owner record is not ready")
+    vi.spyOn(vi, "waitFor").mockRejectedValue(failure)
+    const waiting = waitForFixtureStartup("The service fixture", () => {}, {
+      output: () => "stderr: EPERM: operation not permitted, rename",
+      stopped: () => undefined,
+    })
+
+    await expect(waiting).rejects.toThrow(
+      `The service fixture did not start within its ${fixtureStartupTimeoutMs(process.platform)}ms startup budget`,
+    )
+    await expect(waiting).rejects.toThrow("EPERM: operation not permitted, rename")
+    await expect(waiting).rejects.toMatchObject({ cause: failure })
+  })
+
+  it("keeps waiting through output the fixture recovers from", async () => {
+    let polls = 0
+    const printed = "Error: Fleet lifecycle recovery will retry"
+
+    await expect(waitForFixtureStartup("The service fixture", () => {
+      polls += 1
+      if (polls < 3) throw new Error("The owner record is not ready")
+      return "ready"
+    }, { output: () => printed, stopped: () => undefined })).resolves.toBe("ready")
+    expect(polls).toBe(3)
+  })
+
   it("requires every direct vi.waitFor in the daemon suite to name a positive timeout", async () => {
     const offenders: string[] = []
     const entries = await readdir(import.meta.dirname, { recursive: true })

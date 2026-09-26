@@ -43,5 +43,15 @@
       "since": "2026-09-23",
       "note": "The narrow-window arrangement (code slot 165px, right column wraps below 520px) is layout, not copy."
     }
-  ]
+  ],
+  "scriptBacklog": {
+    "since": "2026-09-26",
+    "reason": "Copy the design builds in its data script, collected by the gate since audit G23 and not yet read against the implementation. Classify each string as an element's copy, sample or annotations, and remove it here.",
+    "strings": [
+      "Code shown",
+      "Just paired",
+      "Refused: the phone's app is older",
+      "Daemon answers only on this computer"
+    ]
+  }
 }

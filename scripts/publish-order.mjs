@@ -2,9 +2,11 @@ import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 
-import { publishablePackages } from "./release-artifacts.mjs"
+import { publishDependencies } from "./release-packages.mjs"
 
-export function evaluatePublishOrder(plan, order = publishablePackages) {
+// A package publishes in a later chunk than every workspace package it needs
+// at runtime. Packages with no edge between them may share a chunk.
+export function evaluatePublishOrder(plan, dependencies = publishDependencies) {
   if (!Array.isArray(plan) || plan.length === 0) return ["publish plan is empty"]
 
   const failures = []
@@ -12,7 +14,7 @@ export function evaluatePublishOrder(plan, order = publishablePackages) {
   plan.forEach((chunk, index) => {
     for (const release of chunk) {
       if (release.kind !== "publish") continue
-      if (!order.includes(release.name)) {
+      if (!Object.hasOwn(dependencies, release.name)) {
         failures.push(`${release.name} is not a package this repository publishes`)
         continue
       }
@@ -20,12 +22,11 @@ export function evaluatePublishOrder(plan, order = publishablePackages) {
     }
   })
 
-  const planned = order.filter((name) => chunkByName.has(name))
-  for (let index = 1; index < planned.length; index += 1) {
-    const before = planned[index - 1]
-    const after = planned[index]
-    if (chunkByName.get(before) >= chunkByName.get(after)) {
-      failures.push(`${before} must publish in a chunk before ${after}`)
+  for (const [name, chunk] of chunkByName) {
+    for (const dependency of dependencies[name]) {
+      if (chunkByName.has(dependency) && chunkByName.get(dependency) >= chunk) {
+        failures.push(`${dependency} must publish in a chunk before ${name}`)
+      }
     }
   }
   return failures

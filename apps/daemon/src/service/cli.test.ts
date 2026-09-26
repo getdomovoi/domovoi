@@ -114,13 +114,27 @@ describe("distributed service CLI", () => {
       let stderr = ""
       child.stdout!.on("data", (bytes: Buffer) => { stdout += bytes.toString() })
       child.stderr!.on("data", (bytes: Buffer) => { stderr += bytes.toString() })
+      // The hostile values above are refused by name when read, and the daemon
+      // then exits. Either one ends the wait at once with what it printed. Any
+      // other logged error is not a startup failure: the daemon handles and
+      // retries some (a lifecycle write the OS refused, say), so readiness is
+      // the only thing waited for.
+      const hostileSetting = /\bDOMOVOI_(?:PORT|AUTH_TOKEN|TLS_KEY_PATH)\b/
+      const serviceChild = child
       await within(() => waitForFixtureStartup("Distributed service daemon", () => {
-        expect(stderr).not.toContain("Error:")
         const owner = readLocalOwnerRecord(home)
         expect(owner?.state).toBe("ready")
         if (owner?.state !== "ready") throw new Error("Owner has not published its bound endpoint")
         expect(stdout).toContain(`domovoid listening on ${owner.url}`)
+      }, {
+        output: () => `stdout:\n${stdout}\nstderr:\n${stderr}`,
+        stopped: () => {
+          if (serviceChild.exitCode !== null) return `exited with code ${serviceChild.exitCode}`
+          if (serviceChild.signalCode !== null) return `ended by ${serviceChild.signalCode}`
+          return hostileSetting.test(stderr) ? "read a setting the saved configuration replaces" : undefined
+        },
       }))
+      expect(stderr).not.toMatch(hostileSetting)
       const owner = readLocalOwnerRecord(home)
       if (owner?.state !== "ready") throw new Error("Owner record disappeared after startup")
       const port = Number(new URL(owner.url).port)

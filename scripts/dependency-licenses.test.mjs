@@ -1,7 +1,61 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
+import { join } from "node:path"
 import test from "node:test"
+import { fileURLToPath } from "node:url"
 
-import { evaluateDependencyLicenses } from "./dependency-licenses.mjs"
+import {
+  auditedPackages, collectAuditGraph, desktopPackages, evaluateDependencyLicenses, mergeLicenseGraphs,
+} from "./dependency-licenses.mjs"
+import { publishablePackages } from "./release-packages.mjs"
+import { collectWorkspacePackages } from "./version-lockstep.mjs"
+
+const root = fileURLToPath(new URL("../", import.meta.url))
+const names = (graph) => new Set(Object.values(graph).flat().map((entry) => entry.name))
+
+// The desktop app ships more than the npm packages: electron-vite inlines the
+// UI graph into the renderer, electron-builder copies the daemon's graph, and
+// Electron itself is the runtime every build carries.
+test("the audit reads the graph every published artifact ships, the desktop app included", { timeout: 60_000 }, async () => {
+  const audited = names(await collectAuditGraph(root))
+  const direct = async (directory) => Object.keys(JSON.parse(await readFile(join(root, directory, "package.json"), "utf8")).dependencies)
+  for (const name of [
+    ...(await direct("packages/ui")).filter((name) => !name.startsWith("@getdomovoi/")),
+    ...(await direct("apps/cli")).filter((name) => !name.startsWith("@getdomovoi/")),
+    "react-dom",
+    "electron",
+  ]) {
+    assert.ok(audited.has(name), `${name} is in the audited graph`)
+  }
+})
+
+test("names every workspace package the desktop app and the npm packages carry at runtime", async () => {
+  const { packages } = await collectWorkspacePackages(root)
+  const manifests = new Map(await Promise.all(packages.map(async ({ name, path }) =>
+    [name, JSON.parse(await readFile(join(root, path), "utf8"))])))
+  const seen = new Set()
+  const pending = ["@getdomovoi/desktop"]
+  while (pending.length) {
+    const name = pending.pop()
+    if (seen.has(name)) continue
+    seen.add(name)
+    for (const [dependency, range] of Object.entries(manifests.get(name).dependencies ?? {})) {
+      if (range.startsWith("workspace:")) pending.push(dependency)
+    }
+  }
+  assert.deepEqual([...seen].sort(), [...desktopPackages].sort())
+  for (const name of publishablePackages) assert.ok(auditedPackages.includes(name), `${name} is audited`)
+})
+
+test("merges license graphs without repeating a package or a version", () => {
+  assert.deepEqual(mergeLicenseGraphs(
+    { MIT: [{ name: "ws", versions: ["8.18.3"], paths: ["/a/ws"] }] },
+    { MIT: [{ name: "ws", versions: ["8.18.3", "8.19.0"], paths: ["/a/ws", "/b/ws"] }, { name: "electron", versions: ["44.4.5"], paths: ["/e"] }] },
+  ), { MIT: [
+    { name: "ws", versions: ["8.18.3", "8.19.0"], paths: ["/a/ws", "/b/ws"] },
+    { name: "electron", versions: ["44.4.5"], paths: ["/e"] },
+  ] })
+})
 
 const policy = { allowed: ["Apache-2.0", "BSD-2-Clause", "MIT"], exceptions: {} }
 
