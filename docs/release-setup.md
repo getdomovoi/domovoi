@@ -58,6 +58,10 @@ same protected environment as subsequent OIDC releases. [npm trust prerequisites
 5. **Enter prerelease mode in a reviewed PR.** Run `pnpm changeset pre enter alpha` and commit
    `.changeset/pre.json`. Merge after its checks pass. Do not run `pre exit` until a stable
    release is intended. No publish follows this step while the variable remains absent.
+   The repository is now in this mode: `.changeset/pre.json` names the `alpha` tag, and
+   `scripts/release-workflow.test.mjs` fails when the version Changesets would write next is
+   not an `-alpha.N` prerelease. A version PR generated before this file existed carries
+   plain `0.1.0` versions and must not merge.
 6. **Enable versioning only.** In Settings, Secrets and variables, Actions, Variables, create
    **`RELEASE_PUBLISHING=version-only`**. The next main push or a manual `release` run with
    **first_publish unchecked** can open the version PR after that commit's CI passes.

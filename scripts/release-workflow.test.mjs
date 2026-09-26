@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import test from "node:test"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 const require = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
 const { parse } = require("yaml")
@@ -80,4 +81,27 @@ test("initial publishing is an explicit manual choice, admitted before credentia
   assert.match(steps[setup].if, /workflow_dispatch.*first_publish/)
   assert.equal(steps[setup].with["registry-url"], "https://registry.npmjs.org")
   assert.equal(release.jobs.publish["timeout-minutes"], 25)
+})
+
+// The version job runs changeset version over exactly this plan. Assembling it
+// here, without git, shows the version it would write.
+test("the next version the release tooling writes is an alpha prerelease", { timeout: 30_000 }, async () => {
+  const changesets = createRequire(createRequire(import.meta.url).resolve("@changesets/cli/package.json"))
+  const load = (name) => import(pathToFileURL(changesets.resolve(name)).href)
+  const [{ getPackages }, { readConfig }, { readPreState }, { readChangesets }, { assembleReleasePlan }] = await Promise.all([
+    load("@manypkg/get-packages"), load("@changesets/config"), load("@changesets/pre"), load("@changesets/read"),
+    load("@changesets/assemble-release-plan"),
+  ])
+  const root = fileURLToPath(new URL("../", import.meta.url))
+  const packages = await getPackages(root)
+  const preState = await readPreState(root)
+  assert.equal(preState?.mode, "pre", "Changesets prerelease mode is entered")
+  assert.equal(preState.tag, "alpha")
+  const { config, errors } = await readConfig(root, packages)
+  assert.equal(errors, undefined)
+  const plan = assembleReleasePlan(await readChangesets(root), packages, config, preState)
+  assert.ok(plan.releases.length > 0, "pending changesets produce a release")
+  for (const release of plan.releases) {
+    assert.match(release.newVersion, /^\d+\.\d+\.\d+-alpha\.\d+$/u, `${release.name} would version to ${release.newVersion}`)
+  }
 })
