@@ -182,3 +182,79 @@ describe("terminal ownership across a reconnect", () => {
     await vi.waitFor(() => expect(outputTo(second.notifications)).toContain("typed from the second connection"), { timeout: 2_000 })
   })
 })
+
+// A connection that reuses the owner's client id holds the shell the way a
+// claim would, and says so the way a claim does.
+describe("an ownership move by the owner's client id", () => {
+  const ownershipNotices = (notifications: Array<{ method: string; params: Record<string, unknown> }>) =>
+    notifications.filter(({ method, params }) => method === "terminal.ownership" && params.terminalId === "terminal-reconnect")
+
+  it("tells the first connection and every watcher when a second connection types", async () => {
+    const { connect, create, input } = await terminalDaemon(60)
+    const first = await connect("desktop-owner")
+    expect((await create(first.rpc, "desktop-owner")).error).toBeUndefined()
+    const watcher = await connect("desktop-watcher")
+    expect((await watcher.rpc("terminal.watch", { terminalId: "terminal-reconnect" })).error).toBeUndefined()
+    const second = await connect("desktop-owner")
+    expect(ownershipNotices(first.notifications)).toHaveLength(0)
+    expect(ownershipNotices(watcher.notifications)).toHaveLength(0)
+
+    expect((await input(second.rpc, "ls\r", "desktop-owner")).error).toBeUndefined()
+    await vi.waitFor(() => {
+      expect(ownershipNotices(first.notifications)).toHaveLength(1)
+      expect(ownershipNotices(watcher.notifications)).toHaveLength(1)
+    }, { timeout: 2_000 })
+    expect(ownershipNotices(first.notifications)[0]!.params).toMatchObject({ owner: { client: "desktop", clientId: "desktop-owner" } })
+
+    // Typing again from the connection that now holds it is not a move.
+    expect((await input(second.rpc, "pwd\r", "desktop-owner")).error).toBeUndefined()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(ownershipNotices(first.notifications)).toHaveLength(1)
+  })
+
+  it("still refuses another client id typing without a claim, and moves nothing", async () => {
+    const { connect, create, input, terminal } = await terminalDaemon(60)
+    const first = await connect("desktop-owner")
+    expect((await create(first.rpc, "desktop-owner")).error).toBeUndefined()
+    const other = await connect("desktop-other")
+    expect((await input(other.rpc, "rm -rf .\r", "desktop-other")).error).toMatchObject({ message: "Terminal is owned by another client" })
+    expect(terminal.write).not.toHaveBeenCalled()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(ownershipNotices(first.notifications)).toHaveLength(0)
+    expect((await input(first.rpc, "ls\r", "desktop-owner")).error).toBeUndefined()
+  })
+
+  it("tells the audience when a closing owner hands the shell to its other connection", async () => {
+    const { connect, create } = await terminalDaemon(60)
+    const first = await connect("desktop-owner")
+    expect((await create(first.rpc, "desktop-owner")).error).toBeUndefined()
+    const watcher = await connect("desktop-watcher")
+    expect((await watcher.rpc("terminal.watch", { terminalId: "terminal-reconnect" })).error).toBeUndefined()
+    const second = await connect("desktop-owner")
+
+    first.socket.close()
+    await once(first.socket, "close")
+    await vi.waitFor(() => {
+      expect(ownershipNotices(watcher.notifications)).toHaveLength(1)
+      expect(ownershipNotices(second.notifications)).toHaveLength(1)
+    }, { timeout: 2_000 })
+  })
+
+  it("tells the audience once when the owner's reconnect takes the shell back at hello", async () => {
+    const { connect, create } = await terminalDaemon(2_000)
+    const first = await connect("desktop-owner")
+    expect((await create(first.rpc, "desktop-owner")).error).toBeUndefined()
+    const watcher = await connect("desktop-watcher")
+    expect((await watcher.rpc("terminal.watch", { terminalId: "terminal-reconnect" })).error).toBeUndefined()
+    first.socket.close()
+    await once(first.socket, "close")
+
+    const second = await connect("desktop-owner")
+    await vi.waitFor(() => {
+      expect(ownershipNotices(watcher.notifications)).toHaveLength(1)
+      expect(ownershipNotices(second.notifications)).toHaveLength(1)
+    }, { timeout: 2_000 })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(ownershipNotices(watcher.notifications)).toHaveLength(1)
+  })
+})

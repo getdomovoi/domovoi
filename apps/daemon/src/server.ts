@@ -10641,7 +10641,17 @@ export class DomovoiDaemon {
       clearTimeout(terminal.reapTimer)
       terminal.reapTimer = undefined
     }
+    this.#announceTerminalOwnership(terminalId, terminal)
     return true
+  }
+
+  // A move by a matching client key is a claim, and is said like one: every
+  // window, the connection that held it included, sees who holds the shell.
+  #announceTerminalOwnership(terminalId: string, terminal: ActiveTerminal): void {
+    this.#notifyTerminalAudience(terminal, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
+      terminalId,
+      owner: terminal.owner,
+    }))
   }
 
   #reattachTerminals(socket: RpcOutboundSocket): void {
@@ -10650,10 +10660,6 @@ export class DomovoiDaemon {
     for (const [terminalId, terminal] of this.#terminals) {
       if (terminal.ownerSocket !== undefined || terminal.ownerKey !== key) continue
       this.#ownsTerminal(terminalId, terminal, socket)
-      this.#notifyTerminalAudience(terminal, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
-        terminalId,
-        owner: terminal.owner,
-      }))
     }
   }
 
@@ -10671,6 +10677,7 @@ export class DomovoiDaemon {
         // to the same client's other connection rather than being cut off.
         terminal.ownerSocket = sameClient
         terminal.audience.add(sameClient)
+        this.#announceTerminalOwnership(terminalId, terminal)
         continue
       }
       terminal.ownerSocket = undefined
