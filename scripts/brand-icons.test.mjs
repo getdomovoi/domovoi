@@ -1,12 +1,15 @@
 import assert from "node:assert/strict"
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { readFile } from "node:fs/promises"
+import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { test } from "node:test"
-import { pathToFileURL } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 import { chromiumArgs, findChromium, markPage, render, targets } from "./brand-icons.mjs"
 
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const scratch = join(tmpdir(), "domovoi-icon-test", "page dir")
 const html = join(scratch, "page.html")
 const shot = join(scratch, "shot.png")
@@ -109,4 +112,86 @@ test("a browser that hangs is stopped at the render time limit", () => {
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+// The owner ruled on 2026-09-25 that the live "Domovoi App Icon.dc.html" (candidate "ink") governs
+// iOS, Android, splash and favicon, and the brand handoff's macOS rule governs the desktop tile.
+const require = createRequire(import.meta.url)
+const { colors } = require("../apps/mobile/src/theme/tokens.generated.js")
+const INK = { ink: colors.dark.primary, ground: colors.dark.card }
+
+function target(out) {
+  const found = targets.find((candidate) => candidate.out === out)
+  assert.ok(found, `no target writes ${out}`)
+  return found
+}
+
+test("square icons are the reduced mark at 60% on the ink ground, full bleed and opaque", () => {
+  for (const [out, size] of [
+    ["apps/mobile/assets/icon.png", 1024],
+    ["apps/mobile/assets/favicon.png", 48],
+    ["apps/desktop/build/icon.png", 1024],
+    ["apps/web/public/icons/app-icon-192.png", 192],
+    ["apps/web/public/icons/app-icon-512.png", 512],
+    ["apps/web/public/icons/apple-touch-icon.png", 180],
+  ]) {
+    const { size: actual, page, transparent } = target(out)
+    assert.equal(actual, size, out)
+    assert.deepEqual(
+      { mark: page.mark, ink: page.ink, ground: page.ground, fraction: page.fraction, tile: page.tile },
+      { mark: "mark-reduced.svg", ...INK, fraction: 0.6, tile: undefined },
+      out,
+    )
+    assert.notEqual(transparent, true, out)
+  }
+})
+
+test("masked foregrounds keep the reduced mark inside the safe zone", () => {
+  const adaptive = target("apps/mobile/assets/adaptive-icon.png")
+  assert.equal(adaptive.transparent, true)
+  assert.equal(adaptive.page.ground, "transparent")
+  const maskable = target("apps/web/public/icons/app-icon-512-maskable.png")
+  assert.equal(maskable.size, 512)
+  // A maskable icon has no separate background layer, so it carries the ground itself.
+  assert.equal(maskable.page.ground, INK.ground)
+  for (const { page } of [adaptive, maskable]) {
+    assert.equal(page.mark, "mark-reduced.svg")
+    assert.equal(page.ink, INK.ink)
+    assert.ok(page.fraction <= 0.5, "the glyph must sit inside the mask's safe circle")
+  }
+})
+
+test("splash art is the full mark per theme at the file's 1242 export size", () => {
+  for (const [out, ink] of [
+    ["apps/mobile/assets/splash-dark.png", colors.dark.primary],
+    ["apps/mobile/assets/splash-light.png", colors.light.primary],
+  ]) {
+    const { size, page, transparent } = target(out)
+    assert.equal(size, 1242, out)
+    assert.equal(page.mark, "mark.svg", out)
+    assert.equal(page.ink, ink, out)
+    // Expo lays the image on the per-theme backgroundColor; a baked ground would be a tile on a tile.
+    assert.equal(transparent, true, out)
+  }
+})
+
+test("the macOS icon is an ink squircle on Apple's 824 of 1024 grid with a 22% radius", () => {
+  const mac = target("apps/desktop/build/icon-mac.png")
+  assert.equal(mac.size, 1024)
+  assert.equal(mac.transparent, true)
+  assert.equal(mac.page.mark, "mark-reduced.svg")
+  assert.equal(mac.page.ink, INK.ink)
+  assert.equal(mac.page.ground, INK.ground)
+  const page = markPage({ size: mac.size, ...mac.page })
+  assert.match(page, /width: 824px; height: 824px;/)
+  assert.match(page, /border-radius: 181px;/)
+  // The glyph is 60% of the tile, not of the canvas.
+  assert.match(page, /width: 494px; height: 494px;/)
+})
+
+test("the macOS build uses the squircle and the other platforms keep the square", async () => {
+  const config = await readFile(join(root, "apps/desktop/electron-builder.yml"), "utf8")
+  const mac = config.slice(config.indexOf("\nmac:"), config.indexOf("\ndmg:"))
+  assert.match(mac, /^ {2}icon: build\/icon-mac\.png$/m)
+  assert.doesNotMatch(config.replace(mac, ""), /^\s*icon:/m)
 })

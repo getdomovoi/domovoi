@@ -1,8 +1,16 @@
 #!/usr/bin/env node
-// Generates the app icon, the Android adaptive foreground, the splash screens and the favicon
-// from design/assets/mark*.svg. Nothing here is hand drawn: geometry comes from Domovoi App Icon.dc.html
-// (mark at 60% of the tile, full-bleed square, no baked radius, no glow, no shadow, no alpha)
-// and the colours come from design/design_system_domovoi/tokens/colors.css.
+// Generates the app icons, the Android adaptive foreground, the splash screens, the favicon, the
+// macOS tile and the web app icons from design/assets/mark*.svg. Nothing here is hand drawn.
+//
+// Sources, per the owner ruling of 2026-09-25:
+// - iOS, Android, splash and favicon: Claude Design project a3b4404e-4d0c-451e-8dd2-203116a76c06,
+//   root file "Domovoi App Icon.dc.html", read 2026-09-25, candidate "ink" (the file's default):
+//   --card ground, --primary reduced mark at 60% of the tile, full-bleed square with no baked
+//   radius because the OS masks it, no alpha, no glow, no shadow. Splash is the full mark at 76pt
+//   in --primary on --background per theme, exported at 1242 square. The file is not vendored.
+// - macOS: design/design_handoff_domovoi_brand/README.md, App icons: squircle at a 22% radius.
+//   macOS does not mask app icons, so the tile carries its own shape on Apple's 824 of 1024 grid.
+// Colours come from apps/mobile/src/theme/tokens.generated.js, generated from the stylesheet.
 //
 // Rendering needs a local Chromium. It is a design-time tool, not part of the build or of CI.
 //   node scripts/brand-icons.mjs
@@ -59,10 +67,26 @@ export function findChromium(candidates = CHROMIUM_CANDIDATES) {
   throw new Error(`no chromium found, set CHROMIUM to one: tried ${candidates.join(", ")}`)
 }
 
-export function markPage({ size, mark, ink, ground, fraction }) {
-  const glyph = Math.round(size * fraction)
+// A page with a tile draws the ground as a rounded tile of `tile.size` of the canvas, with
+// `tile.radius` of the tile as its corner radius, on a transparent canvas. The glyph is then a
+// fraction of the tile rather than of the canvas.
+export function markPage({ size, mark, ink, ground, fraction, tile }) {
   const svg = readFileSync(join(root, "design/assets", mark), "utf8")
   const data = `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`
+  if (tile) {
+    const side = Math.round(size * tile.size)
+    const glyph = Math.round(side * fraction)
+    return `<!doctype html><meta charset="utf-8"><style>
+    html, body { margin: 0; padding: 0; }
+    body { width: ${size}px; height: ${size}px; display: flex; align-items: center; justify-content: center;
+      background: transparent; }
+    div { width: ${side}px; height: ${side}px; border-radius: ${Math.round(side * tile.radius)}px;
+      display: flex; align-items: center; justify-content: center; background: ${ground}; }
+    span { display: block; width: ${glyph}px; height: ${glyph}px; background: ${ink};
+      -webkit-mask: url("${data}") center/contain no-repeat; mask: url("${data}") center/contain no-repeat; }
+  </style><div><span></span></div>`
+  }
+  const glyph = Math.round(size * fraction)
   return `<!doctype html><meta charset="utf-8"><style>
     html, body { margin: 0; padding: 0; }
     body { width: ${size}px; height: ${size}px; display: flex; align-items: center; justify-content: center;
@@ -127,43 +151,56 @@ export function render(
   console.log(`${relative(root, out)} ${size}x${size}`)
 }
 
+// The ink icon: reduced mark at 60% on --card, full bleed. Every OS that masks gets this square.
+const INK_SQUARE = { mark: "mark-reduced.svg", ink: DARK.primary, ground: DARK.card, fraction: MARK_FRACTION }
+// Masked foregrounds keep the glyph well inside the safe circle (61% of the canvas on Android,
+// 80% for a maskable web icon), so the mask never clips the silhouette.
+const MASKED_FRACTION = 0.45
+// Apple's macOS grid: an 824 tile centred on a 1024 canvas, leaving room for the system shadow.
+const MACOS_TILE = { size: 824 / 1024, radius: 0.22 }
+
 export const targets = [
-  {
-    out: "apps/mobile/assets/icon.png",
-    size: 1024,
-    page: { mark: "mark-reduced.svg", ink: DARK.primary, ground: DARK.card, fraction: MARK_FRACTION },
-  },
+  { out: "apps/mobile/assets/icon.png", size: 1024, page: INK_SQUARE },
   {
     out: "apps/mobile/assets/adaptive-icon.png",
     size: 1024,
-    // Android masks the foreground, so the glyph sits inside the safe circle rather than at 60%.
-    page: { mark: "mark-reduced.svg", ink: DARK.primary, ground: "transparent", fraction: 0.45 },
+    // The ground is the adaptive icon's backgroundColor in app.config.ts, not part of this layer.
+    page: { ...INK_SQUARE, ground: "transparent", fraction: MASKED_FRACTION },
     transparent: true,
   },
   // The splash art is the mark alone on transparency: expo-splash-screen centres it on the
-  // background colour and scales it to imageWidth, so a baked ground would be a tile on a tile.
+  // per-theme backgroundColor and scales it to imageWidth (76), so a baked ground would be a tile
+  // on a tile. The 1242 square matches the export size the App Icon file lists.
   {
     out: "apps/mobile/assets/splash-dark.png",
-    size: 1024,
+    size: 1242,
     page: { mark: "mark.svg", ink: DARK.primary, ground: "transparent", fraction: 1 },
     transparent: true,
   },
   {
     out: "apps/mobile/assets/splash-light.png",
-    size: 1024,
+    size: 1242,
     page: { mark: "mark.svg", ink: LIGHT.primary, ground: "transparent", fraction: 1 },
     transparent: true,
   },
+  { out: "apps/mobile/assets/favicon.png", size: 48, page: INK_SQUARE },
+  // Windows and Linux builds take build/icon.png; electron-builder.yml points macOS at the tile.
+  { out: "apps/desktop/build/icon.png", size: 1024, page: INK_SQUARE },
   {
-    out: "apps/mobile/assets/favicon.png",
-    size: 48,
-    page: { mark: "mark-reduced.svg", ink: DARK.primary, ground: DARK.card, fraction: MARK_FRACTION },
-  },
-  {
-    out: "apps/desktop/build/icon.png",
+    out: "apps/desktop/build/icon-mac.png",
     size: 1024,
-    page: { mark: "mark-reduced.svg", ink: DARK.primary, ground: DARK.card, fraction: MARK_FRACTION },
+    page: { ...INK_SQUARE, tile: MACOS_TILE },
+    transparent: true,
   },
+  { out: "apps/web/public/icons/app-icon-192.png", size: 192, page: INK_SQUARE },
+  { out: "apps/web/public/icons/app-icon-512.png", size: 512, page: INK_SQUARE },
+  {
+    out: "apps/web/public/icons/app-icon-512-maskable.png",
+    size: 512,
+    // A maskable icon is one layer, so it keeps the ground and insets the glyph.
+    page: { ...INK_SQUARE, fraction: MASKED_FRACTION },
+  },
+  { out: "apps/web/public/icons/apple-touch-icon.png", size: 180, page: INK_SQUARE },
 ]
 
 function main() {
