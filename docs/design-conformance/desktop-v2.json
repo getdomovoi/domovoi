@@ -1729,7 +1729,7 @@
     {
       "id": "composer.action-row",
       "name": "Composer action row holds only composer controls",
-      "where": "composer action row: attach, model chip, mode chip, sheet, usage, stop, send. Checkpoint, Archive session and the machine switch live in the drawer row menu and the palette, not here",
+      "where": "composer action row: attach, model chip, mode chip, effort chip, sheet, usage, stop, send. Checkpoint, Archive session and the machine switch live in the drawer row menu and the palette, not here",
       "evidence": [
         {
           "absent": "<ArchiveSessionAction",
@@ -1746,13 +1746,43 @@
     },
     {
       "id": "composer.think",
-      "name": "No Think control",
-      "where": "the composer action row draws no Think chip; reasoning effort is not a v2 control",
+      "name": "Effort chip and menu",
+      "where": "composer action row after the mode chip, hidden when the model reports no levels: the level's word; menu EFFORT ON <harness> with the harness's scale name, rows with bars, word, the value sent and a line, then the next-turn rule or the moved-effort note after a model change",
+      "states": [
+        "closed",
+        "open",
+        "moved by a model change"
+      ],
+      "copy": [
+        "EFFORT ON",
+        "thinking budget",
+        "reasoning effort",
+        "A short budget. Enough for a single-file edit or a question with one answer.",
+        "The default here. Holds a multi-file change in view while it plans.",
+        "The longest budget this harness offers. Slow and dear, and worth it on a plan you cannot check yourself.",
+        "Answers quickly and stops reasoning early. Fine for triage.",
+        "The default. Balances the time it spends against what it catches.",
+        "Reasons longer before acting. Noticeably slower per turn.",
+        "Whatever the model does unprompted. The only level that is not a choice.",
+        "Stops reasoning early. Fine for triage and single-file edits.",
+        "Balances the time it spends against what it catches.",
+        "The longest this model will reason. Slow and dear, and worth it on a plan you cannot check yourself.",
+        "Applies from the next turn. A turn already in flight keeps the effort it started with.",
+        "has no",
+        "when you changed model. It stays there."
+      ],
       "evidence": [
-        {
-          "absent": "<ThinkChip",
-          "in": "packages/ui/src/thread.tsx"
-        }
+        "<EffortChip",
+        "export function EffortChip",
+        "`EFFORT ON ${provider.toUpperCase()}`",
+        "Applies from the next turn. A turn already in flight keeps the effort it started with.",
+        "so this moved to",
+        "when you changed model. It stays there.",
+        "Answers quickly and stops reasoning early. Fine for triage.",
+        "thinking budget"
+      ],
+      "notes": [
+        "Rows are the levels the session's model reports, not the design's sample scale. A level gets the design's word and line only where the design names that harness and value; other values show as reported. The level words (Default, Low, Medium, High, Max) are single words, which the gate does not collect as script copy."
       ]
     },
     {
@@ -2044,18 +2074,6 @@
       "Reads and proposes. It cannot write or run anything.",
       "Writes and commands ask first, one at a time.",
       "Writes and runs inside the worktree. Gates still apply.",
-      "thinking budget",
-      "A short budget. Enough for a single-file edit or a question with one answer.",
-      "The default here. Holds a multi-file change in view while it plans.",
-      "The longest budget this harness offers. Slow and dear, and worth it on a plan you cannot check yourself.",
-      "reasoning effort",
-      "Answers quickly and stops reasoning early. Fine for triage.",
-      "The default. Balances the time it spends against what it catches.",
-      "Reasons longer before acting. Noticeably slower per turn.",
-      "Whatever the model does unprompted. The only level that is not a choice.",
-      "Stops reasoning early. Fine for triage and single-file edits.",
-      "Balances the time it spends against what it catches.",
-      "The longest this model will reason. Slow and dear, and worth it on a plan you cannot check yourself.",
       "The default here. Reasoning high, 200k context.",
       "Slower and dearer. Worth it on a plan you cannot check yourself.",
       "Fast and cheap. Fine for triage, weak on multi-file edits.",
@@ -2732,10 +2750,6 @@
       "Reply, or steer the plan",
       "Also cover the claim-expiry case in replay.spec.ts",
       "queued, sends when this turn ends",
-      "EFFORT ON",
-      "has no",
-      "when you changed model. It stays there.",
-      "Applies from the next turn. A turn already in flight keeps the effort it started with.",
       "watching only",
       "No sends, approvals, terminal or writes. Reads stream as normal.",
       "Archived, so the daemon accepts reads only.",
