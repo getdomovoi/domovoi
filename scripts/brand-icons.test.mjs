@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { test } from "node:test"
 import { fileURLToPath, pathToFileURL } from "node:url"
+import { inflateSync } from "node:zlib"
 
 import { chromiumArgs, findChromium, markPage, render, targets } from "./brand-icons.mjs"
 
@@ -194,4 +195,87 @@ test("the macOS build uses the squircle and the other platforms keep the square"
   const mac = config.slice(config.indexOf("\nmac:"), config.indexOf("\ndmg:"))
   assert.match(mac, /^ {2}icon: build\/icon-mac\.png$/m)
   assert.doesNotMatch(config.replace(mac, ""), /^\s*icon:/m)
+})
+
+// The checks above hold the spec. These read the committed PNGs, so an asset that was not
+// regenerated after a spec change fails here without a browser.
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+const RGB = 2
+const RGBA = 6
+
+function readPng(bytes) {
+  assert.ok(bytes.subarray(0, 8).equals(PNG_SIGNATURE), "not a PNG")
+  const chunks = []
+  for (let offset = 8; offset < bytes.length; ) {
+    const length = bytes.readUInt32BE(offset)
+    const type = bytes.toString("latin1", offset + 4, offset + 8)
+    chunks.push({ type, data: bytes.subarray(offset + 8, offset + 8 + length) })
+    offset += 12 + length
+  }
+  const header = chunks[0]
+  assert.equal(header?.type, "IHDR")
+  return {
+    width: header.data.readUInt32BE(0),
+    height: header.data.readUInt32BE(4),
+    bitDepth: header.data[8],
+    colourType: header.data[9],
+    interlace: header.data[12],
+    idat: Buffer.concat(chunks.filter((chunk) => chunk.type === "IDAT").map((chunk) => chunk.data)),
+  }
+}
+
+// Undoes the five PNG row filters for an 8-bit, non-interlaced image and returns the rows.
+function decodeRows(png) {
+  assert.equal(png.bitDepth, 8)
+  assert.equal(png.interlace, 0)
+  const channels = png.colourType === RGBA ? 4 : 3
+  const stride = png.width * channels
+  const raw = inflateSync(png.idat)
+  const rows = []
+  let previous = Buffer.alloc(stride)
+  for (let y = 0; y < png.height; y += 1) {
+    const start = y * (stride + 1)
+    const filter = raw[start]
+    const row = Buffer.from(raw.subarray(start + 1, start + 1 + stride))
+    for (let x = 0; x < stride; x += 1) {
+      const left = x >= channels ? row[x - channels] : 0
+      const up = previous[x]
+      const upLeft = x >= channels ? previous[x - channels] : 0
+      let predictor = 0
+      if (filter === 1) predictor = left
+      else if (filter === 2) predictor = up
+      else if (filter === 3) predictor = (left + up) >> 1
+      else if (filter === 4) {
+        const estimate = left + up - upLeft
+        const toLeft = Math.abs(estimate - left)
+        const toUp = Math.abs(estimate - up)
+        const toUpLeft = Math.abs(estimate - upLeft)
+        predictor = toLeft <= toUp && toLeft <= toUpLeft ? left : toUp <= toUpLeft ? up : upLeft
+      } else assert.equal(filter, 0, `unknown filter ${filter} on row ${y}`)
+      row[x] = (row[x] + predictor) & 0xff
+    }
+    rows.push(row)
+    previous = row
+  }
+  return { rows, channels }
+}
+
+test("every committed asset has the size and alpha its target declares", async () => {
+  for (const { out, size, transparent } of targets) {
+    const png = readPng(await readFile(join(root, out)))
+    assert.deepEqual(
+      { width: png.width, height: png.height, colourType: png.colourType },
+      { width: size, height: size, colourType: transparent === true ? RGBA : RGB },
+      out,
+    )
+  }
+})
+
+test("the committed macOS tile is transparent at the corner and opaque at the centre", async () => {
+  const png = readPng(await readFile(join(root, "apps/desktop/build/icon-mac.png")))
+  const { rows, channels } = decodeRows(png)
+  const alpha = (x, y) => rows[y][x * channels + 3]
+  assert.equal(alpha(0, 0), 0)
+  const centre = png.width / 2
+  assert.equal(alpha(centre, centre), 255)
 })
