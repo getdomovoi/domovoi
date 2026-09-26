@@ -127,6 +127,17 @@ describe("Codex repository configuration", () => {
       .rejects.toThrow(refusal("packages/app/.codex/config.toml"))
   })
 
+  it("resolves a session directory reached through a link to the repository it is in", async () => {
+    const root = repository({ ".codex/config.toml": "model = \"probe\"\n", "packages/app/src/.keep": "" })
+    const aliases = mkdtempSync(join(tmpdir(), "domovoi-codex-alias-"))
+    directories.push(aliases)
+    symlinkSync(join(root, "packages", "app"), join(aliases, "app"))
+    const { adapter, transport } = await connected()
+
+    await expect(adapter.startThread({ cwd: join(aliases, "app"), runtime })).rejects.toThrow(refusal(".codex/config.toml"))
+    expect(sentMethods(transport)).toEqual(["initialize", "initialized"])
+  })
+
   it("starts a session when the worktree holds nothing Codex loads as configuration", async () => {
     const cwd = repository({ ".codex/mcp.json": "{}", "codex.toml": "model = \"probe\"\n", "README.md": "" })
     const { adapter, transport } = await connected()
@@ -203,6 +214,18 @@ describe("Codex configuration in the repository's main checkout", () => {
 
     await expect(adapter.startThread({ cwd: worktree, runtime })).rejects.toThrow(mainCheckoutRefusal(".codex/hooks.json", main))
     expect(sentMethods(transport)).toEqual(["initialize", "initialized", "config/read"])
+  })
+
+  it("finds the main checkout of a session directory reached through a link", async () => {
+    const { main, worktree } = linkedWorktree({ "packages/app/src/.keep": "" }, { ".codex/hooks.json": "{}" })
+    const aliases = mkdtempSync(join(tmpdir(), "domovoi-codex-alias-"))
+    directories.push(aliases)
+    symlinkSync(join(worktree, "packages", "app"), join(aliases, "app"))
+    const { adapter, transport } = await connected()
+
+    await expect(adapter.startThread({ cwd: join(aliases, "app"), runtime }))
+      .rejects.toThrow(mainCheckoutRefusal(".codex/hooks.json", main))
+    expect(sentMethods(transport)).toEqual(["initialize", "initialized"])
   })
 
   it("starts a session when the main checkout holds nothing Codex loads from it", async () => {

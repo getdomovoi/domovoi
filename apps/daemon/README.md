@@ -541,6 +541,47 @@ code or settings the repository brings:
   worktree that contains any of those three files, and says which one. Kilo also reads
   `.kilocode/rules/`, `.kilocode/workflows/` and `.kilocodeignore` from the worktree; those give
   instructions, slash commands and deny rules, and they still load.
+- Codex loads a project's `.codex/config.toml`, `.codex/hooks.json` and `.codex/rules/*.rules`
+  once the project is trusted. Every Codex thread the daemon starts or resumes marks the project
+  untrusted for that thread, and the daemon refuses to open or continue a Codex session while one
+  of those files is in any directory from the session's directory up to the repository root, or
+  while the main checkout of a linked worktree holds `.codex/config.toml` or `.codex/hooks.json`.
+- Cursor and Grok have no switch that turns project configuration off. The daemon refuses to open,
+  resume or prompt a Cursor or Grok session while any directory from the session's directory up
+  to the repository root holds one of the files below, and says which one. The session's directory
+  is also resolved through links, and both paths are checked. A symbolic link counts as the file,
+  and so does a link on the way to it, such as a `.cursor` folder that is a link. A directory in no
+  repository is checked up to the filesystem root, except the home directory, and a file found
+  there is named by its path from the session's directory. A directory that cannot be checked,
+  such as a link loop, is refused the same way.
+  - Cursor: `.cursor/mcp.json` (MCP servers), `.cursor/hooks.json` (hooks), `.cursor/cli.json`
+    (permission rules), `.cursor/sandbox.json` (sandbox policy), `.claude/settings.json` and
+    `.claude/settings.local.json`, whose hooks Cursor runs by default, and `.mcp.json`, which
+    Cursor's documentation does not list and is refused as a precaution.
+  - Grok: `.grok/config.toml` (MCP servers, plugins, permission rules), `.grok/hooks`,
+    `.grok/plugins`, `.grok/agents`, `.grok/roles`, `.grok/workflows`, `.grok/lsp.json`,
+    `.grok/sandbox.toml`, `.mcp.json`, `.cursor/mcp.json`, `.cursor/hooks.json`,
+    `.claude/settings.json`, `.claude/settings.local.json`, `.claude/agents`, `.claude/plugins`
+    and `.envrc`. Grok applies these only in a folder the person has trusted, and the daemon
+    refuses them whether or not it is trusted.
+  - Rules, skills and commands, Cursor subagents and Grok personas still load; they are text the
+    model reads. Cursor reads `AGENTS.md` and `CLAUDE.md` itself. Grok reads project instructions
+    only in a folder the person has trusted, and the daemon does not send them. The lists follow
+    Cursor's documentation and Grok's own list of trust-sensitive files; a file either agent
+    loads that they do not name is not refused.
+  - While a session is open the daemon watches those directories and also checks them every two
+    seconds, so a listed file that appears is found within two seconds even when a watcher misses
+    it, and usually at once. It then stops the agent process, which ends every session that
+    process runs: each shows the disconnect with the refusal as its reason, and a session in that
+    worktree is refused when it resumes. Until then the agent can load the file, so a hook added
+    during a session can run for up to about two seconds. The agent is stopped the same way when a
+    directory cannot be watched or checked, or when more than 256 directories would be watched.
+  - The agent process starts in an empty private folder under the temporary folder, not the
+    daemon's own directory, with that folder as `PWD`; `OLDPWD`, `INIT_CWD` and other inherited
+    working-directory variables are removed. Each session's worktree reaches the agent as that
+    session's directory. If the temporary folder is inside a repository that holds a listed file,
+    the agent is not started. Folders left by a daemon that stopped without closing its agents are
+    removed on the next start once they are ten minutes old.
 
 Instruction files still reach the agent, because the daemon reads them itself as text. For Claude
 Code it reads `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` at the worktree root and

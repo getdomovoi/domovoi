@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto"
+import { statSync, watch, type FSWatcher } from "node:fs"
 
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep } from "./agents.js"
 import type { AcpProviderDefinition } from "./acp-providers.js"
+import { repositoryFileFrom, repositoryWatchDirectories } from "./codex-repository-config.js"
 import { classifyProviderFailure } from "./provider-failures.js"
 import { redactDurableText } from "./secret-redaction.js"
 import { normalizeUsage } from "./usage.js"
@@ -71,6 +73,12 @@ type PendingPermission = {
 
 type ActiveTurn = { id: string }
 
+// Stat calls only: a few per directory from each open session up to its
+// repository root. The README states this interval as the longest a held-back
+// file can go unseen while a session is open.
+const repositoryCheckMs = 2_000
+const maximumWatchedDirectories = 256
+
 export class AcpAgentAdapter implements AgentAdapter {
   readonly permissionCapabilities: NonNullable<AgentAdapter["permissionCapabilities"]>
 
@@ -81,6 +89,9 @@ export class AcpAgentAdapter implements AgentAdapter {
   readonly #listeners = new Set<(event: AgentEvent) => void>()
   readonly #activeTurns = new Map<string, ActiveTurn>()
   readonly #pendingPermissions = new Map<number, PendingPermission>()
+  readonly #sessionDirectories = new Map<string, string>()
+  readonly #watchers = new Map<string, { watcher: FSWatcher; inode: number }>()
+  #periodicCheck: ReturnType<typeof setInterval> | undefined
   #nextPermissionId = 1
   #peer: AcpPeer | undefined
   #disconnected = false
@@ -145,14 +156,20 @@ export class AcpAgentAdapter implements AgentAdapter {
   }
 
   async startThread(input: { cwd: string; runtime: Runtime }): Promise<string> {
-    const setup = await this.#requirePeer().startSession(input.cwd)
-    await this.#configure(setup, input.runtime)
+    this.#refuseHeldBackRepositoryFiles(input.cwd)
+    const peer = this.#requirePeer()
+    const setup = await peer.startSession(input.cwd)
+    this.#guardSession(setup.sessionId, input.cwd)
+    await this.#configureOrClose(peer, setup, input.runtime)
     return setup.sessionId
   }
 
   async resumeThread(input: { threadId: string; cwd: string; runtime: Runtime }): Promise<void> {
-    const setup = await this.#requirePeer().resumeSession(input.threadId, input.cwd)
-    await this.#configure(setup, input.runtime)
+    this.#refuseHeldBackRepositoryFiles(input.cwd)
+    const peer = this.#requirePeer()
+    const setup = await peer.resumeSession(input.threadId, input.cwd)
+    this.#guardSession(input.threadId, input.cwd)
+    await this.#configureOrClose(peer, { ...setup, sessionId: input.threadId }, input.runtime)
   }
 
   async stopThread(threadId: string): Promise<void> {
@@ -160,6 +177,7 @@ export class AcpAgentAdapter implements AgentAdapter {
     const active = this.#activeTurns.delete(threadId)
     if (active) await this.#requirePeer().cancel(threadId)
     await this.#requirePeer().closeSession(threadId)
+    this.#releaseSession(threadId)
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
@@ -176,6 +194,7 @@ export class AcpAgentAdapter implements AgentAdapter {
     runtime: Runtime
   }): Promise<string> {
     if (this.#activeTurns.has(input.threadId)) throw new Error("ACP session already has an active turn")
+    this.#refuseHeldBackRepositoryFiles(input.cwd)
     const turnId = this.#createId()
     this.#activeTurns.set(input.threadId, { id: turnId })
     void this.#runPrompt(input.threadId, turnId, input.prompt)
@@ -205,9 +224,148 @@ export class AcpAgentAdapter implements AgentAdapter {
   async close(): Promise<void> {
     for (const pending of this.#pendingPermissions.values()) pending.resolve({ cancelled: true })
     this.#pendingPermissions.clear()
+    this.#releaseSessions()
     const peer = this.#peer
     this.#peer = undefined
     if (peer) await peer.close()
+  }
+
+  // Neither agent has a switch that turns project configuration off, so a
+  // worktree holding one of these files is refused before the agent is asked.
+  #refuseHeldBackRepositoryFiles(cwd: string): void {
+    const refusal = this.#repositoryRefusal(cwd)
+    if (refusal !== undefined) throw new Error(refusal)
+  }
+
+  // A check that cannot finish, such as a directory that is a link loop,
+  // refuses as if a file were found.
+  #repositoryRefusal(cwd: string): string | undefined {
+    let file: string | undefined
+    try {
+      file = repositoryFileFrom(cwd, this.#definition.heldBackRepositoryFiles)
+    } catch {
+      return this.#uncheckedRefusal()
+    }
+    if (file === undefined) return undefined
+    return `${this.#definition.displayName} would load ${file} from this worktree, and that file can start programs or change agent permissions. `
+      + "Domovoi does not load repository-brought configuration until a trust gate ships. "
+      + `Remove ${file} from this worktree or use another provider here.`
+  }
+
+  #uncheckedRefusal(): string {
+    const name = this.#definition.displayName
+    return `Domovoi could not check this worktree for ${name} configuration that can start programs or change agent permissions, so ${name} is not run here. `
+      + "Domovoi does not load repository-brought configuration until a trust gate ships."
+  }
+
+  // An agent can load a file that appears while a session is open, as Cursor
+  // reloads hooks.json, so each open session's directories are watched and
+  // also checked every repositoryCheckMs, which bounds how long a file can go
+  // unseen when a watcher drops events. When a held-back file appears, or the
+  // directories cannot be watched or checked, the agent process is stopped,
+  // which ends every session it runs; each reports the disconnect with the
+  // refusal as its reason and is refused again when it resumes.
+  #guardSession(threadId: string, cwd: string): void {
+    this.#sessionDirectories.set(threadId, cwd)
+    this.#monitorRepositories()
+  }
+
+  #releaseSession(threadId: string): void {
+    this.#sessionDirectories.delete(threadId)
+    this.#repositoryChanged()
+  }
+
+  // Watchers are armed before the check, so a file created before a folder is
+  // watched is found by the check. Throws the refusal after stopping the agent.
+  #monitorRepositories(): void {
+    let refusal: string | undefined
+    try {
+      this.#watchRepositories()
+      for (const cwd of new Set(this.#sessionDirectories.values())) {
+        refusal = this.#repositoryRefusal(cwd)
+        if (refusal !== undefined) break
+      }
+    } catch {
+      refusal = this.#uncheckedRefusal()
+    }
+    if (refusal === undefined) return
+    const peer = this.#peer
+    if (peer) {
+      this.#handleDisconnect(peer, refusal)
+      void peer.close().catch(() => undefined)
+    }
+    this.#releaseSessions()
+    throw new Error(refusal)
+  }
+
+  #repositoryChanged(): void {
+    try {
+      this.#monitorRepositories()
+    } catch {
+      // The refusal has already stopped the agent and been reported.
+    }
+  }
+
+  // Throws when a directory that exists cannot be watched or when more than
+  // maximumWatchedDirectories would be.
+  #watchRepositories(): void {
+    const files = this.#definition.heldBackRepositoryFiles
+    const wanted = new Set([...new Set(this.#sessionDirectories.values())]
+      .flatMap((cwd) => repositoryWatchDirectories(cwd, files)))
+    if (wanted.size > maximumWatchedDirectories) throw new Error("Too many directories to watch")
+    // A folder removed and made again is a new folder, so a watcher is kept
+    // only while the folder it was armed on is still there.
+    const inodes = new Map([...wanted].map((directory) => [directory, inodeOf(directory)]))
+    for (const [directory, { watcher, inode }] of this.#watchers) {
+      if (inodes.get(directory) === inode) continue
+      watcher.close()
+      this.#watchers.delete(directory)
+    }
+    for (const [directory, inode] of inodes) {
+      if (inode === undefined || this.#watchers.has(directory)) continue
+      let watcher: FSWatcher
+      try {
+        watcher = watch(directory, () => this.#repositoryChanged())
+      } catch (error) {
+        // A folder removed since it was listed has nothing to watch; its
+        // parent is watched and re-arms this one if it comes back.
+        if (inodeOf(directory) === undefined) continue
+        throw error
+      }
+      watcher.on("error", () => {
+        watcher.close()
+        this.#watchers.delete(directory)
+        this.#repositoryChanged()
+      })
+      watcher.unref()
+      this.#watchers.set(directory, { watcher, inode })
+    }
+    if (this.#sessionDirectories.size === 0) {
+      clearInterval(this.#periodicCheck)
+      this.#periodicCheck = undefined
+    } else if (this.#periodicCheck === undefined) {
+      this.#periodicCheck = setInterval(() => this.#repositoryChanged(), repositoryCheckMs)
+      this.#periodicCheck.unref()
+    }
+  }
+
+  #releaseSessions(): void {
+    this.#sessionDirectories.clear()
+    clearInterval(this.#periodicCheck)
+    this.#periodicCheck = undefined
+    for (const { watcher } of this.#watchers.values()) watcher.close()
+    this.#watchers.clear()
+  }
+
+  // A session left open after a failed setup would keep running unwatched.
+  async #configureOrClose(peer: AcpPeer, setup: AcpSessionSetup, runtime: Runtime): Promise<void> {
+    try {
+      await this.#configure(setup, runtime)
+    } catch (error) {
+      this.#releaseSession(setup.sessionId)
+      await peer.closeSession(setup.sessionId).catch(() => undefined)
+      throw error
+    }
   }
 
   async #configure(setup: AcpSessionSetup, runtime: Runtime): Promise<void> {
@@ -322,6 +480,7 @@ export class AcpAgentAdapter implements AgentAdapter {
     this.#peer = undefined
     if (this.#disconnected) return
     this.#disconnected = true
+    this.#releaseSessions()
     this.#activeTurns.clear()
     for (const pending of this.#pendingPermissions.values()) pending.resolve({ cancelled: true })
     this.#pendingPermissions.clear()
@@ -338,6 +497,14 @@ export class AcpAgentAdapter implements AgentAdapter {
 
   #emit(event: AgentEvent): void {
     for (const listener of this.#listeners) listener(event)
+  }
+}
+
+function inodeOf(directory: string): number | undefined {
+  try {
+    return statSync(directory, { throwIfNoEntry: false })?.ino
+  } catch {
+    return undefined
   }
 }
 

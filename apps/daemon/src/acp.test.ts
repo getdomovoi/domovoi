@@ -1,12 +1,34 @@
+import { EventEmitter } from "node:events"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+
 import { waitForDaemon } from "./test-wait-for.js"
 import type { Runtime } from "@getdomovoi/protocol"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { AcpPeer, AcpPeerHandlers, AcpSessionSetup, AcpUpdate } from "./acp.js"
 import { AcpAgentAdapter } from "./acp.js"
-import { CURSOR_ACP_PROVIDER } from "./acp-providers.js"
+import { CURSOR_ACP_PROVIDER, GROK_ACP_PROVIDER, type AcpProviderDefinition } from "./acp-providers.js"
 import type { AgentEvent } from "./agents.js"
 import { classifyProviderFailure } from "./provider-failures.js"
+
+// Lets a test make directory watchers fail to install, or install and never
+// report, as a watcher that drops events does.
+const directoryWatch = vi.hoisted(() => ({ mode: "real" as "real" | "silent" | "fail" }))
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>()
+  return {
+    ...actual,
+    watch: (...args: Parameters<typeof actual.watch>) => {
+      if (directoryWatch.mode === "fail") throw Object.assign(new Error("too many open files"), { code: "EMFILE" })
+      if (directoryWatch.mode === "silent") {
+        return Object.assign(new EventEmitter(), { close: () => undefined, ref() { return this }, unref() { return this } })
+      }
+      return actual.watch(...args)
+    },
+  }
+})
 
 const runtime: Runtime = {
   provider: "cursor-agent",
@@ -377,5 +399,295 @@ describe("AcpAgentAdapter", () => {
         costSource: "provider-reported",
       },
     })
+  })
+})
+
+// Cursor and Grok read MCP servers, hooks, permission rules and other
+// program-starting files from the session's directory and the directories up
+// to the repository root. Until a repository can be trusted, the adapter
+// refuses a session whose worktree holds one, before the agent is asked.
+describe("ACP repository configuration", () => {
+  const scratch: string[] = []
+  afterEach(() => {
+    vi.useRealTimers()
+    directoryWatch.mode = "real"
+    for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true })
+  })
+
+  const unchecked = (name: string) =>
+    `Domovoi could not check this worktree for ${name} configuration that can start programs or change agent permissions, so ${name} is not run here. `
+    + "Domovoi does not load repository-brought configuration until a trust gate ships."
+
+  function worktree(files: Record<string, string> = {}): string {
+    const root = mkdtempSync(join(tmpdir(), "domovoi-acp-config-"))
+    scratch.push(root)
+    mkdirSync(join(root, ".git"))
+    writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n")
+    write(root, files)
+    return root
+  }
+
+  function write(root: string, files: Record<string, string>): void {
+    for (const [path, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, path)), { recursive: true })
+      writeFileSync(join(root, path), content)
+    }
+  }
+
+  function connected(definition: AcpProviderDefinition = CURSOR_ACP_PROVIDER) {
+    const peer = new FakePeer()
+    const adapter = new AcpAgentAdapter({
+      definition,
+      createPeer: () => peer,
+      listModels: async () => [],
+      createId: () => "local-turn",
+    })
+    return { adapter, peer }
+  }
+
+  const refusal = (name: string, file: string) =>
+    `${name} would load ${file} from this worktree, and that file can start programs or change agent permissions. `
+    + "Domovoi does not load repository-brought configuration until a trust gate ships. "
+    + `Remove ${file} from this worktree or use another provider here.`
+
+  it.each([
+    ["Cursor", ".cursor/mcp.json", CURSOR_ACP_PROVIDER],
+    ["Cursor", ".cursor/hooks.json", CURSOR_ACP_PROVIDER],
+    ["Cursor", ".cursor/cli.json", CURSOR_ACP_PROVIDER],
+    ["Cursor", ".claude/settings.json", CURSOR_ACP_PROVIDER],
+    ["Cursor", ".mcp.json", CURSOR_ACP_PROVIDER],
+    ["Grok", ".grok/config.toml", GROK_ACP_PROVIDER],
+    ["Grok", ".grok/hooks/pre-tool.json", GROK_ACP_PROVIDER],
+    ["Grok", ".mcp.json", GROK_ACP_PROVIDER],
+    ["Grok", ".cursor/mcp.json", GROK_ACP_PROVIDER],
+    ["Grok", ".claude/settings.local.json", GROK_ACP_PROVIDER],
+    ["Grok", ".envrc", GROK_ACP_PROVIDER],
+  ] as const)("refuses to start %s in a worktree holding %s", async (name, file, definition) => {
+    const cwd = worktree({ [file]: "{}\n" })
+    const { adapter, peer } = connected(definition)
+    await adapter.connect()
+
+    const shown = file.startsWith(".grok/hooks/") ? ".grok/hooks" : file
+    await expect(adapter.startThread({ cwd, runtime })).rejects.toThrow(refusal(name, shown))
+    expect(peer.startSession).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["Cursor", CURSOR_ACP_PROVIDER],
+    ["Grok", GROK_ACP_PROVIDER],
+  ] as const)("refuses %s for every file on its held-back list", async (name, definition) => {
+    expect(definition.heldBackRepositoryFiles.length).toBeGreaterThan(0)
+    for (const file of definition.heldBackRepositoryFiles) {
+      const cwd = worktree({ [file]: "{}\n" })
+      const { adapter, peer } = connected(definition)
+      await adapter.connect()
+      await expect(adapter.startThread({ cwd, runtime })).rejects.toThrow(refusal(name, file))
+      expect(peer.startSession).not.toHaveBeenCalled()
+    }
+  })
+
+  it("refuses to resume a session whose worktree gained a held-back file", async () => {
+    const cwd = worktree({ ".cursor/mcp.json": "{}\n" })
+    const { adapter, peer } = connected()
+    await adapter.connect()
+
+    await expect(adapter.resumeThread({ threadId: "acp-session", cwd, runtime }))
+      .rejects.toThrow(refusal("Cursor", ".cursor/mcp.json"))
+    expect(peer.resumeSession).not.toHaveBeenCalled()
+  })
+
+  it("refuses a turn once the worktree holds a held-back file", async () => {
+    const cwd = worktree()
+    const { adapter, peer } = connected()
+    await adapter.connect()
+    await expect(adapter.startThread({ cwd, runtime })).resolves.toBe("acp-session")
+    write(cwd, { ".cursor/mcp.json": "{}\n" })
+
+    await expect(adapter.startTurn({ threadId: "acp-session", cwd, prompt: "Ship it", runtime }))
+      .rejects.toThrow(refusal("Cursor", ".cursor/mcp.json"))
+    expect(peer.prompt).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["Cursor", CURSOR_ACP_PROVIDER],
+    ["Grok", GROK_ACP_PROVIDER],
+  ] as const)("still starts %s in a worktree that holds only instruction files", async (_name, definition) => {
+    const cwd = worktree({ "AGENTS.md": "# Rules\n", "CLAUDE.md": "# Rules\n", ".cursor/rules/style.mdc": "Be brief.\n" })
+    const { adapter, peer } = connected(definition)
+    await adapter.connect()
+
+    await expect(adapter.startThread({ cwd, runtime })).resolves.toBe("acp-session")
+    await expect(adapter.startTurn({ threadId: "acp-session", cwd, prompt: "Ship it", runtime })).resolves.toBe("local-turn")
+    expect(peer.startSession).toHaveBeenCalledWith(cwd)
+  })
+
+  it("counts a symbolic link, even a dangling one, as the file", async () => {
+    const cwd = worktree()
+    mkdirSync(join(cwd, ".cursor"))
+    symlinkSync(join(cwd, "missing.json"), join(cwd, ".cursor", "mcp.json"))
+    const { adapter } = connected()
+    await adapter.connect()
+
+    await expect(adapter.startThread({ cwd, runtime })).rejects.toThrow(refusal("Cursor", ".cursor/mcp.json"))
+  })
+
+  it("checks every directory from a nested session directory up to the repository root", async () => {
+    const root = worktree({ "packages/app/src/index.ts": "" })
+    const cwd = join(root, "packages", "app")
+    const { adapter } = connected()
+    await adapter.connect()
+
+    write(root, { "packages/.cursor/hooks.json": "{}\n" })
+    await expect(adapter.startThread({ cwd, runtime })).rejects.toThrow(refusal("Cursor", "packages/.cursor/hooks.json"))
+    rmSync(join(root, "packages", ".cursor"), { recursive: true })
+    write(root, { ".cursor/mcp.json": "{}\n" })
+    await expect(adapter.startThread({ cwd, runtime })).rejects.toThrow(refusal("Cursor", ".cursor/mcp.json"))
+  })
+
+  it("does not look above the repository root", async () => {
+    const outer = mkdtempSync(join(tmpdir(), "domovoi-acp-outer-"))
+    scratch.push(outer)
+    write(outer, { ".cursor/mcp.json": "{}\n", "repo/.git/HEAD": "ref: refs/heads/main\n" })
+    const { adapter } = connected()
+    await adapter.connect()
+
+    await expect(adapter.startThread({ cwd: join(outer, "repo"), runtime })).resolves.toBe("acp-session")
+  })
+
+  it("resolves a session directory reached through a link to the repository it is in", async () => {
+    const root = worktree({ "packages/app/src/index.ts": "", ".grok/hooks/pre-tool.json": "{}\n" })
+    const aliases = mkdtempSync(join(tmpdir(), "domovoi-acp-alias-"))
+    scratch.push(aliases)
+    symlinkSync(join(root, "packages", "app"), join(aliases, "app"))
+    const { adapter } = connected(GROK_ACP_PROVIDER)
+    await adapter.connect()
+
+    await expect(adapter.startThread({ cwd: join(aliases, "app"), runtime })).rejects.toThrow(refusal("Grok", ".grok/hooks"))
+  })
+
+  it("checks every directory above a session directory that is in no repository", async () => {
+    const outer = mkdtempSync(join(tmpdir(), "domovoi-acp-plain-"))
+    scratch.push(outer)
+    write(outer, { ".cursor/mcp.json": "{}\n", "inner/notes.txt": "" })
+    const { adapter } = connected()
+    await adapter.connect()
+
+    await expect(adapter.startThread({ cwd: join(outer, "inner"), runtime }))
+      .rejects.toThrow(refusal("Cursor", "../.cursor/mcp.json"))
+  })
+
+  it("refuses a configuration folder that is a link, without following it", async () => {
+    const cwd = worktree()
+    const elsewhere = mkdtempSync(join(tmpdir(), "domovoi-acp-elsewhere-"))
+    scratch.push(elsewhere)
+    symlinkSync(elsewhere, join(cwd, ".cursor"))
+    const { adapter } = connected()
+    await adapter.connect()
+
+    await expect(adapter.startThread({ cwd, runtime })).rejects.toThrow(refusal("Cursor", ".cursor/mcp.json"))
+  })
+
+  it.each(["start", "resume"] as const)("stops the agent when a held-back file appears in a session it can %s", async (entry) => {
+    const root = worktree({ "packages/app/src/index.ts": "" })
+    const cwd = join(root, "packages", "app")
+    const { adapter, peer } = connected()
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.connect()
+    if (entry === "start") await adapter.startThread({ cwd, runtime })
+    else await adapter.resumeThread({ threadId: "acp-session", cwd, runtime })
+
+    mkdirSync(join(root, ".cursor"))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    writeFileSync(join(root, ".cursor", "hooks.json"), "{}\n")
+
+    await waitForDaemon(() => expect(events).toContainEqual({
+      type: "provider-disconnected",
+      reason: refusal("Cursor", ".cursor/hooks.json"),
+    }))
+    expect(peer.close).toHaveBeenCalledOnce()
+  })
+
+  it("finds a held-back file by a periodic check when the watchers report nothing", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] })
+    directoryWatch.mode = "silent"
+    const cwd = worktree()
+    const { adapter, peer } = connected()
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.connect()
+    await adapter.startThread({ cwd, runtime })
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    write(cwd, { ".cursor/hooks.json": "{}\n" })
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    expect(events).toContainEqual({ type: "provider-disconnected", reason: refusal("Cursor", ".cursor/hooks.json") })
+    expect(peer.close).toHaveBeenCalledOnce()
+  })
+
+  it("stops the agent when a directory it watches can no longer be checked", async () => {
+    const root = worktree({ "packages/app/src/index.ts": "" })
+    const cwd = join(root, "packages", "app")
+    const { adapter, peer } = connected()
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.connect()
+    await adapter.startThread({ cwd, runtime })
+
+    symlinkSync(".git", join(cwd, ".git"))
+
+    await waitForDaemon(() => expect(events).toContainEqual({ type: "provider-disconnected", reason: unchecked("Cursor") }))
+    expect(peer.close).toHaveBeenCalledOnce()
+  })
+
+  it("refuses a session whose directories cannot be watched", async () => {
+    directoryWatch.mode = "fail"
+    const cwd = worktree()
+    const { adapter, peer } = connected()
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.connect()
+
+    await expect(adapter.startThread({ cwd, runtime })).rejects.toThrow(unchecked("Cursor"))
+    expect(events).toContainEqual({ type: "provider-disconnected", reason: unchecked("Cursor") })
+    expect(peer.close).toHaveBeenCalledOnce()
+  })
+
+  it("stops the agent rather than watch more directories than it can bound", async () => {
+    const { adapter, peer } = connected()
+    let opened = 0
+    peer.startSession.mockImplementation(async () => ({ ...peer.setup, sessionId: `session-${opened++}` }))
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.connect()
+
+    let refused: unknown
+    for (let index = 0; index < 300 && refused === undefined; index += 1) {
+      await adapter.startThread({ cwd: worktree(), runtime }).catch((error: unknown) => { refused = error })
+    }
+    expect(refused).toEqual(new Error(unchecked("Cursor")))
+    expect(events).toContainEqual({ type: "provider-disconnected", reason: unchecked("Cursor") })
+  })
+
+  it.each(["start", "resume"] as const)("closes a session it could %s but not configure", async (entry) => {
+    const cwd = worktree()
+    const { adapter, peer } = connected()
+    peer.setMode.mockRejectedValueOnce(new Error("mode refused"))
+    await adapter.connect()
+
+    const opening = entry === "start"
+      ? adapter.startThread({ cwd, runtime })
+      : adapter.resumeThread({ threadId: "acp-session", cwd, runtime })
+    await expect(opening).rejects.toThrow("mode refused")
+    expect(peer.closeSession).toHaveBeenCalledWith("acp-session")
+  })
+
+  it("names every held-back file in the daemon README", () => {
+    const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8")
+    const section = readme.slice(readme.indexOf("## Repository configuration"), readme.indexOf("## Supervise"))
+    for (const definition of [CURSOR_ACP_PROVIDER, GROK_ACP_PROVIDER]) {
+      for (const file of definition.heldBackRepositoryFiles) expect(section).toContain(`\`${file}\``)
+    }
   })
 })
