@@ -367,6 +367,25 @@ export async function proveDaemonRuns({ nodeExecutable, nodeSha256, daemonEntry,
   return printed
 }
 
+// Security review of #577 (P2): the digest of every file in the shipped
+// daemon's dist, recorded after the tree is final and proven. electron-builder
+// puts the manifest inside app.asar, not beside the runtime it describes, and
+// the app checks the files it imports against it before loading them
+// (src/main/daemon-module.ts). A flat set of regular files only: the app
+// checks exactly that shape.
+export async function writeDaemonRuntimeManifest({ daemonRoot, manifestPath }) {
+  const dist = join(daemonRoot, "dist")
+  const digests = {}
+  for (const name of (await readdir(dist)).sort()) {
+    const path = join(dist, name)
+    if (!(await lstat(path)).isFile()) throw new Error(`${path} is not a regular file; the app checks a flat set of files in dist.`)
+    digests[name] = await sha256Of(path)
+  }
+  await mkdir(dirname(manifestPath), { recursive: true })
+  await writeFile(manifestPath, `${JSON.stringify({ version: 1, dist: digests }, null, 2)}\n`)
+  return digests
+}
+
 // Bytes on disk, links counted once as links: pnpm's store is reached through
 // symlinks, and following them would count every package several times.
 export async function directoryBytes(path) {
@@ -403,6 +422,9 @@ export async function prepareDaemonRuntime({
   } else {
     log(`${target.key} is not this host, so ${daemonEntry} was not run; the packaging job on that platform proves it`)
   }
+  const manifestPath = join(desktopRoot, "daemon-runtime-manifests", `${target.key}.json`)
+  const digests = await writeDaemonRuntimeManifest({ daemonRoot: join(output, "daemon"), manifestPath })
+  log(`recorded the digests of ${Object.keys(digests).length} files in daemon-runtime/${target.key}/daemon/dist in ${manifestPath}`)
   const nodeBytes = await directoryBytes(join(output, "node"))
   const daemonBytes = await directoryBytes(join(output, "daemon"))
   log(`daemon-runtime/${target.key}: node ${(nodeBytes / 1048576).toFixed(1)} MB, daemon ${(daemonBytes / 1048576).toFixed(1)} MB`)

@@ -32,6 +32,10 @@ directories:
 files:
   - out/**
   - package.json
+  # The digests of the shipped daemon's dist, checked before the app imports it
+  # (scripts/daemon-runtime.mjs, src/main/daemon-module.ts). Inside app.asar,
+  # not beside the runtime they describe.
+  - daemon-runtime-manifests/**
   - "!**/*.map"
   - "!node_modules/@getdomovoi/ui/**"
   - "!node_modules/react/**"

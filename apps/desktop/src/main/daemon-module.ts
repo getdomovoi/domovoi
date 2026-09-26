@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto"
+import { lstat, readdir, readFile, realpath } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -34,7 +36,8 @@ export const daemonModuleExports = [
 
 export type DaemonModule = Pick<typeof Daemon, (typeof daemonModuleExports)[number]>
 
-export type DaemonModuleLocation = { isPackaged: boolean; resourcesPath: string }
+// appPath: the app's own archive, which carries the digests packaging recorded.
+export type DaemonModuleLocation = { isPackaged: boolean; resourcesPath: string; appPath?: string }
 
 export function daemonModuleSpecifier({ isPackaged, resourcesPath }: DaemonModuleLocation): string {
   return isPackaged
@@ -51,13 +54,43 @@ export class DaemonRuntimeLoadError extends Error {
   }
 }
 
+// Security review of #577 (P2): a packaged app imports its daemon only from
+// files inside its own resources that match the digests packaging recorded
+// (scripts/daemon-runtime.mjs, writeDaemonRuntimeManifest) and shipped inside
+// app.asar, not beside the runtime. It proves the dist files imported are the
+// ones this build shipped. Limits: dependencies under node_modules are covered
+// only by where that directory resolves, and a process running as the same
+// user can rewrite app.asar too (outside the threat model, ruled on #577).
+async function verifyShippedDaemon(resourcesPath: string, appPath = ""): Promise<void> {
+  const daemon = join(resourcesPath, "daemon-runtime", "daemon")
+  const inside = join(await realpath(resourcesPath), "daemon-runtime", "daemon")
+  for (const part of ["dist", "node_modules"]) {
+    if (await realpath(join(daemon, part)) !== join(inside, part)) throw new Error(`${join(daemon, part)} leads outside this app's resources.`)
+  }
+  const manifestPath = join(appPath, "daemon-runtime-manifests", `${process.platform}-${process.arch}.json`)
+  const manifest: unknown = JSON.parse(await readFile(manifestPath, "utf8"))
+  const expected: unknown = typeof manifest === "object" && manifest !== null && "dist" in manifest ? manifest.dist : undefined
+  if (typeof expected !== "object" || expected === null || Array.isArray(expected)) throw new Error(`${manifestPath} is not a digest manifest.`)
+  const digests = expected as Record<string, unknown>
+  const dist = join(daemon, "dist")
+  const names = (await readdir(dist)).sort()
+  if (names.join("/") !== Object.keys(digests).sort().join("/")) throw new Error(`${dist} does not hold the files this build shipped.`)
+  for (const name of names) {
+    const path = join(dist, name)
+    if (!(await lstat(path)).isFile() || createHash("sha256").update(await readFile(path)).digest("hex") !== digests[name]) throw new Error(`${path} does not match this build.`)
+  }
+}
+
 // The values the first module took out of process.env, and the home directory
 // the daemon pins them under.
 export type InheritedCredentialHandOff = { take: () => Daemon.InheritedCredentialValues; homeDirectory: () => unknown }
 
 export async function loadDaemonModule(
   location: DaemonModuleLocation,
-  importer: (specifier: string) => Promise<Record<string, unknown>> = (specifier) => import(specifier) as Promise<Record<string, unknown>>,
+  importer: (specifier: string) => Promise<Record<string, unknown>> = async (specifier) => {
+    if (location.isPackaged) await verifyShippedDaemon(location.resourcesPath, location.appPath)
+    return import(specifier) as Promise<Record<string, unknown>>
+  },
   credentials: InheritedCredentialHandOff = { take: takeInheritedCredentials, homeDirectory: () => homedir() },
 ): Promise<{ module: DaemonModule; from: string }> {
   const from = daemonModuleSpecifier(location)

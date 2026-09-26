@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join, sep } from "node:path"
 import test from "node:test"
 
-import { fetchNodeArchive, nodePins, nodeVersion, proveDaemonRuns, runtimeTarget, sha256Of } from "./daemon-runtime.mjs"
+import { fetchNodeArchive, nodePins, nodeVersion, proveDaemonRuns, runtimeTarget, sha256Of, writeDaemonRuntimeManifest } from "./daemon-runtime.mjs"
 import { createHash } from "node:crypto"
 
 test("pins one Node build per platform and architecture the desktop ships for", () => {
@@ -491,6 +491,35 @@ test("keeps a package link to the tree root itself, and the final check passes i
     assert.equal(await removeExternalLinks(tree, tree), 0)
     assert.equal(await readlink(join(scope, "daemon")), join("..", ".."))
     assert.equal(await assertShippedTreeContained(tree), 1)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// Security review of #577 (P2): the app checks the daemon it imports against
+// digests recorded here, after the tree is final, and shipped inside app.asar
+// rather than beside the runtime they describe.
+test("records the digest of every file in the daemon's dist, and refuses anything but a flat set of files", async () => {
+  const { mkdir, symlink } = await import("node:fs/promises")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-manifest-"))
+  try {
+    const daemonRoot = join(root, "daemon")
+    await mkdir(join(daemonRoot, "dist"), { recursive: true })
+    await writeFile(join(daemonRoot, "dist", "public.js"), "export {}\n")
+    await writeFile(join(daemonRoot, "dist", "chunk-A.js"), "chunk\n")
+    const manifestPath = join(root, "manifests", "darwin-arm64.json")
+    await writeDaemonRuntimeManifest({ daemonRoot, manifestPath })
+    const digest = (text) => createHash("sha256").update(text).digest("hex")
+    assert.deepEqual(JSON.parse(await readFile(manifestPath, "utf8")), {
+      version: 1,
+      dist: { "chunk-A.js": digest("chunk\n"), "public.js": digest("export {}\n") },
+    })
+
+    await mkdir(join(daemonRoot, "dist", "nested"))
+    await assert.rejects(writeDaemonRuntimeManifest({ daemonRoot, manifestPath }), /nested is not a regular file/)
+    await rm(join(daemonRoot, "dist", "nested"), { recursive: true })
+    await symlink(join(daemonRoot, "dist", "public.js"), join(daemonRoot, "dist", "linked.js"))
+    await assert.rejects(writeDaemonRuntimeManifest({ daemonRoot, manifestPath }), /linked\.js is not a regular file/)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

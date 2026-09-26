@@ -125,7 +125,7 @@ const developmentLoopEndpoint = developmentLoopModule?.devLoopEndpoint({
 // runs; the archive carries none of it.
 // A runtime that is missing or does not load stops startup here, before any
 // window, with the path and what is missing, instead of Electron's own error.
-const daemonModule = await loadDaemonModule({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath }).catch(async (error: unknown) => {
+const daemonModule = await loadDaemonModule({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appPath: app.getAppPath() }).catch(async (error: unknown) => {
   if (launchSmoke) {
     console.error("Desktop launch smoke could not load the daemon runtime", error)
   } else {
