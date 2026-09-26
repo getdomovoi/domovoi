@@ -88,8 +88,12 @@ describe("distributed service CLI", () => {
       await expect(within(() => stat(join(home, ".domovoi", "daemon.token")))).rejects.toMatchObject({ code: "ENOENT" })
       const commands = (await within(() => readFile(managerLog, "utf8"))).trim().split("\n")
         .map((line) => JSON.parse(line) as { command: string; args: string[] })
+      // A Windows install first asks Task Scheduler whether a task of the same
+      // name exists (security review round 3), so the launch command is the
+      // /create call's, not the first manager call's.
+      const create = commands.find(({ command, args }) => command === "schtasks" && args[0] === "/create")
       const launch = process.platform === "win32"
-        ? commands[0]!.args[commands[0]!.args.indexOf("/tr") + 1]!
+        ? create!.args[create!.args.indexOf("/tr") + 1]!
         : await within(() => readFile(process.platform === "darwin"
           ? join(home, "Library", "LaunchAgents", "sh.domovoi.domovoid.plist")
           : join(home, ".config", "systemd", "user", "domovoid.service"), "utf8"))

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { launchdPlist, systemdUnit } from "./units.js"
+import { launchdPlist, launchdPlistProgram, systemdUnit, systemdUnitProgram } from "./units.js"
 
 const execPath = "/opt/domovoi/bin/domovoid"
 
@@ -70,6 +70,26 @@ describe("launchdPlist", () => {
   it("keeps a spaced path as one program argument", () => {
     expect(launchdPlist({ execPath: "/opt/Domovoi Suite/domovoid" }))
       .toMatch(/<string>\/opt\/Domovoi Suite\/domovoid<\/string>/)
+  })
+})
+
+// An update puts back only a file these writers would have written, so each
+// must read its own output back, however its values were escaped.
+describe("reading back a service file", () => {
+  const tricky = { execPath: "/opt/Domovoi Suite/node", args: ["/home/$NAME%h/back\\slash's a<b&c.js", "--service-config", "/home/Jean Doe/.domovoi/service.json"] }
+
+  it("recovers the program and arguments of a file each writer wrote", () => {
+    expect(systemdUnitProgram(systemdUnit(tricky))).toEqual(tricky)
+    expect(launchdPlistProgram(launchdPlist(tricky))).toEqual(tricky)
+  })
+
+  it("recovers nothing from a file either writer would not have written", () => {
+    expect(systemdUnitProgram(systemdUnit(tricky).replace("[Service]\n", "[Service]\nExecStartPre=/bin/sh\n"))).toBeUndefined()
+    expect(systemdUnitProgram(systemdUnit(tricky).replace("%%h", "%h"))).toBeUndefined()
+    expect(systemdUnitProgram("")).toBeUndefined()
+    expect(launchdPlistProgram(launchdPlist(tricky).replace("sh.domovoi.domovoid", "com.example.other"))).toBeUndefined()
+    expect(launchdPlistProgram(launchdPlist(tricky).replace("&amp;", "&"))).toBeUndefined()
+    expect(launchdPlistProgram("")).toBeUndefined()
   })
 })
 

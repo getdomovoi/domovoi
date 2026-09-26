@@ -4,7 +4,7 @@ import { once } from "node:events"
 import { fsyncSync } from "node:fs"
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir, userInfo } from "node:os"
-import { join } from "node:path"
+import { join, posix } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
@@ -172,8 +172,15 @@ it("receipts the installed owner's exact instance only after stopping its superv
     await beforeDeadline(removeService(target, {
       ...node,
       run: async (_command, args) => { if (args.includes("disable") || args.includes("bootout")) await stop() },
-      capture: async (_command, args) => {
+      capture: async (command, args) => {
+        // Removal first asks what the job runs (security review rounds 1 and
+        // 2 on #574); answer with the runtime this install recorded.
+        if (command === "launchctl") return { code: 0, stdout: `\tpath = ${posix.join(home, "Library", "LaunchAgents", "sh.domovoi.domovoid.plist")}\n\tstate = running\n` }
         const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+        if (script.includes("domovoi-task-action:")) {
+          const action = { path: `"${process.execPath}"`, arguments: `"${cli}" --service-config "${serviceConfigurationPath(home, "win32")}"`, enabled: true, state: 4 }
+          return { code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}` }
+        }
         if (script.includes("$task.Stop(0)")) await stop()
         return { code: 0, stdout: script.includes("$folder.DeleteTask(") ? "domovoi-task:deleted" : "domovoi-task:1" }
       },

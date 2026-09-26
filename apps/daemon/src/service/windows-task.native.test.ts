@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { copyFile, mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -8,6 +8,7 @@ import { expect, it } from "vitest"
 import { OperationDeadline, OperationDeadlineExceededError } from "../operation-deadline.js"
 import { waitForDaemon } from "../test-wait-for.js"
 import { withinServiceDeadline } from "./deadline.js"
+import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { nodeServiceEffects, removeService, serviceStatus, type ServiceCommand, type ServiceEffects } from "./install.js"
 import { windowsPowerShellPath, windowsTaskRemovalPlan } from "./windows-task.js"
 import { removeScratchDirectory } from "../test-scratch.js"
@@ -45,8 +46,18 @@ it.runIf(process.platform === "win32")("reports and stops a real scheduled proce
     phase = "fixture staging"
     directory = await withinServiceDeadline(deadline, () => mkdtemp(join(tmpdir(), "domovoi-task-")))
     const scriptPath = join(directory, "task.mjs")
-    const readyPath = join(directory, "ready")
+    // Status and removal act only on a task Domovoi registered (ruled
+    // 2026-09-25): service.json records the runtime and entry, and the task
+    // runs them with --service-config and that file, as an install writes it.
+    const configurationPath = serviceConfigurationPath(directory, "win32")
+    const readyPath = `${configurationPath}.ready`
     await withinServiceDeadline(deadline, () => copyFile(new URL("../../test-fixtures/service-task.mjs", import.meta.url), scriptPath))
+    await withinServiceDeadline(deadline, () => mkdir(join(directory!, ".domovoi"), { recursive: true }))
+    await withinServiceDeadline(deadline, () => writeFile(configurationPath, serializeServiceConfiguration({
+      ...createServiceConfiguration({}, { platform: "win32", homeDirectory: directory!, workingDirectory: directory! }),
+      registrationId: randomUUID(),
+      serviceRuntime: { executable: process.execPath, entry: scriptPath },
+    })))
     // A committed RegisterTaskDefinition is not undone by killing the
     // PowerShell an expired deadline abandons, and reading the flag from the
     // result records nothing when the call never returns, so the teardown
@@ -70,7 +81,7 @@ $definition.Principal.LogonType = 3
 $definition.Principal.RunLevel = 0
 $action = $definition.Actions.Create(0)
 $action.Path = ${literal(process.execPath)}
-$action.Arguments = ${literal(`"${scriptPath}" "${readyPath}"`)}
+$action.Arguments = ${literal(`"${scriptPath}" --service-config "${configurationPath}"`)}
 $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $definition.Principal.UserId, $null, 3, $null)
 [Console]::Out.WriteLine('created')
 `), deadline)
@@ -89,10 +100,13 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
     // test's live process behind and fails the liveness assertion below.
     const redirect = (command: string, args: string[]) => {
       if (command === windowsPowerShellPath()) {
-        const source = windowsTaskRemovalPlan("Domovoi daemon")
-        const key = (["stop", "inspect", "remove"] as const).find((key) => JSON.stringify(source[key].args) === JSON.stringify(args))
-        if (!key) throw new Error("Unexpected Task Scheduler command")
-        return plan[key]
+        // Every Task Scheduler script names its task in one literal. Only a
+        // script naming Domovoi's task is rewritten, to this test's UUID task;
+        // any other is refused, so the operator's own task is never reached.
+        const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+        const named = `$name = ${literal("Domovoi daemon")}`
+        if (!script.includes(named)) throw new Error("Unexpected Task Scheduler command")
+        return powershell(script.replace(named, `$name = ${literal(name)}`))
       }
       expect(command).toBe("schtasks")
       expect(args).toEqual(["/delete", "/tn", "Domovoi daemon", "/f"])
@@ -108,7 +122,7 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
       },
     }
     phase = "service status"
-    expect(await withinServiceDeadline(deadline, () => serviceStatus({ platform: "win32" }, scopedEffects)))
+    expect(await withinServiceDeadline(deadline, () => serviceStatus({ platform: "win32", home: directory! }, scopedEffects)))
       .toMatchObject({ installed: true, running: true })
     phase = "service removal"
     await withinServiceDeadline(deadline, () => removeService({ platform: "win32", home: directory! }, scopedEffects))
@@ -118,7 +132,7 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
       expect(() => process.kill(pid!, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
     }))
     phase = "removed task inspection"
-    expect(await withinServiceDeadline(deadline, () => serviceStatus({ platform: "win32" }, scopedEffects)))
+    expect(await withinServiceDeadline(deadline, () => serviceStatus({ platform: "win32", home: directory! }, scopedEffects)))
       .toMatchObject({ installed: false, running: false })
     created = false
   } catch (cause) {
@@ -132,7 +146,7 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
         // A deliberately broken remover may have unregistered a live task.
         // Ask our finite fixture to exit through its private path, never kill
         // by a runtime name or a PID which might have since been reused.
-        await withinServiceDeadline(cleanup, () => writeFile(join(directory!, "ready.stop"), "stop"))
+        await withinServiceDeadline(cleanup, () => writeFile(`${serviceConfigurationPath(directory!, "win32")}.ready.stop`, "stop"))
         const stopped = await capture(plan.stop, cleanup)
         expect(stopped.code, stopped.stderr).toBe(0)
         if (pid !== undefined) await withinServiceDeadline(cleanup, () => waitForDaemon(() => {

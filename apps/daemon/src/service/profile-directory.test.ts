@@ -20,13 +20,34 @@ async function fixture() {
   const configuration = createServiceConfiguration({ DOMOVOI_PROFILE_DIR: profileDirectory }, {
     homeDirectory: home, workingDirectory: home, platform: process.platform,
   })
-  const target = { home, platform: process.platform, uid: 1000, user: "domovoi-test", execPath: join(home, "domovoid"), configuration }
-  const effects = { ...nodeServiceEffects({ userHomeDirectory: home }), run: vi.fn(async () => {}),
-    capture: vi.fn(async (_command: string, args: string[]) => ({ code: 0,
-      stdout: process.platform === "win32"
-        ? `domovoi-task:${Buffer.from(args.at(-1)!, "base64").toString("utf16le").includes("DeleteTask") ? "deleted" : "1"}`
-        : "active",
-    })) }
+  // The runtime is named, as the CLI and the desktop name it, so the install
+  // records it and removal can tell the service is Domovoi's.
+  // Fixed short paths: nothing here runs them, and a Windows temp home is long
+  // enough that paths under it push the task command past 262 characters.
+  const runtime = process.platform === "win32" ? "C:\\domovoi\\node.exe" : "/domovoi/node"
+  const execPath = process.platform === "win32" ? "C:\\domovoi\\domovoid.js" : "/domovoi/domovoid.js"
+  const target = { home, platform: process.platform, uid: 1000, user: "domovoi-test", execPath, runtime, configuration }
+  const configurationPath = serviceConfigurationPath(home, process.platform)
+  // Removal first asks which task action or plist the job runs from (security
+  // review rounds 1 and 2); these answer with Domovoi's own.
+  // A Windows install first asks whether a task exists (security review
+  // round 3); none does until this fixture's /create.
+  let registered = false
+  const effects = { ...nodeServiceEffects({ userHomeDirectory: home }),
+    run: vi.fn(async (_command: string, args: string[]) => { if (args[0] === "/create") registered = true }),
+    capture: vi.fn(async (command: string, args: string[]) => {
+      if (process.platform === "win32") {
+        const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+        if (!registered) return { code: 0, stdout: "domovoi-task:missing" }
+        if (script.includes("domovoi-task-action:")) {
+          const action = { path: `"${runtime}"`, arguments: `"${execPath}" --service-config "${configurationPath}"`, enabled: true, state: 1 }
+          return { code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}` }
+        }
+        return { code: 0, stdout: `domovoi-task:${script.includes("DeleteTask") ? "deleted" : "1"}` }
+      }
+      if (command === "launchctl") return { code: 0, stdout: `\tpath = ${join(home, "Library", "LaunchAgents", "sh.domovoi.domovoid.plist")}\n\tstate = running\n` }
+      return { code: 0, stdout: "active" }
+    }) }
   return { home, profileDirectory, target, effects }
 }
 
