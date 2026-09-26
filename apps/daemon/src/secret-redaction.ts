@@ -2070,6 +2070,11 @@ type ControlState = "none" | "escape" | "csi" | "osc" | "oscEscape"
 class ControlReader {
   #state: ControlState = "none"
 
+  // Outside every control sequence.
+  get idle(): boolean {
+    return this.#state === "none"
+  }
+
   // Whether the character with this code is part of a control sequence or is
   // a control character other than tab, line feed and carriage return.
   invisible(code: number): boolean {
@@ -2140,11 +2145,69 @@ function isTokenCharacter(code: number): boolean {
   return isNameCharacter(code, false)
 }
 
+// Text outside a value that is visible and is no separator: what #mark shows
+// as it is, one character at a time, until a token starts.
+// eslint-disable-next-line no-control-regex -- control characters are exactly what ends the run
+const ordinaryRun = /[^\x00-\x20\x7f=:\s]*/uy
+// The rest of a token.
+const tokenRun = /[A-Za-z0-9_.-]*/uy
+// What a token's prefix ends in.
+const prefixEnd = /[-_J]/gu
+// A run of syntax kinds.
+const syntaxRun = /2*/y
+
+// How many characters, up to most, left from leftAt and right from rightAt
+// are the same: compared by native search in growing and shrinking blocks.
+function sharedLength(left: string, leftAt: number, right: string, rightAt: number, most: number): number {
+  let shared = 0
+  let size = 32
+  while (shared < most) {
+    const block = Math.min(size, most - shared)
+    if (left.startsWith(right.slice(rightAt + shared, rightAt + shared + block), leftAt + shared)) {
+      shared += block
+      size *= 2
+      continue
+    }
+    if (block === 1) break
+    size = block >> 1
+  }
+  return shared
+}
+// Printable text: no control character, no line break.
+// eslint-disable-next-line no-control-regex -- control characters are exactly what ends the run
+const printableRun = /[^\x00-\x1f\x7f]*/uy
+
+// What readValue passes over as a run of plain characters: plainRun, and
+// plainRunInside within a construct, tested on a character code.
+function isPlainValueCharacter(code: number, inside: boolean): boolean {
+  return isNameCharacter(code, true) || code === 0x40 || code === 0x2b || code === 0x25 || (inside && code === 0x20)
+}
+// Both runs hold only ASCII, so checking every ASCII character settles it.
+{
+  const outside = new RegExp(`^${plainRun.source.replace(/\*$/u, "")}$`, "u")
+  const inside = new RegExp(`^${plainRunInside.source.replace(/\*$/u, "")}$`, "u")
+  for (let code = 0; code < 0x80; code += 1) {
+    const character = String.fromCharCode(code)
+    if (isPlainValueCharacter(code, false) !== outside.test(character) || isPlainValueCharacter(code, true) !== inside.test(character)) {
+      throw new Error("isPlainValueCharacter must match plainRun and plainRunInside")
+    }
+  }
+}
+
+// /[=:\s]/u, tested on a character code, the regular expression only past
+// ASCII.
+function isNameSeparator(code: number, character: string): boolean {
+  if (code < 0x80) return code === 0x3d || code === 0x3a || code === 0x20 || (code >= 0x09 && code <= 0x0d)
+  return /\s/u.test(character)
+}
+
 // How the screen reader marks a raw character.
-type Kind = 0 | 1 | 2
-const keptKind: Kind = 0
-const markedKind: Kind = 1
-const syntaxKind: Kind = 2
+// Kept as one character each in a string, so runs of them are read and cut
+// by native string search rather than one element at a time.
+type Kind = "0" | "1" | "2"
+const keptKind: Kind = "0"
+const markedKind: Kind = "1"
+const syntaxKind: Kind = "2"
 
 // A name and separator found on the screen's line, and their value's reading,
 // undefined while the value has not started.
@@ -2213,7 +2276,7 @@ class ScreenReader {
   // between a name and its value, or a quote around a value: never marked),
   // or neither.
   #pending = ""
-  #kinds: Kind[] = []
+  #kinds = ""
   // A replacement or a left-out part of the raw text ended what was lined up:
   // where main goes on is found by what it shows next.
   #resuming = false
@@ -2224,7 +2287,9 @@ class ScreenReader {
   // its prefix.
   #mark(character: string): Kind {
     const code = character.charCodeAt(0)
-    if (this.#controls.invisible(code)) {
+    // A printable character outside every control sequence is visible
+    // without asking the reader, which it leaves as it is.
+    if ((code < 0x20 || code === 0x7f || !this.#controls.idle) && this.#controls.invisible(code)) {
       const value = this.#value
       return (value !== undefined && (value.deep || (value.state !== undefined && !value.counting))) || this.#token ? markedKind : syntaxKind
     }
@@ -2252,7 +2317,13 @@ class ScreenReader {
         value.state = valueStartState(value.delimiter, value.enclosing)
         value.quoted = value.enclosing !== undefined
       }
-      if (readValue(character, 0, value.state).end < 0) {
+      // A plain character where nothing is pending changes nothing in the
+      // reading and ends nothing, as readValue itself passes over it; it is
+      // not read one call at a time.
+      const state = value.state
+      const plain = !state.fresh && !state.escaped && !state.opened && state.closing === 0 && state.pending === ""
+        && isPlainValueCharacter(code, state.stack.length > 0)
+      if (plain || readValue(character, 0, state).end < 0) {
         this.nesting = Math.max(this.nesting, value.state.stack.length)
         if (value.state.stack.length >= screenNesting) {
           // Too deep to follow: the reading is let go, and the rest is hidden.
@@ -2270,7 +2341,7 @@ class ScreenReader {
           // The value opened with a quote or an array's (, $' and $" among
           // them: the opener is shown.
           value.quoted = true
-          if (value.read === 2) this.#kinds[this.#kinds.length - 1] = syntaxKind
+          if (value.read === 2) this.#kinds = `${this.#kinds.slice(0, -1)}${syntaxKind}`
           return syntaxKind
         }
         if (value.quoted && value.state.stack.length === 0) {
@@ -2287,8 +2358,103 @@ class ScreenReader {
       return keptKind
     }
     const token = this.#see(character, code)
-    if (/[=:\s]/u.test(character)) this.#value = this.#nameEnding()
+    if (isNameSeparator(code, character)) this.#value = this.#nameEnding()
     return token ? markedKind : keptKind
+  }
+
+  // Marks a run of characters from `at` in one step, exactly as #mark marks
+  // them one at a time, where each is visible and their kinds follow without
+  // reading them singly: ordinary text outside a value, before any token has
+  // started; plain characters in a value (as readValue passes over them); and
+  // any printable character in a value too deep to follow. How many; 0 when
+  // none.
+  #markRun(piece: string, at: number): number {
+    const value = this.#value
+    let pattern: RegExp
+    let kind: Kind
+    let to = piece.length
+    let started = -1
+    if (value === undefined && this.#token) {
+      // The rest of a token: marked up to its end.
+      pattern = tokenRun
+      kind = markedKind
+    } else if (value === undefined) {
+      pattern = ordinaryRun
+      kind = keptKind
+      // A token that starts in the run is kept up to the end of its prefix,
+      // where the run stops.
+      pattern.lastIndex = at
+      pattern.test(piece)
+      started = this.#tokenStart(piece, at, pattern.lastIndex)
+      if (started >= 0) to = started + 1
+    } else if (value.deep) {
+      pattern = printableRun
+      kind = markedKind
+    } else {
+      const state = value.state
+      // The first two characters decide whether a quote or ( opened the
+      // value, and a counting value's kinds hang on the token too.
+      if (state === undefined || value.counting || value.read < 2) return 0
+      if (state.fresh || state.escaped || state.opened || state.closing !== 0 || state.pending !== "") return 0
+      pattern = state.stack.length > 0 ? plainRunInside : plainRun
+      kind = markedKind
+      // Nothing in a plain run changes the reading: its nesting, and whether
+      // a quote around the value closed, stay as they are.
+    }
+    pattern.lastIndex = at
+    pattern.test(piece)
+    const end = Math.min(pattern.lastIndex, to)
+    if (end <= at) return 0
+    const run = piece.slice(at, end)
+    this.#seeRun(run)
+    if (value === undefined && !this.#token) {
+      // Ordinary text: the word goes on with it. Only its last 16 characters
+      // are ever read, and a prefix never spans a character outside a token,
+      // so it need not be cut at one. The run stops where a token starts.
+      this.#word = `${this.#word}${run}`
+      if (this.#word.length > 32) this.#word = this.#word.slice(-32)
+      this.#token = started >= 0 && end === started + 1
+    }
+    // In a token the word no longer matters. In a value, neither the word nor
+    // the token is read before the value ends, and the character that ends it
+    // (a delimiter or a line break) starts them afresh.
+    if (value !== undefined && !value.deep) value.read += run.length
+    this.#kinds += kind.repeat(end - at)
+    return end - at
+  }
+
+  // Where in piece, from `at` to `to`, a token's prefix would end as #see
+  // reads it one character at a time, the token not having started: -1 when
+  // none does.
+  // Only an _, - or J can end a prefix, so only those are tried. A prefix is
+  // token characters preceded by none of [A-Za-z0-9_], so the text before
+  // it can be read without cutting the word at the last character outside a
+  // token: the same prefixes end in both.
+  #tokenStart(piece: string, at: number, to: number): number {
+    prefixEnd.lastIndex = at
+    for (let found = prefixEnd.exec(piece); found !== null && found.index < to; found = prefixEnd.exec(piece)) {
+      const index = found.index
+      const before = index + 1 - 16
+      const window = before >= at ? piece.slice(before, index + 1) : `${this.#word}${piece.slice(at, index + 1)}`.slice(-16)
+      if (tokenPrefixAtEnd.test(window)) return index
+    }
+    return -1
+  }
+
+  // The line part of #see for each character of a run, in one step: the
+  // line is cut back as it would have been one character at a time.
+  #seeRun(run: string): void {
+    const total = this.#line.length + run.length
+    const doubled = 2 * terminalRedactionCarryCharacters
+    if (total > doubled) {
+      // One character at a time, the line is cut back to the carry each time
+      // it passes twice the carry.
+      const kept = terminalRedactionCarryCharacters + (total - doubled - 1) % (doubled + 1 - terminalRedactionCarryCharacters)
+      this.#line = `${this.#line}${run}`.slice(-kept)
+      this.#valueEnded -= total - kept
+    } else {
+      this.#line += run
+    }
   }
 
   // Adds a visible character to the line and the word; whether it is part of
@@ -2305,8 +2471,10 @@ class ScreenReader {
       return false
     }
     if (this.#token) return true
-    this.#word = `${this.#word}${character}`.slice(-16)
-    this.#token = tokenPrefixAtEnd.test(this.#word)
+    this.#word += character
+    if (this.#word.length > 32) this.#word = this.#word.slice(-16)
+    // A prefix ends in _, - or the J of eyJ; only then can it have ended.
+    if (code === 0x5f || code === 0x2d || code === 0x4a) this.#token = tokenPrefixAtEnd.test(this.#word.slice(-16))
     return false
   }
 
@@ -2344,7 +2512,17 @@ class ScreenReader {
   #markedLeft = false
 
   #readPiece(piece: string): void {
-    for (let at = 0; at < piece.length; at += 1) this.#kinds.push(this.#mark(piece[at]!))
+    for (let at = 0; at < piece.length;) {
+      const run = this.#controls.idle ? this.#markRun(piece, at) : 0
+      if (run > 0) {
+        at += run
+        continue
+      }
+      // Marked first: #mark may change the kind before it.
+      const kind = this.#mark(piece[at]!)
+      this.#kinds += kind
+      at += 1
+    }
     this.#pending += piece
     this.retained = Math.max(this.retained, this.#pending.length)
   }
@@ -2368,7 +2546,8 @@ class ScreenReader {
     const leave = (to: number) => {
       if (to <= 0) return
       if (to > from) {
-        if (this.#kinds.slice(from, to).includes(markedKind)) this.#markedLeft = true
+        const marked = this.#kinds.indexOf(markedKind, from)
+        if (marked >= 0 && marked < to) this.#markedLeft = true
         this.#resuming = true
       }
       this.#pending = this.#pending.slice(to)
@@ -2388,7 +2567,7 @@ class ScreenReader {
     // What cannot be lined up is shown only when nothing left unlined was
     // marked; otherwise it is hidden, its line breaks kept.
     const unlined = (text: string) => {
-      if (!this.#markedLeft && !this.#kinds.slice(from).includes(markedKind)) {
+      if (!this.#markedLeft && this.#kinds.indexOf(markedKind, from) < 0) {
         keep(text)
         return
       }
@@ -2406,6 +2585,17 @@ class ScreenReader {
         if (from + 1 >= this.#pending.length && read < chunk.length) {
           leave(from)
           readPiece()
+          continue
+        }
+        // A run of characters that line up and are not marked is kept in one
+        // step, as it would be one character at a time.
+        const marked = this.#kinds.indexOf(markedKind, from)
+        const limit = Math.min(this.#pending.length - (read < chunk.length ? 1 : 0), from + output.length - at, marked < 0 ? Number.MAX_SAFE_INTEGER : marked)
+        const end = from + sharedLength(output, at, this.#pending, from, limit - from)
+        if (end > from) {
+          keep(output.slice(at, at + end - from))
+          at += end - from
+          from = end
           continue
         }
         if (from < this.#pending.length && output[at] === this.#pending[from]) {
@@ -2463,9 +2653,16 @@ class ScreenReader {
         unlined(output.slice(at))
         break
       }
-      for (let index = 0; index < next.length; index += 1) {
-        if (this.#kinds[resume + index] === markedKind) hide()
-        else keep(next[index]!)
+      for (let index = 0; index < next.length;) {
+        if (this.#kinds[resume + index] === markedKind) {
+          hide()
+          index += 1
+          continue
+        }
+        const marked = this.#kinds.indexOf(markedKind, resume + index)
+        const until = marked < 0 || marked - resume > next.length ? next.length : marked - resume
+        keep(next.slice(index, until))
+        index = until
       }
       from = resume + next.length
       at += next.length
@@ -2483,11 +2680,12 @@ class ScreenReader {
   // Where the value marked from here ends, past the name's syntax before it;
   // here when none is marked.
   #markedEnd(from: number): number {
-    let end = from
-    while (end < this.#kinds.length && this.#kinds[end] === syntaxKind) end += 1
-    if (this.#kinds[end] !== markedKind) return from
-    while (end < this.#kinds.length && this.#kinds[end] !== keptKind) end += 1
-    return end
+    syntaxRun.lastIndex = from
+    syntaxRun.test(this.#kinds)
+    const start = syntaxRun.lastIndex
+    if (this.#kinds[start] !== markedKind) return from
+    const kept = this.#kinds.indexOf(keptKind, start)
+    return kept < 0 ? this.#kinds.length : kept
   }
 
   // Whether main's next text was found only inside a value that runs to the
