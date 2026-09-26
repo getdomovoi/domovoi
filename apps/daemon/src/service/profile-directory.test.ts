@@ -22,8 +22,10 @@ async function fixture() {
   })
   // The runtime is named, as the CLI and the desktop name it, so the install
   // records it and removal can tell the service is Domovoi's.
-  const runtime = join(home, process.platform === "win32" ? "node.exe" : "node")
-  const execPath = join(home, "domovoid.js")
+  // Fixed short paths: nothing here runs them, and a Windows temp home is long
+  // enough that paths under it push the task command past 262 characters.
+  const runtime = process.platform === "win32" ? "C:\\domovoi\\node.exe" : "/domovoi/node"
+  const execPath = process.platform === "win32" ? "C:\\domovoi\\domovoid.js" : "/domovoi/domovoid.js"
   const target = { home, platform: process.platform, uid: 1000, user: "domovoi-test", execPath, runtime, configuration }
   const configurationPath = serviceConfigurationPath(home, process.platform)
   // Removal first asks which task action or plist the job runs from (security
