@@ -79,6 +79,11 @@ export type DesktopDaemonServiceDependencies = {
   // Moves the installed service to the staged runtime in place (ruled
   // 2026-09-23, B). Throws the daemon's DaemonServiceUpdateError on failure.
   update: (options: { runtime: DaemonServiceRuntime }) => Promise<DaemonServiceInstallResult>
+  // Security review of #577 (P1): the profile this app's daemon runs against
+  // the one the login service runs, both directories when they differ. The
+  // turn check and the fence below reach only this app's daemon, so they bind
+  // the service only when both are one profile. Throws when unreadable.
+  profile: () => Promise<{ app: string; service: string } | undefined>
   // The turns running and gates waiting in the daemon's own workspace, named
   // as the renderer names them, or undefined when there are none. Throws when
   // the workspace cannot be read.
@@ -379,7 +384,7 @@ export class DesktopDaemonService {
     let released = false
     let fence: { release: () => void } | undefined
     try {
-      const refused = await this.#refusal()
+      const refused = (await this.#profileRefusal()) ?? (await this.#refusal())
       if (refused) return refused
       let installed: DaemonServiceInstallResult
       try {
@@ -439,7 +444,7 @@ export class DesktopDaemonService {
     let held = false
     let fence: { release: () => void } | undefined
     try {
-      const refused = await this.#refusal()
+      const refused = (await this.#profileRefusal()) ?? (await this.#refusal())
       if (refused) return refused
       const fenced = await this.#fence()
       if (!("release" in fenced)) return fenced
@@ -477,17 +482,19 @@ export class DesktopDaemonService {
     let held = false
     let fence: { release: () => void } | undefined
     try {
-      const refused = await this.#refusal()
+      const refused = (await this.#profileRefusal()) ?? (await this.#refusal())
       if (refused) return refused
+      // Owner ruling 2026-09-26 (#577, A): the daemon's own fence, as install
+      // and remove take it. The read above is only a snapshot; a turn can start
+      // after it. Security review of #577 (P2): taken before staging, because
+      // staging replaces the copy of this version under the profile, which the
+      // running service may be using; no turn starts on it once fenced.
+      const fenced = await this.#fence()
+      if (!("release" in fenced)) return fenced
+      fence = fenced
       let updated: DaemonServiceInstallResult
       try {
         const runtime = await this.deps.stageRuntime("update")
-        // Owner ruling 2026-09-26 (#577, A): the daemon's own fence, taken
-        // right before the service restarts, as install and remove take it.
-        // The read above is only a snapshot; a turn can start after it.
-        const fenced = await this.#fence()
-        if (!("release" in fenced)) return fenced
-        fence = fenced
         held = true
         this.deps.daemon.beginHandoff()
         updated = await this.deps.update({ runtime })
@@ -516,6 +523,16 @@ export class DesktopDaemonService {
       fence?.release()
       if (held) this.deps.daemon.endHandoff()
       this.#busy = false
+    }
+  }
+
+  async #profileRefusal(): Promise<DaemonServiceOutcome | undefined> {
+    try {
+      const mismatch = await this.deps.profile()
+      if (!mismatch) return undefined
+      return { ok: false, reason: "refused", message: `This app's daemon uses the profile at ${mismatch.app}, and the login service uses the profile at ${mismatch.service}.` }
+    } catch (cause) {
+      return { ok: false, reason: "check-failed", message: message(cause) }
     }
   }
 

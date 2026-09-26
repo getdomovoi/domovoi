@@ -27,6 +27,7 @@ export const daemonModuleExports = [
   "readDaemonServiceStatus",
   "readDaemonServiceRuntimeVersion",
   "removeDaemonService",
+  "serviceProfileMismatch",
   "updateDaemonService",
   "DaemonServiceRuntimeMissingError",
 ] as const

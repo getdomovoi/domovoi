@@ -22,6 +22,9 @@ export function createDesktopDaemonService(desktopDaemon: DesktopDaemon, app: { 
     }),
     install: (options) => daemon.installDaemonService(options),
     status: () => daemon.readDaemonServiceStatus(),
+    // The profile this app's daemon runs, read as its acquisition reads it,
+    // against the one the saved service configuration names.
+    profile: async () => daemon.serviceProfileMismatch({ environment: process.env, homeDirectory: homedir() }),
     remove: () => daemon.removeDaemonService(),
     update: (options) => daemon.updateDaemonService(options),
     // The same check the renderer draws, applied to the daemon's own workspace.

@@ -59,6 +59,7 @@ describe("desktop daemon assembly", () => {
       "readDaemonServiceStatus",
       "readLocalServiceHandoffRefusal",
       "removeDaemonService",
+      "serviceProfileMismatch",
       "updateDaemonService",
       "verifyLocalFleetClientRoute",
     ])

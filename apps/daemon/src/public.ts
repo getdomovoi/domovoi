@@ -11,6 +11,7 @@ export { verifyLocalFleetClientRoute } from "./local-client-route.js"
 export { holdServiceHandoffFence, readLocalServiceHandoffRefusal, type ServiceHandoffFence } from "./local-service-handoff.js"
 // The desktop main process calls this before anything else runs.
 export { captureInheritedCredentials, type InheritedCredentialValues } from "./inherited-credentials.js"
+export { serviceProfileMismatch } from "./service/configuration.js"
 export { adoptRelayProfileSuccessor, prepareRelayProfileSuccessor, verifyRelayProfileSuccessor } from "./relay-provisioning.js"
 export type { RelayProfileRecoveryOptions } from "./relay-provisioning.js"
 export {
