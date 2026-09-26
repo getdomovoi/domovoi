@@ -69,7 +69,7 @@
     <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ stepNote }}</span>
   </div>
 
-  <div style="width: 1560px; height: 980px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 50px 150px var(--shadow-xl);">
+  <div style="position: relative; width: 1560px; height: 980px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 50px 150px var(--shadow-xl);">
 
     <div style="height: 46px; flex: 0 0 46px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--border);">
       <div style="display: flex; gap: 8px; padding-right: 4px;">
@@ -109,7 +109,7 @@
 
           <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 9px; flex-wrap: wrap;">
             <div onClick="{{ goInstall }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 600; cursor: pointer;">Install from a path</div>
-            <div onClick="{{ goReviewChanged }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--warn-border); background: var(--warn-bg); font-size: 12px; color: var(--warn-fg); cursor: pointer;">1 review no longer matches its skill</div>
+            <div onClick="{{ goReviewChanged }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); background: var(--card); font-size: 12px; color: var(--foreground); cursor: pointer;" style-hover="background: var(--accent);">1 review no longer matches its skill</div>
             <div onClick="{{ goTurn }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">This turn's selection</div>
           </div>
 
@@ -292,14 +292,14 @@
 
       <sc-if value="{{ isReviewChanged }}" hint-placeholder-val="{{ false }}">
         <div style="width: 100%; max-width: 780px; display: flex; flex-direction: column; gap: 18px; padding: 32px 0 40px;">
-          <div style="flex: 0 0 auto; border: 1px solid var(--warn-border); border-radius: var(--radius); background: var(--warn-bg); overflow: hidden;">
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
             <div style="display: flex; align-items: center; gap: 11px; padding: 13px 15px;">
               <span style="{{ warnDot }}"></span>
-              <span style="font-size: 13.5px; font-weight: 500; color: var(--warn-fg);">sql-explain changed since you reviewed it</span>
+              <span style="font-size: 13.5px; font-weight: 500; color: var(--foreground);">sql-explain changed since you reviewed it</span>
               <span style="flex: 1;"></span>
-              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-dim);">refused · review-changed</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">refused · review-changed</span>
             </div>
-            <div style="padding: 0 15px 14px; font-size: 13px; line-height: 1.62; color: var(--warn-fg); text-wrap: pretty;">The digest moved and the manifest gained a capability, so your old review does not carry. The daemon refused this turn with a reason.</div>
+            <div style="padding: 0 15px 14px; font-size: 13px; line-height: 1.62; color: var(--muted-foreground); text-wrap: pretty;">The digest moved and the manifest gained a capability, so your old review does not carry. The daemon refused this turn with a reason.</div>
           </div>
 
           <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
@@ -399,6 +399,7 @@
                 <span style="font-size: 13px; font-weight: 500; color: var(--info-fg);">{{ repoRunsTitle }}</span>
                 <span style="flex: 1;"></span>
                 <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--info-dim);">{{ repoRunsMeta }}</span>
+                <span onClick="{{ goRevoke }}" style="font-size: 11.5px; color: var(--info-fg); cursor: pointer; text-decoration: underline; text-underline-offset: 3px;">Take back trust</span>
               </div>
               <sc-for list="{{ repoRuns }}" as="r" hint-placeholder-count="3">
                 <div style="display: flex; align-items: center; gap: 11px; padding: 9px 15px; border-top: 1px solid var(--info-border);">
@@ -416,6 +417,53 @@
             <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 12px 15px; border: 1px dashed var(--border); border-radius: var(--radius); font-size: 12px; color: var(--muted-foreground);">
               <span style="display: inline-flex; color: var(--muted-foreground);">{{ iRepo }}</span>
               <span>Nothing from this repository can run when a session starts.</span>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ isHeld }}" hint-placeholder-val="{{ false }}">
+            <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+              <div style="display: flex; align-items: center; gap: 10px; padding: 12px 15px; flex-wrap: wrap;">
+                <span style="{{ heldDot }}"></span>
+                <span style="font-size: 13px; font-weight: 500; color: var(--foreground);">{{ heldTitle }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">all agents · this machine</span>
+                <span style="flex: 1;"></span>
+                <div onClick="{{ openSheet }}" style="padding: 7px 14px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 600; cursor: pointer;">Review what it would run</div>
+              </div>
+              <div style="padding: 0 15px 12px; font-size: 12px; color: var(--muted-foreground); line-height: 1.55;">Its hooks, tool servers, plugins, env, rules and git filter do not load for any agent. <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">CLAUDE.md</span> and <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">AGENTS.md</span> still load.</div>
+              <sc-for list="{{ trustGroups }}" as="f" hint-placeholder-count="3">
+                <div style="display: flex; align-items: center; gap: 11px; padding: 9px 15px; border-top: 1px solid var(--border);">
+                  <span style="display: inline-flex; color: var(--muted-foreground);">{{ f.fileIcon }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); width: 200px; flex: 0 0 200px;">{{ f.path }}</span>
+                  <span style="font-size: 11.5px; color: var(--muted-foreground); width: 130px; flex: 0 0 130px;">{{ f.src }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); flex: 1; min-width: 0; text-align: right;">{{ f.counts }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ isTrustChanged }}" hint-placeholder-val="{{ false }}">
+            <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+              <div style="display: flex; align-items: center; gap: 10px; padding: 12px 15px; flex-wrap: wrap;">
+                <span style="{{ heldDot }}"></span>
+                <span style="font-size: 13px; font-weight: 500; color: var(--foreground);">acme-api changed since you trusted it</span>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">trusted 12 Sep 10:41 from desktop · no longer applies</span>
+              </div>
+              <div style="padding: 0 15px 12px; font-size: 12px; color: var(--muted-foreground);">A trusted config file changed, so everything the repository brings is held back again.</div>
+              <div style="padding: 8px 15px; border-top: 1px solid var(--border); background: var(--sidebar); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">WHAT CHANGED</div>
+              <sc-for list="{{ trustChangeRows }}" as="c" hint-placeholder-count="3">
+                <div style="display: flex; align-items: center; gap: 12px; padding: 10px 15px; border-top: 1px solid var(--border);">
+                  <span style="font-size: 11.5px; color: var(--muted-foreground); width: 110px; flex: 0 0 110px;">{{ c.k }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--danger-dim); width: 200px; flex: 0 0 200px;">{{ c.was }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong); flex: 1; min-width: 0; overflow-wrap: anywhere;">{{ c.now }}</span>
+                </div>
+              </sc-for>
+              <div style="display: flex; align-items: center; gap: 9px; padding: 12px 15px; border-top: 1px solid var(--border); flex-wrap: wrap;">
+                <div onClick="{{ openSheetChanged }}" style="padding: 7px 14px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 600; cursor: pointer;">Review and trust again</div>
+                <div onClick="{{ goHeld }}" style="padding: 7px 14px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Keep held back</div>
+                <span style="flex: 1;"></span>
+                <span style="font-size: 11.5px; color: var(--faint);">Unchanged: <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">.claude/settings.json · .gitattributes</span></span>
+              </div>
             </div>
           </sc-if>
 
@@ -478,6 +526,12 @@
                             <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong);">{{ r.name }}</span>
                             <sc-if value="{{ r.starts }}" hint-placeholder-val="{{ false }}">
                               <span style="font-size: 10.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--info-border); background: var(--info-bg); color: var(--info-fg);">Runs when a session starts</span>
+                            </sc-if>
+                            <sc-if value="{{ r.held }}" hint-placeholder-val="{{ false }}">
+                              <span style="font-size: 10.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--accent); color: var(--muted-foreground);">Held back until you trust this repository</span>
+                            </sc-if>
+                            <sc-if value="{{ r.isNew }}" hint-placeholder-val="{{ false }}">
+                              <span style="font-size: 10.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--info-border); background: var(--info-bg); color: var(--info-fg);">New since you trusted it</span>
                             </sc-if>
                           </div>
                           <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); line-height: 1.5; overflow-wrap: anywhere;">{{ r.detail }}</span>
@@ -571,10 +625,11 @@
                 </div>
                 <div style="display: flex; align-items: center; gap: 8px; padding: 0 16px 14px; flex-wrap: wrap;">
                   <div style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--warning); color: var(--warning-foreground); font-size: 13px; font-weight: 600; cursor: pointer;">Allow once</div>
-                  <div style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--warn-border); color: var(--warn-fg); font-size: 12px; cursor: pointer;">Always for postgres-dev.run_query here</div>
                   <div style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--warn-border); color: var(--warn-fg); font-size: 12px; cursor: pointer;">Deny</div>
+                  <span style="flex: 1;"></span>
+                  <span style="font-size: 11.5px; color: var(--warn-dim);">Tool-server calls have no Always. Each call asks.</span>
                 </div>
-                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--warn-border); border-top: 1px solid var(--warn-border);">
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--warn-border); border-top: 1px solid var(--warn-border);">
                   <sc-for list="{{ gateFacts }}" as="af" hint-placeholder-count="6">
                     <div style="padding: 10px 14px; background: var(--warn-bg);">
                       <div style="font-size: 10.5px; letter-spacing: .13em; color: var(--warn-dim);">{{ af.k }}</div>
@@ -612,15 +667,191 @@
                 </div>
                 <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px 14px 14px; border-top: 1px solid var(--warn-border);">
                   <div style="min-height: 44px; display: flex; align-items: center; justify-content: center; border-radius: calc(var(--radius) - 2px); background: var(--warning); color: var(--warning-foreground); font-size: 14px; font-weight: 600;">Allow once</div>
-                  <div style="min-height: 44px; display: flex; align-items: center; justify-content: center; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--warn-border); color: var(--warn-fg); font-size: 13px;">Always for postgres-dev.run_query here</div>
                   <div style="min-height: 44px; display: flex; align-items: center; justify-content: center; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--warn-border); color: var(--warn-fg); font-size: 13px;">Deny</div>
+                  <span style="font-size: 11.5px; color: var(--warn-dim); text-align: center;">Tool-server calls have no Always. Each call asks.</span>
                 </div>
               </div>
             </div>
           </div>
         </div>
       </sc-if>
+
+      <sc-if value="{{ isRefusal }}" hint-placeholder-val="{{ false }}">
+        <div style="width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 18px; padding: 32px 0 40px;">
+          <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px;">
+              <span style="font-size: 15px; font-weight: 600; letter-spacing: -.01em;">Migrate billing webhooks to the new idempotency table</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ refusalWhere }}</span>
+            </div>
+            <div style="display: flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); background: var(--card);">
+              <div onClick="{{ refuseAgent }}" style="{{ segRefAgent }}">Agent refuses</div>
+              <div onClick="{{ refuseFilter }}" style="{{ segRefFilter }}">Git filter</div>
+            </div>
+          </div>
+
+          <div style="flex: 0 0 auto; align-self: flex-end; max-width: 520px; padding: 10px 14px; border-radius: 14px; background: var(--accent); font-size: 13px; line-height: 1.55;">Start on the idempotency migration. Plan first, then the handler.</div>
+
+          <div style="flex: 0 0 auto; border: 1px solid var(--danger-border); border-radius: 16px; background: var(--danger-bg); overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 10px; padding: 14px 16px 8px; flex-wrap: wrap;">
+              <span style="width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--destructive);"></span>
+              <span style="font-size: 14px; font-weight: 600; color: var(--danger-fg);">{{ refusalHead }}</span>
+              <span style="flex: 1;"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--danger-dim);">{{ refusalCode }}</span>
+            </div>
+            <div style="padding: 0 16px 6px; font-size: 12.5px; line-height: 1.6; color: var(--danger-fg);">{{ refusalBody }}</div>
+            <div style="display: flex; align-items: baseline; gap: 8px; padding: 0 16px 14px; flex-wrap: wrap;">
+              <span style="font-size: 11.5px; color: var(--danger-dim);">{{ refusalNameLabel }}</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--danger-fg);">{{ refusalName }}</span>
+            </div>
+            <sc-if value="{{ refusalNotInline }}" hint-placeholder-val="{{ true }}">
+              <div style="display: flex; align-items: center; gap: 9px; padding: 0 16px 16px; flex-wrap: wrap;">
+                <div onClick="{{ openSheetRefusal }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 600; cursor: pointer;">Review what it would run</div>
+                <div onClick="{{ goHeld }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--danger-border); font-size: 12px; color: var(--danger-fg); cursor: pointer;">Open Tools</div>
+                <span style="flex: 1;"></span>
+                <span style="font-size: 11.5px; color: var(--danger-dim);">Nothing from the repository ran.</span>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isPhone }}" hint-placeholder-val="{{ false }}">
+        <div style="width: 100%; display: flex; justify-content: center; padding: 28px 0 40px;">
+          <div style="width: 390px; height: 820px; flex: 0 0 auto; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 40px; background: var(--background); overflow: hidden; box-shadow: 0 30px 80px var(--shadow-lg);">
+            <div style="height: 46px; flex: 0 0 46px; display: flex; align-items: center; padding: 0 28px; font-size: 13px; font-weight: 600;">9:41</div>
+            <div style="display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 16px 10px;">
+              <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+              <div style="display: flex; flex-direction: column; gap: 2px;">
+                <span style="font-size: 16px; font-weight: 600;">Tools</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">acme-api · {{ machine }}</span>
+              </div>
+            </div>
+            <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 4px 14px 16px;">
+              <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); padding: 13px 14px; display: flex; flex-direction: column; gap: 6px;">
+                <div style="display: flex; align-items: center; gap: 9px;">
+                  <span style="{{ heldDot }}"></span>
+                  <span style="font-size: 14px; font-weight: 500;">Held back until you trust this repository</span>
+                </div>
+                <span style="font-size: 12.5px; line-height: 1.5; color: var(--muted-foreground);">None of it loads for any agent. <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px;">CLAUDE.md</span> and <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px;">AGENTS.md</span> still load.</span>
+              </div>
+              <sc-for list="{{ trustGroups }}" as="g" hint-placeholder-count="3">
+                <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                  <div style="display: flex; align-items: baseline; gap: 8px; padding: 10px 14px; flex-wrap: wrap;">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 500;">{{ g.path }}</span>
+                    <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ g.src }}</span>
+                  </div>
+                  <sc-for list="{{ g.items }}" as="r" hint-placeholder-count="3">
+                    <div style="display: flex; flex-direction: column; gap: 3px; padding: 9px 14px; border-top: 1px solid var(--border);">
+                      <div style="display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;">
+                        <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ r.kind }}</span>
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong); overflow-wrap: anywhere;">{{ r.name }}</span>
+                      </div>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); overflow-wrap: anywhere;">{{ r.detail }}</span>
+                      <sc-if value="{{ r.hasNote }}" hint-placeholder-val="{{ false }}"><span style="font-size: 11px; color: var(--faint);">{{ r.note }}</span></sc-if>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-for>
+            </div>
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 11px; padding: 14px 18px 30px; border-top: 1px solid var(--border); background: var(--sidebar);">
+              <span style="display: inline-flex; color: var(--muted-foreground);">{{ iMonitor }}</span>
+              <div style="display: flex; flex-direction: column; gap: 3px;">
+                <span style="font-size: 13.5px; font-weight: 500;">Trust from desktop or web</span>
+                <span style="font-size: 11.5px; color: var(--muted-foreground);">A phone shows this but cannot trust it.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
     </div>
+
+    <sc-if value="{{ showSheet }}" hint-placeholder-val="{{ false }}">
+      <div style="position: absolute; top: 46px; right: 0; bottom: 0; left: 0; background: var(--overlay); display: flex; justify-content: flex-end;">
+        <div style="width: 640px; height: 100%; display: flex; flex-direction: column; background: var(--background); border-left: 1px solid var(--border); box-shadow: -30px 0 80px var(--shadow-xl);">
+          <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 12px; padding: 20px 22px 16px; border-bottom: 1px solid var(--border);">
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px;">
+              <span style="font-size: 17px; font-weight: 600; letter-spacing: -.01em;">{{ sheetTitle }}</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ sheetWhere }}</span>
+              <span style="font-size: 12.5px; color: var(--muted-foreground);">Everything this repository would run for any agent here. None of it has run.</span>
+            </div>
+            <div onClick="{{ goHeld }}" style="{{ iconBtn }}" style-hover="background: var(--accent); color: var(--foreground);">{{ iClose }}</div>
+          </div>
+          <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 16px 22px;">
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 9px; padding: 10px 13px; border: 1px dashed var(--border); border-radius: var(--radius); font-size: 11.5px; color: var(--muted-foreground);">
+              <span>Instruction files load either way:</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">CLAUDE.md · AGENTS.md</span>
+            </div>
+            <sc-for list="{{ trustGroups }}" as="g" hint-placeholder-count="3">
+              <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                <div style="display: flex; align-items: center; gap: 10px; padding: 10px 14px;">
+                  <span style="display: inline-flex; color: var(--muted-foreground);">{{ g.fileIcon }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; font-weight: 500;">{{ g.path }}</span>
+                  <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ g.src }}</span>
+                  <span style="flex: 1;"></span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ g.digest }}</span>
+                </div>
+                <sc-for list="{{ g.items }}" as="r" hint-placeholder-count="3">
+                  <div style="display: flex; align-items: flex-start; gap: 12px; padding: 10px 14px; border-top: 1px solid var(--border);">
+                    <span style="display: inline-flex; color: var(--muted-foreground); margin-top: 1px;">{{ r.icon }}</span>
+                    <span style="font-size: 11.5px; color: var(--muted-foreground); width: 80px; flex: 0 0 80px;">{{ r.kind }}</span>
+                    <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+                      <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong); overflow-wrap: anywhere;">{{ r.name }}</span>
+                        <sc-if value="{{ r.isNew }}" hint-placeholder-val="{{ false }}">
+                          <span style="font-size: 10.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--info-border); background: var(--info-bg); color: var(--info-fg);">New since you trusted it</span>
+                        </sc-if>
+                        <sc-if value="{{ r.isChanged }}" hint-placeholder-val="{{ false }}">
+                          <span style="font-size: 10.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--info-border); background: var(--info-bg); color: var(--info-fg);">Changed since you trusted it</span>
+                        </sc-if>
+                      </div>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); overflow-wrap: anywhere;">{{ r.detail }}</span>
+                      <sc-if value="{{ r.hasNote }}" hint-placeholder-val="{{ false }}"><span style="font-size: 11px; color: var(--faint);">{{ r.note }}</span></sc-if>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+            <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding: 4px 2px 0; font-size: 11.5px; line-height: 1.55; color: var(--muted-foreground);">
+              <span>Trust is for this machine and this repository only.</span>
+              <span>It is pinned to these four files. Any change, an agent's edit included, holds it back again.</span>
+              <span>Trust does not skip a gate, and its allow rules cannot either. Reads outside the worktree and gated actions still ask.</span>
+            </div>
+          </div>
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 9px; padding: 14px 22px; border-top: 1px solid var(--border); flex-wrap: wrap;">
+            <div onClick="{{ goTrusted }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 600; cursor: pointer;">Trust for this machine</div>
+            <div onClick="{{ goHeld }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Keep held back</div>
+            <span style="flex: 1;"></span>
+            <span style="font-size: 11.5px; color: var(--faint);">{{ sheetFoot }}</span>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ showRevoke }}" hint-placeholder-val="{{ false }}">
+      <div style="position: absolute; top: 46px; right: 0; bottom: 0; left: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center;">
+        <div style="width: 560px; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 30px 80px var(--shadow-xl);">
+          <div style="display: flex; flex-direction: column; gap: 7px; padding: 20px 22px 14px;">
+            <span style="font-size: 17px; font-weight: 600; letter-spacing: -.01em;">Take back trust for acme-api?</span>
+            <span style="font-size: 12.5px; line-height: 1.55; color: var(--muted-foreground);">Domovoi restarts this repository's 2 running agent threads now. A running turn stops, and so do its tool servers.</span>
+          </div>
+          <sc-for list="{{ revokeThreads }}" as="t" hint-placeholder-count="2">
+            <div style="display: flex; align-items: flex-start; gap: 11px; padding: 11px 22px; border-top: 1px solid var(--border);">
+              <span style="{{ t.dot }}"></span>
+              <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+                <span style="font-size: 12.5px; color: var(--foreground);">{{ t.title }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ t.meta }}</span>
+              </div>
+              <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ t.effect }}</span>
+            </div>
+          </sc-for>
+          <div style="padding: 11px 22px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted-foreground);">They come back without its hooks, tool servers, plugins, env, rules and git filter.</div>
+          <div style="display: flex; align-items: center; gap: 9px; padding: 14px 22px; border-top: 1px solid var(--border); flex-wrap: wrap;">
+            <div onClick="{{ goHeld }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--danger-border); background: var(--danger-bg); color: var(--danger-fg); font-size: 13px; font-weight: 600; cursor: pointer;">Take back trust and restart 2 threads</div>
+            <div onClick="{{ goTrusted }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Cancel</div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
   </div>
 </div>
 
@@ -632,7 +863,10 @@ class Component extends DCLogic {
     theme: null,
     disabled: ["sql-explain", "pdf-forms", "acme-seed"],
     target: 1,
-    turnOff: []
+    turnOff: [],
+    sheetChanged: false,
+    sheetFromRefusal: false,
+    refusalKind: "agent"
   };
 
   dot(color, size) {
@@ -671,12 +905,13 @@ class Component extends DCLogic {
   toolsVals(sc, plat) {
     const mode = sc === "toolsNone" ? "none" : sc === "toolsUnread" ? "unread" : sc === "toolsNonePassed" ? "nonepassed" : "normal";
     const byFile = sc === "toolsFile";
+    const heldMode = ["toolsHeld", "trustSheet"].indexOf(sc) !== -1 ? "held" : sc === "trustChanged" ? "changed" : null;
     const win = plat === "windows" && mode !== "none";
     const H = p => win ? "%USERPROFILE%\\" + p.replace(/\//g, "\\") : "~/" + p;
     const machine = mode === "none" ? "hetzner-cx42" : this.machineFor(plat);
     const SRC = { repo: "repository file", project: "project settings", local: "local settings", user: "user settings" };
     const inRepo = s => s === "repo" || s === "project";
-    const KIND = { server: ["Tool server", "Server"], hook: ["Hook", "Webhook"], rule: ["Rule", "ShieldCheck"] };
+    const KIND = { server: ["Tool server", "Server"], hook: ["Hook", "Webhook"], rule: ["Rule", "ShieldCheck"], plugin: ["Plugin", "Puzzle"], env: ["Env keys", "KeyRound"] };
     const stopHook = ({
       mac: "afplay /System/Library/Sounds/Glass.aiff",
       linux: "paplay /usr/share/sounds/freedesktop/stereo/complete.oga",
@@ -702,6 +937,9 @@ class Component extends DCLogic {
     const ALL = [
       { f: "mcp", kind: "server", name: "postgres-dev", detail: "stdio · npx -y @acme/pg-mcp · environment values not read", starts: true },
       { f: "mcp", kind: "server", name: "linear", detail: "http · https://mcp.linear.app/mcp", starts: true },
+      { f: "mcp", kind: "server", name: "s3-sync", detail: "stdio · ./bin/s3-sync --bucket acme-dev-assets", starts: true, changedOnly: true },
+      { f: "proj", kind: "plugin", name: "acme-review@acme-plugins", detail: "marketplace acme-plugins" },
+      { f: "proj", kind: "env", name: "ACME_ENV · DATABASE_URL", detail: "key names only" },
       { f: "proj", kind: "hook", name: "SessionStart", detail: "./scripts/dev-bootstrap.sh", starts: true },
       { f: "proj", kind: "hook", name: "PreToolUse · Bash", detail: "./scripts/guard-prod.sh" },
       { f: "proj", kind: "rule", name: "allow", detail: "Bash(pnpm test:*)" },
@@ -713,7 +951,7 @@ class Component extends DCLogic {
       { f: "codex", kind: "rule", name: "approval_policy", detail: "on-request" },
       { f: "codex", kind: "rule", name: "sandbox_mode", detail: "workspace-write" }
     ];
-    const entries = ALL.filter(e => fileOf(e.f).state === "read");
+    const entries = ALL.filter(e => fileOf(e.f).state === "read" && (!e.changedOnly || heldMode === "changed"));
     const agents = mode === "none" ? ["claude-code"] : mode === "nonepassed" ? ["codex"] : ["claude-code", "codex"];
 
     const entryRow = (e, showSrc) => {
@@ -721,7 +959,8 @@ class Component extends DCLogic {
       return {
         isEntry: true, isError: false, isNote: false,
         icon: this.icon(KIND[e.kind][1], 16), kind: KIND[e.kind][0], name: e.name, detail: e.detail,
-        starts: !!e.starts, showSrc: showSrc, srcLabel: SRC[f.src], file: f.path
+        starts: !!e.starts && !heldMode, held: !!heldMode && inRepo(f.src) && !e.changedOnly,
+        isNew: !!e.changedOnly, showSrc: showSrc, srcLabel: SRC[f.src], file: f.path
       };
     };
     const errorRow = f => ({
@@ -754,7 +993,7 @@ class Component extends DCLogic {
           isEmpty: isEmpty,
           checked: isEmpty ? af.map(f => ({ path: f.path, srcLabel: SRC[f.src], state: f.state === "empty" ? "read, nothing declared" : "not present" })) : [],
           groups: isEmpty ? [] : [
-            grp("FROM THIS REPOSITORY", "Project settings and repository files. They can run when a session starts.", inRepo),
+            grp("FROM THIS REPOSITORY", heldMode ? "Project settings and repository files. Held back until you trust this repository." : "Project settings and repository files. Trusted here, so they run when a session starts.", inRepo),
             grp("THIS MACHINE ONLY", "User and local settings, not committed.", s => !inRepo(s))
           ]
         };
@@ -776,8 +1015,8 @@ class Component extends DCLogic {
           hasNonePassed: false, isEmpty: false, checked: [],
           groups: [{
             label: f.state === "error" ? "UNREAD" : "DECLARES",
-            meta: f.state === "error" ? "" : [["server", "tool servers"], ["hook", "hooks"], ["rule", "rules"]]
-              .map(k => fe.filter(e => e.kind === k[0]).length + " " + k[1]).join(" · "),
+            meta: f.state === "error" ? "" : [["server", "tool servers"], ["hook", "hooks"], ["plugin", "plugins"], ["env", "env entries"], ["rule", "rules"]]
+              .map(k => [fe.filter(e => e.kind === k[0]).length, k[1]]).filter(k => k[0] > 0).map(k => k[0] + " " + k[1]).join(" · "),
             rows: f.state === "error" ? [errorRow(f)] : fe.map(e => entryRow(e, false))
           }]
         };
@@ -802,13 +1041,17 @@ class Component extends DCLogic {
       { k: "MACHINE", v: this.machineFor(plat) + " · loopback" },
       { k: "SERVER", v: "postgres-dev · stdio" },
       { k: "SOURCE", v: "repository file · .mcp.json" },
+      { k: "REPOSITORY", v: "acme-api · trusted on this machine" },
       { k: "STARTED WITH", v: "npx -y @acme/pg-mcp" },
       { k: "AFFECTS", v: "dev database acme_dev" },
-      { k: "ENVIRONMENT", v: "values not read" }
+      { k: "ENV KEYS", v: "PGHOST · PGUSER · PGPASSWORD" },
+      { k: "WHY IT ASKS", v: "tool-server call · trust skips no gate" }
     ];
 
     return {
-      isTools: ["toolsAgent", "toolsFile", "toolsNone", "toolsUnread", "toolsNonePassed"].indexOf(sc) !== -1,
+      isTools: ["toolsAgent", "toolsFile", "toolsNone", "toolsUnread", "toolsNonePassed", "toolsHeld", "trustSheet", "trustChanged", "revoke"].indexOf(sc) !== -1,
+      isHeld: heldMode === "held",
+      isTrustChanged: heldMode === "changed",
       isToolGate: sc === "toolGate",
       goToolsAgent: this.go("toolsAgent"),
       goToolsFile: this.go("toolsFile"),
@@ -820,10 +1063,10 @@ class Component extends DCLogic {
       toolsTitle: "Tools on " + machine,
       toolsWhere: mode === "none" ? "queue-worker · ~/srv/queue-worker" : "acme-api · " + (win ? "C:\\Users\\dana\\src\\acme-api" : "~/src/acme-api"),
       toolsReadMeta: "read 14:02:31 · " + readN + " files" + (mode === "unread" ? " · 1 unreadable" : ""),
-      hasRepoRuns: runs.length > 0,
-      noRepoRuns: runs.length === 0,
-      repoRunsTitle: runs.length + " entries from this repository can run when a session starts",
-      repoRunsMeta: "acme-api · all agents",
+      hasRepoRuns: runs.length > 0 && !heldMode,
+      noRepoRuns: runs.length === 0 && !heldMode,
+      repoRunsTitle: runs.length + " entries from this repository run when a session starts",
+      repoRunsMeta: "acme-api · trusted 12 Sep 10:41 from desktop",
       repoRuns: runs.map(e => ({ icon: this.icon(KIND[e.kind][1], 16), kind: KIND[e.kind][0], name: e.name, detail: e.detail, file: fileOf(e.f).path })),
       toolPanels: panels,
       hasToolsFoot: byFile,
@@ -843,6 +1086,90 @@ class Component extends DCLogic {
     };
   }
 
+  trustVals(sc, plat) {
+    const st = this.state;
+    const m = this.machineFor(plat);
+    const changed = sc === "trustSheet" && st.sheetChanged;
+    const K = { server: ["Tool server", "Server", "tool server", "tool servers"], hook: ["Hook", "Webhook", "hook", "hooks"],
+      plugin: ["Plugin", "Puzzle", "plugin", "plugins"], env: ["Env keys", "KeyRound", "env key", "env keys"], rule: ["Rule", "ShieldCheck", "rule", "rules"],
+      filter: ["Git filter", "Filter", "git filter", "git filters"], driver: ["Filter driver", "Terminal", "filter driver", "filter drivers"] };
+    const G = [
+      { path: ".mcp.json", src: "repository file", digest: changed ? "sha256:c802…4d1" : "sha256:3f0a…91c", items: [
+        { k: "server", name: "postgres-dev", detail: "stdio · npx -y @acme/pg-mcp" },
+        { k: "server", name: "linear", detail: "http · mcp.linear.app" }
+      ].concat(changed ? [{ k: "server", name: "s3-sync", detail: "stdio · ./bin/s3-sync --bucket acme-dev-assets", isNew: true }] : []).concat([
+        { k: "env", name: "PGHOST · PGUSER · PGPASSWORD", detail: "for postgres-dev", note: "Key names only. Values are not shown." }
+      ]) },
+      { path: ".claude/settings.json", src: "project settings", digest: "sha256:a41c…07e", items: [
+        { k: "hook", name: "SessionStart", detail: "./scripts/dev-bootstrap.sh" },
+        { k: "hook", name: "PreToolUse · Bash", detail: "./scripts/guard-prod.sh" },
+        { k: "plugin", name: "acme-review@acme-plugins", detail: "marketplace acme-plugins" },
+        { k: "env", name: "ACME_ENV · DATABASE_URL", detail: "", note: "Key names only. Values are not shown." },
+        { k: "rule", name: "allow", detail: "Bash(pnpm test:*)" },
+        { k: "rule", name: "deny", detail: "Read(./.env*)" }
+      ] },
+      { path: ".gitattributes", src: "repository file", digest: "sha256:5e19…b62", items: [
+        { k: "filter", name: "sops", detail: "*.enc.yaml filter=sops" }
+      ] },
+      { path: ".git/config", src: "local git config", digest: changed ? "sha256:e37b…5c2" : "sha256:91d4…0ae", items: [
+        { k: "driver", name: "filter.sops", detail: changed ? "smudge sops -d --ignore-mac · clean sops -e" : "smudge sops -d · clean sops -e", isChanged: changed }
+      ] }
+    ];
+    const counts = g => Object.keys(K).map(k => {
+      const n = g.items.filter(i => i.k === k).reduce((a, i) => a + (k === "env" ? i.name.split(" · ").length : 1), 0);
+      return n ? n + " " + (n === 1 ? K[k][2] : K[k][3]) : "";
+    }).filter(Boolean).join(" · ");
+    const agentRef = st.refusalKind !== "filter";
+    const segRef = on => "padding: 5px 11px; border-radius: calc(var(--radius) - 4px); font-size: 12px; cursor: pointer; color: var(--" +
+      (on ? "foreground" : "muted-foreground") + "); background: " + (on ? "var(--accent)" : "transparent") + ";";
+    return {
+      machine: m,
+      trustGroups: G.map(g => ({
+        path: g.path, src: g.src, digest: g.digest, counts: counts(g), fileIcon: this.icon("FileText", 16),
+        items: g.items.map(i => ({ icon: this.icon(K[i.k][1], 16), kind: K[i.k][0], name: i.name, detail: i.detail || "", note: i.note || "", hasNote: !!i.note, isNew: !!i.isNew, isChanged: !!i.isChanged }))
+      })),
+      heldTitle: "acme-api is held back on " + m,
+      heldDot: this.dot("var(--faint)", 7),
+      trustChangeRows: [
+        { k: ".mcp.json", was: "sha256:3f0a…91c", now: "sha256:c802…4d1" },
+        { k: "Added", was: "", now: "tool server s3-sync · stdio · ./bin/s3-sync --bucket acme-dev-assets" },
+        { k: ".git/config", was: "sha256:91d4…0ae", now: "sha256:e37b…5c2" },
+        { k: "Changed", was: "filter.sops.smudge = sops -d", now: "filter.sops.smudge = sops -d --ignore-mac" },
+        { k: "Changed by", was: "", now: "claude-code · turn 6 · session s_7f24 · 14:18" }
+      ],
+      openSheet: () => this.setState({ screen: "trustSheet", sheetChanged: false, sheetFromRefusal: false }),
+      openSheetRefusal: () => this.setState({ screen: "trustSheet", sheetChanged: false, sheetFromRefusal: true }),
+      sheetFoot: st.sheetFromRefusal ? "After trust, start the session again." : "Granted from desktop or web only.",
+      openSheetChanged: () => this.setState({ screen: "trustSheet", sheetChanged: true, sheetFromRefusal: false }),
+      goHeld: this.go("toolsHeld"),
+      goTrusted: this.go("toolsAgent"),
+      goRevoke: this.go("revoke"),
+      showSheet: sc === "trustSheet",
+      sheetTitle: (changed ? "Trust acme-api again on " : "Trust acme-api on ") + m,
+      sheetWhere: "acme-api · " + (plat === "windows" ? "C:\\Users\\dana\\src\\acme-api" : "~/src/acme-api") + " · 4 files · all agents",
+      iClose: this.icon("X", 16), iBack: this.icon("ChevronLeft", 20), iMonitor: this.icon("Monitor", 20),
+      showRevoke: sc === "revoke",
+      revokeThreads: [
+        { title: "Migrate billing webhooks to the new idempotency table", meta: "claude-code · turn 4 running · postgres-dev, linear", effect: "Turn stops, restarts", k: "success" },
+        { title: "Backfill replay ids for March", meta: "codex · idle", effect: "Restarts", k: "faint" }
+      ].map(t => Object.assign({}, t, { dot: this.dot("var(--" + t.k + ")", 7) + " margin-top: 5px;" })),
+      isRefusal: sc === "refused",
+      refusalNotInline: true,
+      refuseAgent: () => this.setState({ refusalKind: "agent" }),
+      refuseFilter: () => this.setState({ refusalKind: "filter" }),
+      segRefAgent: segRef(agentRef),
+      segRefFilter: segRef(!agentRef),
+      refusalWhere: "acme-api · " + m + " · claude-code · new session",
+      refusalHead: agentRef ? "claude-code did not start" : "Domovoi did not start this session",
+      refusalCode: agentRef ? "refused · untrusted repository file" : "refused · untrusted git filter",
+      refusalBody: agentRef ? "claude-code will not start in acme-api until the repository is trusted on " + m + "." :
+        "Checking out acme-api would run the sops filter driver, which is not trusted on " + m + ".",
+      refusalNameLabel: agentRef ? "It names" : "Filter",
+      refusalName: agentRef ? ".claude/settings.json" : "sops · .gitattributes · .git/config",
+      isPhone: sc === "phone"
+    };
+  }
+
   renderVals() {
     const st = this.state;
     const sc = st.screen;
@@ -852,17 +1179,25 @@ class Component extends DCLogic {
       { id: "inventory", num: "1", label: "Installed", note: "Grouped by scope and source, with the real trust states: untrusted, trusted, blocked." },
       { id: "install", num: "2", label: "Install from a path", note: "A path is the only source in the protocol. No bundle, no registry, no installer command, so nothing executes to install." },
       { id: "detail", num: "3", label: "Skill and review", note: "Signature and trust are separate. Enablement is a per-project review pinned to a digest and a manifest." },
-      { id: "changed", num: "4", label: "Review changed", note: "Editing a skill invalidates the review. The turn refusal reason is review-changed, and it comes from the daemon." },
+      { id: "changed", num: "4", label: "Review changed", note: "Editing a skill invalidates the review, and the daemon refuses it with review-changed. A state, not a gate, so it is not amber." },
       { id: "turn", num: "5", label: "This turn's skills", note: "Eight at most, and every omission carries one of four reasons: not-enabled, unavailable, review-changed, policy." },
-      { id: "toolsAgent", num: "6", label: "Tools by agent", note: "Read and report only. Every entry names its source, and repository entries lead because they can run when a session starts." },
+      { id: "toolsAgent", num: "6", label: "Tools by agent", note: "Read and report only. This repository is trusted, so its entries lead: they run when a session starts." },
       { id: "toolsFile", num: "7", label: "Tools by source file", note: "The same entries, one panel per file read. Repository files come first, before anyone starts a session." },
-      { id: "toolGate", num: "8", label: "Tool at the gate", note: "The gate names the server and its source file. A phone stacks the facts but drops none of them." },
+      { id: "toolGate", num: "8", label: "Tool at the gate", note: "Tool-server calls get Allow once or Deny, never Always. Trusting the repository skips no gate." },
       { id: "toolsNone", num: "9", label: "None found", note: "Nothing found is a result, so the panel lists every file it read to reach it." },
       { id: "toolsUnread", num: "10", label: "Could not read", note: "An unreadable file is named with its reason. Its entries are not listed or guessed." },
-      { id: "toolsNonePassed", num: "11", label: "None passed", note: "This agent starts with no tool servers passed, so it says none passed, not none found." }
+      { id: "toolsNonePassed", num: "11", label: "None passed", note: "This agent starts with no tool servers passed, so it says none passed, not none found." },
+      { id: "toolsHeld", num: "12", label: "Held back", note: "Held back is a state, not a gate. Untrusted, a repository's hooks, tool servers, plugins, env, rules and git filter load for no agent." },
+      { id: "trustSheet", num: "13", label: "Trust review", note: "The one review surface, on desktop and web. Per machine and per repository, pinned to four file digests." },
+      { id: "trustChanged", num: "14", label: "Changed since trust", note: "Any change to a trusted config file, an agent's own edit included, holds the repository back and asks again." },
+      { id: "refused", num: "15", label: "Session refused", note: "A refusing agent names the file; a git filter refusal names the filter. Review opens the same sheet, and the session does not start by itself." },
+      { id: "refusedInline", num: "16", label: "Inline review, not built", disabled: true, note: "Not built. One review surface: the sheet in step 13." },
+      { id: "revoke", num: "17", label: "Take back trust", note: "Taking trust back restarts the repository's running threads now. A running turn and its tool servers stop." },
+      { id: "phone", num: "18", label: "Phone", note: "The phone shows what is held back and why, with every entry. It cannot trust: that is desktop or web." }
     ];
     const plat = this.props.platform ?? "mac";
-    const isToolsSc = ["toolsAgent", "toolsFile", "toolsNone", "toolsUnread", "toolsNonePassed", "toolGate"].indexOf(sc) !== -1;
+    const isToolsSc = ["toolsAgent", "toolsFile", "toolsNone", "toolsUnread", "toolsNonePassed", "toolGate", "toolsHeld", "trustSheet", "trustChanged", "revoke", "phone"].indexOf(sc) !== -1;
+    const isSessionSc = sc === "refused" || sc === "refusedInline";
     const tabStyle = on => "padding: 4px 10px; border-radius: calc(var(--radius) - 3px); font-size: 12px; cursor: pointer; color: var(--" +
       (on ? "foreground" : "muted-foreground") + "); background: " + (on ? "var(--accent)" : "transparent") + ";";
 
@@ -928,21 +1263,23 @@ class Component extends DCLogic {
       steps: stepDefs.map(s => ({
         num: s.num, label: s.label,
         numColor: sc === s.id ? "var(--primary-foreground)" : "var(--faint)",
-        go: this.go(s.id),
+        go: s.disabled ? undefined : this.go(s.id),
         style: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; border: 1px solid " +
           (sc === s.id ? "var(--primary)" : "var(--border)") + "; background: " + (sc === s.id ? "var(--primary)" : "transparent") +
-          "; color: " + (sc === s.id ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";"
+          "; color: " + (sc === s.id ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";" +
+          (s.disabled ? " opacity: .45; cursor: default; border-style: dashed;" : "")
       })),
       stepNote: (stepDefs.find(s => s.id === sc) || stepDefs[0]).note,
 
       ...this.toolsVals(sc, plat),
-      tabSkills: tabStyle(!isToolsSc),
+      ...this.trustVals(sc, plat),
+      tabSkills: tabStyle(!isToolsSc && !isSessionSc),
       tabTools: tabStyle(isToolsSc),
-      chromeLabel: sc === "install" ? "Install a skill" : sc === "detail" ? "pr-triage" : sc === "changed" ? "sql-explain" : sc === "turn" ? "Turn selection" :
+      chromeLabel: isSessionSc ? "New session" : sc === "phone" ? "Phone" : ["toolsHeld", "trustSheet", "trustChanged"].indexOf(sc) !== -1 ? "acme-api held back" : sc === "install" ? "Install a skill" : sc === "detail" ? "pr-triage" : sc === "changed" ? "sql-explain" : sc === "turn" ? "Turn selection" :
         sc === "toolGate" ? "postgres-dev.run_query" : sc === "toolsFile" ? "By source file" : isToolsSc ? "By agent" : "Skills",
-      chromePill: sc === "changed" ? "review-changed" : sc === "toolsNone" ? "hetzner-cx42 · read only" : isToolsSc ? this.machineFor(plat) + " · read only" : "mac-mini-m4 · 9 skills",
+      chromePill: sc === "changed" ? "review-changed" : isSessionSc ? "refused · acme-api" : sc === "toolsNone" ? "hetzner-cx42 · read only" : isToolsSc ? this.machineFor(plat) + " · read only" : "mac-mini-m4 · 9 skills",
       chromePillStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--" +
-        (sc === "changed" ? "warn-bg" : "accent") + "); color: var(--" + (sc === "changed" ? "warn-fg" : "muted-foreground") + ");",
+        "accent); color: var(--muted-foreground);",
 
       isInventory: sc === "inventory",
       isInstall: sc === "install",
@@ -1057,7 +1394,7 @@ class Component extends DCLogic {
       ],
       skillMd: "---\nname: pr-triage\ndescription: Groups open pull requests by risk and staleness\nmanifest:\n  version: 1\n  capabilities:\n    - filesystem.read\n    - process.execute\n    - network.connect\n    - filesystem.write\n---\n\n# Triage open pull requests\n\nRead every open PR with `gh pr list --json`. Score each one on changed\nlines, files touched outside its own area, days since the last review,\nand whether CI is red.\n\nWrite the grouped result to .github/TRIAGE.md. Do not comment on pull\nrequests and do not request reviewers. Reporting is the job, not acting\non it.",
 
-      warnDot: this.dot("var(--warning)", 7) + " animation: dvPulse 2.4s infinite;",
+      warnDot: this.dot("var(--faint)", 7),
       changeRows: [
         { k: "Content digest", was: "sha256:9c41…a7e", now: "sha256:2d77…b04" },
         { k: "Capabilities", was: "filesystem.read · process.execute", now: "+ secrets.read" },
@@ -1080,7 +1417,7 @@ class Component extends DCLogic {
       restoreTurn: () => this.setState({ turnOff: [] }),
       turnOmitted: [
         { name: "acme-seed", reason: "not-enabled", detail: "Installed, never reviewed for this project.", k: "faint" },
-        { name: "sql-explain", reason: "review-changed", detail: "Edited since your review, and it gained secrets.read.", k: "warning" },
+        { name: "sql-explain", reason: "review-changed", detail: "Edited since your review, and it gained secrets.read.", k: "muted-foreground" },
         { name: "k8s-triage", reason: "unavailable", detail: "Blocked here: the signer was revoked.", k: "destructive" },
         { name: "repo-audit", reason: "policy", detail: "An org policy forbids it in this repository.", k: "destructive" }
       ].map((o, i) => ({

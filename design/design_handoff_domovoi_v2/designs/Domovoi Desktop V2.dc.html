@@ -1567,7 +1567,7 @@
                     <div style="position: relative; display: flex;">
                       <div onClick="{{ toggleEffortMenu }}" style="{{ effortChipStyle }}" style-hover="background: var(--muted);">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex: 0 0 14px; color: var(--muted-foreground);" aria-hidden="true"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"></path><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"></path><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"></path><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"></path><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"></path><path d="M3.477 10.896a4 4 0 0 1 .585-.396"></path><path d="M19.938 10.5a4 4 0 0 1 .585.396"></path><path d="M6 18a4 4 0 0 1-1.967-.516"></path><path d="M19.967 17.484A4 4 0 0 1 18 18"></path></svg>
-                        <span style="font-size: 11px;">{{ effortLabel }}</span>
+                        <span style="{{ effortLabelStyle }}">{{ effortLabel }}</span>
                         <span style="{{ effortChevron }}">
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>
                         </span>
@@ -1588,8 +1588,17 @@
                               </span>
                               <div style="flex: 1; min-width: 0;">
                                 <div style="display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;">
-                                  <span style="font-size: 12.5px; color: var(--foreground);">{{ eo.label }}</span>
-                                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">{{ eo.id }}</span>
+                                  <sc-if value="{{ eo.hasWord }}" hint-placeholder-val="{{ true }}">
+                                    <span style="font-size: 12.5px; color: var(--foreground);">{{ eo.label }}</span>
+                                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ eo.id }}</span>
+                                  </sc-if>
+                                  <sc-if value="{{ eo.noWord }}" hint-placeholder-val="{{ false }}">
+                                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--foreground);">{{ eo.id }}</span>
+                                    <span style="font-size: 10.5px; padding: 0 7px; border-radius: 999px; border: 1px dashed var(--border); color: var(--muted-foreground);">No word yet</span>
+                                  </sc-if>
+                                  <sc-if value="{{ eo.isDefault }}" hint-placeholder-val="{{ false }}">
+                                    <span style="font-size: 10.5px; padding: 0 7px; border-radius: 999px; background: var(--muted); color: var(--muted-foreground);">Model default</span>
+                                  </sc-if>
                                 </div>
                                 <div style="font-size: 11px; color: var(--muted-foreground); margin-top: 3px; line-height: 1.45;">{{ eo.note }}</div>
                               </div>
@@ -4156,47 +4165,66 @@ class Component extends DCLogic {
     // the value actually sent sits beside it in mono.
     const effortScales = {
       "claude-code": {
-        kind: "thinking budget",
+        kind: "effort",
         levels: [
-          { id: "think", label: "Low", note: "A short budget. Enough for a single-file edit or a question with one answer." },
-          { id: "think-hard", label: "Medium", note: "The default here. Holds a multi-file change in view while it plans." },
-          { id: "ultrathink", label: "High", note: "The longest budget this harness offers. Slow and dear, and worth it on a plan you cannot check yourself." }
+          { id: "low", label: "Low", note: "Short thinking. Enough for a single-file edit or a question with one answer." },
+          { id: "medium", label: "Medium", note: "Holds a multi-file change in view while it plans." },
+          { id: "high", label: "High", note: "Thinks longer before acting. Slower per turn." },
+          { id: "max", label: "Max", note: "The longest this model will think. Slow and dear, for a plan you cannot check yourself." }
         ]
       },
       codex: {
         kind: "reasoning effort",
         levels: [
-          { id: "low", label: "Low", note: "Answers quickly and stops reasoning early. Fine for triage." },
-          { id: "medium", label: "Medium", note: "The default. Balances the time it spends against what it catches." },
-          { id: "high", label: "High", note: "Reasons longer before acting. Noticeably slower per turn." }
+          { id: "none", label: "None", note: "No reasoning before it answers. Fastest, and it misses things." },
+          { id: "minimal", label: "Minimal", note: "The least reasoning that still plans. Fine for renames and lookups." },
+          { id: "low", label: "Low", note: "Stops reasoning early. Fine for triage." },
+          { id: "medium", label: "Medium", note: "Balances the time it spends against what it catches." },
+          { id: "high", label: "High", note: "Reasons longer before acting. Noticeably slower per turn." },
+          { id: "xhigh", label: "Extra high", note: "The longest codex will reason. Slow, for a plan you cannot check yourself." }
         ]
       },
       opencode: {
         kind: "reasoning effort",
         levels: [
-          { id: "default", label: "Default", note: "Whatever the model does unprompted. The only level that is not a choice." },
+          { id: "unset", label: "Model's own", note: "Sends no effort value, so the model uses its own setting." },
           { id: "low", label: "Low", note: "Stops reasoning early. Fine for triage and single-file edits." },
           { id: "medium", label: "Medium", note: "Balances the time it spends against what it catches." },
           { id: "high", label: "High", note: "Reasons longer before acting. Noticeably slower per turn." },
-          { id: "max", label: "Max", note: "The longest this model will reason. Slow and dear, and worth it on a plan you cannot check yourself." }
+          { id: "max", label: "Max", note: "The longest this model will reason. Slow and dear, for a plan you cannot check yourself." }
         ]
       },
       kilo: {
         kind: "reasoning effort",
         levels: [
-          { id: "default", label: "Default", note: "Whatever the model does unprompted. The only level that is not a choice." },
+          { id: "unset", label: "Model's own", note: "Sends no effort value, so the model uses its own setting." },
           { id: "low", label: "Low", note: "Stops reasoning early. Fine for triage and single-file edits." },
           { id: "medium", label: "Medium", note: "Balances the time it spends against what it catches." },
           { id: "high", label: "High", note: "Reasons longer before acting. Noticeably slower per turn." },
-          { id: "max", label: "Max", note: "The longest this model will reason. Slow and dear, and worth it on a plan you cannot check yourself." }
+          { id: "max", label: "Max", note: "The longest this model will reason. Slow and dear, for a plan you cannot check yourself." }
         ]
       }
+    };
+    // Each model reports its own default, so the marker follows the model, never the harness.
+    // kimi-k3 also reports a level Domovoi has no word for; it reads as the value it sends.
+    const effortByModel = {
+      "claude-sonnet-4.6": { def: "high" }, "claude-opus-4.2": { def: "high" }, "claude-haiku-4.1": { def: "medium" },
+      "gpt-5.3-codex": { def: "medium" }, "gpt-5.3-mini": { def: "low" }, "o5-preview": { def: "high" },
+      "qwen3-coder-72b": { def: "unset" }, "glm-5-air": { def: "low" }, "grok-code-3": { def: "high" },
+      "kimi-k3": { def: "medium", only: ["low", "medium", "high"], extra: [{ id: "thinking-long", label: "", note: "" }] }
+    };
+    const scaleFor = m => {
+      const base = effortScales[m.agent] || { kind: "", levels: [] };
+      const over = effortByModel[m.label] || {};
+      const lv = (over.only ? base.levels.filter(l => over.only.indexOf(l.id) >= 0) : base.levels).concat(over.extra || [])
+        .map(l => Object.assign({}, l, { label: l.label || l.id, noWord: !l.label, isDefault: l.id === over.def }));
+      return { kind: base.kind, levels: lv };
     };
     // Scales run 3 to 5 levels, so the bars keep a fixed height and vary their step rather
     // than growing the chip when the harness offers more.
     const bars = (rank, total, color) => {
       const out = [];
-      const step = total > 3 ? 2.2 : 3.5;
+      const step = total > 5 ? 1.4 : total > 3 ? 2.2 : 3.5;
       for (let i = 0; i < total; i += 1) {
         out.push("display: block; width: 2.5px; border-radius: 1px; height: " + (4 + i * step) +
           "px; background: " + (i <= rank ? color : "var(--border)") + ";");
@@ -4265,12 +4293,12 @@ class Component extends DCLogic {
     const previewDocTitles = ["Replay table, three states", "Duplicate-delivery runbook page", "Webhook health panel"];
     const docComments = st.comments.filter(c => c.doc === docKey);
     const activeModelDef = models[st.model % models.length];
-    const activeScale = effortScales[activeModelDef.agent] || { kind: "", levels: [] };
+    const activeScale = scaleFor(activeModelDef);
     const effortScale = activeScale.levels;
     const activeModel = { agent: activeModelDef.agent, effortKind: activeScale.kind };
     // A five-rung choice carried onto a three-rung harness has to land somewhere, and doing
     // it silently would change what you picked without saying so.
-    const effortRank = ["Default", "Low", "Medium", "High", "Max"];
+    const effortRank = ["Model's own", "None", "Minimal", "Low", "Medium", "High", "Extra high", "Max"];
     // A word the harness does not offer resolves to its nearest rung. This is display only:
     // the write-back happens when the model changes, so nothing here mutates state.
     const resolveEffort = (word, levels) => {
@@ -4294,7 +4322,7 @@ class Component extends DCLogic {
     // Picking a model rewrites the stored word when the target cannot carry it, so the
     // clamp is real rather than a label that springs back on the next switch.
     const pickModel = i => () => {
-      const scale = (effortScales[models[i % models.length].agent] || { levels: [] }).levels;
+      const scale = scaleFor(models[i % models.length]).levels;
       const landed = scale.length ? scale[resolveEffort(st.effort, scale)].label : st.effort;
       this.setState({
         model: i, modelMenuOpen: false, effort: landed,
@@ -4342,6 +4370,9 @@ class Component extends DCLogic {
       { id: "keymodels", num: "2g", label: "Key-backed models", note: "A key-backed model is listed only on a machine holding that key. A refused key keeps its models listed, locked, with the provider's reason." },
       { id: "keyusage", num: "2h", label: "Usage on a key", note: "On an API key the chip shows the cost the provider reported. The provider bills the key's owner, and Domovoi adds nothing." },
       { id: "keyrefused", num: "2i", label: "Key refused", note: "A key refused mid-session stops the turn at the provider's answer. Send locks with the reason, and nothing is retried on its own." },
+      { id: "effort-codex", num: "2j", label: "Effort on codex", note: "Each model reports its own levels and its own default, marked. This one reports six. A change applies from the next turn." },
+      { id: "effort-claude", num: "2k", label: "Effort on claude-code", note: "claude-code reports low, medium, high and max. The default marker sits where this model reports it, here High." },
+      { id: "effort-unnamed", num: "2l", label: "Level with no word", note: "A level Domovoi has no word for reads as the value it sends, in mono, and is still a choice. No level is ever renamed." },
       { id: "approval", num: "3", label: "Hard gate", note: "The gate is the only thing that interrupts. Facts about what it touches are one click away." },
       { id: "policy", num: "3b", label: "Refused by policy", note: "Not every gate is a question. A policy refusal has no allow button, and the card says who can change it and where." },
       { id: "resolved", num: "4", label: "Decision made", note: "Proposed: before an allowed write runs, the daemon takes a checkpoint and the receipt names it. Today there is none per approval." },
@@ -4384,6 +4415,7 @@ class Component extends DCLogic {
       : st.xmOpened || st.xmPick ? "xmopen"
       : st.paletteOpen && st.xm ? ({ all: "xm", partial: "xmpartial", loading: "xmloading" })[st.xm]
       : sc === "working" && st.keyRefused ? "keyrefused"
+      : st.effortMenuOpen && sc === "working" && ({ 3: "effort-codex", 0: "effort-claude", 9: "effort-unnamed" })[st.model] ? ({ 3: "effort-codex", 0: "effort-claude", 9: "effort-unnamed" })[st.model]
       : st.usageOpen && conn === "api" && !st.sheetOpen ? "keyusage"
       : st.modelMenuOpen && !st.sheetOpen ? "keymodels"
       : sc === "settings" && st.keysFocus ? "keys"
@@ -4499,6 +4531,8 @@ class Component extends DCLogic {
           : s.id === "keymodels" ? () => this.scrollModelList(this._modelListRef, '[data-key="1"]') || this.setState({ screen: "working", model: 0, modelMenuOpen: true, modelQuery: "", slashOpen: false, sheetOpen: false, handoffOpen: false, paletteOpen: false, prOpen: false, subView: null })
           : s.id === "keyusage" ? () => this.setState({ screen: "working", model: KEY_I, usageOpen: true, slashOpen: false, sheetOpen: false, handoffOpen: false, paletteOpen: false, prOpen: false, subView: null })
           : s.id === "keyrefused" ? () => this.setState({ screen: "working", model: KEY_I, keyRefused: true, slashOpen: false, sheetOpen: false, handoffOpen: false, paletteOpen: false, prOpen: false, subView: null })
+          : s.id.indexOf("effort-") === 0 ? () => this.setState(Object.assign({ screen: "working", effortMenuOpen: true, effortDropped: null, modelMenuOpen: false, modeMenuOpen: false, usageOpen: false, keyRefused: false, slashOpen: false, sheetOpen: false, handoffOpen: false, paletteOpen: false, prOpen: false, subView: null },
+            ({ "effort-codex": { model: 3, effort: "Medium" }, "effort-claude": { model: 0, effort: "High" }, "effort-unnamed": { model: 9, effort: "thinking-long" } })[s.id]))
           : s.id === "keys" ? () => this.goKeys()
           : s.id === "subagents" ? () => this.setState({ screen: "working", subView: "test-runner", drawerOpen: true, slashOpen: false, sheetOpen: false, handoffOpen: false, paletteOpen: false, prOpen: false })
           : s.id === "slash" ? () => this.setState({ screen: "working", slashOpen: true, sheetOpen: false, handoffOpen: false, paletteOpen: false, prOpen: false })
@@ -6397,6 +6431,7 @@ class Component extends DCLogic {
       effortHeading: "EFFORT ON " + activeModel.agent.toUpperCase(),
       effortScaleNote: activeModel.effortKind,
       effortLabel: effortLevel.label,
+      effortLabelStyle: "font-size: 11px;" + (effortScale.length && effortScale[effortIdx].noWord ? " font-family: 'JetBrains Mono', monospace; font-size: 10.5px;" : ""),
       effortChipStyle: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; background: var(--" +
         (st.effortMenuOpen ? "muted" : "accent") + "); color: var(--strong);",
       effortChevron: "display: inline-flex; color: var(--faint); transition: transform .12s var(--ease-out, ease); transform: rotate(" +
@@ -6409,7 +6444,8 @@ class Component extends DCLogic {
         attachMenuOpen: false, slashOpen: false
       })),
       effortOptions: effortScale.map((e, i) => ({
-        label: e.label, id: e.id, note: e.note,
+        label: e.label, id: e.id, hasWord: !e.noWord, noWord: e.noWord, isDefault: e.isDefault,
+        note: e.noWord ? "Reported by the model. Domovoi has no word for this level yet, so it shows the value it sends." : e.note,
         bars: bars(i, effortScale.length, effortIdx === i ? "var(--primary)" : "var(--muted-foreground)"),
         barsStyle: "display: flex; align-items: flex-end; gap: 2px; height: 14px; flex: 0 0 auto; margin-top: 2px;",
         pick: () => this.setState({ effort: e.label, effortMenuOpen: false, effortDropped: null }),
@@ -6423,8 +6459,8 @@ class Component extends DCLogic {
           st.effortDropped.to + " when you changed model. It stays there."
         : "Applies from the next turn. A turn already in flight keeps the effort it started with.",
       effortFootStyle: "padding: 10px 12px; border-top: 1px solid var(--border); font-size: 11px; line-height: 1.5; color: var(--" +
-        (st.effortDropped ? "warn-fg" : "muted-foreground") + ");" +
-        (st.effortDropped ? " background: var(--warn-bg);" : ""),
+        (st.effortDropped ? "foreground" : "muted-foreground") + ");" +
+        (st.effortDropped ? " background: var(--accent);" : ""),
 
       modeMenuOpen: st.modeMenuOpen,
       toggleModeMenu: () => this.setState(s => ({ modeMenuOpen: !s.modeMenuOpen, attachMenuOpen: false, slashOpen: false, modelMenuOpen: false })),

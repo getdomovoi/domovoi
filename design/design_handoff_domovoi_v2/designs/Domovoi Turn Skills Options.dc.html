@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { color: color-mix(in oklab, var(--primary) 80%, var(--foreground)); }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --desk: oklch(0.11 0.004 285);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --destructive: oklch(0.63 0.19 25);
+    --shadow-xl: oklch(0 0 0 / .8);
+  }
+  .dv-light {
+    --background: oklch(0.995 0.001 285); --sidebar: oklch(0.975 0.003 285); --card: oklch(1 0 0);
+    --accent: oklch(0.955 0.004 285); --muted: oklch(0.935 0.005 285); --border: oklch(0.9 0.006 285);
+    --foreground: oklch(0.22 0.01 285); --strong: oklch(0.33 0.011 285); --muted-foreground: oklch(0.5 0.012 285);
+    --faint: oklch(0.63 0.011 285); --desk: oklch(0.925 0.005 285);
+    --primary: oklch(0.52 0.2 275); --primary-foreground: oklch(0.99 0.005 275);
+    --success: oklch(0.52 0.13 158); --destructive: oklch(0.55 0.2 25);
+    --shadow-xl: oklch(0.2 0.01 285 / .2);
+  }
+</style>
+</helmet>
+
+<section class="{{ themeClass }}" style="min-height: 100vh; display: flex; flex-direction: column; gap: 22px; padding: 40px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+  <div style="display: flex; flex-direction: column; gap: 6px; max-width: 980px;">
+    <span style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">Per-turn skill selection in the composer</span>
+    <span style="font-size: 13px; line-height: 1.6; color: var(--muted-foreground);">Typing <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">/skill &lt;name&gt;</span> sets which skills the next turn uses. The daemon can refuse a selection. Recommended: <a href="#1a">1a</a>.</span>
+  </div>
+
+  <div style="display: flex; gap: 28px; flex-wrap: wrap; align-items: flex-start;">
+
+    <div id="1a" style="width: 700px; display: flex; flex-direction: column; gap: 14px;">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground);">1a</span>
+        <span style="font-size: 14px; font-weight: 600;">A quiet line in the composer</span>
+      </div>
+      <span style="font-size: 12px; line-height: 1.55; color: var(--muted-foreground);">The selection is state for the next turn, so it shows where you change it. A refusal arrives before you send, while it can still be fixed.</span>
+
+      <sc-for list="{{ aStates }}" as="s" hint-placeholder-count="2">
+        <div style="display: flex; flex-direction: column; gap: 7px;">
+          <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">{{ s.eyebrow }}</span>
+          <div style="border: 1px solid var(--border); border-radius: 14px; background: var(--card); overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 9px; padding: 9px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap;">
+              <span style="display: inline-flex; color: var(--muted-foreground);">{{ iSkill }}</span>
+              <span style="font-size: 11.5px; color: var(--muted-foreground);">Next turn</span>
+              <sc-for list="{{ s.picked }}" as="p" hint-placeholder-count="2">
+                <span style="display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; background: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">{{ p }}</span>
+              </sc-for>
+              <sc-if value="{{ s.hasRefused }}" hint-placeholder-val="{{ false }}">
+                <span style="display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; border: 1px dashed var(--border); font-size: 10.5px; color: var(--muted-foreground);"><span style="width: 6px; height: 6px; border-radius: 50%; background: var(--destructive);"></span><span style="font-family: 'JetBrains Mono', monospace; text-decoration: line-through;">sql-explain</span>refused<span style="font-family: 'JetBrains Mono', monospace;">review-changed</span></span>
+              </sc-if>
+              <span style="flex: 1;"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ s.count }}</span>
+              <span style="font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;">{{ s.action }}</span>
+            </div>
+            <div style="padding: 14px; min-height: 64px; font-size: 13px; line-height: 1.55; color: var(--foreground);">{{ s.text }}</div>
+            <div style="display: flex; align-items: center; gap: 8px; padding: 0 12px 12px;">
+              <span style="padding: 5px 10px; border-radius: 999px; background: var(--accent); font-size: 11px; color: var(--strong);">Build · ask</span>
+              <span style="padding: 5px 10px; border-radius: 999px; background: var(--accent); font-size: 11px; color: var(--strong);">High</span>
+              <span style="padding: 5px 10px; border-radius: 999px; background: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">claude-sonnet-4.6</span>
+              <span style="flex: 1;"></span>
+              <span style="width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 999px; background: var(--primary); color: var(--primary-foreground);">{{ iSend }}</span>
+            </div>
+          </div>
+          <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ s.caption }}</span>
+        </div>
+      </sc-for>
+    </div>
+
+    <div id="1b" style="width: 700px; display: flex; flex-direction: column; gap: 14px;">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--muted); color: var(--foreground);">1b</span>
+        <span style="font-size: 14px; font-weight: 600;">Only in the sent message</span>
+      </div>
+      <span style="font-size: 12px; line-height: 1.55; color: var(--muted-foreground);">The composer stays clean. The record is exact, but you learn of a refusal after the turn has started without that skill.</span>
+
+      <div style="display: flex; flex-direction: column; gap: 7px;">
+        <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">COMPOSER, AFTER TYPING /SKILL</span>
+        <div style="border: 1px solid var(--border); border-radius: 14px; background: var(--card); overflow: hidden;">
+          <div style="padding: 14px; min-height: 64px; font-size: 13px; line-height: 1.55;">Triage the open PRs on the webhook branch before you touch the handler.</div>
+          <div style="display: flex; align-items: center; gap: 8px; padding: 0 12px 12px;">
+            <span style="padding: 5px 10px; border-radius: 999px; background: var(--accent); font-size: 11px; color: var(--strong);">Build · ask</span>
+            <span style="padding: 5px 10px; border-radius: 999px; background: var(--accent); font-size: 11px; color: var(--strong);">High</span>
+            <span style="padding: 5px 10px; border-radius: 999px; background: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">claude-sonnet-4.6</span>
+            <span style="flex: 1;"></span>
+            <span style="width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 999px; background: var(--primary); color: var(--primary-foreground);">{{ iSend }}</span>
+          </div>
+        </div>
+        <span style="font-size: 11.5px; color: var(--muted-foreground);">Nothing shows the selection before send.</span>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 7px;">
+        <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">SENT MESSAGE, ONE REFUSED</span>
+        <div style="align-self: flex-end; max-width: 560px; display: flex; flex-direction: column; gap: 8px; padding: 11px 14px; border-radius: 14px; background: var(--accent);">
+          <span style="font-size: 13px; line-height: 1.55;">Triage the open PRs on the webhook branch before you touch the handler.</span>
+          <div style="display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding-top: 8px; border-top: 1px solid var(--border);">
+            <span style="display: inline-flex; color: var(--muted-foreground);">{{ iSkill }}</span>
+            <span style="font-size: 11px; color: var(--muted-foreground);">Skills this turn</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">pr-triage · acme-deploy</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 7px; flex-wrap: wrap;">
+            <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--destructive);"></span>
+            <span style="font-size: 11px; color: var(--muted-foreground);">Refused</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">sql-explain · review-changed</span>
+            <span style="font-size: 11px; color: var(--muted-foreground);">The turn runs without it.</span>
+          </div>
+        </div>
+        <span style="font-size: 11.5px; color: var(--muted-foreground);">The refusal is on the record, but only after the turn started.</span>
+      </div>
+    </div>
+  </div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;}}">
+class Component extends DCLogic {
+  componentDidMount() {
+    if (!window.lucide) this._lt = setInterval(() => { if (window.lucide) { clearInterval(this._lt); this.forceUpdate(); } }, 150);
+  }
+  componentWillUnmount() { clearInterval(this._lt); }
+  icon(name, size) {
+    const L = window.lucide;
+    const node = L && L.icons && L.icons[name];
+    const kids = node ? (node[0] === "svg" ? node[2] : node) : [];
+    return React.createElement("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.5,
+      strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", style: { display: "block" } },
+      (kids || []).map((c, i) => React.createElement(c[0], Object.assign({ key: i }, c[1]))));
+  }
+  renderVals() {
+    const text = "Triage the open PRs on the webhook branch before you touch the handler.";
+    return {
+      themeClass: (this.props.theme ?? "dark") === "light" ? "dv-light" : "dv-dark",
+      iSkill: this.icon("BookOpen", 16),
+      iSend: this.icon("ArrowUp", 16),
+      aStates: [
+        { eyebrow: "SELECTION SET", picked: ["pr-triage", "acme-deploy"], hasRefused: false, count: "2 of 8", action: "Clear", text: text,
+          caption: "The line appears only once a skill is selected. Without one, the composer is unchanged." },
+        { eyebrow: "ONE REFUSED BY THE DAEMON", picked: ["pr-triage", "acme-deploy"], hasRefused: true, count: "2 of 8", action: "Review sql-explain", text: text,
+          caption: "The refused skill stays on the line, struck through, with the daemon's reason. Send still works; that turn runs without it." }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>
