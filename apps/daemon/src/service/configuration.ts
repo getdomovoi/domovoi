@@ -142,6 +142,21 @@ export class ServiceProfileMismatchError extends Error {
   }
 }
 
+// Security review round 3 of #577 (P1, P2): a registered service whose saved
+// configuration is missing, unreadable or malformed runs a profile nothing
+// names. A service change for a caller's profile refuses it rather than take
+// it for the caller's. Copy pending fetzy's approval.
+export class ServiceProfileUnknownError extends Error {
+  constructor(reason: string) {
+    super(`${reason} Nothing was changed.`)
+    this.name = "ServiceProfileUnknownError"
+  }
+}
+
+export function registeredWithoutConfiguration(definitionPath: string): ServiceProfileUnknownError {
+  return new ServiceProfileUnknownError(`A login service is registered at ${definitionPath}, but its saved configuration is missing, so the profile it runs is not known.`)
+}
+
 // The saved service's profile against the caller's. None saved matches: an
 // install writes the caller's profile (the desktop passes it), an update finds
 // nothing to update, and a removal finds no Domovoi service to stop.

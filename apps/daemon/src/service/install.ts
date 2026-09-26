@@ -12,7 +12,7 @@ import { OperationDeadline } from "../operation-deadline.js"
 import { claimProfile, ProfileAlreadyOwnedError, type ProfileLease } from "../profile-lease.js"
 import { localOwnerRemovalReceiptPath, writeLocalOwnerRemovalReceipt } from "../local-owner-removal.js"
 import { readServiceRemovalSnapshot, serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
-import { assertServiceProfile, createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration, type ServiceRuntimeRecord } from "./configuration.js"
+import { assertServiceProfile, createServiceConfiguration, registeredWithoutConfiguration, ServiceProfileUnknownError, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration, type ServiceRuntimeRecord } from "./configuration.js"
 import { readLocalProfileFile } from "../local-owner-record.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
@@ -593,7 +593,15 @@ async function installWithDeadline(
   // Security review round 2 of #577: read under the service-operation lease,
   // before the handoff, so a service saved for another profile meanwhile
   // refuses the caller's install.
-  if (callerProfile !== undefined) assertServiceProfile(previous, callerProfile)
+  if (callerProfile !== undefined) {
+    // Round 3: a registered service with no saved configuration runs a
+    // profile nothing names; the caller's install does not replace it.
+    if (previous === undefined && plan.kind === "file"
+      && await withinServiceDeadline(deadline, () => effects.exists(plan.path, deadline))) {
+      throw registeredWithoutConfiguration(plan.path)
+    }
+    assertServiceProfile(previous, callerProfile)
+  }
   // Security review round 3 (#574): schtasks /create /f replaces a task of
   // the same name, so a task Domovoi did not register refuses the install, by
   // the same check status and removal use, before anything changes.
@@ -998,6 +1006,7 @@ async function removeWithDeadline(
   effects: RemovalEffects,
   deadline: OperationDeadline,
   progress: RemovalProgress,
+  callerProfile?: ProfileLocation,
 ): Promise<ServiceRemovalResult> {
   const plan = serviceRemovalPlan(target)
   const home = assertHome(target.home)
@@ -1008,6 +1017,19 @@ async function removeWithDeadline(
     throw new WindowsTaskNotDomovoiError(displayName)
   }
   const before = effects.removalSnapshot(home, target.platform)
+  // Security review rounds 2 and 3 of #577: the caller's profile is checked
+  // against this snapshot, the one read of service.json the removal acts on,
+  // under the service-operation lease and before any manager action.
+  if (callerProfile !== undefined) {
+    if (before.configurationUnknown !== undefined) {
+      throw new ServiceProfileUnknownError(`${before.configurationUnknown} The profile the login service runs is not known.`)
+    }
+    if (before.configurationDigest === null) {
+      if (plan.kind === "file" && await withinServiceDeadline(deadline, () => effects.exists(plan.path, deadline))) throw registeredWithoutConfiguration(plan.path)
+    } else {
+      assertServiceProfile(profileLocation(home, before.profileDirectory), callerProfile)
+    }
+  }
   let managerStopped = true
   if (plan.kind === "task") {
     progress.managerHoldsDeadline = true
@@ -1072,16 +1094,7 @@ export function removeService(
   options: { callerProfile?: ProfileLocation } = {},
 ): Promise<ServiceRemovalResult> {
   const progress: RemovalProgress = { managerHoldsDeadline: false }
-  return serviceOperation(effects, (deadline) => {
-    // Security review round 2 of #577: read under the service-operation lease,
-    // before any manager action, so a service saved for another profile
-    // meanwhile refuses the caller's removal.
-    if (options.callerProfile !== undefined) {
-      const saved = effects.readConfiguration?.(assertHome(target.home), target.platform)
-      assertServiceProfile(saved === undefined ? undefined : profileLocation(saved.homeDirectory, saved.profileDirectory), options.callerProfile)
-    }
-    return removeWithDeadline(target, effects, deadline, progress)
-  }).catch((cause: unknown) => {
+  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline, progress, options.callerProfile)).catch((cause: unknown) => {
     // The outer deadline can expire before the manager adapter settles. It
     // needs the same actionable task-specific error, not a bare timer failure.
     if (progress.managerHoldsDeadline && !(cause instanceof WindowsTaskRemovalError)) {

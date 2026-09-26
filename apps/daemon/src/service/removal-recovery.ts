@@ -13,6 +13,10 @@ export type ServiceRemovalSnapshot = {
   // A record or configuration that exists but cannot be read is not proof of
   // anything. Removal still proceeds; no receipt can be derived from it.
   unreadable?: string
+  // A saved configuration that exists but cannot be read or parsed, so it
+  // names no profile. A removal for a caller's profile refuses on it
+  // (security review round 3 of #577).
+  configurationUnknown?: string
 }
 
 function failureDetail(error: unknown): string {
@@ -24,10 +28,12 @@ export function readServiceRemovalSnapshot(homeDirectory: string, platform: stri
   let unreadable: string | undefined
   const configurationPath = serviceConfigurationPath(homeDirectory, platform)
   let text: string | undefined
+  let configurationUnknown: string | undefined
   try {
     text = readLocalProfileFile(configurationPath, 64 * 1_024)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      configurationUnknown = `The saved service configuration at ${configurationPath} could not be read: ${failureDetail(error)}.`
       unreadable ??= `The saved service configuration at ${configurationPath} could not be read: ${failureDetail(error)}`
     }
   }
@@ -38,7 +44,10 @@ export function readServiceRemovalSnapshot(homeDirectory: string, platform: stri
   // registration binding. Only the explicit operator path can recover it.
   try {
     if (text !== undefined) ({ registrationId, profileDirectory } = parseServiceConfiguration(text))
-  } catch { /* A malformed registration cannot authorize recovery. */ }
+  } catch {
+    // A malformed registration cannot authorize recovery.
+    configurationUnknown = `The saved service configuration at ${configurationPath} is not a Domovoi service configuration.`
+  }
   const profile = profileLocation(homeDirectory, profileDirectory)
   try { owner = readLocalOwnerRecord(profile) }
   catch (error) {
@@ -46,7 +55,8 @@ export function readServiceRemovalSnapshot(homeDirectory: string, platform: stri
   }
   return { owner, configurationDigest, ...(registrationId ? { registrationId } : {}),
     ...(profileDirectory === undefined ? {} : { profileDirectory }),
-    ...(unreadable === undefined ? {} : { unreadable }) }
+    ...(unreadable === undefined ? {} : { unreadable }),
+    ...(configurationUnknown === undefined ? {} : { configurationUnknown }) }
 }
 
 export type ServiceRemovalRecovery =

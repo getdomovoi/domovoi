@@ -11,7 +11,7 @@ import {
   WindowsTaskPercentSignError,
   type DaemonServiceDependencies,
 } from "../public.js"
-import { createServiceConfiguration, parseServiceConfiguration, ServiceProfileMismatchError } from "./configuration.js"
+import { createServiceConfiguration, parseServiceConfiguration, ServiceProfileMismatchError, ServiceProfileUnknownError } from "./configuration.js"
 import type { ServiceEffects } from "./install.js"
 import { ServiceOperationBusyError } from "./operation-lease.js"
 import { DaemonServiceHandoffError, LaunchdJobNotDomovoiError, SystemdPathCharacterError, WindowsTaskArgumentVariableError, WindowsTaskPathError } from "./desktop-service.js"
@@ -808,10 +808,14 @@ describe("security review round 6 (install)", () => {
 // and removal check the saved service's profile again under the
 // service-operation lease, before the handoff and before any manager action.
 describe("installDaemonService and removeDaemonService for the caller's profile", () => {
-  const other = createServiceConfiguration({ DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/other" }, { platform: "darwin", homeDirectory: "/Users/dl", workingDirectory: "/Users/dl" })
+  const plistPath = "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist"
+  // The removal snapshot is the one read of service.json a removal acts on.
+  const savedFor = (profileDirectory: string) => vi.fn(() => ({ owner: undefined, configurationDigest: "digest", profileDirectory }))
+  const noDefinition = vi.fn(async (path: string) => path !== plistPath)
 
   it("installs for the caller's profile and records it", async () => {
-    const effects = dependencies()
+    // No service saved and no launch agent registered: nothing to bind to.
+    const effects = dependencies({ exists: noDefinition })
     await installDaemonService({ runtime, environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/work" } }, effects)
     const written = vi.mocked(effects.write).mock.calls.find(([path]) => path === "/Users/dl/.domovoi/service.json")![1]
     expect(parseServiceConfiguration(written).profileDirectory).toBe("/Users/dl/profiles/work")
@@ -830,7 +834,7 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
   })
 
   it("refuses a removal of a service saved for another profile, before any manager action", async () => {
-    const effects = dependencies({ readConfiguration: vi.fn(() => other) })
+    const effects = dependencies({ removalSnapshot: savedFor("/Users/dl/profiles/other") })
     await expect(removeDaemonService(effects, { environment: {} })).rejects.toBeInstanceOf(ServiceProfileMismatchError)
     expect(effects.claimServiceOperation).toHaveBeenCalled()
     expect(effects.run).not.toHaveBeenCalled()
@@ -838,8 +842,51 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
   })
 
   it("removes a service saved for the caller's profile", async () => {
-    const effects = dependencies({ readConfiguration: vi.fn(() => other) })
+    const effects = dependencies({ removalSnapshot: savedFor("/Users/dl/profiles/other") })
     await expect(removeDaemonService(effects, { environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/other" } })).resolves.toMatchObject({ kind: "file" })
     expect(effects.run).toHaveBeenCalledWith("launchctl", ["bootout", "gui/501/sh.domovoi.domovoid"], expect.anything())
+  })
+
+  // Security review round 3 of #577 (P1): with service.json gone, a launch
+  // agent or user unit that is still registered runs a profile nothing names.
+  // Given the caller's profile, the install and the removal refuse rather
+  // than take it for the caller's. The definition names only service.json,
+  // so the profile cannot be read from it.
+  it("refuses an install over a registered service whose saved configuration is missing, before the handoff", async () => {
+    const releaseInAppDaemon = vi.fn(async () => {})
+    const effects = dependencies()
+    const refused = installDaemonService({ runtime, environment: {}, releaseInAppDaemon }, effects)
+    await expect(refused).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+    await expect(refused).rejects.toThrow(`A login service is registered at ${plistPath}, but its saved configuration is missing, so the profile it runs is not known. Nothing was changed.`)
+    expect(releaseInAppDaemon).not.toHaveBeenCalled()
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  it("still lets the command line install over such a service, as before", async () => {
+    await expect(installDaemonService({ runtime }, dependencies())).resolves.toMatchObject({ kind: "file" })
+  })
+
+  it("refuses a removal of a registered service whose saved configuration is missing or unreadable, before any manager action", async () => {
+    const missing = dependencies()
+    await expect(removeDaemonService(missing, { environment: {} })).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+    expect(missing.run).not.toHaveBeenCalled()
+    const unreadable = dependencies({ removalSnapshot: vi.fn(() => ({ owner: undefined, configurationDigest: "digest", configurationUnknown: "The saved service configuration at /Users/dl/.domovoi/service.json is not a Domovoi service configuration." })) })
+    const refused = removeDaemonService(unreadable, { environment: {} })
+    await expect(refused).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+    await expect(refused).rejects.toThrow("The saved service configuration at /Users/dl/.domovoi/service.json is not a Domovoi service configuration. The profile the login service runs is not known. Nothing was changed.")
+    expect(unreadable.run).not.toHaveBeenCalled()
+  })
+
+  // Security review round 3 of #577 (P2): the removal checks the same read of
+  // service.json it then acts on, not a separate earlier read.
+  it("checks the profile in the snapshot the removal acts on", async () => {
+    const other = createServiceConfiguration({ DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/other" }, { platform: "darwin", homeDirectory: "/Users/dl", workingDirectory: "/Users/dl" })
+    const effects = dependencies({
+      readConfiguration: vi.fn(() => other),
+      removalSnapshot: savedFor("/Users/dl/profiles/replaced"),
+    })
+    await expect(removeDaemonService(effects, { environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/other" } })).rejects.toBeInstanceOf(ServiceProfileMismatchError)
+    expect(effects.run).not.toHaveBeenCalled()
   })
 })
