@@ -386,9 +386,9 @@ export class DesktopDaemonService {
       // service is stopped, answers the attach too. Success needs a daemon
       // outside any app and the service read back installed and running.
       if (attached.kind !== "attached" || attached.owner !== "daemon" || !(await this.#serviceRuns())) {
-        // COPY PLACEHOLDER (awaiting the owner's ruling): the detail under the
-        // approved "Installed, but this window could not reach the daemon".
-        return { ok: false, reason: "installed-not-attached", kind: installed.kind, target, message: "[Copy pending] The daemon this window reached is not the running service." }
+        // Approved by fetzy on 2026-09-25: the detail under "Installed, but
+        // this window could not reach the daemon".
+        return { ok: false, reason: "installed-not-attached", kind: installed.kind, target, message: "The daemon this window reached is not the running service." }
       }
       return { ok: true, kind: installed.kind, target, configurationPath: installed.configurationPath, daemonRunning: true }
     } finally {

@@ -293,10 +293,10 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           // Approved by fetzy on 2026-09-25 for a service known not installed.
           ? "The login service is not installed. This daemon was started outside any app and runs until it is stopped. To check by hand, run this in a terminal."
           : installed
-            // COPY PLACEHOLDER (security review round 9, awaiting the owner's
-            // ruling): the service reads back installed but not running, so
-            // the daemon outside the app is not the service.
-            ? "[Copy pending] The login service is installed but not running. This daemon was started outside any app and runs until it is stopped. To check by hand, run this in a terminal."
+            // Approved by fetzy on 2026-09-25 (security review round 9): the
+            // service reads back installed but not running, so the daemon
+            // outside the app is not the service.
+            ? "The login service is installed but not running. This daemon was started outside any app and runs until it is stopped. To check by hand, run this in a terminal."
             : "This app cannot tell whether that daemon is the installed service. To check by hand, run this in a terminal."}</span> : <>
           <span>{installed ? "Removing the service from this window is not built yet." : "Installing the service from this window is not built yet."}</span>
           <span>To finish by hand, run this in a terminal.</span>

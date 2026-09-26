@@ -783,5 +783,5 @@ it("does not call a daemon outside the app the running service while the service
   expect(section.textContent).toContain("Install is off: the service is already installed.")
   expect(section.textContent).not.toContain("Install and Remove are off")
   expect(section.textContent).not.toContain("This app cannot tell whether that daemon is the installed service.")
-  expect(section.textContent).toContain("[Copy pending] The login service is installed but not running.")
+  expect(section.textContent).toContain("The login service is installed but not running. This daemon was started outside any app and runs until it is stopped.")
 })
