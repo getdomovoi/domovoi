@@ -407,4 +407,75 @@ describe("the service handoff fence", () => {
       expect(read.approvalRules).toMatchObject([{ useCount: 1 }])
     })
   })
+
+  // Merge check of 7de0db84: a request held behind the handoff fence must
+  // never become a card or an allow after an emergency stop. The stop denies
+  // it, as it denies any pending gate, whether it was held before the stop
+  // began or arrived while the stop ran.
+  it.each([
+    { order: "held before the stop begins" },
+    { order: "arriving while the stop runs" },
+  ])("denies a turn-less request $order, and replays nothing when the fence lifts", async ({ order }) => {
+    const { workspace, sessionId } = await readySession()
+    const session = workspace.sessions.find(({ id }) => id === sessionId)!
+    session.runtime.permissionMode = "ask"
+    session.runtime.auto = false
+    const { agent, emit } = agentWithHeldTurns(false)
+    const saveGate = { held: undefined as undefined | { entered: () => void; release: Promise<void> } }
+    const endpoint = await daemonWith(workspace, agent, (store) => {
+      const saveAsync = store.saveAsync.bind(store)
+      store.saveAsync = async (snapshot) => {
+        const held = saveGate.held
+        if (held) {
+          saveGate.held = undefined
+          held.entered()
+          await held.release
+        }
+        return saveAsync(snapshot)
+      }
+      return store
+    })
+    const reader = await desktopConnection(endpoint)
+    const fencer = await desktopConnection(endpoint)
+    const fencerSocket = sockets.at(-1)!
+    await expect(fencer("system.serviceHandoffFence", {})).resolves.toMatchObject({ result: { outcome: "fenced" } })
+    const request = { type: "approval-requested" as const, requestId: 77, threadId: "thread-fence", command: "rm -rf build", cwd: session.workspacePath!, reason: "Remove the build output" }
+    const handled = async (marker: string) => {
+      emit({ type: "diff-updated", threadId: "thread-fence", diff: marker })
+      await waitForDaemon(async () => {
+        const read = await reader("workspace.get", {})
+        expect((read.result as WorkspaceSnapshot).artifacts).toContainEqual(expect.objectContaining({ id: `diff-${sessionId}`, content: marker }))
+      })
+    }
+    if (order === "held before the stop begins") {
+      emit(request)
+      await handled("held")
+      await expect(reader("system.emergencyStop", { client: "desktop" })).resolves.toMatchObject({ result: expect.anything() })
+      fencerSocket.terminate()
+    } else {
+      // The stop is kept running by holding its save of the agent state.
+      let entered!: () => void
+      const reached = new Promise<void>((resolve) => { entered = resolve })
+      let release!: () => void
+      saveGate.held = { entered, release: new Promise<void>((resolve) => { release = resolve }) }
+      const stopping = reader("system.emergencyStop", { client: "desktop" })
+      try {
+        await reached
+        emit(request)
+        // While the stop runs its writes are held, so the request is watched
+        // at the provider: the stop's deny must reach it before the fence
+        // lifts.
+        await waitForDaemon(() => expect(agent.resolveApproval).toHaveBeenCalledWith(77, "deny"))
+        fencerSocket.terminate()
+      } finally {
+        release()
+      }
+      await expect(stopping).resolves.toMatchObject({ result: expect.anything() })
+    }
+    await handled("after the fence")
+    const after = (await reader("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.approvals).toEqual([])
+    expect(agent.resolveApproval).toHaveBeenCalledWith(77, "deny")
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(77, "allow-once")
+  })
 })

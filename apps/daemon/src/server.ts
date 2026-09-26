@@ -2060,8 +2060,15 @@ export class DomovoiDaemon {
         if (this.#serviceHandoffFence === socket && !this.#stopping) {
           this.#serviceHandoffFence = undefined
           // Each is handled as if it had just arrived, on the path a new
-          // request takes, including during an emergency stop.
+          // request takes. During an emergency stop none is replayed: the stop
+          // denies it, as it denies every pending gate (merge check of
+          // 7de0db84). A stop that began while they were held has already
+          // denied them and emptied the list.
           for (const { provider, event } of this.#fencedApprovalRequests.splice(0)) {
+            if (this.#emergencyStopInProgress) {
+              this.#denyHeldApprovalRequest(provider, event)
+              continue
+            }
             void this.#mutations.enqueue(
               this.#resourceForAgentEvent(provider, event),
               (signal) => this.#handleAgentEvent(provider, event, signal),
@@ -9214,7 +9221,7 @@ export class DomovoiDaemon {
       // after the last await of card construction below (round 6), where the
       // fence may have been taken.
       if (this.#serviceHandoffFence) {
-        this.#fencedApprovalRequests.push({ provider, event })
+        this.#holdForHandoff(provider, event)
         return
       }
       const project = this.#snapshot.project
@@ -9289,7 +9296,7 @@ export class DomovoiDaemon {
       // standing rule's use; the fence is checked again after it, before the
       // rule's answer is sent (security review rounds 6 and 7 of #576).
       if (this.#serviceHandoffFence) {
-        this.#fencedApprovalRequests.push({ provider, event })
+        this.#holdForHandoff(provider, event)
         return
       }
       const settled = settlement.approval
@@ -9342,7 +9349,7 @@ export class DomovoiDaemon {
           // request is handled afresh, and the rule tried again, once it lifts.
           if (this.#serviceHandoffFence) {
             this.#reportError("Standing rule use could not be persisted", error)
-            this.#fencedApprovalRequests.push({ provider, event })
+            this.#holdForHandoff(provider, event)
             return
           }
           this.#appendAudit({
@@ -9361,7 +9368,7 @@ export class DomovoiDaemon {
         // is used: the request is handled afresh once the fence lifts.
         if (this.#serviceHandoffFence) {
           matchingRule.useCount -= 1
-          this.#fencedApprovalRequests.push({ provider, event })
+          this.#holdForHandoff(provider, event)
           try {
             await this.#persistSnapshot()
           } catch (error) {
@@ -9821,6 +9828,30 @@ export class DomovoiDaemon {
     })
   }
 
+  // A provider approval request met the handoff fence. It is held, neither a
+  // card nor an answer, until the fence lifts. During an emergency stop it is
+  // denied instead, as the stop denies every pending gate, so no held request
+  // can become a card or an allow after a stop.
+  #holdForHandoff(provider: string, event: Extract<AgentEvent, { type: "approval-requested" }>): void {
+    if (this.#emergencyStopInProgress) {
+      this.#denyHeldApprovalRequest(provider, event)
+      return
+    }
+    this.#fencedApprovalRequests.push({ provider, event })
+  }
+
+  // Denies a held request to its provider; answers the error when it fails.
+  #denyHeldApprovalRequest(provider: string, event: AgentEvent): unknown {
+    if (event.type !== "approval-requested") return undefined
+    try {
+      this.#agents.require(provider).resolveApproval(event.requestId, "deny")
+      return undefined
+    } catch (error) {
+      this.#reportError("Domovoi could not deny a request held for the service handoff", error)
+      return error
+    }
+  }
+
   #enqueueEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
     const run = this.#emergencyStopTail.then(
       () => this.#performEmergencyStop(client),
@@ -9917,6 +9948,13 @@ export class DomovoiDaemon {
       }
     }
     this.#removeApprovals(() => true, requestedAt)
+    // Requests held behind the service handoff fence are pending gates too:
+    // the stop denies them, and none is replayed when the fence lifts.
+    for (const { provider, event } of this.#fencedApprovalRequests.splice(0)) {
+      const error = this.#denyHeldApprovalRequest(provider, event)
+      if (error === undefined) approvalsDenied += 1
+      else failures.push({ target: "approval", message: this.#emergencyFailureMessage(error, "Approval denial failed") })
+    }
 
     let turnsStopped = 0
     let providersReset = 0
