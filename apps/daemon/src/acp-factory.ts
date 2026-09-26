@@ -16,18 +16,18 @@ type FactoryOptions = {
 }
 
 export function createCursorAgentAdapter(options: FactoryOptions = {}): AcpAgentAdapter {
-  return createAdapter(CURSOR_ACP_PROVIDER, "Cursor", options)
+  return createAdapter(CURSOR_ACP_PROVIDER, options)
 }
 
 export function createGrokAgentAdapter(options: FactoryOptions = {}): AcpAgentAdapter {
-  return createAdapter(GROK_ACP_PROVIDER, "Grok", options)
+  return createAdapter(GROK_ACP_PROVIDER, options)
 }
 
 function createAdapter(
   definition: AcpProviderDefinition,
-  displayName: string,
   options: FactoryOptions,
 ): AcpAgentAdapter {
+  const { displayName } = definition
   const run = options.run ?? runProviderCommand
   const createPeer = options.createPeer ?? ((handlers) => new StdioAcpPeer({ definition, handlers }))
   return new AcpAgentAdapter({

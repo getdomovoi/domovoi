@@ -41,6 +41,20 @@ export function codexRepositoryConfigRefusal(file: string): string {
     + `Remove ${file} from this worktree or use another provider here.`
 }
 
+// The first of `files` present in any directory from `cwd` up to the project
+// root, by the same root rule as Codex, named by its path from that root.
+// Presence is lstat, so a symbolic link counts even when it dangles.
+export function repositoryFileFrom(cwd: string, files: readonly string[]): string | undefined {
+  const start = resolve(cwd)
+  const root = projectRoot(start)
+  for (const directory of directoriesFrom(root, start)) {
+    for (const file of files) {
+      if (exists(join(directory, file))) return shown(root, join(directory, file))
+    }
+  }
+  return undefined
+}
+
 // In a linked worktree Codex takes hook declarations from the main checkout:
 // for each directory from the session's directory up to the worktree root it
 // reads hooks.json and the [hooks] table of config.toml from the matching

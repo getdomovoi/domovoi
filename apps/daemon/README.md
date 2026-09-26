@@ -541,6 +541,28 @@ code or settings the repository brings:
   worktree that contains any of those three files, and says which one. Kilo also reads
   `.kilocode/rules/`, `.kilocode/workflows/` and `.kilocodeignore` from the worktree; those give
   instructions, slash commands and deny rules, and they still load.
+- Codex loads a project's `.codex/config.toml`, `.codex/hooks.json` and `.codex/rules/*.rules`
+  once the project is trusted. Every Codex thread the daemon starts or resumes marks the project
+  untrusted for that thread, and the daemon refuses to open or continue a Codex session while one
+  of those files is in any directory from the session's directory up to the repository root, or
+  while the main checkout of a linked worktree holds `.codex/config.toml` or `.codex/hooks.json`.
+- Cursor and Grok have no switch that turns project configuration off. The daemon refuses to open,
+  resume or prompt a Cursor or Grok session while any directory from the session's directory up
+  to the repository root holds one of the files below, and says which one. A symbolic link counts.
+  - Cursor: `.cursor/mcp.json` (MCP servers), `.cursor/hooks.json` (hooks), `.cursor/cli.json`
+    (permission rules), `.cursor/sandbox.json` (sandbox policy), and `.claude/settings.json` and
+    `.claude/settings.local.json`, whose hooks Cursor runs by default.
+  - Grok: `.grok/config.toml` (MCP servers, plugins, permission rules), `.grok/hooks`,
+    `.grok/plugins`, `.grok/agents`, `.grok/roles`, `.grok/workflows`, `.grok/lsp.json`,
+    `.grok/sandbox.toml`, `.mcp.json`, `.cursor/mcp.json`, `.cursor/hooks.json`,
+    `.claude/settings.json`, `.claude/settings.local.json`, `.claude/agents`, `.claude/plugins`
+    and `.envrc`. Grok applies these only in a folder the person has trusted, and the daemon
+    refuses them whether or not it is trusted.
+  - Rules, skills and commands, Cursor subagents and Grok personas still load; they are text the
+    model reads. Cursor reads `AGENTS.md` and `CLAUDE.md` itself. Grok reads project instructions
+    only in a folder the person has trusted, and the daemon does not send them. The lists follow
+    Cursor's documentation and Grok's own list of trust-sensitive files; a file either agent
+    loads that they do not name is not refused.
 
 Instruction files still reach the agent, because the daemon reads them itself as text. For Claude
 Code it reads `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` at the worktree root and

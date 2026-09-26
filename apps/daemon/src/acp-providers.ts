@@ -2,29 +2,72 @@ import type { PermissionMode, ProviderModel } from "@getdomovoi/protocol"
 
 export type AcpProviderDefinition = Readonly<{
   id: string
+  displayName: string
   commands: readonly string[]
   launchArgs: readonly string[]
   modelArgs: readonly string[]
   modes: Readonly<Record<PermissionMode, string>>
   askEnforcement: "read-only" | "unsupported"
+  // Repository paths, from the session's directory up to the repository root,
+  // that the agent would load and that can start programs or change its
+  // permissions. A session is refused while one is present; see the daemon
+  // README, "Repository configuration".
+  heldBackRepositoryFiles: readonly string[]
 }>
 
 export const CURSOR_ACP_PROVIDER: AcpProviderDefinition = {
   id: "cursor-agent",
+  displayName: "Cursor",
   commands: ["agent", "cursor-agent"],
   launchArgs: ["acp"],
   modelArgs: ["models"],
   askEnforcement: "read-only",
   modes: { ask: "ask", plan: "plan", build: "agent" },
+  // From Cursor's CLI, MCP, hooks and third-party hooks documentation: project
+  // MCP servers, hooks, CLI permission rules and sandbox policy, and the Claude
+  // Code settings whose hooks Cursor runs by default. The CLI has no switch
+  // that turns project configuration off.
+  heldBackRepositoryFiles: [
+    ".cursor/mcp.json",
+    ".cursor/hooks.json",
+    ".cursor/cli.json",
+    ".cursor/sandbox.json",
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+  ],
 }
 
 export const GROK_ACP_PROVIDER: AcpProviderDefinition = {
   id: "grok",
+  displayName: "Grok",
   commands: ["grok"],
   launchArgs: ["agent", "stdio"],
   modelArgs: ["models"],
   askEnforcement: "unsupported",
   modes: { ask: "default", plan: "plan", build: "default" },
+  // The program-starting and permission entries of Grok Build's own folder
+  // trust scan (collect_repo_config_kinds in xai-grok-workspace/src/
+  // folder_trust.rs at commit f0e3be1), plus its project sandbox profiles.
+  // Grok loads them once the folder is trusted; GROK_FOLDER_TRUST=0 loads them
+  // without asking. Project instructions, skills and personas are text.
+  heldBackRepositoryFiles: [
+    ".grok/config.toml",
+    ".grok/hooks",
+    ".grok/plugins",
+    ".grok/agents",
+    ".grok/roles",
+    ".grok/workflows",
+    ".grok/lsp.json",
+    ".grok/sandbox.toml",
+    ".mcp.json",
+    ".cursor/mcp.json",
+    ".cursor/hooks.json",
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    ".claude/agents",
+    ".claude/plugins",
+    ".envrc",
+  ],
 }
 
 type CatalogEntry = { id?: unknown; name?: unknown; default?: unknown; isDefault?: unknown }

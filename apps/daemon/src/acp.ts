@@ -4,6 +4,7 @@ import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/proto
 
 import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep } from "./agents.js"
 import type { AcpProviderDefinition } from "./acp-providers.js"
+import { repositoryFileFrom } from "./codex-repository-config.js"
 import { classifyProviderFailure } from "./provider-failures.js"
 import { redactDurableText } from "./secret-redaction.js"
 import { normalizeUsage } from "./usage.js"
@@ -145,12 +146,14 @@ export class AcpAgentAdapter implements AgentAdapter {
   }
 
   async startThread(input: { cwd: string; runtime: Runtime }): Promise<string> {
+    this.#refuseHeldBackRepositoryFiles(input.cwd)
     const setup = await this.#requirePeer().startSession(input.cwd)
     await this.#configure(setup, input.runtime)
     return setup.sessionId
   }
 
   async resumeThread(input: { threadId: string; cwd: string; runtime: Runtime }): Promise<void> {
+    this.#refuseHeldBackRepositoryFiles(input.cwd)
     const setup = await this.#requirePeer().resumeSession(input.threadId, input.cwd)
     await this.#configure(setup, input.runtime)
   }
@@ -176,6 +179,7 @@ export class AcpAgentAdapter implements AgentAdapter {
     runtime: Runtime
   }): Promise<string> {
     if (this.#activeTurns.has(input.threadId)) throw new Error("ACP session already has an active turn")
+    this.#refuseHeldBackRepositoryFiles(input.cwd)
     const turnId = this.#createId()
     this.#activeTurns.set(input.threadId, { id: turnId })
     void this.#runPrompt(input.threadId, turnId, input.prompt)
@@ -208,6 +212,18 @@ export class AcpAgentAdapter implements AgentAdapter {
     const peer = this.#peer
     this.#peer = undefined
     if (peer) await peer.close()
+  }
+
+  // Neither agent has a switch that turns project configuration off, so a
+  // worktree holding one of these files is refused before the agent is asked.
+  #refuseHeldBackRepositoryFiles(cwd: string): void {
+    const file = repositoryFileFrom(cwd, this.#definition.heldBackRepositoryFiles)
+    if (file === undefined) return
+    throw new Error(
+      `${this.#definition.displayName} would load ${file} from this worktree, and that file can start programs or change agent permissions. `
+      + "Domovoi does not load repository-brought configuration until a trust gate ships. "
+      + `Remove ${file} from this worktree or use another provider here.`,
+    )
   }
 
   async #configure(setup: AcpSessionSetup, runtime: Runtime): Promise<void> {
