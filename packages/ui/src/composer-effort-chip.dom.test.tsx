@@ -128,3 +128,22 @@ it("keeps the moved-effort note through a mode change", async () => {
   await user.click(screen.getByRole("button", { name: "High" }))
   expect(screen.getByText("claude-code has no Max, so this moved to High when you changed model. It stays there.")).toBeTruthy()
 })
+
+// A model that reports no levels shows no chip, so its value was never on
+// screen. Moving off it must not say that value was dropped.
+it("says nothing moved when the previous model reported no levels", async () => {
+  const user = userEvent.setup()
+  const onSetRuntime = vi.fn(async () => {})
+  const view = render(thread(workspace({ model: "claude-haiku-4.1", reasoning: "none" }), onSetRuntime))
+  await settle()
+  await user.click(screen.getByRole("button", { name: /claude-code · haiku 4\.1/ }))
+  await settle()
+  await user.click(screen.getByRole("option", { name: "claude-opus-4.2, claude-code" }))
+  await user.click(screen.getByRole("button", { name: "Switch here" }))
+  await settle()
+  expect(onSetRuntime).toHaveBeenLastCalledWith(expect.objectContaining({ model: "claude-opus-4.2", reasoning: "high" }))
+  view.rerender(thread(workspace({ model: "claude-opus-4.2", reasoning: "high" }), onSetRuntime))
+  await user.click(screen.getByRole("button", { name: "High" }))
+  expect(screen.queryByText(/so this moved to/)).toBeNull()
+  expect(screen.getByText("Applies from the next turn. A turn already in flight keeps the effort it started with.")).toBeTruthy()
+})

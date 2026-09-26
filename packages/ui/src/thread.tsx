@@ -1187,12 +1187,16 @@ export function Thread({
     setRuntimeError("")
     const sessionId = active.id
     const previous = active.runtime
+    // Only a level the previous model reported was ever on screen. A model
+    // with no levels shows no chip, so moving off it drops nothing the person
+    // saw, and the note would name a value they never chose.
+    const previousShown = effortModel?.supportedReasoningEfforts.includes(previous.reasoning) ?? false
     try {
       await onSetRuntime(runtime)
       // As the design does: a model change sets or clears the note, a picked
       // level clears it, and a mode change leaves it.
       const modelChanged = runtime.provider !== previous.provider || runtime.model !== previous.model
-      if (modelChanged && runtime.reasoning !== previous.reasoning) {
+      if (modelChanged && previousShown && runtime.reasoning !== previous.reasoning) {
         setEffortDropped({ sessionId, from: effortName(previous.provider, previous.reasoning), to: effortName(runtime.provider, runtime.reasoning) })
       } else if (modelChanged || runtime.reasoning !== previous.reasoning) {
         setEffortDropped(undefined)
