@@ -12,6 +12,7 @@ const { getConfig } = builderRequire("app-builder-lib/out/util/config/config.js"
 const { FileMatcher, getFileMatchers, getNodeModuleFileMatcher } = builderRequire("app-builder-lib/out/fileMatcher.js")
 const { getCollectorByPackageManager, PM } = builderRequire("app-builder-lib/out/node-module-collector/index.js")
 const { TmpDir } = builderRequire("temp-file")
+const { log: builderLog } = builderRequire("builder-util")
 
 const sdkName = "@anthropic-ai/claude-agent-sdk"
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url))
@@ -26,12 +27,39 @@ function sdkManifest() {
   }
 }
 
+// node --test reads a test file's stdout as that file's serialized report, so a
+// line electron-builder logs there can corrupt it: Node 22 reads the text after
+// a report message as the next message's length and fails the whole file.
+// Every electron-builder call runs through this, which sends its log to stderr
+// and fails the test if the call still wrote anything to stdout. The runner's
+// own report reaches stdout from Node's stream internals alone, so only writes
+// whose stack passes through a file outside Node's modules count.
+async function withoutStdout(action) {
+  const written = []
+  const { write } = process.stdout
+  const { stream } = builderLog
+  builderLog.stream = process.stderr
+  process.stdout.write = function (chunk, ...rest) {
+    const callers = new Error().stack.split("\n").slice(2)
+    if (callers.some((frame) => !frame.includes("node:") && /[\\/]/u.test(frame))) written.push(String(chunk))
+    return write.call(this, chunk, ...rest)
+  }
+  try {
+    const result = await action()
+    assert.deepEqual(written, [], "electron-builder writes nothing to stdout")
+    return result
+  } finally {
+    process.stdout.write = write
+    builderLog.stream = stream
+  }
+}
+
 async function effectiveConfig() {
   const keys = Object.keys(process.env).filter((key) => /^(CSC_|WIN_CSC_|APPLE_|AZURE_|DOMOVOI_DESKTOP_REQUIRE_SIGNING$|DOMOVOI_WIN_PUBLISHER_NAME$)/u.test(key))
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
   for (const key of keys) delete process.env[key]
   try {
-    return await getConfig(desktopRoot, join(desktopRoot, "electron-builder.cjs"))
+    return await withoutStdout(() => getConfig(desktopRoot, join(desktopRoot, "electron-builder.cjs")))
   } finally {
     Object.assign(process.env, previous)
   }
@@ -75,7 +103,7 @@ async function productionTree(directory, packageName) {
   const temporary = new TmpDir()
   try {
     const collector = getCollectorByPackageManager(PM.PNPM, join(repositoryRoot, directory), temporary)
-    const { nodeModules } = await collector.getNodeModules({ packageName })
+    const { nodeModules } = await withoutStdout(() => collector.getNodeModules({ packageName }))
     const names = new Set()
     const visit = (modules) => { for (const module of modules) { names.add(module.name); visit(module.dependencies ?? []) } }
     visit(nodeModules)
