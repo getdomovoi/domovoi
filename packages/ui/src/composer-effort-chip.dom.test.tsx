@@ -31,7 +31,11 @@ function workspace(runtime: Partial<Runtime> = {}): WorkspaceSnapshot {
   return snapshot
 }
 
-function thread(snapshot: WorkspaceSnapshot, onSetRuntime: (runtime: Runtime) => Promise<void>) {
+function thread(
+  snapshot: WorkspaceSnapshot,
+  onSetRuntime: (runtime: Runtime) => Promise<void>,
+  onListModels: (provider: string) => Promise<ProviderModel[]> = vi.fn(async () => models),
+) {
   return (
     <Thread
       snapshot={snapshot}
@@ -41,7 +45,7 @@ function thread(snapshot: WorkspaceSnapshot, onSetRuntime: (runtime: Runtime) =>
       onResolve={vi.fn(async () => {})}
       onSetRuntime={onSetRuntime}
       onForkSession={vi.fn(async () => {})}
-      onListModels={vi.fn(async () => models)}
+      onListModels={onListModels}
       onNewSession={vi.fn()}
       onSend={vi.fn(async () => {})}
       onCheckpoint={vi.fn(async () => {})}
@@ -146,4 +150,24 @@ it("says nothing moved when the previous model reported no levels", async () => 
   await user.click(screen.getByRole("button", { name: "High" }))
   expect(screen.queryByText(/so this moved to/)).toBeNull()
   expect(screen.getByText("Applies from the next turn. A turn already in flight keeps the effort it started with.")).toBeTruthy()
+})
+
+// No read, no chip: while the model list is being read, and after a read
+// fails, the composer draws no effort chip rather than a guess.
+it("draws no effort chip while the model list is still being read", async () => {
+  render(thread(workspace({ reasoning: "high" }), vi.fn(async () => {}), vi.fn(() => new Promise<ProviderModel[]>(() => {}))))
+  await settle()
+  expect(screen.getByRole("button", { name: /^Mode: Build/ })).toBeTruthy()
+  expect(screen.queryByRole("button", { name: "High" })).toBeNull()
+})
+
+it("drops the effort chip when a read of the model list fails", async () => {
+  const onSetRuntime = vi.fn(async () => {})
+  const view = render(thread(workspace({ reasoning: "high" }), onSetRuntime))
+  await settle()
+  expect(screen.getByRole("button", { name: "High" })).toBeTruthy()
+  view.rerender(thread(workspace({ reasoning: "high" }), onSetRuntime, vi.fn(async () => { throw new Error("Daemon connection is not open") })))
+  await settle()
+  expect(screen.getByRole("button", { name: /^Mode: Build/ })).toBeTruthy()
+  expect(screen.queryByRole("button", { name: "High" })).toBeNull()
 })
