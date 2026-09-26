@@ -147,25 +147,6 @@ export function ModelPopover({
   const matches = shown.filter((row) => row.kind === "model").length
   const loading = listed.some((provider) => catalogs[provider.id]?.status === "loading")
 
-  // The Reasoning group follows the session's own model as its harness
-  // reported it. A model that reports no efforts has no group, and neither does
-  // one whose catalog is still loading or failed: the group names only what a
-  // harness said.
-  const currentCatalog = catalogs[runtime.provider]
-  const currentModel = currentCatalog?.status === "ready"
-    ? currentCatalog.models.find((model) => model.provider === runtime.provider && model.id === runtime.model)
-    : undefined
-  const efforts = currentModel?.supportedReasoningEfforts ?? []
-
-  // The same change the model switch sends, so the daemon validates it against
-  // the model and applies it from the next turn. An update in flight holds the
-  // rows, as it holds the chip.
-  const pickEffort = (reasoning: string) => {
-    if (pending) return
-    setOpen(false)
-    if (reasoning !== runtime.reasoning) onChange({ ...runtime, reasoning })
-  }
-
   const pick = (model: ProviderModel) => {
     if (model.provider === runtime.provider && model.id === runtime.model) { setOpen(false); return }
     setChoice(model)
@@ -268,37 +249,6 @@ export function ModelPopover({
             </div>
           ))}
         </div>
-        {currentModel && efforts.length > 0 ? (
-          <div className="border-t">
-            <div aria-hidden className="px-3 py-2 text-eyebrow font-medium tracking-[.13em] text-faint">REASONING</div>
-            <div role="radiogroup" aria-label="Reasoning effort">
-              {efforts.map((reasoning) => {
-                const checked = reasoning === runtime.reasoning
-                const isDefault = reasoning === currentModel.defaultReasoningEffort
-                return (
-                  <div
-                    key={reasoning}
-                    role="radio"
-                    aria-label={isDefault ? `${reasoning}, the model's default` : reasoning}
-                    aria-checked={checked}
-                    aria-disabled={pending || undefined}
-                    tabIndex={0}
-                    onClick={() => pickEffort(reasoning)}
-                    onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); pickEffort(reasoning) } }}
-                    className={cn("flex items-center gap-2.5 border-t px-3 py-2", checked && "bg-accent", pending ? "cursor-not-allowed opacity-45" : "cursor-pointer")}
-                  >
-                    <span className="min-w-0 flex-1 font-machine text-[12px] text-foreground">{reasoning}</span>
-                    {isDefault ? <span className="font-machine text-[10px] text-faint">default</span> : null}
-                    <CheckIcon className={cn("size-3.5", checked ? "text-primary" : "text-transparent")} />
-                  </div>
-                )
-              })}
-            </div>
-            <p className="m-0 border-t px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-              Applies from the next turn. A turn already in flight keeps the effort it started with.
-            </p>
-          </div>
-        ) : null}
         <p className="m-0 border-t px-3 py-2.5 text-[11px] leading-relaxed text-muted-foreground">
           {turnRunning
             ? "A model change on the same harness applies from the next turn. A different harness starts a fresh provider thread from the thread, the plan and the worktree, and needs the running turn stopped first."

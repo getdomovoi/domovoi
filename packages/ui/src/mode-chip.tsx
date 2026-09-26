@@ -1,13 +1,16 @@
-import type { PermissionMode, Runtime } from "@getdomovoi/protocol"
-import { CheckIcon, ChevronDownIcon } from "lucide-react"
+import type { PermissionMode, ProviderModel, Runtime } from "@getdomovoi/protocol"
+import { BrainIcon, CheckIcon, ChevronDownIcon } from "lucide-react"
 import { useRef, useState } from "react"
 
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu"
 import { Switch } from "./components/ui/switch"
+import { effortLevel, effortName, effortScaleKind } from "./effort-scales"
 import { autoIsOffered, permissionModeLabel, permissionModes, withAuto, withPermissionMode } from "./permission-mode"
 import { StatusDot, type StatusMeaning } from "./status-dot"
 import { cn } from "./lib/utils"
@@ -120,6 +123,107 @@ export function ModeChip({
             onCheckedChange={(checked) => onSetRuntime(withAuto(runtime, checked))}
           />
         </label>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+// Scales run to five levels, so the bars keep a fixed height and vary their
+// step rather than growing the row when the harness offers more.
+function EffortBars({ rank, total, selected }: { rank: number, total: number, selected: boolean }) {
+  const step = total > 3 ? 2.2 : 3.5
+  return (
+    <span aria-hidden className="mt-0.5 flex h-3.5 flex-none items-end gap-0.5">
+      {Array.from({ length: total }, (_, index) => (
+        <span
+          key={index}
+          className={cn("block w-[2.5px] rounded-[1px]", index > rank ? "bg-border" : selected ? "bg-primary" : "bg-muted-foreground")}
+          style={{ height: `${4 + index * step}px` }}
+        />
+      ))}
+    </span>
+  )
+}
+
+// v2's effort chip sits after the mode chip: the current level's shared word,
+// opening "EFFORT ON <HARNESS>" with the harness's own name for its scale. The
+// levels are the ones the session's model reports, so a model that reports
+// none has no chip, as the design hides it. A pick is a runtime change like the
+// mode chip's, and the daemon hands it to the provider with the next turn.
+export function EffortChip({
+  runtime,
+  model,
+  dropped,
+  pending,
+  onSetRuntime,
+}: {
+  runtime: Runtime
+  model: ProviderModel | undefined
+  // Set when a model change could not carry the effort and moved it.
+  dropped?: { from: string, to: string } | undefined
+  pending: boolean
+  onSetRuntime: (runtime: Runtime) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const efforts = model?.supportedReasoningEfforts ?? []
+  if (efforts.length === 0) return null
+  const provider = runtime.provider
+  const kind = effortScaleKind(provider)
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen} modal={false}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={pending}
+          className={cn(
+            "flex items-center gap-[7px] rounded-full px-2.5 py-[5px] text-strong hover:bg-muted",
+            open ? "bg-muted" : "bg-accent",
+            "disabled:cursor-not-allowed disabled:opacity-45",
+          )}
+        >
+          <BrainIcon aria-hidden className="size-3.5 flex-none text-muted-foreground" />
+          <span className="text-[11px]">{effortName(provider, runtime.reasoning)}</span>
+          <ChevronDownIcon aria-hidden className={cn("size-3 text-faint transition-transform", open && "rotate-180")} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-[312px] rounded-[14px] p-0">
+        <div className="flex items-baseline gap-[9px] border-b px-3 py-[9px]">
+          <span className="text-[10.5px] font-medium tracking-[.13em] text-faint">{`EFFORT ON ${provider.toUpperCase()}`}</span>
+          <span className="flex-1" />
+          {kind ? <span className="font-machine text-[10px] text-faint">{kind}</span> : null}
+        </div>
+        <DropdownMenuRadioGroup
+          value={runtime.reasoning}
+          onValueChange={(reasoning) => { if (!pending && reasoning !== runtime.reasoning) onSetRuntime({ ...runtime, reasoning }) }}
+        >
+          {efforts.map((id, index) => {
+            const level = effortLevel(provider, id)
+            const selected = id === runtime.reasoning
+            return (
+              <DropdownMenuRadioItem
+                key={id}
+                value={id}
+                disabled={pending}
+                className="items-start gap-[11px] rounded-none border-t px-3 py-2.5 pr-8 first:border-t-0 data-[state=checked]:bg-accent [&_[data-slot=dropdown-menu-radio-item-indicator]]:top-3 [&_[data-slot=dropdown-menu-radio-item-indicator]_svg]:size-3.5 [&_[data-slot=dropdown-menu-radio-item-indicator]_svg]:text-primary"
+              >
+                <EffortBars rank={index} total={efforts.length} selected={selected} />
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-baseline gap-2">
+                    {level.label
+                      ? <><span className="text-[12.5px] text-foreground">{level.label}</span><span className="font-machine text-[10px] text-faint">{id}</span></>
+                      : <span className="font-machine text-[12px] text-foreground">{id}</span>}
+                  </span>
+                  {level.note ? <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">{level.note}</span> : null}
+                </span>
+              </DropdownMenuRadioItem>
+            )
+          })}
+        </DropdownMenuRadioGroup>
+        <p className={cn("m-0 border-t px-3 py-2.5 text-[11px] leading-normal", dropped ? "bg-warn-background text-warn-foreground" : "text-muted-foreground")}>
+          {dropped
+            ? `${provider} has no ${dropped.from}, so this moved to ${dropped.to} when you changed model. It stays there.`
+            : "Applies from the next turn. A turn already in flight keeps the effort it started with."}
+        </p>
       </DropdownMenuContent>
     </DropdownMenu>
   )
