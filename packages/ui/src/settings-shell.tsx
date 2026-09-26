@@ -117,13 +117,12 @@ function unknownAnswerStill(kind: string, action: "install" | "remove", service:
 
 // Ruled 2026-09-25: an unreadable answer whose read-back shows the change
 // happened, in whole or in part, is not headed "Could not install" or "Could
-// not remove". COPY PLACEHOLDER: the owner's wording is pending; these are
-// the drafts.
+// not remove". The headers were approved by fetzy on 2026-09-25.
 function unknownAnswerHeader(action: "install" | "remove", service: FailedOutcome["service"]): string | undefined {
   if (!service || service.installed === null) return undefined
   const happened = action === "install" ? service.installed : !(service.installed && service.running)
   if (!happened) return undefined
-  return action === "install" ? "[Copy pending] Could not confirm the install" : "[Copy pending] Could not confirm the removal"
+  return action === "install" ? "Could not confirm the install" : "Could not confirm the removal"
 }
 
 // What is still true after a failed install or removal. The approved lines

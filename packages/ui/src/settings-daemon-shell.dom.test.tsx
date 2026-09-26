@@ -204,7 +204,7 @@ it("refreshes the daemon owner when an unreadable reply follows a change the rea
     // Ruled 2026-09-25: after a change the read-back confirms, the header
     // does not say the change failed.
     const header = changed
-      ? (action === "install" ? "[Copy pending] Could not confirm the install" : "[Copy pending] Could not confirm the removal")
+      ? (action === "install" ? "Could not confirm the install" : "Could not confirm the removal")
       : (action === "install" ? "Could not install the service" : "Could not remove the service")
     expect(await within(section()).findByText(header)).toBeTruthy()
     expect(onLocalDaemonChanged).toHaveBeenCalledTimes(changed ? 1 : 0)

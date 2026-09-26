@@ -550,18 +550,18 @@ it("says it cannot tell what changed when there is no way to read the service ba
 
 // Ruled by fetzy on 2026-09-25. An answer this window could not read, whose
 // read-back shows the change happened in whole or in part, must not be headed
-// "Could not install" or "Could not remove". The header's words are pending;
-// the drafts below are the placeholders.
+// "Could not install" or "Could not remove". The headers below were approved
+// on 2026-09-25.
 it("heads an unreadable answer by what the read-back shows, never 'Could not' after a change that happened", async () => {
   const user = userEvent.setup()
   const unreadable = vi.fn(async () => { throw new Error("Desktop returned an invalid service outcome") })
   for (const [owner, button, read, header] of [
-    ["app", "Install", { installed: true, running: true }, "[Copy pending] Could not confirm the install"],
-    ["app", "Install", { installed: true, running: false }, "[Copy pending] Could not confirm the install"],
+    ["app", "Install", { installed: true, running: true }, "Could not confirm the install"],
+    ["app", "Install", { installed: true, running: false }, "Could not confirm the install"],
     ["app", "Install", { installed: false, running: false }, "Could not install the service"],
     ["app", "Install", null, "Could not install the service"],
-    ["outside", "Unload and delete the LaunchAgent", { installed: false, running: false }, "[Copy pending] Could not confirm the removal"],
-    ["outside", "Unload and delete the LaunchAgent", { installed: true, running: false }, "[Copy pending] Could not confirm the removal"],
+    ["outside", "Unload and delete the LaunchAgent", { installed: false, running: false }, "Could not confirm the removal"],
+    ["outside", "Unload and delete the LaunchAgent", { installed: true, running: false }, "Could not confirm the removal"],
     ["outside", "Unload and delete the LaunchAgent", { installed: true, running: true }, "Could not remove the service"],
     ["outside", "Unload and delete the LaunchAgent", null, "Could not remove the service"],
   ] as const) {
@@ -569,7 +569,7 @@ it("heads an unreadable answer by what the read-back shows, never 'Could not' af
     const section = daemonSection(owner, { install: unreadable, remove: unreadable, status })
     await user.click(within(section).getByRole("button", { name: button }))
     expect(await within(section).findByText(header)).toBeTruthy()
-    if (header.startsWith("[Copy pending]")) {
+    if (header.startsWith("Could not confirm")) {
       expect(section.textContent).not.toContain("Could not install the service")
       expect(section.textContent).not.toContain("Could not remove the service")
     }
