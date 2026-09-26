@@ -1,5 +1,5 @@
 import type { ApprovalRule } from "@getdomovoi/protocol"
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
@@ -270,6 +270,84 @@ it("adds nothing for a quarantined target", async () => {
   expect(await within(section).findByText("domovoid 0.9.4 · 3f8b01d")).toBeTruthy()
   expect(within(section).getByText("This build is not signed and does not update itself. Get new versions from the release page.")).toBeTruthy()
   expect(section.textContent).not.toContain("The daemon reports")
+})
+
+// Owner ruling 2026-09-25: when the desktop could not open the browser, say
+// so and give the address as selectable mono text to copy by hand. The status
+// region is mounted before any click so a screen reader announces the change.
+const failureLine = "Could not open the browser. The release page is https://github.com/getdomovoi/domovoi/releases"
+
+function renderDesktopAbout(onOpenReleasePage: () => Promise<boolean>) {
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", state: "idle" as const })), onOpenReleasePage }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  return {
+    section,
+    status: () => within(section).getByRole("status"),
+    // act flushes the settled open before the section is read.
+    click: () => act(async () => { fireEvent.click(within(section).getByRole("link", { name: "Release page" })) }),
+  }
+}
+
+function deferred() {
+  let resolve!: (opened: boolean) => void
+  const promise = new Promise<boolean>((settle) => { resolve = settle })
+  return { promise, resolve }
+}
+
+it.each([
+  ["resolves false", () => Promise.resolve(false)],
+  ["rejects", () => Promise.reject(new Error("bridge refused"))],
+])("gives the release page address when the desktop open %s", async (_case, open) => {
+  const { status, click } = renderDesktopAbout(vi.fn(open))
+  expect(status().textContent).toBe("")
+  await click()
+  expect(status().textContent).toBe(failureLine)
+  const address = within(status()).getByText("https://github.com/getdomovoi/domovoi/releases")
+  expect(address.tagName).not.toBe("A")
+  expect(address.className).toContain("font-machine")
+  expect(address.className).toContain("select-text")
+})
+
+it("adds no line when the desktop opens the release page", async () => {
+  const onOpenReleasePage = vi.fn(async () => true)
+  const { section, status, click } = renderDesktopAbout(onOpenReleasePage)
+  await click()
+  expect(onOpenReleasePage).toHaveBeenCalledOnce()
+  expect(status().textContent).toBe("")
+  expect(section.textContent).not.toContain("Could not open the browser.")
+})
+
+it("clears the line when a later click opens the browser", async () => {
+  const onOpenReleasePage = vi.fn<() => Promise<boolean>>().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+  const { status, click } = renderDesktopAbout(onOpenReleasePage)
+  await click()
+  expect(status().textContent).toBe(failureLine)
+  await click()
+  expect(status().textContent).toBe("")
+})
+
+// Only the latest click speaks: an earlier open that settles late cannot
+// claim a failure after a later click opened the browser.
+it("ignores an earlier open that fails after a later one succeeds", async () => {
+  const first = deferred()
+  const second = deferred()
+  const onOpenReleasePage = vi.fn<() => Promise<boolean>>().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+  const { status, click } = renderDesktopAbout(onOpenReleasePage)
+  await click()
+  await click()
+  await act(async () => { second.resolve(true) })
+  await act(async () => { first.resolve(false) })
+  expect(status().textContent).toBe("")
+})
+
+it("lets a browser tab follow the release page link with no line", () => {
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", state: "idle" as const })) }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  const link = within(section).getByRole("link", { name: "Release page" })
+  expect(link.getAttribute("href")).toBe("https://github.com/getdomovoi/domovoi/releases")
+  expect(link.getAttribute("target")).toBe("_blank")
+  expect(fireEvent.click(link)).toBe(true)
+  expect(section.textContent).not.toContain("Could not open the browser.")
 })
 
 // A watching window changes nothing on the daemon, but reading where new
