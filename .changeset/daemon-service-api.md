@@ -42,7 +42,8 @@ same-named task Domovoi did not register (`WindowsTaskNotDomovoiError`) rather t
 When the service manager refuses the new definition (`schtasks /create`, `launchctl bootstrap` or
 `systemctl daemon-reload`), or a service file cannot be written, install puts the previous
 `service.json` and service file back, or removes them when there were none, so the record still
-names what the manager runs. On macOS, when the install had booted out Domovoi's idle job and the
-new agent then fails to bootstrap, the previous agent is loaded again. On macOS,
+names what the manager runs. On macOS, when the install had sent a bootout for Domovoi's idle
+job and a later step fails, or the bootout reports failure after unloading the job, the previous
+agent is loaded again. On macOS,
 install boots out an idle job loaded from Domovoi's plist before bootstrapping the new one, and
 refuses before the handoff when the label is loaded from another plist (`LaunchdJobNotDomovoiError`).

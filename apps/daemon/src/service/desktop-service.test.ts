@@ -490,6 +490,8 @@ function managerFake(platform: "darwin" | "linux" | "win32", start: {
   failures?: number
   // A file write that fails, by path.
   failingWrite?: string
+  // A bootout that unloads the job and still reports failure.
+  bootoutUnloadsThenFails?: boolean
 } = {}) {
   const home = platform === "win32" ? windowsHome : platform === "darwin" ? "/Users/dl" : "/home/dl"
   const files = new Map(Object.entries(start.files ?? {}))
@@ -522,7 +524,10 @@ function managerFake(platform: "darwin" | "linux" | "win32", start: {
         throw new Error(`${line} failed`)
       }
       if (args[0] === "/create") task = { path: `"${args[args.indexOf("/tr") + 1]!.split('" "')[0]!.slice(1)}"`, arguments: args[args.indexOf("/tr") + 1]!.split('" ').slice(1).join('" ') }
-      if (args[0] === "bootout") job = undefined
+      if (args[0] === "bootout") {
+        job = undefined
+        if (start.bootoutUnloadsThenFails) throw new Error("Boot-out failed: 5: Input/output error")
+      }
       if (args[0] === "bootstrap") {
         if (job) throw new Error("Bootstrap failed: 5: Input/output error")
         job = { path: args[2]!, running: true }
@@ -688,5 +693,27 @@ describe("security review round 4", () => {
     await expect(installDaemonService({ runtime }, fake.effects)).rejects.toThrow(`write ${unit} failed`)
     expect(fake.files.size).toBe(0)
     expect(fake.ran).toEqual([])
+  })
+})
+
+// Security review round 5: a bootout can report failure after it unloaded the
+// job. The install then fails, and the previous agent must be loaded again.
+describe("security review round 5 (install)", () => {
+  const agent = "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist"
+  const configuration = "/Users/dl/.domovoi/service.json"
+
+  it("loads the previous launch agent again when a failed bootout unloaded it", async () => {
+    const fake = managerFake("darwin", { files: { [agent]: "old agent", [configuration]: "old configuration" }, job: { path: agent, running: false }, bootoutUnloadsThenFails: true })
+    await expect(installDaemonService({ runtime }, fake.effects)).rejects.toThrow("Boot-out failed")
+    expect(Object.fromEntries(fake.files)).toEqual({ [agent]: "old agent", [configuration]: "old configuration" })
+    expect(fake.job()?.path).toBe(agent)
+    expect(fake.ran).toEqual(["launchctl bootout", "launchctl bootstrap"])
+  })
+
+  it("leaves a job a failed bootout did not unload as it was", async () => {
+    const fake = managerFake("darwin", { files: { [agent]: "old agent", [configuration]: "old configuration" }, job: { path: agent, running: false }, failing: "bootout" })
+    await expect(installDaemonService({ runtime }, fake.effects)).rejects.toThrow("launchctl bootout failed")
+    expect(fake.job()).toEqual({ path: agent, running: false })
+    expect(fake.ran).toEqual(["launchctl bootout"])
   })
 })

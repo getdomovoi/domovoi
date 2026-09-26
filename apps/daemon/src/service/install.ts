@@ -473,10 +473,21 @@ async function putPreviousFilesBack(previous: NonNullable<PreviousFiles>, effect
   }
 }
 
-// Security review round 4 (#574): the install booted out Domovoi's own idle
-// job before the new bootstrap failed, so the previous plist, now back in
-// place, is loaded again: launchd is left with the job it had.
+// Security review rounds 4 and 5 (#574): the install sent a bootout for
+// Domovoi's own idle job, and a later step failed, or the bootout itself
+// reported failure after it unloaded the job. If launchd no longer lists the
+// job, the previous plist, now back in place, is loaded again: launchd is
+// left with the job it had. A job still listed is left as it is.
 async function loadPreviousAgent(target: ServiceTarget, plan: ServicePlan, previous: NonNullable<PreviousFiles>, effects: InstallEffects, deadline: OperationDeadline, cause: unknown): Promise<void> {
+  const job = `gui/${assertUid(target.uid)}/${agentLabel}`
+  let printed: CapturedRun
+  try {
+    printed = await withinServiceDeadline(deadline, () => effects.capture("launchctl", ["print", job], deadline))
+  } catch (restoreCause) {
+    throw restoreFailure(cause, restoreCause)
+  }
+  if (printed.code === 0) return
+  if (printed.code !== 113 || !isMissingServiceFailure("darwin", printed)) throw restoreFailure(cause, captureFailure("launchctl", printed))
   const path = plan.kind === "file" ? plan.path : undefined
   if (path === undefined || previous.find((file) => file.path === path)?.contents === undefined) {
     throw restoreFailure(cause, new Error("the previous launch agent file was not there to load again"))
@@ -577,18 +588,18 @@ async function installWithDeadline(
     if (!deadline.signal.aborted) for (const lease of leases) lease.release()
   }
   const registering = commands.findIndex(registersDefinition)
-  let bootedOut = false
+  let bootoutSent = false
   for (const [index, { command, args }] of commands.entries()) {
     try {
+      if (command === "launchctl" && args[0] === "bootout") bootoutSent = true
       await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
-      if (command === "launchctl" && args[0] === "bootout") bootedOut = true
     } catch (cause) {
       // Security review round 3 (#574): the manager kept what it ran before,
       // so the files go back to what they were and still name it. A timed-out
       // command may still register late, so then nothing is put back.
       if (index <= registering && previousFiles && !deadline.signal.aborted) {
         await putPreviousFilesBack(previousFiles, effects, deadline, cause)
-        if (bootedOut) await loadPreviousAgent(target, plan, previousFiles, effects, deadline, cause)
+        if (bootoutSent) await loadPreviousAgent(target, plan, previousFiles, effects, deadline, cause)
       }
       throw cause
     }
