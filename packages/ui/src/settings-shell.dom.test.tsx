@@ -1,5 +1,5 @@
 import type { ApprovalRule } from "@getdomovoi/protocol"
-import { cleanup, render, screen, within } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
@@ -224,6 +224,67 @@ it("draws no local daemon section for a client that cannot say how the daemon is
   expect(screen.queryByText(/Domovoi service/u)).toBeNull()
 })
 
+// J10 (2026-09-23): the build says what it is. Unsigned, no self-update,
+// versions come from the release page; the daemon's version and commit in mono.
+it("says the build is not signed and where new versions come from", async () => {
+  const onOpenReleasePage = vi.fn(async () => true)
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", currentSourceCommit: "3f8b01d".padEnd(40, "0"), state: "idle" as const })), onOpenReleasePage }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  expect(await within(section).findByText("domovoid 0.9.4 · 3f8b01d")).toBeTruthy()
+  expect(within(section).getByText("Not signed")).toBeTruthy()
+  expect(within(section).getByText("This build is not signed and does not update itself. Get new versions from the release page.")).toBeTruthy()
+  const link = within(section).getByRole("link", { name: "Release page" })
+  // The desktop hands the fixed address to the bridge; the window itself
+  // does not follow the link.
+  expect(fireEvent.click(link)).toBe(false)
+  expect(onOpenReleasePage).toHaveBeenCalledOnce()
+})
+
+it("links the release page directly where there is no desktop to open it", () => {
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => { throw new Error("not on this daemon") }) }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  expect(within(section).getByText("domovoid 0.9.4")).toBeTruthy()
+  expect(within(section).getByRole("link", { name: "Release page" }).getAttribute("href")).toBe("https://github.com/getdomovoi/domovoi/releases")
+})
+
+// A daemon that reports a pending target is updating itself; the body stops
+// saying it does not, and one line names the target (ruled 2026-09-23).
+const pendingTarget = { pendingVersion: "0.9.5", pendingSourceCommit: "abcdef1".padEnd(40, "0") }
+const refusal = { reason: "busy" as const, message: "A turn is running." }
+it.each([
+  ["pending", { state: "pending" as const, ...pendingTarget }, "The daemon reports domovoid 0.9.5 · abcdef1 waiting to switch in."],
+  ["activating", { state: "activating" as const, ...pendingTarget }, "The daemon reports it is switching to domovoid 0.9.5 · abcdef1 now."],
+  ["deferred", { state: "deferred" as const, ...pendingTarget, refusal }, "The daemon reports domovoid 0.9.5 · abcdef1 waiting. The switch was put off: A turn is running."],
+])("names the %s update the daemon reports", async (_state, status, line) => {
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", currentSourceCommit: "3f8b01d".padEnd(40, "0"), ...status })) }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  expect(await within(section).findByText(line)).toBeTruthy()
+  expect(within(section).getByText("This build is not signed. Get new versions from the release page.")).toBeTruthy()
+  expect(section.textContent).not.toContain("does not update itself")
+  expect(within(section).getByText("Not signed")).toBeTruthy()
+})
+
+it("adds nothing for a quarantined target", async () => {
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", currentSourceCommit: "3f8b01d".padEnd(40, "0"), state: "quarantined" as const, ...pendingTarget, refusal })) }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  expect(await within(section).findByText("domovoid 0.9.4 · 3f8b01d")).toBeTruthy()
+  expect(within(section).getByText("This build is not signed and does not update itself. Get new versions from the release page.")).toBeTruthy()
+  expect(section.textContent).not.toContain("The daemon reports")
+})
+
+// A watching window changes nothing on the daemon, but reading where new
+// versions come from is not a change, so the release page still opens. The
+// read-only fieldset disables form controls only, so the release page is a
+// link. user-event treats anything inside a disabled fieldset as disabled,
+// which a browser does not do for links, so this clicks with fireEvent.
+it("opens the release page from a watching window", () => {
+  const onOpenReleasePage = vi.fn(async () => true)
+  render(<SettingsShell {...shellProps()} readOnly about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", state: "idle" as const })), onOpenReleasePage }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  fireEvent.click(within(section).getByRole("link", { name: "Release page" }))
+  expect(onOpenReleasePage).toHaveBeenCalledOnce()
+})
+
 // J24 (2026-09-23): Settings opens with the daemon on this machine and says
 // what quitting does. Install and Remove are drawn locked until the app can
 // do them; the by-hand command is beside the lock so nobody is left guessing.
@@ -302,4 +363,20 @@ it("keeps the other window's line for a daemon another Domovoi window started", 
   expect(section.textContent).toContain("That app owns the daemon and stops it when it quits.")
   expect(section.textContent).not.toContain("Quitting Domovoi stops the daemon")
   expect(section.textContent).not.toContain("Quitting this app leaves the daemon and its sessions running.")
+})
+
+// The design puts About this build at the bottom of the Daemon on this
+// machine card. Where that card is not drawn (a browser tab), About stands
+// on its own.
+it("draws About at the bottom of the daemon card, and on its own without the card", () => {
+  const about = { version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", state: "idle" as const })) }
+  const { unmount } = render(<SettingsShell {...shellProps()} about={about} localDaemon={{ title: "Running Domovoi inside this app", detail: "This app started the local daemon and stops it when the app quits.", owner: "app", platform: "darwin" }} />)
+  const card = screen.getByRole("region", { name: "Daemon on this machine" })
+  const inside = within(card).getByRole("region", { name: "About this build" })
+  expect(card.lastElementChild).toBe(inside)
+  expect(screen.getAllByRole("region", { name: "About this build" })).toHaveLength(1)
+  unmount()
+  render(<SettingsShell {...shellProps()} about={about} />)
+  expect(screen.queryByRole("region", { name: "Daemon on this machine" })).toBeNull()
+  expect(screen.getByRole("region", { name: "About this build" })).toBeTruthy()
 })

@@ -940,6 +940,12 @@ export class DomovoiClient extends EventTarget {
     }, options)
   }
 
+  // What the daemon knows about its own build: version, source commit and
+  // whether an update is pending. Read once for About this build.
+  updateStatus(options?: DomovoiRequestOptions): Promise<RpcResult<"update.status">> {
+    return this.request("update.status", {}, options)
+  }
+
   // The same code `domovoid pair --client` prints, for the kind named and no
   // other. A watching client is refused before the request leaves.
   issueDeviceCode(targetClient: ClientKind, options?: DomovoiRequestOptions): Promise<RpcResult<"device.issueCode">> {

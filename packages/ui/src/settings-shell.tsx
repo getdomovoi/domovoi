@@ -1,6 +1,6 @@
-import { loginServiceHomePaths, loginServiceTaskName, type ApprovalRule, type ClientKind, type PairedDeviceSummary, type ProviderRuntime } from "@getdomovoi/protocol"
-import { ChevronRightIcon, TerminalIcon } from "lucide-react"
-import { useEffect, useState } from "react"
+import { loginServiceHomePaths, loginServiceTaskName, type ApprovalRule, type ClientKind, type PairedDeviceSummary, type ProviderRuntime, type UpdateStatus } from "@getdomovoi/protocol"
+import { ChevronRightIcon, ExternalLinkIcon, TerminalIcon } from "lucide-react"
+import { useEffect, useState, type MouseEvent, type ReactNode } from "react"
 
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -52,7 +52,8 @@ const loginServices = {
   win32: { kind: "logon task", manager: "Task Scheduler", definition: `Task Scheduler task "${loginServiceTaskName}"`, removeLabel: "Delete the logon task", crash: "Nothing restarts it until you next sign in." },
 } as const
 
-function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: NonNullable<LocalDaemonDescription["owner"]>; platform: NonNullable<LocalDaemonDescription["platform"]> } }) {
+// `footer` is the design's last row of the card: About this build.
+function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { owner: NonNullable<LocalDaemonDescription["owner"]>; platform: NonNullable<LocalDaemonDescription["platform"]> }; footer?: ReactNode }) {
   const service = loginServices[daemon.platform]
   const on = daemon.owner === "outside" && daemon.serviceInstalled === true
   const unknown = daemon.owner === "outside" && !on
@@ -115,6 +116,7 @@ function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: N
         <Button size="sm" variant="outline" disabled title="Not built yet">{service.removeLabel}</Button>
         <span className="text-[11px] text-faint">{lockReason}</span>
       </div>
+      {footer}
     </section>
   )
 }
@@ -159,8 +161,89 @@ function PairingSection({ pairing, readOnly, onOpenFleet }: { pairing: PairingSe
   )
 }
 
+// About this build (J10, 2026-09-23). The first release is unsigned and does
+// not update itself, and Settings says so in one line. scripts/unsigned-build.mjs
+// fails the release invariants the day a signing build runs on an automatic
+// trigger while this line is still here, so the copy moves with the fact.
+export const releasePageUrl = "https://github.com/getdomovoi/domovoi/releases"
+
+export type AboutBuild = {
+  version: string
+  onUpdateStatus: () => Promise<UpdateStatus>
+  // The desktop opens the release page in the person's browser; a browser
+  // tab links it directly.
+  onOpenReleasePage?: (() => Promise<boolean>) | undefined
+}
+
+// A daemon that reports a pending target is updating itself, so the body
+// drops "does not update itself" and one line names the target. Quarantined
+// targets were refused by the daemon and add nothing (ruled 2026-09-23).
+function pendingUpdateLine(status: UpdateStatus): string | undefined {
+  if (!status.pendingVersion || !status.pendingSourceCommit) return undefined
+  const target = `domovoid ${status.pendingVersion} · ${status.pendingSourceCommit.slice(0, 7)}`
+  if (status.state === "pending") return `The daemon reports ${target} waiting to switch in.`
+  if (status.state === "activating") return `The daemon reports it is switching to ${target} now.`
+  if (status.state === "deferred" && status.refusal) return `The daemon reports ${target} waiting. The switch was put off: ${status.refusal.message}`
+  return undefined
+}
+
+// On its own, About is a card. Inside the daemon card it is that card's last
+// row, set off by a rule, as the design draws it.
+function AboutBuildSection({ about, inCard = false }: { about: AboutBuild; inCard?: boolean }) {
+  const [status, setStatus] = useState<UpdateStatus | undefined>(undefined)
+  const { onUpdateStatus } = about
+  useEffect(() => {
+    let active = true
+    onUpdateStatus().then(
+      (next) => { if (active) setStatus(next) },
+      () => { if (active) setStatus(undefined) },
+    )
+    return () => { active = false }
+  }, [onUpdateStatus])
+  const commit = status?.currentSourceCommit?.slice(0, 7)
+  const pending = status ? pendingUpdateLine(status) : undefined
+  const openReleasePage = about.onOpenReleasePage
+  // The design's row: facts on the left, the release page as a link on the
+  // right. A link, not a button, so a watching window (its controls disabled
+  // by the read-only fieldset) can still open it. The desktop hands the fixed
+  // address to the browser through the bridge instead of navigating.
+  return (
+    <section aria-labelledby="settings-about" className={inCard ? "flex items-start gap-3 border-t pt-3" : "flex items-start gap-3 rounded-lg border bg-card p-4"}>
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <h2 id="settings-about" className="m-0 text-[13px] font-medium">About this build</h2>
+          <span className="font-machine text-[10.5px] text-faint">{commit ? `domovoid ${about.version} · ${commit}` : `domovoid ${about.version}`}</span>
+          <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span aria-hidden className="size-[7px] rounded-full bg-faint" />
+            Not signed
+          </span>
+        </div>
+        {pending ? (
+          <>
+            <p className="m-0 text-[11.5px] leading-[1.5] text-muted-foreground">This build is not signed. Get new versions from the release page.</p>
+            <p className="m-0 text-[11.5px] leading-[1.5] text-muted-foreground">{pending}</p>
+          </>
+        ) : (
+          <p className="m-0 text-[11.5px] leading-[1.5] text-muted-foreground">This build is not signed and does not update itself. Get new versions from the release page.</p>
+        )}
+      </div>
+      <a
+        href={releasePageUrl}
+        target="_blank"
+        rel="noopener"
+        className="flex shrink-0 items-center gap-1.5 pt-px text-[11.5px] text-primary underline-offset-2 hover:underline"
+        {...(openReleasePage ? { onClick: (event: MouseEvent<HTMLAnchorElement>) => { event.preventDefault(); void openReleasePage() } } : {})}
+      >
+        Release page
+        <ExternalLinkIcon className="size-3.5" />
+      </a>
+    </section>
+  )
+}
+
 export type SettingsShellProps = {
   providers: readonly ProviderRuntime[]
+  about?: AboutBuild | undefined
   pairing?: PairingSettings | undefined
   secrets: readonly ProviderSecretStatus[]
   localDaemon?: LocalDaemonDescription
@@ -186,6 +269,7 @@ export type SettingsShellProps = {
 export function SettingsShell({
   providers,
   secrets,
+  about,
   pairing,
   localDaemon,
   approvalRules,
@@ -228,11 +312,13 @@ export function SettingsShell({
         </header>
 
         <fieldset disabled={readOnly} className="contents">
-          {daemonSection ? <DaemonSection daemon={daemonSection} /> : null}
+          {daemonSection ? <DaemonSection daemon={daemonSection} footer={about ? <AboutBuildSection about={about} inCard /> : undefined} /> : null}
 
           <section aria-label="Providers and tokens">
             <ProviderSettings providers={providers} secrets={secrets} {...(localDaemon && !daemonSection ? { localDaemon } : {})} />
           </section>
+
+          {about && !daemonSection ? <AboutBuildSection about={about} /> : null}
 
           {pairing ? <PairingSection pairing={pairing} readOnly={readOnly} onOpenFleet={onOpenFleet} /> : null}
 
