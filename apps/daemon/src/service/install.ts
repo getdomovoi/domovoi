@@ -456,6 +456,12 @@ async function readPreviousFiles(plan: ServicePlan, effects: InstallEffects, dea
   return previous
 }
 
+// Placeholder copy: the text needs an owner ruling.
+function restoreFailure(cause: unknown, restoreCause: unknown): Error {
+  const detail = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim().replace(/\.+$/u, "")
+  return new Error(`[copy pending owner ruling] ${detail(cause)}. Putting back the previous service files also failed: ${detail(restoreCause)}.`, { cause: restoreCause })
+}
+
 async function putPreviousFilesBack(previous: NonNullable<PreviousFiles>, effects: InstallEffects, deadline: OperationDeadline, cause: unknown): Promise<void> {
   try {
     for (const { path, contents } of previous) {
@@ -463,9 +469,22 @@ async function putPreviousFilesBack(previous: NonNullable<PreviousFiles>, effect
       else await withinServiceDeadline(deadline, () => effects.write(path, contents, deadline))
     }
   } catch (restoreCause) {
-    // Placeholder copy: the text needs an owner ruling.
-    const detail = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim().replace(/\.+$/u, "")
-    throw new Error(`[copy pending owner ruling] ${detail(cause)}. Putting back the previous service files also failed: ${detail(restoreCause)}.`, { cause: restoreCause })
+    throw restoreFailure(cause, restoreCause)
+  }
+}
+
+// Security review round 4 (#574): the install booted out Domovoi's own idle
+// job before the new bootstrap failed, so the previous plist, now back in
+// place, is loaded again: launchd is left with the job it had.
+async function loadPreviousAgent(target: ServiceTarget, plan: ServicePlan, previous: NonNullable<PreviousFiles>, effects: InstallEffects, deadline: OperationDeadline, cause: unknown): Promise<void> {
+  const path = plan.kind === "file" ? plan.path : undefined
+  if (path === undefined || previous.find((file) => file.path === path)?.contents === undefined) {
+    throw restoreFailure(cause, new Error("the previous launch agent file was not there to load again"))
+  }
+  try {
+    await withinServiceDeadline(deadline, () => effects.run("launchctl", ["bootstrap", `gui/${assertUid(target.uid)}`, path], deadline))
+  } catch (restoreCause) {
+    throw restoreFailure(cause, restoreCause)
   }
 }
 
@@ -540,8 +559,16 @@ async function installWithDeadline(
       throw cause
     }
     await withinServiceDeadline(deadline, () => effects.remove(localOwnerRemovalReceiptPath(profile), deadline))
-    await withinServiceDeadline(deadline, () => effects.write(plan.configuration.path, plan.configuration.contents, deadline))
-    if (plan.kind === "file") await withinServiceDeadline(deadline, () => effects.write(plan.path, plan.contents, deadline))
+    try {
+      await withinServiceDeadline(deadline, () => effects.write(plan.configuration.path, plan.configuration.contents, deadline))
+      if (plan.kind === "file") await withinServiceDeadline(deadline, () => effects.write(plan.path, plan.contents, deadline))
+    } catch (cause) {
+      // Security review round 4 (#574): no manager has seen the new files, so
+      // both go back to what they were, under the profile lease. A timed-out
+      // write may still land, so then nothing is put back.
+      if (previousFiles && !deadline.signal.aborted) await putPreviousFilesBack(previousFiles, effects, deadline, cause)
+      throw cause
+    }
     deadline.throwIfExpired()
   } finally {
     // Timed-out filesystem work may still settle. Retain the lease until this
@@ -550,14 +577,19 @@ async function installWithDeadline(
     if (!deadline.signal.aborted) for (const lease of leases) lease.release()
   }
   const registering = commands.findIndex(registersDefinition)
+  let bootedOut = false
   for (const [index, { command, args }] of commands.entries()) {
     try {
       await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
+      if (command === "launchctl" && args[0] === "bootout") bootedOut = true
     } catch (cause) {
       // Security review round 3 (#574): the manager kept what it ran before,
       // so the files go back to what they were and still name it. A timed-out
       // command may still register late, so then nothing is put back.
-      if (index <= registering && previousFiles && !deadline.signal.aborted) await putPreviousFilesBack(previousFiles, effects, deadline, cause)
+      if (index <= registering && previousFiles && !deadline.signal.aborted) {
+        await putPreviousFilesBack(previousFiles, effects, deadline, cause)
+        if (bootedOut) await loadPreviousAgent(target, plan, previousFiles, effects, deadline, cause)
+      }
       throw cause
     }
   }
