@@ -128,10 +128,10 @@ function launchdJobPath(printed: string): string {
 // Security review round 3 (#574): launchd refuses to bootstrap a label that
 // is still loaded. A job loaded from another plist is not Domovoi's to boot
 // out, so the install stops before the handoff.
-// Placeholder copy: the text needs an owner ruling.
+// Text ruled 2026-09-25.
 export class LaunchdJobNotDomovoiError extends Error {
   constructor(readonly path: string) {
-    super(`[copy pending owner ruling] A job named sh.domovoi.domovoid is loaded from ${path}, which is not Domovoi's launch agent. Nothing was stopped or changed.`)
+    super(`A job named sh.domovoi.domovoid is loaded from ${path}, which is not Domovoi's launch agent. Nothing was stopped or changed.`)
     this.name = "LaunchdJobNotDomovoiError"
   }
 }
@@ -207,10 +207,10 @@ export class WindowsTaskPercentSignError extends Error {
 // Security review round 3 (#574): status and removal recognise a task only
 // by paths in the plain form Windows reports (plainWindowsPath), so install
 // refuses any other form rather than register a task it could not recognise
-// or remove later. Placeholder copy: the text needs an owner ruling.
+// or remove later. Text ruled 2026-09-25.
 export class WindowsTaskPathError extends Error {
   constructor(readonly path: string) {
-    super(`[copy pending owner ruling] ${path} is not in the plain form Windows reports for it (no . or .. parts, no doubled or forward slashes, no DEL character), so Domovoi could not recognise the task later. No service files were changed.`)
+    super(`${path} is not in the plain form Windows reports for it (no . or .. parts, no doubled or forward slashes, no DEL character), so Domovoi could not recognise the task later. No service files were changed.`)
     this.name = "WindowsTaskPathError"
   }
 }
@@ -221,12 +221,12 @@ export class WindowsTaskPathError extends Error {
 // refused before anything changes, as on Windows. A backslash is left to the
 // unit's quoting: the non-native systemd safety tests install with a Windows
 // host's own paths, and refusing it here would make them unrunnable there.
-// Placeholder copy: the text needs an owner ruling.
+// Text ruled 2026-09-25.
 const systemdExpansions: Record<string, string> = { "$": "a variable", "%": "a specifier" }
 
 export class SystemdPathCharacterError extends Error {
   constructor(readonly path: string, readonly character: string) {
-    super(`[copy pending owner ruling] ${path} contains ${character}, which systemd reads as ${systemdExpansions[character] ?? "a special character"} when the service starts. No service files were changed.`)
+    super(`${path} contains ${character}, which systemd reads as ${systemdExpansions[character] ?? "a special character"} when the service starts. No service files were changed.`)
     this.name = "SystemdPathCharacterError"
   }
 }
@@ -485,10 +485,10 @@ async function readPreviousFiles(plan: ServicePlan, effects: InstallEffects, dea
   return previous
 }
 
-// Placeholder copy: the text needs an owner ruling.
+// Text ruled 2026-09-25.
 function restoreFailure(cause: unknown, restoreCause: unknown): Error {
   const detail = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim().replace(/\.+$/u, "")
-  return new Error(`[copy pending owner ruling] ${detail(cause)}. Putting back the previous service files also failed: ${detail(restoreCause)}.`, { cause: restoreCause })
+  return new Error(`${detail(cause)}. Putting back the previous service files also failed: ${detail(restoreCause)}.`, { cause: restoreCause })
 }
 
 async function putPreviousFilesBack(previous: NonNullable<PreviousFiles>, effects: InstallEffects, deadline: OperationDeadline, cause: unknown): Promise<void> {
