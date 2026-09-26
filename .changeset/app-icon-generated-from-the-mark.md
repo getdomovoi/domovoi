@@ -6,8 +6,8 @@
 
 Generate the app icons and the splash from the mark instead of shipping a hand-made tile.
 
-The shipped tile carried an amber radial glow, the full mark at roughly 40 percent of the tile,
-and a near black ground. `scripts/brand-icons.mjs` now renders every asset from
+The shipped tile carried an amber radial glow and the full mark at roughly 40 percent of the
+tile. `scripts/brand-icons.mjs` now renders every asset from
 `design/assets/mark-reduced.svg` and `design/assets/mark.svg` with a local Chromium that cannot
 reach the network. Colours come from `apps/mobile/src/theme/tokens.generated.js`, so the artwork
 and the phone read one palette.

@@ -156,7 +156,7 @@ const INK_SQUARE = { mark: "mark-reduced.svg", ink: DARK.primary, ground: DARK.c
 // Masked foregrounds keep the glyph well inside the safe circle (61% of the canvas on Android,
 // 80% for a maskable web icon), so the mask never clips the silhouette.
 const MASKED_FRACTION = 0.45
-// Apple's macOS grid: an 824 tile centred on a 1024 canvas, leaving room for the system shadow.
+// Apple's 824 of 1024 icon grid: an 824 tile centred on a 1024 canvas.
 const MACOS_TILE = { size: 824 / 1024, radius: 0.22 }
 
 export const targets = [
