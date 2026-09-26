@@ -157,6 +157,36 @@ it("updates an older login service through the desktop and reports the change", 
   await vi.waitFor(() => expect(onLocalDaemonChanged).toHaveBeenCalledOnce())
 })
 
+// Security review of #577 (P3): an update whose answer this window cannot read
+// may still have finished, and one that finished without reaching the daemon
+// changed the service all the same. Both read the service back and ask the
+// desktop to resolve its daemon again, as install and remove do.
+for (const [label, update] of [
+  ["an unreadable answer", async () => { throw new Error("Desktop returned an invalid service outcome") }],
+  ["an update this window could not reach", async () => ({ ok: false as const, reason: "installed-not-attached" as const, kind: "file" as const, target: "/p", message: "The daemon did not answer" })],
+] as const) {
+  it(`reads the service back and resolves the daemon again after ${label}`, async () => {
+    const older = workspaceSnapshot({ approvals: [], sessions: demoWorkspace.sessions.map((session) => { const { activeTurnId: _turn, ...rest } = session; return { ...rest, state: "idle" as const } }) })
+    older.machine = { ...older.machine, version: "0.0.0" }
+    const onLocalDaemonChanged = vi.fn()
+    const windowBridge = bridge(vi.fn())
+    const status = vi.fn(async () => ({ installed: true, running: true, detail: "" }))
+    windowBridge.daemonService = { ...windowBridge.daemonService!, status, update: vi.fn(update) }
+    render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true }} onLocalDaemonChanged={onLocalDaemonChanged} />)
+    await act(async () => { completeHandshake(harness.socket(0), older) })
+    await settle()
+    const user = userEvent.setup()
+    await skipFirstRun(user)
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    const section = await screen.findByRole("region", { name: "Daemon on this machine" })
+    const readsBefore = status.mock.calls.length
+    await user.click(within(section).getByRole("button", { name: "Update the service" }))
+    await settle()
+    await vi.waitFor(() => expect(status.mock.calls.length).toBeGreaterThan(readsBefore))
+    await vi.waitFor(() => expect(onLocalDaemonChanged).toHaveBeenCalledOnce())
+  })
+}
+
 // Review round 3 of #576: an install the desktop answered in a shape this
 // window cannot read still ends with the service read back, both in the
 // outcome and in the section's own state.
