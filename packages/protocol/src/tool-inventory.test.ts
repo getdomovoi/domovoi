@@ -197,10 +197,10 @@ describe("tool inventory text", () => {
   })
 
   it("takes a real host and a port from 1 to 65535", () => {
-    for (const host of ["mcp.linear.app", "localhost:3000", "127.0.0.1:65535", "[::1]:8080", "[2001:db8::1]", "xn--bcher-kva.example"]) {
+    for (const host of ["mcp.linear.app", "localhost:3000", "127.0.0.1:65535", "[::1]:8080", "[2001:db8::1]", "xn--bcher-kva.example", "example.com.", "example.com.:443"]) {
       expect(parses(withEntry({ ...remote, host })), host).toBe(true)
     }
-    for (const host of ["[:::]", "[.]", "[::1", "-bad-.com", "bad-.com", "a..b", "host:0", "host:99999", "host:080", "host:", "999.1.1.1", "1.2.3", `${"a".repeat(64)}.com`]) {
+    for (const host of ["[:::]", "[.]", "[::1", "-bad-.com", "bad-.com", "a..b", "host:0", "host:99999", "host:080", "host:", "999.1.1.1", "1.2.3", "example.com..", ".", `${"a".repeat(64)}.com`]) {
       expect(parses(withEntry({ ...remote, host })), host).toBe(false)
     }
   })
@@ -214,6 +214,64 @@ describe("tool inventory text", () => {
     expect(parses(claude((provider) => { provider.omittedEntries = 100 }))).toBe(true)
     expect(parses(claude((provider) => { provider.omittedEntries = -1 }))).toBe(false)
     expect(parses(claude((provider) => { delete provider.omittedEntries }))).toBe(false)
+  })
+
+  it("leaves room in the budget for the JSON-RPC envelope around the largest request id", () => {
+    // The worst id is 512 code units that JSON escapes to six bytes each.
+    const envelope = (result: unknown) => new TextEncoder().encode(JSON.stringify({ jsonrpc: "2.0", id: "\u0001".repeat(512), result })).byteLength
+    const overhead = envelope({}) - 2
+    expect(maximumToolInventoryBytes + overhead).toBeLessThanOrEqual(256 * 1_024)
+  })
+})
+
+describe("credential backstop", () => {
+  const hook = sample.providers[0].entries[2]
+  const accepts = (command: string) => toolInventorySchema.safeParse(withEntry({ ...hook, command })).success
+
+  // Each form a value can hide in, with a made-up value.
+  it.each([
+    ["env prefix", "PGPASSWORD=madeup-value psql"],
+    ["quoted assignment", 'env "DATABASE_URL=madeup-value" ./start.sh'],
+    ["single-quoted assignment", "'DATABASE_URL=madeup-value' ./start.sh"],
+    ["JSON sensitive key", '{"apiKey":"madeup-value"}'],
+    ["JSON env key", '{"DATABASE_URL": "madeup-value"}'],
+    ["escaped JSON", '{\\"apiKey\\":\\"madeup-value\\"}'],
+    ["YAML sensitive key", "apiKey: madeup-value"],
+    ["YAML env key", "DATABASE_URL: madeup-value"],
+    ["percent-encoded assignment", "DATABASE_URL%3Dmadeup-value"],
+    ["percent-encoded flag", "--api-key%3Dmadeup-value"],
+    ["unicode-escaped assignment", "DATABASE_URL\\u003dmadeup-value"],
+    ["flag=value", "npx mcp --client-secret=madeup-value"],
+    ["flag value", "npx mcp --password madeup-value"],
+    ["marker with a value after it", "--api-key=[REDACTED]madeup-value"],
+    ["assignment marker with a value after it", "API_KEY=[REDACTED]madeup-value"],
+    ["authorization header", "curl -H 'Authorization: Bearer madeup-value'"],
+    ["bearer token", "Bearer abc123def456"],
+    ["basic credentials", "Authorization: Basic dXNlcjpwYXNz"],
+    ["URL user without password", "https://madeup-value@example.test/x"],
+    ["URL user and password", "https://user:madeup-value@example.test/x"],
+    ["encoded URL", "https%3A%2F%2Fmadeup-value%40example.test"],
+  ])("refuses a value in %s", (_form, command) => {
+    expect(accepts(command)).toBe(false)
+  })
+
+  it.each([
+    // The design's rows.
+    "npx -y @acme/pg-mcp", "./scripts/dev-bootstrap.sh", "./scripts/guard-prod.sh", "gh-mcp serve",
+    "afplay /System/Library/Sounds/Glass.aiff", "paplay /usr/share/sounds/freedesktop/stereo/complete.oga",
+    "powershell -c [console]::beep(880,200)", "Bash(pnpm test:*)", "Read(./.env*)", "WebFetch(domain:docs.stripe.com)",
+    "Bash(psql:*)", "EACCES · owned by root, mode 0600", "apiKeyHelper",
+    // Names, paths and hosts.
+    "Bearer Authentication", "Basic Authentication", "/Users/ada/.claude/settings.json", "C:\\Users\\ada\\.claude.json",
+    "https://mcp.linear.app/mcp", "git@github.com:acme/api.git", "git log --format=%H --port=5432",
+    "npx mcp --token-file ~/.config/pg", "npx mcp --api-key-env API_KEY", "llm --max-tokens 100",
+    "EACCES: permission denied, open '/Users/ada/.claude/settings.local.json'",
+    // What the reader's redaction writes.
+    "DATABASE_URL=[REDACTED] ./start.sh", 'env "DATABASE_URL=[REDACTED]" ./start.sh', '{"apiKey":"[REDACTED]"}',
+    "npx mcp --api-key [REDACTED]", "npx mcp --api-key=[REDACTED]", "curl -H 'Authorization: Bearer [REDACTED]'",
+    "https://[REDACTED]@example.test/x",
+  ])("keeps %s", (command) => {
+    expect(accepts(command)).toBe(true)
   })
 })
 

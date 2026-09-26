@@ -8,9 +8,11 @@ each with the file that declared it and whether it runs when a session starts. E
 reported as read, empty, absent or unreadable with a reason, and entries come only from files that
 were read. Environment entries carry key names only, as identifiers; no field holds a value. The
 daemon redacts every text field before sending it, and the schema refuses any text that still
-carries an assignment, a sensitive flag with its value, or a known token shape. Text is one line
+carries a value: an environment assignment, a sensitive key, flag or authorization scheme with its
+value, URL user info, or a known token shape, read as sent and after one layer of quoting, percent
+and backslash decoding. Text is one line
 with no format characters or separators. A remote tool server is named by a valid host and a port
-from 1 to 65535, never a URL path, query or user info. A response stays within 256 KiB, and each
+from 1 to 65535, never a URL path, query or user info. A response, envelope included, stays within 256 KiB, and each
 agent counts the entries it left out to fit. Entries the repository brings can be marked
 held back, and the inventory carries a digest of the repository's configuration files so a later
 trust decision can pin to what the client was shown. An agent Domovoi starts with no tool servers

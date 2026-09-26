@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { holdsCredential } from "./credential-backstop.js"
 import { skillContentDigestSchema, skillInventoryMachineSchema } from "./skills.js"
 import { utf16MaxLength, wireRule } from "./validation.js"
 
@@ -12,36 +13,15 @@ import { utf16MaxLength, wireRule } from "./validation.js"
 
 // Every free-text field below is what a provider's own file says, and a file
 // can hold a credential anywhere: in a command's arguments, a rule, even a
-// name. The daemon's reader (slice P2a) must pass every field through its
-// durable redaction before emitting it, which writes [REDACTED] in place of a
-// value. This check is only the backstop behind that: it refuses an assignment
-// or a known credential shape that still carries a value, so a reader that
-// forgets to redact fails loudly instead of leaking.
-const redactedValue = String.raw`\[REDACTED\]`
-const sensitiveName = String.raw`(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|password|passwd|secret[_-]?key|secret|client[_-]?secret|credentials?|cookie|private[_-]?key)`
-const credentialShapes: readonly RegExp[] = [
-  // A shell assignment, NAME=value.
-  new RegExp(String.raw`(?:^|[\s;&|(])[A-Za-z_][A-Za-z0-9_]*=(?!${redactedValue})\S`, "u"),
-  // A sensitive name with its value: token=x, --token=x, password: x.
-  new RegExp(String.raw`(?<![A-Za-z0-9])${sensitiveName}\s*[=:]\s*(?!${redactedValue})\S`, "iu"),
-  // A sensitive flag and its value as the next word: --api-key x.
-  new RegExp(String.raw`(?:^|[^A-Za-z0-9])-{1,2}${sensitiveName}\s+(?!${redactedValue})[^\s-]`, "iu"),
-  new RegExp(String.raw`\bBearer\s+(?!${redactedValue})\S`, "iu"),
-  // The token shapes the daemon's redaction knows.
-  /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/u,
-  /\b(?:sk|ghp|gho|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}/u,
-  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/u,
-  new RegExp(String.raw`:\/\/[^\s/@:]+:(?!${redactedValue}@)[^\s/@]*@`, "u"),
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/u,
-]
-const holdsNoCredential = (value: string) => !credentialShapes.some((shape) => shape.test(value))
-
+// name. The daemon's reader (slice P2a) must redact every field before it
+// emits it; credential-backstop.ts states what that covers and refuses text
+// that still carries a value.
 // One line of plain text, checked as sent and never normalized: no control or
 // format characters and no line or paragraph separators, so a row cannot be
 // split or reordered on a card, and no padding.
 const text = (maximum: number) => z.string().min(1).check(utf16MaxLength(maximum))
   .regex(/^(?!\s)[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]*(?<!\s)$/u)
-  .refine(holdsNoCredential, "Text must not carry a credential; the reader redacts it first")
+  .refine((value) => !holdsCredential(value), "Text must not carry a credential; the reader redacts it first")
 
 export const toolInventoryPathSchema = text(1_024)
 // An environment variable identifier, never `NAME=value`.
@@ -60,10 +40,12 @@ function isHost(value: string): boolean {
       return false
     }
   }
-  const labels = name!.split(".")
-  if (name!.length > 253 || !labels.every((label) => /^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$/u.test(label))) return false
+  // One terminal root dot is an absolute name: example.com.
+  const absolute = name!.endsWith(".") ? name!.slice(0, -1) : name!
+  const labels = absolute.split(".")
+  if (absolute.length > 253 || !labels.every((label) => /^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$/u.test(label))) return false
   if (labels.every((label) => /^\d+$/u.test(label))) {
-    return labels.length === 4 && labels.every((label) => Number(label) <= 255 && (label === "0" || !label.startsWith("0")))
+    return absolute === name && labels.length === 4 && labels.every((label) => Number(label) <= 255 && (label === "0" || !label.startsWith("0")))
   }
   return !/^\d+$/u.test(labels.at(-1)!)
 }
@@ -152,10 +134,13 @@ export const toolInventoryProviderSchema = z.object({
 })
 
 // The daemon closes a connection whose buffered output reaches 1 MiB, and other
-// traffic shares that buffer, so a whole response stays at its 256 KiB
-// low-water mark. A reader that would exceed it lists fewer entries and counts
-// the rest in omittedEntries.
-export const maximumToolInventoryBytes = 256 * 1_024
+// traffic shares that buffer, so a whole response, envelope included, stays at
+// its 256 KiB low-water mark. The envelope around the largest request id (512
+// code units, each escaped to at most six bytes) is under 4 KiB. A reader that
+// would exceed the budget lists fewer entries and counts the rest in
+// omittedEntries.
+export const toolInventoryEnvelopeReserveBytes = 4 * 1_024
+export const maximumToolInventoryBytes = 256 * 1_024 - toolInventoryEnvelopeReserveBytes
 
 export const toolInventorySchema = wireRule(z.object({
   machine: skillInventoryMachineSchema,
