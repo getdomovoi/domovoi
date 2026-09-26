@@ -1551,8 +1551,10 @@ export class DomovoiDaemon {
   // Security review round 10: counts emergency stops begun. Each provider
   // approval request is stamped with it when it arrives, so a stop that began
   // while the request was settling, held or queued overtakes it.
+  // Round 11: a request that arrives while a stop runs is marked as crossed by
+  // it, since the stop's own count would otherwise match once it finished.
   #emergencyStopGeneration = 0
-  #approvalRequestGenerations = new WeakMap<AgentEvent, number>()
+  #approvalRequestGenerations = new WeakMap<AgentEvent, { generation: number; duringStop: boolean }>()
   // Snapshot and delta broadcasts held while a stop runs. The stop's own
   // notification goes out first, then one snapshot carries every change.
   #snapshotBroadcastHeld = false
@@ -1804,7 +1806,9 @@ export class DomovoiDaemon {
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
       agent.onEvent((event) => {
         if (this.#stopping || this.#stopped) return
-        if (event.type === "approval-requested") this.#approvalRequestGenerations.set(event, this.#emergencyStopGeneration)
+        if (event.type === "approval-requested") {
+          this.#approvalRequestGenerations.set(event, { generation: this.#emergencyStopGeneration, duringStop: this.#emergencyStopInProgress })
+        }
         if (event.type === "provider-disconnected") {
           void this.#enqueueMutation(() => this.#handleAgentEvent(provider, event))
         } else {
@@ -9828,9 +9832,10 @@ export class DomovoiDaemon {
   // approval request, asked on arrival, after every await of its handling,
   // and when the handoff fence releases it. It answers whether the caller may
   // go on to answer the request or put up its card:
-  // - a request that arrived before an emergency stop began (by the stop
-  //   generation stamped when it arrived), or that meets a stop still running,
-  //   is denied to its provider, as the stop denies every pending gate;
+  // - a request that arrived before an emergency stop began, or while one ran
+  //   (by the stamp taken when it arrived), or that meets a stop still
+  //   running, is denied to its provider, as the stop denies every pending
+  //   gate;
   // - a request that meets the handoff fence is held, neither answered nor
   //   carded, until the fence lifts;
   // - otherwise the caller goes on, with no await before its answer.
@@ -9848,10 +9853,11 @@ export class DomovoiDaemon {
     return true
   }
 
-  // Whether an emergency stop began after this request arrived.
+  // Whether an emergency stop overtook this request: it arrived while a stop
+  // ran, or a stop began after it arrived.
   #stopOvertook(event: AgentEvent): boolean {
     const arrived = this.#approvalRequestGenerations.get(event)
-    return arrived !== undefined && arrived !== this.#emergencyStopGeneration
+    return arrived !== undefined && (arrived.duringStop || arrived.generation !== this.#emergencyStopGeneration)
   }
 
   // Denies a held request to its provider; answers the error when it fails.
