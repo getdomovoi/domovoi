@@ -1,7 +1,7 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html",
-  "sha256": "6972659927566825664a28f6b60749069aa55e75e70cd237267999e8f438e3c7",
-  "derivedOn": "2026-09-23",
+  "sha256": "52bafd8d3bae523a0e1d26813de3ca07b3630ac5cc6e5b9f4baa1ef52428da4c",
+  "derivedOn": "2026-09-26",
   "sources": [
     "packages/ui/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts",
@@ -1755,18 +1755,10 @@
       ],
       "copy": [
         "EFFORT ON",
-        "thinking budget",
         "reasoning effort",
-        "A short budget. Enough for a single-file edit or a question with one answer.",
-        "The default here. Holds a multi-file change in view while it plans.",
-        "The longest budget this harness offers. Slow and dear, and worth it on a plan you cannot check yourself.",
-        "Answers quickly and stops reasoning early. Fine for triage.",
-        "The default. Balances the time it spends against what it catches.",
         "Reasons longer before acting. Noticeably slower per turn.",
-        "Whatever the model does unprompted. The only level that is not a choice.",
         "Stops reasoning early. Fine for triage and single-file edits.",
         "Balances the time it spends against what it catches.",
-        "The longest this model will reason. Slow and dear, and worth it on a plan you cannot check yourself.",
         "Applies from the next turn. A turn already in flight keeps the effort it started with.",
         "has no",
         "when you changed model. It stays there."
@@ -1778,12 +1770,57 @@
         "Applies from the next turn. A turn already in flight keeps the effort it started with.",
         "so this moved to",
         "when you changed model. It stays there.",
-        "Answers quickly and stops reasoning early. Fine for triage.",
-        "thinking budget"
+        "kind: \"reasoning effort\"",
+        "Stops reasoning early. Fine for triage and single-file edits.",
+        "Balances the time it spends against what it catches.",
+        "Reasons longer before acting. Noticeably slower per turn."
       ],
       "notes": [
-        "Rows are the levels the session's model reports, not the design's sample scale. A level gets the design's word and line only where the design names that harness and value; other values show as reported. The level words (Default, Low, Medium, High, Max) are single words, which the gate does not collect as script copy."
+        "Rows are the levels the session's model reports, not the design's sample scale. A level gets a word and line only where the scales in effort-scales.ts name that harness and value; other values show as reported. Those scales follow the 2026-09-23 digest: the claude-code and codex words and lines the 2026-09-26 design redraws, Model's own, Extra high and the Model default marker are composer.effort-levels. Single-word level names are not collected as script copy."
       ]
+    },
+    {
+      "id": "composer.effort-levels",
+      "name": "Effort levels each model reports",
+      "where": "effort menu from the composer effort chip (steps 2j to 2l): the levels the active model reports, each with its word and the value sent in mono, the model's own default marked Model default, a level with no word shown as its value with No word yet; the clamp note after a model change is neutral, not amber",
+      "states": [
+        "codex, six levels",
+        "claude-code, four levels, default High",
+        "a level with no word"
+      ],
+      "copy": [
+        "No word yet",
+        "Model default",
+        "Short thinking. Enough for a single-file edit or a question with one answer.",
+        "Holds a multi-file change in view while it plans.",
+        "Thinks longer before acting. Slower per turn.",
+        "The longest this model will think. Slow and dear, for a plan you cannot check yourself.",
+        "No reasoning before it answers. Fastest, and it misses things.",
+        "The least reasoning that still plans. Fine for renames and lookups.",
+        "Stops reasoning early. Fine for triage.",
+        "Extra high",
+        "The longest codex will reason. Slow, for a plan you cannot check yourself.",
+        "Model's own",
+        "Sends no effort value, so the model uses its own setting.",
+        "The longest this model will reason. Slow and dear, for a plan you cannot check yourself.",
+        "Reported by the model. Domovoi has no word for this level yet, so it shows the value it sends."
+      ],
+      "evidence": [
+        "Model default",
+        "No word yet",
+        "Extra high",
+        "Model's own",
+        "Sends no effort value, so the model uses its own setting.",
+        "Short thinking. Enough for a single-file edit or a question with one answer."
+      ],
+      "presence": [
+        "model?.supportedReasoningEfforts ?? []",
+        "effortLevel(provider, id, model?.defaultReasoningEffort)"
+      ],
+      "partial": {
+        "since": "2026-09-26",
+        "reason": "the effort menu from PR #622 lists the levels the model reports, the value sent in mono beside each word, and a level with no word as its value; it uses the 2026-09-23 scales, so the claude-code effort and codex none to xhigh words and lines, Model's own, the Model default marker, the No word yet tag and the neutral clamp note are not built"
+      }
     },
     {
       "id": "editor.dialog",
@@ -1882,7 +1919,13 @@
   "annotations": [
     "LATER · PREVIEW STATE",
     "PREVIEW STATE",
-    "TRY AN INPUT"
+    "TRY AN INPUT",
+    "Effort on codex",
+    "Each model reports its own levels and its own default, marked. This one reports six. A change applies from the next turn.",
+    "Effort on claude-code",
+    "claude-code reports low, medium, high and max. The default marker sits where this model reports it, here High.",
+    "Level with no word",
+    "A level Domovoi has no word for reads as the value it sends, in mono, and is still a choice. No level is ever renamed."
   ],
   "scriptBacklog": {
     "since": "2026-09-26",

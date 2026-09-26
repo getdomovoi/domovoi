@@ -4,7 +4,7 @@
     "project": "Relay multi-device platform",
     "projectId": "a3b4404e-4d0c-451e-8dd2-203116a76c06"
   },
-  "recordedOn": "2026-09-23",
+  "recordedOn": "2026-09-26",
   "files": {
     "design/assets/mark-reduced.svg": {
       "bytes": 519,
@@ -119,8 +119,8 @@
       "sha256": "13bec69b54f560d9c59a765b56f285a63b4dd3a33ccaf3c465de785865dfeaae"
     },
     "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html": {
-      "bytes": 607055,
-      "sha256": "6972659927566825664a28f6b60749069aa55e75e70cd237267999e8f438e3c7"
+      "bytes": 611115,
+      "sha256": "52bafd8d3bae523a0e1d26813de3ca07b3630ac5cc6e5b9f4baa1ef52428da4c"
     },
     "design/design_handoff_domovoi_v2/designs/Domovoi Pairing Layouts.dc.html": {
       "bytes": 10402,
@@ -138,6 +138,10 @@
       "bytes": 54506,
       "sha256": "69b2db14ceff24c169c1645aa4caa00ece1d111a30d19b05a963ee408c02a5b7"
     },
+    "design/design_handoff_domovoi_v2/designs/Domovoi Turn Skills Options.dc.html": {
+      "bytes": 12805,
+      "sha256": "4aaa524c161fb625eb61370ca531e9fbf6b9a77ff4ae0d66fe9fd3f603642e35"
+    },
     "design/design_handoff_domovoi_v2/designs/Domovoi Web v2.dc.html": {
       "bytes": 79318,
       "sha256": "c6dd3265c3df0ceac75b708d53af3e50a88392c06033b72ebbdb9ee7d3d16f7c"
@@ -151,8 +155,8 @@
       "sha256": "136599f8db13471d9d2c9d0766b180f774af32cb4ca6ce215c43080e59141873"
     },
     "design/design_handoff_domovoi_v2/designs/Domovoi v2 Skills.dc.html": {
-      "bytes": 86578,
-      "sha256": "bf89650c0858632c1e74bd813dacbb920dac170d35440feda89be3e23e993b61"
+      "bytes": 118591,
+      "sha256": "794a6547da2a95f479f836feb2a3cc1d69bf43095824c3b76ba5fb8dfffb1576"
     },
     "design/design_handoff_domovoi_v2/designs/Domovoi v2 States.dc.html": {
       "bytes": 36327,
