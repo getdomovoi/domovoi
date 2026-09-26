@@ -203,6 +203,13 @@ function AboutBuildSection({ about, inCard = false }: { about: AboutBuild; inCar
   const commit = status?.currentSourceCommit?.slice(0, 7)
   const pending = status ? pendingUpdateLine(status) : undefined
   const openReleasePage = about.onOpenReleasePage
+  // Owner ruling 2026-09-25: when the desktop could not open the browser, the
+  // row says so and gives the address as selectable mono text to copy.
+  const [browserFailed, setBrowserFailed] = useState(false)
+  const openInBrowser = (open: () => Promise<boolean>) => {
+    setBrowserFailed(false)
+    open().then((opened) => setBrowserFailed(!opened), () => setBrowserFailed(true))
+  }
   // The design's row: facts on the left, the release page as a link on the
   // right. A link, not a button, so a watching window (its controls disabled
   // by the read-only fieldset) can still open it. The desktop hands the fixed
@@ -226,13 +233,18 @@ function AboutBuildSection({ about, inCard = false }: { about: AboutBuild; inCar
         ) : (
           <p className="m-0 text-[11.5px] leading-[1.5] text-muted-foreground">This build is not signed and does not update itself. Get new versions from the release page.</p>
         )}
+        {browserFailed ? (
+          <p role="status" className="m-0 text-[11.5px] leading-[1.5] text-warning">
+            Could not open the browser. The release page is <span className="font-machine select-text break-all">{releasePageUrl}</span>
+          </p>
+        ) : null}
       </div>
       <a
         href={releasePageUrl}
         target="_blank"
         rel="noopener"
         className="flex shrink-0 items-center gap-1.5 pt-px text-[11.5px] text-primary underline-offset-2 hover:underline"
-        {...(openReleasePage ? { onClick: (event: MouseEvent<HTMLAnchorElement>) => { event.preventDefault(); void openReleasePage() } } : {})}
+        {...(openReleasePage ? { onClick: (event: MouseEvent<HTMLAnchorElement>) => { event.preventDefault(); openInBrowser(openReleasePage) } } : {})}
       >
         Release page
         <ExternalLinkIcon className="size-3.5" />

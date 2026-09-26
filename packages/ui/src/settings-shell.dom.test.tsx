@@ -1,5 +1,5 @@
 import type { ApprovalRule } from "@getdomovoi/protocol"
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
@@ -270,6 +270,46 @@ it("adds nothing for a quarantined target", async () => {
   expect(await within(section).findByText("domovoid 0.9.4 · 3f8b01d")).toBeTruthy()
   expect(within(section).getByText("This build is not signed and does not update itself. Get new versions from the release page.")).toBeTruthy()
   expect(section.textContent).not.toContain("The daemon reports")
+})
+
+// Owner ruling 2026-09-25: when the desktop could not open the browser, say
+// so and give the address as selectable mono text to copy by hand.
+it.each([
+  ["resolves false", () => Promise.resolve(false)],
+  ["rejects", () => Promise.reject(new Error("bridge refused"))],
+])("gives the release page address when the desktop open %s", async (_case, open) => {
+  const onOpenReleasePage = vi.fn(open)
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", state: "idle" as const })), onOpenReleasePage }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  expect(section.textContent).not.toContain("Could not open the browser.")
+  fireEvent.click(within(section).getByRole("link", { name: "Release page" }))
+  const line = await within(section).findByRole("status")
+  expect(line.textContent).toBe("Could not open the browser. The release page is https://github.com/getdomovoi/domovoi/releases")
+  const address = within(line).getByText("https://github.com/getdomovoi/domovoi/releases")
+  expect(address.tagName).not.toBe("A")
+  expect(address.className).toContain("font-machine")
+  expect(address.className).toContain("select-text")
+})
+
+it("adds no line when the desktop opens the release page", async () => {
+  const onOpenReleasePage = vi.fn(async () => true)
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", state: "idle" as const })), onOpenReleasePage }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  // act flushes the resolved open before the section is read.
+  await act(async () => { fireEvent.click(within(section).getByRole("link", { name: "Release page" })) })
+  expect(onOpenReleasePage).toHaveBeenCalledOnce()
+  expect(within(section).queryByRole("status")).toBeNull()
+  expect(section.textContent).not.toContain("Could not open the browser.")
+})
+
+it("lets a browser tab follow the release page link with no line", () => {
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", state: "idle" as const })) }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  const link = within(section).getByRole("link", { name: "Release page" })
+  expect(link.getAttribute("href")).toBe("https://github.com/getdomovoi/domovoi/releases")
+  expect(link.getAttribute("target")).toBe("_blank")
+  expect(fireEvent.click(link)).toBe(true)
+  expect(section.textContent).not.toContain("Could not open the browser.")
 })
 
 // A watching window changes nothing on the daemon, but reading where new
