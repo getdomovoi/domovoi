@@ -77,20 +77,36 @@ Measured baseline, from the first coverage run of each package on Node 22:
 | `@getdomovoi/ui` | 52.62% | 51.04% | 50.95% | 55.95% |
 | `@getdomovoi/desktop` | 50.37% | 57.10% | 45.31% | 53.60% |
 | `@getdomovoi/web` | 48.48% | 69.23% | 50.00% | 50.00% |
+| `@getdomovoi/credential-store` | 85.82% | 82.92% | 92.00% | 89.58% |
+| `@getdomovoi/cli` | 64.96% | 46.62% | 80.61% | 68.43% |
+| `@getdomovoi/mobile`, vitest | 66.17% | 68.31% | 75.41% | 67.18% |
+| `@getdomovoi/mobile`, jest | 70.36% | 72.26% | 64.91% | 73.22% |
 
-Thresholds in force, at or just under those numbers:
+The last four rows were measured on 2026-09-26. `@getdomovoi/credential-store` measures lower on
+Windows, where its file-mode checks do not run, so its row is the Windows run; macOS and Linux
+measure 96.26%, 91.46%, 92.00% and 96.87%. The mobile app has two runners: vitest measures the
+logic (`src/**/*.ts`) and jest the screens (`src/**/*.tsx`), each against its own floor. The CLI's
+entry point runs only as the built binary in its end-to-end test, a separate process that v8
+coverage does not see, which is most of its gap.
 
-| Package | Statements | Branches | Functions | Lines |
-| --- | --- | --- | --- | --- |
-| `@getdomovoi/protocol` | 97 | 91 | 98 | 97 |
-| `@getdomovoi/daemon` | 84 | 77 | 86 | 87 |
-| `@getdomovoi/ui` | 52 | 51 | 50 | 55 |
-| `@getdomovoi/desktop` | 50 | 57 | 45 | 53 |
-| `@getdomovoi/web` | 48 | 69 | 49 | 49 |
+The floors in force live in the configs, and this guide does not restate them:
 
-The daemon's branch floor is a point below its measured 78.13% because a few of its suites cover
-timing-dependent branches, and `@getdomovoi/web` sits a point below on the two figures that
-measured as exact integers.
+| Package | Floors |
+| --- | --- |
+| `@getdomovoi/protocol` | `packages/protocol/vitest.config.ts` |
+| `@getdomovoi/credential-store` | `packages/credential-store/vitest.config.ts` |
+| `@getdomovoi/daemon` | `apps/daemon/vitest.config.ts` |
+| `@getdomovoi/ui` | `packages/ui/vite.config.ts` |
+| `@getdomovoi/desktop` | `apps/desktop/vitest.config.ts` |
+| `@getdomovoi/web` | `apps/web/vite.config.ts` |
+| `@getdomovoi/cli` | `apps/cli/vitest.config.ts` |
+| `@getdomovoi/mobile` | `apps/mobile/vitest.config.ts` and `apps/mobile/jest.config.js` |
+
+Each floor started as the measured figure rounded down to a whole percent, and a point lower where
+the measurement was an exact integer. The daemon's branch floor is a point below its measured
+78.13% because a few of its suites cover timing-dependent branches. `@getdomovoi/web` has since
+reached 100% on every figure, and its floors were raised to 100 to match. Other packages now
+measure above their floors; raising one is a change of its own.
 
 ## Project boundaries
 
