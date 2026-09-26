@@ -8,8 +8,12 @@ const repositoryRoot = fileURLToPath(new URL("../", import.meta.url))
 
 // Each production dependency is installed with the package, so it has to be
 // loaded by the code that ships. Tests and type-only imports do not count.
+// Desktop's shipped Node code is the main process and the preload, with the
+// modules they share. The renderer is left out: vite inlines everything it
+// imports into out/renderer, so none of it is loaded from node_modules.
 const packages = [
   { directory: "apps/cli", sources: ["src"] },
+  { directory: "apps/desktop", sources: ["src/main", "src/preload", "src/shared"] },
 ]
 
 const moduleSpecifier = /(?:^|[\s;])(?:import|export)\s+(type\s+)?(?:[^"';]*?\sfrom\s+)?["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)/g

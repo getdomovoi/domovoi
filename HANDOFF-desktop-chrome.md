@@ -280,11 +280,12 @@ In rough order.
      (`workspace-shell.tsx:536`), and `machine-switcher.tsx:122` captures that value in a ref
      **on mount**. Mounting it conditionally therefore breaks `move` silently. It is wrapped in
      `sr-only` so the menu still anchors and opens. Giving `move` its own dialog is the real fix.
-   - `ComposerSkillChip`: **still kept.** The `/skill` picker now inserts `/skill ` into the
-     message field, but it does not populate the protocol's `TurnSkillSelection`. Removing the chip
-     still drops the five tested behaviours: a per-turn skill choice surviving a remount, a held
-     choice for a skill no longer enabled, an explicit empty choice, and waiting for a pending
-     catalog. Do not remove it until that protocol wiring has a design-defined replacement.
+   - `ComposerSkillChip`: **removed** (audit D16, 2026-09-26). The composer stopped rendering it
+     in this change, so only its own tests reached it. Sending `/skill <name>` sets the turn's
+     `TurnSkillSelection` (the `skill` intent in `thread.tsx`), the session draft keeps it across
+     a remount, and the next turn carries it. Nothing on screen shows that selection before the
+     turn is sent, and no client code reads a skill selection refusal. Showing either is a design
+     question.
    - The `<provider> not ready` badge: **kept.** The design is silent on it, and it reports a
      real blocked state. Recorded as a gap rather than invented away.
 2. **Watching-only arrangement.** The copy matches, the arrangement does not. The design insets

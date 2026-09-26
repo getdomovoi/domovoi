@@ -12,9 +12,10 @@ export const desktopNoticesDirectory = "apps/desktop/build/notices"
 
 const noticeFile = /^(?:licen[cs]e|copying|notice)(?:-[a-z0-9]+)?(?:\.(?:md|markdown|txt|rst|html))?$/iu
 
-// The desktop build never contains these, so they get no notice.
-// electron-builder.yml excludes them and desktop-package-contents.test.mjs
-// checks the exclusion.
+// These get no notice. The Claude Agent SDK's per-platform packages are not in
+// the build: electron-builder.yml excludes them and
+// desktop-package-contents.test.mjs checks the exclusion. Domovoi's own
+// packages are left out because they are not third-party.
 const notShipped = [/^@anthropic-ai\/claude-agent-sdk-/u, /^@getdomovoi\//u]
 
 export async function readNoticeTexts(directory) {

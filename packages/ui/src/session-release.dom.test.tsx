@@ -17,7 +17,6 @@ const handlers = {
   onCheckpoint: vi.fn(async () => {}),
   onRestoreCheckpoint: vi.fn(async () => {}),
   onPauseSession: vi.fn(async () => {}),
-  onArchiveSession: vi.fn(async () => {}),
 }
 
 const otherMachineId = `machine-${"b".repeat(32)}`

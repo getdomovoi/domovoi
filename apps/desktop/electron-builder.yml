@@ -22,9 +22,12 @@ directories:
   buildResources: build
   output: dist
 
-# electron-vite writes out/. Production dependencies are added by
-# electron-builder itself; the exclusions drop what only the renderer bundle
-# uses, which vite has already inlined into out/renderer.
+# electron-vite writes out/. electron-builder adds the production dependencies
+# itself, and those are only what the main process and the preload load at run
+# time. The UI and React are development dependencies: vite inlines them into
+# out/renderer, so none of the renderer's packages is copied as node_modules.
+# scripts/declared-dependencies.test.mjs and
+# scripts/desktop-package-contents.test.mjs check both halves.
 #
 # The Claude Agent SDK library ships; its per-platform packages, which carry
 # the vendor's agent binary, do not. The daemon runs the person's own
@@ -37,9 +40,6 @@ files:
   # not beside the runtime they describe.
   - daemon-runtime-manifests/**
   - "!**/*.map"
-  - "!node_modules/@getdomovoi/ui/**"
-  - "!node_modules/react/**"
-  - "!node_modules/react-dom/**"
   - "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
 
 # The daemon runtime the app ships for the login service (J24): one pinned

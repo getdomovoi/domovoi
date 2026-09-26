@@ -21,7 +21,6 @@ function threadFor(snapshot: WorkspaceSnapshot) {
       onCheckpoint={vi.fn(async () => {})}
       onRestoreCheckpoint={vi.fn(async () => {})}
       onPauseSession={vi.fn(async () => {})}
-      onArchiveSession={vi.fn(async () => {})}
     />
   )
 }
@@ -84,7 +83,7 @@ it("routes strip edits, discards and the preview link through the thread", async
       onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})}
       onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})}
       onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})}
-      onPauseSession={vi.fn(async () => {})} onArchiveSession={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
       onEditPlan={onEditPlan} onDiscardPlanEdit={onDiscardPlanEdit} onOpenPlanPreview={onOpenPlanPreview}
     />,
   )
@@ -116,7 +115,7 @@ it("keeps the strip readable for an archived session and shuts its edits", () =>
       onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})}
       onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})}
       onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})}
-      onPauseSession={vi.fn(async () => {})} onArchiveSession={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
       onEditPlan={vi.fn(async () => {})} onDiscardPlanEdit={vi.fn(async () => {})} onOpenPlanPreview={vi.fn()}
     />,
   )
