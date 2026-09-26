@@ -302,10 +302,10 @@ it("removes the installed service and says the daemon is back inside this app", 
 // Review round 1 of #576: Remove waits for the same work Install waits for,
 // and each outcome the main process can report is drawn as what is still
 // true. The lines were approved by fetzy on 2026-09-23.
-function daemonSection(owner: "app" | "outside", service: { install?: () => Promise<unknown>; remove?: () => Promise<unknown>; refusal?: string }) {
+function daemonSection(owner: "app" | "outside", service: { install?: () => Promise<unknown>; remove?: () => Promise<unknown>; status?: () => Promise<unknown>; refusal?: string }) {
   render(<SettingsShell {...shellProps()} localDaemon={{
     title: owner === "outside" ? "Connected to the installed Domovoi service" : "Running Domovoi inside this app", detail: "", owner, ...(owner === "outside" ? { serviceInstalled: true } : {}), platform: "darwin",
-    service: { install: (service.install ?? vi.fn()) as never, remove: (service.remove ?? vi.fn()) as never, ...(service.refusal ? { refusal: service.refusal } : {}) },
+    service: { install: (service.install ?? vi.fn()) as never, remove: (service.remove ?? vi.fn()) as never, ...(service.status ? { status: service.status as never } : {}), ...(service.refusal ? { refusal: service.refusal } : {}) },
   }} />)
   return screen.getByRole("region", { name: "Daemon on this machine" })
 }
@@ -489,4 +489,61 @@ it("keeps the other window's line for a daemon another Domovoi window started", 
   expect(section.textContent).toContain("That app owns the daemon and stops it when it quits.")
   expect(section.textContent).not.toContain("Quitting Domovoi stops the daemon")
   expect(section.textContent).not.toContain("Quitting this app leaves the daemon and its sessions running.")
+})
+
+// Review round 3 of #576: the desktop can finish an install or a removal and
+// still hand this window an answer it cannot read, so an unknown answer says
+// nothing about what changed. Settings reads the service back and says what
+// it saw, or that it cannot tell. It never says nothing changed on its own.
+it("reads the service back when the answer to an install cannot be read, and never says nothing changed", async () => {
+  const user = userEvent.setup()
+  const install = vi.fn(async () => { throw new Error("Desktop returned an invalid service outcome") })
+  const status = vi.fn()
+    .mockResolvedValueOnce({ installed: true, running: true, detail: "pid 48213" })
+    .mockResolvedValueOnce({ unavailable: "launchctl could not be run" })
+    .mockRejectedValueOnce(new Error("The desktop did not answer."))
+    .mockResolvedValueOnce({ installed: false, running: false, detail: "" })
+  const section = daemonSection("app", { install, status })
+  const button = within(section).getByRole("button", { name: "Install" })
+  for (const fact of [
+    "The LaunchAgent is installed and running.",
+    "Whether the LaunchAgent is installed is not known from here.",
+    "Whether the LaunchAgent is installed is not known from here.",
+    "Nothing was installed.",
+  ]) {
+    await user.click(button)
+    expect(await within(section).findByText(fact)).toBeTruthy()
+    expect(section.textContent).toContain("Desktop returned an invalid service outcome")
+    expect(section.textContent).not.toContain("Nothing changed.")
+  }
+  expect(status).toHaveBeenCalledTimes(4)
+})
+
+it("reads the service back when the answer to a removal cannot be read, and never says nothing changed", async () => {
+  const user = userEvent.setup()
+  const remove = vi.fn(async () => { throw new Error("Desktop returned an invalid service outcome") })
+  const status = vi.fn()
+    .mockResolvedValueOnce({ installed: true, running: false, detail: "not loaded" })
+    .mockResolvedValueOnce({ installed: null, running: false, detail: "" })
+    .mockResolvedValueOnce({ installed: false, running: false, detail: "" })
+  const section = daemonSection("outside", { remove, status })
+  const button = within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" })
+  // The last line has no approved wording yet: the removal may or may not
+  // have finished, so the approved "gone, but the removal did not finish"
+  // would claim more than is known.
+  for (const fact of ["The LaunchAgent is still installed but not running.", "Whether the LaunchAgent is installed is not known from here.", "[Copy pending] The LaunchAgent is not installed."]) {
+    await user.click(button)
+    expect(await within(section).findByText(fact)).toBeTruthy()
+    expect(section.textContent).not.toContain("Nothing changed.")
+    expect(section.textContent).not.toContain("Nothing was removed.")
+  }
+})
+
+it("says it cannot tell what changed when there is no way to read the service back", async () => {
+  const user = userEvent.setup()
+  const install = vi.fn(async () => { throw new Error("Desktop returned an invalid service outcome") })
+  const section = daemonSection("app", { install })
+  await user.click(within(section).getByRole("button", { name: "Install" }))
+  expect(await within(section).findByText("Whether the LaunchAgent is installed is not known from here.")).toBeTruthy()
+  expect(section.textContent).not.toContain("Nothing changed.")
 })

@@ -1354,8 +1354,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}),
               ...(localDaemon.serviceInstalled === undefined && serviceInstalled !== undefined ? { serviceInstalled } : {}),
               ...(windowBridge?.daemonService && !watching ? { service: {
-                install: async () => { const outcome = await windowBridge.daemonService!.install(); readServiceStatus(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
-                remove: async () => { const outcome = await windowBridge.daemonService!.remove(); readServiceStatus(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
+                // The status is read again even when the answer cannot be read:
+                // the desktop may have changed the service before it failed.
+                install: async () => { try { const outcome = await windowBridge.daemonService!.install(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome } finally { readServiceStatus() } },
+                remove: async () => { try { const outcome = await windowBridge.daemonService!.remove(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome } finally { readServiceStatus() } },
+                status: () => windowBridge.daemonService!.status(),
                 refusal: serviceHandoffRefusal(snapshot),
               } } : {}),
             } } : {})}

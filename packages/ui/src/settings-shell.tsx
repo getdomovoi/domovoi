@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { AppearanceSettings, ExternalEditorSettings, ProviderSettings, type ProviderSecretStatus } from "./provider-settings.js"
 import type { WorkspaceTheme } from "./appearance.js"
-import type { DaemonServiceOutcome, DesktopExternalEditor, WorkspaceWindowDecoration } from "./desktop-platform.js"
+import type { DaemonServiceOutcome, DaemonServiceStatusReport, DesktopExternalEditor, WorkspaceWindowDecoration } from "./desktop-platform.js"
 import { NotificationSettings } from "./notification-settings.js"
 import type { NotificationPreferences } from "./notification-preferences.js"
 import type { WorkspaceClientCapabilities } from "./workspace-platform.js"
@@ -40,6 +40,9 @@ export type LocalDaemonDescription = {
   service?: {
     install: () => Promise<DaemonServiceOutcome>
     remove: () => Promise<DaemonServiceOutcome>
+    // The service as the desktop reads it now, for an answer this window
+    // could not read.
+    status?: (() => Promise<DaemonServiceStatusReport>) | undefined
     refusal?: string | undefined
   } | undefined
   // True while this app owns the daemon, so quitting it disconnects every
@@ -92,6 +95,26 @@ function daemonFact(daemon: FailedOutcome["daemon"]): string {
   return "The daemon inside this app was not stopped."
 }
 
+async function readServiceBack(status: (() => Promise<DaemonServiceStatusReport>) | undefined): Promise<FailedOutcome["service"]> {
+  if (!status) return null
+  try {
+    const report = await status()
+    return "unavailable" in report ? null : { installed: report.installed, running: report.running }
+  } catch {
+    return null
+  }
+}
+
+// Review round 3 of #576: what is still true after an answer this window could
+// not read. Only the read-back speaks; the daemon's state is not known here.
+function unknownAnswerStill(kind: string, action: "install" | "remove", service: FailedOutcome["service"]): string {
+  // COPY PLACEHOLDER (awaiting the owner's ruling): a removal whose answer was
+  // unreadable and whose read-back shows no service. "Gone, but the removal
+  // did not finish" would claim more than is known.
+  if (action === "remove" && service?.installed === false) return `[Copy pending] The ${kind} is not installed.`
+  return readBackFact(kind, action, service)
+}
+
 // What is still true after a failed install or removal. The approved lines
 // hold only when the service read back afterwards shows nothing changed.
 function failedStill(kind: string, action: "install" | "remove", outcome: FailedOutcome): string {
@@ -139,7 +162,9 @@ function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: N
         ? "No service was installed and no service files were changed."
         : outcome.reason === "busy" ? "Nothing changed." : failedStill(service.kind, action, outcome) })
     } catch (cause) {
-      setPhase({ kind: "failed", action, message: cause instanceof Error ? cause.message : "The desktop did not answer.", still: "Nothing changed." })
+      // The desktop may have finished the change before its answer failed
+      // here, so what changed is read back rather than assumed.
+      setPhase({ kind: "failed", action, message: cause instanceof Error ? cause.message : "The desktop did not answer.", still: unknownAnswerStill(service.kind, action, await readServiceBack(live.status)) })
     }
   }
   const on = daemon.owner === "outside" && daemon.serviceInstalled === true

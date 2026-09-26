@@ -1,5 +1,5 @@
 import { demoWorkspace } from "@getdomovoi/protocol"
-import { act, cleanup, render, screen, within } from "@testing-library/react"
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
@@ -114,6 +114,32 @@ it("keeps a daemon outside the app unnamed when the service status cannot be rea
   const section = await screen.findByRole("region", { name: "Daemon on this machine" })
   expect(within(section).getByText("Not started here")).toBeTruthy()
   expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(true)
+})
+
+// Review round 3 of #576: an install the desktop answered in a shape this
+// window cannot read still ends with the service read back, both in the
+// outcome and in the section's own state.
+it("reads the service back through the desktop when the install answer cannot be read", async () => {
+  const install = vi.fn(async () => { throw new Error("Desktop returned an invalid service outcome") })
+  const windowBridge = bridge(install as never)
+  const status = vi.fn()
+    .mockResolvedValueOnce({ installed: false, running: false, detail: "" })
+    .mockResolvedValue({ installed: true, running: false, detail: "not loaded" })
+  windowBridge.daemonService!.status = status
+  const idle = workspaceSnapshot({ approvals: [], sessions: demoWorkspace.sessions.map((session) => { const { activeTurnId: _turn, ...rest } = session; return { ...rest, state: "idle" as const } }) })
+  render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={{ title: "Running Domovoi inside this app", detail: "", owner: "app" }} />)
+  await act(async () => { completeHandshake(harness.socket(0), idle) })
+  await settle()
+  const user = userEvent.setup()
+  await skipFirstRun(user)
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  const section = await screen.findByRole("region", { name: "Daemon on this machine" })
+  await user.click(within(section).getByRole("button", { name: "Install" }))
+  expect(await within(section).findByText("The LaunchAgent is installed but not running.")).toBeTruthy()
+  expect(section.textContent).not.toContain("Nothing changed.")
+  // Once for the section, once for the outcome, once more to refresh the
+  // section after the failed call.
+  await waitFor(() => expect(status).toHaveBeenCalledTimes(3))
 })
 
 // J24: the desktop's daemon copy names the owner but not the platform; the
