@@ -431,6 +431,7 @@ describe("ACP repository configuration", () => {
     ["Cursor", ".cursor/hooks.json", CURSOR_ACP_PROVIDER],
     ["Cursor", ".cursor/cli.json", CURSOR_ACP_PROVIDER],
     ["Cursor", ".claude/settings.json", CURSOR_ACP_PROVIDER],
+    ["Cursor", ".mcp.json", CURSOR_ACP_PROVIDER],
     ["Grok", ".grok/config.toml", GROK_ACP_PROVIDER],
     ["Grok", ".grok/hooks/pre-tool.json", GROK_ACP_PROVIDER],
     ["Grok", ".mcp.json", GROK_ACP_PROVIDER],
@@ -527,6 +528,60 @@ describe("ACP repository configuration", () => {
     await adapter.connect()
 
     await expect(adapter.startThread({ cwd: join(outer, "repo"), runtime })).resolves.toBe("acp-session")
+  })
+
+  it("resolves a session directory reached through a link to the repository it is in", async () => {
+    const root = worktree({ "packages/app/src/index.ts": "", ".grok/hooks/pre-tool.json": "{}\n" })
+    const aliases = mkdtempSync(join(tmpdir(), "domovoi-acp-alias-"))
+    scratch.push(aliases)
+    symlinkSync(join(root, "packages", "app"), join(aliases, "app"))
+    const { adapter } = connected(GROK_ACP_PROVIDER)
+    await adapter.connect()
+
+    await expect(adapter.startThread({ cwd: join(aliases, "app"), runtime })).rejects.toThrow(refusal("Grok", ".grok/hooks"))
+  })
+
+  it("checks every directory above a session directory that is in no repository", async () => {
+    const outer = mkdtempSync(join(tmpdir(), "domovoi-acp-plain-"))
+    scratch.push(outer)
+    write(outer, { ".cursor/mcp.json": "{}\n", "inner/notes.txt": "" })
+    const { adapter } = connected()
+    await adapter.connect()
+
+    await expect(adapter.startThread({ cwd: join(outer, "inner"), runtime }))
+      .rejects.toThrow(refusal("Cursor", join(outer, ".cursor", "mcp.json")))
+  })
+
+  it("refuses a configuration folder that is a link, without following it", async () => {
+    const cwd = worktree()
+    const elsewhere = mkdtempSync(join(tmpdir(), "domovoi-acp-elsewhere-"))
+    scratch.push(elsewhere)
+    symlinkSync(elsewhere, join(cwd, ".cursor"))
+    const { adapter } = connected()
+    await adapter.connect()
+
+    await expect(adapter.startThread({ cwd, runtime })).rejects.toThrow(refusal("Cursor", ".cursor/mcp.json"))
+  })
+
+  it.each(["start", "resume"] as const)("stops the agent when a held-back file appears in a session it can %s", async (entry) => {
+    const root = worktree({ "packages/app/src/index.ts": "" })
+    const cwd = join(root, "packages", "app")
+    const { adapter, peer } = connected()
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.connect()
+    if (entry === "start") await adapter.startThread({ cwd, runtime })
+    else await adapter.resumeThread({ threadId: "acp-session", cwd, runtime })
+
+    mkdirSync(join(root, ".cursor"))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    writeFileSync(join(root, ".cursor", "hooks.json"), "{}\n")
+
+    await waitForDaemon(() => expect(events).toContainEqual({
+      type: "provider-disconnected",
+      reason: refusal("Cursor", ".cursor/hooks.json"),
+    }))
+    expect(peer.close).toHaveBeenCalledOnce()
   })
 
   it("names every held-back file in the daemon README", () => {

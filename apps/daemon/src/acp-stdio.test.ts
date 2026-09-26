@@ -1,5 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process"
 import { EventEmitter } from "node:events"
+import { existsSync, readdirSync, realpathSync } from "node:fs"
 import { PassThrough } from "node:stream"
 
 import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk"
@@ -60,6 +61,37 @@ async function initializePeer(child: ReturnType<typeof fakeAcpProcess>) {
 }
 
 describe("ACP stdio mapping", () => {
+  // A daemon started inside a repository must not hand that repository to the
+  // agent as its process directory, where it could load project configuration
+  // at startup. The session's worktree reaches the agent as the ACP session cwd.
+  it("starts the agent in an empty private directory and names the worktree only as the session cwd", async () => {
+    const child = fakeAcpProcess((id) => ({
+      jsonrpc: "2.0", id, result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {}, sessionId: "acp-session" },
+    }))
+    const requests: { method?: string; params?: { cwd?: string } }[] = []
+    child.stdin.on("data", (bytes: Buffer) => { requests.push(JSON.parse(bytes.toString())) })
+    const spawnCwds: (string | undefined)[] = []
+    const peer = new StdioAcpPeer({
+      definition: CURSOR_ACP_PROVIDER,
+      handlers: { onUpdate: vi.fn(), onPermission: vi.fn(), onDisconnect: vi.fn() },
+      spawnProcess: (_command, _args, options?: { cwd?: string }) => {
+        spawnCwds.push(options?.cwd)
+        queueMicrotask(() => child.emit("spawn"))
+        return child as unknown as ChildProcessWithoutNullStreams
+      },
+    })
+    await peer.initialize()
+    const [cwd] = spawnCwds
+    expect(cwd).toEqual(expect.any(String))
+    expect(realpathSync(cwd!)).not.toBe(realpathSync(process.cwd()))
+    expect(readdirSync(cwd!)).toEqual([])
+
+    await peer.startSession("/work/session-worktree")
+    expect(requests.find((request) => request.method === "session/new")?.params?.cwd).toBe("/work/session-worktree")
+    await peer.close()
+    expect(existsSync(cwd!)).toBe(false)
+  })
+
   it("identifies the running build to the provider", async () => {
     const child = fakeAcpProcess((id) => ({
       jsonrpc: "2.0", id, result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} },

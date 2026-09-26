@@ -26,7 +26,8 @@ export const CURSOR_ACP_PROVIDER: AcpProviderDefinition = {
   // From Cursor's CLI, MCP, hooks and third-party hooks documentation: project
   // MCP servers, hooks, CLI permission rules and sandbox policy, and the Claude
   // Code settings whose hooks Cursor runs by default. The CLI has no switch
-  // that turns project configuration off.
+  // that turns project configuration off. The root .mcp.json is not documented
+  // for the CLI; it is held back as a precaution until a live run settles it.
   heldBackRepositoryFiles: [
     ".cursor/mcp.json",
     ".cursor/hooks.json",
@@ -34,6 +35,7 @@ export const CURSOR_ACP_PROVIDER: AcpProviderDefinition = {
     ".cursor/sandbox.json",
     ".claude/settings.json",
     ".claude/settings.local.json",
+    ".mcp.json",
   ],
 }
 

@@ -548,10 +548,14 @@ code or settings the repository brings:
   while the main checkout of a linked worktree holds `.codex/config.toml` or `.codex/hooks.json`.
 - Cursor and Grok have no switch that turns project configuration off. The daemon refuses to open,
   resume or prompt a Cursor or Grok session while any directory from the session's directory up
-  to the repository root holds one of the files below, and says which one. A symbolic link counts.
+  to the repository root holds one of the files below, and says which one. The session's directory
+  is also resolved through links, and both paths are checked. A symbolic link counts as the file,
+  and so does a link on the way to it, such as a `.cursor` folder that is a link. A directory in no
+  repository is checked up to the filesystem root, except the home directory.
   - Cursor: `.cursor/mcp.json` (MCP servers), `.cursor/hooks.json` (hooks), `.cursor/cli.json`
-    (permission rules), `.cursor/sandbox.json` (sandbox policy), and `.claude/settings.json` and
-    `.claude/settings.local.json`, whose hooks Cursor runs by default.
+    (permission rules), `.cursor/sandbox.json` (sandbox policy), `.claude/settings.json` and
+    `.claude/settings.local.json`, whose hooks Cursor runs by default, and `.mcp.json`, which
+    Cursor's documentation does not list and is refused as a precaution.
   - Grok: `.grok/config.toml` (MCP servers, plugins, permission rules), `.grok/hooks`,
     `.grok/plugins`, `.grok/agents`, `.grok/roles`, `.grok/workflows`, `.grok/lsp.json`,
     `.grok/sandbox.toml`, `.mcp.json`, `.cursor/mcp.json`, `.cursor/hooks.json`,
@@ -563,6 +567,12 @@ code or settings the repository brings:
     only in a folder the person has trusted, and the daemon does not send them. The lists follow
     Cursor's documentation and Grok's own list of trust-sensitive files; a file either agent
     loads that they do not name is not refused.
+  - While a session is open the daemon watches those directories. When a listed file appears, it
+    stops the agent process, which ends every session that process runs: each shows the
+    disconnect with the refusal as its reason, and a session in that worktree is refused when it
+    resumes. The agent can read the file in the moment before it is stopped.
+  - The agent process starts in an empty private folder, not the daemon's own directory, and is
+    given each session's worktree as that session's directory.
 
 Instruction files still reach the agent, because the daemon reads them itself as text. For Claude
 Code it reads `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` at the worktree root and

@@ -1,4 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
+import { mkdtempSync } from "node:fs"
+import { rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
 
 import { buildVersion } from "@getdomovoi/protocol"
@@ -28,7 +32,11 @@ import type {
 import type { AcpProviderDefinition } from "./acp-providers.js"
 import { onProcessEnd } from "./process-end.js"
 
-type ProcessSpawner = (command: string, args: readonly string[]) => ChildProcessWithoutNullStreams
+type ProcessSpawner = (
+  command: string,
+  args: readonly string[],
+  options: { cwd: string },
+) => ChildProcessWithoutNullStreams
 const ACP_CLOSE_GRACE_MS = 1_000
 const ACP_FORCE_CLOSE_MS = 1_000
 const STDERR_TAIL_BYTES = 16_384
@@ -38,6 +46,7 @@ export class StdioAcpPeer implements AcpPeer {
   readonly #handlers: AcpPeerHandlers
   readonly #spawn: ProcessSpawner
   #process: ChildProcessWithoutNullStreams | undefined
+  #directory: string | undefined
   #connection: ClientSideConnection | undefined
   #capabilities: AgentCapabilities | undefined
   #closing = false
@@ -156,18 +165,30 @@ export class StdioAcpPeer implements AcpPeer {
     this.#connection = undefined
     this.#capabilities = undefined
     if (process) await terminateProcess(process)
+    const directory = this.#directory
+    this.#directory = undefined
+    if (directory) await removeDirectory(directory)
   }
 
+  // The agent runs in an empty private folder, not the daemon's own directory,
+  // which may be a repository whose configuration the agent would load at
+  // startup. Each session's worktree reaches the agent as the ACP session cwd.
   async #spawnFirstAvailable(): Promise<ChildProcessWithoutNullStreams> {
+    // Created synchronously so the child is spawned in the same turn as before.
+    const directory = mkdtempSync(join(tmpdir(), "domovoi-acp-"))
     let lastError: unknown
     for (const command of this.#definition.commands) {
       try {
-        return await spawned(this.#spawn(command, this.#definition.launchArgs))
+        const process = await spawned(this.#spawn(command, this.#definition.launchArgs, { cwd: directory }))
+        onProcessEnd(process, () => void removeDirectory(directory))
+        this.#directory = directory
+        return process
       } catch (error) {
         lastError = error
-        if (!isMissingCommand(error)) throw error
+        if (!isMissingCommand(error)) break
       }
     }
+    await removeDirectory(directory)
     throw lastError ?? new Error(`${this.#definition.id} CLI is unavailable`)
   }
 
@@ -271,8 +292,12 @@ function mapPermissionRequest(request: RequestPermissionRequest): AcpPermissionR
   }
 }
 
-function spawnAcpProcess(command: string, args: readonly string[]): ChildProcessWithoutNullStreams {
-  return spawn(command, [...args], { stdio: ["pipe", "pipe", "pipe"] })
+function spawnAcpProcess(command: string, args: readonly string[], options: { cwd: string }): ChildProcessWithoutNullStreams {
+  return spawn(command, [...args], { cwd: options.cwd, stdio: ["pipe", "pipe", "pipe"] })
+}
+
+async function removeDirectory(directory: string): Promise<void> {
+  await rm(directory, { recursive: true, force: true }).catch(() => undefined)
 }
 
 function spawned(process: ChildProcessWithoutNullStreams): Promise<ChildProcessWithoutNullStreams> {

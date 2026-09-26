@@ -20,17 +20,18 @@ export function codexRepositoryConfigFile(
   cwd: string,
   codexHome: string = process.env.CODEX_HOME || join(homedir(), ".codex"),
 ): string | undefined {
-  const start = resolve(cwd)
-  const root = projectRoot(start)
   const home = realPath(codexHome)
-  for (const directory of directoriesFrom(root, start)) {
-    const folder = join(directory, ".codex")
-    if (!isDirectory(folder) || realPath(folder) === home) continue
-    for (const name of loadedFiles) {
-      if (exists(join(folder, name))) return shown(root, join(folder, name))
+  for (const start of startsOf(cwd)) {
+    const root = projectRoot(start)
+    for (const directory of directoriesFrom(root, start)) {
+      const folder = join(directory, ".codex")
+      if (!isDirectory(folder) || realPath(folder) === home) continue
+      for (const name of loadedFiles) {
+        if (exists(join(folder, name))) return shown(root, join(folder, name))
+      }
+      const rules = entries(join(folder, rulesDirectory)).filter((name) => name.endsWith(rulesExtension)).sort()
+      if (rules[0] !== undefined) return shown(root, join(folder, rulesDirectory, rules[0]))
     }
-    const rules = entries(join(folder, rulesDirectory)).filter((name) => name.endsWith(rulesExtension)).sort()
-    if (rules[0] !== undefined) return shown(root, join(folder, rulesDirectory, rules[0]))
   }
   return undefined
 }
@@ -42,17 +43,79 @@ export function codexRepositoryConfigRefusal(file: string): string {
 }
 
 // The first of `files` present in any directory from `cwd` up to the project
-// root, by the same root rule as Codex, named by its path from that root.
-// Presence is lstat, so a symbolic link counts even when it dangles.
-export function repositoryFileFrom(cwd: string, files: readonly string[]): string | undefined {
-  const start = resolve(cwd)
-  const root = projectRoot(start)
-  for (const directory of directoriesFrom(root, start)) {
+// root, by the same root rule as Codex, named by its path from that root. A cwd
+// in no repository is checked up to the filesystem root, skipping the home
+// directory, whose files are the person's own configuration; such a file is
+// named by its absolute path. Presence is lstat, so a symbolic link counts even
+// when it dangles, and a link on the way to a file counts as the file: the check
+// never follows one out of the repository.
+export function repositoryFileFrom(
+  cwd: string,
+  files: readonly string[],
+  home: string = homedir(),
+): string | undefined {
+  for (const { root, directory } of repositoryDirectories(cwd, home)) {
     for (const file of files) {
-      if (exists(join(directory, file))) return shown(root, join(directory, file))
+      if (heldBack(directory, file)) return root === undefined ? join(directory, file) : shown(root, join(directory, file))
     }
   }
   return undefined
+}
+
+// The directories whose entries decide repositoryFileFrom: each directory it
+// checks and each real folder on the way to one of `files`. Watching them for
+// changes sees every file that could appear there.
+export function repositoryWatchDirectories(
+  cwd: string,
+  files: readonly string[],
+  home: string = homedir(),
+): string[] {
+  const watched = new Set<string>()
+  for (const { directory } of repositoryDirectories(cwd, home)) {
+    watched.add(directory)
+    for (const file of files) {
+      const parts = file.split("/")
+      let path = directory
+      for (const part of parts.slice(0, -1)) {
+        path = join(path, part)
+        if (!lstatSync(path, { throwIfNoEntry: false })?.isDirectory()) break
+        watched.add(path)
+      }
+    }
+  }
+  return [...watched]
+}
+
+function repositoryDirectories(cwd: string, home: string): { root: string | undefined; directory: string }[] {
+  const found = new Map<string, string | undefined>()
+  const skipped = realPath(home)
+  for (const start of startsOf(cwd)) {
+    const root = repositoryRoot(start)
+    const directories = root === undefined
+      ? ancestorsOf(start).filter((directory) => realPath(directory) !== skipped)
+      : directoriesFrom(root, start)
+    for (const directory of directories) if (!found.has(directory)) found.set(directory, root)
+  }
+  return [...found].map(([directory, root]) => ({ root, directory }))
+}
+
+function heldBack(directory: string, file: string): boolean {
+  const parts = file.split("/")
+  let path = directory
+  for (const [index, part] of parts.entries()) {
+    path = join(path, part)
+    const found = lstatSync(path, { throwIfNoEntry: false })
+    if (found === undefined) return false
+    if (index === parts.length - 1 || found.isSymbolicLink()) return true
+    if (!found.isDirectory()) return false
+  }
+  return false
+}
+
+// The session's directory as given and as the filesystem resolves it: a link
+// to a folder inside another repository belongs to that repository's root.
+function startsOf(cwd: string): string[] {
+  return [...new Set([resolve(cwd), realPath(cwd)])]
 }
 
 // In a linked worktree Codex takes hook declarations from the main checkout:
@@ -68,16 +131,17 @@ export function codexMainCheckoutConfigFile(
   cwd: string,
   codexHome: string = process.env.CODEX_HOME || join(homedir(), ".codex"),
 ): { file: string; mainCheckout: string } | undefined {
-  const start = resolve(cwd)
-  const root = projectRoot(start)
-  const mainCheckout = mainCheckoutOf(root)
-  if (mainCheckout === undefined) return undefined
   const home = realPath(codexHome)
-  for (const directory of directoriesFrom(root, start)) {
-    const folder = join(mainCheckout, relative(root, directory), ".codex")
-    if (!isDirectory(folder) || realPath(folder) === home) continue
-    for (const name of mainCheckoutFiles) {
-      if (exists(join(folder, name))) return { file: shown(mainCheckout, join(folder, name)), mainCheckout }
+  for (const start of startsOf(cwd)) {
+    const root = projectRoot(start)
+    const mainCheckout = mainCheckoutOf(root)
+    if (mainCheckout === undefined) continue
+    for (const directory of directoriesFrom(root, start)) {
+      const folder = join(mainCheckout, relative(root, directory), ".codex")
+      if (!isDirectory(folder) || realPath(folder) === home) continue
+      for (const name of mainCheckoutFiles) {
+        if (exists(join(folder, name))) return { file: shown(mainCheckout, join(folder, name)), mainCheckout }
+      }
     }
   }
   return undefined
@@ -99,9 +163,10 @@ export function codexMainCheckoutConfigRefusal(file: string, mainCheckout: strin
 // here, marked untrusted, answers each of those lookups before any trust level
 // set elsewhere is reached.
 export function codexProjectTrustKeys(cwd: string): string[] {
-  const start = resolve(cwd)
-  const root = projectRoot(start)
-  const paths = [...directoriesFrom(root, start), mainCheckoutOf(root) ?? root]
+  const paths = startsOf(cwd).flatMap((start) => {
+    const root = projectRoot(start)
+    return [...directoriesFrom(root, start), mainCheckoutOf(root) ?? root]
+  })
   return [...new Set(paths.map(canonicalPath))]
 }
 
@@ -134,19 +199,33 @@ function readText(path: string): string | undefined {
 }
 
 function projectRoot(cwd: string): string {
-  for (let directory = cwd; ; directory = dirname(directory)) {
+  return repositoryRoot(cwd) ?? cwd
+}
+
+function repositoryRoot(cwd: string): string | undefined {
+  for (const directory of ancestorsOf(cwd)) {
     const marker = join(directory, ".git")
     const found = statSync(marker, { throwIfNoEntry: false })
     if (found && (!found.isDirectory() || exists(join(marker, "HEAD")))) return directory
-    if (dirname(directory) === directory) return cwd
+  }
+  return undefined
+}
+
+// cwd first, then each parent up to the filesystem root.
+function ancestorsOf(cwd: string): string[] {
+  const directories: string[] = []
+  for (let directory = cwd; ; directory = dirname(directory)) {
+    directories.push(directory)
+    if (dirname(directory) === directory) return directories
   }
 }
 
+// Root first, down to cwd.
 function directoriesFrom(root: string, cwd: string): string[] {
   const directories: string[] = []
   for (let directory = cwd; ; directory = dirname(directory)) {
-    directories.unshift(directory)
-    if (directory === root || dirname(directory) === directory) return directories
+    directories.push(directory)
+    if (directory === root || dirname(directory) === directory) return directories.reverse()
   }
 }
 
