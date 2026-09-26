@@ -52,7 +52,7 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
         : []),
       ...(affectsLine.sensitive ? affectsLinePaths(affects.value) : []),
       ...commandOperands(command.value).filter(namesSecretPath),
-      ...textOperands(operation.value).filter(namesSecretPath),
+      ...textOperands(operation.value, namesSecretPath).filter(namesSecretPath),
     ])
     const commandText = hider.hide(command.value)
     const operationText = hider.hide(operation.value)
@@ -101,7 +101,7 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
       const operation = redactDurableText(item.operation).value
       return {
         ...item,
-        operation: pathHider(textOperands(operation).filter(namesSecretPath)).hide(operation),
+        operation: pathHider(textOperands(operation, namesSecretPath).filter(namesSecretPath)).hide(operation),
         ...(item.explanation === undefined
           ? {}
           : { explanation: redactDurableText(item.explanation).value }),

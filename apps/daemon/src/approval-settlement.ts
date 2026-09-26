@@ -223,7 +223,7 @@ function sealedCard(input: SettlementInput): SettledApproval {
     ...(saved === undefined ? [] : affectsLinePaths(redactDurableText(saved.affects).value)),
     ...(request.blockedPath === undefined ? [] : [request.blockedPath]),
     ...commandOperands(command).filter(namesSecretPath),
-    ...textOperands(operation).filter(namesSecretPath),
+    ...textOperands(operation, namesSecretPath).filter(namesSecretPath),
   ])
   return mint({
     ...input.approval,
@@ -384,7 +384,7 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
   const operation = { ...operationCopy, value: hidesWhole ? operationCopy.value : hidePaths(operationCopy.value, shownForms) }
   // A secret file the agent's own text names is judged by the same
   // classifier, and hidden, even when no request field names it.
-  const textPaths = textOperands(operation.value).filter(namesSecretPath)
+  const textPaths = textOperands(operation.value, namesSecretPath).filter(namesSecretPath)
   // Each path the card hides is replaced in its own text too, and a record
   // that holds one in a command word is hidden.
   const hider = pathHider([
@@ -506,7 +506,7 @@ export function sealedApproval(approval: Approval, workspace: string | undefined
     ...(directoryWasHidden ? [] : [approval.directory]),
     ...affectsLinePaths(redactDurableText(approval.affects).value),
     ...commandOperands(command).filter(namesSecretPath),
-    ...textOperands(operation).filter(namesSecretPath),
+    ...textOperands(operation, namesSecretPath).filter(namesSecretPath),
   ])
   return mint({
     ...approval,

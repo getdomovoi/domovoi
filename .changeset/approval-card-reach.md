@@ -123,7 +123,10 @@ that only starts with the path, such as `x.envy.txt` beside a hidden `x.env`, is
 not split into words first, so a hidden name that holds a comma, a space, a quote or a colon, such
 as `src/.env,prod`, is replaced whole. A secret file that only the agent's text names, such as
 `src/private.pem` in the operation of a card for `src/index.ts`, is judged by the same classifier,
-replaced the same way, and makes the card a hard gate. The classifier reads `.env.example` and
+replaced the same way, and makes the card a hard gate. Such a name is read whole beside a curly
+quote, a guillemet, a fullwidth bracket, an em dash, an ellipsis or a line suffix such as `:12` or
+`#L3`. The matching has a work limit: a card whose text would take more, or that names a hidden path
+longer than any real path, shows its operation and command as `[REDACTED]`. The classifier reads `.env.example` and
 `.envrc` as secret files too, so those names are replaced as well. A hidden
 directory at the start of a longer path is replaced, and a shell word that decodes into the path
 through quotes or escapes is replaced whole. An execution record whose command words hold the path

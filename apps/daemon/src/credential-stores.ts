@@ -435,19 +435,70 @@ export function commandOperands(command: string): string[] {
   return [...new Set([...words].flatMap(operandPieces))]
 }
 
+// The quotes, brackets and punctuation that open or end a name in prose: the
+// ASCII ones below, and outside ASCII any opening, closing, initial or final
+// quote, dash or other punctuation, such as a curly quote, a guillemet, a
+// fullwidth bracket, an em dash, an ellipsis or an ideographic full stop
+// (round 15).
+const asciiOpening = new Set([..."\"'`([{<"])
+const asciiClosing = new Set([..."\"'`)]}>,.;:!?"])
+const proseOpening = /^[\p{Ps}\p{Pi}\p{Pf}\p{Po}\p{Pd}]$/u
+const proseClosing = /^[\p{Pe}\p{Pi}\p{Pf}\p{Po}\p{Pd}]$/u
+
+function opensName(character: string): boolean {
+  return asciiOpening.has(character) || (character.codePointAt(0)! > 0x7f && proseOpening.test(character))
+}
+
+function closesName(character: string): boolean {
+  return asciiClosing.has(character) || (character.codePointAt(0)! > 0x7f && proseClosing.test(character))
+}
+
+// A candidate without the punctuation that opens and ends it. Read one code
+// point at a time, so a long run of punctuation costs linear time.
+function withoutProse(candidate: string): string {
+  const characters = [...candidate]
+  let start = 0
+  let end = characters.length
+  while (start < end && opensName(characters[start]!)) start += 1
+  while (end > start && closesName(characters[end - 1]!)) end -= 1
+  return characters.slice(start, end).join("")
+}
+
+const nonNameRun = /[^\p{L}\p{M}\p{N}\p{Pc}.\-~/\\]+/gu
+
+// The start of a word up to the end of its last run between non-name
+// characters that names a secret, so a name that holds a comma or a
+// parenthesis is read whole whatever follows it: an em dash, a line suffix
+// such as ":12" or "#L3", or a closing quote (round 15). Undefined when no
+// run does.
+function secretPrefix(word: string, names: (path: string) => boolean): string | undefined {
+  let end: number | undefined
+  let from = 0
+  for (const separator of word.matchAll(nonNameRun)) {
+    if (names(word.slice(from, separator.index))) end = separator.index
+    from = separator.index + separator[0].length
+  }
+  if (names(word.slice(from))) end = word.length
+  return end === undefined ? undefined : word.slice(0, end)
+}
+
 // The paths the agent's own text on a card can name, for the classifier to
 // judge (owner ruling 2026-09-25): each word between spaces, each run in it
 // between characters that are neither name characters nor separators, such as
-// a quote, a comma or a parenthesis, and the text's operands as a shell reads
-// them, for a quoted name that holds a space. Each is read without the quotes
-// and brackets that open it and the quotes, brackets and punctuation that end
-// it, so a sentence around a path stays. A candidate the classifier does not
-// hide is dropped by the caller, so reading too many only costs time.
-export function textOperands(text: string): string[] {
+// a quote, a comma or a parenthesis, the start of each word up to its last run
+// that names a secret, and the text's operands as a shell reads them, for a
+// quoted name that holds a space. Each is read without the punctuation that
+// opens and ends it, so a sentence around a path stays. Names is the judge the
+// caller keeps candidates by; a candidate it does not hide is dropped by the
+// caller, so reading too many only costs time.
+export function textOperands(text: string, names: (path: string) => boolean = isCredentialPath): string[] {
   const words = text.split(/\s+/u)
-  const runs = words.flatMap((word) => [word, ...word.split(/[^\p{L}\p{M}\p{N}\p{Pc}.\-~/\\]+/u)])
-  const candidates = [...runs, ...commandOperands(text)]
-    .map((candidate) => candidate.replace(/^["'`([{<]+|["'`)\]}>,.;:!?]+$/gu, ""))
+  const runs = words.flatMap((word) => [
+    word,
+    ...word.split(nonNameRun),
+    ...[secretPrefix(word, names)].filter((prefix) => prefix !== undefined),
+  ])
+  const candidates = [...runs, ...commandOperands(text)].map(withoutProse)
   return [...new Set(candidates)].filter((candidate) => candidate !== "")
 }
 

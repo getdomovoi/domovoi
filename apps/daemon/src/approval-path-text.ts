@@ -31,12 +31,49 @@ import {
 
 const hiddenMark = "[REDACTED]"
 
+// The work one hider may take, in steps, across every text it is given: a
+// card's operation, its command and each word of its record (owner ruling
+// 2026-09-25, as for hidePaths). Secret names the text holds, read as keys, can cost more than
+// linear work: 8 KiB of "s0/k0.pem,s1/k1.pem,..." held the daemon for seconds
+// (round 15). Past the limit the text, and every text after it, is shown as
+// [REDACTED], as a card whose spellings hit their bound is, and holds is true;
+// every text a hider is given belongs to a card that hides a path, which is a
+// hard gate already.
+export const pathHiderStepLimit = 4_000_000
+
+// Longer than any path the system resolves. A hidden path this long is not a
+// file on disk but a run of the agent's text, and matching it would cost more
+// than its worth: a hider given one shows every text as [REDACTED].
+const maximumHiddenPathLength = 4_096
+
 export type PathHider = Readonly<{
   // The text with every hidden path in it replaced.
   hide: (text: string) => string
   // Whether the text holds a hidden path.
   holds: (text: string) => boolean
+  // hide, with the steps of work it took.
+  measure: (text: string) => { text: string; steps: number }
 }>
+
+// The steps of work one hide takes, counted where its cost grows: each scan of
+// the text, each start tried for a path, and each code unit a candidate
+// compares.
+class Work {
+  steps = 0
+  get exhausted(): boolean {
+    return this.steps >= pathHiderStepLimit
+  }
+
+  spend(steps: number): void {
+    if (this.steps + steps > pathHiderStepLimit) {
+      this.steps = pathHiderStepLimit
+      throw new WorkExhausted()
+    }
+    this.steps += steps
+  }
+}
+
+class WorkExhausted extends Error {}
 
 type Span = [start: number, end: number]
 
@@ -129,10 +166,12 @@ function project(text: string, at: (index: number) => number): Projection {
 
 // Offsets in the card's text just past each place the projection holds one of
 // these components.
-function componentEnds(projection: Projection, components: ReadonlySet<string>): number[] {
+function componentEnds(projection: Projection, components: ReadonlySet<string>, work: Work): number[] {
   const found: number[] = []
   for (const component of components) {
+    work.spend(projection.text.length)
     for (let at = projection.text.indexOf(component); at !== -1; at = projection.text.indexOf(component, at + 1)) {
+      work.spend(1)
       found.push(...projection.ends.get(at + component.length) ?? [])
     }
   }
@@ -189,8 +228,13 @@ function replaced(text: string, spans: readonly Span[]): string {
 
 export function pathHider(paths: Iterable<string>): PathHider {
   const keys = new Set<string>()
+  let hidesAll = false
   for (const path of paths) {
     if (path === "" || path.includes(hiddenMark)) continue
+    if (path.length > maximumHiddenPathLength) {
+      hidesAll = true
+      continue
+    }
     for (const key of pathKeys(path)) keys.add(key)
   }
   const keyComponents = [...keys].map((key) => key.split("/").filter((part) => part !== "").map(looseForm))
@@ -203,7 +247,8 @@ export function pathHider(paths: Iterable<string>): PathHider {
   // How a candidate names a hidden path: as written, only once ".." is
   // applied, or not at all. Each candidate is also read without backslash
   // escapes.
-  const naming = (candidate: string): "written" | "collapsed" | undefined => {
+  const naming = (candidate: string, work: Work): "written" | "collapsed" | undefined => {
+    work.spend(2 * candidate.length)
     let kind: "collapsed" | undefined
     for (const form of [candidate, candidate.replace(/\\(.)/gu, "$1")]) {
       const forms = pathKeys(form)
@@ -213,14 +258,15 @@ export function pathHider(paths: Iterable<string>): PathHider {
     }
     return kind
   }
-  const names = (candidate: string): boolean => candidate !== "" && naming(candidate) !== undefined
+  const names = (candidate: string, work: Work): boolean => candidate !== "" && naming(candidate, work) !== undefined
 
-  const literalSpans = (text: string): Span[] => {
+  const literalSpans = (text: string, work: Work): Span[] => {
+    work.spend(4 * text.length)
     const written = project(text, (index) => index)
     const unescaped = unescapedView(text)
     const anchors = new Set([
-      ...componentEnds(written, lastComponents),
-      ...(unescaped.text === text ? [] : componentEnds(project(unescaped.text, (index) => unescaped.at[index]!), lastComponents)),
+      ...componentEnds(written, lastComponents, work),
+      ...(unescaped.text === text ? [] : componentEnds(project(unescaped.text, (index) => unescaped.at[index]!), lastComponents, work)),
     ])
     const pieces = slashComponents(text)
 
@@ -259,8 +305,10 @@ export function pathHider(paths: Iterable<string>): PathHider {
       while (piece >= 0 && names <= mostComponents) {
         const [from, to] = pieces[piece]!
         const stop = Math.min(to, end)
+        work.spend(1 + stop - from)
         const step = stepOf(text.slice(from, stop))
         for (let index = starts.length - 1; index >= 0; index -= 1) {
+          work.spend(1)
           const start = starts[index]!
           if (start >= stop) continue
           if (start < from - 1) break
@@ -279,7 +327,7 @@ export function pathHider(paths: Iterable<string>): PathHider {
     const startFor = (end: number): number | undefined => {
       let collapsed: number | undefined
       for (const start of candidateStarts(end)) {
-        const kind = naming(text.slice(start, end))
+        const kind = naming(text.slice(start, end), work)
         if (kind === "written") return start
         if (kind === "collapsed") collapsed = start
       }
@@ -301,7 +349,7 @@ export function pathHider(paths: Iterable<string>): PathHider {
   // The length of the longest start of the candidate that ends at a
   // component boundary and names a hidden path, the whole candidate first;
   // 0 when none does.
-  const hiddenPrefix = (candidate: string): number => {
+  const hiddenPrefix = (candidate: string, work: Work): number => {
     const ends: number[] = []
     let position = 0
     for (const character of candidate) {
@@ -309,28 +357,43 @@ export function pathHider(paths: Iterable<string>): PathHider {
       position += character.length
     }
     for (const end of [candidate.length, ...ends.reverse()]) {
-      if (names(candidate.slice(0, end))) return end
+      if (names(candidate.slice(0, end), work)) return end
     }
     return 0
   }
 
-  const decodedHolds = (word: string) => operandPieces(word).some((piece) => hiddenPrefix(piece) > 0)
+  const decodedHolds = (word: string, work: Work) => operandPieces(word).some((piece) => hiddenPrefix(piece, work) > 0)
 
-  const hide = (text: string): string => {
+  const work = new Work()
+  const measure = (text: string): { text: string; steps: number } => {
+    if (hidesAll || work.exhausted) return { text: text === "" ? text : hiddenMark, steps: 0 }
+    const before = work.steps
+    try {
+      return { text: hideWith(text, work), steps: work.steps - before }
+    } catch (error) {
+      if (!(error instanceof WorkExhausted)) throw error
+      return { text: hiddenMark, steps: work.steps - before }
+    }
+  }
+
+  const hideWith = (text: string, work: Work): string => {
     if (keys.size === 0) return text
-    const spans = literalSpans(text)
+    const spans = literalSpans(text, work)
     for (const reading of readings) {
+      work.spend(text.length)
       for (const word of shellWordSpans(text, reading)) {
         const written = text.slice(word.start, word.end)
-        if (written === word.text || !decodedHolds(word.text)) continue
+        if (written === word.text || !decodedHolds(word.text, work)) continue
+        work.spend(spans.length + 2 * written.length)
         const inside = spans
           .filter(([start, end]) => start >= word.start && end <= word.end)
           .map(([start, end]): Span => [start - word.start, end - word.start])
-        if (shellWords(replaced(written, inside), reading).some(decodedHolds)) spans.push([word.start, word.end])
+        if (shellWords(replaced(written, inside), reading).some((decoded) => decodedHolds(decoded, work))) spans.push([word.start, word.end])
       }
     }
     return spans.length === 0 ? text : replaced(text, spans)
   }
 
-  return { hide, holds: (text) => hide(text) !== text }
+  const hide = (text: string): string => measure(text).text
+  return { hide, holds: (text) => hide(text) !== text, measure }
 }

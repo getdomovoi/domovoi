@@ -818,6 +818,43 @@ describe("a card's own text when the card hides a path", () => {
   })
 })
 
+// Round 15, finding 2: the reviewer's cards, through a live daemon.
+describe("a text-only secret name beside non-ASCII punctuation or a line suffix", () => {
+  it("is hidden whole in workspace.get, the store and the receipt", async () => {
+    const { socket, emit, card, store } = await setup(async (root) => {
+      await mkdir(join(root, "src"))
+      await writeFile(join(root, "src", "index.ts"), "")
+    })
+    const cases = [
+      { requestId: 1101, reason: "Compare src/index.ts with \u201csrc/key,prod.pem\u201d", operation: "Compare src/index.ts with \u201c[REDACTED]\u201d" },
+      { requestId: 1102, reason: "Edit src/index.ts using src/prod,.env\u2014the key", operation: "Edit src/index.ts using [REDACTED]\u2014the key" },
+      { requestId: 1103, reason: "Edit src/index.ts as src/deploy(1).pem:12 says", operation: "Edit src/index.ts as [REDACTED]:12 says" },
+    ]
+    const leak = /src\/key|src\/prod|deploy\(1\)/u
+    for (const { requestId, reason } of cases) emit({ requestId, command: "Edit", path: "src/index.ts", reason })
+    const cards = await waitForDaemon(async () => {
+      const found = await Promise.all(cases.map(({ requestId }) => card(requestId)))
+      expect(found.every((approval) => approval !== undefined)).toBe(true)
+      return found as Approval[]
+    })
+    for (const [index, { operation }] of cases.entries()) {
+      expect(cards[index]).toMatchObject({ risk: "hard-gate", operation })
+      expect(store.load().approvals.find((approval) => approval.id === cards[index]!.id)).toMatchObject({ operation })
+    }
+    for (const approval of cards) {
+      expect((await rpc(socket, "approval.resolve", { approvalId: approval.id, decision: "deny", client: "cli" })).error).toBeUndefined()
+    }
+    const current = (await rpc(socket, "workspace.get")).result as WorkspaceSnapshot
+    for (const copy of [current, store.load()]) {
+      for (const [index, { operation }] of cases.entries()) {
+        expect(copy.thread.find((item) => item.kind === "receipt" && item.id.startsWith(`receipt-${cards[index]!.id}-`)))
+          .toMatchObject({ operation })
+      }
+    }
+    expect(JSON.stringify(store.load())).not.toMatch(leak)
+  })
+})
+
 // A saved card's execution record is not trusted at load: every path it can
 // hold, moved by a link into a store after the card was saved, makes the card
 // a hard gate with the record hidden.

@@ -313,6 +313,74 @@ describe("settleApproval hides a secret file named only in the card's own text",
 
 // A card read back from disk names its file only in the saved line. The file
 // it names is judged on disk now: a link there can lead into a store since.
+// Round 15, finding 1: the reviewer's shapes settle within the matcher's step
+// limit and show the line whole as [REDACTED] on a hard gate.
+describe("settleApproval hides a costly line whole", () => {
+  const fill = (unit: (index: number) => string, length: number): string => {
+    let text = ""
+    for (let index = 0; text.length < length; index += 1) text += unit(index)
+    return text
+  }
+
+  async function sourceTree(): Promise<string> {
+    const workspace = await worktree()
+    await mkdir(join(workspace, "src"))
+    await writeFile(join(workspace, "src", "index.ts"), "")
+    return workspace
+  }
+
+  it("hides an 8 KiB operation of secret names joined by commas", async () => {
+    const workspace = await sourceTree()
+    const reason = `Edit src/index.ts with ${fill((index) => `s${index}/k${index}.pem,`, 8_192)}`
+    const { approval } = await settleApproval(input(workspace, { request: { workspace, cwd: workspace, command: "Edit", path: "src/index.ts", reason } }))
+    expect(approval).toMatchObject({ risk: "hard-gate", operation: "[REDACTED]" })
+  })
+
+  it("hides an 8 KiB command of secret names joined by colons", async () => {
+    const workspace = await sourceTree()
+    const command = `cat ${fill((index) => `s${index}/k${index}.pem:`, 8_192)}`
+    const { approval } = await settleApproval(input(workspace, { request: { workspace, cwd: workspace, command, reason: "Read the keys" } }))
+    expect(approval).toMatchObject({ risk: "hard-gate", command: "[REDACTED]" })
+  })
+
+  it("hides a 64 KiB operation of a.pem joined by commas", async () => {
+    const workspace = await sourceTree()
+    const reason = fill(() => "a.pem,", 65_536)
+    const { approval } = await settleApproval(input(workspace, { request: { workspace, cwd: workspace, command: "Edit", path: "src/index.ts", reason } }))
+    expect(approval).toMatchObject({ risk: "hard-gate", operation: "[REDACTED]" })
+  })
+})
+
+// Round 15, finding 2: a secret file named only in the operation is hidden
+// whole when non-ASCII punctuation or a line suffix touches it.
+describe("settleApproval hides a text-only secret name beside any punctuation", () => {
+  async function sourceTree(): Promise<string> {
+    const workspace = await worktree()
+    await mkdir(join(workspace, "src"))
+    await writeFile(join(workspace, "src", "index.ts"), "")
+    return workspace
+  }
+
+  it.each([
+    ["Compare src/index.ts with \u201csrc/key,prod.pem\u201d", "Compare src/index.ts with \u201c[REDACTED]\u201d"],
+    ["Compare src/index.ts with \u00absrc/key,prod.pem\u00bb", "Compare src/index.ts with \u00ab[REDACTED]\u00bb"],
+    ["Compare src/index.ts with \u300csrc/key,prod.pem\u300d", "Compare src/index.ts with \u300c[REDACTED]\u300d"],
+    ["Compare src/index.ts with \uff08src/key,prod.pem\uff09", "Compare src/index.ts with \uff08[REDACTED]\uff09"],
+    ["Edit src/index.ts using src/prod,.env\u2014the key", "Edit src/index.ts using [REDACTED]\u2014the key"],
+    ["Edit src/index.ts using src/key,prod.pem\u2026 then stop", "Edit src/index.ts using [REDACTED]\u2026 then stop"],
+    ["Edit src/index.ts using src/key,prod.pem\u3002", "Edit src/index.ts using [REDACTED]\u3002"],
+    ["Edit src/index.ts as src/key,prod.pem#L3 says", "Edit src/index.ts as [REDACTED]#L3 says"],
+    ["Edit src/index.ts as src/deploy(1).pem:12 says", "Edit src/index.ts as [REDACTED]:12 says"],
+  ])("shows %j as %j", async (reason, operation) => {
+    const workspace = await sourceTree()
+    const { approval, sensitive } = await settleApproval(input(workspace, {
+      request: { workspace, cwd: workspace, command: "Edit", path: "src/index.ts", reason },
+    }))
+    expect(sensitive).toBe(true)
+    expect(approval).toMatchObject({ risk: "hard-gate", operation })
+  })
+})
+
 describe("settleApproval for a saved file line", () => {
   async function savedFileCard(workspace: string): Promise<Approval> {
     await writeFile(join(workspace, "notes.txt"), "")
