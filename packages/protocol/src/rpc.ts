@@ -109,6 +109,7 @@ import {
 } from "./identifiers.js"
 import { previewBridgeChannelSchema, previewParentOriginSchema } from "./preview-bridge.js"
 import { maximumProviderPromptCodeUnits } from "./prompt-delivery.js"
+import { toolInventorySchema } from "./tool-inventory.js"
 import {
   skillCapabilityManifestSchema,
   skillContentDigestSchema,
@@ -1536,6 +1537,7 @@ export const rpcMethods = {
   "audit.export": { params: auditExportParamsSchema, result: auditExportResultSchema },
   "skill.list": { params: z.object({}).strict(), result: skillSummariesSchema },
   "skill.inventory": { params: z.object({}).strict(), result: skillInventorySchema },
+  "tool.inventory": { params: z.object({}).strict(), result: toolInventorySchema },
   "skill.read": {
     params: z.object({ id: skillIdSchema }),
     result: skillDocumentSchema,
@@ -1722,6 +1724,7 @@ export const rpcMethodAuthorizations = {
   "audit.export": "observe",
   "skill.list": "observe",
   "skill.inventory": "observe",
+  "tool.inventory": "observe",
   "skill.read": "observe",
   "skill.reviewRevision": "observe",
   "skill.setEnabled": "control",
@@ -1797,6 +1800,7 @@ export const rpcMethodMutations = {
   "audit.export": "read-only",
   "skill.list": "read-only",
   "skill.inventory": "read-only",
+  "tool.inventory": "read-only",
   "skill.read": "read-only",
   "skill.reviewRevision": "read-only",
   "skill.installPreview": "read-only",
