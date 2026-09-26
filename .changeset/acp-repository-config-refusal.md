@@ -22,11 +22,17 @@ A symbolic link counts as the file, and so does a link on the way to it. A sessi
 through a link is checked at the path given and at its resolved path, for Codex too, and a directory
 in no repository is checked up to the filesystem root, except the home directory.
 
-While a session is open its directories are watched. When a listed file appears, the agent process
-is stopped, which ends every Cursor or Grok session it runs with the refusal as the disconnect
-reason; a session in that worktree is refused when it resumes. The agent process now starts in an
-empty private folder instead of the daemon's working directory, and each session's worktree reaches
-it as the ACP session directory.
+While a session is open its directories are watched and checked every two seconds. When a listed
+file appears, or the directories cannot be watched or checked, the agent process is stopped, which
+ends every Cursor or Grok session it runs with the refusal as the disconnect reason; a session in
+that worktree is refused when it resumes. A hook added during a session can run for up to about two
+seconds before that. A session whose setup fails after the agent opened it is closed.
+
+The agent process now starts in an empty private folder under the temporary folder instead of the
+daemon's working directory, with `PWD` set to it and inherited working-directory variables such as
+`OLDPWD` and `INIT_CWD` removed. It is not started when the temporary folder is inside a repository
+that holds a listed file. Each session's worktree reaches it as the ACP session directory. Launch
+folders left by a daemon that stopped without closing its agents are removed after ten minutes.
 
 Instruction files such as `AGENTS.md` and `CLAUDE.md`, rules,
 skills and commands do not stop a session. The daemon README's "Repository configuration" section

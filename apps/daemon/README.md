@@ -551,7 +551,9 @@ code or settings the repository brings:
   to the repository root holds one of the files below, and says which one. The session's directory
   is also resolved through links, and both paths are checked. A symbolic link counts as the file,
   and so does a link on the way to it, such as a `.cursor` folder that is a link. A directory in no
-  repository is checked up to the filesystem root, except the home directory.
+  repository is checked up to the filesystem root, except the home directory, and a file found
+  there is named by its path from the session's directory. A directory that cannot be checked,
+  such as a link loop, is refused the same way.
   - Cursor: `.cursor/mcp.json` (MCP servers), `.cursor/hooks.json` (hooks), `.cursor/cli.json`
     (permission rules), `.cursor/sandbox.json` (sandbox policy), `.claude/settings.json` and
     `.claude/settings.local.json`, whose hooks Cursor runs by default, and `.mcp.json`, which
@@ -567,12 +569,19 @@ code or settings the repository brings:
     only in a folder the person has trusted, and the daemon does not send them. The lists follow
     Cursor's documentation and Grok's own list of trust-sensitive files; a file either agent
     loads that they do not name is not refused.
-  - While a session is open the daemon watches those directories. When a listed file appears, it
-    stops the agent process, which ends every session that process runs: each shows the
-    disconnect with the refusal as its reason, and a session in that worktree is refused when it
-    resumes. The agent can read the file in the moment before it is stopped.
-  - The agent process starts in an empty private folder, not the daemon's own directory, and is
-    given each session's worktree as that session's directory.
+  - While a session is open the daemon watches those directories and also checks them every two
+    seconds, so a listed file that appears is found within two seconds even when a watcher misses
+    it, and usually at once. It then stops the agent process, which ends every session that
+    process runs: each shows the disconnect with the refusal as its reason, and a session in that
+    worktree is refused when it resumes. Until then the agent can load the file, so a hook added
+    during a session can run for up to about two seconds. The agent is stopped the same way when a
+    directory cannot be watched or checked, or when more than 256 directories would be watched.
+  - The agent process starts in an empty private folder under the temporary folder, not the
+    daemon's own directory, with that folder as `PWD`; `OLDPWD`, `INIT_CWD` and other inherited
+    working-directory variables are removed. Each session's worktree reaches the agent as that
+    session's directory. If the temporary folder is inside a repository that holds a listed file,
+    the agent is not started. Folders left by a daemon that stopped without closing its agents are
+    removed on the next start once they are ten minutes old.
 
 Instruction files still reach the agent, because the daemon reads them itself as text. For Claude
 Code it reads `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` at the worktree root and

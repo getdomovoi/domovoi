@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
-import { mkdtempSync } from "node:fs"
+import { lstatSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
 import { rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -30,12 +30,13 @@ import type {
   AcpUpdate,
 } from "./acp.js"
 import type { AcpProviderDefinition } from "./acp-providers.js"
+import { repositoryFileFrom } from "./codex-repository-config.js"
 import { onProcessEnd } from "./process-end.js"
 
 type ProcessSpawner = (
   command: string,
   args: readonly string[],
-  options: { cwd: string },
+  options: { cwd: string; env: NodeJS.ProcessEnv },
 ) => ChildProcessWithoutNullStreams
 const ACP_CLOSE_GRACE_MS = 1_000
 const ACP_FORCE_CLOSE_MS = 1_000
@@ -173,13 +174,31 @@ export class StdioAcpPeer implements AcpPeer {
   // The agent runs in an empty private folder, not the daemon's own directory,
   // which may be a repository whose configuration the agent would load at
   // startup. Each session's worktree reaches the agent as the ACP session cwd.
+  // The folder is refused when the temporary folder sits where the agent would
+  // load held-back configuration from, as a session directory would be.
   async #spawnFirstAvailable(): Promise<ChildProcessWithoutNullStreams> {
-    // Created synchronously so the child is spawned in the same turn as before.
-    const directory = mkdtempSync(join(tmpdir(), "domovoi-acp-"))
+    // Synchronous so the child is spawned in the same turn as before.
+    reapLaunchDirectories()
+    const directory = mkdtempSync(join(tmpdir(), `${launchPrefix}${process.pid}-`))
+    let reason: string | undefined
+    try {
+      const file = repositoryFileFrom(directory, this.#definition.heldBackRepositoryFiles)
+      if (file !== undefined) reason = `it would load ${file} from a folder above it`
+    } catch {
+      reason = "Domovoi could not check the folders above it"
+    }
+    if (reason !== undefined) {
+      rmSync(directory, { recursive: true, force: true })
+      throw new Error(
+        `${this.#definition.id} cannot start in the temporary folder, because ${reason}. `
+        + "Set TMPDIR, or TEMP on Windows, to a folder outside any repository.",
+      )
+    }
+    const environment = launchEnvironment(directory)
     let lastError: unknown
     for (const command of this.#definition.commands) {
       try {
-        const process = await spawned(this.#spawn(command, this.#definition.launchArgs, { cwd: directory }))
+        const process = await spawned(this.#spawn(command, this.#definition.launchArgs, { cwd: directory, env: environment }))
         onProcessEnd(process, () => void removeDirectory(directory))
         this.#directory = directory
         return process
@@ -292,8 +311,64 @@ function mapPermissionRequest(request: RequestPermissionRequest): AcpPermissionR
   }
 }
 
-function spawnAcpProcess(command: string, args: readonly string[], options: { cwd: string }): ChildProcessWithoutNullStreams {
-  return spawn(command, [...args], { cwd: options.cwd, stdio: ["pipe", "pipe", "pipe"] })
+function spawnAcpProcess(
+  command: string,
+  args: readonly string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv },
+): ChildProcessWithoutNullStreams {
+  return spawn(command, [...args], { cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"] })
+}
+
+const launchPrefix = "domovoi-acp-"
+const staleLaunchMs = 10 * 60 * 1_000
+
+// Working directories the daemon inherited from its shell or package manager.
+// The agent gets its own launch folder as PWD and none of these.
+const inheritedDirectoryVariables = [
+  "OLDPWD", "INIT_CWD", "PROJECT_CWD", "npm_config_local_prefix", "npm_package_json", "DIRENV_DIR", "DIRENV_FILE",
+]
+
+function launchEnvironment(directory: string): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { ...process.env, PWD: directory }
+  for (const name of inheritedDirectoryVariables) delete environment[name]
+  return environment
+}
+
+// A daemon that stopped without closing its agents leaves their launch folders
+// behind. A folder is removed only when this user owns it, it is a real folder,
+// the daemon that made it (named in the folder) is no longer running, and it
+// has not changed for staleLaunchMs.
+function reapLaunchDirectories(): void {
+  const root = tmpdir()
+  let names: string[]
+  try {
+    names = readdirSync(root)
+  } catch {
+    return
+  }
+  const uid = process.getuid?.()
+  for (const name of names) {
+    const pid = Number(name.slice(launchPrefix.length).match(/^(\d+)-/)?.[1])
+    if (!name.startsWith(launchPrefix) || !Number.isSafeInteger(pid) || pid === process.pid || isRunning(pid)) continue
+    const path = join(root, name)
+    try {
+      const found = lstatSync(path)
+      if (!found.isDirectory() || (uid !== undefined && found.uid !== uid)) continue
+      if (Date.now() - found.mtimeMs < staleLaunchMs) continue
+      rmSync(path, { recursive: true, force: true })
+    } catch {
+      // Another daemon may be reaping the same folder.
+    }
+  }
+}
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return !(error instanceof Error && "code" in error && error.code === "ESRCH")
+  }
 }
 
 async function removeDirectory(directory: string): Promise<void> {

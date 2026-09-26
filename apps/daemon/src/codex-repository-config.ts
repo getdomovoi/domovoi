@@ -46,7 +46,8 @@ export function codexRepositoryConfigRefusal(file: string): string {
 // root, by the same root rule as Codex, named by its path from that root. A cwd
 // in no repository is checked up to the filesystem root, skipping the home
 // directory, whose files are the person's own configuration; such a file is
-// named by its absolute path. Presence is lstat, so a symbolic link counts even
+// named by its path from cwd, so no path outside the session reaches the
+// refusal text. Presence is lstat, so a symbolic link counts even
 // when it dangles, and a link on the way to a file counts as the file: the check
 // never follows one out of the repository.
 export function repositoryFileFrom(
@@ -54,9 +55,9 @@ export function repositoryFileFrom(
   files: readonly string[],
   home: string = homedir(),
 ): string | undefined {
-  for (const { root, directory } of repositoryDirectories(cwd, home)) {
+  for (const { root, start, directory } of repositoryDirectories(cwd, home)) {
     for (const file of files) {
-      if (heldBack(directory, file)) return root === undefined ? join(directory, file) : shown(root, join(directory, file))
+      if (heldBack(directory, file)) return shown(root ?? start, join(directory, file))
     }
   }
   return undefined
@@ -86,17 +87,20 @@ export function repositoryWatchDirectories(
   return [...watched]
 }
 
-function repositoryDirectories(cwd: string, home: string): { root: string | undefined; directory: string }[] {
-  const found = new Map<string, string | undefined>()
+function repositoryDirectories(
+  cwd: string,
+  home: string,
+): { root: string | undefined; start: string; directory: string }[] {
+  const found = new Map<string, { root: string | undefined; start: string; directory: string }>()
   const skipped = realPath(home)
   for (const start of startsOf(cwd)) {
     const root = repositoryRoot(start)
     const directories = root === undefined
       ? ancestorsOf(start).filter((directory) => realPath(directory) !== skipped)
       : directoriesFrom(root, start)
-    for (const directory of directories) if (!found.has(directory)) found.set(directory, root)
+    for (const directory of directories) if (!found.has(directory)) found.set(directory, { root, start, directory })
   }
-  return [...found].map(([directory, root]) => ({ root, directory }))
+  return [...found.values()]
 }
 
 function heldBack(directory: string, file: string): boolean {
