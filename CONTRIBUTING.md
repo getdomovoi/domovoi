@@ -54,10 +54,14 @@ the conventions below.
 
 ### Coverage
 
-Every package with tests runs the `v8` coverage provider on each `vitest run`, and each one carries
-its own global thresholds. A run that drops below them fails, so coverage is part of `pnpm test`
-rather than a separate command. Report output is a text summary; the HTML and JSON reports are not
-generated.
+Every package with tests runs the `v8` coverage provider from its `test` script
+(`vitest run --coverage`), and each one carries its own global thresholds in its vitest config. A
+run that drops below them fails, so coverage is part of `pnpm test` rather than a separate
+command. Report output is a text summary; the HTML and JSON reports are not generated.
+
+A focused run, `npx vitest run <file>` inside a package, does not collect coverage, so it passes
+or fails on its tests alone. One file cannot meet a whole package's floor. Add `--coverage` to a
+focused run only when you want the package figures.
 
 The thresholds are a floor, not a target. They were set from the first measured run of each
 package, rounded down to the nearest whole percent, so the gate is green on the code as it stands

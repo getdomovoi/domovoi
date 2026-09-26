@@ -17,7 +17,6 @@ export default defineConfig({
   test: {
     ...daemonTestScheduling(process.platform),
     coverage: {
-      enabled: true,
       provider: "v8",
       reporter: ["text-summary"],
       include: ["src/**/*.ts"],
