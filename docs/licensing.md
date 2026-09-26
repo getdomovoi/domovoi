@@ -74,10 +74,23 @@ for the scope and the offline schema validation boundary.
 ## Current exceptions
 
 `@anthropic-ai/claude-agent-sdk` and its per-platform binaries, covered by
-`@anthropic-ai/claude-agent-sdk-*`, publish no SPDX license. Their `LICENSE.md` reads
-"© Anthropic PBC. All rights reserved.", with use governed by the Claude Code legal agreements.
+`@anthropic-ai/claude-agent-sdk-*`, publish no SPDX license: their manifests say
+`SEE LICENSE IN README.md` and `SEE LICENSE IN LICENSE.md`, which `pnpm licenses list` reports as
+`Unknown`. Their `LICENSE.md` reads, in full: "© Anthropic PBC. All rights reserved. Use is
+subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance."
 They are proprietary, and they are a runtime dependency of the Claude Code session adapter in the
-Apache-2.0 daemon.
+Apache-2.0 daemon. This document records what Domovoi ships; it does not interpret those terms.
+
+How the exception is recorded:
+
+- `license-policy.json` names both keys with the reason. The audit passes them and fails on any
+  other package without an allowed license. It also fails if the exact-name key leaves the graph,
+  so the exception cannot outlive the dependency.
+- The daemon manifest's `license` field is `Apache-2.0`, which describes the daemon's own code. A
+  manifest has no field for a dependency's terms, so the daemon README's License section states
+  the exception. npm packs that README into every daemon tarball and shows it on the package page.
+- The desktop app's `THIRD_PARTY_NOTICES.txt` carries the SDK's `LICENSE.md` text, as it does
+  for every package the app bundles.
 
 This is a known constraint, not a resolved one. What each artifact carries:
 
@@ -107,7 +120,9 @@ Removing the exception requires one of:
 
 Until one of those lands, the daemon's npm package carries a dependency whose terms are not
 Apache-2.0, and the desktop app carries the SDK's JavaScript library under those terms. Say so in
-release notes rather than implying the whole install is Apache-2.0.
+release notes rather than implying the whole install is Apache-2.0. `release:github` builds the
+release notes from each package's changelog entry and adds nothing on its own, so the statement
+reaches a release only when a changeset in that release carries it.
 
 ## Claude Agent SDK peer dependencies
 
