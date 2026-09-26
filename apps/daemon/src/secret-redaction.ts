@@ -167,6 +167,25 @@ function quoteNamed(quote: string): GroupingName {
   return quote === "'" ? "singleQuote" : "doubleQuote"
 }
 
+// A character that opens, closes, escapes and delimits nothing: a letter, a
+// digit or _ . - / @ + %, and inside a construct also a space. Anything else
+// is read one character at a time.
+function isPlainCharacter(code: number, inside: boolean): boolean {
+  return (code >= 0x61 && code <= 0x7a) || (code >= 0x41 && code <= 0x5a) || (code >= 0x30 && code <= 0x39)
+    || code === 0x5f || code === 0x2e || code === 0x2d || code === 0x2f || code === 0x40 || code === 0x2b || code === 0x25
+    || (inside && code === 0x20)
+}
+
+function isDigit(code: number): boolean {
+  return code >= 0x30 && code <= 0x39
+}
+
+// [A-Za-z0-9_.-], and / with slash, tested on a character code.
+function isNameCharacter(code: number, slash: boolean): boolean {
+  return (code >= 0x61 && code <= 0x7a) || (code >= 0x41 && code <= 0x5a) || isDigit(code)
+    || code === 0x5f || code === 0x2e || code === 0x2d || (slash && code === 0x2f)
+}
+
 // Where a terminal control sequence at `at` ends, such as the colour ESC[1m:
 // ESC [, parameter and intermediate bytes, then a final byte. -1 when there is
 // none, or it does not end before `to`.
@@ -198,9 +217,18 @@ function readValue(text: string, from: number, state: ValueState, to = text.leng
     if (stack.length === 1 && fresh && groupingConstructs[name].at !== "word") word = false
     fresh = false
   }
-  // Outside every construct: what may open next.
-  const topOpeners = () => fresh ? valueStartOpeners : wordOpeners
   for (let at = from; at < to; at += 1) {
+    // A run of plain characters changes nothing once the value has started
+    // and nothing is pending, so it is passed over in one step.
+    if (!fresh && !escaped && !opened && closing === 0 && pending === "") {
+      const inside = stack.length > 0
+      let next = at
+      while (next < to && isPlainCharacter(text.charCodeAt(next), inside)) next += 1
+      if (next > at) {
+        at = next - 1
+        continue
+      }
+    }
     const character = text[at]!
     if (escaped) {
       escaped = false
@@ -247,7 +275,7 @@ function readValue(text: string, from: number, state: ValueState, to = text.leng
       }
       if (pending !== "") {
         const joined = `${pending}${character}`
-        const pendingOpeners = topOpeners()
+        const pendingOpeners = fresh ? valueStartOpeners : wordOpeners
         const name = pendingOpeners.exact.get(joined)
         if (name !== undefined) {
           open(name)
@@ -261,7 +289,7 @@ function readValue(text: string, from: number, state: ValueState, to = text.leng
         pending = ""
         fresh = false
       }
-      const openers = topOpeners()
+      const openers = fresh ? valueStartOpeners : wordOpeners
       const name = openers.exact.get(character)
       if (name !== undefined) open(name)
       else if (openers.starts.has(character)) pending = character
@@ -458,7 +486,7 @@ function readMatch(pattern: ValuePattern, text: string, match: RegExpExecArray):
   // sensitive word, as where what came before is out of view, may begin in
   // the middle of it.
   let nameStart = match.index
-  while (nameStart > 0 && match.index - nameStart < 1_024 && /[A-Za-z0-9_.-]/u.test(text[nameStart - 1]!)) nameStart -= 1
+  while (nameStart > 0 && match.index - nameStart < 1_024 && isNameCharacter(text.charCodeAt(nameStart - 1), false)) nameStart -= 1
   const quote = openNameQuote(`${text.slice(nameStart, match.index)}${match[0]}`, text[nameStart - 1])
   const enclosing = quote === undefined ? undefined : quoteNamed(quote)
   const read = readValue(text, valueAt, valueStartState(pattern.delimiter, enclosing))
@@ -490,6 +518,11 @@ function nextInner(search: InnerSearch, start: RegExp, text: string, from: numbe
 // inside that value are looked for in turn. Only a name outside every quote
 // and construct of the value counts: one inside a quoted value, as in
 // API_KEY="a token=b", is part of that quoted value and ends with it.
+// Every inner name holds a sensitive word inside the value it sits in, so a
+// value without one is not searched: most values are not, and the search
+// would cost each of them a scan per pattern.
+const sensitiveWord = new RegExp(sensitiveName, "iu")
+
 function withInnerValues(outer: ValueMatch, text: string, search: InnerSearch): ValueMatch {
   if (outer.open !== undefined) return outer
   const inner: ValueMatch[] = []
@@ -497,6 +530,7 @@ function withInnerValues(outer: ValueMatch, text: string, search: InnerSearch): 
   let from = outer.index + outer.prefix.length
   let end = outer.end
   for (;;) {
+    if (!sensitiveWord.test(text.slice(from, end))) break
     const names: Array<{ pattern: ValuePattern, match: RegExpExecArray }> = []
     for (const { pattern, start } of innerStarts) {
       for (let match = nextInner(search, start, text, from); match !== null && match.index < end; match = nextInner(search, start, text, match.index + 1)) {
@@ -975,7 +1009,16 @@ const danglingSecret = new RegExp(
 // A name can itself be split, so a run of name characters still being typed at
 // the end of a read, with any flag dashes, slash or dot in it, is held until
 // the next read resolves it.
-const danglingName = /[A-Za-z_./-][A-Za-z0-9_./-]*$/u
+// Where the run of name characters at the end of a window starts, from its
+// first character that is not a digit, as /[A-Za-z_./-][A-Za-z0-9_./-]*$/
+// finds it; -1 when there is none. Walked back from the end rather than
+// matched, which tries every start in a run of letters to its end.
+function danglingNameStart(window: string): number {
+  let start = window.length
+  while (start > 0 && isNameCharacter(window.charCodeAt(start - 1), true)) start -= 1
+  while (start < window.length && isDigit(window.charCodeAt(start))) start += 1
+  return start < window.length ? start : -1
+}
 const nameCharacter = /[A-Za-z0-9_./-]/u
 // What a pattern reads before a name: set, $env: and an opening quote.
 const nameContext = /(?:\$env:|\bset\s+)?["']?$/iu
@@ -1294,12 +1337,12 @@ class HeldTailRedactor {
     }
     const floor = Math.max(0, combined.length - terminalRedactionCarryCharacters)
     const window = combined.slice(floor)
-    const name = danglingName.exec(window)
-    if (!name) {
+    const nameAt = danglingNameStart(window)
+    if (nameAt < 0) {
       const context = danglingContext.exec(window)
       return { start: context ? floor + context.index : combined.length }
     }
-    const nameStart = this.#nameStart(combined, floor + name.index, floor)
+    const nameStart = this.#nameStart(combined, floor + nameAt, floor)
     const contextStart = this.#contextStart(combined, nameStart)
     const start = Math.max(floor, contextStart)
     // Cut when the name, or the set " or quote read before it, goes on past
@@ -1429,6 +1472,8 @@ export class TerminalOutputRedactor {
   // The end of the current line as shown, kept whether or not a beat has
   // released anything, so a name shown before the beat is still in view.
   #line = ""
+  // Whether the line ends in a space or a tab.
+  #blankEnd = false
   // The end of the current line as it was typed. On a beat main has shown all
   // of it, so it says exactly where a value released there stands, which what
   // main shows cannot: main writes `"[REDACTED]"` for a quote that is still
@@ -1457,7 +1502,7 @@ export class TerminalOutputRedactor {
     if (!typed) {
       const released = this.#read(flushed)
       this.#context = true
-      if (this.#value === undefined) this.#value = valueEndingText(this.#line)
+      if (this.#value === undefined) this.#value = valueEndingText(this.#seen())
       return released
     }
     // What main releases of a value still open is part of that value. When
@@ -1488,6 +1533,7 @@ export class TerminalOutputRedactor {
   flush(): string {
     const output = this.#read(this.#held.flush())
     this.#line = ""
+    this.#blankEnd = false
     this.#raw = ""
     this.#context = false
     this.#value = undefined
@@ -1500,6 +1546,7 @@ export class TerminalOutputRedactor {
       const character = text[index]!
       if (character === "\n" || character === "\r") {
         this.#line = ""
+        this.#blankEnd = false
         this.#context = false
         this.#value = undefined
         output += character
@@ -1541,7 +1588,7 @@ export class TerminalOutputRedactor {
       }
       output += character
       this.#see(character)
-      if (this.#context && this.#value === undefined) this.#value = valueEndingText(this.#line)
+      if (this.#context && this.#value === undefined) this.#value = valueEndingText(this.#seen())
     }
     return output
   }
@@ -1571,8 +1618,21 @@ export class TerminalOutputRedactor {
   }
 
   // A run of spaces is kept as one: the patterns read any amount the same.
+  // The line is cut back to the carry only once it has grown to twice that,
+  // rather than on every character, and read through #seen, which cuts it
+  // back first: the same last characters either way, at a fraction of the
+  // copying.
+  // Its last character is kept apart, since reading one from a line built by
+  // joining would copy the line.
   #see(text: string): void {
-    if ((text === " " || text === "\t") && /[ \t]$/u.test(this.#line)) return
-    this.#line = `${this.#line}${text}`.slice(-terminalRedactionCarryCharacters)
+    if ((text === " " || text === "\t") && this.#blankEnd) return
+    if (text !== "") this.#blankEnd = text.endsWith(" ") || text.endsWith("\t")
+    this.#line = `${this.#line}${text}`
+    if (this.#line.length > 2 * terminalRedactionCarryCharacters) this.#line = this.#line.slice(-terminalRedactionCarryCharacters)
+  }
+
+  #seen(): string {
+    if (this.#line.length > terminalRedactionCarryCharacters) this.#line = this.#line.slice(-terminalRedactionCarryCharacters)
+    return this.#line
   }
 }

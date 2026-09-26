@@ -488,8 +488,13 @@ function readings(item: Case, next: () => number): Step[][] {
 // may occur more often in the output than in the text around the value, once
 // the redactors' own markers are taken out. A value of any length is checked,
 // and a value shown in part counts as shown.
+// A value is judged many times in a row, once for each reading and redactor,
+// so the last value's pieces are kept.
+let lastPieces: { value: string, pieces: string[] } | undefined
+
 function fragments(value: string): string[] {
-  return [...new Set(value.match(/[\p{L}\p{N}]/gu) ?? [])]
+  if (lastPieces?.value !== value) lastPieces = { value, pieces: [...new Set(value.match(/[\p{L}\p{N}]/gu) ?? [])] }
+  return lastPieces.pieces
 }
 
 const markers = ["[REDACTED]", "[Long command output line omitted]", "…"]

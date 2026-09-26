@@ -252,9 +252,10 @@ const pairs: readonly Pair[] = [
   { name: "durable command", main: (item) => mainRedactDurableCommand(item.text).value, current: (item) => redactDurableCommand(item.text).value },
 ]
 
-function failure(item: Case, steps: readonly Step[], under: readonly Pair[] = pairs): string | undefined {
+// knownMain: main's output for the only pair, when the caller has it already.
+function failure(item: Case, steps: readonly Step[], under: readonly Pair[] = pairs, knownMain?: string): string | undefined {
   for (const pair of under) {
-    const main = pair.main(item, steps)
+    const main = knownMain ?? pair.main(item, steps)
     const current = pair.current(item, steps)
     if (item.value === undefined) {
       const prefixedName = item.shape === "identifier-suffix"
@@ -271,8 +272,12 @@ function failure(item: Case, steps: readonly Step[], under: readonly Pair[] = pa
 }
 
 // The check of the check: a redactor that shows everything fails wherever
-// main hides a value.
-const identity: readonly Pair[] = pairs.map((pair) => ({ ...pair, current: (item: Case) => item.text }))
+// main hides a value. It stands in for the durable output redactor only,
+// whole text, so each case costs one of main's redactions: the oracle is the
+// same for every pair.
+const identity: readonly Pair[] = pairs
+  .filter((pair) => pair.name === "durable output")
+  .map((pair) => ({ ...pair, current: (item: Case) => item.text }))
 
 function shrink(item: Case, steps: readonly Step[]): Step[] {
   let best = [...steps]
@@ -327,9 +332,11 @@ describe("terminal redaction against main", () => {
     for (let index = 0; index < 4_000; index += 1) {
       const next = random(seed + index)
       const item = generate(next)
-      if (item.value === undefined || exposed(item, mainRedactDurableOutput(item.text).value) !== undefined) continue
+      if (item.value === undefined) continue
+      const main = mainRedactDurableOutput(item.text).value
+      if (exposed(item, main) !== undefined) continue
       hidden += 1
-      if (failure(item, [item.text], identity) === undefined) missed.push(`${item.shape}: ${JSON.stringify(item.text.slice(0, 80))}`)
+      if (failure(item, [item.text], identity, main) === undefined) missed.push(`${item.shape}: ${JSON.stringify(item.text.slice(0, 80))}`)
     }
     expect(hidden).toBeGreaterThan(1_000)
     expect(missed).toEqual([])
