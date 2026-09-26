@@ -3,7 +3,8 @@ name: release
 # Versions and publishes the npm packages listed in scripts/release-packages.mjs
 # (@getdomovoi/protocol, @getdomovoi/credential-store, @getdomovoi/daemon and
 # @getdomovoi/cli) with Changesets and npm trusted publishing.
-# RELEASE_PUBLISHING="version-only" permits version PRs; "enabled" also permits publishing. An absent variable permits neither.
+# RELEASE_PUBLISHING="version-only" permits version PRs; "enabled" also permits
+# publishing. An absent variable permits neither.
 # The one-time manual bootstrap and human steps are in docs/release-setup.md.
 
 on:

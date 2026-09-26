@@ -61,8 +61,9 @@ The renderer's JavaScript bundles carry no license comments, and the app does no
   than shipping a build that lacks them.
 
 `scripts/desktop-package-contents.test.mjs` checks that the packaging configuration copies these
-files on every platform, and `apps/desktop/scripts/package-smoke.mjs` checks that a packaged
-build contains them.
+files on every platform. `apps/desktop/scripts/package-smoke.mjs` checks that a packaged build
+contains them; `pnpm package` runs the smoke, and the per-platform `package:mac`, `package:win`
+and `package:linux` scripts do not.
 
 The release SBOMs' inventory is broader: it comes from the packed all-platform runtime lock, or
 for the CLI and the credential store from `pnpm-lock.yaml`, including optional binaries absent

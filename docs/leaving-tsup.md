@@ -68,8 +68,8 @@ inlined credential-store types all need rework, and the published declaration la
 Each package needs a build script in place of a config file.
 
 **Recommendation: A**, because it can produce the bundled declarations and top-level file layout
-the contracts above check without a per-package build script, and it clears both exit conditions. B stays the fallback if a `tsdown`
-release breaks one of those contracts. The choice needs the owner's approval before step 1.
+the contracts above check without a per-package build script, and it clears tsup's part of both
+exit conditions. B stays the fallback if a `tsdown` release breaks one of those contracts. The choice needs the owner's approval before step 1.
 
 ## Order and proof
 
