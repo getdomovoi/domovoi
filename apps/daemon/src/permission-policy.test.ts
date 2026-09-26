@@ -197,6 +197,10 @@ describe("permissionDecisionFor", () => {
     "cat credentials.json",
     "docker run --env-file=.env app",
     String.raw`type C:\Users\me\.env`,
+    "cat clé.pem",
+    "cat keys/id_rsa_work",
+    "cat ~/.git-credentials",
+    "cat ~/.pgpass",
   ])("hard-gates a secret file wherever it sits on the line: %s", (command) => {
     for (const [permissionMode, auto] of [
       ["ask", false],

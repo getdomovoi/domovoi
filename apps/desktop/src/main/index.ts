@@ -374,6 +374,8 @@ registerDesktopIpc(ipcMain, {
     install: () => desktopDaemonService.install(),
     remove: () => desktopDaemonService.remove(),
   },
+  // The one address the renderer may ask the browser to open, fixed here.
+  releasePage: { open: () => shell.openExternal("https://github.com/getdomovoi/domovoi/releases").then(() => true, () => false) },
   notifications: desktopNotifications,
   deepLinks,
   rendererDeepLinkSink: {

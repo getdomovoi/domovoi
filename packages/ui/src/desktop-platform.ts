@@ -85,6 +85,9 @@ export type DesktopWindowBridge = {
     install(): Promise<DaemonServiceOutcome>
     remove(): Promise<DaemonServiceOutcome>
   }
+  // One fixed address, the release page, opened in the person's browser. The
+  // renderer names no URL, so this cannot become a way to open any address.
+  openReleasePage?(): Promise<boolean>
   onDeepLink(listener: (sessionId: string) => void): () => void
   getWindowDecoration(): Promise<WorkspaceWindowDecoration>
   setWindowDecoration(decoration: WorkspaceWindowDecoration): Promise<boolean>

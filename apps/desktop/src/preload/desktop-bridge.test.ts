@@ -57,6 +57,8 @@ describe("createDesktopWindowBridge", () => {
     await expect(bridge.daemonService?.status()).resolves.toEqual({ installed: true, running: true, detail: "pid 1" })
     target.invoke.mockImplementationOnce(async () => ({ nonsense: true }))
     await expect(bridge.daemonService?.remove()).rejects.toThrow("invalid service outcome")
+    await expect(bridge.openReleasePage?.()).resolves.toBe(true)
+    expect(target.invoke).toHaveBeenCalledWith("domovoi:open-release-page")
     expect(bridge).not.toHaveProperty("ipcRenderer")
     expect(bridge).not.toHaveProperty("shell")
     expect(bridge).not.toHaveProperty("clipboard")

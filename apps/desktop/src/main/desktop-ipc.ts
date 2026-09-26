@@ -60,6 +60,9 @@ export type DesktopIpcDependencies = {
     install(): Promise<unknown>
     remove(): Promise<unknown>
   }
+  releasePage: {
+    open(): Promise<boolean>
+  }
   notifications: {
     notify(input: unknown, activate: (sessionId: string) => void): boolean
   }
@@ -201,6 +204,10 @@ export function registerDesktopIpc(ipcMain: DesktopIpcMain, deps: DesktopIpcDepe
   ipcMain.handle("domovoi:daemon-service-remove", (event) => {
     if (!deps.authorized(event)) throw new Error("Desktop request is not authorized")
     return deps.daemonService.remove()
+  })
+  ipcMain.handle("domovoi:open-release-page", (event) => {
+    if (!deps.authorized(event)) throw new Error("Desktop request is not authorized")
+    return deps.releasePage.open()
   })
 
   ipcMain.on("domovoi:deep-link-ready", (event) => {

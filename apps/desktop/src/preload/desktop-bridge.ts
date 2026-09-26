@@ -255,6 +255,7 @@ export function createDesktopWindowBridge(
       install: async () => serviceOutcome(await ipc.invoke("domovoi:daemon-service-install")),
       remove: async () => serviceOutcome(await ipc.invoke("domovoi:daemon-service-remove")),
     },
+    openReleasePage: async () => booleanResult(await ipc.invoke("domovoi:open-release-page"), "release page"),
     onDeepLink: (listener) => {
       const handler = (_event: unknown, sessionId: unknown) => {
         if (typeof sessionId === "string" && sessionIdPattern.test(sessionId)) listener(sessionId)

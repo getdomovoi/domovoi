@@ -31,7 +31,9 @@ vi.mock("./file-target-affects.js", async (importOriginal) => {
   return {
     ...actual,
     cardDirectory: async (...args: Parameters<typeof actual.cardDirectory>) => { await passBarrier("cardDirectory"); return actual.cardDirectory(...args) },
-    fileTargetAffects: async (...args: Parameters<typeof actual.fileTargetAffects>) => { await passBarrier("fileTargetAffects"); return actual.fileTargetAffects(...args) },
+    // Main's settlement (approval-settlement.ts) judges a file target's path
+    // through pathSpellings; fileTargetAffects no longer runs on this path.
+    pathSpellings: async (...args: Parameters<typeof actual.pathSpellings>) => { await passBarrier("pathSpellings"); return actual.pathSpellings(...args) },
   }
 })
 vi.mock("./followed-path.js", async (importOriginal) => {
@@ -296,7 +298,7 @@ describe("the service handoff fence", () => {
     { await: "resolveExecution", file: false },
     { await: "cardDirectory", file: false },
     { await: "fileTargetIdentity", file: true },
-    { await: "fileTargetAffects", file: true },
+    { await: "pathSpellings", file: true },
   ])("holds a request that was waiting on $await when the fence was taken", async ({ await: name, file }) => {
     const { workspace, sessionId } = await readySession()
     const session = workspace.sessions.find(({ id }) => id === sessionId)!

@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite"
 import { createEmptyWorkspace, demoWorkspace, machineIdSchema, protocolVersion, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { resolveCommandExecution } from "./execution-resolution.js"
 import {
   isCorruption,
   storedProtocolVersion,
@@ -462,6 +463,219 @@ describe("SqliteWorkspaceStore", () => {
     const raw = repaired.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
     repaired.close()
     expect(JSON.stringify(raw)).not.toMatch(/legacy-command-secret|legacy-output-secret/)
+  })
+
+  // Approvals saved before the directory was classified keep a raw
+  // credential-store directory. It is hidden whole on load, keeps its
+  // location, makes the approval a hard gate, and the stored copy is repaired.
+  it("hides a credential-store directory in a saved approval and repairs the stored copy", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-legacy-directory-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    const approval = legacy.approvals[0]!
+    const session = legacy.sessions.find((candidate) => candidate.id === approval.sessionId)!
+    session.workspacePath = "/worktrees/legacy-directory"
+    approval.risk = "normal"
+    approval.directory = "/home/u/.aws"
+    legacy.approvals.push({ ...structuredClone(approval), id: "approval-legacy-inside", directory: "/worktrees/legacy-directory/.ssh" })
+    legacy.approvals.push({ ...structuredClone(approval), id: "approval-legacy-ordinary", directory: "/worktrees/legacy-directory/src" })
+    const injected = new DatabaseSync(databasePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const visible = reopened.load()
+    expect(visible.approvals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: approval.id, directory: "[REDACTED], outside the session worktree", risk: "hard-gate" }),
+      expect.objectContaining({ id: "approval-legacy-inside", directory: "[REDACTED] in the session worktree", risk: "hard-gate" }),
+      expect.objectContaining({ id: "approval-legacy-ordinary", directory: "/worktrees/legacy-directory/src", risk: "normal" }),
+    ]))
+    const readStored = () => {
+      const database = new DatabaseSync(databasePath)
+      const raw = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
+      database.close()
+      return JSON.stringify(raw)
+    }
+    expect(readStored()).not.toMatch(/\/home\/u\/\.aws|legacy-directory\/\.ssh/)
+
+    // A later save of a snapshot that still carries the raw directory writes
+    // the hidden form.
+    reopened.save(legacy)
+    expect(readStored()).not.toMatch(/\/home\/u\/\.aws|legacy-directory\/\.ssh/)
+    expect(readStored()).toContain("[REDACTED], outside the session worktree")
+    reopened.close()
+  })
+
+  // Every other saved approval field that can hold a path: the directory in
+  // the execution record, the manifest a script came from, and a file line
+  // written before its path was classified. Each is hidden and hard-gates the
+  // approval; a standing rule that holds one is dropped.
+  it("hides credential paths in a saved approval's execution record and file line", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-legacy-paths-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    const approval = legacy.approvals[0]!
+    approval.risk = "normal"
+    approval.directory = "/worktrees/legacy-paths/src"
+    approval.affects = "The file src/app.ts in the session worktree."
+    const inStore = resolveCommandExecution({ command: "ls", cwd: ".aws" })
+    const fromManifest = resolveCommandExecution({
+      command: "pnpm test",
+      packageScripts: { test: "vitest run" },
+      manifest: ".ssh/package.json",
+    })
+    const ordinary = resolveCommandExecution({ command: "ls", cwd: "src" })
+    legacy.approvals = [
+      { ...structuredClone(approval), id: "approval-record-cwd", execution: inStore },
+      { ...structuredClone(approval), id: "approval-record-manifest", execution: fromManifest },
+      {
+        ...structuredClone(approval),
+        id: "approval-legacy-affects",
+        affects: "The file /home/u/.conﬁg/gh/config.yml, outside the session worktree.",
+      },
+      { ...structuredClone(approval), id: "approval-ordinary", execution: ordinary },
+    ]
+    legacy.approvalRules = [{
+      id: "rule-record-cwd", projectId: legacy.project!.id,
+      operation: "List files", command: "ls", status: "active",
+      execution: inStore as Extract<typeof inStore, { state: "resolved" }>,
+      createdBy: "desktop", createdAt: "2026-09-01T00:00:00.000Z", useCount: 0,
+    }]
+    const injected = new DatabaseSync(databasePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const visible = reopened.load()
+    const hidden = { state: "unresolved", reason: "sensitive-content" }
+    expect(visible.approvals).toEqual([
+      expect.objectContaining({ id: "approval-record-cwd", risk: "hard-gate", execution: hidden }),
+      expect.objectContaining({ id: "approval-record-manifest", risk: "hard-gate", execution: hidden }),
+      expect.objectContaining({
+        id: "approval-legacy-affects",
+        risk: "hard-gate",
+        affects: "The file [REDACTED], outside the session worktree.",
+      }),
+      expect.objectContaining({ id: "approval-ordinary", risk: "normal", execution: ordinary }),
+    ])
+    expect(visible.approvalRules).toEqual([])
+    const database = new DatabaseSync(databasePath)
+    const stored = JSON.stringify(database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get())
+    database.close()
+    expect(stored).not.toMatch(/\.aws|\.ssh|\.conﬁg/u)
+    reopened.close()
+  })
+
+  // A saved approval whose command or operation line names a path the card
+  // hides keeps the rest of its text, with only that path replaced, on load
+  // and on every save.
+  it("hides a hidden path in a saved approval's command and operation lines", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-legacy-text-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    const approval = legacy.approvals[0]!
+    const session = legacy.sessions.find((candidate) => candidate.id === approval.sessionId)!
+    session.workspacePath = "/worktrees/legacy-text"
+    approval.risk = "normal"
+    legacy.approvals = [
+      { ...structuredClone(approval), id: "approval-command-path", command: "cat ~/.aws/credentials", operation: "Read ~/.aws/credentials" },
+      {
+        ...structuredClone(approval),
+        id: "approval-directory-path",
+        directory: "/home/u/.ssh",
+        command: "ls /home/u/.ssh",
+        operation: "List /home/u/.ssh",
+      },
+      { ...structuredClone(approval), id: "approval-ordinary-text", command: "cat notes.txt", operation: "Read notes.txt" },
+    ]
+    const injected = new DatabaseSync(databasePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    expect(reopened.load().approvals).toEqual([
+      expect.objectContaining({ id: "approval-command-path", risk: "hard-gate", command: "cat [REDACTED]", operation: "Read [REDACTED]" }),
+      expect.objectContaining({ id: "approval-directory-path", risk: "hard-gate", command: "ls [REDACTED]", operation: "List [REDACTED]" }),
+      expect.objectContaining({ id: "approval-ordinary-text", risk: "normal", command: "cat notes.txt", operation: "Read notes.txt" }),
+    ])
+    const readStored = () => {
+      const database = new DatabaseSync(databasePath)
+      const raw = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
+      database.close()
+      return JSON.stringify(raw)
+    }
+    expect(readStored()).not.toMatch(/\.aws|\.ssh/u)
+    reopened.save(legacy)
+    expect(readStored()).not.toMatch(/\.aws|\.ssh/u)
+    reopened.close()
+  })
+
+  // Owner ruling 2026-09-25 (round 14): a secret file that only a saved
+  // card's operation, or its receipt, names is replaced in that copy too, and
+  // the card becomes a hard gate. An ordinary second path stays.
+  it("hides a secret file that only a saved approval's operation or its receipt names", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-operation-path-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    const approval = legacy.approvals[0]!
+    const session = legacy.sessions.find((candidate) => candidate.id === approval.sessionId)!
+    session.workspacePath = "/worktrees/operation-path"
+    approval.risk = "normal"
+    legacy.approvals = [
+      { ...structuredClone(approval), id: "approval-operation-secret", command: "cat notes.txt", operation: "Read notes.txt and src/private.pem" },
+      { ...structuredClone(approval), id: "approval-operation-ordinary", command: "cat notes.txt", operation: "Read notes.txt and src/index.ts" },
+    ]
+    legacy.thread = [
+      ...legacy.thread,
+      {
+        id: "receipt-operation-secret",
+        sessionId: approval.sessionId,
+        kind: "receipt",
+        decision: "deny",
+        operation: "Edit src/.env,prod with the key in src/private.pem",
+        checkpoint: "unavailable",
+        client: "cli",
+        createdAt: "2026-09-25T00:00:00.000Z",
+      },
+    ]
+    const injected = new DatabaseSync(databasePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const loaded = reopened.load()
+    expect(loaded.approvals).toEqual([
+      expect.objectContaining({ id: "approval-operation-secret", risk: "hard-gate", command: "cat notes.txt", operation: "Read notes.txt and [REDACTED]" }),
+      expect.objectContaining({ id: "approval-operation-ordinary", risk: "normal", command: "cat notes.txt", operation: "Read notes.txt and src/index.ts" }),
+    ])
+    expect(loaded.thread.find((item) => item.id === "receipt-operation-secret"))
+      .toMatchObject({ operation: "Edit [REDACTED] with the key in [REDACTED]" })
+    const readStored = () => {
+      const database = new DatabaseSync(databasePath)
+      const raw = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
+      database.close()
+      return JSON.stringify(raw)
+    }
+    expect(readStored()).not.toMatch(/private\.pem|\.env,prod/u)
+    reopened.save(legacy)
+    expect(readStored()).not.toMatch(/private\.pem|\.env,prod/u)
+    reopened.close()
   })
 
   it("keeps audit receipts across workspace-store reopen", async () => {

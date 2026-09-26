@@ -82,6 +82,7 @@ import {
   type TransferStatusResult,
   type SystemEmergencyStopResult,
   type ClientKind,
+  type ExecutionResolution,
   type Runtime,
   type TerminalOwner,
   type TerminalSummary,
@@ -99,6 +100,18 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
+import { type ApprovalScope } from "./approval-facts.js"
+import {
+  ApprovalLedger,
+  heldSettlementInput,
+  sameApproval,
+  sameExecution,
+  savedSettlementInput,
+  nextRevision,
+  settleApproval,
+  type ApprovalRequest,
+  type SettledApproval,
+} from "./approval-settlement.js"
 import {
   boundedQueuedSendReason,
   SqliteWorkspaceStore,
@@ -218,8 +231,6 @@ import {
   permissionHardGates,
   permissionPolicyRefusalFor,
 } from "./permission-policy.js"
-import { resolveExecution } from "./execution-resolution.js"
-import { cardDirectory, fileTargetAffects, hidePaths } from "./file-target-affects.js"
 import {
   fileTargetChanged,
   fileTargetHasOtherNames,
@@ -386,8 +397,8 @@ function withoutApprovals(
   updatedAt: string,
 ): {
   removed: WorkspaceSnapshot["approvals"]
+  removedIds: ReadonlySet<string>
   blockedIds: ReadonlySet<string>
-  approvals: WorkspaceSnapshot["approvals"]
   workingPlans: WorkspaceSnapshot["workingPlans"]
 } | undefined {
   const removed = snapshot.approvals.filter(predicate)
@@ -403,8 +414,8 @@ function withoutApprovals(
   const cleared = clearWorkingPlanApprovalBlockers(snapshot.workingPlans, removedIds, updatedAt)
   return {
     removed,
+    removedIds,
     blockedIds,
-    approvals: snapshot.approvals.filter((approval) => !removedIds.has(approval.id)),
     workingPlans: cleared.plans,
   }
 }
@@ -1325,14 +1336,27 @@ export type DaemonErrorEntry = {
 
 export type DaemonErrorSink = (entry: DaemonErrorEntry) => void
 
-// What a card that hides its file carries in place of its execution record,
-// which would name the file: the shape #541 gives a card whose record holds a
-// credential path, so every saved and sent copy stays free of the path.
-const hiddenApprovalExecution = { state: "unresolved", reason: "sensitive-content" } as const
-
 // Ruled 2026-09-24: Domovoi never releases an edit to a file with more than
 // one name. The card still shows; every Allow for it is refused with this.
 const fileTargetOtherNamesMessage = "This file has other names Domovoi cannot check, so Domovoi will not release the edit."
+const fileTargetChangedMessage = "The file target changed; review the updated approval before allowing it"
+const resolvedCommandChangedMessage = "The resolved command changed; review the updated approval before allowing it"
+
+// A waiting card's request as the provider gave it, what it resolved to before
+// the card hid anything, and for a file tool the reading of its file.
+type HeldApproval = {
+  request: ApprovalRequest
+  execution: ExecutionResolution
+  identity?: FileTargetIdentity | undefined
+}
+
+// A file tool's request: the file an edit reaches, read again at every Allow.
+function heldFileTool(request: ApprovalRequest): boolean {
+  return request.path !== undefined
+    && request.tool === undefined
+    && request.command !== undefined
+    && isFileToolCommand(request.command)
+}
 
 // All closed terminal records together: sixteen full records at the replay
 // budget, 1,048,576 characters, the same figure as the WebSocket high-water
@@ -1364,11 +1388,14 @@ type ActiveTerminal = {
   redactor: TerminalOutputRedactor
   redactorFlush: ReturnType<typeof setTimeout> | undefined
   owner: TerminalOwner
-  // Ownership is the connection that holds it. The owner's identity is
-  // broadcast to every client, so a caller-supplied one authorizes nothing.
-  // A released ownership waits through a grace window for the next connection
-  // to re-claim it, then the terminal is reaped rather than stranded forever.
+  // Ownership is the connection that holds it, and any later direct connection
+  // that authenticated as the same client (its hello identity, or its paired
+  // device). The owner broadcast to every client is caller-supplied and
+  // authorizes nothing. A released ownership waits through a grace window for
+  // that client to reconnect, then the terminal is reaped rather than
+  // stranded forever.
   ownerSocket: RpcOutboundSocket | undefined
+  ownerKey: string | undefined
   // The connections that opened, claimed or watch this terminal. Its output,
   // owner changes and close go to these and nowhere else.
   audience: Set<RpcOutboundSocket>
@@ -1402,35 +1429,6 @@ export class DomovoiDaemon {
   #store: WorkspaceStore
   #stateRecovery: StateRecovery | undefined
   #queuedSessionSends = new Map<string, StoredQueuedSessionSend>()
-  // The file a waiting file-tool card was raised for, exactly as the provider
-  // asked for it, keyed by approval id. approval.resolve reads it again before
-  // releasing the edit. Held in memory: the provider request it answers does
-  // not outlive the daemon either. When the card hides its file, the card
-  // carries hiddenApprovalExecution in every copy saved or sent, and the
-  // execution record naming the file is kept here alone, for that reading.
-  // The path the provider blocked on is kept so the file resolves the same way
-  // again, and so is what was at the file when the card's current revision was
-  // made: a blocked or unresolved record reads the same whatever is there, so
-  // only that reading tells an Allow the file was swapped.
-  #fileApprovalTargets = new Map<string, {
-    cwd: string
-    filePath: string
-    tool: string
-    blockedPath?: string
-    identity?: FileTargetIdentity
-    hiddenExecution?: WorkspaceSnapshot["approvals"][number]["execution"]
-  }>()
-  // The execution record of a waiting card that is not a file tool's and
-  // hides the directory its request runs in, keyed by approval id. The record
-  // names that directory, so every saved and sent copy carries
-  // hiddenApprovalExecution and the record is kept here alone, for the
-  // package script reading at approval.resolve.
-  #hiddenApprovalExecutions = new Map<string, WorkspaceSnapshot["approvals"][number]["execution"]>()
-  // The command of a waiting card whose command line hides a path, exactly as
-  // the provider sent it, keyed by approval id. The card's own line no longer
-  // resolves to what runs, so the package script reading at approval.resolve
-  // reads this instead. It names the hidden path, so it is kept here alone.
-  #hiddenApprovalCommands = new Map<string, string>()
   #persistenceFailures = 0
   #persistenceUnavailable = false
   #snapshotPersistenceTail: Promise<void> = Promise.resolve()
@@ -1438,6 +1436,18 @@ export class DomovoiDaemon {
   #auditLog: AuditLog | undefined
   #pendingAudits = new WeakMap<RpcOutboundSocket, Map<string, AuditAppendInput>>()
   #commandOutputRedactors = new Map<string, { itemId: string; redactor: DurableOutputRedactor }>()
+  // What each waiting card's request can reach, as the agent gave it, keyed by
+  // approval id. Kept in memory only, since the provider request it answers
+  // does not outlive the daemon either; the card shows these paths hidden or
+  // not at all. With it, the execution as resolved before the card hid it, and
+  // for a file tool what was at the file when the card's current revision was
+  // made: a blocked or unresolved record reads the same whatever is there, so
+  // only that reading tells an Allow the file was swapped.
+  readonly #approvalTargets = new Map<string, HeldApproval>()
+  // Where approvals enter the snapshot. Saves and broadcasts seal any approval
+  // it did not admit, once the approvals loaded from disk are settled.
+  readonly #approvalLedger = new ApprovalLedger()
+  #approvalsSettled = false
   #agents: AgentRegistry
   #workspaceService: WorkspaceService
   #connectedAgents = new Set<string>()
@@ -1538,6 +1548,9 @@ export class DomovoiDaemon {
   // order once the fence lifts without a stop; a stop drops them with the
   // provider processes.
   #fencedApprovalRequests: { provider: string; event: AgentEvent }[] = []
+  // Snapshot and delta broadcasts held while a stop runs. The stop's own
+  // notification goes out first, then one snapshot carries every change.
+  #snapshotBroadcastHeld = false
   #stopping = false
   #stopped = false
   #stopPromise: Promise<void> | undefined
@@ -1791,7 +1804,7 @@ export class DomovoiDaemon {
         } else {
           void this.#mutations.enqueue(
             this.#resourceForAgentEvent(provider, event),
-            () => this.#handleAgentEvent(provider, event),
+            (signal) => this.#handleAgentEvent(provider, event, signal),
           )
         }
       }),
@@ -1954,11 +1967,7 @@ export class DomovoiDaemon {
   // The waiting cards whose requested file path or hidden directory is held
   // in memory, for checking that no path outlives its card.
   get fileApprovalTargetIds(): readonly string[] {
-    return [...new Set([
-      ...this.#fileApprovalTargets.keys(),
-      ...this.#hiddenApprovalExecutions.keys(),
-      ...this.#hiddenApprovalCommands.keys(),
-    ])]
+    return [...this.#approvalTargets.keys()]
   }
 
   async start(signal?: AbortSignal): Promise<{ host: string; port: number }> {
@@ -1975,6 +1984,10 @@ export class DomovoiDaemon {
     signal?.throwIfAborted()
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.())
     this.#recoverInterruptedTurns()
+    // Startup recovery expired every saved card (ruled 2026-09-24, #604), so
+    // from here on every approval in the snapshot came out of settlement, and
+    // saves and broadcasts seal any that did not.
+    this.#approvalsSettled = true
     await this.#recoverSessionCreations()
     this.#syncArtifactWatchers()
 
@@ -2046,10 +2059,12 @@ export class DomovoiDaemon {
         // finished, and no turn may start in that gap either.
         if (this.#serviceHandoffFence === socket && !this.#stopping) {
           this.#serviceHandoffFence = undefined
+          // Each is handled as if it had just arrived, on the path a new
+          // request takes, including during an emergency stop.
           for (const { provider, event } of this.#fencedApprovalRequests.splice(0)) {
             void this.#mutations.enqueue(
               this.#resourceForAgentEvent(provider, event),
-              () => this.#handleAgentEvent(provider, event),
+              (signal) => this.#handleAgentEvent(provider, event, signal),
             )
           }
         }
@@ -2398,30 +2413,138 @@ export class DomovoiDaemon {
     })
   }
 
+  #holdApprovalTargets(approvalId: string, held: HeldApproval): void {
+    this.#forgetDepartedFileApprovalTargets()
+    this.#approvalTargets.set(approvalId, held)
+  }
+
   // A card leaves by many routes (a decision, archive, a provider disconnect,
   // session close, emergency stop, expiry), so rather than each route
-  // forgetting its paths, they are trimmed to the waiting cards whenever cards
-  // are removed and whenever state is saved or broadcast.
+  // forgetting its request, the held requests are trimmed to the waiting cards
+  // whenever a card is held and whenever state is saved or broadcast.
   #forgetDepartedFileApprovalTargets(): void {
-    const held = [this.#fileApprovalTargets, this.#hiddenApprovalExecutions, this.#hiddenApprovalCommands]
-    if (held.every((kept) => kept.size === 0)) return
+    if (this.#approvalTargets.size === 0) return
     const waiting = new Set(this.#snapshot.approvals.map((approval) => approval.id))
-    for (const kept of held) {
-      for (const approvalId of kept.keys()) {
-        if (!waiting.has(approvalId)) kept.delete(approvalId)
-      }
+    for (const approvalId of this.#approvalTargets.keys()) {
+      if (!waiting.has(approvalId)) this.#approvalTargets.delete(approvalId)
     }
   }
 
+  // The only write of an approval into the live snapshot.
+  #putApproval(approval: SettledApproval): void {
+    this.#approvalLedger.admit(this.#snapshot.approvals, approval)
+  }
+
+  #approvalWorkspace(approval: WorkspaceSnapshot["approvals"][number]): string | undefined {
+    return this.#snapshot.sessions.find((session) => session.id === approval.sessionId)?.workspacePath
+      ?? this.#snapshot.project?.path
+  }
+
+  #approvalScope(runtime: Runtime): ApprovalScope | undefined {
+    try { return this.#agents.require(runtime.provider).approvalScope?.(runtime) } catch { return undefined }
+  }
+
+  // Every save and broadcast: an approval in the live snapshot that did not
+  // come out of settlement is sealed, a hard gate with its paths hidden.
+  #sealUnsettledApprovals(): void {
+    if (!this.#approvalsSettled) return
+    const sealed = this.#approvalLedger.sealUnsettled(
+      this.#snapshot.approvals,
+      (approval) => this.#approvalWorkspace(approval),
+    )
+    if (sealed.length > 0) {
+      this.#reportError("Domovoi sealed an approval that did not pass its path checks", new Error(sealed.join(", ")))
+    }
+  }
+
+  // Before an Allow, the card is settled again from the request now: a link
+  // can move to a credential store, a file target can be swapped, and a
+  // package script can change, after the card was made. A file tool's file is
+  // read first, the same way and in the same order as when the card was
+  // raised, and its execution resolved again; so is a package script's. A
+  // card that changed, or whose file is not what was read for its current
+  // revision, is settled under the next revision, saved and sent, and the
+  // refusal says why. A card with no held request is resolved again from its
+  // saved text. OtherNames is whether the file, as read now, has another name,
+  // which no Allow releases.
+  async #settleBeforeAllow(
+    approval: WorkspaceSnapshot["approvals"][number],
+    session: WorkspaceSnapshot["sessions"][number],
+  ): Promise<{ refusal: string | undefined; otherNames: boolean }> {
+    const workspace = session.workspacePath ?? this.#snapshot.project?.path
+    if (workspace === undefined) return { refusal: undefined, otherNames: false }
+    const held = this.#approvalTargets.get(approval.id)
+    const fileTool = held !== undefined && heldFileTool(held.request)
+    const identity = fileTool
+      ? await fileTargetIdentity(held.request.workspace, held.request.path!, held.request.cwd ?? held.request.workspace)
+      : undefined
+    const otherNames = identity !== undefined && fileTargetHasOtherNames(identity)
+    const targetChanged = identity !== undefined && fileTargetChanged(held?.identity, identity)
+    const heldExecution = held?.execution ?? approval.execution
+    const reResolve = fileTool || (heldExecution.state === "resolved"
+      && heldExecution.record.kind === "shell"
+      && heldExecution.record.entries.some((entry) => entry.source.kind === "package-script"))
+    const scope = this.#approvalScope(session.runtime)
+    const risk = (execution: ExecutionResolution): WorkspaceSnapshot["approvals"][number]["risk"] => {
+      if (approval.risk === "hard-gate" || sameExecution(execution, heldExecution)) return approval.risk
+      return permissionDecisionFor({
+        runtime: session.runtime,
+        command: held?.request.command ?? approval.command,
+        reason: held?.request.reason ?? approval.operation,
+        execution,
+      }).risk
+    }
+    const settlement = await settleApproval(held
+      ? heldSettlementInput(approval, held.request, scope, reResolve ? "resolve" : held.execution, risk)
+      : savedSettlementInput(approval, workspace, scope, risk))
+    const current = this.#snapshot.approvals.find((candidate) => candidate.id === approval.id)
+    if (current === undefined) return { refusal: undefined, otherNames }
+    // The record a hidden card keeps in memory can change while every copy of
+    // the card reads the same, so it is compared on its own too.
+    const heldExecutionChanged = held !== undefined && !sameExecution(settlement.execution, held.execution)
+    if (sameApproval(settlement.approval, current) && !targetChanged && !heldExecutionChanged) {
+      // The card is what settlement makes of its request now, so it is the
+      // settled card from here on, even one that entered the list another
+      // way: a decision undone later puts it back as it is, not sealed.
+      this.#putApproval(settlement.approval)
+      return { refusal: undefined, otherNames }
+    }
+    const executionChanged = heldExecutionChanged || !sameExecution(settlement.approval.execution, current.execution)
+    // A card that a path now makes a hard gate says its target changed; one
+    // whose command resolves differently, and nothing else, says that.
+    const becameSensitive = settlement.sensitive && current.risk !== "hard-gate"
+    this.#putApproval(nextRevision(settlement.approval))
+    if (held) this.#approvalTargets.set(approval.id, { request: held.request, execution: settlement.execution, identity })
+    await this.#persistSnapshot()
+    this.#broadcastSnapshot()
+    // A file that gained another name while its card waited is refused for
+    // that, as the rewritten card will be.
+    const refusal = otherNames
+      ? fileTargetOtherNamesMessage
+      : fileTool || isFileToolCommand(current.command) || becameSensitive || !executionChanged
+        ? fileTargetChangedMessage
+        : resolvedCommandChangedMessage
+    return { refusal, otherNames }
+  }
   #broadcastSnapshot(): void {
+    if (this.#emergencyStopInProgress) {
+      this.#snapshotBroadcastHeld = true
+      return
+    }
+    this.#sendSnapshot()
+  }
+
+  #sendSnapshot(): void {
+    this.#snapshotBroadcastHeld = false
     this.#forgetDepartedFileApprovalTargets()
-    this.#flushPendingWorkspaceDeltas()
+    this.#flushPendingWorkspaceDeltas(true)
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.(
       this.#snapshot.sessions.flatMap((session) => session.providerThreadId && session.activeTurnId
         ? [{ provider: session.runtime.provider, threadId: session.providerThreadId, turnId: session.activeTurnId }]
         : []),
     ))
-    this.#broadcastNotification("workspace.changed", workspaceSnapshotForClient(this.#snapshot))
+    this.#sealUnsettledApprovals()
+    this.#broadcastNotification("workspace.changed", workspaceSnapshotForClient(this.#snapshot), true)
     this.#syncArtifactWatchActivity()
   }
 
@@ -2466,7 +2589,15 @@ export class DomovoiDaemon {
     return record
   }
 
-  #broadcastNotification<M extends NotificationMethod>(method: M, params: NotificationParams<M>): void {
+  #broadcastNotification<M extends NotificationMethod>(method: M, params: NotificationParams<M>, duringStop = false): void {
+    if (
+      (method === "workspace.changed" || method === "workspace.delta")
+      && this.#emergencyStopInProgress
+      && !duringStop
+    ) {
+      this.#snapshotBroadcastHeld = true
+      return
+    }
     this.#notifyClients(this.#rpcClients, method, params)
   }
 
@@ -2992,7 +3123,7 @@ export class DomovoiDaemon {
       && device.binding.clientAccess === "full"
   }
 
-  async #releaseQueuedSessionSend(sessionId: string): Promise<void> {
+  async #releaseQueuedSessionSend(sessionId: string, signal?: AbortSignal): Promise<void> {
     const queued = this.#queuedSessionSends.get(sessionId)
     if (!queued || queued.state !== "waiting") return
     const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
@@ -3038,7 +3169,7 @@ export class DomovoiDaemon {
         ...(queued.skillSelection ? { skillSelection: queued.skillSelection } : {}),
         ...(queued.uploads ? { attachments: queued.uploads } : {}),
       },
-    }))
+    }), signal)
     const result = await response
     if (!("error" in result)) {
       this.#store.deleteQueuedSessionSend?.(sessionId, queued.id)
@@ -4758,6 +4889,7 @@ export class DomovoiDaemon {
         })
       }
       this.#connectionIds.set(socket, randomUUID())
+      this.#reattachTerminals(socket)
       const deadline = this.#authenticationDeadlines.get(socket)
       if (deadline) clearTimeout(deadline)
       this.#authenticationDeadlines.delete(socket)
@@ -5193,13 +5325,14 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, invalidParams, "Terminal belongs to another session")
             return
           }
-          if (existing.ownerSocket === socket) {
+          if (this.#ownsTerminal(params.terminalId, existing, socket)) {
             existing.process.resize(params.cols, params.rows)
             existing.cols = params.cols
             existing.rows = params.rows
           } else if (existing.ownerSocket === undefined) {
             existing.owner = this.#terminalOwner(socket, params)
             existing.ownerSocket = socket
+            existing.ownerKey = this.#terminalClientKey(socket)
             if (existing.reapTimer !== undefined) {
               clearTimeout(existing.reapTimer)
               existing.reapTimer = undefined
@@ -5256,6 +5389,7 @@ export class DomovoiDaemon {
           redactorFlush: undefined,
           owner: this.#terminalOwner(socket, params),
           ownerSocket: socket,
+          ownerKey: this.#terminalClientKey(socket),
           audience: new Set([socket]),
           watchers: new Set(),
           openedAt: Date.now(),
@@ -5359,6 +5493,7 @@ export class DomovoiDaemon {
         }
         terminal.owner = this.#terminalOwner(socket, params)
         terminal.ownerSocket = socket
+        terminal.ownerKey = this.#terminalClientKey(socket)
         terminal.audience.add(socket)
         if (terminal.reapTimer !== undefined) {
           clearTimeout(terminal.reapTimer)
@@ -5435,7 +5570,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal.ownerSocket !== socket) {
+        if (!this.#ownsTerminal(params.terminalId, terminal, socket)) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
@@ -5455,7 +5590,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal.ownerSocket !== socket) {
+        if (!this.#ownsTerminal(params.terminalId, terminal, socket)) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
@@ -5477,7 +5612,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal.ownerSocket !== socket) {
+        if (!this.#ownsTerminal(params.terminalId, terminal, socket)) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
@@ -7143,9 +7278,7 @@ export class DomovoiDaemon {
           return
         }
         const fileCard = isFileToolCommand(approval.command)
-        const changedCardMessage = fileCard
-          ? "The file target changed; review the updated approval before allowing it"
-          : "The resolved command changed; review the updated approval before allowing it"
+        const changedCardMessage = fileCard ? fileTargetChangedMessage : resolvedCommandChangedMessage
         // An Allow answers the card the person saw. One given to a card the
         // daemon has since rewritten is refused, and the current card stands.
         if (
@@ -7165,155 +7298,32 @@ export class DomovoiDaemon {
           )
           return
         }
-        const requestedFile = this.#fileApprovalTargets.get(approval.id)
-        const hiddenDirectoryExecution = this.#hiddenApprovalExecutions.get(approval.id)
-        // The command as the provider sent it, when the card's line hides a
-        // path in it.
-        const requestCommand = this.#hiddenApprovalCommands.get(approval.id) ?? approval.command
-        // A card that hides its file or its directory is answered for the
-        // record the daemon kept, not the placeholder every copy of the card
-        // carries.
-        const cardExecution = requestedFile?.hiddenExecution ?? hiddenDirectoryExecution ?? approval.execution
-        let resolvedApprovalExecution = cardExecution.state === "resolved"
-          ? cardExecution
-          : undefined
-        const approvedRecord = resolvedApprovalExecution?.record
-        // A package script can change while its card waits, and so can the
-        // file an edit reaches: a directory on its path can become a link to
-        // somewhere else, and a file with another link can be replaced by a
-        // link out of the worktree. Every file tool's card, resolved or not,
-        // and every package script's is read again before anything is
-        // released.
-        const fileTool = approvedRecord?.kind === "workspace-file-tool"
-          ? approvedRecord.tool
-          : fileCard ? requestedFile?.tool : undefined
-        const packageScript = approvedRecord?.kind === "shell" && approvedRecord.entries.some(
-          (entry) => entry.source.kind === "package-script",
-        )
-        // Whether the file, as read for this Allow, has another name.
+        // A standing rule, like an Allow, answers only a card that came out of
+        // settlement just now, and never a hard gate.
         let targetHasOtherNames = false
-        if (
-          params.decision !== "deny"
-          && params.decision !== "deny-explain"
-          && (fileTool !== undefined || packageScript)
-        ) {
-          const project = this.#snapshot.project
-          const workspaceRoot = session?.workspacePath ?? project?.path
-          const cwd = workspaceRoot === undefined
-            ? undefined
-            : approvedRecord === undefined || approvedRecord.cwd === "."
-              ? workspaceRoot
-              : join(workspaceRoot, approvedRecord.cwd)
-          const fileTarget = workspaceRoot === undefined || cwd === undefined || fileTool === undefined
-            ? undefined
-            : requestedFile ?? (approvedRecord?.kind === "workspace-file-tool" && approvedRecord.scope === "file"
-              ? { cwd, filePath: join(workspaceRoot, approvedRecord.path) }
-              : undefined)
-          // What is at the file now, read before it is resolved again, the
-          // same way and in the same order as when the card was raised.
-          const currentIdentity = fileTarget === undefined || workspaceRoot === undefined
-            ? undefined
-            : await fileTargetIdentity(workspaceRoot, fileTarget.filePath, fileTarget.cwd)
-          targetHasOtherNames = currentIdentity !== undefined && fileTargetHasOtherNames(currentIdentity)
-          const currentExecution = workspaceRoot === undefined || cwd === undefined
-            ? { state: "unresolved" as const, reason: "cwd-outside-project" as const }
-            : fileTool !== undefined
-              ? await resolveExecution({
-                  workspaceRoot,
-                  cwd: fileTarget?.cwd ?? cwd,
-                  command: fileTool,
-                  ...(fileTarget ? { filePath: fileTarget.filePath } : {}),
-                  ...(requestedFile?.blockedPath === undefined ? {} : { blockedPath: requestedFile.blockedPath }),
-                })
-              : await resolveExecution({
-                  workspaceRoot,
-                  command: requestCommand,
-                  cwd,
-                })
-          // The card names the file as it is read now, so the line the person
-          // answers is the one the edit reaches.
-          const currentAffects = fileTarget && workspaceRoot !== undefined
-            ? await fileTargetAffects({ workspace: workspaceRoot, path: fileTarget.filePath, cwd: fileTarget.cwd })
-            : undefined
-          const currentDecision = permissionDecisionFor({
-            runtime: session?.runtime ?? {
-              provider: "claude-code",
-              model: "unknown",
-              reasoning: "high",
-              permissionMode: approval.mode,
-              auto: false,
-            },
-            command: requestCommand,
-            reason: approval.operation,
-            execution: currentExecution,
-          })
-          // A card raised as a hard gate (a secret in its text, say) stays
-          // one, and a secret in the file it now names, or a file it hides,
-          // makes it one.
-          const currentRisk = approval.risk === "hard-gate" || currentAffects?.redacted === true || currentAffects?.sensitive === true
-            ? "hard-gate"
-            : currentDecision.risk
-          const executionChanged = cardExecution.state === "resolved"
-            ? currentExecution.state !== "resolved" || currentExecution.digest !== cardExecution.digest
-            : currentExecution.state !== "unresolved" || currentExecution.reason !== cardExecution.reason
-          // A blocked or unresolved record reads the same whatever is at the
-          // file, so what is there is compared on its own: any difference from
-          // the reading kept for this revision is a change, whatever the
-          // record says. A card with no reading kept stands only on a regular
-          // file or a path with nothing at it.
-          const targetChanged = currentIdentity !== undefined && fileTargetChanged(requestedFile?.identity, currentIdentity)
+        if (params.decision !== "deny" && params.decision !== "deny-explain" && session) {
+          const settled = await this.#settleBeforeAllow(approval, session)
+          // An emergency stop can deny and remove this approval while it is
+          // settled again; the stop's answer must stand. Settlement leaves a
+          // card the stop removed as it is and refuses nothing, so the Allow
+          // ends here, before a checkpoint or any later step.
           if (
-            executionChanged
-            || targetChanged
-            || (currentAffects !== undefined && currentAffects.text !== approval.affects)
-            || currentRisk !== approval.risk
+            signal?.aborted
+            || this.#emergencyStopInProgress
+            || !this.#snapshot.approvals.some((candidate) => candidate.id === approval.id)
           ) {
-            // A card that hid its file keeps hiding it, and one whose file is
-            // now hidden starts to; either way the record stays in memory.
-            // The reading of the file moves to the new revision with it.
-            const keptTarget = requestedFile ?? (fileTarget !== undefined && fileTool !== undefined
-              ? { cwd: fileTarget.cwd, filePath: fileTarget.filePath, tool: fileTool }
-              : undefined)
-            const hidesFile = keptTarget !== undefined && (
-              requestedFile?.hiddenExecution !== undefined
-              || currentAffects?.redacted === true
-              || currentAffects?.sensitive === true
-            )
-            const reading = currentIdentity === undefined ? {} : { identity: currentIdentity }
-            if (hidesFile) this.#fileApprovalTargets.set(approval.id, { ...keptTarget, ...reading, hiddenExecution: currentExecution })
-            else if (requestedFile) this.#fileApprovalTargets.set(approval.id, { ...requestedFile, ...reading })
-            // A card that hid its directory keeps hiding it.
-            const hidesDirectory = !hidesFile && hiddenDirectoryExecution !== undefined
-            if (hidesDirectory) this.#hiddenApprovalExecutions.set(approval.id, currentExecution)
-            approval.execution = hidesFile || hidesDirectory ? { ...hiddenApprovalExecution } : currentExecution
-            // A file hidden now is hidden in the card's text from this revision
-            // on, as written and as the durable redaction left it.
-            if (hidesFile && workspaceRoot !== undefined) {
-              // The forms the card was judged on are the ones it hides; a set
-              // that hit its bound hides the text whole.
-              const { forms, complete } = currentAffects
-                ?? await fileTargetAffects({ workspace: workspaceRoot, path: keptTarget.filePath, cwd: keptTarget.cwd })
-              if (complete) {
-                const shownForms = [...forms, ...forms.map((form) => redactDurableText(form).value)]
-                approval.operation = hidePaths(approval.operation, shownForms)
-                approval.command = hidePaths(approval.command, shownForms)
-              } else {
-                approval.operation = "[REDACTED]"
-                approval.command = "[REDACTED]"
-              }
-            }
-            approval.revision += 1
-            if (currentAffects !== undefined) approval.affects = currentAffects.text
-            approval.risk = currentRisk
-            await this.#persistSnapshot()
-            this.#broadcastSnapshot()
-            // A file that gained another name while its card waited is refused
-            // for that, as the rewritten card will be.
-            this.#error(socket, request.id, invalidParams, targetHasOtherNames ? fileTargetOtherNamesMessage : changedCardMessage)
+            this.#error(socket, request.id, invalidParams, "The approval was withdrawn before it could be allowed")
             return
           }
-          resolvedApprovalExecution = currentExecution.state === "resolved" ? currentExecution : undefined
+          targetHasOtherNames = settled.otherNames
+          if (settled.refusal !== undefined) {
+            this.#error(socket, request.id, invalidParams, settled.refusal)
+            return
+          }
         }
+        const resolvedApprovalExecution = approval.execution.state === "resolved"
+          ? approval.execution
+          : undefined
         if (params.decision === "always-project" && !resolvedApprovalExecution) {
           this.#error(
             socket,
@@ -7506,9 +7516,11 @@ export class DomovoiDaemon {
             this.#reportError("Domovoi could not pass an approval decision to the agent", error)
             const undo = (snapshot: WorkspaceSnapshot) => {
               snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId && item.id !== approvedCheckpoint?.id)
-              if (!snapshot.approvals.some((pending) => pending.id === approval.id)) {
-                snapshot.approvals.push(structuredClone(undecided.approval))
-              }
+              this.#approvalLedger.restore(
+                snapshot.approvals,
+                undecided.approval,
+                (restored) => this.#approvalWorkspace(restored),
+              )
               if (newRule) {
                 snapshot.approvalRules = snapshot.approvalRules
                   .filter((rule) => rule.id !== newRule.id)
@@ -7550,9 +7562,7 @@ export class DomovoiDaemon {
             return
           }
         }
-        this.#fileApprovalTargets.delete(approval.id)
-        this.#hiddenApprovalExecutions.delete(approval.id)
-        this.#hiddenApprovalCommands.delete(approval.id)
+        this.#approvalTargets.delete(approval.id)
         const runTurnId = session?.activeTurnId
         if (allows && approval.itemId && runTurnId) {
           this.#dropApprovedRunsOutside(approval.sessionId, runTurnId)
@@ -7934,7 +7944,9 @@ export class DomovoiDaemon {
           }
           this.#snapshot.sessions = restored?.sessions ?? []
           this.#snapshot.activeSessionId = restored?.activeSessionId ?? null
-          this.#snapshot.approvals = restored?.approvals ?? []
+          // Saved cards never enter the live list: they expire just below
+          // (ruled 2026-09-24, #604), before any client or save sees them.
+          this.#snapshot.approvals = []
           this.#snapshot.approvalRules = restored?.approvalRules ?? []
           this.#snapshot.thread = restored?.thread ?? []
           this.#snapshot.artifacts = restored?.artifacts ?? []
@@ -7943,7 +7955,7 @@ export class DomovoiDaemon {
           // The project's provider threads were stopped when it was closed,
           // possibly by another daemon process, so its saved cards expire.
           const expiredAt = new Date().toISOString()
-          const expiredApprovals = this.#expireStoredApprovals(this.#snapshot, expiredAt)
+          const expiredApprovals = this.#expireStoredApprovals(this.#snapshot, expiredAt, restored?.approvals ?? [])
           noteExpiredApprovals(
             this.#snapshot,
             expiredApprovals,
@@ -8958,7 +8970,7 @@ export class DomovoiDaemon {
     }
   }
 
-  async #handleAgentEvent(provider: string, event: AgentEvent): Promise<void> {
+  async #handleAgentEvent(provider: string, event: AgentEvent, signal?: AbortSignal): Promise<void> {
     if (event.type === "provider-disconnected") {
       this.#appendAudit({
         actor: { kind: "provider", provider },
@@ -9207,98 +9219,14 @@ export class DomovoiDaemon {
       }
       const project = this.#snapshot.project
       if (!project) return
-      // The directory the request runs in. A path the provider blocked on is
-      // named beside the request and is never its directory.
-      const requestCwd = event.cwd !== undefined && event.cwd !== event.blockedPath
-        ? event.cwd
-        : session.workspacePath ?? project.path
+      // A path the provider blocked on is named beside the request and is
+      // never its directory.
+      const requestCwd = event.cwd !== undefined && event.cwd !== event.blockedPath ? event.cwd : undefined
       // A file tool is named without the whitespace around it, on the card, in
       // its record and in what the card hides, as execution resolution names it.
       const command = event.command !== undefined && isFileToolCommand(event.command)
         ? event.command.trim()
         : event.command
-      // A file tool's card names the file the edit reaches. What is at that
-      // path is read before the request is resolved, so a swap after this
-      // reading shows as a change when the card is answered.
-      const fileTarget = event.path !== undefined
-        && event.tool === undefined
-        && command !== undefined
-        && isFileToolCommand(command)
-        ? {
-            cwd: requestCwd,
-            filePath: event.path,
-            tool: command,
-            ...(event.blockedPath === undefined ? {} : { blockedPath: event.blockedPath }),
-            identity: await fileTargetIdentity(session.workspacePath ?? project.path, event.path, requestCwd),
-          }
-        : undefined
-      const execution = await resolveExecution({
-        workspaceRoot: session.workspacePath ?? project.path,
-        cwd: requestCwd,
-        ...(command === undefined ? {} : { command }),
-        ...(event.path === undefined ? {} : { filePath: event.path }),
-        ...(event.blockedPath === undefined ? {} : { blockedPath: event.blockedPath }),
-        ...(event.tool === undefined ? {} : { tool: event.tool }),
-      })
-      const decision = permissionDecisionFor({
-        runtime: session.runtime,
-        ...(command ? { command } : {}),
-        ...(event.reason ? { reason: event.reason } : {}),
-        execution,
-      })
-      const workspaceRoot = session.workspacePath ?? project.path
-      const directoryCopy = await cardDirectory({ directory: requestCwd, workspace: workspaceRoot })
-      const affectsCopy = fileTarget
-        ? await fileTargetAffects({ workspace: workspaceRoot, path: fileTarget.filePath, cwd: fileTarget.cwd })
-        : { text: "Files and processes in the session worktree.", redacted: false, sensitive: false, forms: [], complete: true }
-      // The path Claude Code blocked on is never drawn on the card. When it
-      // names a credential file, or the durable redaction changes it, the card
-      // hides it the way the Affects line would.
-      const blockedCopy = event.blockedPath === undefined
-        ? undefined
-        : await fileTargetAffects({ workspace: workspaceRoot, path: event.blockedPath, cwd: requestCwd })
-      // Past the last await of card construction (the file target, the
-      // execution, the card's directory and paths). From here the request is
-      // denied, allowed by policy, or published as a card without yielding,
-      // so the fence is either seen here or taken after it is settled. The one
-      // later await saves a standing rule's use; the fence is checked again
-      // after it, before the rule's answer is sent (round 7).
-      if (this.#serviceHandoffFence) {
-        this.#fencedApprovalRequests.push({ provider, event })
-        return
-      }
-      const hidesBlockedPath = blockedCopy !== undefined && (blockedCopy.redacted || blockedCopy.sensitive)
-      // Ruled 2026-09-24: the operation and command lines hide each path the
-      // card hides, in every form, and keep the rest of the agent's text. The
-      // forms are the ones each path was judged on.
-      const hiddenForms = [
-        ...(fileTarget !== undefined && (affectsCopy.redacted || affectsCopy.sensitive) ? affectsCopy.forms : []),
-        ...(directoryCopy.hidden ? directoryCopy.forms : []),
-        ...(blockedCopy !== undefined && hidesBlockedPath ? blockedCopy.forms : []),
-      ]
-      // A path whose spellings hit their bound cannot be hidden form by form,
-      // so the operation and command are hidden whole (final check after
-      // e8f7a4d3). Such a path is also judged as a credential path, which
-      // hides its line and makes the card a hard gate.
-      const hidesWhole = !affectsCopy.complete || !directoryCopy.complete || blockedCopy?.complete === false
-      const shownCommand = hidesWhole ? "[REDACTED]" : hidePaths(command ?? "Command details unavailable", hiddenForms)
-      const commandCopy = redactDurableCommand(shownCommand)
-      const reasonCopy = redactDurableText(hidesWhole ? "[REDACTED]" : hidePaths(event.reason ?? "Run a command", hiddenForms))
-      const containsSecret = commandCopy.redacted
-        || reasonCopy.redacted
-        || directoryCopy.hidden
-        || affectsCopy.redacted
-        || affectsCopy.sensitive
-        || hidesBlockedPath
-        || (execution.state === "unresolved" && execution.reason === "sensitive-content")
-      const matchingRule = this.#snapshot.approvalRules.find(
-        (rule) => !containsSecret
-          && execution.state === "resolved"
-          && rule.status === "active"
-          && rule.useCount < Number.MAX_SAFE_INTEGER
-          && rule.projectId === project.id
-          && rule.execution.digest === execution.digest,
-      )
       const inactiveRuleIds = this.#snapshot.approvalRules.flatMap((rule) => (
         rule.status === "inactive"
         && rule.inactiveReason === "legacy-text-only"
@@ -9307,12 +9235,79 @@ export class DomovoiDaemon {
           ? [rule.id]
           : []
       ))
+      const request: ApprovalRequest = {
+        workspace: session.workspacePath ?? project.path,
+        cwd: requestCwd,
+        path: event.path,
+        command,
+        reason: event.reason,
+        blockedPath: event.blockedPath,
+        tool: event.tool,
+      }
+      // A file tool's card is held with what was at its file, read before the
+      // request is resolved, so a swap after this reading shows as a change
+      // when the card is answered.
+      const identity = heldFileTool(request)
+        ? await fileTargetIdentity(request.workspace, request.path!, request.cwd ?? request.workspace)
+        : undefined
+      const policy = (execution: ExecutionResolution) => permissionDecisionFor({
+        runtime: session.runtime,
+        ...(command ? { command } : {}),
+        ...(event.reason ? { reason: event.reason } : {}),
+        execution,
+      })
+      // The card, the automatic allow and a standing rule all start from the
+      // settled request: its execution resolved and every path on it judged
+      // on disk, under one deadline.
+      const settlement = await settleApproval({
+        approval: {
+          id: `approval-${randomUUID()}`,
+          sessionId: session.id,
+          machine: this.#snapshot.machine.name,
+          agent: `${session.runtime.provider} / ${session.runtime.model}`,
+          mode: session.runtime.permissionMode,
+          estimatedDuration: "Unknown",
+          checkpoint: session.baseCommit ?? "unavailable",
+          providerRequestId: event.requestId,
+          ...(event.itemId && event.itemId.length <= 256 ? { itemId: event.itemId } : {}),
+          requestedAt: createdAt,
+          revision: 0,
+          ...(inactiveRuleIds.length === 0 ? {} : {
+            reapproval: { reason: "legacy-text-only" as const, inactiveRuleIds },
+          }),
+        },
+        request,
+        scope: this.#approvalScope(session.runtime),
+        execution: "resolve",
+        risk: (execution) => policy(execution).risk,
+      })
+      // Past the last await of card construction: the file's identity and the
+      // settlement (execution resolution and every path on the card, judged on
+      // disk). From here the request is denied, allowed by policy, or put up
+      // as a card without yielding, so the handoff fence is either seen here
+      // or taken after the request is settled. The one later await saves a
+      // standing rule's use; the fence is checked again after it, before the
+      // rule's answer is sent (security review rounds 6 and 7 of #576).
+      if (this.#serviceHandoffFence) {
+        this.#fencedApprovalRequests.push({ provider, event })
+        return
+      }
+      const settled = settlement.approval
+      const decision = policy(settlement.execution)
+      const settledDigest = settled.risk === "normal" && settled.execution.state === "resolved"
+        ? settled.execution.digest
+        : undefined
+      const matchingRule = settledDigest === undefined ? undefined : this.#snapshot.approvalRules.find(
+        (rule) => rule.status === "active"
+          && rule.useCount < Number.MAX_SAFE_INTEGER
+          && rule.projectId === project.id
+          && rule.execution.digest === settledDigest,
+      )
+      const allowed = settled.risk === "normal" && decision.action === "allow"
       // The outcome has to describe what actually happened: during a
       // persistence lockout nothing is approved, so recording success would put
       // a decision in the audit log that was never made.
-      const autoResolved = !this.#persistenceUnavailable
-        && !containsSecret
-        && decision.action === "allow"
+      const autoResolved = !this.#persistenceUnavailable && allowed
       this.#appendAudit({
         actor: { kind: "provider", provider, providerThreadId: threadId },
         action: "provider.approval-requested",
@@ -9330,13 +9325,13 @@ export class DomovoiDaemon {
         this.#agents.require(provider).resolveApproval(event.requestId, "deny")
         this.#reportError(
           persistenceUnavailableContext,
-          new Error(`Denied ${reasonCopy.value} because state cannot reach disk`),
+          new Error(`Denied ${settled.operation} because state cannot reach disk`),
         )
         return
       }
-      if (!containsSecret && decision.action === "allow") {
+      if (allowed) {
         this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
-      } else if (decision.risk === "normal" && matchingRule) {
+      } else if (matchingRule) {
         matchingRule.useCount += 1
         try {
           await this.#persistSnapshot()
@@ -9381,41 +9376,9 @@ export class DomovoiDaemon {
         })
         this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
       } else {
-        // A card that hides its file, whole or in part, or the directory the
-        // request runs in, carries no record that names it; approval.resolve
-        // reads the kept record instead.
-        const hidesFile = fileTarget !== undefined && (affectsCopy.redacted || affectsCopy.sensitive || directoryCopy.hidden)
-        // Only a resolved record names the directory.
-        const hidesDirectory = fileTarget === undefined && directoryCopy.hidden && execution.state === "resolved"
-        const approval: WorkspaceSnapshot["approvals"][number] = {
-          id: `approval-${randomUUID()}`,
-          sessionId: session.id,
-          risk: containsSecret ? "hard-gate" : decision.risk,
-          operation: reasonCopy.value,
-          command: commandCopy.value,
-          machine: this.#snapshot.machine.name,
-          agent: `${session.runtime.provider} / ${session.runtime.model}`,
-          mode: session.runtime.permissionMode,
-          directory: directoryCopy.text,
-          affects: affectsCopy.text,
-          network: "No agent network access granted.",
-          estimatedDuration: "Unknown",
-          checkpoint: session.baseCommit ?? "unavailable",
-          providerRequestId: event.requestId,
-          ...(event.itemId && event.itemId.length <= 256 ? { itemId: event.itemId } : {}),
-          requestedAt: createdAt,
-          execution: hidesFile || hidesDirectory ? { ...hiddenApprovalExecution } : execution,
-          revision: 0,
-          ...(inactiveRuleIds.length === 0 ? {} : {
-            reapproval: { reason: "legacy-text-only" as const, inactiveRuleIds },
-          }),
-        }
-        this.#snapshot.approvals.push(approval)
-        if (fileTarget) {
-          this.#fileApprovalTargets.set(approval.id, hidesFile ? { ...fileTarget, hiddenExecution: execution } : fileTarget)
-        }
-        if (hidesDirectory) this.#hiddenApprovalExecutions.set(approval.id, execution)
-        if (command !== undefined && shownCommand !== command) this.#hiddenApprovalCommands.set(approval.id, command)
+        const approval = settled
+        this.#putApproval(approval)
+        this.#holdApprovalTargets(approval.id, { request, execution: settlement.execution, identity })
         const blocked = blockWorkingPlanForApproval(
           this.#snapshot.workingPlans,
           session.id,
@@ -9702,7 +9665,7 @@ export class DomovoiDaemon {
     } else {
       await this.#flushAgentState()
     }
-    if (releaseQueuedSend) await this.#releaseQueuedSessionSend(session.id)
+    if (releaseQueuedSend) await this.#releaseQueuedSessionSend(session.id, signal)
   }
 
   async #handleProviderDisconnect(provider: string, reason: string): Promise<void> {
@@ -9775,7 +9738,7 @@ export class DomovoiDaemon {
       markDisconnected(candidate)
       const candidateApprovals = withoutApprovals(candidate, heldByAffected, createdAt)
       if (candidateApprovals) {
-        candidate.approvals = candidateApprovals.approvals
+        candidate.approvals = candidate.approvals.filter((approval) => !candidateApprovals.removedIds.has(approval.id))
         candidate.workingPlans = candidateApprovals.workingPlans
       }
       if (held.length > 0) {
@@ -9811,7 +9774,7 @@ export class DomovoiDaemon {
     const next = withoutApprovals(this.#snapshot, predicate, updatedAt)
     if (!next) return []
     const { removed, blockedIds } = next
-    this.#snapshot.approvals = next.approvals
+    this.#snapshot.approvals = this.#snapshot.approvals.filter((approval) => !next.removedIds.has(approval.id))
     this.#snapshot.workingPlans = next.workingPlans
     this.#forgetDepartedFileApprovalTargets()
     for (const approval of removed) {
@@ -9873,6 +9836,8 @@ export class DomovoiDaemon {
       return await this.#runEmergencyStop(client)
     } finally {
       this.#emergencyStopInProgress = false
+      // A stop that failed before its notification still releases what it held.
+      if (this.#snapshotBroadcastHeld) this.#sendSnapshot()
     }
   }
 
@@ -10082,8 +10047,10 @@ export class DomovoiDaemon {
       },
       failures: failures.slice(0, 100),
     }
-    this.#broadcastSnapshot()
+    // A client holding a queued message releases it when a session goes idle.
+    // The stop has to reach it first, or the idle snapshot restarts the work.
     this.#broadcastNotification("system.emergencyStopped", result)
+    this.#sendSnapshot()
     return result
   }
 
@@ -10334,8 +10301,11 @@ export class DomovoiDaemon {
   // session that was only waiting on it goes idle, the state a denied card
   // leaves. The agent asks again when the session continues. The expired cards
   // are returned for the caller to audit.
-  #expireStoredApprovals(snapshot: WorkspaceSnapshot, expiredAt: string): WorkspaceSnapshot["approvals"] {
-    const expired = snapshot.approvals
+  #expireStoredApprovals(
+    snapshot: WorkspaceSnapshot,
+    expiredAt: string,
+    expired: WorkspaceSnapshot["approvals"] = snapshot.approvals,
+  ): WorkspaceSnapshot["approvals"] {
     if (expired.length === 0) return []
     const expiredIds = new Set(expired.map((approval) => approval.id))
     snapshot.approvals = []
@@ -10688,11 +10658,68 @@ export class DomovoiDaemon {
     return true
   }
 
+  // Relay channels stay bound to the channel that admitted them; only direct
+  // connections share a terminal across a reconnect of the same client.
+  #terminalClientKey(socket: RpcOutboundSocket): string | undefined {
+    if (socket instanceof DaemonRelaySocket) return undefined
+    const actor = this.#authenticatedActors.get(socket)
+    if (actor?.kind !== "client" || actor.clientId === undefined) return undefined
+    return `${actor.client}\u0000${actor.clientId}`
+  }
+
+  // A connection that authenticated as the owning client holds the terminal,
+  // so the owner's reconnect is not refused as another client's.
+  #ownsTerminal(terminalId: string, terminal: ActiveTerminal, socket: RpcOutboundSocket): boolean {
+    if (terminal.ownerSocket === socket) return true
+    const key = this.#terminalClientKey(socket)
+    if (key === undefined || terminal.ownerKey !== key) return false
+    // Wherever ownership moves, the new owner also hears the terminal, from
+    // the same boundary as any other connection that joins.
+    terminal.ownerSocket = socket
+    this.#joinTerminalAudience(terminalId, terminal, socket)
+    if (terminal.reapTimer !== undefined) {
+      clearTimeout(terminal.reapTimer)
+      terminal.reapTimer = undefined
+    }
+    this.#announceTerminalOwnership(terminalId, terminal)
+    return true
+  }
+
+  // A move by a matching client key is a claim, and is said like one: every
+  // window, the connection that held it included, sees who holds the shell.
+  #announceTerminalOwnership(terminalId: string, terminal: ActiveTerminal): void {
+    this.#notifyTerminalAudience(terminal, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
+      terminalId,
+      owner: terminal.owner,
+    }))
+  }
+
+  #reattachTerminals(socket: RpcOutboundSocket): void {
+    const key = this.#terminalClientKey(socket)
+    if (key === undefined) return
+    for (const [terminalId, terminal] of this.#terminals) {
+      if (terminal.ownerSocket !== undefined || terminal.ownerKey !== key) continue
+      this.#ownsTerminal(terminalId, terminal, socket)
+    }
+  }
+
   #releaseTerminalOwnership(socket: RpcOutboundSocket): void {
+    const key = this.#terminalClientKey(socket)
+    const sameClient = key === undefined
+      ? undefined
+      : [...this.#rpcClients].find((candidate) => candidate !== socket && this.#terminalClientKey(candidate) === key)
     for (const [terminalId, terminal] of this.#terminals) {
       terminal.audience.delete(socket)
       terminal.watchers.delete(socket)
       if (terminal.ownerSocket !== socket) continue
+      if (sameClient) {
+        // No record is read here, so output still waiting in the batch goes on
+        // to the same client's other connection rather than being cut off.
+        terminal.ownerSocket = sameClient
+        terminal.audience.add(sameClient)
+        this.#announceTerminalOwnership(terminalId, terminal)
+        continue
+      }
       terminal.ownerSocket = undefined
       if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)
       terminal.reapTimer = setTimeout(() => {
@@ -10853,8 +10880,12 @@ export class DomovoiDaemon {
     }, workspaceDeltaBatchDelayMilliseconds)
   }
 
-  #flushPendingWorkspaceDeltas(): void {
+  #flushPendingWorkspaceDeltas(duringStop = false): void {
     if (this.#pendingWorkspaceDeltas.length === 0) return
+    if (this.#emergencyStopInProgress && !duringStop) {
+      this.#snapshotBroadcastHeld = true
+      return
+    }
     const pending = this.#pendingWorkspaceDeltas
     this.#pendingWorkspaceDeltas = []
     const validated = validWorkspaceDeltaBatches(pending)
@@ -10863,10 +10894,11 @@ export class DomovoiDaemon {
       this.#broadcastNotification(
         "workspace.changed",
         structuredClone(workspaceSnapshotForClient(this.#snapshot)),
+        duringStop,
       )
       return
     }
-    for (const batch of validated.batches) this.#broadcastNotification("workspace.delta", batch)
+    for (const batch of validated.batches) this.#broadcastNotification("workspace.delta", batch, duringStop)
   }
 
   async #flushAgentState(broadcast = true): Promise<void> {
@@ -10912,6 +10944,7 @@ export class DomovoiDaemon {
     const pending = this.#pendingSnapshotPersist ??= this.#serializeSnapshotPersistence(async () => {
       this.#pendingSnapshotPersist = undefined
       this.#sessionHistory.invalidate()
+      this.#sealUnsettledApprovals()
       try {
         if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
         else this.#store.save(this.#snapshot)
