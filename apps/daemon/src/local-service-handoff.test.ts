@@ -9,7 +9,7 @@ import WebSocket from "ws"
 import type { AgentEvent } from "./agents.js"
 import type { AgentAdapter } from "./codex.js"
 import { holdServiceHandoffFence, readLocalServiceHandoffRefusal } from "./local-service-handoff.js"
-import { DomovoiDaemon } from "./server.js"
+import { DomovoiDaemon, serviceHandoffFencedMessage, serviceHandoffStopRefusal } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForDaemon } from "./test-wait-for.js"
@@ -589,6 +589,125 @@ describe("the service handoff fence", () => {
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(71, "allow-once")
     expect(agent.resolveApproval.mock.calls.filter(([requestId]) => requestId === 71)).toEqual([[71, "deny"]])
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(70, "allow-once")
+  })
+})
+
+// Holds the first save whose snapshot passes `when`, so a test can keep an
+// emergency stop running at its save of the agent state. The daemon passes
+// its live snapshot, so `when` reads it as it is at the save.
+function heldSaves() {
+  let held: undefined | { when: (snapshot: WorkspaceSnapshot) => boolean; entered: () => void; release: Promise<"succeeds" | "fails"> }
+  const wrap = (store: SqliteWorkspaceStore) => {
+    const saveAsync = store.saveAsync.bind(store)
+    store.saveAsync = async (snapshot) => {
+      const gate = held
+      if (gate?.when(snapshot)) {
+        held = undefined
+        gate.entered()
+        if (await gate.release === "fails") throw new Error("The held save failed")
+      }
+      return saveAsync(snapshot)
+    }
+    return store
+  }
+  const hold = (when: (snapshot: WorkspaceSnapshot) => boolean = () => true) => {
+    let entered!: () => void
+    const reached = new Promise<void>((resolve) => { entered = resolve })
+    let release!: (outcome: "succeeds" | "fails") => void
+    held = { when, entered, release: new Promise((resolve) => { release = resolve }) }
+    return { reached, release }
+  }
+  return { wrap, hold }
+}
+
+// Security review of #577: an emergency stop denies gates and interrupts
+// turns before it saves its state. A fence asked for in that gap found nothing
+// in flight and was granted, so a handoff could stop the daemon mid-stop.
+describe("the service handoff fence and an emergency stop", () => {
+  it("refuses a fence while a stop saves its state, after its gates cleared, and grants it once the stop finishes", async () => {
+    const { workspace, sessionId } = await readySession()
+    const session = workspace.sessions.find(({ id }) => id === sessionId)!
+    session.runtime.permissionMode = "ask"
+    session.runtime.auto = false
+    const { agent, emit } = agentWithHeldTurns(false)
+    const saves = heldSaves()
+    const endpoint = await daemonWith(workspace, agent, saves.wrap)
+    const reader = await desktopConnection(endpoint)
+    const fencer = await desktopConnection(endpoint)
+    emit({ type: "approval-requested", requestId: 7, threadId: "thread-fence", command: "rm -rf build", cwd: session.workspacePath!, reason: "Remove the build output" })
+    await waitForDaemon(async () => {
+      const read = (await reader("workspace.get", {})).result as WorkspaceSnapshot
+      expect(read.approvals).toMatchObject([{ sessionId, providerRequestId: 7 }])
+    })
+    // Only the stop's own save is held: it is the one that records the stop.
+    const save = saves.hold((snapshot) => snapshot.thread.some((item) => item.kind === "system" && item.body.startsWith("Emergency stop requested")))
+    const stopping = reader("system.emergencyStop", { client: "desktop" })
+    try {
+      await save.reached
+      expect(agent.resolveApproval).toHaveBeenCalledWith(7, "deny")
+      await expect(fencer("system.serviceHandoffFence", {})).resolves.toMatchObject({
+        result: { outcome: "refused", refusal: serviceHandoffStopRefusal },
+      })
+    } finally {
+      save.release("succeeds")
+    }
+    await expect(stopping).resolves.toMatchObject({ result: { failures: [] } })
+    await expect(fencer("system.serviceHandoffFence", {})).resolves.toMatchObject({ result: { outcome: "fenced" } })
+  })
+
+  // The stop's own failure rule: a save that fails is recorded as a
+  // persistence failure and the stop still finishes. The fence waits for it
+  // to finish, and not longer.
+  it("refuses a fence while a stop's save is failing, and grants it once the stop finishes with that failure", async () => {
+    const saves = heldSaves()
+    const endpoint = await daemonWith(quiet(), undefined, saves.wrap)
+    const reader = await desktopConnection(endpoint)
+    const fencer = await desktopConnection(endpoint)
+    const save = saves.hold()
+    const stopping = reader("system.emergencyStop", { client: "desktop" })
+    try {
+      await save.reached
+      await expect(fencer("system.serviceHandoffFence", {})).resolves.toMatchObject({
+        result: { outcome: "refused", refusal: serviceHandoffStopRefusal },
+      })
+    } finally {
+      save.release("fails")
+    }
+    await expect(stopping).resolves.toMatchObject({ result: { failures: [expect.objectContaining({ target: "persistence" })] } })
+    await expect(fencer("system.serviceHandoffFence", {})).resolves.toMatchObject({ result: { outcome: "fenced" } })
+  })
+
+  // #576's design, kept: a stop is never refused, and a fence taken before it
+  // began stays held through it and after it, so no turn starts until the
+  // holder lets go. The stop denies what the fence held (tests above).
+  it("runs a stop to completion under a fence taken before it, and the fence stays held", async () => {
+    const { workspace, sessionId } = await readySession()
+    const { agent } = agentWithHeldTurns(false)
+    const saves = heldSaves()
+    const endpoint = await daemonWith(workspace, agent, saves.wrap)
+    const reader = await desktopConnection(endpoint)
+    const fence = await holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })
+    expect(fence).toEqual({ release: expect.any(Function) })
+    const save = saves.hold()
+    const stopping = reader("system.emergencyStop", { client: "desktop" })
+    try {
+      await save.reached
+      // The stop's own refusal answers first while it runs.
+      await expect(reader("session.send", { sessionId, prompt: "go", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
+      await expect(holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })).rejects.toThrow()
+    } finally {
+      save.release("succeeds")
+    }
+    await expect(stopping).resolves.toMatchObject({ result: { failures: [] } })
+    await expect(reader("session.send", { sessionId, prompt: "go", client: "desktop" })).resolves.toMatchObject({
+      error: { code: -32602, message: serviceHandoffFencedMessage },
+    })
+    expect(agent.startTurn).not.toHaveBeenCalled()
+    if ("release" in fence) fence.release()
+    await waitForDaemon(async () => {
+      const retry = await reader("session.send", { sessionId, prompt: "go", client: "desktop" })
+      expect(retry.error).toBeUndefined()
+    })
   })
 })
 
