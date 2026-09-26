@@ -2,6 +2,20 @@ packages:
   - apps/*
   - packages/*
 
+# pnpm reads only auth and registry settings from .npmrc, so the peer policy
+# lives here. A resolution that leaves a peer outside its declared range fails
+# unless a rule below names it.
+strictPeerDependencies: true
+peerDependencyRules:
+  allowedVersions:
+    # electron-vite 5 declares vite up to 7; 6.0.0-beta.1 is the first to admit
+    # vite 8. Remove once the desktop moves to electron-vite 6.
+    electron-vite>vite: "8"
+    # Expo pins react 19.2.3 for the phone, while the react-dom its web tooling
+    # resolves (19.2.8) asks for at least its own version. Remove once Expo's
+    # react pin reaches the react-dom it installs.
+    react-dom>react: "19.2.3"
+
 allowBuilds:
   '@parcel/watcher': true
   electron: true
