@@ -12,7 +12,7 @@ import { OperationDeadline } from "../operation-deadline.js"
 import { claimProfile, ProfileAlreadyOwnedError, type ProfileLease } from "../profile-lease.js"
 import { localOwnerRemovalReceiptPath, writeLocalOwnerRemovalReceipt } from "../local-owner-removal.js"
 import { readServiceRemovalSnapshot, serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
-import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration, type ServiceRuntimeRecord } from "./configuration.js"
+import { assertServiceProfile, createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration, type ServiceRuntimeRecord } from "./configuration.js"
 import { readLocalProfileFile } from "../local-owner-record.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
@@ -582,6 +582,7 @@ async function installWithDeadline(
   effects: InstallEffects,
   deadline: OperationDeadline,
   handoff: (() => Promise<void>) | undefined,
+  callerProfile?: ProfileLocation,
 ): Promise<ServicePlan> {
   // Reinstalling is a new supervisor decision, not reuse of an old recovery
   // authorization. Assign the identity here, even if the caller supplied one.
@@ -589,6 +590,10 @@ async function installWithDeadline(
   deadline.throwIfExpired()
   const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory)
   const previous = effects.registeredProfile?.(target.configuration.homeDirectory, target.platform)
+  // Security review round 2 of #577: read under the service-operation lease,
+  // before the handoff, so a service saved for another profile meanwhile
+  // refuses the caller's install.
+  if (callerProfile !== undefined) assertServiceProfile(previous, callerProfile)
   // Security review round 3 (#574): schtasks /create /f replaces a task of
   // the same name, so a task Domovoi did not register refuses the install, by
   // the same check status and removal use, before anything changes.
@@ -664,9 +669,9 @@ async function installWithDeadline(
 export function installService(
   target: ServiceTarget,
   effects: InstallEffects & Pick<ServiceEffects, "claimServiceOperation">,
-  options: { handoff?: () => Promise<void> } = {},
+  options: { handoff?: () => Promise<void>; callerProfile?: ProfileLocation } = {},
 ): Promise<ServicePlan> {
-  return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.handoff))
+  return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.handoff, options.callerProfile))
 }
 
 // Security review rounds 1 and 2 (#574): any program can register a Windows
@@ -1064,9 +1069,19 @@ async function removeWithDeadline(
 export function removeService(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
   effects: RemovalEffects,
+  options: { callerProfile?: ProfileLocation } = {},
 ): Promise<ServiceRemovalResult> {
   const progress: RemovalProgress = { managerHoldsDeadline: false }
-  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline, progress)).catch((cause: unknown) => {
+  return serviceOperation(effects, (deadline) => {
+    // Security review round 2 of #577: read under the service-operation lease,
+    // before any manager action, so a service saved for another profile
+    // meanwhile refuses the caller's removal.
+    if (options.callerProfile !== undefined) {
+      const saved = effects.readConfiguration?.(assertHome(target.home), target.platform)
+      assertServiceProfile(saved === undefined ? undefined : profileLocation(saved.homeDirectory, saved.profileDirectory), options.callerProfile)
+    }
+    return removeWithDeadline(target, effects, deadline, progress)
+  }).catch((cause: unknown) => {
     // The outer deadline can expire before the manager adapter settles. It
     // needs the same actionable task-specific error, not a bare timer failure.
     if (progress.managerHoldsDeadline && !(cause instanceof WindowsTaskRemovalError)) {

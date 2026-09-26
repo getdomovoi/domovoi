@@ -11,7 +11,7 @@ import {
   WindowsTaskPercentSignError,
   type DaemonServiceDependencies,
 } from "../public.js"
-import { createServiceConfiguration, parseServiceConfiguration } from "./configuration.js"
+import { createServiceConfiguration, parseServiceConfiguration, ServiceProfileMismatchError } from "./configuration.js"
 import type { ServiceEffects } from "./install.js"
 import { ServiceOperationBusyError } from "./operation-lease.js"
 import { DaemonServiceHandoffError, LaunchdJobNotDomovoiError, SystemdPathCharacterError, WindowsTaskArgumentVariableError, WindowsTaskPathError } from "./desktop-service.js"
@@ -801,5 +801,45 @@ describe("security review round 6 (install)", () => {
     )
     expect(fake.job()).toEqual({ path: other, running: true })
     expect(fake.ran).toEqual(["launchctl bootout", "launchctl bootstrap"])
+  })
+})
+
+// Security review round 2 of #577 (P1): given the caller's environment, install
+// and removal check the saved service's profile again under the
+// service-operation lease, before the handoff and before any manager action.
+describe("installDaemonService and removeDaemonService for the caller's profile", () => {
+  const other = createServiceConfiguration({ DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/other" }, { platform: "darwin", homeDirectory: "/Users/dl", workingDirectory: "/Users/dl" })
+
+  it("installs for the caller's profile and records it", async () => {
+    const effects = dependencies()
+    await installDaemonService({ runtime, environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/work" } }, effects)
+    const written = vi.mocked(effects.write).mock.calls.find(([path]) => path === "/Users/dl/.domovoi/service.json")![1]
+    expect(parseServiceConfiguration(written).profileDirectory).toBe("/Users/dl/profiles/work")
+  })
+
+  it("refuses an install over a service saved for another profile, before the handoff", async () => {
+    const releaseInAppDaemon = vi.fn(async () => {})
+    const effects = dependencies({ registeredProfile: vi.fn(() => ({ profileDirectory: "/Users/dl/profiles/other" })) })
+    const refused = installDaemonService({ runtime, environment: {}, releaseInAppDaemon }, effects)
+    await expect(refused).rejects.toBeInstanceOf(ServiceProfileMismatchError)
+    await expect(refused).rejects.toThrow("This app's daemon uses the profile at /Users/dl/.domovoi, and the login service uses the profile at /Users/dl/profiles/other.")
+    expect(effects.claimServiceOperation).toHaveBeenCalled()
+    expect(releaseInAppDaemon).not.toHaveBeenCalled()
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  it("refuses a removal of a service saved for another profile, before any manager action", async () => {
+    const effects = dependencies({ readConfiguration: vi.fn(() => other) })
+    await expect(removeDaemonService(effects, { environment: {} })).rejects.toBeInstanceOf(ServiceProfileMismatchError)
+    expect(effects.claimServiceOperation).toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+    expect(effects.remove).not.toHaveBeenCalled()
+  })
+
+  it("removes a service saved for the caller's profile", async () => {
+    const effects = dependencies({ readConfiguration: vi.fn(() => other) })
+    await expect(removeDaemonService(effects, { environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/other" } })).resolves.toMatchObject({ kind: "file" })
+    expect(effects.run).toHaveBeenCalledWith("launchctl", ["bootout", "gui/501/sh.domovoi.domovoid"], expect.anything())
   })
 })

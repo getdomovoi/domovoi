@@ -1468,3 +1468,23 @@ describe("security review round 6", () => {
     expect(effects.order).toEqual([])
   })
 })
+
+// Security review round 2 of #577 (P1): the desktop checks the profiles before
+// its fence, and another service change can replace service.json after that.
+// Given the caller's environment, the update checks the saved service's
+// profile again under the service-operation lease, before any manager action.
+describe("updateDaemonService for the caller's profile", () => {
+  it("changes nothing when the saved service runs another profile than the caller's", async () => {
+    const effects = fake("darwin", "/Users/dl")
+    const refused = updateDaemonService({ runtime, environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/work" } }, effects)
+    await expect(refused).rejects.toMatchObject({ outcome: "nothing-changed", cause: { name: "ServiceProfileMismatchError" } })
+    await expect(refused).rejects.toThrow("This app's daemon uses the profile at /Users/dl/profiles/work, and the login service uses the profile at /Users/dl/.domovoi")
+    expect(effects.claimServiceOperation).toHaveBeenCalled()
+    expect(effects.order).toEqual([])
+  })
+
+  it("updates the saved service when it runs the caller's profile", async () => {
+    const effects = fake("darwin", "/Users/dl")
+    await expect(updateDaemonService({ runtime, environment: {} }, effects)).resolves.toMatchObject({ kind: "file" })
+  })
+})

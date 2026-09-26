@@ -2,13 +2,31 @@ import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+// A read the test fails for one path with a chosen code, standing in for a
+// service.json whose directory cannot be searched. Other paths read as usual.
+const failingReads = vi.hoisted(() => new Map<string, string>())
+vi.mock("../local-owner-record.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../local-owner-record.js")>()
+  return {
+    ...actual,
+    readLocalProfileFile: (path: string, maximumBytes: number, privateFile?: boolean) => {
+      const code = failingReads.get(path)
+      if (code !== undefined) throw Object.assign(new Error(`${code}: injected by the test`), { code })
+      return actual.readLocalProfileFile(path, maximumBytes, privateFile)
+    },
+  }
+})
 
 import { removeScratchDirectories } from "../test-scratch.js"
 import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, serviceProfileMismatch } from "./configuration.js"
 
 const roots: string[] = []
-afterEach(async () => { await removeScratchDirectories(roots) })
+afterEach(async () => {
+  failingReads.clear()
+  await removeScratchDirectories(roots)
+})
 
 async function home(): Promise<string> {
   const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-service-profile-match-")))
@@ -33,11 +51,11 @@ describe("serviceProfileMismatch", () => {
     expect(serviceProfileMismatch({ environment: {}, homeDirectory: root })).toBeUndefined()
   })
 
-  it("names both profiles when the environment names another profile than an install would write", async () => {
+  // Security review round 2 of #577 (P1): an install from the desktop writes
+  // the app's own profile, so with no saved service any profile matches.
+  it("matches any profile the environment names when no service is saved", async () => {
     const root = await home()
-    const other = join(root, "profiles", "other")
-    expect(serviceProfileMismatch({ environment: { DOMOVOI_PROFILE_DIR: other }, homeDirectory: root }))
-      .toEqual({ app: other, service: join(root, ".domovoi") })
+    expect(serviceProfileMismatch({ environment: { DOMOVOI_PROFILE_DIR: join(root, "profiles", "other") }, homeDirectory: root })).toBeUndefined()
   })
 
   it("matches the profile the saved configuration names, and names both when the environment names another", async () => {
@@ -54,5 +72,16 @@ describe("serviceProfileMismatch", () => {
     await mkdir(dirname(path), { recursive: true })
     await writeFile(path, "not a configuration", { mode: 0o600 })
     expect(() => serviceProfileMismatch({ environment: {}, homeDirectory: root })).toThrow()
+  })
+
+  // Security review round 2 of #577 (P2): only a service.json that is not
+  // there counts as none saved; one that cannot be read is not known.
+  it("throws when service.json cannot be reached, and reads a missing one as none saved", async () => {
+    const root = await home()
+    const path = serviceConfigurationPath(root, process.platform)
+    failingReads.set(path, "EACCES")
+    expect(() => serviceProfileMismatch({ environment: {}, homeDirectory: root })).toThrow(/EACCES/)
+    failingReads.set(path, "ENOENT")
+    expect(serviceProfileMismatch({ environment: {}, homeDirectory: root })).toBeUndefined()
   })
 })

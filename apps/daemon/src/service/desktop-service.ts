@@ -6,8 +6,9 @@ import { posix, win32 } from "node:path"
 import { loginServiceHomePaths, loginServiceTaskName } from "@getdomovoi/protocol"
 
 import type { DaemonEnvironment } from "../config.js"
+import { profileLocation } from "../profile-directory.js"
 import { OperationDeadline } from "../operation-deadline.js"
-import { createServiceConfiguration } from "./configuration.js"
+import { assertServiceProfile, callerProfile, createServiceConfiguration } from "./configuration.js"
 import type { ServiceConfiguration } from "./configuration.js"
 import {
   installService,
@@ -52,6 +53,9 @@ export type DaemonServiceOptions = {
   // The settings the service keeps (profile, host, port, TLS paths), read as
   // the daemon reads its environment. Absent means the default profile under
   // the user's home. DOMOVOI_AUTH_TOKEN is refused, as the CLI refuses it.
+  // Given, it also names the caller's profile: a service saved for another
+  // profile refuses the install under the service-operation lease, before the
+  // handoff (security review round 2 of #577).
   environment?: DaemonEnvironment
   // The handoff, ruled 2026-09-23: called once the runtime, the platform and
   // the configuration have been checked, the service-operation lease is held
@@ -160,6 +164,7 @@ export async function installDaemonService(
   // lease, so a busy lease refuses with the in-app daemon still running.
   const plan = await installService(serviceTarget, dependencies, {
     ...(options.releaseInAppDaemon === undefined ? {} : { handoff: options.releaseInAppDaemon }),
+    ...(options.environment === undefined ? {} : { callerProfile: callerProfile(options.environment, dependencies.home) }),
   })
   return plan.kind === "file"
     ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
@@ -168,6 +173,10 @@ export async function installDaemonService(
 
 export type DaemonServiceUpdateOptions = {
   runtime: DaemonServiceRuntime
+  // The caller's daemon environment. Given, the saved service must run the
+  // profile it names, checked under the service-operation lease before any
+  // manager action (security review round 2 of #577).
+  environment?: DaemonEnvironment
 }
 
 // Ruled 2026-09-23: "Update the service" moves the installed service to the
@@ -201,6 +210,9 @@ export async function updateDaemonService(
       throw new DaemonServiceUpdateError("nothing-changed", cause)
     }
     if (!saved) throw new DaemonServiceUpdateError("not-installed")
+    if (options.environment !== undefined) {
+      assertServiceProfile(profileLocation(saved.homeDirectory, saved.profileDirectory), callerProfile(options.environment, dependencies.home))
+    }
     if (dependencies.platform === "linux" && saved.wsl) {
       const steps = await prepareWslUpdate(saved, options.runtime, tracked.effects, waits, tracked.inFlight)(readDeadline)
       return { ...steps, swap: async (deadline) => ({ kind: "task" as const, ...await steps.swap(deadline) }) }
@@ -229,10 +241,16 @@ export function readDaemonServiceStatus(
   return serviceStatus(target(dependencies), dependencies)
 }
 
+// options.environment: the caller's daemon environment. Given, the saved
+// service must run the profile it names, checked under the service-operation
+// lease before any manager action (security review round 2 of #577).
 export async function removeDaemonService(
   dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),
+  options: { environment?: DaemonEnvironment } = {},
 ): Promise<DaemonServiceRemovalResult> {
-  const removed = await removeService(target(dependencies), dependencies)
+  const removed = await removeService(target(dependencies), dependencies, {
+    ...(options.environment === undefined ? {} : { callerProfile: callerProfile(options.environment, dependencies.home) }),
+  })
   const recovery = {
     profileRecovery: removed.profileRecovery,
     ...(removed.profileRecoveryDetail === undefined ? {} : { profileRecoveryDetail: removed.profileRecoveryDetail }),

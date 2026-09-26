@@ -126,23 +126,54 @@ function webAppUrlSetting(value: unknown): string | undefined {
   throw new DaemonConfigurationError("DOMOVOI_WEB_APP_URL must be a string")
 }
 
-// Security review of #577 (P1): the profile a caller's own daemon runs (its
-// environment's DOMOVOI_PROFILE_DIR, read as the daemon reads it) against the
-// one the login service runs (the saved configuration's, or the default
-// profile an install from the desktop writes when nothing is saved). When they
-// differ, a turn check or a fence taken through the caller's daemon says
-// nothing about the service, so both directories are returned. Throws when
-// the saved configuration cannot be read. Reads only.
-export function serviceProfileMismatch(input: { environment: NodeJS.ProcessEnv; homeDirectory: string }): { app: string; service: string } | undefined {
-  const home = input.homeDirectory
-  const app = profileLocation(home, configuredProfileDirectory(input.environment.DOMOVOI_PROFILE_DIR, home))
-  const path = serviceConfigurationPath(home, process.platform)
-  let service: ProfileLocation = home
-  if (existsSync(path)) {
-    const config = parseServiceConfiguration(readLocalProfileFile(path, maximumConfigurationBytes))
-    service = profileLocation(config.homeDirectory, config.profileDirectory)
+// Security review of #577 (P1): the turn check and the fence reach only the
+// caller's own daemon, so a service change binds the service only when it
+// runs that daemon's profile. The caller's profile is its environment's
+// DOMOVOI_PROFILE_DIR, read as the daemon reads it.
+export function callerProfile(environment: DaemonEnvironment, homeDirectory: string): ProfileLocation {
+  return profileLocation(homeDirectory, configuredProfileDirectory(environment.DOMOVOI_PROFILE_DIR, homeDirectory))
+}
+
+// Copy approved by fetzy on 2026-09-26.
+export class ServiceProfileMismatchError extends Error {
+  constructor(readonly app: string, readonly service: string) {
+    super(`This app's daemon uses the profile at ${app}, and the login service uses the profile at ${service}.`)
+    this.name = "ServiceProfileMismatchError"
   }
-  return sameProfileDirectory(app, service) ? undefined : { app: profileDirectory(app), service: profileDirectory(service) }
+}
+
+// The saved service's profile against the caller's. None saved matches: an
+// install writes the caller's profile (the desktop passes it), an update finds
+// nothing to update, and a removal finds no Domovoi service to stop.
+export function assertServiceProfile(saved: ProfileLocation | undefined, caller: ProfileLocation): void {
+  if (saved !== undefined && !sameProfileDirectory(saved, caller)) throw new ServiceProfileMismatchError(profileDirectory(caller), profileDirectory(saved))
+}
+
+// Round 2 (P2): only a service.json that is not there counts as none saved.
+// One that cannot be reached or read throws, so it is never taken for none.
+function savedServiceProfile(home: string): ProfileLocation | undefined {
+  let text: string
+  try {
+    text = readLocalProfileFile(serviceConfigurationPath(home, process.platform), maximumConfigurationBytes)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+    throw error
+  }
+  const config = parseServiceConfiguration(text)
+  return profileLocation(config.homeDirectory, config.profileDirectory)
+}
+
+// The desktop's early check, before its turn check and fence: both profile
+// directories when the saved service runs another profile than the caller's.
+// The service calls check again under the service-operation lease. Reads only.
+export function serviceProfileMismatch(input: { environment: NodeJS.ProcessEnv; homeDirectory: string }): { app: string; service: string } | undefined {
+  try {
+    assertServiceProfile(savedServiceProfile(input.homeDirectory), callerProfile(input.environment, input.homeDirectory))
+    return undefined
+  } catch (error) {
+    if (error instanceof ServiceProfileMismatchError) return { app: error.app, service: error.service }
+    throw error
+  }
 }
 
 export function parseServiceConfiguration(text: string): ServiceConfiguration {
