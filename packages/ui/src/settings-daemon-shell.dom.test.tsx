@@ -257,3 +257,60 @@ it("keeps the newer status when a read started before an unreadable reply answer
   expect(within(section()).getByText("Running")).toBeTruthy()
   expect(within(section()).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(false)
 })
+
+// Security review round 5 of #576. A readable failure can still change who
+// holds the daemon: the app's daemon started again, this app attached to one
+// it did not start, or the service was left written or partly removed. Each
+// failed shape is walked; after the desktop resolves its daemon again, the
+// section's owner facts (the toggle, its quit line, whether Remove is live)
+// must match what the failure reported. The desktop here resolves as the real
+// one does: its own daemon back, attached to the service, unchanged, or, after
+// a stop, attached to a running service or starting its own.
+it("refreshes the owner after a failure that changed the daemon or the service, and draws what is now true", async () => {
+  type Read = { installed: boolean | null; running: boolean } | null
+  const services: Read[] = [{ installed: true, running: true }, { installed: true, running: false }, { installed: false, running: false }, null]
+  const daemons = ["restarted", "attached", "stopped", "untouched"] as const
+  for (const action of ["install", "remove"] as const) {
+    for (const service of services) {
+      for (const daemon of daemons) {
+        const label = `${action} ${JSON.stringify(service)} ${daemon}`
+        const before: LocalDaemon = action === "install" ? inApp : outside
+        const confirmedChange = service !== null && service.installed !== null
+          && (action === "install" ? service.installed : !(service.installed && service.running))
+        const refreshes = daemon === "restarted" || daemon === "attached" || confirmedChange
+        const resolved: LocalDaemon = daemon === "restarted" ? inApp
+          : daemon === "attached" ? outside
+            : daemon === "untouched" ? before
+              : service?.running ? outside : inApp
+        const ownerAfter = refreshes ? resolved : before
+        const windowBridge = bridge(vi.fn())
+        const failure = { ok: false as const, reason: "failed" as const, message: "launchctl exited 5", daemon, service }
+        windowBridge.daemonService!.install = vi.fn(async () => failure)
+        windowBridge.daemonService!.remove = vi.fn(async () => failure)
+        windowBridge.daemonService!.status = vi.fn()
+          .mockResolvedValueOnce(action === "install" ? { installed: false, running: false, detail: "" } : { installed: true, running: true, detail: "" })
+          .mockResolvedValue(service ? { ...service, detail: "" } : { unavailable: "launchctl could not be run" })
+        let moveTo: (next: LocalDaemon) => void = () => {}
+        const onLocalDaemonChanged = vi.fn(() => moveTo(resolved))
+        const opened = await openDaemonSection(windowBridge, before, onLocalDaemonChanged)
+        moveTo = opened.moveTo
+        await opened.user.click(within(opened.section()).getByRole("button", { name: action === "install" ? "Install" : "Unload and delete the LaunchAgent" }))
+        await within(opened.section()).findByText(action === "install" ? "Could not install the service" : "Could not remove the service")
+        await settle()
+        expect(onLocalDaemonChanged, label).toHaveBeenCalledTimes(refreshes ? 1 : 0)
+        const section = opened.section()
+        const running = ownerAfter.owner === "outside" && service?.installed === true
+        const toggle = ownerAfter.owner === "app" ? "Off" : running ? "Running" : "Not started here"
+        const quitLine = ownerAfter.owner === "app"
+          ? "Quitting Domovoi stops the daemon and every session on it."
+          : running ? "Quitting this app leaves the daemon and its sessions running." : "A daemon this app did not start. Quitting this app leaves it running."
+        expect(within(section).getByText(toggle), label).toBeTruthy()
+        expect(section.textContent, label).toContain(quitLine)
+        expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled"), label).toBe(!running)
+        cleanup()
+        harness.uninstall()
+        harness = installFakeWebSocket()
+      }
+    }
+  }
+})
