@@ -198,100 +198,6 @@ function controlSequenceEnd(text: string, at: number, to: number): number {
   return -1
 }
 
-// Reads terminal control sequences one character at a time, so a sequence
-// split across reads is followed: ESC, then [ and a CSI sequence such as the
-// colour ESC[1m or the cursor move ESC[8C, ] and an OSC string up to BEL or
-// ESC \, or a two-character escape. A line break ends an OSC string that has
-// not closed. They change how a line looks, not what it says, and so do
-// control characters other than tab, line feed and carriage return.
-type ControlState = "none" | "escape" | "csi" | "osc" | "oscEscape"
-
-class ControlReader {
-  #state: ControlState = "none"
-
-  // Outside every control sequence.
-  get idle(): boolean {
-    return this.#state === "none"
-  }
-
-  // Whether the character with this code is part of a control sequence or is
-  // a control character other than tab, line feed and carriage return.
-  invisible(code: number): boolean {
-    switch (this.#state) {
-      case "escape":
-        if (code === 0x5b) {
-          this.#state = "csi"
-          return true
-        }
-        if (code === 0x5d) {
-          this.#state = "osc"
-          return true
-        }
-        if (code >= 0x20 && code <= 0x2f) return true
-        this.#state = "none"
-        if (code >= 0x30 && code <= 0x7e) return true
-        break
-      case "csi":
-        if (code >= 0x20 && code <= 0x3f) return true
-        this.#state = "none"
-        if (code >= 0x40 && code <= 0x7e) return true
-        break
-      case "osc":
-        if (code === 0x07) {
-          this.#state = "none"
-          return true
-        }
-        if (code === 0x1b) {
-          this.#state = "oscEscape"
-          return true
-        }
-        if (code !== 0x0a && code !== 0x0d) return true
-        this.#state = "none"
-        break
-      case "oscEscape":
-        // ESC \ closes the string; an ESC followed by anything else starts a
-        // sequence of its own.
-        if (code === 0x5c) {
-          this.#state = "none"
-          return true
-        }
-        this.#state = "escape"
-        return this.invisible(code)
-      case "none":
-        break
-    }
-    if (code === 0x1b) {
-      this.#state = "escape"
-      return true
-    }
-    return (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || code === 0x7f
-  }
-}
-
-function holdsControl(text: string): boolean {
-  for (let at = 0; at < text.length; at += 1) {
-    const code = text.charCodeAt(at)
-    if ((code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || code === 0x7f) return true
-  }
-  return false
-}
-
-// A text as it reads on screen, with control sequences and control
-// characters taken out, and for each character it keeps, the index it came
-// from. Undefined when the text holds none.
-function readableText(text: string): { text: string, origins: number[] } | undefined {
-  if (!holdsControl(text)) return undefined
-  const reader = new ControlReader()
-  const kept: string[] = []
-  const origins: number[] = []
-  for (let at = 0; at < text.length; at += 1) {
-    if (reader.invisible(text.charCodeAt(at))) continue
-    kept.push(text[at]!)
-    origins.push(at)
-  }
-  return { text: kept.join(""), origins }
-}
-
 // Reads a value from `from`. end: the index of the delimiter that ends the
 // value, or -1 when the text ends first; state: where the reading stands.
 function readValue(text: string, from: number, state: ValueState, to = text.length): { end: number, state: ValueState } {
@@ -871,36 +777,6 @@ export function redactStreamText(value: string, complete = true, exemptFrom = 0,
   return redact(value, Number.MAX_SAFE_INTEGER, complete, exemptFrom, following).value
 }
 
-// A terminal read is redacted as a stream read is, then read again as it
-// reads on screen, with control sequences and control characters taken out,
-// so formatting between a name and its value (export API_KEY ESC[0m=value)
-// does not hide the assignment (#608). The second read runs over what the
-// first shows, and only the span it changes is written back: control
-// sequences before and after that span are kept, those inside it go with it.
-// Every character it keeps, the first read showed, so it hides at least what
-// the first read hides. Where context is lost, a counting value is shown only
-// after the first line break of what the first read shows, never earlier
-// than the first read would show it.
-function redactTerminalText(value: string, complete: boolean, exemptFrom = 0, following?: string): string {
-  const shown = redactStreamText(value, complete, exemptFrom, following)
-  const view = readableText(shown)
-  if (view === undefined) return shown
-  const lineEnd = exemptFrom === 0 ? undefined : /[\r\n]/u.exec(view.text)
-  const readableExemptFrom = exemptFrom === 0 ? 0 : lineEnd ? lineEnd.index + 1 : Number.MAX_SAFE_INTEGER
-  const redacted = redactStreamText(view.text, complete, readableExemptFrom, following)
-  if (redacted === view.text) return shown
-  const { text, origins } = view
-  let shared = 0
-  const limit = Math.min(text.length, redacted.length)
-  while (shared < limit && text.charCodeAt(shared) === redacted.charCodeAt(shared)) shared += 1
-  let suffix = 0
-  while (suffix < limit - shared && text.charCodeAt(text.length - 1 - suffix) === redacted.charCodeAt(redacted.length - 1 - suffix)) suffix += 1
-  const from = shared < origins.length ? origins[shared]! : shown.length
-  const lastChanged = text.length - suffix - 1
-  const to = lastChanged >= shared ? origins[lastChanged]! + 1 : from
-  return `${shown.slice(0, from)}${redacted.slice(shared, redacted.length - suffix)}${shown.slice(to)}`
-}
-
 export function redactDurableOutput(value: unknown): RedactedText {
   return redact(value, maximumDurableOutputLength)
 }
@@ -1342,66 +1218,8 @@ function closedQuote(value: string, delimiter: RegExp, enclosing: GroupingName |
 // redacted as usual, and the value becomes the replacement, in its quotes
 // when it is quoted.
 function hideOpenValue(text: string, open: OpenValue, complete: boolean, exemptFrom: number): string {
-  const before = redactTerminalText(text.slice(0, open.valueStart), complete, exemptFrom, text[open.valueStart])
+  const before = redactStreamText(text.slice(0, open.valueStart), complete, exemptFrom, text[open.valueStart])
   return `${before}${open.shown}`
-}
-
-// A readable position mapped back to the text: right after the character
-// before it, so a control sequence between a separator and its value goes
-// with the value.
-function rawIndexAfter(origins: readonly number[], at: number): number {
-  return at > 0 ? origins[at - 1]! + 1 : 0
-}
-
-// openValue on the text as it reads on screen, with its positions mapped back
-// to the text. Asked only where main's reading finds none: a control sequence
-// inside a name or its separator (API_KEY ESC[0m='a b) must not end a value
-// main would hold open (#608).
-function openReadableValue(text: string, words: boolean | "all"): OpenValue | undefined {
-  const view = readableText(text)
-  if (view === undefined) return undefined
-  const open = openValue(view.text, words)
-  if (open === undefined) return undefined
-  return { ...open, start: view.origins[open.start]!, valueStart: rawIndexAfter(view.origins, open.valueStart) }
-}
-
-// A value whose name began before an idle beat and which begins after it.
-// match: as the patterns found it in read, the text they read; valueAt and
-// end: where the value starts and ends in the text itself.
-type AcrossBeat = { match: ValueMatch, valueAt: number, end: number, read: string }
-
-function valueAcrossBeat(joined: string, beat: number): AcrossBeat | undefined {
-  const matches = [...scanValues(joined), ...valueMatches(lostContextAssignment, joined)]
-  const match = matches.flatMap((found) => [found, ...found.inner])
-    .filter((found) => found.index < beat && found.index + found.prefix.length >= beat)
-    // A counting name keeps its value in view here as anywhere: total_token= then 5.
-    .filter((found) => {
-      let nameStart = found.index
-      while (nameStart > 0 && isNameCharacter(joined.charCodeAt(nameStart - 1), false)) nameStart -= 1
-      return !countingName.test(nameOf(joined.slice(nameStart, found.index + found.prefix.length)).name)
-    })
-    .sort((left, right) => left.index - right.index)[0]
-  return match === undefined ? undefined : { match, valueAt: match.index + match.prefix.length, end: match.end, read: joined }
-}
-
-// valueAcrossBeat on the text as it reads on screen, asked only where main's
-// reading finds none: a control sequence inside a name or its separator
-// (access ESC[2K-token = then 'value') must not hide the name (#608).
-function readableValueAcrossBeat(joined: string, beat: number): AcrossBeat | undefined {
-  const view = readableText(joined)
-  if (view === undefined) return undefined
-  let readableBeat = 0
-  while (readableBeat < view.origins.length && view.origins[readableBeat]! < beat) readableBeat += 1
-  const found = valueAcrossBeat(view.text, readableBeat)
-  if (found === undefined) return undefined
-  const { match } = found
-  return {
-    match,
-    // What the beat already showed stays shown.
-    valueAt: Math.max(beat, rawIndexAfter(view.origins, match.index + match.prefix.length)),
-    end: match.end < view.origins.length ? view.origins[match.end]! : joined.length,
-    read: view.text,
-  }
 }
 
 // Where the terminal holds back from, and what it holds: see #holdFrom.
@@ -1450,25 +1268,6 @@ type Dropping =
   }
 
 const nameWordLength = 64
-
-// A token's alphabet, the dot of a JWT included, and where a token starts:
-// its prefix at the start of a word.
-function isTokenCharacter(code: number): boolean {
-  return isNameCharacter(code, false)
-}
-const tokenStart = /(?<![A-Za-z0-9_])(?:(?:sk|ghp|gho|github_pat|xox[baprs])[-_]|eyJ)/u
-const longestTokenPrefix = "github_pat_".length
-
-// Where a bare token starts in the run of token characters at the end of the
-// text, -1 when that run holds none. The run is found by walking back, and
-// only it is searched, so the cost is the run's length.
-function bareTokenStart(text: string): number {
-  let start = text.length
-  while (start > 0 && isTokenCharacter(text.charCodeAt(start - 1))) start -= 1
-  const found = tokenStart.exec(text.slice(start))
-  return found ? start + found.index : -1
-}
-
 const endsInSensitiveName = new RegExp(String.raw`(?:^|[_.-])${sensitiveName}$`, "iu")
 
 // The inner terminal redactor: this branch's rewrite of main's, plus the
@@ -1509,30 +1308,14 @@ class HeldTailRedactor {
   // How much of the last read a drop under way when it arrived took.
   leadDropped = 0
 
-  // Set while the rest of a bare token that outgrew the carry is still to be
-  // taken off what is shown.
-  #tokenTail = false
-
   // Everything held back plus the new read is redacted as one string, so an
   // assignment split across two reads is seen whole.
   push(chunk: string): string {
     const typedFrom = Math.max(chunk.lastIndexOf("\n"), chunk.lastIndexOf("\r")) + 1
     this.#typedTail = (typedFrom > 0 ? chunk.slice(typedFrom) : `${this.#typedTail}${chunk}`).slice(-nameWordLength)
-    const tail = this.#tokenTail
     const output = this.#push(chunk)
     if (output !== "") this.#beforeBeat = ""
-    return tail ? this.#withoutTokenTail(output) : output
-  }
-
-  // What is shown with the rest of a bare token that outgrew the carry taken
-  // off its front, up to the end of the token's alphabet. It is main's own
-  // output with a part removed, read as main reads it, so a name glued to the
-  // token's end still hides its value.
-  #withoutTokenTail(output: string): string {
-    let at = 0
-    while (at < output.length && isTokenCharacter(output.charCodeAt(at))) at += 1
-    if (at < output.length) this.#tokenTail = false
-    return output.slice(at)
+    return output
   }
 
   #push(chunk: string): string {
@@ -1561,7 +1344,7 @@ class HeldTailRedactor {
     // its end.
     let scanned: readonly ValueMatch[] | undefined
     const values = () => scanned ??= scanValues(combined)
-    const open = openValue(combined, true, values) ?? openReadableValue(combined, true)
+    const open = openValue(combined, true, values)
     if (open) {
       // A value still open may itself sit inside the value of an earlier
       // name, one read only where context is lost (Dtoken='a password=b…):
@@ -1579,10 +1362,10 @@ class HeldTailRedactor {
       const emitted = combined.slice(0, start)
       this.#carry = combined.slice(start)
       this.#settle(emitted)
-      return `${lead}${redactTerminalText(emitted, false, exemptFrom, this.#carry[0])}`
+      return `${lead}${redactStreamText(emitted, false, exemptFrom, this.#carry[0])}`
     }
 
-    const hold = this.#readableHold(combined, this.#holdFrom(combined, values, exemptFrom))
+    const hold = this.#holdFrom(combined, values, exemptFrom)
     const held = combined.length - hold.start
     if (held > terminalRedactionCarryCharacters && hold.value !== undefined) {
       // The held text is an assignment whose value has already run past the
@@ -1592,21 +1375,14 @@ class HeldTailRedactor {
       this.#dropping = this.#startDropping(hold.value, hold.syntax ?? "", hold.flag ?? false, hold.word ?? "", hold.enclosing)
       this.#dropped = combined.slice(-terminalRedactionCarryCharacters)
       this.#settle(combined)
-      return `${lead}${redactTerminalText(combined, false, exemptFrom)}`
+      return `${lead}${redactStreamText(combined, false, exemptFrom)}`
     }
 
     const emitted = combined.slice(0, hold.start)
     this.#carry = combined.slice(hold.start)
     this.#settle(emitted)
     if (hold.cut && this.#contextLost === undefined) this.#contextLost = "name"
-    // A bare token longer than the carry: what is emitted of it is redacted
-    // as it always was, and the rest of it, which would be shown without its
-    // prefix, is taken off the front of what is shown next (#608).
-    if (hold.cut) {
-      const token = bareTokenStart(combined)
-      if (token >= 0 && token < hold.start) this.#tokenTail = true
-    }
-    return `${lead}${redactTerminalText(emitted, false, exemptFrom, this.#carry[0])}`
+    return `${lead}${redactStreamText(emitted, false, exemptFrom, this.#carry[0])}`
   }
 
   // A value whose name began before the last idle beat and which begins after
@@ -1618,25 +1394,34 @@ class HeldTailRedactor {
     const text = `${this.#carry}${input}`
     const beat = this.#beforeBeat.length
     const joined = `${this.#beforeBeat}${text}`
-    const found = valueAcrossBeat(joined, beat) ?? readableValueAcrossBeat(joined, beat)
-    if (found === undefined) return undefined
-    const { match: across, valueAt, end, read } = found
+    const matches = [...scanValues(joined), ...valueMatches(lostContextAssignment, joined)]
+    const across = matches.flatMap((match) => [match, ...match.inner])
+      .filter((match) => match.index < beat && match.index + match.prefix.length >= beat)
+      // A counting name keeps its value in view here as anywhere: total_token= then 5.
+      .filter((match) => {
+        let nameStart = match.index
+        while (nameStart > 0 && isNameCharacter(joined.charCodeAt(nameStart - 1), false)) nameStart -= 1
+        return !countingName.test(nameOf(joined.slice(nameStart, match.index + match.prefix.length)).name)
+      })
+      .sort((left, right) => left.index - right.index)[0]
+    if (across === undefined) return undefined
     this.#beforeBeat = ""
     this.#carry = ""
-    const shown = `${text.slice(0, valueAt - beat)}${hiddenValue("", across.secret, across.enclosing)}`
-    this.#settle(text.slice(0, valueAt - beat))
-    if (across.open !== undefined && end >= joined.length) {
+    const valueAt = across.index + across.prefix.length - beat
+    const shown = `${text.slice(0, valueAt)}${hiddenValue("", across.secret, across.enclosing)}`
+    this.#settle(text.slice(0, valueAt))
+    if (across.open !== undefined && across.end >= joined.length) {
       this.#dropping = { kind: "value", state: across.open }
       this.#dropped = joined.slice(-terminalRedactionCarryCharacters)
       return shown
     }
     // A name and separator at the end of the hidden value take the value
     // that follows them, as a drop's end does.
-    const trailing = this.#trailingName(read.slice(Math.max(0, across.end - terminalRedactionCarryCharacters), across.end))
+    const trailing = this.#trailingName(joined.slice(Math.max(0, across.end - terminalRedactionCarryCharacters), across.end))
     if (trailing !== undefined && (/[:=]/u.test(trailing.syntax ?? "") || trailing.flag === true)) {
       this.#dropping = this.#startDropping("", trailing.syntax ?? "", trailing.flag ?? false, trailing.word ?? "", undefined)
     }
-    const rest = text.slice(end - beat)
+    const rest = text.slice(across.end - beat)
     return rest === "" ? shown : `${shown}${this.#push(rest)}`
   }
 
@@ -1757,18 +1542,11 @@ class HeldTailRedactor {
   // on, and a name and separator at the end start a drop of the value that
   // follows them (security review round 7 of #539).
   flush(idle = false): string {
-    const tail = this.#tokenTail
-    const output = this.#flush(idle)
-    if (!idle) this.#tokenTail = false
-    return tail ? this.#withoutTokenTail(output) : output
-  }
-
-  #flush(idle: boolean): string {
     if (!idle && (this.#dropping?.kind !== "value" || this.#dropping.state.stack.length === 0)) this.#dropping = undefined
     const remainder = this.#carry
     this.#carry = ""
     const exemptFrom = this.#exemptFrom(remainder)
-    const open = remainder === "" ? undefined : openValue(remainder, idle ? "all" : false) ?? openReadableValue(remainder, idle ? "all" : false)
+    const open = remainder === "" ? undefined : openValue(remainder, idle ? "all" : false)
     if (open) {
       this.#dropping = { kind: "value", state: open.state }
       this.#dropped = remainder.slice(-terminalRedactionCarryCharacters)
@@ -1785,7 +1563,7 @@ class HeldTailRedactor {
       ? ""
       : open
         ? hideOpenValue(remainder, open, true, exemptFrom)
-        : redactTerminalText(remainder, true, exemptFrom)
+        : redactStreamText(remainder, true, exemptFrom)
     // A flush in the middle of a line leaves the rest of the line without
     // what came before it.
     this.#settle(remainder)
@@ -1868,21 +1646,6 @@ class HeldTailRedactor {
       flag: text[nameStart] === "-" || text[nameStart] === "/",
       word: text.slice(Math.max(nameStart, wordEnd - nameWordLength), wordEnd),
     }
-  }
-
-  // The hold main's reading makes, or, when the text read as it reads on
-  // screen ends in an assignment held from further back, that one: a control
-  // sequence inside a name or its separator (API_KEY ESC[0m = zq) must not
-  // let the value go out before it is complete (#608).
-  #readableHold(combined: string, hold: Hold): Hold {
-    const view = readableText(combined)
-    if (view === undefined) return hold
-    const readable = this.#danglingHold(view.text)
-    if (readable.value === undefined || readable.start >= view.text.length) return hold
-    const start = view.origins[readable.start]!
-    if (start >= hold.start) return hold
-    const valueStart = rawIndexAfter(view.origins, view.text.length - readable.value.length)
-    return { ...readable, start, value: readable.value === "" ? "" : combined.slice(valueStart) }
   }
 
   #danglingHold(combined: string): Hold {
@@ -1969,10 +1732,8 @@ function valueEndingRead(partial: string): ValueRead | undefined {
   for (let index = 0; index < partial.length; index += 1) {
     const character = partial[index]!
     if (read.quote !== undefined) {
-      // A backslash escapes the next character inside either quote (owner
-      // ruling 2026-09-25), so an escaped quote does not close the value.
       if (read.escaped) read.escaped = false
-      else if (character === "\\") read.escaped = true
+      else if (character === "\\" && read.quote === '"') read.escaped = true
       else if (character === read.quote) return undefined
     } else if (index === 0 && !read.marked && (character === '"' || character === "'")) {
       read.quote = character
@@ -2000,9 +1761,8 @@ function valueOpenInTypedLine(line: string): (ValueRead & { from: number }) | un
     for (; index < line.length; index += 1) {
       const character = line[index]!
       if (read.quote !== undefined) {
-        // A backslash escapes the next character inside either quote.
         if (read.escaped) read.escaped = false
-        else if (character === "\\") read.escaped = true
+        else if (character === "\\" && read.quote === '"') read.escaped = true
         else if (character === read.quote) break
         continue
       }
@@ -2018,20 +1778,6 @@ function valueOpenInTypedLine(line: string): (ValueRead & { from: number }) | un
     starts.lastIndex = Math.max(index, from)
   }
   return undefined
-}
-
-// valueOpenInTypedLine on the typed line as it reads on screen, so a control
-// sequence inside a name or its separator does not hide it, with from counted
-// in the typed line itself.
-function typedValue(raw: string): (ValueRead & { from: number }) | undefined {
-  const view = readableText(raw)
-  if (view === undefined) return valueOpenInTypedLine(raw)
-  const typed = valueOpenInTypedLine(view.text)
-  if (typed === undefined) return undefined
-  // Right after the last character before the value: a control sequence
-  // between the separator and the value is read as part of the value, as the
-  // typed line itself reads it.
-  return { ...typed, from: typed.from > 0 ? view.origins[typed.from - 1]! + 1 : 0 }
 }
 
 // The end of a line with more text: from its last line boundary, runs of
@@ -2064,7 +1810,8 @@ function collapsedIndex(text: string, length: number): number {
 // separator in it, however the name was split around the beat, make what
 // follows that name's value, and the value is shown as the replacement. It
 // only ever hides text main would show, so nothing main hides is shown.
-export class TerminalOutputRedactor {
+// It runs unchanged as the first stage of TerminalOutputRedactor below.
+class MainTerminalRedactor {
   readonly #held = new HeldTailRedactor()
   // The end of the current line as shown, kept whether or not a beat has
   // released anything, so a name shown before the beat is still in view.
@@ -2085,15 +1832,6 @@ export class TerminalOutputRedactor {
   #raw = ""
   #context = false
   #value: ValueRead | undefined
-  // Where the output stands in a control sequence. The line is read as it
-  // reads on screen, without them, so formatting between a name and its
-  // value does not hide the assignment (#608).
-  #controls = new ControlReader()
-  // The word an idle beat cut, as typed so far, and where the beat fell in
-  // it. A bare token has no name, so what the beat released of it is not
-  // context for the rest: once the word holds a token's prefix that began
-  // before the beat, the rest of the word is hidden (#608). hiding: it does.
-  #cutWord: { word: string, beat: number, hiding: boolean } | undefined
 
   push(chunk: string): string {
     this.#raw = keptLineEnd(this.#raw, chunk)
@@ -2112,21 +1850,10 @@ export class TerminalOutputRedactor {
   }
 
   release(): string {
-    const released = this.#release()
-    if (this.#cutWord === undefined) {
-      const typed = readableText(this.#raw)?.text ?? this.#raw
-      let start = typed.length
-      while (start > 0 && isTokenCharacter(typed.charCodeAt(start - 1))) start -= 1
-      if (start < typed.length) this.#cutWord = { word: typed.slice(start), beat: typed.length - start, hiding: false }
-    }
-    return released
-  }
-
-  #release(): string {
     const flushed = this.#held.flush(true)
     // Main has now shown the whole line, so the typed line says where a
     // value stands, better than what main showed for it.
-    const typed = typedValue(this.#raw)
+    const typed = valueOpenInTypedLine(this.#raw)
     if (!typed) {
       const released = this.#read(flushed)
       this.#context = true
@@ -2143,8 +1870,6 @@ export class TerminalOutputRedactor {
       const keep = collapsedIndex(flushed, Math.max(0, typed.from - releaseStart))
       released = this.#read(flushed.slice(0, keep))
       if (keep < flushed.length) {
-        // What is hidden is still read for where a control sequence stands.
-        for (let at = keep; at < flushed.length; at += 1) this.#controls.invisible(flushed.charCodeAt(at))
         released += replacement
         this.#see(replacement)
         hidden = true
@@ -2170,8 +1895,6 @@ export class TerminalOutputRedactor {
     this.#raw = ""
     this.#context = false
     this.#value = undefined
-    this.#controls = new ControlReader()
-    this.#cutWord = undefined
     return output
   }
 
@@ -2193,35 +1916,19 @@ export class TerminalOutputRedactor {
         }
       }
       const character = text[index]!
-      // A control sequence or control character is never read as part of the
-      // line, so a name before it still meets its separator after it. Where a
-      // value is being read, it is read as part of that value, as before.
-      const invisible = this.#controls.invisible(text.charCodeAt(index))
-      if (invisible && (!this.#context || this.#value === undefined)) {
-        output += character
-        continue
-      }
-      if (!invisible && (character === "\n" || character === "\r")) {
-        // A carriage return redraws the line, and is read as a line break: it
-        // ends a value under way, but a name and separator still waiting for
-        // their value keep waiting, as the patterns read a line break between
-        // a separator and its value (#608).
-        const waiting = character === "\r" && this.#context && this.#value !== undefined && !this.#value.started
+      if (character === "\n" || character === "\r") {
         this.#line = ""
         this.#blankEnd = false
         this.#noValueEnding = false
         this.#separatorAt = -1
         this.#lineOffset = 0
-        if (!waiting) {
-          this.#context = false
-          this.#value = undefined
-        }
-        this.#cutWord = undefined
+        this.#context = false
+        this.#value = undefined
         output += character
         continue
       }
       const value = this.#context ? this.#value : undefined
-      if (!invisible && value && !value.started && (character === '"' || character === "'")
+      if (value && !value.started && (character === '"' || character === "'")
         && text.startsWith(`${character}${replacement}${character}`, index)) {
         // Main replaced a quoted value here, and the value ends with it.
         const shown = `${character}${replacement}${character}`
@@ -2231,7 +1938,7 @@ export class TerminalOutputRedactor {
         this.#see(shown)
         continue
       }
-      if (!invisible && value?.quote !== undefined && text.startsWith(replacement, index)) {
+      if (value?.quote !== undefined && text.startsWith(replacement, index)) {
         // Part of the quoted value was replaced. This branch's reader keeps a
         // quote's closer after its replacement, so the quote is still open
         // and closes at its own closer (security review round 7 of #539).
@@ -2254,48 +1961,19 @@ export class TerminalOutputRedactor {
         if (!this.#line.endsWith(replacement)) this.#see(replacement)
         continue
       }
-      if (!invisible && this.#cutWord !== undefined && this.#hidesCutWord(this.#cutWord, character)) {
-        if (!this.#line.endsWith(replacement)) {
-          output += replacement
-          this.#see(replacement)
-        }
-        continue
-      }
       output += character
-      if (invisible) continue
       this.#see(character)
       if (this.#context && this.#value === undefined) this.#value = this.#valueEnding()
     }
     return output
   }
 
-  // Whether this character goes on a word an idle beat cut and is hidden with
-  // it. A token's prefix that began before the beat ends within 11 characters
-  // after it, so the word is only searched that far.
-  #hidesCutWord(cut: { word: string, beat: number, hiding: boolean }, character: string): boolean {
-    if (!isTokenCharacter(character.charCodeAt(0))) {
-      this.#cutWord = undefined
-      return false
-    }
-    if (cut.hiding) return true
-    cut.word = `${cut.word}${character}`
-    const token = tokenStart.exec(cut.word)
-    if (token !== null && token.index < cut.beat) {
-      cut.hiding = true
-      // The prefix itself is shown; what follows it is not.
-      return token.index + token[0].length < cut.word.length
-    }
-    if (cut.word.length > cut.beat + longestTokenPrefix) this.#cutWord = undefined
-    return false
-  }
-
   // Whether this character belongs to the value being read, which ends the
   // value when it does not.
   #hides(value: ValueRead, character: string): boolean {
     if (value.quote !== undefined) {
-      // A backslash escapes the next character inside either quote.
       if (value.escaped) value.escaped = false
-      else if (character === "\\") value.escaped = true
+      else if (character === "\\" && value.quote === '"') value.escaped = true
       else if (character === value.quote) this.#value = undefined
       return true
     }
@@ -2334,25 +2012,11 @@ export class TerminalOutputRedactor {
 
   // #see of each character of a run, in one step: runs of spaces and tabs
   // are kept as their first.
-  #seeRun(text: string): void {
-    const run = this.#visible(text)
+  #seeRun(run: string): void {
     let collapsed = run.replace(/[ \t]+/gu, (blanks) => blanks[0]!)
     if (this.#blankEnd && (collapsed[0] === " " || collapsed[0] === "\t")) collapsed = collapsed.slice(1)
     if (collapsed === "") return
     this.#see(collapsed)
-  }
-
-  // What of a text reads on screen, with the control reader moved past it.
-  #visible(text: string): string {
-    if (text === "" || (this.#controls.idle && !holdsControl(text))) return text
-    let visible = ""
-    let from = 0
-    for (let at = 0; at < text.length; at += 1) {
-      if (!this.#controls.invisible(text.charCodeAt(at))) continue
-      visible += text.slice(from, at)
-      from = at + 1
-    }
-    return `${visible}${text.slice(from)}`
   }
 
   #cut(): void {
@@ -2392,5 +2056,379 @@ export class TerminalOutputRedactor {
     this.#separatorAt = -1
     this.#noValueEnding = !value
     return value ? valueEndingRead(value[1] ?? "") : undefined
+  }
+}
+
+// Reads terminal control sequences one character at a time, so a sequence
+// split across reads is followed: ESC, then [ and a CSI sequence such as the
+// colour ESC[1m or the cursor move ESC[8C, ] and an OSC string up to BEL or
+// ESC \, or a two-character escape. A line break ends an OSC string that has
+// not closed. They change how a line looks, not what it says, and so do
+// control characters other than tab, line feed and carriage return.
+type ControlState = "none" | "escape" | "csi" | "osc" | "oscEscape"
+
+class ControlReader {
+  #state: ControlState = "none"
+
+  // Whether the character with this code is part of a control sequence or is
+  // a control character other than tab, line feed and carriage return.
+  invisible(code: number): boolean {
+    switch (this.#state) {
+      case "escape":
+        if (code === 0x5b) {
+          this.#state = "csi"
+          return true
+        }
+        if (code === 0x5d) {
+          this.#state = "osc"
+          return true
+        }
+        if (code >= 0x20 && code <= 0x2f) return true
+        this.#state = "none"
+        if (code >= 0x30 && code <= 0x7e) return true
+        break
+      case "csi":
+        if (code >= 0x20 && code <= 0x3f) return true
+        this.#state = "none"
+        if (code >= 0x40 && code <= 0x7e) return true
+        break
+      case "osc":
+        if (code === 0x07) {
+          this.#state = "none"
+          return true
+        }
+        if (code === 0x1b) {
+          this.#state = "oscEscape"
+          return true
+        }
+        if (code !== 0x0a && code !== 0x0d) return true
+        this.#state = "none"
+        break
+      case "oscEscape":
+        // ESC \ closes the string; an ESC followed by anything else starts a
+        // sequence of its own.
+        if (code === 0x5c) {
+          this.#state = "none"
+          return true
+        }
+        this.#state = "escape"
+        return this.invisible(code)
+      case "none":
+        break
+    }
+    if (code === 0x1b) {
+      this.#state = "escape"
+      return true
+    }
+    return (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || code === 0x7f
+  }
+}
+
+// A name and its separator at the end of a line as it reads on screen, as
+// main's value patterns find them, with nothing required after them yet.
+const screenNames = valuePatterns.map((pattern) => {
+  const source = pattern.start.source.replace(valueStart, "").replace(structuredValueStart, "")
+  if (source === pattern.start.source) throw new Error("a value pattern must end in its value's lookahead")
+  return { pattern, atEnd: new RegExp(`(?:${source})$`, "iu") }
+})
+
+// Where a bare token's prefix ends: the prefix at the start of a word.
+const tokenPrefixAtEnd = /(?<![A-Za-z0-9_])(?:(?:sk|ghp|gho|github_pat|xox[baprs])[-_]|eyJ)$/u
+
+// A token's alphabet, the dot of a JWT included.
+function isTokenCharacter(code: number): boolean {
+  return isNameCharacter(code, false)
+}
+
+// How the screen reader marks a raw character.
+type Kind = 0 | 1 | 2
+const keptKind: Kind = 0
+const markedKind: Kind = 1
+const syntaxKind: Kind = 2
+
+// A name and separator found on the screen's line, and their value's reading,
+// undefined while the value has not started.
+// quoted: the value is inside a quote or array whose opener and closer are
+// shown around the replacement, as main shows them: one the value opened
+// with, or one opened right before the name. read: how many of the value's
+// characters have been read. counting: a counting name's value, which main
+// shows when it is a complete count and hides otherwise; it is read, so that
+// its quotes are followed, and left to main.
+type ScreenValue = {
+  delimiter: RegExp, enclosing: GroupingName | undefined, state: ValueState | undefined, quoted: boolean, read: number, counting: boolean,
+}
+
+// What main may write right after a replacement: the closer of the quote or
+// construct the replaced value was in.
+const replacementClosers = ["'", "\"", ")", "}", "`"]
+
+// Most of the raw text kept while it waits to be lined up with what main
+// shows: main holds at most its carry, but a value it drops shows nothing.
+const screenPendingLimit = 65_536
+
+// The second stage of the terminal redactor (#608). It reads the raw
+// terminal stream as it reads on screen: control sequences and control
+// characters are not part of the line, a carriage return is a line break
+// that a name and separator still waiting for their value wait across, and an
+// idle beat does not matter at all. It marks the characters of the values
+// that main's value patterns find on that line, read by the same reader as
+// main's values (so a backslash escapes the next character inside single
+// quotes too), and the characters of a bare token after its prefix, however
+// long. Then it lines what main shows up with the raw stream and takes the
+// marked characters off it, a run of them becoming one replacement. It only
+// ever removes characters from what main shows, so it hides at least what
+// main hides. Main's replacements stand for text that is no longer there:
+// after one, main's output is found again in the raw stream by what it shows
+// next.
+class ScreenReader {
+  #controls = new ControlReader()
+  // The current line as it reads on screen, and where in it the last value
+  // read ended.
+  #line = ""
+  #valueEnded = 0
+  // A name and separator found, and their value: its reading, or undefined
+  // while it has not started.
+  #value: ScreenValue | undefined
+  // The end of the current run of token characters, and whether it holds a
+  // bare token's prefix.
+  #word = ""
+  #token = false
+  // The raw text not yet lined up with what main shows, and for each of its
+  // characters: marked, syntax (a space, separator or control sequence
+  // between a name and its value, or a quote around a value: never marked),
+  // or neither.
+  #pending = ""
+  #kinds: Kind[] = []
+  // A replacement or a left-out part of the raw text ended what was lined up:
+  // where main goes on is found by what it shows next.
+  #resuming = false
+  // What was shown last is a replacement.
+  #replaced = false
+
+  read(chunk: string): void {
+    for (let at = 0; at < chunk.length; at += 1) {
+      this.#pending += chunk[at]!
+      this.#kinds.push(this.#mark(chunk[at]!))
+    }
+    if (this.#pending.length > screenPendingLimit) {
+      const cut = this.#pending.length - screenPendingLimit / 2
+      this.#pending = this.#pending.slice(cut)
+      this.#kinds = this.#kinds.slice(cut)
+    }
+  }
+
+  // Whether this raw character is part of a value or of a bare token after
+  // its prefix.
+  #mark(character: string): Kind {
+    const code = character.charCodeAt(0)
+    if (this.#controls.invisible(code)) return (this.#value?.state !== undefined && !this.#value.counting) || this.#token ? markedKind : syntaxKind
+    const value = this.#value
+    if (value !== undefined) {
+      if (value.state === undefined) {
+        // A name and separator wait for their value across spaces, and across
+        // a carriage return, which redraws the line.
+        if (character === " " || character === "\t" || character === "\r") {
+          if (character === "\r") this.#newLine()
+          return syntaxKind
+        }
+        // A separator after a flag and its space (-Dx.token = value) is still
+        // the name's syntax, and so is a doubled one, which main hides with
+        // the value.
+        if (character === "=" || character === ":") {
+          this.#see(character, code)
+          return syntaxKind
+        }
+        value.state = valueStartState(value.delimiter, value.enclosing)
+        value.quoted = value.enclosing !== undefined
+      }
+      if (readValue(character, 0, value.state).end < 0) {
+        if (character === "\n" || character === "\r") this.#newLine()
+        else this.#see(character, code)
+        value.read += 1
+        if (value.counting) return keptKind
+        if (value.enclosing === undefined && value.read <= 2 && !value.quoted && value.state.stack.length === 1 && !value.state.word) {
+          // The value opened with a quote or an array's (, $' and $" among
+          // them: the opener is shown.
+          value.quoted = true
+          if (value.read === 2) this.#kinds[this.#kinds.length - 1] = syntaxKind
+          return syntaxKind
+        }
+        if (value.quoted && value.state.stack.length === 0) {
+          value.quoted = false
+          return syntaxKind
+        }
+        return markedKind
+      }
+      this.#value = undefined
+      this.#valueEnded = this.#line.length
+    }
+    if (character === "\n" || character === "\r") {
+      this.#newLine()
+      return keptKind
+    }
+    const token = this.#see(character, code)
+    if (/[=:\s]/u.test(character)) this.#value = this.#nameEnding()
+    return token ? markedKind : keptKind
+  }
+
+  // Adds a visible character to the line and the word; whether it is part of
+  // a bare token after its prefix.
+  #see(character: string, code: number): boolean {
+    this.#line += character
+    if (this.#line.length > 2 * terminalRedactionCarryCharacters) {
+      this.#valueEnded -= this.#line.length - terminalRedactionCarryCharacters
+      this.#line = this.#line.slice(-terminalRedactionCarryCharacters)
+    }
+    if (!isTokenCharacter(code)) {
+      this.#word = ""
+      this.#token = false
+      return false
+    }
+    if (this.#token) return true
+    this.#word = `${this.#word}${character}`.slice(-16)
+    this.#token = tokenPrefixAtEnd.test(this.#word)
+    return false
+  }
+
+  #newLine(): void {
+    this.#line = ""
+    this.#valueEnded = 0
+    this.#word = ""
+    this.#token = false
+  }
+
+  // A name and separator at the end of the line, as main's value patterns
+  // find them. A counting name's value is read but not marked: main shows a
+  // complete count and hides anything else.
+  #nameEnding(): ScreenValue | undefined {
+    const tail = this.#line.slice(-2 * nameWordLength - terminalRedactionCarryCharacters)
+    if (!sensitiveWord.test(tail.slice(-2 * nameWordLength))) return undefined
+    for (const { pattern, atEnd } of screenNames) {
+      const match = atEnd.exec(tail)
+      if (match === null) continue
+      const counting = countingName.test(nameOf(match[0]).name)
+      // A quote the value read last took, as its closer, opens nothing.
+      const matchAt = this.#line.length - tail.length + match.index
+      const quote = matchAt > this.#valueEnded ? openNameQuote(match[0], tail[match.index - 1]) : openNameQuote(match[0].replace(/^["']/u, ""))
+      return { delimiter: pattern.delimiter, enclosing: quote === undefined ? undefined : quoteNamed(quote), state: undefined, quoted: false, read: 0, counting }
+    }
+    return undefined
+  }
+
+  // What main shows with the marked characters taken off.
+  show(output: string): string {
+    if (output === "") return ""
+    let shown = ""
+    const keep = (text: string) => {
+      if (text === "") return
+      shown += text
+      this.#replaced = false
+    }
+    const hide = () => {
+      if (!this.#replaced) shown += replacement
+      this.#replaced = true
+    }
+    let from = 0
+    let at = 0
+    while (at < output.length) {
+      if (!this.#resuming && from < this.#pending.length && output[at] === this.#pending[from]) {
+        if (this.#kinds[from] === markedKind) hide()
+        else keep(output[at]!)
+        from += 1
+        at += 1
+        continue
+      }
+      if (output.startsWith(replacement, at)) {
+        hide()
+        at += replacement.length
+        this.#resuming = true
+        continue
+      }
+      if (!this.#resuming) {
+        // Main left out part of the raw text here without a replacement, as
+        // the rest of a value it drops.
+        this.#resuming = true
+        continue
+      }
+      const nextReplacement = output.indexOf(replacement, at)
+      let next = output.slice(at, Math.min(at + 64, nextReplacement < 0 ? output.length : nextReplacement))
+      let resume = this.#resumeAt(next, from)
+      // Main writes the closer of what a replacement stood for right after
+      // it, as the closing quote of a quoted value, whether or not the raw
+      // text has one there: where the raw text has none, or has one only
+      // inside the value, it is shown, and main is found by what follows.
+      for (let closers = 0; closers < 2 && replacementClosers.includes(next[0] ?? "") && (resume < 0 || this.#kinds[resume] === markedKind); closers += 1) {
+        keep(next[0]!)
+        at += 1
+        next = next.slice(1)
+        resume = next === "" ? -1 : this.#resumeAt(next, from)
+      }
+      if (next === "") continue
+      if (resume < 0) {
+        if (at + next.length === output.length) {
+          // What ends main's output is not in the raw text yet, as the
+          // closing quote main writes after a replacement.
+          keep(next)
+          at += next.length
+          continue
+        }
+        // Lost: the rest is shown as main shows it, and lining up starts
+        // again with the raw text still to come.
+        keep(output.slice(at))
+        this.#pending = ""
+        this.#kinds = []
+        from = 0
+        this.#resuming = false
+        break
+      }
+      for (let index = 0; index < next.length; index += 1) {
+        if (this.#kinds[resume + index] === markedKind) hide()
+        else keep(next[index]!)
+      }
+      from = resume + next.length
+      at += next.length
+      this.#resuming = false
+    }
+    if (from > 0) {
+      this.#pending = this.#pending.slice(from)
+      this.#kinds = this.#kinds.slice(from)
+    }
+    return shown
+  }
+
+  // Where main goes on in the raw text, found by what it shows next: after
+  // the value marked from here, past the name's syntax before it, where that
+  // text occurs there, since main's replacement stood for a value and so do
+  // the marked characters; otherwise where it first occurs. -1 when it does
+  // not occur.
+  #resumeAt(next: string, from: number): number {
+    let markedEnd = from
+    while (markedEnd < this.#kinds.length && this.#kinds[markedEnd] === syntaxKind) markedEnd += 1
+    if (this.#kinds[markedEnd] !== markedKind) markedEnd = from
+    while (markedEnd < this.#kinds.length && this.#kinds[markedEnd] !== keptKind) markedEnd += 1
+    const after = this.#pending.indexOf(next, markedEnd)
+    return after >= 0 ? after : this.#pending.indexOf(next, from)
+  }
+}
+
+// The terminal redactor: main's, then the screen reader, which only takes
+// more off what main shows (#608).
+export class TerminalOutputRedactor {
+  readonly #main = new MainTerminalRedactor()
+  #screen = new ScreenReader()
+
+  push(chunk: string): string {
+    this.#screen.read(chunk)
+    return this.#screen.show(this.#main.push(chunk))
+  }
+
+  release(): string {
+    return this.#screen.show(this.#main.release())
+  }
+
+  flush(): string {
+    const output = this.#screen.show(this.#main.flush())
+    this.#screen = new ScreenReader()
+    return output
   }
 }

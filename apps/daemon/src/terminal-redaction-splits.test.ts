@@ -158,6 +158,14 @@ const redrawCases: readonly { name: string, steps: readonly Step[] }[] = [
   // Found by the leak-shape fuzz: a name cut by one beat, formatting before
   // its separator, and a quoted value after another beat.
   { name: "a name cut by a beat, formatting before its separator, then a quoted value", steps: ["export a", "ccess", "idle", "-token\x1b[2K =", "idle", " 'zqxjwvkmqk' done\n", "idle"] },
+  // Security review round 2 of #617: an OSC string between a name cut by a
+  // beat and its separator carries an assignment of its own, which main hides.
+  { name: "an assignment inside OSC between a cut name and its separator", steps: ["export API_", "idle", "KEY\x1b]0;PASSWORD=zqxjwvkm\x07=abc done\r\n"] },
+  // A quote inside OSC does not close a quoted value that outgrew the carry.
+  { name: "a quote inside OSC in an oversized quoted value", steps: ["export API_KEY\x1b[0m='", "q".repeat(300), "\x1b]0;'\x07 zqxjwvkm rest' done\r\n"] },
+  { name: "a quote inside OSC in an oversized quoted value main reads", steps: ["export API_KEY='", "q".repeat(300), "\x1b]0;'\x07 zqxjwvkm rest' done\r\n"] },
+  // Spaces and a semicolon inside OSC do not end a value that starts after it.
+  { name: "OSC between a separator and its value, after a beat", steps: ["API_KEY=", "idle", "\x1b]0;a b\x07zqxjwvkm done\r\n"] },
 ]
 
 describe("terminal redaction across formatting, redraws and long tokens", () => {

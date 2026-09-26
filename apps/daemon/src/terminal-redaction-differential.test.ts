@@ -125,7 +125,10 @@ function generate(next: () => number): Case {
     if (chance(0.05)) { features.push("space-300"); return " ".repeat(300) }
     return " ".repeat(Math.floor(next() * 3))
   }
-  const ansi = (): string => chance(0.12) ? (features.push("ansi"), pick(formatting)) : ""
+  // Formatting, or an OSC string holding a quote, spaces or an assignment.
+  const ansi = (): string => chance(0.12)
+    ? (features.push("ansi"), pick([...formatting, "\x1b]0;'\x07", "\x1b]0;\"\x07", "\x1b]0;a b; c\x07", "\x1b]0;token=kk\x07"]))
+    : ""
   const word = (length: number) => Array.from({ length }, () => pick(valueLetters.split(""))).join("")
   const valueBody = (): string => {
     if (chance(0.06)) { features.push("long-value"); return word(4) + "q".repeat(9_000) + word(8) }
@@ -234,15 +237,48 @@ function cut(text: string, next: () => number): Step[] {
 // 2026-09-25). The secret is never the token's prefix, which stays visible.
 const tokenPrefixes = ["sk-", "ghp_", "gho_", "github_pat_", "xoxb-"]
 
-function generateLeak(next: () => number): { item: Case, steps: Step[] } {
+// OSC strings, which a terminal does not print: a window title or a link.
+// They may carry an assignment of their own (other: its secret), a quote, or
+// spaces and a semicolon, none of which is part of the line as it reads.
+function oscString(next: () => number, other: string): string {
+  const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!
+  return pick([
+    `\x1b]0;${pick(names)}=${other}\x07`,
+    `\x1b]2;${pick(names)}: ${other}\x1b\\`,
+    "\x1b]0;'\x07",
+    "\x1b]0;\"\x07",
+    "\x1b]0;a b; c\x07",
+    "\x1b]8;;https://example.test/p\x1b\\",
+  ])
+}
+
+function generateLeak(next: () => number): { item: Case, others: string[], steps: Step[] } {
   const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!
   const word = (length: number) => Array.from({ length }, () => pick(valueLetters.split(""))).join("")
   const secret = word(8 + Math.floor(next() * 6))
   const name = pick(names)
   const ending = pick(["\r\n", "\n", ""])
-  const shape = pick(["ansi-name", "redraw", "long-token", "beat-token"])
+  const shape = pick(["ansi-name", "redraw", "long-token", "beat-token", "osc"])
+  const others: string[] = []
   let text: string
   switch (shape) {
+    case "osc": {
+      // OSC strings inside the name, between it and its separator, between
+      // the separator and the value, and inside an oversized quoted value.
+      const osc = (chance: number): string => {
+        if (next() >= chance) return ""
+        const other = word(8)
+        const string = oscString(next, other)
+        if (string.includes(other)) others.push(other)
+        return string
+      }
+      const cutAt = 1 + Math.floor(next() * (name.length - 1))
+      const nameText = `${name.slice(0, cutAt)}${osc(0.5)}${name.slice(cutAt)}`
+      const long = "q".repeat(260 + Math.floor(next() * 60))
+      const value = pick([secret, `'${secret}'`, `"${secret}"`, `'${long}${osc(0.8)} ${secret} rest'`, `"${long}${osc(0.8)} ${secret} rest"`])
+      text = `${pick(["export ", ""])}${nameText}${osc(0.5)}${pick(["=", ": "])}${osc(0.5)}${value} done${ending}`
+      break
+    }
     case "ansi-name": {
       // An escaped single quote does not close the value, so the secret after
       // it is still inside it.
@@ -263,11 +299,12 @@ function generateLeak(next: () => number): { item: Case, steps: Step[] } {
       const beat = "echo ".length + 1 + Math.floor(next() * (text.indexOf(secret) - "echo ".length))
       return {
         item: { shape, text, value: secret, kept: [] },
+        others,
         steps: [text.slice(0, beat), "idle", ...cut(text.slice(beat), next)],
       }
     }
   }
-  return { item: { shape, text, value: secret, kept: [] }, steps: cut(text, next) }
+  return { item: { shape, text, value: secret, kept: [] }, others, steps: cut(text, next) }
 }
 
 // Every three consecutive characters of a secret.
@@ -487,11 +524,13 @@ describe("terminal redaction against main", () => {
     const failures = new Map<string, string>()
     for (let index = 0; index < leakCases; index += 1) {
       const caseSeed = seed + index
-      const { item, steps } = generateLeak(random(caseSeed))
+      const { item, others, steps } = generateLeak(random(caseSeed))
       // The check has teeth: the text itself shows the secret.
       expect(exposed(item, item.text), item.shape).toBeDefined()
       const output = runNew(steps)
+      // A secret an OSC string carries stays hidden too.
       const shown = fragments(item.value!).find((piece) => output.includes(piece)) ?? exposed(item, output)
+        ?? others.flatMap(fragments).find((piece) => output.includes(piece))
       if (shown === undefined || failures.has(item.shape)) continue
       failures.set(item.shape, `seed ${caseSeed}: shows ${JSON.stringify(shown)}\n  reads ${JSON.stringify(steps.map((step) => step !== "idle" && step.length > 60 ? `${step.slice(0, 40)}…(${step.length})` : step))}`)
     }
