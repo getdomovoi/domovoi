@@ -26,6 +26,16 @@ export class DaemonServiceRuntimeMissingError extends Error {
   }
 }
 
+// Security review round 2 of #577: the service calls check the profiles again
+// under the service-operation lease and refuse before changing anything. An
+// update carries that refusal as the cause of its nothing-changed error.
+function profileRefusal(cause: unknown): string | undefined {
+  for (let at = cause, depth = 0; at instanceof Error && depth < 2; at = at.cause, depth += 1) {
+    if (at.name === "ServiceProfileMismatchError") return at.message
+  }
+  return undefined
+}
+
 function runtimeMissing(cause: unknown): { part: "node" | "daemon"; path: string; message: string } | undefined {
   if (!(cause instanceof Error) || cause.name !== "DaemonServiceRuntimeMissingError") return undefined
   const { part, path } = cause as Error & { part?: unknown; path?: unknown }
@@ -402,6 +412,8 @@ export class DesktopDaemonService {
         })
       } catch (cause) {
         if (cause instanceof HandoffNotFenced) return cause.outcome
+        const otherProfile = released ? undefined : profileRefusal(cause)
+        if (otherProfile) return { ok: false, reason: "refused", message: otherProfile }
         // Recognised by name: the daemon's own class is loaded at run time.
         const missing = runtimeMissing(cause)
         if (missing) return { ok: false, reason: "runtime-missing", ...missing }
@@ -455,6 +467,8 @@ export class DesktopDaemonService {
       try {
         removed = await this.deps.remove()
       } catch (cause) {
+        const otherProfile = profileRefusal(cause)
+        if (otherProfile) return { ok: false, reason: "refused", message: otherProfile }
         // The manager can fail after it unloaded or deleted part of the
         // service. Read it back; unless it still runs, take a daemon back.
         const service = await this.#serviceAfter()
@@ -501,6 +515,8 @@ export class DesktopDaemonService {
       } catch (cause) {
         const missing = runtimeMissing(cause)
         if (missing) return { ok: false, reason: "runtime-missing", ...missing }
+        const otherProfile = profileRefusal(cause)
+        if (otherProfile) return { ok: false, reason: "refused", message: otherProfile }
         return { ok: false, reason: "update-failed", message: message(cause) }
       }
       const target = updated.kind === "file" ? updated.path : updated.name

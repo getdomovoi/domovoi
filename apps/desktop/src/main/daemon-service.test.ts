@@ -60,6 +60,22 @@ describe("DesktopDaemonService on another profile than the service's", () => {
       expect(deps[action], action).not.toHaveBeenCalled()
     }
   })
+
+  // Round 2: the service calls check the profiles again under the
+  // service-operation lease, since service.json can change after the early
+  // check. Their refusal changes nothing and reads as the same refusal.
+  it("reports the service calls' own profile refusal as that refusal, with nothing stopped or restarted", async () => {
+    const profileError = () => Object.assign(new Error(words), { name: "ServiceProfileMismatchError" })
+    const install = harness({ install: vi.fn(async () => { throw profileError() }) })
+    await expect(install.service.install()).resolves.toEqual({ ok: false, reason: "refused", message: words })
+    expect(install.deps.daemon.stopOwned).not.toHaveBeenCalled()
+    expect(install.deps.daemon.restart).not.toHaveBeenCalled()
+    const update = harness({ update: vi.fn(async () => { throw Object.assign(new Error(`Domovoi could not update the service: ${words}`), { cause: profileError() }) }) })
+    await expect(update.service.update()).resolves.toEqual({ ok: false, reason: "refused", message: words })
+    const remove = harness({ remove: vi.fn(async () => { throw profileError() }) })
+    await expect(remove.service.remove()).resolves.toEqual({ ok: false, reason: "refused", message: words })
+    expect(remove.deps.daemon.restart).not.toHaveBeenCalled()
+  })
 })
 
 describe("DesktopDaemonService", () => {

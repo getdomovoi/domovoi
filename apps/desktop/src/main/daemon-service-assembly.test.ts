@@ -1,0 +1,78 @@
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+import { createDesktopDaemonService } from "./daemon-service-assembly.js"
+import type { DaemonModule } from "./daemon-module.js"
+import { daemonRuntimeLayout } from "./daemon-service.js"
+import type { DesktopDaemon } from "./desktop-daemon.js"
+
+// Security review round 2 of #577 (P1): the service calls act for the profile
+// this app's daemon runs. The install writes that profile, and every service
+// call gets the app's profile to check again under the service-operation lease.
+describe("the login service assembled for this app's profile", () => {
+  const roots: string[] = []
+  afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
+
+  async function scratch() {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-assembly-")))
+    roots.push(root)
+    const resourcesPath = join(root, "Resources")
+    const shipped = daemonRuntimeLayout(resourcesPath, process.platform)
+    await mkdir(dirname(shipped.nodePath), { recursive: true })
+    await mkdir(dirname(shipped.daemonEntryPath), { recursive: true })
+    await writeFile(shipped.nodePath, "node")
+    await writeFile(shipped.daemonEntryPath, "daemon")
+    const home = join(root, "home")
+    await mkdir(home)
+    return { resourcesPath, home, profile: join(root, "profiles", "work") }
+  }
+
+  function daemonModule() {
+    const installed = { kind: "file" as const, path: "/p", configurationPath: "/c" }
+    return {
+      serviceProfileMismatch: vi.fn(() => undefined),
+      readLocalServiceHandoffRefusal: vi.fn(async () => undefined),
+      holdServiceHandoffFence: vi.fn(async () => ({ release: () => {} })),
+      installDaemonService: vi.fn(async (options: { releaseInAppDaemon?: () => Promise<void> }) => { await options.releaseInAppDaemon?.(); return installed }),
+      updateDaemonService: vi.fn(async () => installed),
+      removeDaemonService: vi.fn(async () => ({ kind: "file" as const, path: "/p", profileRecovery: "not-needed" as const })),
+      readDaemonServiceStatus: vi.fn(async () => ({ installed: true, running: true, detail: "" })),
+    }
+  }
+
+  function desktopDaemon(): DesktopDaemon {
+    const attached = { kind: "attached" as const, owner: "daemon" as const, url: "ws://127.0.0.1:47831/rpc", token: "t" }
+    return {
+      current: () => ({ kind: "owned", url: "ws://127.0.0.1:47831/rpc", token: "t" }),
+      beginHandoff: () => {},
+      endHandoff: () => {},
+      stopOwned: async () => {},
+      attachOnly: async () => attached,
+      restart: async () => attached,
+    } as unknown as DesktopDaemon
+  }
+
+  it("installs, updates and removes for the profile this app's environment names", async () => {
+    const { resourcesPath, home, profile } = await scratch()
+    const daemon = daemonModule()
+    const service = createDesktopDaemonService(desktopDaemon(), { resourcesPath, version: "0.9.4", home, environment: { DOMOVOI_PROFILE_DIR: profile } }, daemon as unknown as DaemonModule)
+    await expect(service.install()).resolves.toMatchObject({ ok: true })
+    expect(daemon.serviceProfileMismatch).toHaveBeenCalledWith({ environment: { DOMOVOI_PROFILE_DIR: profile }, homeDirectory: home })
+    expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: { DOMOVOI_PROFILE_DIR: profile } }))
+    await expect(service.update()).resolves.toMatchObject({ ok: true })
+    expect(daemon.updateDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: { DOMOVOI_PROFILE_DIR: profile } }))
+    await expect(service.remove()).resolves.toMatchObject({ ok: true })
+    expect(daemon.removeDaemonService).toHaveBeenCalledWith(undefined, { environment: { DOMOVOI_PROFILE_DIR: profile } })
+  })
+
+  it("names no profile for an app on the default one, so the service calls check the default", async () => {
+    const { resourcesPath, home } = await scratch()
+    const daemon = daemonModule()
+    const service = createDesktopDaemonService(desktopDaemon(), { resourcesPath, version: "0.9.4", home, environment: {} }, daemon as unknown as DaemonModule)
+    await service.install()
+    expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: {} }))
+  })
+})
