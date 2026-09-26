@@ -6,6 +6,8 @@ import type {
   Runtime,
 } from "@getdomovoi/protocol"
 
+import { commandOperands, credentialStoreNames, isCredentialPath, operandPieces } from "./credential-stores.js"
+
 export type PermissionDecision = {
   action: "allow" | "review"
   risk: ApprovalRisk
@@ -23,9 +25,31 @@ export function permissionPolicyRefusalFor(runtime: Runtime): PolicyRefusalFacts
   }
 }
 
+const pathSeparator = String.raw`[/\\]`
+const credentialStorePatterns = credentialStoreNames.map(
+  (parts) => parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)).join(pathSeparator),
+)
+
+// The command-line reading of secret names, kept beside the path classifier so
+// nothing it matched stops matching: a name is a run of letters, digits,
+// underscores, dots and hyphens in any script.
+const commandNameCharacter = String.raw`[\p{L}\p{M}\p{N}_.-]`
+const commandNameStart = String.raw`(?:^|[\s:=/\\'"])`
+const secretFilePattern = new RegExp(`${commandNameStart}(?:${[
+  String.raw`\.env${commandNameCharacter}*`,
+  String.raw`${commandNameCharacter}*\.env(?:rc)?`,
+  String.raw`${commandNameCharacter}+\.(?:pem|key|p12|pfx)`,
+  String.raw`gh[/\\]hosts\.yml`,
+  String.raw`daemon\.token`,
+  String.raw`credentials\.json`,
+  ...credentialStorePatterns,
+].join("|")})(?!${commandNameCharacter})`, "iu")
+// The secret file names #545 judged file targets by, kept beside the reading
+// above so a name either one matches is secret (union ruled 2026-09-25): the
+// .env family with any extension after it, and the named credential files.
 const secretPathStart = String.raw`(?:^|[\s:=/\\'"])`
 const secretPathEnd = String.raw`(?![\w.-])`
-const secretFileNames = [
+const listedSecretFileNames = [
   String.raw`[\w.-]*\.env(?:rc|\.[\w.-]+)?`,
   String.raw`\.ssh`,
   String.raw`\.aws[/\\]credentials`,
@@ -39,16 +63,30 @@ const secretFileNames = [
   String.raw`\.pypirc`,
   String.raw`[\w.-]+\.(?:pem|key|p12|pfx)`,
 ] as const
-const secretFilePattern = new RegExp(
-  `${secretPathStart}(?:${secretFileNames.join("|")})${secretPathEnd}`,
+const listedSecretFilePattern = new RegExp(
+  `${secretPathStart}(?:${listedSecretFileNames.join("|")})${secretPathEnd}`,
   "i",
 )
-const privateKeyFileName = /\bid_(?:rsa|dsa|ecdsa|ed25519)\b/i
+// A private key keeps its name with any suffix: id_rsa, id_rsa.pub, id_rsa_work.
+const privateKeyFileName = /\bid_(?:rsa|dsa|ecdsa|ed25519)/i
 
-// Whether a path names a credential file or private key: the same patterns
-// that put a command in the credentials hard-gate group.
+// Whether text names a credential file or private key: the same patterns that
+// put a command in the credentials hard-gate group.
+function namesSecretFile(text: string): boolean {
+  return secretFilePattern.test(text) || listedSecretFilePattern.test(text) || privateKeyFileName.test(text)
+}
+
+// Whether a path names a credential store or secret file, by the one path
+// classifier or the way a command line would. One judge for file targets,
+// directories, and command and operation operands.
 export function namesSecretPath(path: string): boolean {
-  return secretFilePattern.test(path) || privateKeyFileName.test(path)
+  return isCredentialPath(path) || namesSecretFile(path)
+}
+
+// Whether any operand of a command line names a credential store or secret
+// file, each operand read by the same path classifier as a card path.
+function commandNamesSecretPath(command: string): boolean {
+  return commandOperands(command).some(namesSecretPath)
 }
 
 const hardGateGroups: Record<HardGateCategory["id"], { label: string; patterns: readonly RegExp[] }> = {
@@ -69,6 +107,7 @@ const hardGateGroups: Record<HardGateCategory["id"], { label: string; patterns: 
   "database-migrations": { label: "database migrations", patterns: [/\b(?:migrate|migration)\b/i] },
   credentials: { label: "read credentials, private keys or environment secrets", patterns: [
     secretFilePattern,
+    listedSecretFilePattern,
     privateKeyFileName,
     /\b(?:printenv|keychain|security\s+find-(?:generic|internet)-password|pass\s+show)\b/i,
   ] },
@@ -231,6 +270,7 @@ function resolvedExecutionDecision(execution: ExecutionResolution): BodyDecision
       if (
         isSkillInstallCommand(command)
         || hardGatePatterns.some((pattern) => pattern.test(command))
+        || part.argv.some((word) => operandPieces(word).some(namesSecretPath))
       ) return "hard-gate"
       if (part.expandsTo.length > 0) continue
       if (entry.source.kind === "request") {
@@ -255,6 +295,9 @@ export function permissionDecisionFor(input: {
     return { action: "review", risk: "hard-gate" }
   }
   if (hardGatePatterns.some((pattern) => pattern.test(operation))) {
+    return { action: "review", risk: "hard-gate" }
+  }
+  if (command && commandNamesSecretPath(command)) {
     return { action: "review", risk: "hard-gate" }
   }
   const executionDecision = input.execution
