@@ -1548,6 +1548,11 @@ export class DomovoiDaemon {
   // order once the fence lifts without a stop; a stop drops them with the
   // provider processes.
   #fencedApprovalRequests: { provider: string; event: AgentEvent }[] = []
+  // Security review round 10: counts emergency stops begun. Each provider
+  // approval request is stamped with it when it arrives, so a stop that began
+  // while the request was settling, held or queued overtakes it.
+  #emergencyStopGeneration = 0
+  #approvalRequestGenerations = new WeakMap<AgentEvent, number>()
   // Snapshot and delta broadcasts held while a stop runs. The stop's own
   // notification goes out first, then one snapshot carries every change.
   #snapshotBroadcastHeld = false
@@ -1799,6 +1804,7 @@ export class DomovoiDaemon {
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
       agent.onEvent((event) => {
         if (this.#stopping || this.#stopped) return
+        if (event.type === "approval-requested") this.#approvalRequestGenerations.set(event, this.#emergencyStopGeneration)
         if (event.type === "provider-disconnected") {
           void this.#enqueueMutation(() => this.#handleAgentEvent(provider, event))
         } else {
@@ -2065,7 +2071,7 @@ export class DomovoiDaemon {
           // 7de0db84). A stop that began while they were held has already
           // denied them and emptied the list.
           for (const { provider, event } of this.#fencedApprovalRequests.splice(0)) {
-            if (this.#emergencyStopInProgress) {
+            if (this.#emergencyStopInProgress || this.#stopOvertook(event)) {
               this.#denyHeldApprovalRequest(provider, event)
               continue
             }
@@ -9216,14 +9222,11 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "approval-requested") {
-      // Security review round 1 of #576: no gate is raised while the service
-      // handoff fence is held, whatever the request's turn id. Checked again
-      // after the last await of card construction below (round 6), where the
-      // fence may have been taken.
-      if (this.#serviceHandoffFence) {
-        this.#holdForHandoff(provider, event)
-        return
-      }
+      // Security review rounds 1, 6, 7 and 10 of #576: the one admission
+      // check runs on arrival and again after every await, before any answer
+      // or card. It denies a request a stop has overtaken and holds one that
+      // meets the handoff fence.
+      if (!this.#admitApprovalRequest(provider, event)) return
       const project = this.#snapshot.project
       if (!project) return
       // A path the provider blocked on is named beside the request and is
@@ -9295,10 +9298,7 @@ export class DomovoiDaemon {
       // or taken after the request is settled. The one later await saves a
       // standing rule's use; the fence is checked again after it, before the
       // rule's answer is sent (security review rounds 6 and 7 of #576).
-      if (this.#serviceHandoffFence) {
-        this.#holdForHandoff(provider, event)
-        return
-      }
+      if (!this.#admitApprovalRequest(provider, event)) return
       const settled = settlement.approval
       const decision = policy(settlement.execution)
       const settledDigest = settled.risk === "normal" && settled.execution.state === "resolved"
@@ -9347,9 +9347,8 @@ export class DomovoiDaemon {
           // Security review round 7: the fence may have been taken while the
           // use was being saved. Nothing is answered while it is held; the
           // request is handled afresh, and the rule tried again, once it lifts.
-          if (this.#serviceHandoffFence) {
+          if (!this.#admitApprovalRequest(provider, event)) {
             this.#reportError("Standing rule use could not be persisted", error)
-            this.#holdForHandoff(provider, event)
             return
           }
           this.#appendAudit({
@@ -9362,18 +9361,15 @@ export class DomovoiDaemon {
           this.#reportError("Standing rule use could not be persisted", error)
           return
         }
-        // Security review round 7: the fence may have been taken while the
-        // use was being saved. The allow is not sent while it is held, and the
-        // use is taken back, and saved, so the rule counts it once, when it
-        // is used: the request is handled afresh once the fence lifts.
-        if (this.#serviceHandoffFence) {
+        // Security review rounds 7 and 10: a fence or a stop may have come
+        // while the use was being saved. The allow is not sent then; the use
+        // is taken back, and saved, so the rule counts it once, when it is
+        // used. Nothing is answered after that save, so it is not awaited.
+        if (!this.#admitApprovalRequest(provider, event)) {
           matchingRule.useCount -= 1
-          this.#holdForHandoff(provider, event)
-          try {
-            await this.#persistSnapshot()
-          } catch (error) {
+          void this.#persistSnapshot().catch((error: unknown) => {
             this.#reportError("Standing rule use could not be persisted", error)
-          }
+          })
           return
         }
         this.#appendAudit({
@@ -9828,16 +9824,34 @@ export class DomovoiDaemon {
     })
   }
 
-  // A provider approval request met the handoff fence. It is held, neither a
-  // card nor an answer, until the fence lifts. During an emergency stop it is
-  // denied instead, as the stop denies every pending gate, so no held request
-  // can become a card or an allow after a stop.
-  #holdForHandoff(provider: string, event: Extract<AgentEvent, { type: "approval-requested" }>): void {
-    if (this.#emergencyStopInProgress) {
+  // Security review round 10 of #576: the one admission check for a provider
+  // approval request, asked on arrival, after every await of its handling,
+  // and when the handoff fence releases it. It answers whether the caller may
+  // go on to answer the request or put up its card:
+  // - a request that arrived before an emergency stop began (by the stop
+  //   generation stamped when it arrived), or that meets a stop still running,
+  //   is denied to its provider, as the stop denies every pending gate;
+  // - a request that meets the handoff fence is held, neither answered nor
+  //   carded, until the fence lifts;
+  // - otherwise the caller goes on, with no await before its answer.
+  // A handler test checks that every answer and card follows this check with
+  // no await in between.
+  #admitApprovalRequest(provider: string, event: Extract<AgentEvent, { type: "approval-requested" }>): boolean {
+    if (this.#stopOvertook(event) || this.#emergencyStopInProgress) {
       this.#denyHeldApprovalRequest(provider, event)
-      return
+      return false
     }
-    this.#fencedApprovalRequests.push({ provider, event })
+    if (this.#serviceHandoffFence) {
+      this.#fencedApprovalRequests.push({ provider, event })
+      return false
+    }
+    return true
+  }
+
+  // Whether an emergency stop began after this request arrived.
+  #stopOvertook(event: AgentEvent): boolean {
+    const arrived = this.#approvalRequestGenerations.get(event)
+    return arrived !== undefined && arrived !== this.#emergencyStopGeneration
   }
 
   // Denies a held request to its provider; answers the error when it fails.
@@ -9862,6 +9876,7 @@ export class DomovoiDaemon {
   }
 
   async #performEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
+    this.#emergencyStopGeneration += 1
     this.#emergencyStopInProgress = true
     try {
       return await this.#runEmergencyStop(client)

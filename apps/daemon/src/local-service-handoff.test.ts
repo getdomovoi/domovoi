@@ -478,4 +478,73 @@ describe("the service handoff fence", () => {
     expect(agent.resolveApproval).toHaveBeenCalledWith(77, "deny")
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(77, "allow-once")
   })
+
+  // Security review round 10: a request already settling when a stop runs
+  // must be denied as the stop denies any pending gate, never held, replayed,
+  // carded or allowed afterwards, with or without the fence.
+  it.each([
+    { fence: true },
+    { fence: false },
+  ])("denies a request that was settling when an emergency stop ran (fence held: $fence)", async ({ fence }) => {
+    const { workspace, sessionId } = await readySession()
+    const session = workspace.sessions.find(({ id }) => id === sessionId)!
+    session.runtime.permissionMode = "ask"
+    session.runtime.auto = false
+    const { agent, emit } = agentWithHeldTurns(false)
+    const endpoint = await daemonWith(workspace, agent)
+    const reader = await desktopConnection(endpoint)
+    const fencer = await desktopConnection(endpoint)
+    const fencerSocket = sockets.at(-1)!
+    const barrier = arm("cardDirectory")
+    try {
+      emit({ type: "approval-requested", requestId: 88, threadId: "thread-fence", command: "rm -rf build", cwd: session.workspacePath!, reason: "Remove the build output" })
+      await barrier.reached
+      if (fence) await expect(fencer("system.serviceHandoffFence", {})).resolves.toMatchObject({ result: { outcome: "fenced" } })
+      await expect(reader("system.emergencyStop", { client: "desktop" })).resolves.toMatchObject({ result: expect.anything() })
+    } finally {
+      barrier.release()
+    }
+    if (fence) fencerSocket.terminate()
+    await waitForDaemon(() => expect(agent.resolveApproval).toHaveBeenCalledWith(88, "deny"))
+    emit({ type: "diff-updated", threadId: "thread-fence", diff: "after the stop" })
+    await waitForDaemon(async () => {
+      const read = await reader("workspace.get", {})
+      expect((read.result as WorkspaceSnapshot).artifacts).toContainEqual(expect.objectContaining({ id: `diff-${sessionId}`, content: "after the stop" }))
+    })
+    const after = (await reader("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.approvals).toEqual([])
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(88, "allow-once")
+    expect(agent.resolveApproval).toHaveBeenCalledOnce()
+  })
+})
+
+// Round 10 by construction: in the approval-requested handler, every answer
+// to the provider and every card follows a call to the one admission check
+// with no await in between. A new path that answers after an await without
+// asking the check fails here.
+describe("the approval request handler", () => {
+  it("asks the admission check after every await and before every answer or card", async () => {
+    const { readFile } = await import("node:fs/promises")
+    const source = await readFile(new URL("./server.ts", import.meta.url), "utf8")
+    const start = source.indexOf('if (event.type === "approval-requested") {')
+    const end = source.indexOf('if (event.type === "item") {', start)
+    expect(start).toBeGreaterThan(0)
+    expect(end).toBeGreaterThan(start)
+    // Comments name awaits too; only code counts.
+    const branch = source.slice(start, end).split("\n").map((line) => line.replace(/\/\/.*$/, "")).join("\n")
+    const tokens = [...branch.matchAll(/\bawait\b|this\.#admitApprovalRequest\(|resolveApproval\(event\.requestId|this\.#putApproval\(/g)]
+      .map((match) => match[0])
+    expect(tokens).toContain("this.#admitApprovalRequest(")
+    let admitted = false
+    const answers: string[] = []
+    for (const token of tokens) {
+      if (token === "await") admitted = false
+      else if (token === "this.#admitApprovalRequest(") admitted = true
+      else {
+        answers.push(token)
+        expect(admitted, `${token} is reached after an await without the admission check`).toBe(true)
+      }
+    }
+    expect(answers.length).toBeGreaterThanOrEqual(4)
+  })
 })
