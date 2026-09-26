@@ -271,6 +271,8 @@ In rough order.
      fetch, `reasoningCatalog`, `catalogAttempt` and the `ReasoningCatalog` import went with it,
      since nothing else read them. **Capability lost:** there is now no way to set reasoning
      effort. The design draws none, so this is the design's answer, not an oversight.
+     **Restored 2026-09-26:** the design re-vendored on 2026-09-23 draws an effort chip beside the
+     mode chip, and the composer renders it (audit J33, #622).
    - `Checkpoint` button: **removed.** The design draws no checkpoint control in the composer.
      The `/revert` picker now inserts that command and the Checkpoints sheet tab lists existing
      checkpoints, but there is still no manual checkpoint creation. `onCheckpoint` stays on
@@ -351,9 +353,9 @@ composer draws are settled by reading the design rather than by asking. See sect
 
 Still open, because the design cannot answer them:
 
-1. Reasoning effort now has no control at all. **Answered 2026-09-22:** give it a home, as a
-   group in the v2 model menu (audit J33). It waits for the design; keep `ThinkChip` and
-   `ReasoningCatalog` until then.
+1. Reasoning effort now has no control at all. **Answered 2026-09-22**, then **superseded
+   2026-09-26 (Q9 B):** it is the design's effort chip beside the mode chip, not a group in the
+   model menu (audit J33). `ThinkChip` and `ReasoningCatalog` are removed (audit D21).
 2. Manual checkpoint creation is gone until `/revert` exists. **Answered 2026-09-22:** the
    daemon will take a checkpoint before each approved write (audit J34), and the command palette
    now has "Take a checkpoint" for a manual one.
