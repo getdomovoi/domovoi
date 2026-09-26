@@ -208,6 +208,17 @@ describe("readDaemonServiceRuntimeVersion", () => {
     expect(capture).toHaveBeenCalledWith("schtasks", ["/query", "/tn", "Domovoi daemon", "/xml"], expect.anything())
   })
 
+  // Security review round 3 of #577: the desktop stages under the selected
+  // profile, so a service on another profile runs <profile>/runtime/<version>.
+  it("names the staged runtime version under a profile other than ~/.domovoi", async () => {
+    const readDefinition = vi.fn(async () => plist("/Users/dana/profiles/work/runtime/0.9.2/node/bin/node", "/Users/dana/profiles/work/runtime/0.9.2/daemon/dist/index.js"))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition, capture: vi.fn() }))
+      .resolves.toEqual({ installed: true, version: "0.9.2" })
+    const other = vi.fn(async () => plist("/opt/runtime/1.2.3/bin/node", "/opt/tools/runtime/1.2.3/main.js"))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: other, capture: vi.fn() }))
+      .resolves.toEqual({ installed: true })
+  })
+
   it("says installed with no version when the service runs a runtime the desktop did not stage", async () => {
     await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: async () => plist("/opt/homebrew/bin/node", "/opt/homebrew/lib/node_modules/@getdomovoi/daemon/dist/index.js"), capture: vi.fn() }))
       .resolves.toEqual({ installed: true })

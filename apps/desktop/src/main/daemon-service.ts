@@ -28,10 +28,11 @@ export class DaemonServiceRuntimeMissingError extends Error {
 
 // Security review round 2 of #577: the service calls check the profiles again
 // under the service-operation lease and refuse before changing anything. An
-// update carries that refusal as the cause of its nothing-changed error.
+// update carries that refusal as the cause of its nothing-changed error. Round 3: a
+// registered service whose profile is not known is refused the same way.
 function profileRefusal(cause: unknown): string | undefined {
   for (let at = cause, depth = 0; at instanceof Error && depth < 2; at = at.cause, depth += 1) {
-    if (at.name === "ServiceProfileMismatchError") return at.message
+    if (at.name === "ServiceProfileMismatchError" || at.name === "ServiceProfileUnknownError") return at.message
   }
   return undefined
 }
@@ -135,12 +136,18 @@ const maximumRuntimeVersionLength = 64
 // Cause strings below are shown as the detail under "Could not install the
 // service". They are new in security review round 1 of #576 and were
 // approved by fetzy on 2026-09-25.
-export function profileRuntimeDirectory(home: string, version: string, platform: string): string {
+//
+// Security review round 3 of #577 (P2): the copy goes under the selected
+// profile (<profile>/runtime/<version>; ~/.domovoi for the default profile),
+// because staging runs before the service calls bind the profile under their
+// lease. A refused change then replaces at most its own profile's copy, never
+// the one another profile's service runs.
+export function profileRuntimeDirectory(profileDirectory: string, version: string, platform: string): string {
   const path = platform === "win32" ? win32 : posix
   if (version.length > maximumRuntimeVersionLength || !runtimeVersionPattern.test(version)) {
     throw new Error(`The app version "${version.slice(0, maximumRuntimeVersionLength)}" is not a release version, so no runtime was copied.`)
   }
-  const root = path.join(home, ".domovoi", "runtime")
+  const root = path.join(profileDirectory, "runtime")
   const destination = path.join(root, version)
   // Belt and braces for the pattern: the copy is one name directly under root.
   if (path.dirname(destination) !== root || path.basename(destination) !== version) {
@@ -238,20 +245,21 @@ async function checkShippedRuntime(fs: RuntimeFileSystem, pathApi: typeof posix,
   }
 }
 
-// ~/.domovoi and ~/.domovoi/runtime must be real directories owned by this
-// profile: a link there would send the copy, and the replacement of an
-// earlier copy, somewhere else. Missing ones are made, private to the user.
-async function runtimeRoot(fs: RuntimeFileSystem, pathApi: typeof posix, home: string): Promise<string> {
-  let at = home
-  for (const step of [".domovoi", "runtime"]) {
-    at = pathApi.join(at, step)
+// The profile directory and its runtime directory must be real directories
+// owned by this profile: a link there would send the copy, and the
+// replacement of an earlier copy, somewhere else. Missing ones are made,
+// private to the user; the profile's parent must exist.
+async function runtimeRoot(fs: RuntimeFileSystem, pathApi: typeof posix, profileDirectory: string): Promise<string> {
+  let at = profileDirectory
+  for (const step of ["", "runtime"]) {
+    at = step === "" ? at : pathApi.join(at, step)
     if (await fs.entry(at) === "missing") await fs.makeDirectory(at)
     if (await fs.entry(at) !== "directory") {
       throw new Error(`${at} is not a directory (it may be a link), so no runtime was copied under it.`)
     }
   }
-  if (await fs.realpath(at) !== pathApi.join(await fs.realpath(home), ".domovoi", "runtime")) {
-    throw new Error(`${at} does not resolve inside the home directory, so no runtime was copied under it.`)
+  if (await fs.realpath(at) !== pathApi.join(await fs.realpath(profileDirectory), "runtime")) {
+    throw new Error(`${at} does not resolve inside the profile directory, so no runtime was copied under it.`)
   }
   return at
 }
@@ -271,7 +279,8 @@ async function runtimeRoot(fs: RuntimeFileSystem, pathApi: typeof posix, home: s
 // inferred from which call threw.
 export async function stageDaemonRuntime(input: {
   resourcesPath: string
-  home: string
+  // The profile the selected service runs: DOMOVOI_PROFILE_DIR, or ~/.domovoi.
+  profileDirectory: string
   version: string
   platform: string
   fileSystem: RuntimeFileSystem
@@ -280,7 +289,10 @@ export async function stageDaemonRuntime(input: {
 }): Promise<DaemonServiceRuntime> {
   const fs = input.fileSystem
   const pathApi = input.platform === "win32" ? win32 : posix
-  const destination = profileRuntimeDirectory(input.home, input.version, input.platform)
+  if (!pathApi.isAbsolute(input.profileDirectory)) {
+    throw new Error(`The profile directory ${input.profileDirectory} is not an absolute path, so no runtime was copied.`)
+  }
+  const destination = profileRuntimeDirectory(input.profileDirectory, input.version, input.platform)
   const shippedRoot = pathApi.join(input.resourcesPath, runtimeDirectory)
   await checkShippedRuntime(fs, pathApi, shippedRoot, input.platform, input.operation ?? "install")
   // Stated limit, ruled by fetzy on 2026-09-25: the checks above hold against
@@ -289,7 +301,7 @@ export async function stageDaemonRuntime(input: {
   // between these checks and the copy. Such a process already acts as the
   // person, so it is outside the threat model (as with the build-machine
   // ruling on #577).
-  const root = await runtimeRoot(fs, pathApi, input.home)
+  const root = await runtimeRoot(fs, pathApi, input.profileDirectory)
   const earlier = await fs.entry(destination)
   if (earlier !== "missing" && earlier !== "directory") {
     throw new Error(`${destination} is not a directory (it may be a link), so no runtime was copied there.`)

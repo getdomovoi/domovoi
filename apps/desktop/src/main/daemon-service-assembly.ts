@@ -1,4 +1,5 @@
 import { homedir } from "node:os"
+import { posix, win32 } from "node:path"
 
 import type { DaemonModule } from "./daemon-module.js"
 import { DesktopDaemonService, nodeRuntimeFileSystem, stageDaemonRuntime } from "./daemon-service.js"
@@ -29,7 +30,7 @@ export function createDesktopDaemonService(
     stageRuntime: (operation) => stageDaemonRuntime({
       operation,
       resourcesPath: app.resourcesPath,
-      home,
+      profileDirectory: profileDirectory ?? (process.platform === "win32" ? win32 : posix).join(home, ".domovoi"),
       version: app.version,
       platform: process.platform,
       fileSystem: nodeRuntimeFileSystem(),

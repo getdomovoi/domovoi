@@ -27,7 +27,10 @@ describe("the login service assembled for this app's profile", () => {
     await writeFile(shipped.daemonEntryPath, "daemon")
     const home = join(root, "home")
     await mkdir(home)
-    return { resourcesPath, home, profile: join(root, "profiles", "work") }
+    // The app's daemon has made its profile directory by the time Settings asks.
+    const profile = join(root, "profiles", "work")
+    await mkdir(profile, { recursive: true })
+    return { resourcesPath, home, profile }
   }
 
   function daemonModule() {
@@ -62,6 +65,8 @@ describe("the login service assembled for this app's profile", () => {
     await expect(service.install()).resolves.toMatchObject({ ok: true })
     expect(daemon.serviceProfileMismatch).toHaveBeenCalledWith({ environment: { DOMOVOI_PROFILE_DIR: profile }, homeDirectory: home })
     expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: { DOMOVOI_PROFILE_DIR: profile } }))
+    // Round 3 (P2): the runtime is copied under the app's profile, not the home's.
+    expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ runtime: daemonRuntimeLayoutUnder(join(profile, "runtime", "0.9.4")) }))
     await expect(service.update()).resolves.toMatchObject({ ok: true })
     expect(daemon.updateDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: { DOMOVOI_PROFILE_DIR: profile } }))
     await expect(service.remove()).resolves.toMatchObject({ ok: true })
@@ -73,6 +78,12 @@ describe("the login service assembled for this app's profile", () => {
     const daemon = daemonModule()
     const service = createDesktopDaemonService(desktopDaemon(), { resourcesPath, version: "0.9.4", home, environment: {} }, daemon as unknown as DaemonModule)
     await service.install()
-    expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: {} }))
+    expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: {}, runtime: daemonRuntimeLayoutUnder(join(home, ".domovoi", "runtime", "0.9.4")) }))
   })
 })
+
+function daemonRuntimeLayoutUnder(destination: string) {
+  return process.platform === "win32"
+    ? { nodePath: join(destination, "node", "node.exe"), daemonEntryPath: join(destination, "daemon", "dist", "index.js") }
+    : { nodePath: join(destination, "node", "bin", "node"), daemonEntryPath: join(destination, "daemon", "dist", "index.js") }
+}

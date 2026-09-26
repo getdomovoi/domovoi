@@ -297,7 +297,10 @@ export type DaemonServiceRuntimeReader = {
   capture: ServiceEffects["capture"]
 }
 
-const stagedRuntime = /[\\/]\.domovoi[\\/]runtime[\\/](\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)[\\/]/u
+// The desktop stages the runtime under the selected profile,
+// <profile>/runtime/<version>/ (security review round 3 of #577), so the
+// version is read from that layout: the shipped Node program under it.
+const stagedRuntime = /[\\/]runtime[\\/](\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)[\\/]node[\\/](?:bin[\\/]node|node\.exe)\b/u
 
 export function stagedRuntimeVersion(definition: string): string | undefined {
   return stagedRuntime.exec(definition)?.[1]

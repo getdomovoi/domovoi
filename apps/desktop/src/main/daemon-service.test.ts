@@ -64,6 +64,16 @@ describe("DesktopDaemonService on another profile than the service's", () => {
   // Round 2: the service calls check the profiles again under the
   // service-operation lease, since service.json can change after the early
   // check. Their refusal changes nothing and reads as the same refusal.
+  it("reports the service calls' refusal of a service whose profile is not known as a refusal", async () => {
+    const unknownWords = "A login service is registered at /Users/dana/Library/LaunchAgents/sh.domovoi.domovoid.plist, but its saved configuration is missing, so the profile it runs is not known. Nothing was changed."
+    const unknown = () => Object.assign(new Error(unknownWords), { name: "ServiceProfileUnknownError" })
+    const install = harness({ install: vi.fn(async () => { throw unknown() }) })
+    await expect(install.service.install()).resolves.toEqual({ ok: false, reason: "refused", message: unknownWords })
+    const remove = harness({ remove: vi.fn(async () => { throw unknown() }) })
+    await expect(remove.service.remove()).resolves.toEqual({ ok: false, reason: "refused", message: unknownWords })
+    expect(remove.deps.daemon.restart).not.toHaveBeenCalled()
+  })
+
   it("reports the service calls' own profile refusal as that refusal, with nothing stopped or restarted", async () => {
     const profileError = () => Object.assign(new Error(words), { name: "ServiceProfileMismatchError" })
     const install = harness({ install: vi.fn(async () => { throw profileError() }) })
@@ -424,7 +434,7 @@ describe("daemon runtime layout", () => {
       nodePath: "C:\\Program Files\\Domovoi\\resources\\daemon-runtime\\node\\node.exe",
       daemonEntryPath: "C:\\Program Files\\Domovoi\\resources\\daemon-runtime\\daemon\\dist\\index.js",
     })
-    expect(profileRuntimeDirectory("/Users/dana", "0.9.4", "darwin")).toBe("/Users/dana/.domovoi/runtime/0.9.4")
+    expect(profileRuntimeDirectory("/Users/dana/.domovoi", "0.9.4", "darwin")).toBe("/Users/dana/.domovoi/runtime/0.9.4")
   })
 })
 
@@ -654,11 +664,37 @@ describe("staging the shipped runtime under the profile", () => {
     })
   })
 
+  // Security review round 3 of #577 (P2): staging runs before the service
+  // calls bind the profile under the lease, so it copies only into the
+  // selected profile's own runtime directory. A refused change never replaces
+  // the copy another profile's service runs.
+  it("stages under the selected profile, and leaves another profile's copy of the same version alone", async () => {
+    await withScratch(async ({ root, resources, home }) => {
+      const other = join(home, ".domovoi", "runtime", "0.9.4")
+      await mkdir(join(other, "daemon", "dist"), { recursive: true })
+      await writeFile(join(other, "daemon", "dist", "index.js"), "the other profile's copy")
+      const profile = join(root, "profiles", "work")
+      await mkdir(profile, { recursive: true })
+      const runtime = await stageDaemonRuntime({ resourcesPath: resources, home, profileDirectory: profile, version: "0.9.4", platform, fileSystem: nodeRuntimeFileSystem() } as Parameters<typeof stageDaemonRuntime>[0])
+      expect(runtime).toEqual(daemonRuntimeLayoutUnder(join(profile, "runtime", "0.9.4")))
+      expect(await readFile(runtime.daemonEntryPath, "utf8")).toBe("daemon")
+      expect(await readFile(join(other, "daemon", "dist", "index.js"), "utf8")).toBe("the other profile's copy")
+    })
+  })
+
+  it("refuses a relative profile directory before copying anything", async () => {
+    await withScratch(async ({ resources, home }) => {
+      await expect(stageDaemonRuntime({ resourcesPath: resources, home, profileDirectory: "profiles/work", version: "0.9.4", platform, fileSystem: nodeRuntimeFileSystem() } as Parameters<typeof stageDaemonRuntime>[0]))
+        .rejects.toThrow("The profile directory profiles/work is not an absolute path, so no runtime was copied.")
+      expect(await entries(home)).toEqual([])
+    })
+  })
+
   // The daemon's approved words for an update (update-outcome, 2026-09-23).
   it("says the service was not updated when the shipped part is missing for an update", async () => {
     const { stageDaemonRuntime } = await import("./daemon-service.js")
     await expect(stageDaemonRuntime({
-      resourcesPath: "/r", home: "/Users/dana", version: "0.9.4", platform: "darwin", operation: "update",
+      resourcesPath: "/r", profileDirectory: "/Users/dana/.domovoi", version: "0.9.4", platform: "darwin", operation: "update",
       fileSystem: nodeRuntimeFileSystem({ entry: async () => "missing", copy: vi.fn(), remove: async () => {}, rename: async () => {} }),
     })).rejects.toThrow("The Node runtime this app ships was not found at /r/daemon-runtime/node/bin/node. The service was not updated and no service files were changed.")
   })
@@ -714,7 +750,7 @@ type StageInput = {
 
 function stage(input: StageInput) {
   return stageDaemonRuntime({
-    resourcesPath: input.resources, home: input.home, version: input.version, platform,
+    resourcesPath: input.resources, profileDirectory: join(input.home, ".domovoi"), version: input.version, platform,
     fileSystem: nodeRuntimeFileSystem({
       ...(input.copy ? { copy: input.copy } : {}),
       ...(input.rename ? { rename: input.rename } : {}),
