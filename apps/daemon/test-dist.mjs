@@ -16,8 +16,9 @@ assert.deepEqual(Object.keys(publicApi).sort(), [
   "DaemonServiceHandoffError", "DaemonServiceRuntimeMissingError", "DaemonServiceUpdateError", "LaunchdJobNotDomovoiError",
   "SystemdPathCharacterError",
   "WindowsTaskArgumentVariableError", "WindowsTaskNotDomovoiError", "WindowsTaskPathError", "WindowsTaskPercentSignError",
-  "acquireLocalDaemon", "adoptRelayProfileSuccessor", "captureInheritedCredentials", "createProductionDaemon", "installDaemonService",
-  "prepareRelayProfileSuccessor", "readDaemonServiceStatus", "removeDaemonService", "updateDaemonService", "verifyLocalFleetClientRoute",
+  "acquireLocalDaemon", "adoptRelayProfileSuccessor", "captureInheritedCredentials", "createProductionDaemon", "holdServiceHandoffFence",
+  "installDaemonService", "prepareRelayProfileSuccessor", "readDaemonServiceStatus", "readLocalServiceHandoffRefusal", "removeDaemonService",
+  "updateDaemonService", "verifyLocalFleetClientRoute",
   "verifyRelayProfileSuccessor",
 ])
 assert.equal("DomovoiDaemon" in internal, false)
