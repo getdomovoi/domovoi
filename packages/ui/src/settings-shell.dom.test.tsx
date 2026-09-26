@@ -364,3 +364,19 @@ it("keeps the other window's line for a daemon another Domovoi window started", 
   expect(section.textContent).not.toContain("Quitting Domovoi stops the daemon")
   expect(section.textContent).not.toContain("Quitting this app leaves the daemon and its sessions running.")
 })
+
+// The design puts About this build at the bottom of the Daemon on this
+// machine card. Where that card is not drawn (a browser tab), About stands
+// on its own.
+it("draws About at the bottom of the daemon card, and on its own without the card", () => {
+  const about = { version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", state: "idle" as const })) }
+  const { unmount } = render(<SettingsShell {...shellProps()} about={about} localDaemon={{ title: "Running Domovoi inside this app", detail: "This app started the local daemon and stops it when the app quits.", owner: "app", platform: "darwin" }} />)
+  const card = screen.getByRole("region", { name: "Daemon on this machine" })
+  const inside = within(card).getByRole("region", { name: "About this build" })
+  expect(card.lastElementChild).toBe(inside)
+  expect(screen.getAllByRole("region", { name: "About this build" })).toHaveLength(1)
+  unmount()
+  render(<SettingsShell {...shellProps()} about={about} />)
+  expect(screen.queryByRole("region", { name: "Daemon on this machine" })).toBeNull()
+  expect(screen.getByRole("region", { name: "About this build" })).toBeTruthy()
+})

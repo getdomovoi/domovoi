@@ -1,6 +1,6 @@
 import { loginServiceHomePaths, loginServiceTaskName, type ApprovalRule, type ClientKind, type PairedDeviceSummary, type ProviderRuntime, type UpdateStatus } from "@getdomovoi/protocol"
 import { ChevronRightIcon, ExternalLinkIcon, TerminalIcon } from "lucide-react"
-import { useEffect, useState, type MouseEvent } from "react"
+import { useEffect, useState, type MouseEvent, type ReactNode } from "react"
 
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -52,7 +52,8 @@ const loginServices = {
   win32: { kind: "logon task", manager: "Task Scheduler", definition: `Task Scheduler task "${loginServiceTaskName}"`, removeLabel: "Delete the logon task", crash: "Nothing restarts it until you next sign in." },
 } as const
 
-function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: NonNullable<LocalDaemonDescription["owner"]>; platform: NonNullable<LocalDaemonDescription["platform"]> } }) {
+// `footer` is the design's last row of the card: About this build.
+function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { owner: NonNullable<LocalDaemonDescription["owner"]>; platform: NonNullable<LocalDaemonDescription["platform"]> }; footer?: ReactNode }) {
   const service = loginServices[daemon.platform]
   const on = daemon.owner === "outside" && daemon.serviceInstalled === true
   const unknown = daemon.owner === "outside" && !on
@@ -115,6 +116,7 @@ function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: N
         <Button size="sm" variant="outline" disabled title="Not built yet">{service.removeLabel}</Button>
         <span className="text-[11px] text-faint">{lockReason}</span>
       </div>
+      {footer}
     </section>
   )
 }
@@ -185,7 +187,9 @@ function pendingUpdateLine(status: UpdateStatus): string | undefined {
   return undefined
 }
 
-function AboutBuildSection({ about }: { about: AboutBuild }) {
+// On its own, About is a card. Inside the daemon card it is that card's last
+// row, set off by a rule, as the design draws it.
+function AboutBuildSection({ about, inCard = false }: { about: AboutBuild; inCard?: boolean }) {
   const [status, setStatus] = useState<UpdateStatus | undefined>(undefined)
   const { onUpdateStatus } = about
   useEffect(() => {
@@ -204,7 +208,7 @@ function AboutBuildSection({ about }: { about: AboutBuild }) {
   // by the read-only fieldset) can still open it. The desktop hands the fixed
   // address to the browser through the bridge instead of navigating.
   return (
-    <section aria-labelledby="settings-about" className="flex items-start gap-3 rounded-lg border bg-card p-4">
+    <section aria-labelledby="settings-about" className={inCard ? "flex items-start gap-3 border-t pt-3" : "flex items-start gap-3 rounded-lg border bg-card p-4"}>
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
         <div className="flex flex-wrap items-center gap-2.5">
           <h2 id="settings-about" className="m-0 text-[13px] font-medium">About this build</h2>
@@ -308,13 +312,13 @@ export function SettingsShell({
         </header>
 
         <fieldset disabled={readOnly} className="contents">
-          {daemonSection ? <DaemonSection daemon={daemonSection} /> : null}
+          {daemonSection ? <DaemonSection daemon={daemonSection} footer={about ? <AboutBuildSection about={about} inCard /> : undefined} /> : null}
 
           <section aria-label="Providers and tokens">
             <ProviderSettings providers={providers} secrets={secrets} {...(localDaemon && !daemonSection ? { localDaemon } : {})} />
           </section>
 
-          {about ? <AboutBuildSection about={about} /> : null}
+          {about && !daemonSection ? <AboutBuildSection about={about} /> : null}
 
           {pairing ? <PairingSection pairing={pairing} readOnly={readOnly} onOpenFleet={onOpenFleet} /> : null}
 
