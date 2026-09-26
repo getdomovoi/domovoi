@@ -52,6 +52,7 @@ describe("desktop daemon assembly", () => {
     expect([...daemonModuleExports].sort()).toEqual([
       "DaemonServiceRuntimeMissingError",
       "acquireLocalDaemon",
+      "captureInheritedCredentials",
       "holdServiceHandoffFence",
       "installDaemonService",
       "readDaemonServiceRuntimeVersion",

@@ -231,3 +231,46 @@ describe("kept inherited credentials", () => {
     expect(Object.hasOwn(withInheritedCredentials(process.env, home), "DOMOVOI_AUTH_TOKEN")).toBe(false)
   })
 })
+
+// Owner ruling 2026-09-26 (#577, A): the desktop's first module takes the
+// values out of process.env itself and holds them until the daemon it ships
+// loads, then hands them here. The pinning stays in this one copy.
+describe("credentials a caller held and hands over", () => {
+  it("keeps values handed in, pinned to the profile process.env names, for a later acquisition", async () => {
+    const home = join(root, "home")
+    const profile = join(root, "profile")
+    await mkdir(home)
+    await mkdir(profile)
+    process.env.DOMOVOI_PROFILE_DIR = profile
+
+    captureInheritedCredentials(() => home, { DOMOVOI_AUTH_TOKEN: "placeholder-held-value", DOMOVOI_CREDENTIAL_PATH: "/placeholder/credential" })
+
+    const filled = withInheritedCredentials(process.env, home)
+    expect(filled.DOMOVOI_AUTH_TOKEN === "placeholder-held-value").toBe(true)
+    expect(filled.DOMOVOI_CREDENTIAL_PATH === "/placeholder/credential").toBe(true)
+    expect(Object.hasOwn(filled, "DOMOVOI_RELAY_CREDENTIAL_FILE")).toBe(false)
+    expect(Object.hasOwn(process.env, "DOMOVOI_AUTH_TOKEN")).toBe(false)
+  })
+
+  it("still takes a value left in process.env out of it, and a held value wins over it", async () => {
+    const home = join(root, "home")
+    await mkdir(home)
+    process.env.DOMOVOI_AUTH_TOKEN = "placeholder-environment-value"
+    process.env.DOMOVOI_RELAY_CREDENTIAL_FILE = "/placeholder/relay"
+
+    captureInheritedCredentials(() => home, { DOMOVOI_AUTH_TOKEN: "placeholder-held-value" })
+
+    expect(Object.hasOwn(process.env, "DOMOVOI_AUTH_TOKEN")).toBe(false)
+    expect(Object.hasOwn(process.env, "DOMOVOI_RELAY_CREDENTIAL_FILE")).toBe(false)
+    const filled = withInheritedCredentials(process.env, home)
+    expect(filled.DOMOVOI_AUTH_TOKEN === "placeholder-held-value").toBe(true)
+    expect(filled.DOMOVOI_RELAY_CREDENTIAL_FILE === "/placeholder/relay").toBe(true)
+  })
+
+  it("keeps nothing for an empty hand-over", async () => {
+    const home = join(root, "home")
+    await mkdir(home)
+    captureInheritedCredentials(() => home, { DOMOVOI_AUTH_TOKEN: "" })
+    expect(Object.hasOwn(withInheritedCredentials(process.env, home), "DOMOVOI_AUTH_TOKEN")).toBe(false)
+  })
+})

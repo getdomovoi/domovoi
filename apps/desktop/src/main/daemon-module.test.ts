@@ -65,6 +65,24 @@ describe("where the in-app daemon is loaded from", () => {
       .rejects.toThrow(/is missing updateDaemonService\./)
   })
 
+  // Owner ruling 2026-09-26 (#577, A): the values the first module held reach
+  // the run-time daemon's own capture, and only a runtime that loads gets them.
+  it("hands the held credentials to the run-time daemon's capture once it loads", async () => {
+    const module = Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()]))
+    const held = { DOMOVOI_AUTH_TOKEN: "placeholder-held-value" }
+    const take = vi.fn(() => held)
+    const homeDirectory = () => "/Users/dana"
+    await loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => module, { take, homeDirectory })
+    expect(take).toHaveBeenCalledOnce()
+    expect(module.captureInheritedCredentials).toHaveBeenCalledWith(homeDirectory, held)
+
+    const refused = vi.fn(() => held)
+    const { captureInheritedCredentials: _capture, ...without } = module
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => without, { take: refused, homeDirectory }))
+      .rejects.toThrow(/is missing captureInheritedCredentials\./)
+    expect(refused).not.toHaveBeenCalled()
+  })
+
   it("names the path when the runtime cannot be imported, as a load error", async () => {
     const failed = loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => { throw new Error("Cannot find module") })
     await expect(failed).rejects.toBeInstanceOf(DaemonRuntimeLoadError)
