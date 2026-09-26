@@ -359,6 +359,11 @@ export async function runWslServiceCommand(verb: string, dependencies: ServiceCo
       throw new Error("Remove the existing systemd registration before installing the WSL service")
     }
     const wsl = await discover(dependencies, deadline)
+    // Task Scheduler expands %NAME% and substitutes $( in the task's wsl.exe
+    // path and arguments when it runs, so any value the task would carry is
+    // refused with the install's approved lines, before the profile is
+    // claimed, a file is written or a task command runs.
+    for (const value of [wsl.wsl, wsl.distribution, wsl.linuxUser, wsl.executable, ...wsl.args, path]) refuseTaskSchedulerExpansion(value)
     // Ruled 2026-09-24 (A): the guest runtime and daemon entry installed are
     // recorded, so an update puts back only those. A guest install with no
     // separate entry has nothing an update could put back, and records nothing.

@@ -30,4 +30,6 @@ changed (`LaunchdJobNotDomovoiError`). On Windows an update refuses, with nothin
 previous task action it would register again contains `%`, `$(` or a path Windows would not report
 in that form. A WSL update refuses, with nothing changed, when the old or the new task would carry `%` or `$(`
 in its `wsl.exe` path or arguments, and a Linux update refuses when the recorded old runtime or entry
-contains `$` or `%`.
+contains `$` or `%`. `domovoid service install` for a WSL guest refuses, with the same lines, a
+distribution, Linux user, guest runtime, entry, `wsl.exe` path or configuration path that contains
+`%` or `$(`, before any file is written or task command runs.
