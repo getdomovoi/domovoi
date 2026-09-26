@@ -66,6 +66,43 @@ export function systemdUnit({ execPath, args = [] }: ServiceUnitInput): string {
   ].join("\n")
 }
 
+// The program and arguments of a service file this module wrote, or undefined
+// for a file it would not have written. The file must be exactly what the
+// renderer gives for them, so its label, keys and every other line are
+// Domovoi's own; only the program and arguments are left to check.
+function renderedFrom(
+  render: (input: ServiceUnitInput) => string,
+  text: string,
+  [execPath, ...args]: string[],
+): { execPath: string; args: string[] } | undefined {
+  if (execPath === undefined) return undefined
+  try {
+    return render({ execPath, args }) === text ? { execPath, args } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+const unescapes: Record<string, string> = { "&lt;": "<", "&gt;": ">", "&amp;": "&" }
+
+export function launchdPlistProgram(text: string): { execPath: string; args: string[] } | undefined {
+  const listed = /\n {4}<key>ProgramArguments<\/key>\n {4}<array>\n((?: {6}<string>[^<\n]*<\/string>\n)+) {4}<\/array>\n/.exec(text)?.[1]
+  if (listed === undefined) return undefined
+  const values = [...listed.matchAll(/<string>([^<\n]*)<\/string>/g)]
+    .map((match) => (match[1] ?? "").replace(/&(?:lt|gt|amp);/g, (entity) => unescapes[entity] ?? entity))
+  return renderedFrom(launchdPlist, text, values)
+}
+
+export function systemdUnitProgram(text: string): { execPath: string; args: string[] } | undefined {
+  const line = /^ExecStart=(.*)$/m.exec(text)?.[1]
+  if (line === undefined) return undefined
+  // The reverse of systemdArgument: a value is quoted or bare, and its
+  // backslashes, percent signs and dollar signs are doubled.
+  const values = [...line.matchAll(/"([^"]*)"|([^\s"]+)/g)]
+    .map((match) => (match[1] ?? match[2] ?? "").replace(/\\\\|%%|\$\$/g, (pair) => pair.charAt(0)))
+  return renderedFrom(systemdUnit, text, values)
+}
+
 export function launchdPlist({ execPath, args = [] }: ServiceUnitInput): string {
   assertExecutable(execPath)
   assertArguments(args)

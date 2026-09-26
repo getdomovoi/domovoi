@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { posix, win32 } from "node:path"
+import { isDeepStrictEqual } from "node:util"
 import { loginServiceHomePaths } from "@getdomovoi/protocol"
 
 import type { OperationDeadline } from "../operation-deadline.js"
@@ -7,10 +8,12 @@ import { profileLocation } from "../profile-directory.js"
 import { localOwnerRemovalReceiptPath } from "../local-owner-removal.js"
 import { z } from "zod"
 
-import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration } from "./configuration.js"
+import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration, type ServiceRuntimeRecord } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceCommand, ServiceCommandDependencies, ServiceEffects } from "./install.js"
-import { claimProfileAfterStop, currentInstance, OwnerInstances, type ServiceSwap } from "./update-outcome.js"
+import { refuseTaskSchedulerExpansion } from "./install.js"
+import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, type InFlight, type ServiceSwap } from "./update-outcome.js"
+import { hasDomovoiServiceShape, isRecordedServiceProgram } from "./restore-target.js"
 import { serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
 import { installedWslTask, type WslInstallation } from "./wsl-registration.js"
 import { removeWindowsTask, WindowsTaskRemovalError, type WindowsTaskRemovalPlan } from "./windows-task.js"
@@ -60,33 +63,98 @@ export function wslUpdateIntentPath(configurationPath: string): string {
   return `${configurationPath}.update-intent.json`
 }
 
+// `completed` is written only once the update has ended with that side's
+// service reporting ready, and only when removing the record failed.
 const wslUpdateIntentSchema = z.object({
   version: z.literal(1),
   previous: z.string().min(1),
   next: z.string().min(1),
+  completed: z.enum(["previous", "next"]).optional(),
 }).strict()
 
+type WslUpdateIntent = { previous: ServiceConfiguration; next: ServiceConfiguration; completed?: "previous" | "next" }
+
+function wslUpdateIntentText(previous: ServiceConfiguration, next: ServiceConfiguration, completed?: "previous" | "next"): string {
+  return `${JSON.stringify({ version: 1, previous: serializeServiceConfiguration(previous), next: serializeServiceConfiguration(next), ...(completed === undefined ? {} : { completed }) })}\n`
+}
+
+// The configuration as it is saved and read back, so two can be compared
+// whatever order their fields were built in. The runtime record is left out:
+// it names the runtime that last reported ready, which an update changes on
+// its own, and is checked against what is started instead.
+function asSaved(configuration: ServiceConfiguration): ServiceConfiguration {
+  const { serviceRuntime: _record, ...settings } = parseServiceConfiguration(serializeServiceConfiguration(configuration))
+  return settings
+}
+
+// The program the guest task runs for a saved runtime, as installedWslTask
+// builds it.
+function guestProgram(wsl: WslInstallation, configurationPath: string) {
+  return { execPath: wsl.executable, args: [...wsl.args, "--service-supervise", configurationPath] }
+}
+
+const guestShape = (configurationPath: string) => ({ paths: "posix", flag: "--service-supervise", configurationPath }) as const
+
+// Checked as every restore target is (security review round 2): the runtime,
+// one daemon entry, and the supervise flag with this configuration.
+function domovoiGuestRuntime(wsl: WslInstallation, configurationPath: string): boolean {
+  return hasDomovoiServiceShape(guestProgram(wsl, configurationPath), guestShape(configurationPath))
+}
+
+// Security review round 3, ruled 2026-09-24 (A): a guest runtime a failed step
+// registers and starts again must be exactly the one service.json records.
+function recordedGuestRuntime(wsl: WslInstallation, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): boolean {
+  return isRecordedServiceProgram(guestProgram(wsl, configurationPath), guestShape(configurationPath), recorded)
+}
+
+// An update changes only the guest runtime, and writes it in the shape an
+// install does: an absolute normalized executable and one absolute normalized
+// daemon entry. A recorded configuration that differs from the saved one in
+// anything else (registration, profile, distribution, user, PowerShell or
+// wsl.exe), or names a runtime of another shape, was not written by an update
+// of this service, and nothing it names is registered or started.
+function recordedByThisService(recorded: ServiceConfiguration, saved: ServiceConfiguration): boolean {
+  if (!recorded.wsl || !saved.wsl) return false
+  if (!domovoiGuestRuntime(recorded.wsl, serviceConfigurationPath(saved.homeDirectory, "linux"))) return false
+  return isDeepStrictEqual(asSaved({ ...recorded, wsl: { ...recorded.wsl, executable: saved.wsl.executable, args: saved.wsl.args } }), asSaved(saved))
+}
+
 // Ruled 2026-09-23: a damaged record has one fixed cause, never a parser's
-// own words.
+// own words. A record that cannot be read as a private regular file, or that
+// does not match the saved registration, is damaged too.
 async function readWslUpdateIntent(
   intentPath: string,
   read: (path: string, deadline: OperationDeadline) => Promise<string>,
+  saved: ServiceConfiguration | undefined,
   deadline: OperationDeadline,
-): Promise<{ previous: ServiceConfiguration; next: ServiceConfiguration }> {
-  const text = await withinServiceDeadline(deadline, () => read(intentPath, deadline))
+): Promise<WslUpdateIntent> {
   try {
+    const text = await withinServiceDeadline(deadline, () => read(intentPath, deadline))
     const parsed: unknown = JSON.parse(text)
     const intent = wslUpdateIntentSchema.parse(parsed)
-    return { previous: parseServiceConfiguration(intent.previous), next: parseServiceConfiguration(intent.next) }
+    const recorded = {
+      previous: parseServiceConfiguration(intent.previous),
+      next: parseServiceConfiguration(intent.next),
+      ...(intent.completed === undefined ? {} : { completed: intent.completed }),
+    }
+    if (!saved || !recordedByThisService(recorded.previous, saved) || !recordedByThisService(recorded.next, saved)) {
+      throw new Error("The update record does not match the saved service registration")
+    }
+    return recorded
   } catch (cause) {
+    if (deadline.signal.aborted) throw cause
     throw new Error("the record of an interrupted update is unreadable", { cause })
   }
 }
 
-// A record whose next configuration is the one saved now belongs to an update
-// that finished: only removing the record failed.
-function finishedUpdate(recorded: { next: ServiceConfiguration }, saved: ServiceConfiguration | undefined): boolean {
-  return saved !== undefined && serializeServiceConfiguration(recorded.next) === serializeServiceConfiguration(saved)
+// A record marked completed, whose completed side is the configuration saved
+// now, belongs to an update that ended with that service reporting ready:
+// only removing the record failed. An unmarked record is an interrupted
+// update even when service.json already names its next configuration, since
+// the swap saves that before the new task has reported ready.
+function finishedUpdate(recorded: WslUpdateIntent, saved: ServiceConfiguration | undefined): boolean {
+  return recorded.completed !== undefined && saved !== undefined
+    && isDeepStrictEqual(asSaved(recorded[recorded.completed]), asSaved(saved))
 }
 
 // Ruled 2026-09-23: inside an update, the old task's removal failing is named
@@ -125,6 +193,7 @@ export function prepareWslUpdate(
   runtime: { nodePath: string; daemonEntryPath: string },
   effects: WslServiceUpdateEffects,
   waits: { profileWaitMs: number; readinessWaitMs: number },
+  inFlight: InFlight,
 ) {
   return async (readDeadline: OperationDeadline): Promise<ServiceSwap<{ name: string; configurationPath: string }>> => {
     const path = serviceConfigurationPath(saved.homeDirectory, "linux")
@@ -140,7 +209,7 @@ export function prepareWslUpdate(
     let interrupted: ServiceConfiguration | undefined
     let previous = saved
     if (await withinServiceDeadline(readDeadline, () => effects.exists(intentPath, readDeadline))) {
-      const recorded = await readWslUpdateIntent(intentPath, read, readDeadline)
+      const recorded = await readWslUpdateIntent(intentPath, read, saved, readDeadline)
       // A finished update whose record could not be removed leaves nothing to
       // roll back; this update writes its own record over it.
       if (!finishedUpdate(recorded, saved)) {
@@ -149,9 +218,32 @@ export function prepareWslUpdate(
       }
     }
     if (!previous.wsl || !previous.registrationId) throw new Error("No saved WSL service registration; no systemd action was attempted")
+    // The old task is registered and started again on a failed step, so the
+    // runtime it runs must be exactly the one service.json records (security
+    // review rounds 2 and 3, ruled 2026-09-24 A), whether it comes from
+    // service.json or from the record of an interrupted update. A crafted
+    // intent record of any other kind was refused above with its own cause.
+    const recorded = saved.serviceRuntime
+    if (!recorded || !recordedGuestRuntime(previous.wsl, path, recorded)) throw new DaemonServiceUpdateError("changed-outside")
     const registrationId = previous.registrationId
     const old = installedWslTask(previous.wsl, registrationId, path)
-    const updated = { ...previous, wsl: { ...previous.wsl, executable: runtime.nodePath, args: [runtime.daemonEntryPath] } }
+    // service.json keeps naming the previous runtime as the one that last
+    // reported ready until the new one has; an update interrupted before then
+    // still starts from it.
+    const restored = { ...previous, serviceRuntime: recorded }
+    const updated = { ...restored, wsl: { ...previous.wsl, executable: runtime.nodePath, args: [runtime.daemonEntryPath] } }
+    const ready = { ...updated, serviceRuntime: { executable: runtime.nodePath, entry: runtime.daemonEntryPath } }
+    // Security review round 6: Task Scheduler expands %NAME% and substitutes
+    // $( in the wsl.exe path and arguments of either task, the old one a
+    // failed step registers again and the new one, so any value either would
+    // carry is refused before anything changes, with the install's refusals.
+    try {
+      for (const wsl of [previous.wsl, updated.wsl]) {
+        for (const value of [wsl.wsl, wsl.distribution, wsl.linuxUser, wsl.executable, ...wsl.args, path]) refuseTaskSchedulerExpansion(value)
+      }
+    } catch (cause) {
+      throw new DaemonServiceUpdateError("nothing-changed", cause)
+    }
     const next = installedWslTask(updated.wsl, registrationId, path)
     const candidates = [old.removal, next.removal,
       ...(interrupted?.wsl ? [installedWslTask(interrupted.wsl, registrationId, path).removal] : [])]
@@ -159,7 +251,7 @@ export function prepareWslUpdate(
     const stoppedInstance = currentInstance(readOwner, profile)
     const instances = new OwnerInstances(readOwner, profile)
     await instances.note(readDeadline)
-    const intent = `${JSON.stringify({ version: 1, previous: serializeServiceConfiguration(previous), next: serializeServiceConfiguration(updated) })}\n`
+    const intent = wslUpdateIntentText(previous, updated)
 
     const confirmedIn = (deadline: OperationDeadline) => async (command: ServiceCommand) => {
       const result = await withinServiceDeadline(deadline, () => effects.capture(command.command, command.args, deadline))
@@ -174,6 +266,18 @@ export function prepareWslUpdate(
     }
     const writeIn = (deadline: OperationDeadline) => (file: string, contents: string) => withinServiceDeadline(deadline, () => effects.write(file, contents, deadline))
     const removeIntentIn = (deadline: OperationDeadline) => () => withinServiceDeadline(deadline, () => effects.remove(intentPath, deadline))
+    // Ends the update once the given side's service has reported ready. A
+    // record that cannot be removed is marked with that side instead, so the
+    // next update or status clears it rather than rolling back. If neither
+    // works, the record stays unmarked and the next update restores from its
+    // previous configuration, a service that ran before.
+    const settleIntentIn = (deadline: OperationDeadline) => async (running: "previous" | "next") => {
+      try {
+        await removeIntentIn(deadline)()
+      } catch {
+        await writeIn(deadline)(intentPath, wslUpdateIntentText(previous, updated, running)).catch(() => undefined)
+      }
+    }
 
     return {
       swap: async (deadline) => {
@@ -195,20 +299,31 @@ export function prepareWslUpdate(
         try {
           await writeIn(deadline)(path, serializeServiceConfiguration(updated))
         } finally {
-          lease.release()
+          await releaseWhenSettled(lease, inFlight)
         }
         await startIn(deadline)(next)
-        // The new service is running. A record that cannot be removed now
-        // names the configuration just saved as next, and the next update or
-        // status clears it; it does not undo a working update.
-        await removeIntentIn(deadline)().catch(() => undefined)
+        // The new service has reported ready; only now is the update done,
+        // and service.json records its runtime. The new daemon holds the
+        // profile, so this write, like the intent record's, is made without
+        // it. If it fails, the record of the update is kept as it is: the
+        // next update starts from the previous runtime service.json still
+        // records.
+        try {
+          await writeIn(deadline)(path, serializeServiceConfiguration(ready))
+        } catch {
+          return { name: next.name, configurationPath: path }
+        }
+        await settleIntentIn(deadline)("next")
         return { name: next.name, configurationPath: path }
       },
       restore: async (deadline) => {
         await removeRegisteredTask(candidates, effects, deadline)
-        await writeIn(deadline)(path, serializeServiceConfiguration(previous))
+        await writeIn(deadline)(path, serializeServiceConfiguration(restored))
         await startIn(deadline)(old)
-        await removeIntentIn(deadline)()
+        // The previous service has reported ready, so the restore worked. A
+        // record that cannot be removed is left for later cleanup, marked as
+        // settled on the previous configuration; it does not undo the restore.
+        await settleIntentIn(deadline)("previous")
       },
     }
   }
@@ -224,7 +339,7 @@ export async function runWslServiceCommand(verb: string, dependencies: ServiceCo
   let interrupted = await withinServiceDeadline(deadline, () => dependencies.exists(intentPath, deadline))
   const saved = dependencies.readConfiguration?.(home, "linux")
   if (interrupted && verb === "status" && dependencies.read) {
-    const recorded = await readWslUpdateIntent(intentPath, dependencies.read, deadline).catch(() => undefined)
+    const recorded = await readWslUpdateIntent(intentPath, dependencies.read, saved, deadline).catch(() => undefined)
     if (recorded && finishedUpdate(recorded, saved)) {
       // A finished update whose record could not be removed: cleared here.
       await withinServiceDeadline(deadline, () => dependencies.remove(intentPath, deadline)).catch(() => undefined)
@@ -244,9 +359,18 @@ export async function runWslServiceCommand(verb: string, dependencies: ServiceCo
       throw new Error("Remove the existing systemd registration before installing the WSL service")
     }
     const wsl = await discover(dependencies, deadline)
+    // Task Scheduler expands %NAME% and substitutes $( in the task's wsl.exe
+    // path and arguments when it runs, so any value the task would carry is
+    // refused with the install's approved lines, before the profile is
+    // claimed, a file is written or a task command runs.
+    for (const value of [wsl.wsl, wsl.distribution, wsl.linuxUser, wsl.executable, ...wsl.args, path]) refuseTaskSchedulerExpansion(value)
+    // Ruled 2026-09-24 (A): the guest runtime and daemon entry installed are
+    // recorded, so an update puts back only those. A guest install with no
+    // separate entry has nothing an update could put back, and records nothing.
     const configuration = { ...createServiceConfiguration(dependencies.environment ?? {}, {
       platform: "linux", homeDirectory: home, workingDirectory: dependencies.workingDirectory ?? process.cwd(),
-    }), registrationId: randomUUID(), wsl }
+    }), registrationId: randomUUID(), wsl,
+    ...(dependencies.runtime === undefined ? {} : { serviceRuntime: { executable: dependencies.runtime, entry: dependencies.execPath } }) }
     const task = installedWslTask(wsl, configuration.registrationId, path)
     const contents = serializeServiceConfiguration(configuration)
     const profile = profileLocation(home, configuration.profileDirectory)
@@ -277,7 +401,7 @@ export async function runWslServiceCommand(verb: string, dependencies: ServiceCo
   const tasks = [task]
   if (interrupted && dependencies.read) {
     const read = dependencies.read
-    const recorded = await readWslUpdateIntent(intentPath, read, deadline).catch(() => undefined)
+    const recorded = await readWslUpdateIntent(intentPath, read, saved, deadline).catch(() => undefined)
     for (const configuration of recorded ? [recorded.previous, recorded.next] : []) {
       if (configuration.wsl) tasks.push(installedWslTask(configuration.wsl, saved.registrationId, path))
     }

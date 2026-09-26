@@ -51,6 +51,7 @@ import { FleetAccessSession } from "./fleet-access-session"
 import { ClientAdmissionError } from "./client-admission-policy"
 import { prepareFleetEndpoint, withinFleetDeadline } from "./fleet-access"
 import { Deadline } from "./deadline"
+import { advancePendingElsewhere, paletteSearchTargets, type PendingElsewhere } from "./palette-search-targets"
 import { collectFleetInventories } from "./fleet-inventories"
 import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
 import { type ProviderSecretStatus } from "./provider-settings"
@@ -108,6 +109,8 @@ import {
   enqueueDesktopDeepLink,
   openDesktopPath,
   openProjectFromDesktop,
+  type DaemonServiceOutcome,
+  type DaemonServiceStatusReport,
   type DesktopExternalEditor,
   type DesktopWindowBridge,
   type WorkspaceWindowDecoration,
@@ -126,7 +129,7 @@ import {
 } from "./workspace-selectors"
 import { LauncherDialog, type LauncherMode, ProjectSwitchConfirmationDialog } from "./launcher-dialog"
 import { AppBar, useUsageToday } from "./app-bar"
-import { Thread, archiveSessionDescription } from "./thread"
+import { ArchiveConfirmBody, Thread, archiveSessionDescription } from "./thread"
 
 export { ArchiveSessionAction, CheckpointThreadItem, SessionReadOnlyNotice, SessionRow, type SessionTransferReceipt, Thread, archiveSessionDescription, providerFailureActionCopy, sessionStatusMeaning, sessionTransferReceiptText } from "./thread"
 
@@ -205,21 +208,76 @@ export { providerHandoffChoices, openProviderChoice, forkProviderChoice, type Pr
 export { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked }
 
 
+// Whether a service read shows the change the action set out to make, in
+// whole or in part: installed after an install; removed or no longer running
+// after a removal. An unknown read shows nothing.
+function serviceChangedBy(action: "install" | "remove", service: { installed: boolean | null; running: boolean }): boolean {
+  if (service.installed === null) return false
+  return action === "install" ? service.installed : !(service.installed && service.running)
+}
+
+function serviceOutcomeMovesDaemon(action: "install" | "remove", outcome: DaemonServiceOutcome): boolean {
+  if (outcome.ok || outcome.reason === "installed-not-attached") return true
+  if (outcome.reason !== "failed") return false
+  if (outcome.daemon === "restarted" || outcome.daemon === "attached") return true
+  return outcome.service !== null && serviceChangedBy(action, outcome.service)
+}
+
 export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
   // J24: whether the login service is installed, from the desktop's own
   // status read. A daemon outside the app is drawn as the service only when
   // this says so; an unreadable or unverified status leaves it unnamed.
   const [serviceInstalled, setServiceInstalled] = useState<boolean | undefined>(undefined)
-  const readServiceStatus = useCallback(() => {
+  // Whether the service itself runs, from the same read (security review
+  // round 9). Unknown whenever the installed fact is unknown.
+  const [serviceRunning, setServiceRunning] = useState<boolean | undefined>(undefined)
+  // Reads are numbered and only the newest one's answer is kept, so a read
+  // that started before an install or a removal cannot answer after the read
+  // that followed it and put the old fact back (security review round 4).
+  const serviceStatusGeneration = useRef(0)
+  const readServiceStatus = useCallback(async (): Promise<DaemonServiceStatusReport | undefined> => {
     const service = windowBridge?.daemonService
-    if (!service) return
-    void service.status().then(
-      (status) => setServiceInstalled("installed" in status && status.installed !== null ? status.installed : undefined),
-      () => setServiceInstalled(undefined),
-    )
+    if (!service) return undefined
+    const generation = ++serviceStatusGeneration.current
+    try {
+      const status = await service.status()
+      if (generation === serviceStatusGeneration.current) {
+        const read = "installed" in status && status.installed !== null ? status : undefined
+        setServiceInstalled(read ? read.installed ?? undefined : undefined)
+        setServiceRunning(read?.running)
+      }
+      return status
+    } catch (cause) {
+      if (generation === serviceStatusGeneration.current) {
+        setServiceInstalled(undefined)
+        setServiceRunning(undefined)
+      }
+      throw cause
+    }
   }, [windowBridge])
-  useEffect(() => { readServiceStatus() }, [readServiceStatus])
+  useEffect(() => { void readServiceStatus().catch(() => {}) }, [readServiceStatus])
+  // An install or a removal, then a status read. The desktop is told the
+  // daemon changed, so it resolves its daemon again, whenever the change may
+  // have moved who holds it: a success; a service installed but not attached;
+  // a failure that started the app's daemon again, attached this app to one
+  // it did not start, or left the service changed in its read-back; and a
+  // reply this window cannot read when the read-back shows the service
+  // changed (security review rounds 4 and 5). A failure that only stopped the
+  // app's daemon keeps the section, and its line says to quit and reopen.
+  const changeService = useCallback(async (action: "install" | "remove", call: () => Promise<DaemonServiceOutcome>): Promise<DaemonServiceOutcome> => {
+    let outcome: DaemonServiceOutcome
+    try {
+      outcome = await call()
+    } catch (cause) {
+      const after = await readServiceStatus().catch(() => undefined)
+      if (after && "installed" in after && serviceChangedBy(action, after)) onLocalDaemonChanged?.()
+      throw cause
+    }
+    void readServiceStatus().catch(() => {})
+    if (serviceOutcomeMovesDaemon(action, outcome)) onLocalDaemonChanged?.()
+    return outcome
+  }, [readServiceStatus, onLocalDaemonChanged])
   // The queue outlives the thread view and is not limited to the session on
   // screen. Thread is keyed by session, so a switch unmounts it; and a message
   // queued in A must leave at A's next turn boundary whether or not anyone is
@@ -259,8 +317,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     access ? { state: "client", admission: access,
       resolveEndpoint: (deadline) => prepareFleetEndpoint({ ...accessInputs.current, ...access, deadline }),
     } : { state: "disabled" }, relayPinStorage)
-  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, revokeDevice, rotateDevice, renameDevice } = home
+  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, updateStatus, revokeDevice, rotateDevice, renameDevice } = home
   const homeSkillInventory = home.getSkillInventory
+  const homeVersion = home.snapshot?.machine.version
+  const openReleasePage = windowBridge?.openReleasePage
+  const about = useMemo(() => attached || homeVersion === undefined ? undefined : {
+    version: homeVersion,
+    onUpdateStatus: updateStatus,
+    ...(openReleasePage ? { onOpenReleasePage: openReleasePage } : {}),
+  }, [attached, homeVersion, updateStatus, openReleasePage])
   const {
     activateSession,
     archiveSession,
@@ -554,6 +619,46 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // machine change drops it rather than opening controls on the wrong thread.
   const [rowIntent, setRowIntent] = useState<{ action: "fork" | "move", sessionId: string } | null>(null)
   const [archiveTarget, setArchiveTarget] = useState<string | null>(null)
+  // A row picked on another machine (J39) switches this window to that
+  // machine, then opens the session once its snapshot arrives.
+  const [pendingElsewhere, setPendingElsewhere] = useState<PendingElsewhere | null>(null)
+  const windowMachineId = attached?.machineId ?? homeMachineId
+  useEffect(() => {
+    if (!pendingElsewhere) return
+    const step = advancePendingElsewhere(pendingElsewhere, {
+      currentMachineId: windowMachineId,
+      snapshotMachineId: snapshot?.machine.id ?? null,
+      sessionIds: snapshot?.sessions.map((session) => session.id) ?? [],
+    })
+    if (step.next !== pendingElsewhere) setPendingElsewhere(step.next)
+    if (step.open) openSessionInWorkspace(step.open)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingElsewhere, windowMachineId, snapshot])
+  const searchTargets = windowMachineId ? paletteSearchTargets({
+    machines: fleetMachines(fleet?.entries ?? []),
+    access: fleetClientAccess,
+    homeMachineId,
+    currentMachineId: windowMachineId,
+    currentLabel: snapshot?.machine.name ?? windowMachineId,
+  }) : null
+  const homeSearch = home.searchSessions
+  const machineSearch = useMemo(() => !searchTargets || searchTargets.others.length === 0 ? undefined : {
+    here: searchTargets.here,
+    machines: searchTargets.others,
+    search: async (machineId: string, query: string, signal: AbortSignal) => {
+      if (machineId !== homeMachineId) return accessSession.search(machineId, query, signal)
+      const deadline = Deadline.start(10_000)
+      try {
+        return await homeSearch({ query, limit: 20 }, { deadline, signal })
+      } finally {
+        deadline.clear()
+      }
+    },
+    open: (machineId: string, sessionId: string) => {
+      if (windowMachineId && switchMachine(machineId)) setPendingElsewhere({ from: windowMachineId, machineId, sessionId, reached: false })
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(searchTargets), homeMachineId, accessSession, homeSearch, switchMachine])
   const sessionRowAction = (action: SessionRowAction, sessionId: string) => {
     if (watching) return
     if (action === "stop") {
@@ -983,7 +1088,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // Named before the snapshot exists, because the snapshot is what is being
   // waited for. The endpoint is what this client actually knows it is reading.
   const readingLabel = `reading ${attached?.machineId ?? endpointUrl}`
-  const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} clientAccess={workspaceAccess} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: { ...current.previewBuildBasis, [sessionId]: artifactId } })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={() => snapshot.activeSessionId ? sendMessage(snapshot.activeSessionId, "Looks right, carry on") : Promise.reject(new Error("No session is active"))} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
+  const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} clientAccess={workspaceAccess} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: { ...current.previewBuildBasis, [sessionId]: artifactId } })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} onTakeCheckpoint={createCheckpoint} onOpenInEditor={!watching && windowBridge && activeWorkspacePath && !attached ? openActiveWorkspaceInEditor : undefined} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={() => snapshot.activeSessionId ? sendMessage(snapshot.activeSessionId, "Looks right, carry on") : Promise.reject(new Error("No session is active"))} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = !dockCollapsed && dockPinned ? "drawer.dock" : "drawer.thread"
   const defaultLayout = layouts[layoutKey]
   const shellTitle = launcherMode
@@ -1271,6 +1376,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               onAction={watching ? undefined : sessionRowAction}
             machineAvailability={machineAvailability}
             onOpenMachines={() => setSurface("fleet")}
+            {...(clientKind === "web" && !attached ? {
+              scope: { machine: snapshot.machine.name, note: "this machine only" },
+              credentialNote: { label: "Paired for this tab", meta: "ends when it closes" },
+            } : {})}
           />
           <AlertDialog open={archiveTarget !== null} onOpenChange={(open) => { if (!open) setArchiveTarget(null) }}>
             <AlertDialogContent>
@@ -1278,8 +1387,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 <AlertDialogTitle>Archive {snapshot.sessions.find((session) => session.id === archiveTarget)?.title ?? "this session"}?</AlertDialogTitle>
                 <AlertDialogDescription>{archiveSessionDescription}</AlertDialogDescription>
               </AlertDialogHeader>
+              <ArchiveConfirmBody
+                worktreePath={snapshot.sessions.find((session) => session.id === archiveTarget)?.workspacePath}
+                branch={snapshot.sessions.find((session) => session.id === archiveTarget)?.branch}
+              />
               <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogCancel>Keep the session</AlertDialogCancel>
                 <AlertDialogAction
                   variant="destructive"
                   disabled={watching}
@@ -1290,7 +1403,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                     if (target) void archiveSession(target).catch((cause: unknown) => setConnectionError(cause instanceof Error ? cause.message : "The session could not be archived"))
                   }}
                 >
-                  Archive session
+                  Archive and remove the worktree
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
@@ -1304,14 +1417,34 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               ...localDaemon,
               ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}),
               ...(localDaemon.serviceInstalled === undefined && serviceInstalled !== undefined ? { serviceInstalled } : {}),
+              ...(localDaemon.serviceRunning === undefined && serviceRunning !== undefined ? { serviceRunning } : {}),
               ...(localDaemon.owner === "outside" ? { serviceVersion: snapshot.machine.version, appVersion: clientVersion } : {}),
               ...(windowBridge?.daemonService && !watching ? { service: {
-                install: async () => { const outcome = await windowBridge.daemonService!.install(); readServiceStatus(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
-                remove: async () => { const outcome = await windowBridge.daemonService!.remove(); readServiceStatus(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
-                update: async () => { const outcome = await windowBridge.daemonService!.update(); readServiceStatus(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
+                install: () => changeService("install", () => windowBridge.daemonService!.install()),
+                remove: () => changeService("remove", () => windowBridge.daemonService!.remove()),
+                // No daemon of this app is stopped for an update, so only a success
+                // asks the desktop to resolve its daemon again (#577).
+                update: async () => { const outcome = await windowBridge.daemonService!.update(); void readServiceStatus().catch(() => {}); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
+                // Through the same numbered read, so the section's own state
+                // follows the newest answer.
+                status: async () => {
+                  const status = await readServiceStatus()
+                  if (!status) throw new Error("The desktop offers no service status")
+                  return status
+                },
                 refusal: serviceHandoffRefusal(snapshot),
               } } : {}),
             } } : {})}
+            about={about}
+            {...(attached || clientKind !== "desktop" ? {} : {
+              pairing: {
+                connected: home.connected,
+                onIssueCode: issueDeviceCode,
+                onCopy: (text: string) => platform ? platform.clipboard.writeText(text) : Promise.reject(new Error("This client has no clipboard")),
+                onListDevices: listDevices,
+                inAppDaemon: localDaemon?.inApp ?? false,
+              },
+            })}
             approvalRules={snapshot.approvalRules}
             notifications={notificationPreferences}
             onNotificationsChange={(next: NotificationPreferences) => {
@@ -1385,6 +1518,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onAuthorizeClient={(machineId, credential, signal) => accessSession.authorize(machineId, credential, signal)}
             onRemoveClientAccess={removeClientAccess}
             currentMachineId={attached?.machineId ?? snapshot.machine.id}
+            devicesMachineLabel={home.snapshot?.machine.name}
             currentSessionCount={activeSessionCount(snapshot)}
             providers={snapshot.machine.providers}
             onOpenSkills={() => setSurface("skills")}
@@ -1518,6 +1652,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           commands={workspaceCommands}
           onOpenChange={setCommandPaletteOpen}
           restoreFocusTo={commandPaletteFocusRef.current}
+          machineSearch={machineSearch}
           {...(firstRunEnabled && !watching ? {
             onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
           } : {})}

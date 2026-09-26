@@ -47,10 +47,18 @@ export const sessionAttachmentSchema = z.union([
   workspaceFileAttachmentSchema,
 ])
 
+// Released clients parse this strictly, so it keeps exactly this shape. For
+// image-input-unsupported the client already knows the session's model and
+// how many images it sent; the daemon's message names both.
 export const sessionAttachmentRefusalSchema = z.object({
   kind: z.literal("session-attachment-refused"),
   reason: z.enum(["image-input-unsupported", "invalid-image", "invalid-text", "invalid-workspace-file"]),
 }).strict()
+
+// What the attach sheet shows beside a locked image source when the selected
+// model takes no image input (Phone v2 frame 13b). A client constant, not a
+// wire field.
+export const modelImageInputRefusalCode = "attach.image.model_no_input"
 
 export type ImageUpload = z.infer<typeof imageUploadSchema>
 export type TextAttachment = z.infer<typeof textAttachmentSchema>

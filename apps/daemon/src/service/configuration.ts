@@ -4,7 +4,7 @@ import { posix, win32 } from "node:path"
 
 import { z } from "zod"
 
-import { parseDaemonEnvironment, type DaemonEnvironment, type DaemonEnvironmentConfig } from "../config.js"
+import { DaemonConfigurationError, parseDaemonEnvironment, type DaemonEnvironment, type DaemonEnvironmentConfig } from "../config.js"
 import { OperationDeadline } from "../operation-deadline.js"
 import { configuredSshTunnelsSchema, tailnetHostSchema } from "../transport-config.js"
 import { withinServiceDeadline } from "./deadline.js"
@@ -18,6 +18,7 @@ const configurationSchema = z.object({
   version: z.literal(1),
   registrationId: z.uuid().optional(),
   wsl: wslInstallationSchema.optional(),
+  serviceRuntime: z.object({ executable: pathSchema, entry: pathSchema }).strict().optional(),
   homeDirectory: pathSchema,
   profileDirectory: pathSchema.optional(),
   host: z.string(),
@@ -31,13 +32,21 @@ const configurationSchema = z.object({
   tailnetHost: tailnetHostSchema.optional(),
   sshTunnels: configuredSshTunnelsSchema.optional(),
   allowedOrigins: z.array(z.string()).optional(),
+  webAppUrl: z.unknown().optional(),
   allowRemoteTransport: z.boolean(),
 }).strict()
+
+// Ruled 2026-09-24 (A): the Node executable and daemon entry the service runs,
+// as Domovoi installed them, or as an update left them once the new runtime
+// reported ready. An update puts back only exactly these, never what a plist,
+// unit, task action or saved WSL runtime names on its own.
+export type ServiceRuntimeRecord = { executable: string; entry: string }
 
 export type ServiceConfiguration = Omit<DaemonEnvironmentConfig, "authToken"> & {
   version: 1
   registrationId?: string
   wsl?: WslInstallation
+  serviceRuntime?: ServiceRuntimeRecord
   homeDirectory: string
 }
 
@@ -64,6 +73,7 @@ export function serviceEnvironment(config: ServiceConfiguration): DaemonEnvironm
     ...(config.tailnetHost !== undefined ? { DOMOVOI_TAILNET_HOST: config.tailnetHost } : {}),
     ...(config.sshTunnels !== undefined ? { DOMOVOI_SSH_TUNNELS: JSON.stringify(config.sshTunnels) } : {}),
     ...(config.allowedOrigins !== undefined ? { DOMOVOI_ALLOWED_ORIGINS: config.allowedOrigins.join(",") } : {}),
+    ...(config.webAppUrl !== undefined ? { DOMOVOI_WEB_APP_URL: config.webAppUrl } : {}),
   }
 }
 
@@ -109,13 +119,22 @@ export function serviceRegistrationBlocksProfile(home: string, profile: ProfileL
   }
 }
 
+// A saved address of the wrong type is a refused daemon setting, like a
+// refused string, not a malformed file.
+function webAppUrlSetting(value: unknown): string | undefined {
+  if (value === undefined || typeof value === "string") return value
+  throw new DaemonConfigurationError("DOMOVOI_WEB_APP_URL must be a string")
+}
+
 export function parseServiceConfiguration(text: string): ServiceConfiguration {
   try {
     if (Buffer.byteLength(text, "utf8") > maximumConfigurationBytes) throw new Error("oversized")
-    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, ...required } = configurationSchema.parse(JSON.parse(text))
+    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, webAppUrl: savedWebAppUrl, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, serviceRuntime, ...required } = configurationSchema.parse(JSON.parse(text))
+    const webAppUrl = webAppUrlSetting(savedWebAppUrl)
     const config: ServiceConfiguration = {
       ...required,
       ...(wsl !== undefined ? { wsl } : {}),
+      ...(serviceRuntime !== undefined ? { serviceRuntime } : {}),
       ...(profileDirectory !== undefined ? { profileDirectory } : {}),
       ...(relayIdentityPublicKey !== undefined ? { relayIdentityPublicKey } : {}),
       ...(relayCredentialFile !== undefined ? { relayCredentialFile } : {}),
@@ -125,6 +144,7 @@ export function parseServiceConfiguration(text: string): ServiceConfiguration {
       ...(tailnetHost !== undefined ? { tailnetHost } : {}),
       ...(sshTunnels !== undefined ? { sshTunnels } : {}),
       ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
+      ...(webAppUrl !== undefined ? { webAppUrl } : {}),
     }
     // Reuse the production listener and origin checks, including required TLS.
     parseDaemonEnvironment(serviceEnvironment(config), config.homeDirectory)
@@ -133,9 +153,11 @@ export function parseServiceConfiguration(text: string): ServiceConfiguration {
       installedWslTask(wsl, registrationId, serviceConfigurationPath(config.homeDirectory, "linux"))
     }
     return config
-  } catch {
-    // No parser diagnostics that could echo unexpected secret-bearing fields.
-    throw new Error("Invalid service configuration. Reinstall with valid non-secret daemon settings.")
+  } catch (error) {
+    // No parser diagnostics that could echo unexpected secret-bearing fields. A
+    // setting the daemon refuses keeps its type, without its message or cause.
+    const message = "Invalid service configuration. Reinstall with valid non-secret daemon settings."
+    throw error instanceof DaemonConfigurationError ? new DaemonConfigurationError(message) : new Error(message)
   }
 }
 
@@ -151,7 +173,11 @@ export async function readServiceConfiguration(path: string): Promise<ServiceCon
     const text = await withinServiceDeadline(deadline, () => readFile(path, { encoding: "utf8", signal: deadline.signal }))
     return parseServiceConfiguration(text)
   } catch (error) {
-    throw new Error(`Could not load service configuration at ${path}. Reinstall the service before restarting.`, { cause: error })
+    // The parser already replaced any refused value with a fixed message.
+    const message = `Could not load service configuration at ${path}. Reinstall the service before restarting.`
+    throw error instanceof DaemonConfigurationError
+      ? new DaemonConfigurationError(message, { cause: error })
+      : new Error(message, { cause: error })
   } finally {
     deadline.clear()
   }

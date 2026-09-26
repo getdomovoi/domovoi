@@ -18,6 +18,7 @@ import {
   serviceRemovalPlan,
   serviceStatus,
   servicePlan,
+  type CapturedRun,
   type ServiceCommandDependencies,
   type ServiceEffects,
 } from "./install.js"
@@ -33,6 +34,22 @@ function configuration(homeDirectory: string, platform: string) {
 const linux = { platform: "linux", execPath: "/usr/local/bin/domovoid", home: "/home/dl", configuration: configuration("/home/dl", "linux") }
 const darwin = { platform: "darwin", execPath: "/usr/local/bin/domovoid", home: "/Users/dl", uid: 501, configuration: configuration("/Users/dl", "darwin") }
 const windows = { platform: "win32", execPath: "C:\\Program Files\\Domovoi\\domovoid.exe", user: "dl", home: "C:\\Users\\dl", configuration: configuration("C:\\Users\\dl", "win32") }
+// Ruled 2026-09-25: Windows status and removal first read the task's action
+// and service.json to check that Domovoi registered the task. This answers
+// that read with a Domovoi registration and leaves every other script to the
+// test.
+function registeredWindowsTask(answer: (command: string, args: string[]) => Promise<CapturedRun> | CapturedRun): Partial<ServiceEffects> {
+  const configurationPath = "C:\\Users\\dl\\.domovoi\\service.json"
+  const action = { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\Program Files\\Domovoi\\dist\\index.js" --service-config "${configurationPath}"`, enabled: true, state: 4 }
+  return {
+    readConfiguration: vi.fn(() => ({ ...windows.configuration, serviceRuntime: { executable: "C:\\Program Files\\nodejs\\node.exe", entry: "C:\\Program Files\\Domovoi\\dist\\index.js" } })),
+    capture: vi.fn(async (command: string, args: string[]) => {
+      const script = command === "schtasks" ? "" : Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+      if (script.includes("domovoi-task-action:")) return { code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}\r\n` }
+      return answer(command, args)
+    }),
+  }
+}
 const windowsScript = {
   platform: "win32",
   execPath: "C:\\Program Files\\Domovoi\\dist\\index.js",
@@ -57,9 +74,18 @@ function effects(overrides: Partial<ServiceEffects> = {}): ServiceEffects {
   }
 }
 
+afterEach(() => { vi.unstubAllEnvs() })
+
+// Security review round 3: a darwin or Windows install first asks the manager
+// what is registered under Domovoi's name. These answer that nothing is.
+const nothingRegistered = () => vi.fn(async (command: string) => command === "launchctl"
+  ? { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
+  : command.endsWith("powershell.exe") ? { code: 0, stdout: "domovoi-task:missing\r\n" } : { code: 0, stdout: "" })
+
 function command(overrides: Partial<ServiceCommandDependencies> = {}): ServiceCommandDependencies {
+  vi.stubEnv("SystemRoot", "C:\\Windows")
   return {
-    ...effects(),
+    ...effects({ capture: nothingRegistered() }),
     platform: "linux",
     execPath: "/usr/local/bin/domovoid",
     home: "/home/dl",
@@ -432,7 +458,7 @@ describe("serviceStatus", () => {
 
   it.each(["running", "not running", "spawn scheduled"])("reports the launch agent's runtime state %j", async (state) => {
     const dependencies = effects({
-      capture: vi.fn(async () => ({ code: 0, stdout: `gui/501/sh.domovoi.domovoid = {\n\tstate = ${state}\n}\n` })),
+      capture: vi.fn(async () => ({ code: 0, stdout: `gui/501/sh.domovoi.domovoid = {\n\tpath = /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\n\tstate = ${state}\n}\n` })),
     })
     await expect(serviceStatus(darwin, dependencies)).resolves.toEqual({
       installed: true,
@@ -444,7 +470,7 @@ describe("serviceStatus", () => {
   it("does not borrow a nested launchd state for the agent", async () => {
     const dependencies = effects({ capture: vi.fn(async () => ({
       code: 0,
-      stdout: "gui/501/sh.domovoi.domovoid = {\n\tresource coalition = {\n\t\tstate = active\n\t}\n\tstate = not running\n}\n",
+      stdout: "gui/501/sh.domovoi.domovoid = {\n\tpath = /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\n\tresource coalition = {\n\t\tstate = active\n\t}\n\tstate = not running\n}\n",
     })) })
     await expect(serviceStatus(darwin, dependencies)).resolves.toMatchObject({ installed: true, running: false })
   })
@@ -472,35 +498,38 @@ describe("serviceStatus", () => {
   })
 
   it.each(["Status: Wird ausgeführt", "Statut : En cours"])("reads numeric Windows state instead of localized schtasks output %j", async (localized) => {
-    const dependencies = effects({
-      capture: vi.fn(async (command, args) => {
-        if (command === "schtasks") return { code: 0, stdout: `${localized}\r\n` }
-        expect(command).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
-        expect(args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
-        const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
-        expect(script).toContain("[int]$task.State")
-        expect(script).not.toMatch(/\$task\.(?:Enabled|Stop)|DeleteTask/)
-        return { code: 0, stdout: "domovoi-task:4\r\n" }
-      }),
-    })
-    await expect(serviceStatus({ platform: "win32" }, dependencies)).resolves.toEqual({
+    const dependencies = effects(registeredWindowsTask((command, args) => {
+      if (command === "schtasks") return { code: 0, stdout: `${localized}\r\n` }
+      expect(command).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+      expect(args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
+      const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+      expect(script).toContain("[int]$task.State")
+      expect(script).not.toMatch(/\$task\.(?:Enabled|Stop)|DeleteTask/)
+      return { code: 0, stdout: "domovoi-task:4\r\n" }
+    }))
+    await expect(serviceStatus({ platform: "win32", home: "C:\\Users\\dl" }, dependencies)).resolves.toEqual({
       installed: true,
       running: true,
       detail: "Domovoi daemon is running",
     })
-    expect(dependencies.capture).toHaveBeenCalledOnce()
+    // The ownership read, then the state read; neither is schtasks text.
+    expect(dependencies.capture).toHaveBeenCalledTimes(2)
+    for (const [command, args] of vi.mocked(dependencies.capture).mock.calls) {
+      expect(command).not.toBe("schtasks")
+      expect(Buffer.from(args.at(-1)!, "base64").toString("utf16le")).not.toMatch(/\$task\.Enabled\s*=|\$task\.Stop|DeleteTask/)
+    }
     expect(dependencies.run).not.toHaveBeenCalled()
     expect(dependencies.remove).not.toHaveBeenCalled()
   })
 
   it.each(["1", "2", "3", "missing"])("reports the Windows task answer %j without claiming it is running", async (state) => {
-    const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: `domovoi-task:${state}\r\n` })) })
+    const dependencies = effects(registeredWindowsTask(() => ({ code: 0, stdout: `domovoi-task:${state}\r\n` })))
     await expect(serviceStatus(windows, dependencies)).resolves.toMatchObject({ installed: state !== "missing", running: false })
   })
 
   it.each(["domovoi-task:0", "domovoi-task:deleted", "domovoi-task:5", "Status: Running", "", "domovoi-task:4\ndomovoi-task:3"])(
     "refuses an unknown or ambiguous Windows task state %j", async (stdout) => {
-      const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout })) })
+      const dependencies = effects(registeredWindowsTask(() => ({ code: 0, stdout })))
       await expect(serviceStatus(windows, dependencies)).rejects.toThrow("Task Scheduler")
     },
   )
@@ -528,6 +557,39 @@ describe("serviceStatus", () => {
 
     await expect(serviceStatus({ platform: "linux", home: "/home/dl" }, dependencies))
       .rejects.toThrow("Failed to connect to bus")
+  })
+})
+
+// Security review round 2 on #574, finding 2: the CLI reports and stops a
+// launchd or systemd job only when Domovoi's own file is there.
+describe("the CLI and a same-named job with no Domovoi file", () => {
+  it("status reports no launch agent, whatever launchctl says is loaded", async () => {
+    const dependencies = command({
+      ...darwin, execPath: darwin.execPath,
+      exists: vi.fn(async () => false),
+      capture: vi.fn(async () => ({ code: 0, stdout: "\tpath = /Users/dl/Library/LaunchAgents/other.plist\n\tstate = running\n" })),
+    })
+    expect(await runServiceCommand(["service", "status"], dependencies)).toBe(1)
+    expect(dependencies.stdout).toHaveBeenCalledWith("not installed, not running: no launch agent at /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\n")
+  })
+
+  it("remove asks no manager to stop a job when Domovoi's unit is not there", async () => {
+    for (const target of [darwin, linux]) {
+      const dependencies = command({ ...target, exists: vi.fn(async () => false), capture: vi.fn(async () => ({ code: 0, stdout: "active\n" })) })
+      expect(await runServiceCommand(["service", "remove"], dependencies)).toBe(0)
+      expect(dependencies.run).not.toHaveBeenCalled()
+    }
+  })
+})
+
+// Security review round 5 on #574: the CLI refuses the same Linux paths.
+describe("the CLI and systemd expansion characters", () => {
+  it("refuses a daemon path containing $ before any file or manager call", async () => {
+    const dependencies = command({ ...linux, execPath: "/opt/do$main/domovoid.js", runtime: "/usr/bin/node" })
+    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+    expect(dependencies.stderr).toHaveBeenCalledWith(expect.stringContaining("/opt/do$main/domovoid.js contains $"))
+    expect(dependencies.write).not.toHaveBeenCalled()
+    expect(dependencies.run).not.toHaveBeenCalled()
   })
 })
 
@@ -595,6 +657,9 @@ describe("runServiceCommand", () => {
       machineIdentityPath: at("machine.json"),
       advertiseHost: "studio.example.com",
       allowedOrigins: ["https://domovoi.example.com"],
+      // Ruled 2026-09-24 (A): a service that runs a script through a named
+      // runtime records both, so an update can put back only those.
+      ...("runtime" in target ? { serviceRuntime: { executable: target.runtime, entry: target.execPath } } : {}),
     })
     const launch = target.platform === "win32"
       ? vi.mocked(dependencies.run).mock.calls[0]?.[1].join(" ")

@@ -1,14 +1,27 @@
+import { resolve } from "node:path"
+
 import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
 
+import {
+  affectsLinePaths,
+  approvalAffects,
+  approvalDirectory,
+  executionNamesCredentialPath,
+  executionRecordText,
+} from "./approval-facts.js"
+import { pathHider } from "./approval-path-text.js"
+import { commandOperands, textOperands } from "./credential-stores.js"
+import { namesSecretPath } from "./permission-policy.js"
 import {
   redactDurableCommand,
   redactDurableOutput,
   redactDurableText,
 } from "./secret-redaction.js"
 
-function executionContainsSecret(
+export function executionContainsSecret(
   execution: WorkspaceSnapshot["approvals"][number]["execution"],
 ): boolean {
+  if (executionNamesCredentialPath(execution)) return true
   if (execution.state !== "resolved" || execution.record.kind !== "shell") return false
   return execution.record.entries.some((entry) => (
     entry.parts.some((part) => redactDurableCommand(part.argv.join(" ")).redacted)
@@ -22,20 +35,40 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
   sanitized.approvals = sanitized.approvals.map((approval) => {
     const command = redactDurableCommand(approval.command)
     const operation = redactDurableText(approval.operation)
-    const directory = redactDurableText(approval.directory)
+    // A directory saved before it was classified is hidden here too, judged
+    // as written; its location is read against the session worktree.
+    const workspace = sanitized.sessions.find((session) => session.id === approval.sessionId)?.workspacePath
+      ?? sanitized.project?.path
+    const directory = approvalDirectory({ directory: approval.directory, workspace })
     const affects = redactDurableText(approval.affects)
+    // A file line saved before its path was classified is judged here too.
+    const affectsLine = approvalAffects(affects.value)
     const network = redactDurableText(approval.network)
+    // Each path the card hides, judged as written, is replaced in its own
+    // command and operation lines, and a record that holds one is hidden.
+    const hider = pathHider([
+      ...(directory.sensitive
+        ? [approval.directory, ...(workspace === undefined ? [] : [resolve(workspace, approval.directory)])]
+        : []),
+      ...(affectsLine.sensitive ? affectsLinePaths(affects.value) : []),
+      ...commandOperands(command.value).filter(namesSecretPath),
+      ...textOperands(operation.value, namesSecretPath).filter(namesSecretPath),
+    ])
+    const commandText = hider.hide(command.value)
+    const operationText = hider.hide(operation.value)
+    const pathsHidden = commandText !== command.value || operationText !== operation.value
     const unsafeExecution = executionContainsSecret(approval.execution)
+      || executionRecordText(approval.execution).some(hider.holds)
     return {
       ...approval,
-      risk: command.redacted || operation.redacted || directory.redacted
-        || affects.redacted || network.redacted || unsafeExecution
+      risk: command.redacted || operation.redacted || directory.redacted || directory.sensitive
+        || affects.redacted || affectsLine.sensitive || network.redacted || unsafeExecution || pathsHidden
         ? "hard-gate"
         : approval.risk,
-      command: command.value,
-      operation: operation.value,
-      directory: directory.value,
-      affects: affects.value,
+      command: commandText,
+      operation: operationText,
+      directory: directory.text,
+      affects: affectsLine.text,
       network: network.value,
       execution: unsafeExecution
         ? { state: "unresolved", reason: "sensitive-content" }
@@ -63,9 +96,12 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
       }
     }
     if (item.kind === "receipt") {
+      // The receipt keeps the card's operation line, so a secret file that
+      // line names is replaced here too.
+      const operation = redactDurableText(item.operation).value
       return {
         ...item,
-        operation: redactDurableText(item.operation).value,
+        operation: pathHider(textOperands(operation, namesSecretPath).filter(namesSecretPath)).hide(operation),
         ...(item.explanation === undefined
           ? {}
           : { explanation: redactDurableText(item.explanation).value }),

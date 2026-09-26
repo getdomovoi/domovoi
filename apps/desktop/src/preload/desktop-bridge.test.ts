@@ -40,7 +40,7 @@ describe("createDesktopWindowBridge", () => {
         { ok: false, reason: "installed-not-attached", kind: "file", target: "/p", message: "The daemon did not answer" }],
       [{ ok: false, reason: "refused", message: "1 gate is waiting (Fix login)." }, { ok: false, reason: "refused", message: "1 gate is waiting (Fix login)." }],
       [{ ok: false, reason: "check-failed", message: "connect ECONNREFUSED" }, { ok: false, reason: "check-failed", message: "connect ECONNREFUSED" }],
-      [{ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "stopped" }, { ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "stopped" }],
+      [{ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "stopped", service: { installed: false, running: false } }, { ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "stopped", service: { installed: false, running: false } }],
     ] as const) {
       target.invoke.mockImplementationOnce(async () => answer)
       await expect(bridge.daemonService?.remove()).resolves.toEqual(drawn)
@@ -65,9 +65,38 @@ describe("createDesktopWindowBridge", () => {
     await expect(bridge.daemonService?.status()).resolves.toEqual({ installed: true, running: true, detail: "pid 1" })
     target.invoke.mockImplementationOnce(async () => ({ nonsense: true }))
     await expect(bridge.daemonService?.remove()).rejects.toThrow("invalid service outcome")
+    await expect(bridge.openReleasePage?.()).resolves.toBe(true)
+    expect(target.invoke).toHaveBeenCalledWith("domovoi:open-release-page")
     expect(bridge).not.toHaveProperty("ipcRenderer")
     expect(bridge).not.toHaveProperty("shell")
     expect(bridge).not.toHaveProperty("clipboard")
+  })
+
+  // Security review round 1 of #576: a removal says whether the daemon this
+  // app reaches afterwards is one it did not start, and a failure carries the
+  // service as read back afterwards (null when it could not be read).
+  it("passes a removal's attachment and a failure's service read-back through, and refuses them malformed", async () => {
+    const target = ipc()
+    const bridge = createDesktopWindowBridge(target, "linux")
+    for (const answer of [
+      { ok: true, kind: "file", target: "/p", profileRecovery: "not-needed", daemonRunning: true, daemonAttached: true },
+      { ok: true, kind: "file", target: "/p", profileRecovery: "not-needed", daemonRunning: true, daemonAttached: false },
+      { ok: false, reason: "failed", message: "m", daemon: "attached", service: { installed: true, running: false } },
+      { ok: false, reason: "failed", message: "m", daemon: "restarted", service: null },
+      { ok: false, reason: "failed", message: "m", daemon: "untouched", service: { installed: null, running: false } },
+    ]) {
+      target.invoke.mockImplementationOnce(async () => answer)
+      await expect(bridge.daemonService?.remove()).resolves.toEqual(answer)
+    }
+    for (const answer of [
+      { ok: false, reason: "failed", message: "m", daemon: "stopped" },
+      { ok: false, reason: "failed", message: "m", daemon: "stopped", service: { installed: "yes", running: false } },
+      { ok: false, reason: "failed", message: "m", daemon: "stopped", service: { installed: true } },
+      { ok: true, kind: "file", target: "/p", daemonRunning: true, daemonAttached: "yes" },
+    ]) {
+      target.invoke.mockImplementationOnce(async () => answer)
+      await expect(bridge.daemonService?.remove()).rejects.toThrow("invalid service outcome")
+    }
   })
 
   it("hands the renderer the endpoint of the daemon the main process acquired", async () => {

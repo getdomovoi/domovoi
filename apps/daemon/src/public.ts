@@ -8,7 +8,9 @@ export {
 
 export type { DaemonErrorEntry, DaemonErrorSink } from "./server.js"
 export { verifyLocalFleetClientRoute } from "./local-client-route.js"
-export { readLocalServiceHandoffRefusal } from "./local-service-handoff.js"
+export { holdServiceHandoffFence, readLocalServiceHandoffRefusal, type ServiceHandoffFence } from "./local-service-handoff.js"
+// The desktop main process calls this before anything else runs.
+export { captureInheritedCredentials } from "./inherited-credentials.js"
 export { adoptRelayProfileSuccessor, prepareRelayProfileSuccessor, verifyRelayProfileSuccessor } from "./relay-provisioning.js"
 export type { RelayProfileRecoveryOptions } from "./relay-provisioning.js"
 export {
@@ -19,12 +21,15 @@ export {
   type LocalDaemonRefusalReason,
 } from "./local-daemon.js"
 export {
+  DaemonServiceHandoffError,
   DaemonServiceRuntimeMissingError,
   DaemonServiceUpdateError,
   installDaemonService,
+  LaunchdJobNotDomovoiError,
   readDaemonServiceRuntimeVersion,
   readDaemonServiceStatus,
   removeDaemonService,
+  SystemdPathCharacterError,
   updateDaemonService,
   type DaemonServiceDependencies,
   type DaemonServiceRuntimeReport,
@@ -36,4 +41,8 @@ export {
   type DaemonServiceUpdateOptions,
   type DaemonServiceUpdateOutcome,
   type RuntimeFileState,
+  WindowsTaskArgumentVariableError,
+  WindowsTaskNotDomovoiError,
+  WindowsTaskPathError,
+  WindowsTaskPercentSignError,
 } from "./service/desktop-service.js"

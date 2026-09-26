@@ -10,12 +10,14 @@ import type * as Daemon from "@getdomovoi/daemon"
 // a package (development, tests), the workspace package is loaded instead.
 
 // What the app uses from the daemon: the local ownership seam, route
-// verification against an existing owner, and the login-service calls. None
-// of them constructs a daemon in this process.
+// verification, the handoff check and the handoff fence against an existing
+// owner, and the login-service calls. None of them constructs a daemon in
+// this process.
 export const daemonModuleExports = [
   "acquireLocalDaemon",
   "verifyLocalFleetClientRoute",
   "readLocalServiceHandoffRefusal",
+  "holdServiceHandoffFence",
   "installDaemonService",
   "readDaemonServiceStatus",
   "readDaemonServiceRuntimeVersion",

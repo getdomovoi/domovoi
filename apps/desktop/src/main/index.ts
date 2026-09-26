@@ -1,21 +1,23 @@
+// First: the inherited credentials leave process.env before any other module
+// of the app runs (see inherited-environment.ts).
+import { developmentEnvironment } from "./inherited-environment.js"
 import { homedir, hostname } from "node:os"
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
-import { access, cp, realpath, rm, stat } from "node:fs/promises"
+import { realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
-import { publishFileDurably } from "@getdomovoi/credential-store"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, protocol, session, shell } from "electron"
 
 import { DesktopDaemon } from "./desktop-daemon.js"
 import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
 import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
-import { DesktopDaemonService, stageDaemonRuntime } from "./daemon-service.js"
+import type { DesktopDaemonService } from "./daemon-service.js"
 import { loadDaemonModule } from "./daemon-module.js"
 import { withServiceMismatch } from "./service-mismatch.js"
 import { daemonErrorLogSink, recordDaemonRuntimeFailure, recordStartupFailure } from "./startup-failure.js"
 import {
-  developmentDaemonEnvironment,
+  developmentDaemonOverrides,
   inlineScriptHashes,
   isAuthorizedRendererEvent,
   isTrustedRendererFrameUrl,
@@ -105,17 +107,18 @@ function appendDomovoiMainLog(logPath: string, text: string): void {
   appendFileSync(logPath, text)
 }
 
+const developmentLoop = developmentEnvironment()
 const developmentLoopConfigured = !app.isPackaged && Boolean(
-  process.env.DOMOVOI_DEV_FIXTURE_URL
-    || process.env.DOMOVOI_DEV_DAEMON_URL
-    || process.env.DOMOVOI_DEV_DAEMON_TOKEN,
+  developmentLoop.DOMOVOI_DEV_FIXTURE_URL
+    || developmentLoop.DOMOVOI_DEV_DAEMON_URL
+    || developmentLoop.DOMOVOI_DEV_DAEMON_TOKEN,
 )
 const developmentLoopModule = developmentLoopConfigured
   ? await import("./dev-fixture-seam.js")
   : undefined
 const developmentLoopEndpoint = developmentLoopModule?.devLoopEndpoint({
   isPackaged: false,
-  environment: process.env,
+  environment: developmentLoop,
 })
 // One copy of the daemon (fetzy, 2026-09-23): a packaged app runs its in-app
 // daemon from the runtime it ships in resources, the files the login service
@@ -131,12 +134,12 @@ const daemonModule = await loadDaemonModule({ isPackaged: app.isPackaged, resour
   app.exit(1)
   return process.exit(1)
 })
-const { acquireLocalDaemon, verifyLocalFleetClientRoute, installDaemonService, readDaemonServiceStatus, readDaemonServiceRuntimeVersion, readLocalServiceHandoffRefusal, removeDaemonService, updateDaemonService } = daemonModule.module
+const { acquireLocalDaemon, verifyLocalFleetClientRoute, readDaemonServiceRuntimeVersion } = daemonModule.module
 if (launchSmoke) console.info(`DOMOVOI_DESKTOP_DAEMON_MODULE ${daemonModule.from}`)
 const daemonSeam = developmentLoopModule
   ? developmentLoopModule.resolveDesktopDaemonSeam({
       isPackaged: false,
-      environment: process.env,
+      environment: developmentLoop,
       acquire: acquireLocalDaemon,
     })
   : withServiceMismatch(acquireLocalDaemon, () => readDaemonServiceRuntimeVersion())
@@ -144,10 +147,10 @@ const daemonSeam = developmentLoopModule
 // Attach to the profile's owner, or own a daemon only when the profile is free.
 const desktopDaemon = new DesktopDaemon(daemonSeam, () => ({
   // The window resolves its renderer target before the first acquisition, so a
-  // development daemon is told the origin its renderer is actually served from.
-  environment: mainRendererTarget
-    ? developmentDaemonEnvironment(process.env, mainRendererTarget)
-    : process.env,
+  // development daemon is told the origin its renderer is actually served from,
+  // as an override on top of process.env so the inherited bearer stays bound.
+  environment: process.env,
+  ...(mainRendererTarget ? { environmentOverrides: developmentDaemonOverrides(process.env, mainRendererTarget) } : {}),
   homeDirectory: homedir(),
   machineLabel: hostname(),
   errorSink: daemonErrorLogSink(domovoiMainLogPath(), appendDomovoiMainLog),
@@ -157,38 +160,21 @@ const fleetOrigins = new FleetOriginAdmission(async (machineId, timeoutMs) => {
   if (!endpoint || endpoint.kind === "refused") return { outcome: "refused", reason: "machine-unavailable" }
   return verifyLocalFleetClientRoute({ endpoint, machineId, timeoutMs })
 })
-// J24: the login service. The shipped runtime is copied under the profile
-// first, so the service never points into the app bundle.
-const desktopDaemonService = new DesktopDaemonService({
-  stageRuntime: (operation) => stageDaemonRuntime({
-    operation,
-    resourcesPath: process.resourcesPath,
-    home: homedir(),
-    version: app.getVersion(),
-    platform: process.platform,
-    exists: async (path) => { try { await access(path); return true } catch { return false } },
-    copy: (from, to) => cp(from, to, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true }),
-    remove: (path) => rm(path, { recursive: true, force: true }),
-    rename: (from, to) => publishFileDurably(from, to),
-  }),
-  install: (options) => installDaemonService(options),
-  status: () => readDaemonServiceStatus(),
-  remove: () => removeDaemonService(),
-  update: (options) => updateDaemonService(options),
-  // The same check the renderer draws, applied to the daemon's own workspace.
-  refusal: async () => {
-    const endpoint = desktopDaemon.current()
-    if (!endpoint || endpoint.kind === "refused") throw new Error("This app is not connected to a daemon")
-    return readLocalServiceHandoffRefusal({ endpoint, timeoutMs: 5_000 })
-  },
-  daemon: {
-    beginHandoff: () => desktopDaemon.beginHandoff(),
-    endHandoff: () => desktopDaemon.endHandoff(),
-    stopOwned: () => desktopDaemon.stopOwned(),
-    attachOnly: () => desktopDaemon.attachOnly(),
-    restart: () => desktopDaemon.restart(),
-  },
-})
+// J24: the login service. Its code (the service calls, the runtime copy and
+// the handoff) loads only when Settings first asks, so it stays out of the
+// startup bundle. One instance serves every call; a load that fails is tried
+// again on the next call.
+let desktopDaemonService: Promise<DesktopDaemonService> | undefined
+const daemonService = (): Promise<DesktopDaemonService> => {
+  desktopDaemonService ??= import("./daemon-service-assembly.js").then(
+    (assembly) => assembly.createDesktopDaemonService(desktopDaemon, { resourcesPath: process.resourcesPath, version: app.getVersion() }, daemonModule.module),
+    (error: unknown) => {
+      desktopDaemonService = undefined
+      throw error
+    },
+  )
+  return desktopDaemonService
+}
 const daemonLifecycle = new DesktopDaemonLifecycle(() => desktopDaemon.release(), (error) => {
   console.error("Local daemon failed to release during desktop shutdown", error)
 })
@@ -382,11 +368,13 @@ registerDesktopIpc(ipcMain, {
   clipboard: safeClipboard,
   externalTargets,
   daemonService: {
-    status: () => desktopDaemonService.status(),
-    install: () => desktopDaemonService.install(),
-    remove: () => desktopDaemonService.remove(),
-    update: () => desktopDaemonService.update(),
+    status: async () => (await daemonService()).status(),
+    install: async () => (await daemonService()).install(),
+    remove: async () => (await daemonService()).remove(),
+    update: async () => (await daemonService()).update(),
   },
+  // The one address the renderer may ask the browser to open, fixed here.
+  releasePage: { open: () => shell.openExternal("https://github.com/getdomovoi/domovoi/releases").then(() => true, () => false) },
   notifications: desktopNotifications,
   deepLinks,
   rendererDeepLinkSink: {

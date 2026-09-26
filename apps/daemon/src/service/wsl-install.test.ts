@@ -39,6 +39,15 @@ describe("WSL service installation", () => {
     expect(stored.wsl).toMatchObject({ distribution: "Ubuntu", linuxUser: "test" })
   })
 
+  // Ruled 2026-09-24 (A): the install records the guest runtime and daemon
+  // entry it installed; an update's rollback starts only those.
+  it("records the installed guest runtime and daemon entry in service.json", async () => {
+    const deps = dependencies()
+    expect(await runServiceCommand(["service", "install"], deps)).toBe(0)
+    const stored = parseServiceConfiguration(deps.write.mock.calls[0]![1]!)
+    expect(stored.serviceRuntime).toEqual({ executable: "/usr/bin/node", entry: "/opt/domovoi/index.js" })
+  })
+
   it("refuses missing Windows interop without writing or falling back", async () => {
     const deps = dependencies()
     delete (deps.environment as Record<string, string | undefined>).WSL_INTEROP
@@ -103,6 +112,37 @@ describe("WSL service installation", () => {
   it("keeps an existing registration unchanged on reinstall", async () => {
     const deps: ServiceCommandDependencies = { ...dependencies(), readConfiguration: () => configuration }
     expect(await runServiceCommand(["service", "install"], deps)).toBe(1)
+    expect(deps.write).not.toHaveBeenCalled()
+    expect(deps.run).not.toHaveBeenCalled()
+  })
+
+  // Task Scheduler expands %NAME% and substitutes $( in the wsl.exe path and
+  // arguments of the task when it runs, so install refuses either in any value
+  // the task carries before it writes a file or runs a task command.
+  const taskValues: Array<[string, (deps: ReturnType<typeof dependencies>, marker: string) => string]> = [
+    ["the distribution name", (deps, marker) => (deps.environment.WSL_DISTRO_NAME = `Ub${marker}untu`)],
+    ["the Linux user", (deps, marker) => (deps.user = `te${marker}st`)],
+    ["the guest runtime", (deps, marker) => (deps.runtime = `/opt/${marker}/node`)],
+    ["the guest entry", (deps, marker) => (deps.execPath = `/opt/${marker}/index.js`)],
+    ["the wsl.exe path", (deps, marker) => {
+      deps.capture.mockImplementation(async (_command, args) => ({ code: 0, stdout: args[0] === "-u" ? wsl.powershell : `C:\\Win${marker}dows` }))
+      return `C:\\Win${marker}dows\\System32\\wsl.exe`
+    }],
+    ["the configuration path", (deps, marker) => {
+      deps.home = deps.workingDirectory = `/home/te${marker}st`
+      return `/home/te${marker}st/.domovoi/service.json`
+    }],
+  ]
+  it.each([
+    ...taskValues.map(([name, set]) => [name, "%TEMP%", set, "contains a percent sign, which Task Scheduler reads as an environment variable when the task runs. No service files were changed."] as const),
+    ...taskValues.map(([name, set]) => [name, "$(Arg0)", set, "contains $(, which Task Scheduler reads as a task argument when the task runs. No service files were changed."] as const),
+  ])("refuses %s with %s before writing or registering", async (_name, marker, set, reason) => {
+    const deps = dependencies()
+    const value = set(deps, marker)
+    expect(await runServiceCommand(["service", "install"], deps)).toBe(1)
+    expect(deps.stderr).toHaveBeenCalledExactlyOnceWith(`${value} ${reason}\n`)
+    expect(deps.claimProfile).not.toHaveBeenCalled()
+    expect(deps.remove).not.toHaveBeenCalled()
     expect(deps.write).not.toHaveBeenCalled()
     expect(deps.run).not.toHaveBeenCalled()
   })
@@ -195,8 +235,10 @@ describe("WSL service installation", () => {
 
     // Review of ae039f1e (S1): a finished update whose record could not be
     // removed is not an interrupted one. Status clears it and reports as usual.
+    // Security review round 1 (F6): a finished update marks its leftover
+    // record as completed once the new service has reported ready.
     it("clears a finished update's leftover record from status", async () => {
-      const intent = JSON.stringify({ version: 1, previous: serializeServiceConfiguration({ ...configuration, wsl: { ...wsl, executable: "/usr/bin/node-old" } }), next: serializeServiceConfiguration(configuration) })
+      const intent = JSON.stringify({ version: 1, previous: serializeServiceConfiguration({ ...configuration, wsl: { ...wsl, executable: "/usr/bin/node-old" } }), next: serializeServiceConfiguration(configuration), completed: "next" })
       const deps: ServiceCommandDependencies = { ...dependencies(), environment: {}, readConfiguration: () => parseServiceConfiguration(serializeServiceConfiguration(configuration)),
         read: vi.fn(async () => intent),
         exists: vi.fn(async (path: string) => path === intentPath),
@@ -205,6 +247,19 @@ describe("WSL service installation", () => {
       expect(await runServiceCommand(["service", "status"], deps)).toBe(0)
       expect(deps.stdout).toHaveBeenCalledWith("installed; guest daemon running\n")
       expect(deps.remove).toHaveBeenCalledWith(intentPath, expect.anything())
+    })
+
+    // Security review round 1 (F6): service.json already naming the record's
+    // next configuration does not finish an update; the new task may never
+    // have reported ready.
+    it("reports an unmarked record as interrupted even when service.json names its next configuration", async () => {
+      const intent = JSON.stringify({ version: 1, previous: serializeServiceConfiguration({ ...configuration, wsl: { ...wsl, executable: "/usr/bin/node-old" } }), next: serializeServiceConfiguration(configuration) })
+      const deps: ServiceCommandDependencies = { ...dependencies(), environment: {}, readConfiguration: () => parseServiceConfiguration(serializeServiceConfiguration(configuration)),
+        read: vi.fn(async () => intent),
+        exists: vi.fn(async (path: string) => path === intentPath) }
+      expect(await runServiceCommand(["service", "status"], deps)).toBe(1)
+      expect(deps.stdout).toHaveBeenCalledExactlyOnceWith("not installed; a service update was interrupted before the new Windows task was registered. Run Update the service from the app, or domovoid service remove, to settle it.\n")
+      expect(deps.remove).not.toHaveBeenCalled()
     })
 
     it("refuses install, changing nothing", async () => {

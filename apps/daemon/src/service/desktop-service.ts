@@ -12,10 +12,10 @@ import type { ServiceConfiguration } from "./configuration.js"
 import {
   installService,
   nodeServiceEffects,
+  prepareServiceUpdate,
   removeService,
   servicePlan,
   serviceStatus,
-  updateService,
   type ServiceEffects,
   type ServiceStatus,
 } from "./install.js"
@@ -23,6 +23,16 @@ import { DaemonServiceUpdateError, runServiceUpdate, trackInFlight } from "./upd
 import { prepareWslUpdate } from "./wsl-install.js"
 
 export { DaemonServiceUpdateError, type DaemonServiceUpdateOutcome } from "./update-outcome.js"
+
+export {
+  DaemonServiceHandoffError,
+  LaunchdJobNotDomovoiError,
+  SystemdPathCharacterError,
+  WindowsTaskArgumentVariableError,
+  WindowsTaskNotDomovoiError,
+  WindowsTaskPathError,
+  WindowsTaskPercentSignError,
+} from "./install.js"
 
 // The desktop's way to keep the daemon running after the app quits: a per-user
 // service (a launchd agent, a systemd user unit or a Windows logon task) that
@@ -44,7 +54,9 @@ export type DaemonServiceOptions = {
   // the user's home. DOMOVOI_AUTH_TOKEN is refused, as the CLI refuses it.
   environment?: DaemonEnvironment
   // The handoff, ruled 2026-09-23: called once the runtime, the platform and
-  // the configuration have been checked, and before the profile is claimed.
+  // the configuration have been checked, the service-operation lease is held
+  // and the saved registration has been read, and before the profile is
+  // claimed.
   // The desktop stops its in-app daemon here, so a refused install never
   // stops it. A rejection stops the install with nothing claimed or written.
   // The desktop refuses the handoff before calling this while a turn runs or
@@ -141,10 +153,14 @@ export async function installDaemonService(
     configuration,
   }
   // The plan is pure: building it refuses an unsupported platform, a missing
-  // user or uid, and an overlong Windows command, all before the handoff.
+  // user or uid, an overlong Windows command and a Windows path Task
+  // Scheduler would expand, all before the service-operation lease is taken.
   servicePlan(serviceTarget)
-  await options.releaseInAppDaemon?.()
-  const plan = await installService(serviceTarget, dependencies)
+  // Security review round 1: the installer calls the handoff inside that
+  // lease, so a busy lease refuses with the in-app daemon still running.
+  const plan = await installService(serviceTarget, dependencies, {
+    ...(options.releaseInAppDaemon === undefined ? {} : { handoff: options.releaseInAppDaemon }),
+  })
   return plan.kind === "file"
     ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
     : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
@@ -157,40 +173,54 @@ export type DaemonServiceUpdateOptions = {
 // Ruled 2026-09-23: "Update the service" moves the installed service to the
 // runtime the app now ships, in place, on each platform. The runtime is
 // checked first and nothing is changed before that passes. The saved service
-// configuration (profile, host, port, TLS) is kept; for a WSL guest service
-// it records the guest runtime, so that one field changes. If the swap fails,
-// the previous service is put back and started, and the error says so.
+// configuration (profile, host, port, TLS) is kept; the runtime it records
+// (serviceRuntime, and a WSL guest's saved runtime) changes to the new one.
+// If the swap fails, the previous service is put back and started, and the
+// error says so. Ruled 2026-09-24 (A): only exactly the runtime service.json
+// records is put back; an install without that record is refused.
 export async function updateDaemonService(
   options: DaemonServiceUpdateOptions,
   dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),
 ): Promise<DaemonServiceInstallResult> {
   await checkRuntime(options.runtime, dependencies, "update")
-  let saved: ServiceConfiguration | undefined
-  try {
-    saved = dependencies.readConfiguration?.(dependencies.home, dependencies.platform)
-  } catch (cause) {
-    throw new DaemonServiceUpdateError("nothing-changed", cause)
-  }
-  if (!saved) throw new DaemonServiceUpdateError("not-installed")
   const waits = {
     profileWaitMs: dependencies.profileReleaseWaitMs ?? 10_000,
     readinessWaitMs: dependencies.readinessWaitMs ?? 20_000,
     budgetMs: dependencies.updateBudgetMs ?? 60_000,
   }
-  if (dependencies.platform === "linux" && saved.wsl) {
-    const tracked = trackInFlight(dependencies)
-    const updated = await runServiceUpdate(dependencies.claimServiceOperation, waits.budgetMs, prepareWslUpdate(saved, options.runtime, tracked.effects, waits), tracked.inFlight)
-    return { kind: "task", ...updated }
-  }
-  const plan = await updateService({
-    ...target(dependencies),
-    execPath: options.runtime.daemonEntryPath,
-    runtime: options.runtime.nodePath,
-    configuration: saved,
-  }, dependencies, waits)
-  return plan.kind === "file"
-    ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
-    : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
+  const tracked = trackInFlight(dependencies)
+  return runServiceUpdate<DaemonServiceInstallResult>(dependencies.claimServiceOperation, waits.budgetMs, async (readDeadline) => {
+    // Read under the service-operation lease: a removal that held it has
+    // finished by now, and none can start before the update ends. A
+    // configuration read before the claim could name a service that was
+    // removed meanwhile, which a restore would then recreate and start.
+    let saved: ServiceConfiguration | undefined
+    try {
+      saved = dependencies.readConfiguration?.(dependencies.home, dependencies.platform)
+    } catch (cause) {
+      throw new DaemonServiceUpdateError("nothing-changed", cause)
+    }
+    if (!saved) throw new DaemonServiceUpdateError("not-installed")
+    if (dependencies.platform === "linux" && saved.wsl) {
+      const steps = await prepareWslUpdate(saved, options.runtime, tracked.effects, waits, tracked.inFlight)(readDeadline)
+      return { ...steps, swap: async (deadline) => ({ kind: "task" as const, ...await steps.swap(deadline) }) }
+    }
+    const steps = await prepareServiceUpdate({
+      ...target(dependencies),
+      execPath: options.runtime.daemonEntryPath,
+      runtime: options.runtime.nodePath,
+      configuration: saved,
+    }, tracked.effects, waits, tracked.inFlight)(readDeadline)
+    return {
+      ...steps,
+      swap: async (deadline): Promise<DaemonServiceInstallResult> => {
+        const plan = await steps.swap(deadline)
+        return plan.kind === "file"
+          ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
+          : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
+      },
+    }
+  }, tracked.inFlight)
 }
 
 export function readDaemonServiceStatus(

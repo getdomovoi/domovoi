@@ -50,6 +50,7 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_TAILNET_HOST` | Explicit tailnet host or address for a non-loopback TLS listener |
 | `DOMOVOI_SSH_TUNNELS` | Source-local JSON list of `{machineId, endpoint}` SSH forwards |
 | `DOMOVOI_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to connect |
+| `DOMOVOI_WEB_APP_URL` | Web app a pairing code can be opened in. An absolute `http` or `https` URL without whitespace, control characters, credentials or a fragment, at most 2048 characters. When set, `device.issueCode` returns it as `webAppUrl` beside `pairingAddress`, so a pairing card can offer a browser link; when unset, the result has no `webAppUrl`. The service configuration file keeps it as `webAppUrl`. |
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
 | `DOMOVOI_TOOL_PATH` | Directories searched first for agent CLIs, in the platform's PATH form; then the login shell's PATH, then the launcher's (`src/tool-path.ts`) |
 | `DOMOVOI_RELAY_IDENTITY_PUBLIC_KEY` | Off-machine signer's Ed25519 public key for relay provisioning; see [relay key provisioning](../../docs/relay-key-provisioning.md) |
@@ -61,7 +62,12 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 daemon settings.
 
 Every daemon requires authentication. When `DOMOVOI_AUTH_TOKEN` is unset, `domovoid` creates and
-reuses a high-entropy credential at `<profile>/daemon.token`. On POSIX, private state files are
+reuses a high-entropy credential at `<profile>/daemon.token`. When it is set, the daemon reads it
+and then removes it and `DOMOVOI_CREDENTIAL_PATH` from its process environment, so providers, agent
+servers and terminals the daemon starts do not inherit the bearer; the values stay in memory for a
+later start in the same process. A connection that authenticates with the bearer cannot use a
+paired device's id as its client id, in `system.hello` or as a terminal owner, and audit entries
+record whether a client connected with the daemon bearer or a device credential. On POSIX, private state files are
 `0600` inside a `0700` state directory and permissive files are repaired on startup. On Windows,
 the default profile is `.domovoi` in the user directory and no additional ACL restriction is
 applied yet. Remote
@@ -514,6 +520,36 @@ user thread item's `providerPromptDelivery`: `budget.limit` and `budget.used`,
 `skills.omitted.budget`, `annotations.omitted.budget`, and `handoff.omitted`. The prompt itself
 opens with a `domovoi_context_delivery` marker whenever context was omitted.
 
+## Repository configuration
+
+A session worktree is a checkout of the opened repository, so anything the repository tracks is in
+it. Until a one-time trust step for a repository exists, the daemon does not let a provider load
+code or settings the repository brings:
+
+- Claude Code sessions start with `settingSources: ["user"]`. The worktree's
+  `.claude/settings.json`, `.claude/settings.local.json` and `.mcp.json` are not read, so their
+  hooks, `env` block, helper commands, permission rules and MCP servers do not apply. Project
+  skills, subagents and commands under `.claude/` are not loaded either. Your own
+  `~/.claude/settings.json` still applies.
+- OpenCode and Kilo servers start with `OPENCODE_DISABLE_PROJECT_CONFIG=1` and
+  `KILO_DISABLE_PROJECT_CONFIG=1`. Project `opencode.json`, `kilo.json`, `.opencode/`, `.kilo/`
+  and `.kilocode/` configuration, plugins and MCP entries are not loaded, and no package install
+  runs in those directories. Your global provider configuration still applies.
+- Kilo still reads its legacy files from the session directory with that switch set: a
+  `.kilo/mcp.json` or `.kilocode/mcp.json` starts its MCP servers, and a `.kilocodemodes` adds
+  agents with their own permissions. The daemon refuses to open or continue a Kilo session in a
+  worktree that contains any of those three files, and says which one. Kilo also reads
+  `.kilocode/rules/`, `.kilocode/workflows/` and `.kilocodeignore` from the worktree; those give
+  instructions, slash commands and deny rules, and they still load.
+
+Instruction files still reach the agent, because the daemon reads them itself as text. For Claude
+Code it reads `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` at the worktree root and
+follows `@path` imports up to five levels deep, and it appends them to the preset system prompt
+when the session opens. For OpenCode and Kilo it sends the first of `AGENTS.md`, `CLAUDE.md` and
+`CONTEXT.md` at the worktree root as system text with each prompt. Only regular files of at most
+128 KiB that resolve inside the worktree are read; an import or link that leaves it is skipped.
+`.claude/rules/` and instruction entries in project provider configuration are not read.
+
 ## Supervise
 
 Install the daemon as a service for the user who asks for it:
@@ -707,6 +743,28 @@ Domovoi process using that worktree root and its supervisor, confirm no restore 
 remove only the named claim file. Keep the session worktree, repository and Git refs intact. The
 token check catches an already-replaced claim; it is not an atomic compare-and-unlink and does not
 make live manual claim deletion safe.
+
+## Live provider contract
+
+The adapter unit tests drive fakes that submit every tool call for approval, so they cannot see a
+call a real provider approves on its own. `src/live-provider-contract.test.ts` runs the providers
+installed on the machine (`claude`, `codex`, `opencode`, `kilo`; a missing one is reported as skipped) through
+the real adapters in Ask, Build and Build auto. Each provider talks to a local stand-in for its
+model API that asks for one shell command: reading a committed `.env` that holds a planted token,
+writing a file outside the worktree, or `rm -rf build`. The suite denies every approval and checks
+that the effect did not happen (the token never came back to the stand-in, the file does not
+exist, `build/` is intact). Every case also checks that the stand-in sent its tool call, since a
+case where it never did tested nothing. In Build (except Codex) the request must reach the adapter
+as an approval or a policy refusal first; otherwise the turn must have ended or shown a card. No
+model is called and no account is used; it runs under a scratch `HOME`. The outside-the-worktree
+target is a scratch directory under the real `~/.cache` (`~/.cache/domovoi-live-contract-*`),
+because Codex's workspace sandbox keeps the temporary directory writable. The suite removes it
+afterwards; a run that is killed can leave it behind. It is opt-in and not for hosted CI:
+
+```sh
+cd apps/daemon
+DOMOVOI_LIVE_PROVIDERS=1 npx vitest run src/live-provider-contract.test.ts --coverage.enabled=false
+```
 
 ## Loaded fixture checks
 

@@ -18,6 +18,10 @@ export type PublishedEndpoint = {
 const fileName = "endpoint.json"
 const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"])
 
+export function publishesEndpointFor(host: string): boolean {
+  return loopbackHosts.has(host)
+}
+
 export function endpointFilePath(home: ProfileLocation): string {
   return join(profileDirectory(home), fileName)
 }
@@ -27,7 +31,7 @@ export function endpointFilePath(home: ProfileLocation): string {
 // credential, so it is only ever written for a loopback listener, only ever
 // readable by the user who owns it, and nothing in it is repeated in an error.
 export async function publishEndpointFile(input: PublishEndpointInput): Promise<string> {
-  if (!loopbackHosts.has(input.host)) {
+  if (!publishesEndpointFor(input.host)) {
     throw new Error("an endpoint is published only for a loopback listener, so no credential leaves the machine")
   }
   if (input.token === "") {

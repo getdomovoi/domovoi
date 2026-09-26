@@ -251,11 +251,7 @@
       "evidence": [
         "Start a new session from this branch",
         "Archived, so there is no worktree to delete"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for I69; archived rows have no menu that says why fork, unarchive and delete are absent"
-      }
+      ]
     },
     {
       "id": "drawer.archive-confirm",
@@ -273,18 +269,21 @@
         "Archive and remove the worktree",
         "Keep the session"
       ],
-      "presence": [
-        "<AlertDialog open={archiveTarget !== null}"
-      ],
       "evidence": [
         "<AlertDialog open={archiveTarget !== null}",
         "Archive and remove the worktree",
         "Keep the session",
-        "then removes the worktree directory"
+        "then removes the worktree directory",
+        "files that were never merged"
+      ],
+      "presence": [
+        "<AlertDialog open={archiveTarget !== null}",
+        "Archive and remove the worktree",
+        "Keep the session"
       ],
       "partial": {
         "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for I69; a confirmation exists; it does not list what is removed and kept, and its actions are not the design's"
+        "reason": "needs an unmerged-file count before archive"
       }
     },
     {
@@ -479,12 +478,8 @@
       ],
       "evidence": [
         "About this build",
-        "Checks run only while this machine's update policy allows them."
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J10; Settings does not say the build is unsigned or how update checks run"
-      }
+        "This build is not signed and does not update itself."
+      ]
     },
     {
       "id": "settings.pairing",
@@ -498,11 +493,7 @@
       "evidence": [
         "Phone and tablet",
         "Rename, rotate and unpair them on Machines"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "no client surface on the desktop shows a device pairing code (device.issueCode has no caller outside the daemon's own CLI); the earlier presence string Pairing matched code comments, and the pairing dialog that exists pairs this client to another machine"
-      }
+      ]
     },
     {
       "id": "settings.paired-devices",
@@ -523,18 +514,10 @@
         "Each daemon keeps its own list. Pair a new one from Settings."
       ],
       "evidence": [
-        "Paired devices",
+        "Devices paired with",
         "Copy once",
         "Each daemon keeps its own list"
-      ],
-      "presence": [
-        "Paired devices",
-        "Copy once"
-      ],
-      "partial": {
-        "since": "2026-09-23",
-        "reason": "rows, rename, rotate and one-time copy exist on Machines; the per-machine heading and the per-daemon note are not drawn"
-      }
+      ]
     },
     {
       "id": "settings.providers",
@@ -664,14 +647,7 @@
       "copy": [
         "Archived and read-only. The worktree was removed. Branch",
         "and its final checkpoint are kept."
-      ],
-      "presence": [
-        "SessionReadOnlyNotice"
-      ],
-      "partial": {
-        "since": "2026-09-23",
-        "reason": "the archived notice does not yet say the worktree was removed and which branch and checkpoint are kept (I69)"
-      }
+      ]
     },
     {
       "id": "conversation.subagent",
@@ -1501,12 +1477,17 @@
         "Take a checkpoint",
         "Take checkpoint"
       ],
-      "evidence": [
+      "presence": [
+        "Take a checkpoint",
         "Take checkpoint"
       ],
-      "missing": {
+      "evidence": [
+        "Take checkpoint",
+        "taken at the next tool boundary"
+      ],
+      "partial": {
         "since": "2026-09-23",
-        "reason": "checkpoint.create is reachable from the palette only; the tab has no take action"
+        "reason": "mid-turn deferred take (design: taken at the next tool boundary) needs daemon support"
       }
     },
     {
@@ -1545,15 +1526,20 @@
         "EVIDENCE PER FILE",
         "Revert this file",
         "Keep it",
-        "Open in editor"
+        "Open in editor",
+        {
+          "absent": "<AlertDialog",
+          "in": "packages/ui/src/session-evidence.tsx"
+        }
       ],
       "presence": [
         "<SessionEvidencePanel",
+        "EVIDENCE PER FILE",
         "Revert this file"
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "evidence per file and revert exist; the header, the keep/revert ask and the dock-local editor action are not the design's"
+        "since": "2026-09-23",
+        "reason": "copy and actions match; the design asks Revert this file / Keep it inline in the file row, the implementation asks in a dialog, and keeps the worktree diff and observed runs below the list instead of in each row"
       }
     },
     {
@@ -1720,11 +1706,7 @@
       ],
       "evidence": [
         "SESSIONS ON OTHER MACHINES"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J39; the palette searches the connected machine only"
-      }
+      ]
     },
     {
       "id": "composer.action-row",
@@ -1809,11 +1791,6 @@
   ],
   "humanRead": [
     {
-      "id": "thread.session-notice",
-      "since": "2026-09-18",
-      "note": "paused and archived banners with a resume action are not verified against the design"
-    },
-    {
       "id": "composer.send-hint",
       "since": "2026-09-19",
       "note": "The design defines kSend in its data and draws it nowhere. Enter alone now sends, so the hint is rendered rather than left out; read it against the design as an addition, not a match."
@@ -1832,6 +1809,26 @@
       "id": "palette",
       "since": "2026-09-23",
       "note": "The scope line moved into the design's data (paletteScope): titles and summaries, every machine while searching other machines, otherwise sessions, machines, commands, skills."
+    },
+    {
+      "id": "settings.pairing",
+      "since": "2026-09-23",
+      "note": "Shown to desktop clients only: device.issueCode takes the daemon credential, which a web tab (a paired device) does not hold. The card's problem states that point at a tailnet setting draw no action while TailnetReach is blocked; the reach and certificate lines come from the pairingAddress the daemon sends with the code."
+    },
+    {
+      "id": "palette.other-machines",
+      "since": "2026-09-23",
+      "note": "Grouped per machine (the design's layout A). The window's own machine is searched too and counted by its answer; its summary matches join the SESSIONS group, marked in summary. A row picked elsewhere switches this window to that machine and opens the session once its snapshot arrives (needs session.search, #570)."
+    },
+    {
+      "id": "thread.session-notice",
+      "since": "2026-09-23",
+      "note": "Branch name and files-never-merged count come from sessionSummary.branch and unmergedFiles (daemon lane, #568); a part the daemon did not report is left out rather than guessed."
+    },
+    {
+      "id": "settings.about-build",
+      "since": "2026-09-23",
+      "note": "Not signed is fixed copy for M1 (ND6); scripts/unsigned-build.mjs fails the release invariants once a signing build runs on an automatic trigger while the line stays. The update-checks line (Checks run only while this machine's update policy allows them) belongs to the design's later signed state and is not drawn. The About Domovoi menu dialog is not drawn; it is app-menu work."
     }
   ],
   "annotations": [

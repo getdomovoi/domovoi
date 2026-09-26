@@ -1,6 +1,7 @@
 import { WebSocket } from "ws"
+import type { z } from "zod"
 
-import { buildVersion, protocolVersion } from "@getdomovoi/protocol"
+import { buildVersion, maximumRpcMessageBytes, protocolVersion, rpcResponseSchema } from "@getdomovoi/protocol"
 
 import { OperationDeadline, OperationDeadlineExceededError } from "./operation-deadline.js"
 
@@ -106,14 +107,24 @@ function exchange(
     // The daemon broadcasts notifications on the same socket, so only the reply
     // carrying this request's id may settle the wait, and a socket that closes
     // first must reject rather than leave the caller waiting.
+    // Valid JSON is not yet a reply: null, a number, an array or a
+    // notification is ignored. A frame that answers this request but is not a
+    // well-formed response still settles it, without repeating its text.
     const receive = (data: { toString(): string }) => {
-      let message: { id?: unknown; result?: unknown; error?: { message?: string } }
+      let value: unknown
       try {
-        message = JSON.parse(data.toString()) as typeof message
+        value = JSON.parse(data.toString())
       } catch { return }
-      if (message.id !== id) return
-      if (message.error) reject(new Error(message.error.message ?? `The daemon refused ${method}`))
-      else resolve(message.result)
+      const reply = rpcResponseSchema.safeParse(value)
+      if (!reply.success) {
+        if (typeof value === "object" && value !== null && !Array.isArray(value) && "id" in value && value.id === id) {
+          reject(new Error(`The daemon refused ${method}`))
+        }
+        return
+      }
+      if (reply.data.id !== id) return
+      if (reply.data.error) reject(new Error(reply.data.error.message))
+      else resolve(reply.data.result)
     }
     const closed = () => reject(new Error("The daemon closed the connection"))
     const failed = (error: Error) => reject(error)
@@ -170,6 +181,39 @@ export async function callDaemonOnce(input: {
   }
 }
 
+// One bounded exchange whose connection stays open after the reply, for a
+// call whose effect lasts as long as the connection does (the service handoff
+// fence). The caller closes it; a refusal or an expired deadline closes it
+// here. The reply limit is the daemon's own message limit, because the daemon
+// broadcasts on this socket while it is held and a larger frame would close it.
+export async function callDaemonHeld(input: {
+  target: CliRpcTarget
+  token: string
+  method: string
+  params: Record<string, unknown>
+  deadline: OperationDeadline
+}): Promise<{ result: unknown; close: () => void }> {
+  input.deadline.throwIfExpired()
+  const address = describedAddress(input.target)
+  const socket = new WebSocket(endpointUrl(input.target), {
+    headers: { authorization: `Bearer ${input.token}` },
+    maxPayload: maximumRpcMessageBytes,
+    followRedirects: false,
+  })
+  socket.on("error", () => {})
+  try {
+    await awaitOpen(socket, input.deadline, address)
+    await exchange(socket, input.deadline, address, helloRequestId, "system.hello", {
+      client: "cli", clientVersion: buildVersion, protocolVersion,
+    })
+    const result = await exchange(socket, input.deadline, address, callRequestId, input.method, input.params)
+    return { result, close: () => socket.terminate() }
+  } catch (error) {
+    socket.terminate()
+    throw error
+  }
+}
+
 // The whole command, not just its connect, is bounded by one clock started
 // before the socket is allocated.
 export async function callDaemon(input: {
@@ -185,4 +229,13 @@ export async function callDaemon(input: {
   } finally {
     deadline.clear()
   }
+}
+
+// A reply can be a well-formed response whose result is not the method's
+// shape. It is refused the way a malformed reply is, in the same words, rather
+// than surfacing the schema's own error.
+export function readDaemonResult<T>(method: string, schema: z.ZodType<T>, value: unknown): T {
+  const result = schema.safeParse(value)
+  if (!result.success) throw new Error(`The daemon refused ${method}`)
+  return result.data
 }

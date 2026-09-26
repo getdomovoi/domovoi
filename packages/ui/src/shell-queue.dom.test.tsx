@@ -142,18 +142,16 @@ it('a single remote emergency notification cannot release before its hold applie
   expect(screen.getByText(/Held because work was stopped/)).toBeTruthy()
 })
 
-// Skipped because no client can pass it. The daemon sends the idle snapshot
-// first and system.emergencyStopped afterwards, and an idle session reached by
-// a stop is indistinguishable from one that simply finished. By the time the
-// stop arrives the queue has legitimately left. The fix is daemon-side
-// ordering: the stop notification must precede, or ride with, the snapshot
-// that reflects it. Un-skip this when that lands; do not weaken it.
-it.skip('snapshot then remote stop notification cannot restart work', async () => {
+// The daemon sends system.emergencyStopped before the idle snapshot that
+// reflects the stop (pinned by apps/daemon/src/server-emergency-order.test.ts).
+// An idle session reached by a stop is otherwise indistinguishable from one
+// that simply finished, so this replays that order and the queue must hold.
+it('remote stop notification then its idle snapshot cannot restart work', async () => {
   const value = running()
   const socket = await open(value)
   queue('do not restart after a remote stop')
-  await snapshot(socket, idle(value))
   await act(async () => notify(socket, 'system.emergencyStopped', stopResult(idle(value))))
+  await snapshot(socket, idle(value))
   await settle()
   expect(sentRequests(socket, 'session.send')).toHaveLength(0)
 })

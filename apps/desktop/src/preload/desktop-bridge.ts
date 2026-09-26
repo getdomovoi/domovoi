@@ -86,6 +86,18 @@ function serviceText(value: unknown): value is string {
 // fields it draws, and refuses a shape it does not know.
 const profileRecoveries = ["recorded", "not-needed", "operator-confirmation-required", "proof-unavailable"] as const
 
+// The service as the main process read it back after a failure: null when it
+// could not be read, undefined when the answer is malformed.
+function serviceReadBack(value: unknown): { installed: boolean | null; running: boolean } | null | undefined {
+  if (value === null) return null
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const read = value as Record<string, unknown>
+  if ((read.installed === true || read.installed === false || read.installed === null) && typeof read.running === "boolean") {
+    return { installed: read.installed, running: read.running }
+  }
+  return undefined
+}
+
 function serviceOutcome(value: unknown): DaemonServiceOutcome {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Desktop returned an invalid service outcome")
   const result = value as Record<string, unknown>
@@ -93,8 +105,10 @@ function serviceOutcome(value: unknown): DaemonServiceOutcome {
   if (result.ok === true && kind && serviceText(result.target) && typeof result.daemonRunning === "boolean") {
     const recovery = profileRecoveries.find((candidate) => candidate === result.profileRecovery)
     if (result.profileRecovery !== undefined && !recovery) throw new Error("Desktop returned an invalid service outcome")
+    if (result.daemonAttached !== undefined && typeof result.daemonAttached !== "boolean") throw new Error("Desktop returned an invalid service outcome")
     return {
       ok: true, kind, target: result.target, daemonRunning: result.daemonRunning,
+      ...(typeof result.daemonAttached === "boolean" ? { daemonAttached: result.daemonAttached } : {}),
       ...(recovery ? { profileRecovery: recovery } : {}),
       ...(recovery && serviceText(result.profileRecoveryDetail) ? { profileRecoveryDetail: result.profileRecoveryDetail } : {}),
     }
@@ -111,9 +125,10 @@ function serviceOutcome(value: unknown): DaemonServiceOutcome {
   if (result.ok === false && result.reason === "update-failed" && serviceText(result.message)) {
     return { ok: false, reason: "update-failed", message: result.message }
   }
-  if (result.ok === false && result.reason === "failed" && serviceText(result.message)
-    && (result.daemon === "untouched" || result.daemon === "restarted" || result.daemon === "stopped")) {
-    return { ok: false, reason: "failed", message: result.message, daemon: result.daemon }
+  const readBack = serviceReadBack(result.service)
+  if (result.ok === false && result.reason === "failed" && serviceText(result.message) && readBack !== undefined
+    && (result.daemon === "untouched" || result.daemon === "restarted" || result.daemon === "attached" || result.daemon === "stopped")) {
+    return { ok: false, reason: "failed", message: result.message, daemon: result.daemon, service: readBack }
   }
   throw new Error("Desktop returned an invalid service outcome")
 }
@@ -244,6 +259,7 @@ export function createDesktopWindowBridge(
       remove: async () => serviceOutcome(await ipc.invoke("domovoi:daemon-service-remove")),
       update: async () => serviceOutcome(await ipc.invoke("domovoi:daemon-service-update")),
     },
+    openReleasePage: async () => booleanResult(await ipc.invoke("domovoi:open-release-page"), "release page"),
     onDeepLink: (listener) => {
       const handler = (_event: unknown, sessionId: unknown) => {
         if (typeof sessionId === "string" && sessionIdPattern.test(sessionId)) listener(sessionId)

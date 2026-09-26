@@ -1,5 +1,5 @@
 import type { ApprovalRule } from "@getdomovoi/protocol"
-import { cleanup, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
@@ -115,7 +115,7 @@ it("says what a rule match does not cover", async () => {
   expect(screen.getByText(/dependency binaries may still change/u)).toBeTruthy()
 })
 
-it("says a file-tool rule covers the worktree, not one path", async () => {
+it("says a worktree-wide file-tool rule no longer matches", async () => {
   const fileRule: ApprovalRule = {
     ...activeRule,
     id: "rule-3",
@@ -135,8 +135,32 @@ it("says a file-tool rule covers the worktree, not one path", async () => {
   }
   render(<SettingsShell {...shellProps()} approvalRules={[fileRule]} />)
 
-  expect(screen.getByText(/matches that tool anywhere inside the worktree/u)).toBeTruthy()
+  expect(screen.getByText(/made for the whole worktree no longer matches anything/u)).toBeTruthy()
   expect(screen.queryByText(/Matches command and package-script text only/u)).toBeNull()
+})
+
+it("says a file-tool rule covers one file", async () => {
+  const fileRule: ApprovalRule = {
+    ...activeRule,
+    id: "rule-4",
+    command: "Edit",
+    execution: {
+      state: "resolved",
+      digest: `sha256:${"c".repeat(64)}`,
+      record: {
+        version: 1,
+        cwd: ".",
+        kind: "workspace-file-tool",
+        coverage: "tool-and-file",
+        tool: "Edit",
+        scope: "file",
+        path: "src/index.ts",
+      },
+    },
+  }
+  render(<SettingsShell {...shellProps()} approvalRules={[fileRule]} />)
+
+  expect(screen.getByText(/matches that tool on one file/u)).toBeTruthy()
 })
 
 it("announces a retired legacy rule before its approval card returns", async () => {
@@ -200,6 +224,145 @@ it("draws no local daemon section for a client that cannot say how the daemon is
   expect(screen.queryByText(/Domovoi service/u)).toBeNull()
 })
 
+// J10 (2026-09-23): the build says what it is. Unsigned, no self-update,
+// versions come from the release page; the daemon's version and commit in mono.
+it("says the build is not signed and where new versions come from", async () => {
+  const onOpenReleasePage = vi.fn(async () => true)
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", currentSourceCommit: "3f8b01d".padEnd(40, "0"), state: "idle" as const })), onOpenReleasePage }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  expect(await within(section).findByText("domovoid 0.9.4 · 3f8b01d")).toBeTruthy()
+  expect(within(section).getByText("Not signed")).toBeTruthy()
+  expect(within(section).getByText("This build is not signed and does not update itself. Get new versions from the release page.")).toBeTruthy()
+  const link = within(section).getByRole("link", { name: "Release page" })
+  // The desktop hands the fixed address to the bridge; the window itself
+  // does not follow the link.
+  expect(fireEvent.click(link)).toBe(false)
+  expect(onOpenReleasePage).toHaveBeenCalledOnce()
+})
+
+it("links the release page directly where there is no desktop to open it", () => {
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => { throw new Error("not on this daemon") }) }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  expect(within(section).getByText("domovoid 0.9.4")).toBeTruthy()
+  expect(within(section).getByRole("link", { name: "Release page" }).getAttribute("href")).toBe("https://github.com/getdomovoi/domovoi/releases")
+})
+
+// A daemon that reports a pending target is updating itself; the body stops
+// saying it does not, and one line names the target (ruled 2026-09-23).
+const pendingTarget = { pendingVersion: "0.9.5", pendingSourceCommit: "abcdef1".padEnd(40, "0") }
+const refusal = { reason: "busy" as const, message: "A turn is running." }
+it.each([
+  ["pending", { state: "pending" as const, ...pendingTarget }, "The daemon reports domovoid 0.9.5 · abcdef1 waiting to switch in."],
+  ["activating", { state: "activating" as const, ...pendingTarget }, "The daemon reports it is switching to domovoid 0.9.5 · abcdef1 now."],
+  ["deferred", { state: "deferred" as const, ...pendingTarget, refusal }, "The daemon reports domovoid 0.9.5 · abcdef1 waiting. The switch was put off: A turn is running."],
+])("names the %s update the daemon reports", async (_state, status, line) => {
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", currentSourceCommit: "3f8b01d".padEnd(40, "0"), ...status })) }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  expect(await within(section).findByText(line)).toBeTruthy()
+  expect(within(section).getByText("This build is not signed. Get new versions from the release page.")).toBeTruthy()
+  expect(section.textContent).not.toContain("does not update itself")
+  expect(within(section).getByText("Not signed")).toBeTruthy()
+})
+
+it("adds nothing for a quarantined target", async () => {
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", currentSourceCommit: "3f8b01d".padEnd(40, "0"), state: "quarantined" as const, ...pendingTarget, refusal })) }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  expect(await within(section).findByText("domovoid 0.9.4 · 3f8b01d")).toBeTruthy()
+  expect(within(section).getByText("This build is not signed and does not update itself. Get new versions from the release page.")).toBeTruthy()
+  expect(section.textContent).not.toContain("The daemon reports")
+})
+
+// Owner ruling 2026-09-25: when the desktop could not open the browser, say
+// so and give the address as selectable mono text to copy by hand. The status
+// region is mounted before any click so a screen reader announces the change.
+const failureLine = "Could not open the browser. The release page is https://github.com/getdomovoi/domovoi/releases"
+
+function renderDesktopAbout(onOpenReleasePage: () => Promise<boolean>) {
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", state: "idle" as const })), onOpenReleasePage }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  return {
+    section,
+    status: () => within(section).getByRole("status"),
+    // act flushes the settled open before the section is read.
+    click: () => act(async () => { fireEvent.click(within(section).getByRole("link", { name: "Release page" })) }),
+  }
+}
+
+function deferred() {
+  let resolve!: (opened: boolean) => void
+  const promise = new Promise<boolean>((settle) => { resolve = settle })
+  return { promise, resolve }
+}
+
+it.each([
+  ["resolves false", () => Promise.resolve(false)],
+  ["rejects", () => Promise.reject(new Error("bridge refused"))],
+])("gives the release page address when the desktop open %s", async (_case, open) => {
+  const { status, click } = renderDesktopAbout(vi.fn(open))
+  expect(status().textContent).toBe("")
+  await click()
+  expect(status().textContent).toBe(failureLine)
+  const address = within(status()).getByText("https://github.com/getdomovoi/domovoi/releases")
+  expect(address.tagName).not.toBe("A")
+  expect(address.className).toContain("font-machine")
+  expect(address.className).toContain("select-text")
+})
+
+it("adds no line when the desktop opens the release page", async () => {
+  const onOpenReleasePage = vi.fn(async () => true)
+  const { section, status, click } = renderDesktopAbout(onOpenReleasePage)
+  await click()
+  expect(onOpenReleasePage).toHaveBeenCalledOnce()
+  expect(status().textContent).toBe("")
+  expect(section.textContent).not.toContain("Could not open the browser.")
+})
+
+it("clears the line when a later click opens the browser", async () => {
+  const onOpenReleasePage = vi.fn<() => Promise<boolean>>().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+  const { status, click } = renderDesktopAbout(onOpenReleasePage)
+  await click()
+  expect(status().textContent).toBe(failureLine)
+  await click()
+  expect(status().textContent).toBe("")
+})
+
+// Only the latest click speaks: an earlier open that settles late cannot
+// claim a failure after a later click opened the browser.
+it("ignores an earlier open that fails after a later one succeeds", async () => {
+  const first = deferred()
+  const second = deferred()
+  const onOpenReleasePage = vi.fn<() => Promise<boolean>>().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+  const { status, click } = renderDesktopAbout(onOpenReleasePage)
+  await click()
+  await click()
+  await act(async () => { second.resolve(true) })
+  await act(async () => { first.resolve(false) })
+  expect(status().textContent).toBe("")
+})
+
+it("lets a browser tab follow the release page link with no line", () => {
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", state: "idle" as const })) }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  const link = within(section).getByRole("link", { name: "Release page" })
+  expect(link.getAttribute("href")).toBe("https://github.com/getdomovoi/domovoi/releases")
+  expect(link.getAttribute("target")).toBe("_blank")
+  expect(fireEvent.click(link)).toBe(true)
+  expect(section.textContent).not.toContain("Could not open the browser.")
+})
+
+// A watching window changes nothing on the daemon, but reading where new
+// versions come from is not a change, so the release page still opens. The
+// read-only fieldset disables form controls only, so the release page is a
+// link. user-event treats anything inside a disabled fieldset as disabled,
+// which a browser does not do for links, so this clicks with fireEvent.
+it("opens the release page from a watching window", () => {
+  const onOpenReleasePage = vi.fn(async () => true)
+  render(<SettingsShell {...shellProps()} readOnly about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", state: "idle" as const })), onOpenReleasePage }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  fireEvent.click(within(section).getByRole("link", { name: "Release page" }))
+  expect(onOpenReleasePage).toHaveBeenCalledOnce()
+})
+
 // J24 (2026-09-23): Settings opens with the daemon on this machine and says
 // what quitting does. Install and Remove are drawn locked until the app can
 // do them; the by-hand command is beside the lock so nobody is left guessing.
@@ -222,7 +385,7 @@ it("draws the daemon section for a daemon inside this app, with Install locked a
 })
 
 it("draws the installed service as running, with what it wrote", () => {
-  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", serviceInstalled: true, platform: "linux" }} />)
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "linux" }} />)
   const section = screen.getByRole("region", { name: "Daemon on this machine" })
   expect(within(section).getByText("Running")).toBeTruthy()
   expect(section.textContent).toContain("Quitting this app leaves the daemon and its sessions running.")
@@ -268,7 +431,7 @@ it("says what the installer refused, and that nothing changed", async () => {
 it("removes the installed service and says the daemon is back inside this app", async () => {
   const user = userEvent.setup()
   const remove = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", profileRecovery: "not-needed" as const, daemonRunning: true }))
-  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, platform: "darwin", service: { install: vi.fn(), remove } }} />)
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "darwin", service: { install: vi.fn(), remove } }} />)
   const section = screen.getByRole("region", { name: "Daemon on this machine" })
   await user.click(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
   expect(remove).toHaveBeenCalledOnce()
@@ -278,10 +441,10 @@ it("removes the installed service and says the daemon is back inside this app", 
 // Review round 1 of #576: Remove waits for the same work Install waits for,
 // and each outcome the main process can report is drawn as what is still
 // true. The lines were approved by fetzy on 2026-09-23.
-function daemonSection(owner: "app" | "outside", service: { install?: () => Promise<unknown>; remove?: () => Promise<unknown>; refusal?: string }) {
+function daemonSection(owner: "app" | "outside", service: { install?: () => Promise<unknown>; remove?: () => Promise<unknown>; status?: () => Promise<unknown>; refusal?: string }) {
   render(<SettingsShell {...shellProps()} localDaemon={{
-    title: owner === "outside" ? "Connected to the installed Domovoi service" : "Running Domovoi inside this app", detail: "", owner, ...(owner === "outside" ? { serviceInstalled: true } : {}), platform: "darwin",
-    service: { install: (service.install ?? vi.fn()) as never, remove: (service.remove ?? vi.fn()) as never, ...(service.refusal ? { refusal: service.refusal } : {}) },
+    title: owner === "outside" ? "Connected to the installed Domovoi service" : "Running Domovoi inside this app", detail: "", owner, ...(owner === "outside" ? { serviceInstalled: true, serviceRunning: true } : {}), platform: "darwin",
+    service: { install: (service.install ?? vi.fn()) as never, remove: (service.remove ?? vi.fn()) as never, ...(service.status ? { status: service.status as never } : {}), ...(service.refusal ? { refusal: service.refusal } : {}) },
   }} />)
   return screen.getByRole("region", { name: "Daemon on this machine" })
 }
@@ -324,8 +487,8 @@ it("says the service is installed when this window could not reach it", async ()
 it("says the daemon is not running when a failed install could not start it again", async () => {
   const user = userEvent.setup()
   const install = vi.fn()
-    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "stopped" })
-    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl is not available", daemon: "untouched" })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "stopped", service: { installed: false, running: false } })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl is not available", daemon: "untouched", service: { installed: false, running: false } })
   const section = daemonSection("app", { install })
   await user.click(within(section).getByRole("button", { name: "Install" }))
   expect(await within(section).findByText("Nothing was installed. The daemon inside this app stopped and did not start again, so no session is running. Quit and reopen Domovoi to start it.")).toBeTruthy()
@@ -370,7 +533,7 @@ it("names the Linux unit the installer writes and no lingering it does not turn 
 // Native Windows runs the logon task unsupervised; only the WSL task has the
 // crash supervisor, so nothing restarts a crashed daemon before the next sign-in.
 it("names the Windows logon task the installer registers and says nothing restarts it", () => {
-  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", serviceInstalled: true, platform: "win32" }} />)
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "win32" }} />)
   const section = screen.getByRole("region", { name: "Daemon on this machine" })
   expect(section.textContent).toContain('Task Scheduler task "Domovoi daemon"')
   expect(section.textContent).toContain("Nothing restarts it until you next sign in.")
@@ -396,14 +559,14 @@ it("does not call a daemon this app did not start the installed service", () => 
 // Ruled 2026-09-23 (#577, B): after an app update the service can still run
 // the runtime it was installed with. Settings names both versions.
 it("says the login service runs an older Domovoi than this app", () => {
-  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, platform: "darwin", serviceVersion: "0.9.2", appVersion: "0.10.0" }} />)
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "darwin", serviceVersion: "0.9.2", appVersion: "0.10.0" }} />)
   expect(screen.getByText("The login service runs Domovoi 0.9.2. This app is 0.10.0.")).toBeTruthy()
 })
 
 it("says nothing about versions when the service is current or newer", () => {
-  const { rerender } = render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, platform: "darwin", serviceVersion: "0.10.0", appVersion: "0.10.0" }} />)
+  const { rerender } = render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "darwin", serviceVersion: "0.10.0", appVersion: "0.10.0" }} />)
   expect(screen.queryByText(/The login service runs Domovoi/)).toBeNull()
-  rerender(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, platform: "darwin", serviceVersion: "0.11.0", appVersion: "0.10.0" }} />)
+  rerender(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "darwin", serviceVersion: "0.11.0", appVersion: "0.10.0" }} />)
   expect(screen.queryByText(/The login service runs Domovoi/)).toBeNull()
   rerender(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", platform: "darwin", serviceVersion: "0.9.2", appVersion: "0.10.0" }} />)
   expect(screen.queryByText(/The login service runs Domovoi/)).toBeNull()
@@ -425,7 +588,7 @@ it("says Removed once when the profile owner is unresolved and the daemon did no
 // app's runtime in place. Success adds no words; a failure shows only the
 // daemon's own; an update this window cannot reach says so in its own words.
 function olderService(update: () => Promise<unknown>, refusal?: string) {
-  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, platform: "darwin", serviceVersion: "0.9.2", appVersion: "0.10.0", service: { install: vi.fn(), remove: vi.fn(), update: update as never, ...(refusal ? { refusal } : {}) } }} />)
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "darwin", serviceVersion: "0.9.2", appVersion: "0.10.0", service: { install: vi.fn(), remove: vi.fn(), update: update as never, ...(refusal ? { refusal } : {}) } }} />)
   return screen.getByRole("region", { name: "Daemon on this machine" })
 }
 
@@ -461,4 +624,222 @@ it("says an update this window cannot reach was still made", async () => {
 it("keeps Update locked while a turn runs or a gate waits", () => {
   const section = olderService(vi.fn(), "1 gate is waiting (Fix login).")
   expect(within(section).getByRole("button", { name: "Update the service" }).hasAttribute("disabled")).toBe(true)
+})
+
+// Security review round 1 of #576. The main process reads the service back
+// after a failed install or removal, and says whether the daemon it reaches
+// afterwards is one this app did not start. A line that is only true when
+// nothing changed is drawn only when the read-back says nothing changed. The
+// other states' lines were approved by fetzy on 2026-09-25.
+it("does not say nothing was installed when the service reads back as installed or cannot be read", async () => {
+  const user = userEvent.setup()
+  const install = vi.fn()
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "restarted", service: { installed: true, running: false } })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "stopped", service: null })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "attached", service: { installed: false, running: false } })
+  const section = daemonSection("app", { install })
+  const button = within(section).getByRole("button", { name: "Install" })
+  for (const fact of ["The LaunchAgent is installed", "Whether the LaunchAgent is installed is not known from here", "This app is connected to a daemon it did not start"]) {
+    await user.click(button)
+    expect(await within(section).findByText("Could not install the service")).toBeTruthy()
+    expect(section.textContent).toContain(fact)
+    expect(section.textContent).not.toContain("Nothing else was touched.")
+    if (fact !== "This app is connected to a daemon it did not start") expect(section.textContent).not.toContain("Nothing was installed.")
+  }
+})
+
+it("does not say nothing was removed when the removal stopped or deleted part of the service", async () => {
+  const user = userEvent.setup()
+  const remove = vi.fn()
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "unlink: permission denied", daemon: "restarted", service: { installed: true, running: false } })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "unlink: permission denied", daemon: "stopped", service: { installed: false, running: false } })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl could not be run", daemon: "restarted", service: null })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl bootout exited 5", daemon: "untouched", service: { installed: true, running: true } })
+  const section = daemonSection("outside", { remove })
+  const button = within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" })
+  for (const fact of ["The LaunchAgent is still installed but not running", "The LaunchAgent is gone", "Whether the LaunchAgent is installed is not known from here"]) {
+    await user.click(button)
+    expect(await within(section).findByText("Could not remove the service")).toBeTruthy()
+    expect(section.textContent).toContain(fact)
+    expect(section.textContent).not.toContain("Nothing was removed.")
+    expect(section.textContent).not.toContain("every session keeps running")
+  }
+  await user.click(button)
+  expect(await within(section).findByText("Nothing was removed. The LaunchAgent still holds the daemon, and every session keeps running.")).toBeTruthy()
+})
+
+it("does not say quitting stops the daemon, or that no session runs, when the removal left this app on a daemon it did not start", async () => {
+  const user = userEvent.setup()
+  const remove = vi.fn(async () => ({ ok: true, kind: "file", target: "/p", profileRecovery: "not-needed", daemonRunning: true, daemonAttached: true }))
+  const section = daemonSection("outside", { remove })
+  await user.click(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
+  expect(await within(section).findByText(/This app is connected to a daemon it did not start/)).toBeTruthy()
+  expect(section.textContent).not.toContain("Quitting Domovoi now stops the daemon")
+  expect(section.textContent).not.toContain("no session is running")
+})
+
+// Another Domovoi window holds the daemon: quitting this one does not stop it,
+// so the section keeps that window's own line.
+it("keeps the other window's line for a daemon another Domovoi window started", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the daemon another Domovoi Desktop started", detail: "That app owns the daemon and stops it when it quits.", owner: "other-app", platform: "darwin" }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(section.textContent).toContain("That app owns the daemon and stops it when it quits.")
+  expect(section.textContent).not.toContain("Quitting Domovoi stops the daemon")
+  expect(section.textContent).not.toContain("Quitting this app leaves the daemon and its sessions running.")
+})
+
+// Review round 3 of #576: the desktop can finish an install or a removal and
+// still hand this window an answer it cannot read, so an unknown answer says
+// nothing about what changed. Settings reads the service back and says what
+// it saw, or that it cannot tell. It never says nothing changed on its own.
+it("reads the service back when the answer to an install cannot be read, and never says nothing changed", async () => {
+  const user = userEvent.setup()
+  const install = vi.fn(async () => { throw new Error("Desktop returned an invalid service outcome") })
+  const status = vi.fn()
+    .mockResolvedValueOnce({ installed: true, running: true, detail: "pid 48213" })
+    .mockResolvedValueOnce({ unavailable: "launchctl could not be run" })
+    .mockRejectedValueOnce(new Error("The desktop did not answer."))
+    .mockResolvedValueOnce({ installed: false, running: false, detail: "" })
+  const section = daemonSection("app", { install, status })
+  const button = within(section).getByRole("button", { name: "Install" })
+  for (const fact of [
+    "The LaunchAgent is installed and running.",
+    "Whether the LaunchAgent is installed is not known from here.",
+    "Whether the LaunchAgent is installed is not known from here.",
+    "Nothing was installed.",
+  ]) {
+    await user.click(button)
+    expect(await within(section).findByText(fact)).toBeTruthy()
+    expect(section.textContent).toContain("Desktop returned an invalid service outcome")
+    expect(section.textContent).not.toContain("Nothing changed.")
+  }
+  expect(status).toHaveBeenCalledTimes(4)
+})
+
+it("reads the service back when the answer to a removal cannot be read, and never says nothing changed", async () => {
+  const user = userEvent.setup()
+  const remove = vi.fn(async () => { throw new Error("Desktop returned an invalid service outcome") })
+  const status = vi.fn()
+    .mockResolvedValueOnce({ installed: true, running: false, detail: "not loaded" })
+    .mockResolvedValueOnce({ installed: null, running: false, detail: "" })
+    .mockResolvedValueOnce({ installed: false, running: false, detail: "" })
+  const section = daemonSection("outside", { remove, status })
+  const button = within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" })
+  // The last line was approved by fetzy on 2026-09-25: the removal may or may
+  // not have finished, so "gone, but the removal did not finish" would claim
+  // more than is known.
+  for (const fact of ["The LaunchAgent is still installed but not running.", "Whether the LaunchAgent is installed is not known from here.", "The LaunchAgent is not installed."]) {
+    await user.click(button)
+    expect(await within(section).findByText(fact)).toBeTruthy()
+    expect(section.textContent).not.toContain("Nothing changed.")
+    expect(section.textContent).not.toContain("Nothing was removed.")
+  }
+})
+
+it("says it cannot tell what changed when there is no way to read the service back", async () => {
+  const user = userEvent.setup()
+  const install = vi.fn(async () => { throw new Error("Desktop returned an invalid service outcome") })
+  const section = daemonSection("app", { install })
+  await user.click(within(section).getByRole("button", { name: "Install" }))
+  expect(await within(section).findByText("Whether the LaunchAgent is installed is not known from here.")).toBeTruthy()
+  expect(section.textContent).not.toContain("Nothing changed.")
+})
+
+// Ruled by fetzy on 2026-09-25. An answer this window could not read, whose
+// read-back shows the change happened in whole or in part, must not be headed
+// "Could not install" or "Could not remove". The headers below were approved
+// on 2026-09-25.
+it("heads an unreadable answer by what the read-back shows, never 'Could not' after a change that happened", async () => {
+  const user = userEvent.setup()
+  const unreadable = vi.fn(async () => { throw new Error("Desktop returned an invalid service outcome") })
+  for (const [owner, button, read, header] of [
+    ["app", "Install", { installed: true, running: true }, "Could not confirm the install"],
+    ["app", "Install", { installed: true, running: false }, "Could not confirm the install"],
+    ["app", "Install", { installed: false, running: false }, "Could not install the service"],
+    ["app", "Install", null, "Could not install the service"],
+    ["outside", "Unload and delete the LaunchAgent", { installed: false, running: false }, "Could not confirm the removal"],
+    ["outside", "Unload and delete the LaunchAgent", { installed: true, running: false }, "Could not confirm the removal"],
+    ["outside", "Unload and delete the LaunchAgent", { installed: true, running: true }, "Could not remove the service"],
+    ["outside", "Unload and delete the LaunchAgent", null, "Could not remove the service"],
+  ] as const) {
+    const status = vi.fn(async () => read ? { ...read, detail: "" } : { unavailable: "launchctl could not be run" })
+    const section = daemonSection(owner, { install: unreadable, remove: unreadable, status })
+    await user.click(within(section).getByRole("button", { name: button }))
+    expect(await within(section).findByText(header)).toBeTruthy()
+    if (header.startsWith("Could not confirm")) {
+      expect(section.textContent).not.toContain("Could not install the service")
+      expect(section.textContent).not.toContain("Could not remove the service")
+    }
+    cleanup()
+  }
+})
+
+// Ruled by fetzy on 2026-09-25: a daemon this app did not start, when the
+// service is known not installed, is named as what it is. The label, the
+// status command and the lock reason stay.
+it("says the login service is not installed when a daemon outside the app runs and the service is known absent", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to a daemon outside this app", detail: "", owner: "outside", serviceInstalled: false, platform: "darwin" }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(section.textContent).toContain("The login service is not installed. This daemon was started outside any app and runs until it is stopped.")
+  expect(section.textContent).not.toContain("This app cannot tell whether that daemon is the installed service.")
+  expect(within(section).getByText("Not started here")).toBeTruthy()
+  expect(within(section).getByText("domovoid service status")).toBeTruthy()
+  expect(section.textContent).toContain("Install and Remove are off: this app did not start that daemon.")
+})
+
+// Security review round 8 of #576: a failed install can leave the service
+// installed but stopped while the daemon is back inside this app. The owner
+// line stays the app's; the installed service is its own fact, so Remove is
+// live, Install is off, and nothing says nothing is installed.
+it("keeps Remove live for an installed service while the daemon runs inside this app", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{
+    title: "Running Domovoi inside this app", detail: "", owner: "app", serviceInstalled: true, platform: "darwin",
+    service: { install: vi.fn() as never, remove: vi.fn() as never },
+  }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(within(section).getByText("Off")).toBeTruthy()
+  expect(section.textContent).toContain("Quitting Domovoi stops the daemon and every session on it.")
+  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(false)
+  expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
+  expect(section.textContent).toContain("Install is off: the service is already installed.")
+  expect(section.textContent).toContain("WHAT IT WROTE")
+  expect(section.textContent).not.toContain("nothing is installed")
+})
+
+// The design puts About this build at the bottom of the Daemon on this
+// machine card. Where that card is not drawn (a browser tab), About stands
+// on its own.
+it("draws About at the bottom of the daemon card, and on its own without the card", () => {
+  const about = { version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", state: "idle" as const })) }
+  const { unmount } = render(<SettingsShell {...shellProps()} about={about} localDaemon={{ title: "Running Domovoi inside this app", detail: "This app started the local daemon and stops it when the app quits.", owner: "app", platform: "darwin" }} />)
+  const card = screen.getByRole("region", { name: "Daemon on this machine" })
+  const inside = within(card).getByRole("region", { name: "About this build" })
+  expect(card.lastElementChild).toBe(inside)
+  expect(screen.getAllByRole("region", { name: "About this build" })).toHaveLength(1)
+  unmount()
+  render(<SettingsShell {...shellProps()} about={about} />)
+  expect(screen.queryByRole("region", { name: "Daemon on this machine" })).toBeNull()
+  expect(screen.getByRole("region", { name: "About this build" })).toBeTruthy()
+})
+
+// Security review round 9 of #576: the service reads back installed but not
+// running while a daemon outside the app answers. That daemon is not the
+// service, so the section does not call it Running or promise a restart after
+// a crash; the installed service keeps Remove live.
+it("does not call a daemon outside the app the running service while the service is stopped", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{
+    title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: false, platform: "darwin",
+    service: { install: vi.fn() as never, remove: vi.fn() as never },
+  }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(within(section).queryByText("Running")).toBeNull()
+  expect(within(section).getByText("Not started here")).toBeTruthy()
+  expect(section.textContent).toContain("A daemon this app did not start. Quitting this app leaves it running.")
+  expect(section.textContent).not.toContain("launchd starts it again.")
+  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(false)
+  expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
+  expect(section.textContent).toContain("Install is off: the service is already installed.")
+  expect(section.textContent).not.toContain("Install and Remove are off")
+  expect(section.textContent).not.toContain("This app cannot tell whether that daemon is the installed service.")
+  expect(section.textContent).toContain("The login service is installed but not running. This daemon was started outside any app and runs until it is stopped.")
 })

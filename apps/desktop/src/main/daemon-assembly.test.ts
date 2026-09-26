@@ -44,14 +44,15 @@ describe("desktop daemon assembly", () => {
     expect(offenders).toEqual([])
   })
 
-  // Route verification and the handoff check (#576) read an existing home
-  // owner, and the service calls install a manager-owned service; none of
+  // Route verification, the handoff check and the handoff fence (#576) talk to
+  // an existing home owner, and the service calls install a manager-owned service; none of
   // them constructs a daemon in this process. The constructor and the internal surface stay out.
   it("loads only the ownership seam and the service calls from the daemon", async () => {
     const { daemonModuleExports } = await import("./daemon-module.js")
     expect([...daemonModuleExports].sort()).toEqual([
       "DaemonServiceRuntimeMissingError",
       "acquireLocalDaemon",
+      "holdServiceHandoffFence",
       "installDaemonService",
       "readDaemonServiceRuntimeVersion",
       "readDaemonServiceStatus",

@@ -1,0 +1,399 @@
+import { isAbsolute, join, parse, relative, resolve, sep } from "node:path"
+
+import { approvalFacts, hiddenDirectory } from "./approval-facts.js"
+import { below, withTrailingSeparator } from "./credential-stores.js"
+import { followedTarget, followPath, requestedPath, type FollowedPath, type FollowedTarget } from "./followed-path.js"
+import type { OperationDeadline } from "./operation-deadline.js"
+import { namesSecretPath } from "./permission-policy.js"
+import { redactDurableText } from "./secret-redaction.js"
+
+// The spelling sets a card judges and hides its paths by, and the file tool
+// card's Affects line. The line itself is approvalFacts' file line, the one
+// sentence form every card uses (folded in when #541 landed after #545): it
+// names the file the edit really reaches.
+
+function within(workspace: string, target: string): string | undefined {
+  const inside = relative(workspace, target)
+  return inside !== "" && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside)
+    ? inside.split(sep).join("/")
+    : undefined
+}
+
+// One path on a card: the file or directory, the worktree, and the directory
+// the request runs in.
+type CardPath = { workspace: string; path: string; cwd?: string | undefined }
+
+// A card judges a path on exactly the spellings it hides, and hides exactly
+// the spellings it judges: both read the one set pathSpellings builds (final
+// check after 3fd053db). Forms is that set. Complete is false when the set
+// hit a bound and so lists only some spellings: the card is then judged as
+// naming a credential path, and its text cannot be hidden form by form, so the
+// server hides the operation and command whole (final check after e8f7a4d3).
+
+// The directory line of a card: the directory the request runs in. It is
+// persisted and sent like the file path, so a directory any spelling of which
+// names a credential store, or one the durable redaction changes, is hidden
+// whole and the line keeps only where it is, in the form #541 uses
+// (hiddenDirectory in approval-facts.ts). Hidden is true then, and the card is
+// a hard gate.
+export async function cardDirectory(
+  input: { directory: string; workspace: string },
+  deadline?: OperationDeadline,
+): Promise<{ text: string; hidden: boolean; forms: string[]; complete: boolean }> {
+  const spellings = await pathSpellings({ workspace: input.workspace, path: input.directory }, deadline)
+  const { forms, complete } = spellings
+  if (!namesCredential(spellings) && !redactDurableText(input.directory).redacted) {
+    return { text: input.directory, hidden: false, forms, complete }
+  }
+  const workspace = resolve(input.workspace)
+  const directory = resolve(workspace, input.directory)
+  const inside = directory === workspace || within(workspace, directory) !== undefined
+  return {
+    text: hiddenDirectory(inside),
+    hidden: true,
+    forms,
+    complete,
+  }
+}
+
+// Redacted is true when the durable redaction changed a path, which makes the
+// card a hard gate the way a secret anywhere else in its text does. Sensitive
+// is true when the file is hidden as [REDACTED] for naming a credential file:
+// the card is then a hard gate too (ruled for #541), so no standing rule is
+// made or used for a file the person cannot see.
+//
+// Sensitive is judged on every spelling in the set, as #541 judges the
+// requested path, each hop and the final target, and more: a credential name
+// in any spelling of the file, of the worktree it lies in, or of the directory
+// the request runs in hides the file, even when the file itself is public,
+// since the card's text may name it that way.
+export async function fileTargetAffects(
+  input: CardPath,
+  deadline?: OperationDeadline,
+): Promise<{ text: string; redacted: boolean; sensitive: boolean; forms: string[]; complete: boolean }> {
+  const spellings = await pathSpellings(input, deadline)
+  const { forms, followed, complete } = spellings
+  const facts = approvalFacts({
+    path: input.path,
+    workspace: input.workspace,
+    cwd: input.cwd,
+    scope: undefined,
+    resolved: followed && { target: followed.target, workspace: followed.workspace, hops: followed.walks.target.hops },
+    spellings,
+  })
+  return { text: facts.affects, redacted: facts.redacted, sensitive: facts.sensitive, forms, complete }
+}
+
+// The path from a directory to a target, with "/", when one can be written:
+// not the directory itself, and not a path of only "." and ".." steps, which
+// would name every parent in the agent's text.
+function from(directory: string, target: string): string | undefined {
+  const path = relative(directory, target)
+  if (path === "" || isAbsolute(path)) return undefined
+  const steps = path.split(sep)
+  return steps.every((step) => step === "." || step === "..") ? undefined : steps.join("/")
+}
+
+// The rest of a path after a root, as written, with "/": ".." and "." are
+// kept, since a link's target can hold them and the text can name the path
+// that way. Undefined outside the root, and for a rest of only "." and ".."
+// steps.
+function writtenWithin(root: string, path: string): string | undefined {
+  const prefix = withTrailingSeparator(root)
+  if (!path.startsWith(prefix)) return undefined
+  const steps = path.slice(prefix.length).split(sep).filter((step) => step !== "")
+  return steps.length === 0 || steps.every((step) => step === "." || step === "..") ? undefined : steps.join("/")
+}
+
+// A root and a rest from writtenWithin, joined without collapsing "..".
+function writtenBelow(root: string, rest: string): string {
+  return below(root, rest.split("/"))
+}
+
+// How many directories a path goes down from its filesystem root.
+function depth(path: string): number {
+  return path.slice(parse(path).root.length).split(sep).filter((step) => step !== "").length
+}
+
+// The number of ".." steps a relative form, written with "/", starts with.
+function climbs(path: string): number {
+  const steps = path.split("/")
+  const down = steps.findIndex((step) => step !== "..")
+  return down === -1 ? steps.length : down
+}
+
+// A path is closed under the pairs of spellings its walks found for one place
+// (FollowedPath.links, and each walked path beside its realpath spelling):
+// where it starts with one of a pair, it is written with the other as well,
+// again and again, since each link on a way can be written either way. A link
+// that leads to its own parent can spell without end, so each set is bounded,
+// and so is the whole set of forms; past a bound the set is not complete, the
+// card is judged as naming a credential path, and its text is hidden whole.
+//
+// The bounds keep a card's cost small, since the relative forms grow with the
+// square of the spellings: measured on an Apple Silicon Mac after e8f7a4d3,
+// the costliest complete set (32 spellings, four nested links under the
+// /var -> /private/var link) took 6.5 ms per path and 14.4 ms for a card's
+// directory, file and blocked path; a set past the bound takes about 3 ms.
+// At 256 spellings the same shape took 316 ms per path.
+const maximumSpellings = 32
+const maximumForms = 4096
+
+function sameSpellings(
+  pairs: ReadonlyArray<readonly [string, string]>,
+  seeds: readonly string[],
+): { spellings: string[]; complete: boolean } {
+  const found = new Set(seeds)
+  let frontier = seeds.filter((path) => isAbsolute(path))
+  const prefix = (path: string) => withTrailingSeparator(path)
+  while (frontier.length > 0) {
+    const next: string[] = []
+    for (const path of frontier) {
+      for (const [one, other] of pairs) {
+        for (const [from, to] of [[one, other], [other, one]] as const) {
+          const swapped = path === from ? to : path.startsWith(prefix(from)) ? `${prefix(to)}${path.slice(prefix(from).length)}` : undefined
+          if (swapped === undefined || found.has(swapped)) continue
+          if (found.size >= maximumSpellings) return { spellings: [...found], complete: false }
+          found.add(swapped)
+          next.push(swapped)
+        }
+      }
+    }
+    frontier = next
+  }
+  return { spellings: [...found], complete: true }
+}
+
+// The one set a card both judges and hides for a path: every form in which its
+// text can name it (ruled 2026-09-24, closed after 3fd053db).
+//
+// Target spellings: the path as given, as requested from the request's
+// directory, the lexical path, the path after each link on the way (each link
+// target as the link spelled it, with the rest still to walk), the walked path
+// and the realpath target.
+//
+// Roots, in two places: the worktree, and the directory the request runs in.
+// Each place is spelled as given, resolved, as realpath writes it, as walked,
+// and after each link on the way to it.
+//
+// Every absolute spelling, of the target and of each root, is closed under
+// the links the three walks crossed (sameSpellings). Every target spelling is
+// then listed as it is, and relative to every root of each place: below the
+// root with ".." collapsed and as written, and above it with ".." where that
+// does not climb to the filesystem root. Each relative form is joined again to
+// every root of the same place, and written with "/" and with "\", bare and
+// after "./". A relative form is not joined to the other place's roots, which
+// would spell a path that is not there.
+export type PathSpellings = { forms: string[]; complete: boolean }
+
+export async function pathSpellings(
+  input: CardPath,
+  deadline?: OperationDeadline,
+): Promise<PathSpellings & { followed: FollowedTarget | undefined }> {
+  const workspace = resolve(input.workspace)
+  const followed = await followedTarget(input.workspace, input.path, input.cwd, deadline)
+  const lexical = resolve(workspace, input.cwd ?? ".", input.path)
+  const directoryGiven = input.cwd === undefined
+    ? input.workspace
+    : isAbsolute(input.cwd) ? input.cwd : `${input.workspace}${sep}${input.cwd}`
+  const directory = resolve(workspace, input.cwd ?? ".")
+  const directoryWalk = await followPath(directory, deadline)
+  const targetWalk = followed?.walks.target
+  const workspaceWalk = followed?.walks.workspace
+  const walks = [targetWalk, workspaceWalk, directoryWalk].flatMap((walk) => walk ?? [])
+  const pairs = walks.flatMap((walk) => [...walk.links, [walk.walked, walk.path] as const])
+  const spelled = (paths: readonly string[]) => sameSpellings(pairs, [...new Set(paths)])
+  const walkSpellings = (walk: FollowedPath | undefined) => walk ? [...walk.aliases, walk.walked, walk.path] : []
+  const targets = spelled([
+    input.path,
+    requestedPath(input.workspace, input.path, input.cwd),
+    lexical,
+    ...walkSpellings(targetWalk),
+  ])
+  const places = [
+    spelled([input.workspace, workspace, ...walkSpellings(workspaceWalk)]),
+    spelled([directoryGiven, directory, ...walkSpellings(directoryWalk)]),
+  ]
+  const forms = new Set(targets.spellings)
+  const finished = (complete: boolean) => ({
+    forms: [...forms].filter((form) => form !== "" && form !== "." && form !== sep),
+    complete,
+    followed,
+  })
+  if (!targets.complete || places.some((place) => !place.complete)) {
+    for (const place of places) for (const root of place.spellings) forms.add(root)
+    return finished(false)
+  }
+  for (const { spellings: roots } of places) {
+    // Each relative form of a target from any root of this place, collapsed or
+    // as written, and whether it climbs.
+    const relatives = new Map<string, "collapsed" | "written">()
+    for (const root of roots) {
+      if (!isAbsolute(root)) continue
+      for (const target of targets.spellings) {
+        if (!isAbsolute(target)) continue
+        const collapsed = from(root, target)
+        if (collapsed !== undefined && climbs(collapsed) < depth(root) && !relatives.has(collapsed)) relatives.set(collapsed, "collapsed")
+        const written = writtenWithin(root, target)
+        if (written !== undefined && !relatives.has(written)) relatives.set(written, "written")
+      }
+    }
+    for (const [path, kind] of relatives) {
+      const backslashed = path.split("/").join("\\")
+      for (const form of [path, `./${path}`, backslashed, `.\\${backslashed}`]) forms.add(form)
+      for (const other of roots) {
+        if (!isAbsolute(other)) continue
+        if (kind === "written") forms.add(writtenBelow(other, path))
+        else if (climbs(path) < depth(other)) forms.add(join(other, path))
+      }
+      if (forms.size > maximumForms) return finished(false)
+    }
+  }
+  return finished(true)
+}
+
+// The judge every card path goes through: a credential name in any form of
+// the set, or a set that could not be closed.
+export function namesCredential(spellings: PathSpellings): boolean {
+  return !spellings.complete || spellings.forms.some(namesSecretPath)
+}
+
+// The set a card judges and hides for one path (pathSpellings).
+export async function hiddenPathForms(input: CardPath): Promise<string[]> {
+  return (await pathSpellings(input)).forms
+}
+
+// A form may not start right after one of these, which would make it the end
+// of a longer name, nor end right before a name character, or a "." that
+// starts an extension. Each is tested on one code point and anchored at both
+// ends: `/[\p{L}\p{N}_.-]$/u` reports no match for a lone astral letter such
+// as U+10000 in Node, which let ".env" in "\u{10000}.env" through (final check
+// after 1b6aef0f).
+const joinsBefore = /^[\p{L}\p{N}_.-]$/u
+const joinsAfter = /^[\p{L}\p{N}_-]$/u
+const startsExtension = /^[\p{L}\p{N}]$/u
+
+function isLeadSurrogate(unit: number): boolean {
+  return unit >= 0xd800 && unit <= 0xdbff
+}
+
+function isTrailSurrogate(unit: number): boolean {
+  return unit >= 0xdc00 && unit <= 0xdfff
+}
+
+// The text is read by code point, as the "u" pattern hidePaths replaced read
+// it: a lead surrogate followed by a trail is one code point, and any other
+// surrogate is a code point of its own (final check after 1b6aef0f).
+function codePointLength(text: string, index: number): number {
+  return isLeadSurrogate(text.charCodeAt(index)) && isTrailSurrogate(text.charCodeAt(index + 1)) ? 2 : 1
+}
+
+function codePointAt(text: string, index: number): string {
+  return text.slice(index, index + codePointLength(text, index))
+}
+
+function codePointBefore(text: string, index: number): string {
+  const paired = index >= 2 && isTrailSurrogate(text.charCodeAt(index - 1)) && isLeadSurrogate(text.charCodeAt(index - 2))
+  return text.slice(Math.max(0, index - (paired ? 2 : 1)), index)
+}
+
+// Whether a form found at [start, end) ends where a whole path ends: not
+// inside a surrogate pair, and not before a name character or an extension.
+function endsWhole(text: string, end: number): boolean {
+  if (isLeadSurrogate(text.charCodeAt(end - 1)) && isTrailSurrogate(text.charCodeAt(end))) return false
+  const next = codePointAt(text, end)
+  if (joinsAfter.test(next)) return false
+  return next !== "." || !startsExtension.test(codePointAt(text, end + 1))
+}
+
+// The first form in sorted[low, high), all of which are longer than depth and
+// share their first depth units, whose unit at depth is at least unit.
+function firstFrom(sorted: readonly string[], low: number, high: number, depth: number, unit: number): number {
+  let from = low
+  let to = high
+  while (from < to) {
+    const middle = (from + to) >>> 1
+    if (sorted[middle]!.charCodeAt(depth) < unit) from = middle + 1
+    else to = middle
+  }
+  return from
+}
+
+// The comparisons hidePaths may make before it hides the text whole. An
+// ordinary text uses a small part of it: a text of 1 MB that names the hidden
+// paths throughout takes about 8 per unit. A text built to agree with long
+// forms at many places runs out and is shown as [REDACTED], as a card whose
+// spellings hit their bound is. Every text hidePaths is given belongs to a
+// card that hides a path, which is a hard gate already (final check after
+// 1b6aef0f).
+const matchingAllowance = 4_000_000
+
+// Replace each exact form of a hidden path in the agent's text with
+// [REDACTED], and nothing else. A form counts only where it stands as a whole
+// path: not inside a longer name (".env" in "x.env" or ".env.example"), but
+// before a "/" that continues into the hidden directory. The longest form is
+// tried first, so an absolute path is not left half replaced.
+//
+// The forms are sorted once, and at each place in the text the ones that
+// agree with it are narrowed unit by unit, so the cost at a place follows how
+// far the text agrees with some form, not the number of forms or of their
+// lengths (final check after 1b6aef0f). The total is bounded as above.
+export function hidePaths(text: string, forms: readonly string[]): string {
+  // Sorted by UTF-16 unit, so the forms that share a prefix are adjacent and
+  // a form sorts before the longer ones it starts.
+  const sorted = [...new Set(forms)].filter((form) => form !== "").sort()
+  if (sorted.length === 0) return text
+  const starting = new Map<number, { low: number, high: number }>()
+  sorted.forEach((form, position) => {
+    const first = form.charCodeAt(0)
+    const range = starting.get(first)
+    if (range === undefined) starting.set(first, { low: position, high: position + 1 })
+    else range.high = position + 1
+  })
+  let allowance = matchingAllowance
+  let shown = ""
+  let kept = 0
+  let index = 0
+  while (index < text.length) {
+    const range = starting.get(text.charCodeAt(index))
+    if (range !== undefined) {
+      allowance -= 1
+      if (allowance < 0) return "[REDACTED]"
+    }
+    if (range !== undefined && !joinsBefore.test(codePointBefore(text, index))) {
+      // The lengths of the forms found at this place, shortest first.
+      const found: number[] = []
+      let { low, high } = range
+      let depth = 1
+      while (low < high) {
+        if (sorted[low]!.length === depth) {
+          found.push(depth)
+          low += 1
+          continue
+        }
+        if (index + depth >= text.length) break
+        const unit = text.charCodeAt(index + depth)
+        if (high - low === 1) {
+          allowance -= 1
+          if (sorted[low]!.charCodeAt(depth) !== unit) break
+        } else {
+          // Two binary searches over the range.
+          allowance -= 2 * Math.ceil(Math.log2(high - low + 1))
+          low = firstFrom(sorted, low, high, depth, unit)
+          high = firstFrom(sorted, low, high, depth, unit + 1)
+        }
+        if (allowance < 0) return "[REDACTED]"
+        depth += 1
+      }
+      const length = found.reverse().find((candidate) => endsWhole(text, index + candidate))
+      if (length !== undefined) {
+        shown += `${text.slice(kept, index)}[REDACTED]`
+        index += length
+        kept = index
+        continue
+      }
+    }
+    index += codePointLength(text, index)
+  }
+  return `${shown}${text.slice(kept)}`
+}

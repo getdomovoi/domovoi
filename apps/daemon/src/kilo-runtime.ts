@@ -1,10 +1,11 @@
 import type { Config } from "@kilocode/sdk"
 
 import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
-import { requireOpenCodeClient, type OpenCodeFactory } from "./opencode.js"
+import { domovoiAgentPermission, requireOpenCodeClient, type OpenCodeFactory } from "./opencode.js"
 
 export const domovoiKiloConfig: Config = {
   autoupdate: false,
+  permission: domovoiAgentPermission,
   agent: {
     "domovoi-ask": {
       mode: "primary",
@@ -64,6 +65,7 @@ export const createDefaultKiloRuntime: OpenCodeFactory = async () => {
     passwordEnvironment: "KILO_SERVER_PASSWORD",
     usernameEnvironment: "KILO_SERVER_USERNAME",
     username: "kilo",
+    environment: { KILO_DISABLE_PROJECT_CONFIG: "1" },
     config: domovoiKiloConfig,
     startServer: createKiloServer,
     createClient: createKiloClient,

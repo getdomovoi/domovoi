@@ -12,6 +12,12 @@ import type { claimServiceOperation } from "./operation-lease.js"
 // live only here.
 export type DaemonServiceUpdateOutcome =
   | "not-installed"
+  // Ruled 2026-09-24: the service is there, but its plist, unit, task action
+  // or saved WSL runtime is not in the shape a Domovoi install writes, or does
+  // not run exactly the runtime service.json records, or service.json records
+  // none, so it is not put back or replaced. A missing service stays
+  // "not-installed".
+  | "changed-outside"
   | "nothing-changed"
   | "swap-failed-restored"
   | "swap-and-restore-failed"
@@ -26,6 +32,8 @@ function updateMessage(outcome: DaemonServiceUpdateOutcome, cause: unknown, rest
   switch (outcome) {
     case "not-installed":
       return "No Domovoi service is installed for this user, so there is nothing to update. Install the service first."
+    case "changed-outside":
+      return "The installed service file was changed outside Domovoi, so Domovoi will not update it. Remove the service and install it again to replace it."
     case "nothing-changed":
       return `Domovoi could not update the service: ${detail(cause)}. Nothing was changed, and the service was left as it was.`
     case "swap-failed-restored":
@@ -94,9 +102,21 @@ export function trackInFlight<E extends object>(effects: E): { effects: E, inFli
   }
 }
 
-// How long a call that outlived its step may keep running before the restore
-// starts anyway.
+// How long the update's caller waits for calls still running after the update
+// ended before it returns; the service lease is released once they settle.
+// The restore never starts on this timer: it waits for them to settle.
 const inFlightWaitMs = 10_000
+
+// Releases a profile lease once no call the update started is still running.
+// A write the deadline cut short may still land, and it must land while the
+// profile is held.
+export async function releaseWhenSettled(lease: ProfileLease, inFlight: InFlight): Promise<void> {
+  try {
+    await inFlight.settled()
+  } finally {
+    lease.release()
+  }
+}
 
 // The two halves of an update once everything it needs has been read: the
 // swap to the new runtime, and the way back to what ran before.
@@ -108,8 +128,9 @@ export type ServiceSwap<T> = {
 // Each half gets its own budget. The swap runs under one deadline; when any of
 // its steps fails, a timeout included, the restore runs after the swap has
 // ended and its calls have settled, under a fresh deadline, so a swap that ran
-// out of time is still put back. The service-operation lease is released on
-// every path, once no call the update started is still running.
+// out of time is still put back. The service-operation lease is claimed before
+// prepare reads anything, and released on every path, once no call the update
+// started is still running.
 export async function runServiceUpdate<T>(
   claim: () => ReturnType<typeof claimServiceOperation>,
   budgetMs: number,
@@ -133,7 +154,10 @@ export async function runServiceUpdate<T>(
         return await steps.swap(swapDeadline)
       } catch (cause) {
         if (cause instanceof DaemonServiceUpdateError) throw cause
-        await inFlight.settle(inFlightWaitMs)
+        // A step that ran out of time may still be writing or starting what
+        // the restore is about to replace. The restore waits for it, however
+        // long, rather than for a fixed time: a late write would undo it.
+        await inFlight.settled()
         const restoreDeadline = OperationDeadline.start(budgetMs)
         try {
           await steps.restore(restoreDeadline)
@@ -155,14 +179,14 @@ export async function runServiceUpdate<T>(
 
 export type OwnerReader = (profile: ProfileLocation) => LocalOwnerRecord | undefined
 
-type OwnerRead = { ok: true, record: LocalOwnerRecord | undefined } | { ok: false }
+type OwnerRead = { ok: true, record: LocalOwnerRecord | undefined } | { ok: false, error: unknown }
 
 function readOwnerOnce(readOwner: OwnerReader, profile: ProfileLocation): OwnerRead {
   try {
     return { ok: true, record: readOwner(profile) }
-  } catch {
+  } catch (error) {
     // A record being rewritten, or not readable yet, says nothing either way.
-    return { ok: false }
+    return { ok: false, error }
   }
 }
 
@@ -191,15 +215,20 @@ export class OwnerInstances {
   constructor(readonly readOwner: OwnerReader, readonly profile: ProfileLocation) {}
 
   // Records whichever instance the owner record names now. A read that fails
-  // is tried again briefly; what was seen before still counts either way.
+  // is tried again briefly. A record that stays unreadable is a failure, not
+  // a pass: with the instance running now unknown, it could later pass for a
+  // new start. Before any change that is "nothing changed"; before a start it
+  // fails that start.
   async note(deadline: OperationDeadline): Promise<void> {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    const attempts = 5
+    for (let attempt = 1; ; attempt += 1) {
       const read = readOwnerOnce(this.readOwner, this.profile)
       if (read.ok) {
         const instance = instanceOf(read.record)
         if (instance !== undefined) this.#seen.add(instance)
         return
       }
+      if (attempt === attempts) throw read.error
       await pause(50, deadline)
     }
   }

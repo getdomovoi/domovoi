@@ -41,6 +41,14 @@ describe("where the in-app daemon is loaded from", () => {
       .rejects.toThrow(/is missing readLocalServiceHandoffRefusal\. The shipped daemon runtime does not match this app\./)
   })
 
+  // #576: the handoff fence the service calls take comes from the same runtime.
+  it("exposes the service handoff fence from the runtime", async () => {
+    const module = Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()]))
+    const { holdServiceHandoffFence: _omitted, ...without } = module
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => without))
+      .rejects.toThrow(/is missing holdServiceHandoffFence\./)
+  })
+
   // Ruled 2026-09-23 (#577, A): the service runtime version comes from the same runtime.
   it("exposes the service runtime version reader from the runtime", async () => {
     const module = Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()]))

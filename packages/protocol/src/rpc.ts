@@ -3,11 +3,12 @@ import { imageUploadSchema, maximumSessionAttachments, sessionAttachmentSchema }
 
 import { protocolVersionSchema } from "./protocol-version.js"
 import { relayRecoveryParamsSchema, relayRecoveryResultSchema } from "./relay-recovery.js"
+import { serviceHandoffFenceParamsSchema, serviceHandoffFenceResultSchema } from "./service-handoff.js"
 import { dateTimeSchema, utf16Length, utf16MaxLength } from "./validation.js"
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
 import { approvalRuleRevokeParamsSchema, permissionHardGatesParamsSchema, permissionHardGatesResultSchema } from "./rules.js"
-import { approvalDecisionDurationMsSchema, checkpointReasonSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
+import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointReasonSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
 import {
   updateActivateParamsSchema,
   updateActivateResultSchema,
@@ -46,11 +47,13 @@ import {
 import {
   maximumSessionHistoryPageItems,
   maximumTerminalOutputChunkCharacters,
+  maximumTerminalReplayCharacters,
 } from "./performance.js"
 
 import {
   annotationAnchorSchema,
   approvalDecisionSchema,
+  approvalRevisionSchema,
   clientIdentityIdSchema,
   clientKindSchema,
   connectionIdSchema,
@@ -64,6 +67,7 @@ import {
   workingPlanStructureSchema,
   workingPlanStructureStepSchema,
   workspaceSnapshotSchema,
+  sessionSummarySchema,
 } from "./schema.js"
 import {
   clientAccessSchema,
@@ -83,9 +87,11 @@ import {
   deviceRevokeParamsSchema,
   deviceRotateParamsSchema,
   devicesResultSchema,
+  deviceIdSchema,
+  deviceLabelSchema,
   pairedDeviceSchema,
 } from "./devices.js"
-import { fleetMachineDescriptorSchema, fleetSnapshotSchema } from "./fleet.js"
+import { fleetChangedNotificationSchema, fleetMachineDescriptorSchema, fleetSnapshotSchema } from "./fleet.js"
 import {
   fleetEnrollParamsSchema,
   fleetEnrollResultSchema,
@@ -344,6 +350,7 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     clientId: clientIdentityIdSchema.optional(),
     explanation: z.string().min(1).optional(),
     decisionDurationMs: approvalDecisionDurationMsSchema.optional(),
+    ranForMs: approvedCommandRunMsSchema.optional(),
   }),
   z.object({
     ...historyEntryBase,
@@ -404,6 +411,29 @@ export const sessionHistoryParamsSchema = z.object({
   ).optional(),
   query: z.string().trim().min(1).check(utf16MaxLength(maximumSessionHistoryQueryLength)).optional(),
 })
+
+// Search over what a client already reads in the snapshot, without pulling
+// the snapshot: a session's title, and its summary, the newest assistant
+// message the daemon holds for it. A client fans this out per admitted
+// machine for the palette's "Sessions on other machines"; each machine answers
+// for itself, so "not searched" stays distinct from "no match".
+export const maximumSessionSearchQueryLength = 256
+export const maximumSessionSearchResults = 50
+export const sessionSearchParamsSchema = z.object({
+  query: z.string().trim().min(1).check(utf16MaxLength(maximumSessionSearchQueryLength)),
+  limit: z.number().int().min(1).max(maximumSessionSearchResults).default(20),
+}).strict()
+export const sessionSearchMatchSchema = z.object({
+  session: sessionSummarySchema,
+  // Where the query was found; the title wins when both match.
+  matchedIn: z.enum(["title", "summary"]),
+}).strict()
+export const sessionSearchResultSchema = z.object({
+  query: z.string().min(1),
+  matches: z.array(sessionSearchMatchSchema).max(maximumSessionSearchResults),
+  // More sessions matched than the limit allowed; the list is not every match.
+  truncated: z.boolean(),
+}).strict()
 
 export const sessionHistoryPageSchema = z.object({
   sessionId: streamedIdSchema,
@@ -474,6 +504,9 @@ export const auditActorSchema = z.discriminatedUnion("kind", [
     client: clientKindSchema,
     clientId: auditActorReferenceSchema.optional(),
     connectionId: connectionIdSchema.optional(),
+    // The daemon bearer, or a paired device's credential. A bearer connection
+    // names its own client kind, so the credential says who could have acted.
+    credential: z.enum(["daemon", "device"]).optional(),
   }).strict(),
   z.object({
     kind: z.literal("provider"),
@@ -900,9 +933,14 @@ export const artifactAuthorizeResultSchema = z.object({
 const terminalIdSchema = z.string().min(1).check(utf16MaxLength(128))
 const terminalDimensionSchema = z.number().int().min(2).max(1_000)
 
+// The claimant, as the receipt names a decider: the client kind and id the
+// claimant gave, plus the paired device the daemon verified on that
+// connection, when there is one. A root bearer has no device. The label is
+// the one at claim time; renaming the device later does not rewrite it.
 export const terminalOwnerSchema = z.object({
   client: clientKindSchema,
   clientId: clientIdentityIdSchema,
+  device: z.object({ id: deviceIdSchema, label: deviceLabelSchema }).strict().optional(),
 })
 
 const terminalClientIdentitySchema = terminalOwnerSchema
@@ -945,6 +983,67 @@ export const terminalSessionSchema = z.object({
 })
 
 export const terminalAcceptedSchema = z.object({ accepted: z.literal(true) })
+
+// Reading a terminal, as distinct from holding it. A watcher names no client
+// identity because it types nothing: the daemon knows the connection, and
+// nothing a watcher says about itself could authorize input, a resize or the
+// claim. Phone v2 frame 04.
+export const terminalWatchParamsSchema = z.object({ terminalId: terminalIdSchema }).strict()
+export const terminalUnwatchParamsSchema = z.object({ terminalId: terminalIdSchema }).strict()
+export const terminalListParamsSchema = z.object({ sessionId: z.string().min(1) }).strict()
+// A closed terminal stays readable this long, then the daemon drops it.
+export const terminalClosedRetentionMilliseconds = 3_600_000
+const terminalStateShape = {
+  // Closed is a state, not an error: the record stays readable for
+  // terminalClosedRetentionMilliseconds after closedAt, with how the shell ended.
+  state: z.enum(["live", "closed"]),
+  closedAt: dateTimeSchema.optional(),
+  exitCode: z.number().int().optional(),
+  signal: z.number().int().optional(),
+} as const
+type TerminalState = { state: "live" | "closed", closedAt?: string | undefined, exitCode?: number | undefined, signal?: number | undefined, claimHeld: boolean }
+function terminalStateInvariants(terminal: TerminalState, context: z.RefinementCtx): void {
+  if (terminal.state === "closed" && terminal.closedAt === undefined) {
+    context.addIssue({ code: "custom", path: ["closedAt"], message: "A closed terminal names when it closed" })
+  }
+  if (terminal.state === "live" && (terminal.closedAt !== undefined || terminal.exitCode !== undefined || terminal.signal !== undefined)) {
+    context.addIssue({ code: "custom", path: ["state"], message: "A live terminal has not ended" })
+  }
+  if (terminal.state === "closed" && terminal.claimHeld) {
+    context.addIssue({ code: "custom", path: ["claimHeld"], message: "A closed terminal holds no claim" })
+  }
+}
+const terminalSummaryShape = {
+  terminalId: terminalIdSchema,
+  sessionId: z.string().min(1),
+  cols: terminalDimensionSchema,
+  rows: terminalDimensionSchema,
+  shell: z.string().min(1),
+  cwd: z.string().min(1),
+  owner: terminalOwnerSchema,
+  // The owner is the last connection to hold the claim; claimHeld says whether
+  // that connection is still attached, or the terminal is waiting to be reaped.
+  // A closed terminal holds no claim.
+  claimHeld: z.boolean(),
+  openedAt: dateTimeSchema,
+  ...terminalStateShape,
+} as const
+export const terminalSummarySchema = z.object(terminalSummaryShape).strict().superRefine(terminalStateInvariants)
+export const terminalListResultSchema = z.object({ terminals: z.array(terminalSummarySchema) }).strict()
+export const terminalWatchResultSchema = z.object({
+  ...terminalSummaryShape,
+  // The daemon's record: redacted before it was kept, at most
+  // maximumTerminalReplayCharacters. bufferStartsAt is when the oldest kept
+  // character was printed, absent when nothing has been printed;
+  // earlierOutputDropped says the record does not start at the shell's start.
+  buffer: z.string().check(utf16MaxLength(maximumTerminalReplayCharacters)),
+  bufferStartsAt: dateTimeSchema.optional(),
+  earlierOutputDropped: z.boolean(),
+  // When the daemon began sending this watcher live output; what arrives in
+  // terminal.output after the reply came after the buffer. A closed terminal
+  // sends nothing more.
+  watchedAt: dateTimeSchema,
+}).strict().superRefine(terminalStateInvariants)
 export const terminalOutputNotificationSchema = z.object({
   terminalId: terminalIdSchema,
   data: z.string().min(1).check(utf16MaxLength(maximumTerminalOutputChunkCharacters)),
@@ -1009,6 +1108,9 @@ export const approvalResolveParamsSchema = z
     approvalId: z.string().min(1),
     decision: approvalDecisionSchema,
     explanation: z.string().trim().min(1).check(utf16MaxLength(4_096)).optional(),
+    // The card revision the client showed. An Allow must name it, so the
+    // daemon can refuse one given to a card it has since rewritten.
+    revision: approvalRevisionSchema.optional(),
   })
   .superRefine((params, context) => {
     if (params.decision === "deny-explain" && !params.explanation) {
@@ -1016,6 +1118,13 @@ export const approvalResolveParamsSchema = z
         code: "custom",
         message: "An explanation is required for deny-explain",
         path: ["explanation"],
+      })
+    }
+    if ((params.decision === "allow-once" || params.decision === "always-project") && params.revision === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "The card revision is required to allow an approval",
+        path: ["revision"],
       })
     }
   })
@@ -1329,6 +1438,9 @@ export const rpcMethods = {
   "terminal.input": { params: terminalInputParamsSchema, result: terminalAcceptedSchema },
   "terminal.resize": { params: terminalResizeParamsSchema, result: terminalAcceptedSchema },
   "terminal.close": { params: terminalCloseParamsSchema, result: terminalAcceptedSchema },
+  "terminal.list": { params: terminalListParamsSchema, result: terminalListResultSchema },
+  "terminal.watch": { params: terminalWatchParamsSchema, result: terminalWatchResultSchema },
+  "terminal.unwatch": { params: terminalUnwatchParamsSchema, result: terminalAcceptedSchema },
   "fleet.list": { params: fleetListParamsSchema, result: fleetSnapshotSchema },
   "fleet.clientRoute": { params: fleetClientRouteParamsSchema, result: fleetClientRouteResultSchema },
   "fleet.enroll": { params: fleetEnrollParamsSchema, result: fleetEnrollResultSchema },
@@ -1408,12 +1520,18 @@ export const rpcMethods = {
     params: systemEmergencyStopParamsSchema,
     result: systemEmergencyStopResultSchema,
   },
+  // J24 handoff fence (service-handoff.ts). Loopback, daemon credential only.
+  "system.serviceHandoffFence": {
+    params: serviceHandoffFenceParamsSchema,
+    result: serviceHandoffFenceResultSchema,
+  },
   // A diagnostic and test-harness read. Clients receive the same snapshot from
   // `system.hello` on every connection and resync through it after a reconnect,
   // so a client with no call to this method is behaving normally, not missing one.
   "workspace.get": { params: z.object({}).strict(), result: workspaceSnapshotSchema },
   "session.evidence": { params: sessionEvidenceParamsSchema, result: sessionEvidenceSchema },
   "session.history": { params: sessionHistoryParamsSchema, result: sessionHistoryPageSchema },
+  "session.search": { params: sessionSearchParamsSchema, result: sessionSearchResultSchema },
   "audit.query": { params: auditQueryParamsSchema, result: auditQueryPageSchema },
   "audit.export": { params: auditExportParamsSchema, result: auditExportResultSchema },
   "skill.list": { params: z.object({}).strict(), result: skillSummariesSchema },
@@ -1537,6 +1655,22 @@ export const rpcMethods = {
 
 export type RpcMethod = keyof typeof rpcMethods
 
+// Every notification the daemon sends, with the schema of its params. The
+// daemon checks each payload against this map before it sends, and the wire
+// record fingerprints the same map.
+export const notificationMethods = {
+  "workspace.changed": workspaceSnapshotSchema,
+  "workspace.delta": workspaceDeltaSchema,
+  "terminal.output": terminalOutputNotificationSchema,
+  "terminal.closed": terminalClosedNotificationSchema,
+  "terminal.ownership": terminalOwnershipNotificationSchema,
+  "fleet.changed": fleetChangedNotificationSchema,
+  "system.emergencyStopped": systemEmergencyStoppedNotificationSchema,
+} as const
+
+export type NotificationMethod = keyof typeof notificationMethods
+export type NotificationParams<M extends NotificationMethod> = z.input<(typeof notificationMethods)[M]>
+
 export type RpcMethodAuthorization = "observe" | "control"
 
 export const rpcMethodAuthorizations = {
@@ -1548,6 +1682,9 @@ export const rpcMethodAuthorizations = {
   "terminal.input": "control",
   "terminal.resize": "control",
   "terminal.close": "control",
+  "terminal.list": "observe",
+  "terminal.watch": "observe",
+  "terminal.unwatch": "observe",
   "fleet.list": "observe",
   "fleet.clientRoute": "control",
   "fleet.enroll": "control",
@@ -1576,9 +1713,11 @@ export const rpcMethodAuthorizations = {
   "device.rename": "control",
   "system.pauseAll": "control",
   "system.emergencyStop": "control",
+  "system.serviceHandoffFence": "control",
   "workspace.get": "observe",
   "session.evidence": "observe",
   "session.history": "observe",
+  "session.search": "observe",
   "audit.query": "observe",
   "audit.export": "observe",
   "skill.list": "observe",
@@ -1638,6 +1777,9 @@ export const rpcMethodMutations = {
   "terminal.input": "read-only",
   "terminal.resize": "read-only",
   "terminal.close": "read-only",
+  "terminal.list": "read-only",
+  "terminal.watch": "read-only",
+  "terminal.unwatch": "read-only",
   "fleet.list": "read-only",
   "fleet.heartbeat": "read-only",
   "session.transferPreview": "read-only",
@@ -1648,6 +1790,7 @@ export const rpcMethodMutations = {
   "fleet.clientRoute": "read-only",
   "session.evidence": "read-only",
   "session.history": "read-only",
+  "session.search": "read-only",
   "session.usage": "read-only",
   "usage.window": "read-only",
   "audit.query": "read-only",
@@ -1683,6 +1826,8 @@ export const rpcMethodMutations = {
   "transfer.abort": "mutating",
   "system.pauseAll": "mutating",
   "system.emergencyStop": "mutating",
+  // The fence lives in the daemon process and ends with it; nothing is written.
+  "system.serviceHandoffFence": "read-only",
   "skill.setEnabled": "mutating",
   "skill.review": "mutating",
   "skill.install": "mutating",
@@ -1742,15 +1887,17 @@ export function isRefusedWithoutPersistence(method: RpcMethod): boolean {
 // The line says Domovoi does not carry the repository to the phone, not that
 // a phone holds no influence over a machine that already has it.
 //
-// The first line is not fully built. Live terminal output is broadcast to
-// every client and so needs no method here, but existing output and terminal
-// metadata are returned only by terminal.create, which also spawns a shell
-// and stays out. A handheld joining a running terminal sees what arrives
-// next, not what came before. A read-only attach path would close that; until
-// it exists the phone's pairing screen says so.
+// The first line's terminal half is the three read-only terminal methods:
+// list a session's terminals, watch one (its kept output, then live output
+// until unwatch or disconnect), and unwatch. terminal.create, claim, input,
+// resize and close stay out: a handheld reads the shell, and only the one
+// connection holding the claim types into it, resizes it or ends it.
 export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
   // Watch.
   "system.hello",
+  "terminal.list",
+  "terminal.watch",
+  "terminal.unwatch",
   "device.current",
   "workspace.get",
   "session.history",
@@ -1788,17 +1935,19 @@ export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
   "skill.list",
 ])
 
-// The pairing card's grant list, verbatim from step 10 of the v2 desktop
-// design, in the order and on the ramps it draws them. The unbuilt line is one
-// of the grants rather than a note correcting them, because a drawing that
-// needs a footnote to stop being wrong is a drawing that should have said it.
-// Every surface showing the list reads it from here, so the machine's card,
-// the CLI and the phone cannot come to say different things.
+// The pairing card's grant list, verbatim from PairingCard in the 2026-09-23
+// desktop design, in the order it draws them. The unbuilt line is one of the
+// grants rather than a note correcting them, because a drawing that needs a
+// footnote to stop being wrong is a drawing that should have said it. Every
+// surface showing the list reads it from here, so the machine's card, the CLI
+// and the phone cannot come to say different things. The gates-while-open line
+// is a limit of the first release: without the relay nothing is pushed.
 export const phoneAndTabletPromise = [
   { text: "Watch every session and its diffs", tone: "granted" },
   { text: "Answer gates, with the same three decisions", tone: "granted" },
   { text: "Start and stop sessions, and steer one mid-run", tone: "granted" },
-  { text: "Terminal output is not on a phone yet. Everything else here works.", tone: "unbuilt" },
+  { text: "Gates reach it only while its app is open. Nothing is pushed to a phone yet.", tone: "limit" },
+  { text: "Terminal output is not on a phone yet.", tone: "unbuilt" },
   { text: "It cannot pull the repository down. Files stay here.", tone: "limit" },
 ] as const satisfies readonly { text: string, tone: "granted" | "unbuilt" | "limit" }[]
 
@@ -1810,6 +1959,10 @@ export type RpcNotification = z.infer<typeof rpcNotificationSchema>
 export type ArtifactAccess = z.infer<typeof artifactAuthorizeResultSchema>
 export type ArtifactAccessPurpose = z.infer<typeof artifactAccessPurposeSchema>
 export type TerminalSession = z.infer<typeof terminalSessionSchema>
+export type TerminalSummary = z.infer<typeof terminalSummarySchema>
+export type TerminalWatchResult = z.infer<typeof terminalWatchResultSchema>
+export type SessionSearchMatch = z.infer<typeof sessionSearchMatchSchema>
+export type SessionSearchResult = z.infer<typeof sessionSearchResultSchema>
 export type TerminalOwner = z.infer<typeof terminalOwnerSchema>
 export type TerminalOutputNotification = z.infer<typeof terminalOutputNotificationSchema>
 export type TerminalClosedNotification = z.infer<typeof terminalClosedNotificationSchema>

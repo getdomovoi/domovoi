@@ -118,7 +118,47 @@ describe("App", () => {
 
     const sent = socket.requests("approval.resolve")
     expect(sent).toHaveLength(1)
-    expect(sent[0]?.params).toMatchObject({ approvalId: approval.id, decision: "allow-once" })
+    expect(sent[0]?.params).toMatchObject({ approvalId: approval.id, decision: "allow-once", revision: 0 })
+  })
+
+  // Round 4 on #545: the daemon rewrites a file card when the file it reaches
+  // moves, and refuses an Allow that names the card as it was. The phone shows
+  // the card it was last sent and answers with that card's revision.
+  it("shows the file a rewritten gate reaches and answers with the revision it shows", async () => {
+    const raised = workspace()
+    raised.approvals[0]!.command = "Edit"
+    raised.approvals[0]!.affects = "The file one/file in the session worktree."
+    const { socket } = await openApp(raised)
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    expect(screen.getByText("The file one/file in the session worktree.")).toBeOnTheScreen()
+
+    const rewritten = structuredClone(raised)
+    rewritten.approvals[0]!.affects = "The file two/file in the session worktree."
+    rewritten.approvals[0]!.revision = 1
+    await act(async () => { socket.push("workspace.changed", rewritten) })
+    await settle()
+    expect(screen.getByText("The file two/file in the session worktree.")).toBeOnTheScreen()
+    expect(screen.queryByText("The file one/file in the session worktree.")).toBeNull()
+
+    await fireEvent.press(screen.getByRole("button", { name: "Allow once" }))
+    await settle()
+    expect(socket.requests("approval.resolve").map((frame) => frame.params)).toEqual([
+      { approvalId: approval.id, decision: "allow-once", revision: 1 },
+    ])
+  })
+
+  it("names the revision of the gate it denies with a reason", async () => {
+    const raised = workspace()
+    raised.approvals[0]!.revision = 2
+    const { socket } = await openApp(raised)
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    await fireEvent.press(screen.getByRole("button", { name: "Deny" }))
+    await fireEvent.changeText(screen.getByLabelText("Reason sent to the agent"), "Use staging first")
+    await fireEvent.press(screen.getByRole("button", { name: "Send denial" }))
+    await settle()
+    expect(socket.requests("approval.resolve").map((frame) => frame.params)).toEqual([
+      { approvalId: approval.id, decision: "deny-explain", explanation: "Use staging first", revision: 2 },
+    ])
   })
 
   it("keeps the gate on screen with the reason when the daemon refuses the answer", async () => {
