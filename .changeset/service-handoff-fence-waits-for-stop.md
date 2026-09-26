@@ -18,3 +18,8 @@ once its state is saved. If the process ends before that save (a crash, a kill, 
 the next start on the same store records `Emergency stop requested by <client>.` on each session
 the stop touched before it accepts any connection. Startup recovery already ends the interrupted
 turns and expires the waiting gates. A start whose save of that record fails does not open.
+
+A stop finished at restart now leaves each session as a completed stop leaves it: a dispatch the
+stop caught in flight has its provider thread reset and its session marked failed. A journal row
+that does not read back no longer keeps the daemon from starting: it is moved whole to a separate
+table, reported once, and the readable stops are still finished.

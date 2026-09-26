@@ -9942,11 +9942,23 @@ export class DomovoiDaemon {
     }
     for (const approval of this.#snapshot.approvals) affectedSessionIds.add(approval.sessionId)
     for (const terminal of this.#terminals.values()) affectedSessionIds.add(terminal.sessionId)
+    const activeThreadKeys = new Set(active.map((session) =>
+      providerThreadKey(session.runtime.provider, session.providerThreadId!),
+    ))
+    const inFlightThreads = [...this.#inFlightProviderThreads]
+      .filter(([threadKey]) => !activeThreadKeys.has(threadKey))
+      .map(([threadKey, sessionId]) => {
+        const [provider = "", providerThreadId = ""] = threadKey.split("\u0000", 2)
+        return { sessionId, provider, providerThreadId }
+      })
     // Security review round 2 of #628: durable before the first effect, so a
     // restart on this store finishes a stop the process did not live to save.
-    // A stop is never refused for want of it.
+    // A stop is never refused for want of it: it runs, and its result names
+    // the persistence failure, so it does not read as a clean stop (round 3).
     try {
-      this.#store.emergencyStops?.begin({ version: 1, stopId, client, requestedAt, sessionIds: [...affectedSessionIds] })
+      this.#store.emergencyStops?.begin({
+        version: 1, stopId, client, requestedAt, sessionIds: [...affectedSessionIds], inFlight: inFlightThreads,
+      })
     } catch (error) {
       failures.push({
         target: "persistence",
@@ -10014,9 +10026,6 @@ export class DomovoiDaemon {
 
     let turnsStopped = 0
     let providersReset = 0
-    const activeThreadKeys = new Set(active.map((session) =>
-      providerThreadKey(session.runtime.provider, session.providerThreadId!),
-    ))
     const turnResults = await Promise.allSettled(active.map((session) =>
       withTimeout(
         this.#agents.require(session.runtime.provider).interruptTurn(
@@ -10507,20 +10516,38 @@ export class DomovoiDaemon {
   // Security review round 2 of #628: a stop whose intent outlived its process
   // is finished here, before the listener opens, so no RPC and no handoff
   // fence meets it half done. Recovery above has already ended the turns the
-  // stop was stopping and expired the gates it was denying; what is left is
+  // stop was stopping and expired the gates it was denying. What is left is
+  // what a completed stop does with a provider that is gone: a running turn's
+  // interrupt has nothing left to stop, which leaves the session idle with
+  // its thread (as recovery left it); a dispatch caught in flight has its
+  // thread reset, which leaves the session failed without it (round 3). Then
   // the stop's record on each session it touched. A stop already recorded
-  // (its own save, or a later one, landed) is not recorded again. A failed
-  // save here fails startup and keeps the intent for the next one.
+  // (its own save, or a later one, landed) is not finished again. A failed
+  // save here fails startup and keeps the intent for the next one. A journal
+  // row that does not read back is set aside by the journal and reported.
   #recoverEmergencyStops(): void {
     const journal = this.#store.emergencyStops
-    const intents = journal?.pending() ?? []
-    if (!journal || intents.length === 0) return
+    if (!journal) return
+    const { intents: entries, setAside } = journal.pending()
+    for (const { key, reason } of setAside) {
+      this.#reportError("Domovoi set aside an unreadable emergency stop intent", new Error(`${key}: ${reason}`))
+    }
+    if (entries.length === 0) return
     const candidate = structuredClone(this.#snapshot)
-    for (const intent of intents) {
+    for (const { intent } of entries) {
       const lineId = (sessionId: string) => `system-${intent.stopId}-${sessionId}`
       const recorded = candidate.thread.some((item) => item.kind === "system"
         && (item.detail?.startsWith(`${intent.stopId}:`) || item.id.startsWith(`system-${intent.stopId}-`)))
       if (recorded) continue
+      for (const dispatch of intent.inFlight ?? []) {
+        const session = candidate.sessions.find(({ id }) => id === dispatch.sessionId)
+        if (!session) continue
+        session.updatedAt = intent.requestedAt
+        session.state = "failed"
+        if (session.runtime.provider === dispatch.provider && session.providerThreadId === dispatch.providerThreadId) {
+          delete session.providerThreadId
+        }
+      }
       for (const sessionId of intent.sessionIds) {
         const session = candidate.sessions.find(({ id }) => id === sessionId)
         if (!session || sessionIsReadOnly(session)) continue
@@ -10536,7 +10563,7 @@ export class DomovoiDaemon {
     workspaceSnapshotSchema.parse(candidate)
     this.#store.save(candidate)
     this.#snapshot = candidate
-    for (const intent of intents) journal.clear(intent.stopId)
+    for (const { key } of entries) journal.clear(key)
   }
 
   // `storedApprovalIds` names cards read from storage when startup resumes an

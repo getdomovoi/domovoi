@@ -1,5 +1,6 @@
 import { demoWorkspace, protocolVersion, serviceHandoffRefusal, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { execFileSync } from "node:child_process"
+import { DatabaseSync } from "node:sqlite"
 import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -9,7 +10,7 @@ import WebSocket from "ws"
 import type { AgentEvent } from "./agents.js"
 import type { AgentAdapter } from "./codex.js"
 import { holdServiceHandoffFence, readLocalServiceHandoffRefusal } from "./local-service-handoff.js"
-import { DomovoiDaemon, serviceHandoffFencedMessage, serviceHandoffStopRefusal } from "./server.js"
+import { DomovoiDaemon, serviceHandoffFencedMessage, serviceHandoffStopRefusal, type DaemonErrorSink } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import type { TerminalProcess } from "./terminal.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -621,6 +622,36 @@ function heldSaves() {
   return { wrap, hold }
 }
 
+const stopRecorded = (snapshot: WorkspaceSnapshot) => snapshot.thread.some((item) => item.kind === "system" && item.body.startsWith("Emergency stop requested"))
+
+const endpointOf = (address: { host: string; port: number }, daemon: DomovoiDaemon) => ({ url: `ws://${address.host}:${address.port}/rpc`, token: daemon.authToken })
+
+async function stateFile(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "domovoi-fence-state-"))
+  scratchDirectories.push(directory)
+  return join(directory, "workspace.sqlite")
+}
+
+// A daemon on a store file, so a later daemon can start on what it left, as a
+// restart does. It is not started here.
+async function daemonOnFile(statePath: string, workspace: WorkspaceSnapshot, options: {
+  wrap?: (store: SqliteWorkspaceStore) => SqliteWorkspaceStore
+  heldTurns?: boolean
+  errorSink?: DaemonErrorSink
+} = {}) {
+  const profileDirectory = await mkdtemp(join(tmpdir(), "domovoi-fence-"))
+  scratchDirectories.push(profileDirectory)
+  const { agent, emit } = agentWithHeldTurns(options.heldTurns ?? false)
+  const store = new SqliteWorkspaceStore(statePath, workspace)
+  const daemon = new DomovoiDaemon({
+    port: 0, store: options.wrap ? options.wrap(store) : store, profileDirectory, agent,
+    skillCatalog: { list: async () => [], read: async () => { throw new Error("No skills here") } },
+    ...(options.errorSink ? { errorSink: options.errorSink } : {}),
+  })
+  daemons.push(daemon)
+  return { daemon, agent, emit }
+}
+
 // Security review of #577: an emergency stop denies gates and interrupts
 // turns before it saves its state. A fence asked for in that gap found nothing
 // in flight and was granted, so a handoff could stop the daemon mid-stop.
@@ -788,19 +819,7 @@ describe("the service handoff fence and an emergency stop", () => {
     const statePath = join(await mkdtemp(join(tmpdir(), "domovoi-fence-state-")), "workspace.sqlite")
     scratchDirectories.push(dirname(statePath))
     const stopLine = { sessionId, kind: "system", body: "Emergency stop requested by desktop." }
-    const stopRecorded = (snapshot: WorkspaceSnapshot) => snapshot.thread.some((item) => item.kind === "system" && item.body.startsWith("Emergency stop requested"))
-    const onFile = async (wrap: (store: SqliteWorkspaceStore) => SqliteWorkspaceStore = (store) => store) => {
-      const profileDirectory = await mkdtemp(join(tmpdir(), "domovoi-fence-"))
-      scratchDirectories.push(profileDirectory)
-      const { agent, emit } = agentWithHeldTurns(false)
-      const daemon = new DomovoiDaemon({
-        port: 0, store: wrap(new SqliteWorkspaceStore(statePath, workspace)), profileDirectory, agent,
-        skillCatalog: { list: async () => [], read: async () => { throw new Error("No skills here") } },
-      })
-      daemons.push(daemon)
-      return { daemon, agent, emit }
-    }
-    const endpointOf = (address: { host: string; port: number }, daemon: DomovoiDaemon) => ({ url: `ws://${address.host}:${address.port}/rpc`, token: daemon.authToken })
+    const onFile = (wrap?: (store: SqliteWorkspaceStore) => SqliteWorkspaceStore) => daemonOnFile(statePath, workspace, { ...(wrap ? { wrap } : {}) })
 
     // The first daemon raises a gate, then a stop runs and is cut off at its
     // save: that save never reaches the file, as if the process had ended.
@@ -848,6 +867,131 @@ describe("the service handoff fence and an emergency stop", () => {
       // The first daemon's save fails, so it writes nothing over the file.
       save.release("fails")
     }
+  })
+
+  // Security review round 3 of #628: a stop finished at restart must leave
+  // each session as a completed stop leaves it. A completed stop resets the
+  // provider thread of a dispatch it caught in flight and marks the session
+  // failed, so no later send resumes that thread. A restart has no provider
+  // left to reset, which is the reset's own outcome.
+  it("leaves a dispatch caught in flight as a completed stop leaves it when the stop is finished at restart", async () => {
+    const sessionState = (snapshot: WorkspaceSnapshot, id: string) => {
+      const { state, providerThreadId, activeTurnId } = snapshot.sessions.find((candidate) => candidate.id === id)!
+      return { state, providerThreadId, activeTurnId }
+    }
+    const dispatching = async (daemon: DomovoiDaemon, agent: AgentAdapter, sessionId: string) => {
+      const endpoint = endpointOf(await daemon.start(), daemon)
+      // The send waits on its own connection, which answers in order, and a
+      // new connection's hello would wait behind the send, so both open first.
+      const sender = await desktopConnection(endpoint)
+      const reader = await desktopConnection(endpoint)
+      void sender("session.send", { sessionId, prompt: "go", client: "desktop" })
+      await waitForDaemon(() => expect(agent.startTurn).toHaveBeenCalledOnce())
+      return reader
+    }
+
+    // A completed stop.
+    const completedCase = await readySession()
+    const completed = await daemonOnFile(await stateFile(), completedCase.workspace, { heldTurns: true })
+    const completedReader = await dispatching(completed.daemon, completed.agent, completedCase.sessionId)
+    const stopped = await completedReader("system.emergencyStop", { client: "desktop" })
+    expect(stopped.result).toMatchObject({ failures: [] })
+    // The state the stop left, as its result carries it: the held dispatch
+    // stays unanswered, as a provider that is gone never answers.
+    const expected = sessionState((stopped.result as { snapshot: WorkspaceSnapshot }).snapshot, completedCase.sessionId)
+    expect(expected).toEqual({ state: "failed", providerThreadId: undefined, activeTurnId: undefined })
+
+    // The same stop, cut off at its save, then finished by a restart.
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    const saves = heldSaves()
+    const first = await daemonOnFile(statePath, workspace, { wrap: saves.wrap, heldTurns: true })
+    const reader = await dispatching(first.daemon, first.agent, sessionId)
+    const save = saves.hold(stopRecorded)
+    void reader("system.emergencyStop", { client: "desktop" })
+    try {
+      await save.reached
+      const second = await daemonOnFile(statePath, workspace)
+      const after = (await (await desktopConnection(endpointOf(await second.daemon.start(), second.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+      expect(sessionState(after, sessionId)).toEqual(expected)
+    } finally {
+      save.release("fails")
+    }
+  })
+
+  // Security review round 3 of #628: a stop whose intent
+  // cannot be written still runs, and its result names the persistence
+  // failure, so it is not reported as a clean stop.
+  it("still stops when its intent cannot be written, and reports the persistence failure", async () => {
+    const { workspace, sessionId } = await readySession()
+    const session = workspace.sessions.find(({ id }) => id === sessionId)!
+    session.runtime.permissionMode = "ask"
+    session.runtime.auto = false
+    const first = await daemonOnFile(await stateFile(), workspace, {
+      wrap: (store) => {
+        store.emergencyStops.begin = () => { throw new Error("The intent write failed") }
+        return store
+      },
+      errorSink: () => {},
+    })
+    const reader = await desktopConnection(endpointOf(await first.daemon.start(), first.daemon))
+    first.emit({ type: "approval-requested", requestId: 7, threadId: "thread-fence", command: "rm -rf build", cwd: session.workspacePath!, reason: "Remove the build output" })
+    await waitForDaemon(async () => {
+      const read = (await reader("workspace.get", {})).result as WorkspaceSnapshot
+      expect(read.approvals).toMatchObject([{ sessionId, providerRequestId: 7 }])
+    })
+    const stopped = await reader("system.emergencyStop", { client: "desktop" })
+    expect(stopped.result).toMatchObject({
+      outcomes: { approvalsDenied: 1 },
+      failures: [expect.objectContaining({ target: "persistence" })],
+    })
+    expect(first.agent.resolveApproval).toHaveBeenCalledWith(7, "deny")
+  })
+
+  // Security review round 3 of #628: a journal row that does not read back
+  // must not keep the daemon from starting, and must not cost a readable stop
+  // its finish. An unreadable row is moved aside, kept whole, and reported
+  // once; a row whose key disagrees with its record is still a stop, and is
+  // finished from its record.
+  it("starts past an unreadable journal row, keeps it aside, and still finishes the readable stops", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    const seeded = new SqliteWorkspaceStore(statePath, workspace)
+    const intent = (stopId: string) => ({ version: 1 as const, stopId, client: "desktop" as const, requestedAt: "2026-09-26T10:00:00.000Z", sessionIds: [sessionId] })
+    const readable = `stop-${"1".repeat(8)}-1111-4111-8111-${"1".repeat(12)}`
+    const mismatched = `stop-${"2".repeat(8)}-2222-4222-8222-${"2".repeat(12)}`
+    seeded.emergencyStops.begin(intent(readable))
+    await seeded.close()
+    const database = new DatabaseSync(statePath)
+    try {
+      database.prepare("INSERT INTO emergency_stop_intents (stop_id, record) VALUES (?, ?)").run("stop-unreadable", "{ not json")
+      database.prepare("INSERT INTO emergency_stop_intents (stop_id, record) VALUES (?, ?)").run("stop-other-key", JSON.stringify(intent(mismatched)))
+    } finally {
+      database.close()
+    }
+
+    const reports: string[] = []
+    const first = await daemonOnFile(statePath, workspace, { errorSink: (entry) => { reports.push(entry.context) } })
+    const after = (await (await desktopConnection(endpointOf(await first.daemon.start(), first.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    const lines = after.thread.filter((item) => item.kind === "system" && item.sessionId === sessionId && item.body === "Emergency stop requested by desktop.")
+    expect(lines).toHaveLength(2)
+    expect(reports.filter((context) => context === "Domovoi set aside an unreadable emergency stop intent")).toHaveLength(1)
+    await first.daemon.stop()
+
+    const kept = new DatabaseSync(statePath, { readOnly: true })
+    try {
+      expect(kept.prepare("SELECT stop_id, record FROM emergency_stop_intent_quarantine").all()).toEqual([
+        expect.objectContaining({ stop_id: "stop-unreadable", record: "{ not json" }),
+      ])
+      expect(kept.prepare("SELECT stop_id FROM emergency_stop_intents").all()).toEqual([])
+    } finally {
+      kept.close()
+    }
+
+    const again: string[] = []
+    const second = await daemonOnFile(statePath, workspace, { errorSink: (entry) => { again.push(entry.context) } })
+    await second.daemon.start()
+    expect(again).not.toContain("Domovoi set aside an unreadable emergency stop intent")
   })
 })
 
