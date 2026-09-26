@@ -60,6 +60,18 @@ test("the packed plan uses reviewed bytes, ordered packages and the alpha tag", 
   assert.deepEqual(await verify(), result)
 })
 
+// release:github compares this value with npm's dist.integrity, which is the
+// Subresource Integrity form of the tarball: sha512- and the base64 digest.
+test("records each archive's integrity in the form npm reports", async (t) => {
+  const { root, prepare } = await releaseFixture(t)
+  const result = await prepare()
+  assert.equal(result.packages.length, names.length)
+  for (const pkg of result.packages) {
+    const bytes = await readFile(join(root, "release", pkg.archive))
+    assert.equal(pkg.integrity, `sha512-${digest(bytes, "sha512", "base64")}`, pkg.name)
+  }
+})
+
 test("a changed archive refuses before a publish plan is written", async (t) => {
   const { root, put, prepare } = await releaseFixture(t)
   await put(`release/getdomovoi-daemon-${version}.tgz`, "substituted")
