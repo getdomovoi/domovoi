@@ -1810,7 +1810,8 @@ function collapsedIndex(text: string, length: number): number {
 // separator in it, however the name was split around the beat, make what
 // follows that name's value, and the value is shown as the replacement. It
 // only ever hides text main would show, so nothing main hides is shown.
-export class TerminalOutputRedactor {
+// It runs unchanged as the first stage of TerminalOutputRedactor below.
+class MainTerminalRedactor {
   readonly #held = new HeldTailRedactor()
   // The end of the current line as shown, kept whether or not a beat has
   // released anything, so a name shown before the beat is still in view.
@@ -2055,5 +2056,490 @@ export class TerminalOutputRedactor {
     this.#separatorAt = -1
     this.#noValueEnding = !value
     return value ? valueEndingRead(value[1] ?? "") : undefined
+  }
+}
+
+// Reads terminal control sequences one character at a time, so a sequence
+// split across reads is followed: ESC, then [ and a CSI sequence such as the
+// colour ESC[1m or the cursor move ESC[8C, ] and an OSC string up to BEL or
+// ESC \, or a two-character escape. A line break ends an OSC string that has
+// not closed. They change how a line looks, not what it says, and so do
+// control characters other than tab, line feed and carriage return.
+type ControlState = "none" | "escape" | "csi" | "osc" | "oscEscape"
+
+class ControlReader {
+  #state: ControlState = "none"
+
+  // Whether the character with this code is part of a control sequence or is
+  // a control character other than tab, line feed and carriage return.
+  invisible(code: number): boolean {
+    switch (this.#state) {
+      case "escape":
+        if (code === 0x5b) {
+          this.#state = "csi"
+          return true
+        }
+        if (code === 0x5d) {
+          this.#state = "osc"
+          return true
+        }
+        if (code >= 0x20 && code <= 0x2f) return true
+        this.#state = "none"
+        if (code >= 0x30 && code <= 0x7e) return true
+        break
+      case "csi":
+        if (code >= 0x20 && code <= 0x3f) return true
+        this.#state = "none"
+        if (code >= 0x40 && code <= 0x7e) return true
+        break
+      case "osc":
+        if (code === 0x07) {
+          this.#state = "none"
+          return true
+        }
+        if (code === 0x1b) {
+          this.#state = "oscEscape"
+          return true
+        }
+        if (code !== 0x0a && code !== 0x0d) return true
+        this.#state = "none"
+        break
+      case "oscEscape":
+        // ESC \ closes the string; an ESC followed by anything else starts a
+        // sequence of its own.
+        if (code === 0x5c) {
+          this.#state = "none"
+          return true
+        }
+        this.#state = "escape"
+        return this.invisible(code)
+      case "none":
+        break
+    }
+    if (code === 0x1b) {
+      this.#state = "escape"
+      return true
+    }
+    return (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || code === 0x7f
+  }
+}
+
+// A name and its separator at the end of a line as it reads on screen, as
+// main's value patterns find them, with nothing required after them yet.
+const screenNames = valuePatterns.map((pattern) => {
+  const source = pattern.start.source.replace(valueStart, "").replace(structuredValueStart, "")
+  if (source === pattern.start.source) throw new Error("a value pattern must end in its value's lookahead")
+  return { pattern, atEnd: new RegExp(`(?:${source})$`, "iu") }
+})
+
+// Where a bare token's prefix ends: the prefix at the start of a word.
+const tokenPrefixAtEnd = /(?<![A-Za-z0-9_])(?:(?:sk|ghp|gho|github_pat|xox[baprs])[-_]|eyJ)$/u
+
+// A token's alphabet, the dot of a JWT included.
+function isTokenCharacter(code: number): boolean {
+  return isNameCharacter(code, false)
+}
+
+// How the screen reader marks a raw character.
+type Kind = 0 | 1 | 2
+const keptKind: Kind = 0
+const markedKind: Kind = 1
+const syntaxKind: Kind = 2
+
+// A name and separator found on the screen's line, and their value's reading,
+// undefined while the value has not started.
+// quoted: the value is inside a quote or array whose opener and closer are
+// shown around the replacement, as main shows them: one the value opened
+// with, or one opened right before the name. read: how many of the value's
+// characters have been read. counting: a counting name's value, which main
+// shows when it is a complete count and hides otherwise; it is read, so that
+// its quotes are followed, and left to main.
+// deep: the value nests past screenNesting, so its reading is dropped and
+// the rest of it is hidden until the reader starts again.
+type ScreenValue = {
+  delimiter: RegExp, enclosing: GroupingName | undefined, state: ValueState | undefined, quoted: boolean, read: number, counting: boolean,
+  deep: boolean,
+}
+
+// How deep a value's quotes and constructs may nest while the screen reads
+// it, as many as the raw text it keeps. Past this, where the value ends
+// cannot be told without keeping every opener, so the rest of the output is
+// hidden up to the end of the output.
+const screenNesting = 16_384
+
+// What main may write right after a replacement: the closer of the quote or
+// construct the replaced value was in.
+const replacementClosers = ["'", "\"", ")", "}", "`"]
+
+// The screen reads raw text in pieces of this size, lining main's output up
+// with each before it reads the next, so a long read is never kept whole.
+const screenPiece = 4_096
+// Once main's output for a read is lined up, main shows raw text again only
+// from its carry, so raw text older than this is never shown again.
+const screenKept = 4 * terminalRedactionCarryCharacters
+// How far the screen reads past a value that may still go on while it looks
+// for where main goes on after a replacement.
+const screenLookahead = 8_192
+
+// The second stage of the terminal redactor (#608). It reads the raw
+// terminal stream as it reads on screen: control sequences and control
+// characters are not part of the line, a carriage return is a line break
+// that a name and separator still waiting for their value wait across, and an
+// idle beat does not matter at all. It marks the characters of the values
+// that main's value patterns find on that line, read by the same reader as
+// main's values (so a backslash escapes the next character inside single
+// quotes too), and the characters of a bare token after its prefix, however
+// long. Then it lines what main shows up with the raw stream and takes the
+// marked characters off it, a run of them becoming one replacement. It only
+// ever removes characters from what main shows, so it hides at least what
+// main hides. Main's replacements stand for text that is no longer there:
+// after one, main's output is found again in the raw stream by what it shows
+// next.
+class ScreenReader {
+  #controls = new ControlReader()
+  // The current line as it reads on screen, and where in it the last value
+  // read ended.
+  #line = ""
+  #valueEnded = 0
+  // A name and separator found, and their value: its reading, or undefined
+  // while it has not started.
+  #value: ScreenValue | undefined
+  // The end of the current run of token characters, and whether it holds a
+  // bare token's prefix.
+  #word = ""
+  #token = false
+  // The raw text not yet lined up with what main shows, and for each of its
+  // characters: marked, syntax (a space, separator or control sequence
+  // between a name and its value, or a quote around a value: never marked),
+  // or neither.
+  #pending = ""
+  #kinds: Kind[] = []
+  // A replacement or a left-out part of the raw text ended what was lined up:
+  // where main goes on is found by what it shows next.
+  #resuming = false
+  // What was shown last is a replacement.
+  #replaced = false
+
+  // Whether this raw character is part of a value or of a bare token after
+  // its prefix.
+  #mark(character: string): Kind {
+    const code = character.charCodeAt(0)
+    if (this.#controls.invisible(code)) {
+      const value = this.#value
+      return (value !== undefined && (value.deep || (value.state !== undefined && !value.counting))) || this.#token ? markedKind : syntaxKind
+    }
+    const value = this.#value
+    if (value?.deep === true) {
+      if (character === "\n" || character === "\r") this.#newLine()
+      else this.#see(character, code)
+      return markedKind
+    }
+    if (value !== undefined) {
+      if (value.state === undefined) {
+        // A name and separator wait for their value across spaces, and across
+        // a carriage return, which redraws the line.
+        if (character === " " || character === "\t" || character === "\r") {
+          if (character === "\r") this.#newLine()
+          return syntaxKind
+        }
+        // A separator after a flag and its space (-Dx.token = value) is still
+        // the name's syntax, and so is a doubled one, which main hides with
+        // the value.
+        if (character === "=" || character === ":") {
+          this.#see(character, code)
+          return syntaxKind
+        }
+        value.state = valueStartState(value.delimiter, value.enclosing)
+        value.quoted = value.enclosing !== undefined
+      }
+      if (readValue(character, 0, value.state).end < 0) {
+        this.nesting = Math.max(this.nesting, value.state.stack.length)
+        if (value.state.stack.length >= screenNesting) {
+          // Too deep to follow: the reading is let go, and the rest is hidden.
+          value.deep = true
+          value.state = undefined
+          if (character === "\n" || character === "\r") this.#newLine()
+          else this.#see(character, code)
+          return markedKind
+        }
+        if (character === "\n" || character === "\r") this.#newLine()
+        else this.#see(character, code)
+        value.read += 1
+        if (value.counting) return keptKind
+        if (value.enclosing === undefined && value.read <= 2 && !value.quoted && value.state.stack.length === 1 && !value.state.word) {
+          // The value opened with a quote or an array's (, $' and $" among
+          // them: the opener is shown.
+          value.quoted = true
+          if (value.read === 2) this.#kinds[this.#kinds.length - 1] = syntaxKind
+          return syntaxKind
+        }
+        if (value.quoted && value.state.stack.length === 0) {
+          value.quoted = false
+          return syntaxKind
+        }
+        return markedKind
+      }
+      this.#value = undefined
+      this.#valueEnded = this.#line.length
+    }
+    if (character === "\n" || character === "\r") {
+      this.#newLine()
+      return keptKind
+    }
+    const token = this.#see(character, code)
+    if (/[=:\s]/u.test(character)) this.#value = this.#nameEnding()
+    return token ? markedKind : keptKind
+  }
+
+  // Adds a visible character to the line and the word; whether it is part of
+  // a bare token after its prefix.
+  #see(character: string, code: number): boolean {
+    this.#line += character
+    if (this.#line.length > 2 * terminalRedactionCarryCharacters) {
+      this.#valueEnded -= this.#line.length - terminalRedactionCarryCharacters
+      this.#line = this.#line.slice(-terminalRedactionCarryCharacters)
+    }
+    if (!isTokenCharacter(code)) {
+      this.#word = ""
+      this.#token = false
+      return false
+    }
+    if (this.#token) return true
+    this.#word = `${this.#word}${character}`.slice(-16)
+    this.#token = tokenPrefixAtEnd.test(this.#word)
+    return false
+  }
+
+  #newLine(): void {
+    this.#line = ""
+    this.#valueEnded = 0
+    this.#word = ""
+    this.#token = false
+  }
+
+  // A name and separator at the end of the line, as main's value patterns
+  // find them. A counting name's value is read but not marked: main shows a
+  // complete count and hides anything else.
+  #nameEnding(): ScreenValue | undefined {
+    const tail = this.#line.slice(-2 * nameWordLength - terminalRedactionCarryCharacters)
+    if (!sensitiveWord.test(tail.slice(-2 * nameWordLength))) return undefined
+    for (const { pattern, atEnd } of screenNames) {
+      const match = atEnd.exec(tail)
+      if (match === null) continue
+      const counting = countingName.test(nameOf(match[0]).name)
+      // A quote the value read last took, as its closer, opens nothing.
+      const matchAt = this.#line.length - tail.length + match.index
+      const quote = matchAt > this.#valueEnded ? openNameQuote(match[0], tail[match.index - 1]) : openNameQuote(match[0].replace(/^["']/u, ""))
+      return { delimiter: pattern.delimiter, enclosing: quote === undefined ? undefined : quoteNamed(quote), state: undefined, quoted: false, read: 0, counting, deep: false }
+    }
+    return undefined
+  }
+
+  // The most raw text kept at once, and the deepest a value's reading
+  // nested.
+  retained = 0
+  nesting = 0
+  // A marked character was left behind without being lined up since main's
+  // output was last found in the raw text.
+  #markedLeft = false
+
+  #readPiece(piece: string): void {
+    for (let at = 0; at < piece.length; at += 1) this.#kinds.push(this.#mark(piece[at]!))
+    this.#pending += piece
+    this.retained = Math.max(this.retained, this.#pending.length)
+  }
+
+  // Reads a raw read and what main shows for it together, a piece at a time,
+  // and returns what main shows with the marked characters taken off. Main's
+  // output lines up with raw text already read; more is read only when it
+  // runs out, and raw text main can no longer show is let go as it goes.
+  step(chunk: string, output: string): string {
+    let read = 0
+    const readPiece = (): boolean => {
+      if (read >= chunk.length) return false
+      const piece = chunk.slice(read, read + screenPiece)
+      read += piece.length
+      this.#readPiece(piece)
+      return true
+    }
+    let from = 0
+    // Lets go of the raw text before a point. Past what is lined up, main
+    // left it out, and where it goes on is found again.
+    const leave = (to: number) => {
+      if (to <= 0) return
+      if (to > from) {
+        if (this.#kinds.slice(from, to).includes(markedKind)) this.#markedLeft = true
+        this.#resuming = true
+      }
+      this.#pending = this.#pending.slice(to)
+      this.#kinds = this.#kinds.slice(to)
+      from = Math.max(0, from - to)
+    }
+    let shown = ""
+    const keep = (text: string) => {
+      if (text === "") return
+      shown += text
+      this.#replaced = false
+    }
+    const hide = () => {
+      if (!this.#replaced) shown += replacement
+      this.#replaced = true
+    }
+    // What cannot be lined up is shown only when nothing left unlined was
+    // marked; otherwise it is hidden, its line breaks kept.
+    const unlined = (text: string) => {
+      if (!this.#markedLeft && !this.#kinds.slice(from).includes(markedKind)) {
+        keep(text)
+        return
+      }
+      for (const part of text.split(/(\r\n|\r|\n)/u)) {
+        if (part === "") continue
+        if (/^[\r\n]+$/u.test(part)) keep(part)
+        else hide()
+      }
+    }
+    let at = 0
+    while (at < output.length) {
+      if (!this.#resuming) {
+        // One character of raw text is read ahead of what is lined up: $
+        // before a quote is the quote's opener, shown, not the value.
+        if (from + 1 >= this.#pending.length && read < chunk.length) {
+          leave(from)
+          readPiece()
+          continue
+        }
+        if (from < this.#pending.length && output[at] === this.#pending[from]) {
+          if (this.#kinds[from] === markedKind) hide()
+          else keep(output[at]!)
+          from += 1
+          at += 1
+          continue
+        }
+      }
+      if (output.startsWith(replacement, at)) {
+        hide()
+        at += replacement.length
+        this.#resuming = true
+        continue
+      }
+      if (!this.#resuming) {
+        // Main left out part of the raw text here without a replacement, as
+        // the rest of a value it drops.
+        this.#resuming = true
+        continue
+      }
+      const nextReplacement = output.indexOf(replacement, at)
+      let next = output.slice(at, Math.min(at + 64, nextReplacement < 0 ? output.length : nextReplacement))
+      let resume = this.#resumeAt(next, from)
+      // Not found yet, or found only inside a value that may still go on in
+      // raw text not yet read: read on, letting go of what cannot hold it.
+      if (read < chunk.length && (resume < 0 || this.#early(resume, from))) {
+        if (resume < 0) leave(Math.max(from, this.#pending.length - screenKept))
+        readPiece()
+        continue
+      }
+      // Main writes the closer of what a replacement stood for right after
+      // it, as the closing quote of a quoted value, whether or not the raw
+      // text has one there: where the raw text has none, or has one only
+      // inside the value, it is shown, and main is found by what follows.
+      for (let closers = 0; closers < 2 && replacementClosers.includes(next[0] ?? "") && (resume < 0 || this.#kinds[resume] === markedKind); closers += 1) {
+        keep(next[0]!)
+        at += 1
+        next = next.slice(1)
+        resume = next === "" ? -1 : this.#resumeAt(next, from)
+      }
+      if (next === "") continue
+      if (resume < 0) {
+        if (at + next.length === output.length && !/[\p{L}\p{N}]/u.test(next)) {
+          // What ends main's output is not in the raw text yet and carries
+          // no letter or digit, as the closing quote main writes after a
+          // replacement.
+          keep(next)
+          at += next.length
+          continue
+        }
+        // Lost: the rest is shown only where nothing unlined was marked, and
+        // lining up starts again from main's carry.
+        unlined(output.slice(at))
+        break
+      }
+      for (let index = 0; index < next.length; index += 1) {
+        if (this.#kinds[resume + index] === markedKind) hide()
+        else keep(next[index]!)
+      }
+      from = resume + next.length
+      at += next.length
+      this.#resuming = false
+      this.#markedLeft = false
+    }
+    // What is lined up is let go, and of the rest of the read main shows
+    // none again but its carry.
+    leave(from)
+    while (readPiece()) leave(this.#pending.length - screenKept)
+    leave(this.#pending.length - screenKept)
+    return shown
+  }
+
+  // Where the value marked from here ends, past the name's syntax before it;
+  // here when none is marked.
+  #markedEnd(from: number): number {
+    let end = from
+    while (end < this.#kinds.length && this.#kinds[end] === syntaxKind) end += 1
+    if (this.#kinds[end] !== markedKind) return from
+    while (end < this.#kinds.length && this.#kinds[end] !== keptKind) end += 1
+    return end
+  }
+
+  // Whether main's next text was found only inside a value that runs to the
+  // end of what is read, and more may be read to find it after the value.
+  #early(resume: number, from: number): boolean {
+    const end = this.#markedEnd(from)
+    return resume < end && end === this.#pending.length && this.#pending.length - from < screenLookahead
+  }
+
+  // Where main goes on in the raw text, found by what it shows next: after
+  // the value marked from here, past the name's syntax before it, where that
+  // text occurs there, since main's replacement stood for a value and so do
+  // the marked characters; otherwise where it first occurs. -1 when it does
+  // not occur.
+  #resumeAt(next: string, from: number): number {
+    const after = this.#pending.indexOf(next, this.#markedEnd(from))
+    return after >= 0 ? after : this.#pending.indexOf(next, from)
+  }
+}
+
+// The terminal redactor: main's, then the screen reader, which only takes
+// more off what main shows (#608).
+export class TerminalOutputRedactor {
+  readonly #main = new MainTerminalRedactor()
+  #screen = new ScreenReader()
+  #retained = 0
+  #nesting = 0
+
+  push(chunk: string): string {
+    return this.#screen.step(chunk, this.#main.push(chunk))
+  }
+
+  release(): string {
+    return this.#screen.step("", this.#main.release())
+  }
+
+  flush(): string {
+    const output = this.#screen.step("", this.#main.flush())
+    this.#retained = Math.max(this.#retained, this.#screen.retained)
+    this.#nesting = Math.max(this.#nesting, this.#screen.nesting)
+    this.#screen = new ScreenReader()
+    return output
+  }
+
+  // The deepest the second stage's reading of a value nested: a bound too.
+  get nesting(): number {
+    return Math.max(this.#nesting, this.#screen.nesting)
+  }
+
+  // The most raw text the second stage has kept at once, reads in progress
+  // included: a bound, however long the output runs.
+  get retained(): number {
+    return Math.max(this.#retained, this.#screen.retained)
   }
 }

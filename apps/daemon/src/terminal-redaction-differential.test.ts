@@ -125,7 +125,10 @@ function generate(next: () => number): Case {
     if (chance(0.05)) { features.push("space-300"); return " ".repeat(300) }
     return " ".repeat(Math.floor(next() * 3))
   }
-  const ansi = (): string => chance(0.12) ? (features.push("ansi"), pick(formatting)) : ""
+  // Formatting, or an OSC string holding a quote, spaces or an assignment.
+  const ansi = (): string => chance(0.12)
+    ? (features.push("ansi"), pick([...formatting, "\x1b]0;'\x07", "\x1b]0;\"\x07", "\x1b]0;a b; c\x07", "\x1b]0;token=kk\x07"]))
+    : ""
   const word = (length: number) => Array.from({ length }, () => pick(valueLetters.split(""))).join("")
   const valueBody = (): string => {
     if (chance(0.06)) { features.push("long-value"); return word(4) + "q".repeat(9_000) + word(8) }
@@ -165,16 +168,18 @@ function generate(next: () => number): Case {
   if (quote && chance(0.1)) { features.push("separator"); value = `${word(4)}${pick(separators)}${value}` }
   if (quote && chance(0.1)) { features.push("escaped-separator"); value = `${word(4)}\\${pick(separators)}${value}` }
   if (quote === '"' && chance(0.3)) { features.push("escaped-quote"); value = `${word(4)}\\"${value}` }
-  // In shell single quotes a backslash is literal and cannot escape the quote.
-  if (quote === "'" && chance(0.3)) { features.push("single-quote-backslash"); value = `${value}\\` }
+  // A backslash inside single quotes escapes the next character, as it does
+  // inside double quotes (owner ruling 2026-09-25): an escaped quote is part
+  // of the value.
+  if (quote === "'" && chance(0.3)) { features.push("escaped-single-quote"); value = `${word(4)}\\'${value}` }
   const closed = !quote || chance(0.85)
   if (quote && !closed) features.push("unclosed")
-  // A double quote whose closing quote is escaped never closes.
-  const escapedClose = quote === '"' && closed && chance(0.08)
+  // A quote whose closing quote is escaped never closes.
+  const escapedClose = quote !== "" && closed && chance(0.08)
   if (escapedClose) features.push("escaped-closing-quote")
   const after = quote && closed && chance(0.2) ? (features.push("after-quote"), word(8)) : ""
-  const quoted = escapedClose ? `"${value}\\"` : `${quote}${value}${closed ? quote : ""}${after}`
-  const secretText = quote ? value.replace(/\\"/g, "") + after : value + after
+  const quoted = escapedClose ? `${quote}${value}\\${quote}` : `${quote}${value}${closed ? quote : ""}${after}`
+  const secretText = quote ? value.replace(/\\["']/g, "") + after : value + after
   const newlineBeforeValue = chance(0.08) ? (features.push("newline-before-value"), "\n") : ""
   const redraw = chance(0.06) ? (features.push("redraw"), "\r\x1b[4C") : ""
   const form = pick(["assignment", "export", "json", "json-mixed", "flag-space", "flag-equals", "property", "prompt", "env", "bare-token"])
@@ -222,6 +227,133 @@ function cut(text: string, next: () => number): Step[] {
   steps.push(text.slice(from))
   if (next() < 0.3) steps.push("idle")
   return steps
+}
+
+// The leak shapes of #608, each cut into reads with idle beats between some,
+// and judged on their own terms rather than against main: formatting between
+// a name and its separator, a carriage return redraw after a name and its
+// separator, a bare token longer than the carry, and a bare token an idle beat
+// cuts. A single-quoted value may hold an escaped quote (owner ruling
+// 2026-09-25). The secret is never the token's prefix, which stays visible.
+const tokenPrefixes = ["sk-", "ghp_", "gho_", "github_pat_", "xoxb-"]
+
+// OSC strings, which a terminal does not print: a window title or a link.
+// They may carry an assignment of their own (other: its secret), a quote, or
+// spaces and a semicolon, none of which is part of the line as it reads.
+function oscString(next: () => number, other: string): string {
+  const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!
+  return pick([
+    `\x1b]0;${pick(names)}=${other}\x07`,
+    `\x1b]2;${pick(names)}: ${other}\x1b\\`,
+    "\x1b]0;'\x07",
+    "\x1b]0;\"\x07",
+    "\x1b]0;a b; c\x07",
+    "\x1b]8;;https://example.test/p\x1b\\",
+  ])
+}
+
+// Output far longer than the raw text the terminal redactor keeps (security
+// review round 3 of #617): a leak shape after 65,000 or more characters of
+// ordinary output, in one read, in many reads with idle beats between some,
+// or with the secret starting right at 65,536 characters.
+const fillerPieces = ["a", "b", " ", "lorem ", "ipsum ", "\r\n", "\x1b[32mok\x1b[0m ", "done\n"]
+
+function generateLongLeak(next: () => number, secret: string, name: string, ending: string): { item: Case, others: string[], steps: Step[] } {
+  const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!
+  const [form, tail] = pick([
+    ["ansi-name", ` ${pick(["export ", ""])}${name}${pick(formatting)}=${secret}`],
+    ["redraw", ` ${name}=\r${pick(["", "\x1b[8C"])}${secret}`],
+    ["token", ` echo ${pick(tokenPrefixes)}${"a".repeat(pick([0, 300]))}${secret} done`],
+    ["osc", ` ${name}\x1b]0;'\x07='${"q".repeat(pick([4, 300]))} ${secret} rest'`],
+  ] as const)
+  const kind = pick(["read", "stream", "boundary"])
+  const target = kind === "boundary" ? 65_536 - tail.indexOf(secret) + Math.floor(next() * 9) - 4 : 65_000 + Math.floor(next() * 2_000)
+  // Whole pieces, then plain letters to the length: a control sequence cut
+  // short would take the name's first letters as its own.
+  let filler = ""
+  while (filler.length < target - 16) filler += pick(fillerPieces)
+  filler = filler.padEnd(target, "a")
+  const text = `${filler}${tail}${ending}`
+  const item: Case = { shape: `long-${kind}-${form}`, text, value: secret, kept: [] }
+  if (kind === "read") return { item, others: [], steps: cut(text, next) }
+  if (kind === "boundary") return { item, others: [], steps: pick([[text], [text.slice(0, 65_536), text.slice(65_536)], [text.slice(0, 65_536), "idle", text.slice(65_536)]]) }
+  const steps: Step[] = []
+  for (let from = 0; from < text.length;) {
+    const to = Math.min(text.length, from + 300 + Math.floor(next() * 2_700))
+    steps.push(text.slice(from, to))
+    if (next() < 0.1) steps.push("idle")
+    from = to
+  }
+  return { item, others: [], steps }
+}
+
+function generateLeak(next: () => number): { item: Case, others: string[], steps: Step[] } {
+  const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!
+  const word = (length: number) => Array.from({ length }, () => pick(valueLetters.split(""))).join("")
+  const secret = word(8 + Math.floor(next() * 6))
+  const name = pick(names)
+  const ending = pick(["\r\n", "\n", ""])
+  if (next() < 0.04) return generateLongLeak(next, secret, name, ending)
+  // A value nested hundreds or thousands deep (security review round 4 of
+  // #617), after formatting in the name or not.
+  if (next() < 0.03) {
+    const depth = next() < 0.2 ? 16_400 + Math.floor(next() * 4_000) : 200 + Math.floor(next() * 1_800)
+    const openers = Array.from({ length: depth }, () => pick([["$(", ")"], ["${", "}"], ["<(", ")"], ["$((", "))"]] as const))
+    const text = `${pick(["export ", "echo "])}${name}${pick(["", ...formatting])} = ${openers.map(([opener]) => opener).join("")}${secret}${openers.map(([, closer]) => closer).reverse().join("")} done${ending}`
+    return { item: { shape: "deep", text, value: secret, kept: [] }, others: [], steps: cut(text, next) }
+  }
+  const shape = pick(["ansi-name", "redraw", "long-token", "beat-token", "osc"])
+  const others: string[] = []
+  let text: string
+  switch (shape) {
+    case "osc": {
+      // OSC strings inside the name, between it and its separator, between
+      // the separator and the value, and inside an oversized quoted value.
+      const osc = (chance: number): string => {
+        if (next() >= chance) return ""
+        const other = word(8)
+        const string = oscString(next, other)
+        if (string.includes(other)) others.push(other)
+        return string
+      }
+      const cutAt = 1 + Math.floor(next() * (name.length - 1))
+      const nameText = `${name.slice(0, cutAt)}${osc(0.5)}${name.slice(cutAt)}`
+      const long = "q".repeat(260 + Math.floor(next() * 60))
+      const value = pick([secret, `'${secret}'`, `"${secret}"`, `'${long}${osc(0.8)} ${secret} rest'`, `"${long}${osc(0.8)} ${secret} rest"`])
+      text = `${pick(["export ", ""])}${nameText}${osc(0.5)}${pick(["=", ": "])}${osc(0.5)}${value} done${ending}`
+      break
+    }
+    case "ansi-name": {
+      // An escaped single quote does not close the value, so the secret after
+      // it is still inside it.
+      const quoted = pick([secret, `"${secret}"`, `'${secret}'`, `'${word(3)}\\'${secret}'`, `'${word(3)}\\'${secret} rest'`])
+      text = `${pick(["export ", ""])}${name}${pick(formatting)}${pick(["=", " = "])}${quoted} done${ending}`
+      break
+    }
+    case "redraw":
+      text = `${pick([`export ${name}=`, `${name}=`, `${name}: `, `${name}:`])}\r${pick(["", "\x1b[8C", "\x1b[12C", "\x1b[2K"])}${secret}${ending}`
+      break
+    case "long-token":
+      text = `echo ${pick(tokenPrefixes)}${"a".repeat(260 + Math.floor(next() * 300))}${secret}${pick(["", "a".repeat(40)])} done${ending}`
+      break
+    default: {
+      text = `echo ${pick(tokenPrefixes)}${secret} done${ending}`
+      // The first beat falls inside the token, at or before the secret; the
+      // rest is cut at random.
+      const beat = "echo ".length + 1 + Math.floor(next() * (text.indexOf(secret) - "echo ".length))
+      return {
+        item: { shape, text, value: secret, kept: [] },
+        others,
+        steps: [text.slice(0, beat), "idle", ...cut(text.slice(beat), next)],
+      }
+    }
+  }
+  return { item: { shape, text, value: secret, kept: [] }, others, steps: cut(text, next) }
+}
+
+// Every three consecutive characters of a secret.
+function fragments(value: string): string[] {
+  return Array.from({ length: Math.max(1, value.length - 2) }, (_, index) => value.slice(index, index + 3))
 }
 
 function runMain(steps: readonly Step[]): string {
@@ -398,6 +530,8 @@ const seed = Number(process.env.TERMINAL_REDACTION_FUZZ_SEED ?? 20_260_923)
 if (!Number.isSafeInteger(cases) || cases < 1 || !Number.isSafeInteger(seed)) {
   throw new Error("TERMINAL_REDACTION_FUZZ_CASES and TERMINAL_REDACTION_FUZZ_SEED must be integers")
 }
+const leakCases = Number(process.env.TERMINAL_REDACTION_LEAK_CASES ?? 2_000)
+if (!Number.isSafeInteger(leakCases) || leakCases < 1) throw new Error("TERMINAL_REDACTION_LEAK_CASES must be an integer")
 
 describe("terminal redaction against main", () => {
   it(`hides at least what main hid and keeps what main kept, ${cases} cases from seed ${seed}`, () => {
@@ -429,6 +563,39 @@ describe("terminal redaction against main", () => {
     if (process.env.TERMINAL_REDACTION_FUZZ_REPORT) writeFileSync(process.env.TERMINAL_REDACTION_FUZZ_REPORT, report.join("\n"))
     expect(report).toEqual([])
   }, 10_000 + cases * 2)
+
+  it(`hides the leak shapes of #608 on their own terms, ${leakCases} cases from seed ${seed}`, () => {
+    const failures = new Map<string, string>()
+    // Every failing case's reads in full, where asked for.
+    const full: string[] = []
+    // The most raw text the second stage kept in any case, and the deepest
+    // its reading of a value nested.
+    let retained = 0
+    let nesting = 0
+    for (let index = 0; index < leakCases; index += 1) {
+      const caseSeed = seed + index
+      const { item, others, steps } = generateLeak(random(caseSeed))
+      // The check has teeth: the text itself shows the secret.
+      expect(exposed(item, item.text), item.shape).toBeDefined()
+      const redactor = new TerminalOutputRedactor()
+      const output = steps.map((step) => step === "idle" ? redactor.release() : redactor.push(step)).join("") + redactor.flush()
+      retained = Math.max(retained, redactor.retained)
+      nesting = Math.max(nesting, redactor.nesting)
+      // A secret an OSC string carries stays hidden too.
+      const shown = fragments(item.value!).find((piece) => output.includes(piece)) ?? exposed(item, output)
+        ?? others.flatMap(fragments).find((piece) => output.includes(piece))
+      if (shown === undefined) continue
+      full.push(JSON.stringify({ seed: caseSeed, shape: item.shape, steps }))
+      if (failures.has(item.shape)) continue
+      failures.set(item.shape, `seed ${caseSeed}: shows ${JSON.stringify(shown)}\n  reads ${JSON.stringify(steps.map((step) => step !== "idle" && step.length > 60 ? `${step.slice(0, 40)}…(${step.length})` : step))}`)
+    }
+    if (process.env.TERMINAL_REDACTION_LEAK_REPORT) writeFileSync(process.env.TERMINAL_REDACTION_LEAK_REPORT, full.join("\n"))
+    expect([...failures].map(([shape, detail]) => `${shape}\n  ${detail}`)).toEqual([])
+    // They stay bounded, however long the output runs and however deep a
+    // value nests.
+    expect(retained).toBeLessThanOrEqual(16_384)
+    expect(nesting).toBeLessThanOrEqual(16_384)
+  })
 
   it("fails a redactor that shows everything wherever main hides a value", () => {
     let hidden = 0
