@@ -9260,9 +9260,9 @@ export class DomovoiDaemon {
       // Past the last await of card construction (the file target, the
       // execution, the card's directory and paths). From here the request is
       // denied, allowed by policy, or published as a card without yielding,
-      // so the fence is either seen here or taken after it is settled. The
-      // one later await records a standing rule's use; the rule was chosen
-      // here, before any fence, and no card forms on that path.
+      // so the fence is either seen here or taken after it is settled. The one
+      // later await saves a standing rule's use; the fence is checked again
+      // after it, before the rule's answer is sent (round 7).
       if (this.#serviceHandoffFence) {
         this.#fencedApprovalRequests.push({ provider, event })
         return
@@ -9342,6 +9342,14 @@ export class DomovoiDaemon {
           await this.#persistSnapshot()
         } catch (error) {
           matchingRule.useCount -= 1
+          // Security review round 7: the fence may have been taken while the
+          // use was being saved. Nothing is answered while it is held; the
+          // request is handled afresh, and the rule tried again, once it lifts.
+          if (this.#serviceHandoffFence) {
+            this.#reportError("Standing rule use could not be persisted", error)
+            this.#fencedApprovalRequests.push({ provider, event })
+            return
+          }
           this.#appendAudit({
             actor: { kind: "daemon", component: "approval-rules" },
             action: "approval-rule.used", outcome: "denied", target: matchingRule.id,
@@ -9350,6 +9358,20 @@ export class DomovoiDaemon {
           })
           this.#agents.require(provider).resolveApproval(event.requestId, "deny")
           this.#reportError("Standing rule use could not be persisted", error)
+          return
+        }
+        // Security review round 7: the fence may have been taken while the
+        // use was being saved. The allow is not sent while it is held, and the
+        // use is taken back, and saved, so the rule counts it once, when it
+        // is used: the request is handled afresh once the fence lifts.
+        if (this.#serviceHandoffFence) {
+          matchingRule.useCount -= 1
+          this.#fencedApprovalRequests.push({ provider, event })
+          try {
+            await this.#persistSnapshot()
+          } catch (error) {
+            this.#reportError("Standing rule use could not be persisted", error)
+          }
           return
         }
         this.#appendAudit({

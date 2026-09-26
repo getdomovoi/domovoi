@@ -1,4 +1,5 @@
 import { demoWorkspace, protocolVersion, serviceHandoffRefusal, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { execFileSync } from "node:child_process"
 import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -13,24 +14,49 @@ import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
-// A barrier the round 6 test can hold inside card construction. It passes
-// straight through unless a test arms it.
-const cardBarrier = vi.hoisted(() => ({ held: undefined as undefined | { entered: () => void; release: Promise<void> } }))
+// Barriers the round 6 and 7 tests can hold inside each await between a
+// provider's approval request and the answer to it. Each passes straight
+// through unless a test arms it; an armed barrier holds its first call only.
+type Barrier = { entered: () => void; release: Promise<void> }
+const barriers = vi.hoisted(() => new Map<string, Barrier>())
+const passBarrier = vi.hoisted(() => async (name: string) => {
+  const held = barriers.get(name)
+  if (!held) return
+  barriers.delete(name)
+  held.entered()
+  await held.release
+})
 vi.mock("./file-target-affects.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./file-target-affects.js")>()
   return {
     ...actual,
-    cardDirectory: async (...args: Parameters<typeof actual.cardDirectory>) => {
-      const held = cardBarrier.held
-      if (held) {
-        cardBarrier.held = undefined
-        held.entered()
-        await held.release
-      }
-      return actual.cardDirectory(...args)
-    },
+    cardDirectory: async (...args: Parameters<typeof actual.cardDirectory>) => { await passBarrier("cardDirectory"); return actual.cardDirectory(...args) },
+    fileTargetAffects: async (...args: Parameters<typeof actual.fileTargetAffects>) => { await passBarrier("fileTargetAffects"); return actual.fileTargetAffects(...args) },
   }
 })
+vi.mock("./followed-path.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./followed-path.js")>()
+  return {
+    ...actual,
+    fileTargetIdentity: async (...args: Parameters<typeof actual.fileTargetIdentity>) => { await passBarrier("fileTargetIdentity"); return actual.fileTargetIdentity(...args) },
+  }
+})
+vi.mock("./execution-resolution.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./execution-resolution.js")>()
+  return {
+    ...actual,
+    resolveExecution: async (...args: Parameters<typeof actual.resolveExecution>) => { await passBarrier("resolveExecution"); return actual.resolveExecution(...args) },
+  }
+})
+
+// Arms a barrier and returns what the test drives it with.
+function arm(name: string) {
+  let entered!: () => void
+  const reached = new Promise<void>((resolve) => { entered = resolve })
+  let release!: () => void
+  barriers.set(name, { entered, release: new Promise<void>((resolve) => { release = resolve }) })
+  return { reached, release: () => release() }
+}
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -46,12 +72,12 @@ afterEach(async () => {
   await removeScratchDirectories(scratchDirectories)
 })
 
-async function daemonWith(workspace: WorkspaceSnapshot, agent?: AgentAdapter) {
+async function daemonWith(workspace: WorkspaceSnapshot, agent?: AgentAdapter, wrapStore?: (store: SqliteWorkspaceStore) => SqliteWorkspaceStore) {
   // The profile and the skill catalog stay in scratch, never the real home.
   const profileDirectory = await mkdtemp(join(tmpdir(), "domovoi-fence-"))
   scratchDirectories.push(profileDirectory)
   const daemon = new DomovoiDaemon({
-    port: 0, store: new SqliteWorkspaceStore(":memory:", workspace), profileDirectory,
+    port: 0, store: (wrapStore ?? ((store) => store))(new SqliteWorkspaceStore(":memory:", workspace)), profileDirectory,
     skillCatalog: { list: async () => [], read: async () => { throw new Error("No skills here") } },
     ...(agent ? { agent } : { agents: {} }),
   })
@@ -260,10 +286,18 @@ describe("the service handoff fence", () => {
     expect(agent.resolveApproval).not.toHaveBeenCalled()
   })
 
-  // Security review round 6: a request already building its card when the
-  // fence is taken must not become a gate either. The card's directory is
-  // held until the fence is in place, then let go.
-  it("holds a request whose card was being built when the fence was taken", async () => {
+  // Security review rounds 6 and 7: a request already on its way to an
+  // answer when the fence is taken must not be answered or become a card
+  // until the fence lifts. Each await on that way is held on a barrier, the
+  // fence is taken on a connection whose hello was answered before the
+  // request arrived (a fresh connection's hello waits behind the request,
+  // which the daemon must not rely on), and the barrier is let go.
+  it.each([
+    { await: "resolveExecution", file: false },
+    { await: "cardDirectory", file: false },
+    { await: "fileTargetIdentity", file: true },
+    { await: "fileTargetAffects", file: true },
+  ])("holds a request that was waiting on $await when the fence was taken", async ({ await: name, file }) => {
     const { workspace, sessionId } = await readySession()
     const session = workspace.sessions.find(({ id }) => id === sessionId)!
     session.runtime.permissionMode = "ask"
@@ -271,20 +305,15 @@ describe("the service handoff fence", () => {
     const { agent, emit } = agentWithHeldTurns(false)
     const endpoint = await daemonWith(workspace, agent)
     const reader = await desktopConnection(endpoint)
-    // The fence is taken on a connection whose hello was answered before the
-    // request arrived. A fresh connection's hello waits behind the card being
-    // built, which closes the window for the desktop today, but the daemon
-    // must not rely on that.
     const fencer = await desktopConnection(endpoint)
     const fencerSocket = sockets.at(-1)!
-    let entered!: () => void
-    const building = new Promise<void>((resolve) => { entered = resolve })
-    let release!: () => void
-    cardBarrier.held = { entered, release: new Promise<void>((resolve) => { release = resolve }) }
-    emit({ type: "approval-requested", requestId: 43, threadId: "thread-fence", command: "rm -rf build", cwd: session.workspacePath!, reason: "Remove the build output" })
-    await building
+    const barrier = arm(name)
+    emit(file
+      ? { type: "approval-requested", requestId: 43, threadId: "thread-fence", command: "Edit", path: "notes.txt", cwd: session.workspacePath!, reason: "Edit the notes" }
+      : { type: "approval-requested", requestId: 43, threadId: "thread-fence", command: "rm -rf build", cwd: session.workspacePath!, reason: "Remove the build output" })
+    await barrier.reached
     await expect(fencer("system.serviceHandoffFence", {})).resolves.toMatchObject({ result: { outcome: "fenced" } })
-    release()
+    barrier.release()
     emit({ type: "diff-updated", threadId: "thread-fence", diff: "after the card" })
     await waitForDaemon(async () => {
       const read = await reader("workspace.get", {})
@@ -300,5 +329,80 @@ describe("the service handoff fence", () => {
       expect((read.result as WorkspaceSnapshot).approvals).toMatchObject([{ sessionId, providerRequestId: 43 }])
     })
     expect(agent.resolveApproval).not.toHaveBeenCalled()
+  })
+
+  // A standing rule answers a request with no card, but only after its use
+  // is saved. The save is held, the fence taken, and the save let go (or
+  // failed): no answer may reach the provider while the fence is held, and
+  // the rule's use counts once, when it is used.
+  it.each([
+    { save: "succeeds" },
+    { save: "fails" },
+  ])("holds a standing rule's answer when the fence is taken while its use is saved (the save $save)", async ({ save }) => {
+    const { workspace, sessionId } = await readySession()
+    const session = workspace.sessions.find(({ id }) => id === sessionId)!
+    session.runtime.permissionMode = "ask"
+    session.runtime.auto = false
+    // An allow takes a checkpoint of the worktree first, so it is a repository.
+    const git = (...args: string[]) => execFileSync("git", ["-C", session.workspacePath!, "-c", "user.name=Domovoi test", "-c", "user.email=test@domovoi.invalid", ...args], { stdio: "ignore" })
+    git("init", "-q")
+    git("commit", "-q", "--allow-empty", "-m", "start")
+    const { agent, emit } = agentWithHeldTurns(false)
+    const saveGate = { held: undefined as undefined | { entered: () => void; release: Promise<void>; fail: boolean } }
+    const endpoint = await daemonWith(workspace, agent, (store) => {
+      const saveAsync = store.saveAsync.bind(store)
+      store.saveAsync = async (snapshot) => {
+        const held = saveGate.held
+        if (held) {
+          saveGate.held = undefined
+          held.entered()
+          await held.release
+          if (held.fail) throw new Error("simulated save failure")
+        }
+        return saveAsync(snapshot)
+      }
+      return store
+    })
+    const reader = await desktopConnection(endpoint)
+    const fencer = await desktopConnection(endpoint)
+    const fencerSocket = sockets.at(-1)!
+    const request = (requestId: number) => ({ type: "approval-requested" as const, requestId, threadId: "thread-fence", command: "ls", cwd: session.workspacePath!, reason: "List the files" })
+    // The rule comes from the person: a card answered "always for this project".
+    emit(request(50))
+    const card = await waitForDaemon(async () => {
+      const read = (await reader("workspace.get", {})).result as WorkspaceSnapshot
+      expect(read.approvals).toMatchObject([{ providerRequestId: 50 }])
+      return read.approvals[0]!
+    })
+    await expect(reader("approval.resolve", { approvalId: card.id, decision: "always-project", revision: card.revision, client: "desktop" })).resolves.toMatchObject({ result: expect.anything() })
+    const rules = ((await reader("workspace.get", {})).result as WorkspaceSnapshot).approvalRules
+    expect(rules).toMatchObject([{ status: "active", useCount: 0 }])
+    agent.resolveApproval.mockClear()
+
+    let entered!: () => void
+    const reached = new Promise<void>((resolve) => { entered = resolve })
+    let release!: () => void
+    saveGate.held = { entered, release: new Promise<void>((resolve) => { release = resolve }), fail: save === "fails" }
+    emit(request(51))
+    await reached
+    await expect(fencer("system.serviceHandoffFence", {})).resolves.toMatchObject({ result: { outcome: "fenced" } })
+    release()
+    emit({ type: "diff-updated", threadId: "thread-fence", diff: "after the rule" })
+    await waitForDaemon(async () => {
+      const read = await reader("workspace.get", {})
+      expect((read.result as WorkspaceSnapshot).artifacts).toContainEqual(expect.objectContaining({ id: `diff-${sessionId}`, content: "after the rule" }))
+    })
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+    const during = (await reader("workspace.get", {})).result as WorkspaceSnapshot
+    expect(during.approvals).toEqual([])
+    expect(during.approvalRules).toMatchObject([{ useCount: 0 }])
+
+    fencerSocket.terminate()
+    await waitForDaemon(() => expect(agent.resolveApproval).toHaveBeenCalledWith(51, "allow-once"))
+    expect(agent.resolveApproval).toHaveBeenCalledOnce()
+    await waitForDaemon(async () => {
+      const read = (await reader("workspace.get", {})).result as WorkspaceSnapshot
+      expect(read.approvalRules).toMatchObject([{ useCount: 1 }])
+    })
   })
 })
