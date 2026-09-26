@@ -109,6 +109,8 @@ import {
   enqueueDesktopDeepLink,
   openDesktopPath,
   openProjectFromDesktop,
+  type DaemonServiceOutcome,
+  type DaemonServiceStatusReport,
   type DesktopExternalEditor,
   type DesktopWindowBridge,
   type WorkspaceWindowDecoration,
@@ -212,15 +214,43 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // status read. A daemon outside the app is drawn as the service only when
   // this says so; an unreadable or unverified status leaves it unnamed.
   const [serviceInstalled, setServiceInstalled] = useState<boolean | undefined>(undefined)
-  const readServiceStatus = useCallback(() => {
+  // Reads are numbered and only the newest one's answer is kept, so a read
+  // that started before an install or a removal cannot answer after the read
+  // that followed it and put the old fact back (security review round 4).
+  const serviceStatusGeneration = useRef(0)
+  const readServiceStatus = useCallback(async (): Promise<DaemonServiceStatusReport | undefined> => {
     const service = windowBridge?.daemonService
-    if (!service) return
-    void service.status().then(
-      (status) => setServiceInstalled("installed" in status && status.installed !== null ? status.installed : undefined),
-      () => setServiceInstalled(undefined),
-    )
+    if (!service) return undefined
+    const generation = ++serviceStatusGeneration.current
+    try {
+      const status = await service.status()
+      if (generation === serviceStatusGeneration.current) {
+        setServiceInstalled("installed" in status && status.installed !== null ? status.installed : undefined)
+      }
+      return status
+    } catch (cause) {
+      if (generation === serviceStatusGeneration.current) setServiceInstalled(undefined)
+      throw cause
+    }
   }, [windowBridge])
-  useEffect(() => { readServiceStatus() }, [readServiceStatus])
+  useEffect(() => { void readServiceStatus().catch(() => {}) }, [readServiceStatus])
+  // An install or a removal, then a status read. A reply this window cannot
+  // read may follow a change the desktop did make, so the read-back decides:
+  // when it shows the service now where the action put it, the desktop is
+  // told the daemon changed, as a readable success tells it.
+  const changeService = useCallback(async (action: "install" | "remove", call: () => Promise<DaemonServiceOutcome>): Promise<DaemonServiceOutcome> => {
+    let outcome: DaemonServiceOutcome
+    try {
+      outcome = await call()
+    } catch (cause) {
+      const after = await readServiceStatus().catch(() => undefined)
+      if (after && "installed" in after && after.installed === (action === "install")) onLocalDaemonChanged?.()
+      throw cause
+    }
+    void readServiceStatus().catch(() => {})
+    if (outcome.ok) onLocalDaemonChanged?.()
+    return outcome
+  }, [readServiceStatus, onLocalDaemonChanged])
   // The queue outlives the thread view and is not limited to the session on
   // screen. Thread is keyed by session, so a switch unmounts it; and a message
   // queued in A must leave at A's next turn boundary whether or not anyone is
@@ -1354,11 +1384,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}),
               ...(localDaemon.serviceInstalled === undefined && serviceInstalled !== undefined ? { serviceInstalled } : {}),
               ...(windowBridge?.daemonService && !watching ? { service: {
-                // The status is read again even when the answer cannot be read:
-                // the desktop may have changed the service before it failed.
-                install: async () => { try { const outcome = await windowBridge.daemonService!.install(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome } finally { readServiceStatus() } },
-                remove: async () => { try { const outcome = await windowBridge.daemonService!.remove(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome } finally { readServiceStatus() } },
-                status: () => windowBridge.daemonService!.status(),
+                install: () => changeService("install", () => windowBridge.daemonService!.install()),
+                remove: () => changeService("remove", () => windowBridge.daemonService!.remove()),
+                // Through the same numbered read, so the section's own state
+                // follows the newest answer.
+                status: async () => {
+                  const status = await readServiceStatus()
+                  if (!status) throw new Error("The desktop offers no service status")
+                  return status
+                },
                 refusal: serviceHandoffRefusal(snapshot),
               } } : {}),
             } } : {})}

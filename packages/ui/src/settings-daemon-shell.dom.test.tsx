@@ -155,3 +155,105 @@ it("draws the daemon section with the window's platform", async () => {
   expect(section.textContent).toContain("~/.config/systemd/user/domovoid.service")
   expect(screen.queryByRole("region", { name: /local daemon/iu })).toBeNull()
 })
+
+// Security review round 4 of #576. Two orderings the shell must survive: a
+// reply this window cannot read after the desktop did change the service, and
+// a status read that answers after a newer one.
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((settle) => { resolve = settle })
+  return { promise, resolve }
+}
+type Status = { installed: boolean | null; running: boolean; detail: string }
+const quietWorkspace = () => workspaceSnapshot({ approvals: [], sessions: demoWorkspace.sessions.map((session) => { const { activeTurnId: _turn, ...rest } = session; return { ...rest, state: "idle" as const } }) })
+type LocalDaemon = { title: string; detail: string; owner: "app" | "outside"; serviceInstalled?: boolean }
+const inApp: LocalDaemon = { title: "Running Domovoi inside this app", detail: "", owner: "app" }
+const outside: LocalDaemon = { title: "Connected to a daemon outside this app", detail: "", owner: "outside" }
+
+async function openDaemonSection(windowBridge: DesktopWindowBridge, localDaemon: LocalDaemon, onLocalDaemonChanged = vi.fn()) {
+  const view = render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={localDaemon} onLocalDaemonChanged={onLocalDaemonChanged} />)
+  await act(async () => { completeHandshake(harness.socket(0), quietWorkspace()) })
+  await settle()
+  const user = userEvent.setup()
+  await skipFirstRun(user)
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  await screen.findByRole("region", { name: "Daemon on this machine" })
+  const section = () => screen.getByRole("region", { name: "Daemon on this machine" })
+  // What the desktop does when told the daemon changed: it resolves its
+  // daemon again and hands the shell the new owner.
+  const moveTo = (next: LocalDaemon) => view.rerender(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={next} onLocalDaemonChanged={onLocalDaemonChanged} />)
+  return { user, section, moveTo }
+}
+
+it("refreshes the daemon owner when an unreadable reply follows a change the read-back confirms", async () => {
+  for (const [action, button, after, changed] of [
+    ["install", "Install", { installed: true, running: true, detail: "" }, true],
+    ["install", "Install", { installed: false, running: false, detail: "" }, false],
+    ["remove", "Unload and delete the LaunchAgent", { installed: false, running: false, detail: "" }, true],
+    ["remove", "Unload and delete the LaunchAgent", { installed: true, running: true, detail: "" }, false],
+  ] as const) {
+    const windowBridge = bridge(vi.fn())
+    const unreadable = vi.fn(async () => { throw new Error("Desktop returned an invalid service outcome") })
+    windowBridge.daemonService!.install = unreadable
+    windowBridge.daemonService!.remove = unreadable
+    const before: Status = action === "install" ? { installed: false, running: false, detail: "" } : { installed: true, running: true, detail: "" }
+    windowBridge.daemonService!.status = vi.fn().mockResolvedValueOnce(before).mockResolvedValue(after)
+    const onLocalDaemonChanged = vi.fn()
+    const { user, section } = await openDaemonSection(windowBridge, action === "install" ? inApp : outside, onLocalDaemonChanged)
+    await user.click(within(section()).getByRole("button", { name: button }))
+    expect(await within(section()).findByText(action === "install" ? "Could not install the service" : "Could not remove the service")).toBeTruthy()
+    expect(onLocalDaemonChanged).toHaveBeenCalledTimes(changed ? 1 : 0)
+    cleanup()
+    harness.uninstall()
+    harness = installFakeWebSocket()
+  }
+})
+
+it("keeps the newer status when a read started before an install answers after it", async () => {
+  const stale = deferred<Status>()
+  const windowBridge = bridge(vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/p", daemonRunning: true })))
+  windowBridge.daemonService!.status = vi.fn()
+    .mockImplementationOnce(() => stale.promise)
+    .mockResolvedValue({ installed: true, running: true, detail: "pid 48213" })
+  const { user, section, moveTo } = await openDaemonSection(windowBridge, inApp)
+  await user.click(within(section()).getByRole("button", { name: "Install" }))
+  expect(await within(section()).findByText("Installed. Quitting this app now leaves the daemon and its sessions running.")).toBeTruthy()
+  moveTo(outside)
+  await act(async () => { stale.resolve({ installed: false, running: false, detail: "" }) })
+  await settle()
+  expect(within(section()).getByText("Running")).toBeTruthy()
+  expect(within(section()).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(false)
+})
+
+it("keeps the newer status when a read started before a removal answers after it", async () => {
+  const stale = deferred<Status>()
+  const windowBridge = bridge(vi.fn())
+  windowBridge.daemonService!.remove = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/p", profileRecovery: "not-needed" as const, daemonRunning: true, daemonAttached: true }))
+  windowBridge.daemonService!.status = vi.fn()
+    .mockImplementationOnce(() => stale.promise)
+    .mockResolvedValue({ installed: false, running: false, detail: "" })
+  const { user, section, moveTo } = await openDaemonSection(windowBridge, { ...outside, serviceInstalled: true })
+  await user.click(within(section()).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
+  await within(section()).findByText(/This app is connected to a daemon it did not start/)
+  moveTo(outside)
+  await act(async () => { stale.resolve({ installed: true, running: true, detail: "pid 48213" }) })
+  await settle()
+  expect(within(section()).getByText("Not started here")).toBeTruthy()
+  expect(within(section()).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(true)
+})
+
+it("keeps the newer status when a read started before an unreadable reply answers after the re-read", async () => {
+  const stale = deferred<Status>()
+  const windowBridge = bridge(vi.fn(async () => { throw new Error("Desktop returned an invalid service outcome") }) as never)
+  windowBridge.daemonService!.status = vi.fn()
+    .mockImplementationOnce(() => stale.promise)
+    .mockResolvedValue({ installed: true, running: true, detail: "pid 48213" })
+  const { user, section, moveTo } = await openDaemonSection(windowBridge, inApp)
+  await user.click(within(section()).getByRole("button", { name: "Install" }))
+  expect(await within(section()).findByText("The LaunchAgent is installed and running.")).toBeTruthy()
+  moveTo(outside)
+  await act(async () => { stale.resolve({ installed: false, running: false, detail: "" }) })
+  await settle()
+  expect(within(section()).getByText("Running")).toBeTruthy()
+  expect(within(section()).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(false)
+})
