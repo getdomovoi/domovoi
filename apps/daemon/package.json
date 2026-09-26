@@ -23,10 +23,6 @@
     ".": {
       "types": "./dist/public.d.ts",
       "import": "./dist/public.js"
-    },
-    "./internal": {
-      "types": "./dist/server.d.ts",
-      "import": "./dist/server.js"
     }
   },
   "files": [

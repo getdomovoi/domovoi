@@ -81,3 +81,14 @@ test("initial publishing is an explicit manual choice, admitted before credentia
   assert.equal(steps[setup].with["registry-url"], "https://registry.npmjs.org")
   assert.equal(release.jobs.publish["timeout-minutes"], 25)
 })
+
+test("advisory gates cover development dependencies, where Electron sits", async () => {
+  const steps = (await workflow("ci")).jobs.audit.steps
+  const audit = steps.find((step) => /\bpnpm audit\b/.test(step.run ?? ""))
+  assert.ok(audit, "the audit job must run pnpm audit")
+  assert.doesNotMatch(audit.run, /\s(?:--prod|--production|-P|--dev|-D)(?=\s|$)/)
+  const review = steps.find((step) => step.uses?.startsWith("actions/dependency-review-action@"))
+  const scopes = String(review?.with?.["fail-on-scopes"] ?? "").split(",").map((scope) => scope.trim())
+  assert.ok(scopes.includes("runtime"), "dependency review must fail on runtime advisories")
+  assert.ok(scopes.includes("development"), "dependency review must fail on development advisories")
+})

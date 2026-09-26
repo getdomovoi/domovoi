@@ -15,3 +15,6 @@ apps/daemon/runtime/
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# Backups that agent-wiring tools leave beside the instruction files.
+*.bak-*
