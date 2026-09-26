@@ -1,6 +1,6 @@
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { waitForDaemon } from "./test-wait-for.js"
-import { access, chmod, link, mkdir, mkdtemp, realpath, rename, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import { access, chmod, link, mkdir, mkdtemp, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
 import { execFileSync } from "node:child_process"
@@ -95,6 +95,7 @@ import type { AuditLog } from "./audit-log.js"
 import type { ProviderSecretStatus } from "./provider-secrets.js"
 import type { ArtifactWatcherOptions } from "./artifact-watcher.js"
 import { maximumPrintableArtifactDepth } from "./print-artifact.js"
+import { savedSettlementInput, settleApproval } from "./approval-settlement.js"
 import { resolveExecution } from "./execution-resolution.js"
 import {
   createSessionTransferPackage,
@@ -1101,6 +1102,87 @@ describe("DomovoiDaemon", () => {
     await rpc("approval.resolve", { approvalId, decision: "allow-once", revision: 0, client: "desktop" })
     expect(agent.resolveApproval).toHaveBeenCalledWith(91, "allow-once")
 
+    // A secret only in the file path is redacted on the card and makes the
+    // gate hard, like a secret in the command.
+    const pathToken = `ghp_${"a1B2".repeat(9)}`
+    listener!({
+      type: "approval-requested",
+      requestId: 92,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "cat notes.txt",
+      reason: "Read a file",
+      cwd: "/repo",
+      path: `/tmp/${pathToken}/x`,
+    })
+    const pathApproval = (await rpc("workspace.get", {})).result.approvals
+      .find((candidate) => candidate.providerRequestId === 92)
+    expect(pathApproval).toMatchObject({ risk: "hard-gate" })
+    expect(JSON.stringify(pathApproval)).not.toContain(pathToken)
+    expect(pathApproval?.affects).toContain("[REDACTED]")
+
+    // A credential file named only by the path is a hard gate too. A relative
+    // path is read from the request's directory, here outside the worktree.
+    listener!({
+      type: "approval-requested",
+      requestId: 93,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "cat config",
+      reason: "Read a file",
+      cwd: "/elsewhere/project",
+      path: "config/.env.production",
+    })
+    const envApproval = (await rpc("workspace.get", {})).result.approvals
+      .find((candidate) => candidate.providerRequestId === 93)
+    expect(envApproval).toMatchObject({ risk: "hard-gate", affects: "The file [REDACTED], outside the session worktree." })
+
+    // The directory a request runs in is persisted and sent too. A credential
+    // store there is hidden whole, keeps its location, and makes the gate hard.
+    listener!({
+      type: "approval-requested",
+      requestId: 94,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "ls",
+      reason: "List files",
+      cwd: "/home/u/.aws",
+    })
+    const directoryApproval = (await rpc("workspace.get", {})).result.approvals
+      .find((candidate) => candidate.providerRequestId === 94)
+    expect(directoryApproval).toMatchObject({ risk: "hard-gate", directory: "[REDACTED], outside the session worktree" })
+    expect(JSON.stringify(directoryApproval)).not.toContain(".aws")
+
+    // A link with an ordinary name reaches a store only on disk: the operand
+    // and the directory are judged at their real paths as well.
+    const onDisk = await realpath(await mkdtemp(join(tmpdir(), "domovoi-approval-real-")))
+    onTestFinished(() => rm(onDisk, { recursive: true, force: true }))
+    await mkdir(join(onDisk, ".aws"))
+    await writeFile(join(onDisk, ".aws", "credentials"), "")
+    await symlink(join(onDisk, ".aws"), join(onDisk, "plain"))
+    listener!({
+      type: "approval-requested",
+      requestId: 95,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "tar czf x.tgz plain/credentials",
+      reason: "Archive a file",
+      cwd: onDisk,
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 96,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "ls",
+      reason: "List files",
+      cwd: join(onDisk, "plain"),
+    })
+    const onDiskApprovals = (await rpc("workspace.get", {})).result.approvals
+    expect(onDiskApprovals.find((candidate) => candidate.providerRequestId === 95)).toMatchObject({ risk: "hard-gate" })
+    expect(onDiskApprovals.find((candidate) => candidate.providerRequestId === 96))
+      .toMatchObject({ risk: "hard-gate", directory: "[REDACTED], outside the session worktree" })
+
     listener!({
       type: "command-output",
       threadId: session.providerThreadId,
@@ -1266,6 +1348,114 @@ describe("DomovoiDaemon", () => {
       /sk-proj-command-secret|flag-command-secret|approval-reason-secret|cwd-password|stream-output-secret|tool-command-secret|tool-output-secret|no-aggregate-stream-secret|legacy-display-secret|legacy-output-secret/,
     )
     reopened.close()
+  })
+
+  it("hides a credential directory in the execution record and rechecks targets before an Allow", async () => {
+    const worktree = await realpath(await mkdtemp(join(tmpdir(), "domovoi-approval-recheck-")))
+    scratchDirectories.push(worktree)
+    await mkdir(join(worktree, ".aws"))
+    await writeFile(join(worktree, "notes.txt"), "")
+    await writeFile(join(worktree, ".env"), "")
+    await symlink(join(worktree, "notes.txt"), join(worktree, "link.txt"))
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "active"
+    session.runtime.provider = "claude-code"
+    session.workspacePath = worktree
+    session.providerThreadId = "thread-approval-recheck"
+    session.activeTurnId = "turn-approval-recheck"
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-approval-recheck"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agents: { "claude-code": agent },
+      workspaceService: checkpointingWorkspace(),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = <M extends RpcMethod>(method: M, params: object) => new Promise<TestRpcResponse<M>>((resolve) => {
+      const requestId = ++id
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>
+        if (message.id !== requestId) return
+        socket.off("message", receive)
+        resolve(message as TestRpcResponse<M>)
+      }
+      socket.on("message", receive)
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+    })
+    await rpc("session.send", { sessionId: session.id, prompt: "Continue the recheck test", client: "desktop" })
+
+    // The directory is hidden on the card, and in the execution record too.
+    listener!({
+      type: "approval-requested",
+      requestId: 201,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "ls",
+      reason: "List files",
+      cwd: join(worktree, ".aws"),
+    })
+    const inStore = (await rpc("workspace.get", {})).result.approvals
+      .find((candidate) => candidate.providerRequestId === 201)
+    expect(inStore).toMatchObject({ risk: "hard-gate", directory: "[REDACTED] in the session worktree" })
+    expect(JSON.stringify(inStore)).not.toContain(".aws")
+
+    // An ordinary file behind a link gets a normal card. The link then moves
+    // to .env: the command text and its execution digest are unchanged, so
+    // only a recheck of the targets at Allow sees it.
+    listener!({
+      type: "approval-requested",
+      requestId: 202,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "cat link.txt",
+      reason: "Read a file",
+      cwd: worktree,
+      path: "link.txt",
+    })
+    const ordinary = (await rpc("workspace.get", {})).result.approvals
+      .find((candidate) => candidate.providerRequestId === 202)
+    expect(ordinary).toMatchObject({ risk: "normal" })
+    await unlink(join(worktree, "link.txt"))
+    await symlink(join(worktree, ".env"), join(worktree, "link.txt"))
+    await expect(rpc("approval.resolve", { approvalId: ordinary!.id, decision: "allow-once", revision: ordinary!.revision, client: "desktop" }))
+      .resolves.toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+    const recarded = (await rpc("workspace.get", {})).result.approvals
+      .find((candidate) => candidate.providerRequestId === 202)
+    expect(recarded).toMatchObject({ id: ordinary!.id, risk: "hard-gate", affects: "The file [REDACTED] in the session worktree." })
+
+    // The hard gate, now shown for what it is, takes an explicit Allow.
+    await expect(rpc("approval.resolve", { approvalId: ordinary!.id, decision: "allow-once", revision: recarded!.revision, client: "desktop" }))
+      .resolves.not.toHaveProperty("error")
+    expect(agent.resolveApproval).toHaveBeenCalledWith(202, "allow-once")
+    socket.close()
   })
 
   it("reads context occupancy only for the active provider runtime and thread", async () => {
@@ -7109,6 +7299,38 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  // The script changed after the card saved its record: the saved record no
+  // longer matches the one resolved again. Nothing on the card names a
+  // credential path, so only the mismatch makes it a hard gate. Saved cards
+  // expire when the daemon starts (ruled 2026-09-24, #604), so the card's saved
+  // text is settled the way the daemon settles a card it holds no request for.
+  it("hard-gates a saved card whose resolved script changed, and hides its record", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-stale-saved-record-"))
+    scratchDirectories.push(workspacePath)
+    const manifestPath = join(workspacePath, "package.json")
+    await writeFile(manifestPath, JSON.stringify({ scripts: { test: "vitest run" } }))
+    const approval = structuredClone(demoWorkspace.approvals[0]!)
+    approval.risk = "normal"
+    approval.operation = "Run the test suite"
+    approval.command = "pnpm test"
+    approval.directory = workspacePath
+    approval.providerRequestId = 93
+    approval.execution = await resolveExecution({
+      workspaceRoot: workspacePath,
+      cwd: workspacePath,
+      command: approval.command,
+    })
+    expect(approval.execution).toMatchObject({ state: "resolved" })
+    await writeFile(manifestPath, JSON.stringify({ scripts: { test: "vitest run --changed" } }))
+
+    const settled = await settleApproval(savedSettlementInput(approval, workspacePath, undefined, () => "normal"))
+    expect(settled.approval).toMatchObject({ risk: "hard-gate", execution: { state: "unresolved", reason: "sensitive-content" } })
+    const unchanged = structuredClone(approval)
+    unchanged.execution = await resolveExecution({ workspaceRoot: workspacePath, cwd: workspacePath, command: approval.command })
+    expect((await settleApproval(savedSettlementInput(unchanged, workspacePath, undefined, () => "normal"))).approval)
+      .toMatchObject({ risk: "normal", execution: unchanged.execution })
+  })
+
   it("reuses a standing rule only while its resolved execution digest matches", async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-rule-digest-"))
     scratchDirectories.push(workspacePath)
@@ -7228,6 +7450,9 @@ describe("DomovoiDaemon", () => {
       result: {
         approvals: [expect.objectContaining({
           providerRequestId: 42,
+          // Claude Code runs an approved command as the user, unsandboxed.
+          affects: "Anything this user account can reach on this machine.",
+          network: "Not restricted: this provider runs commands with this machine's network access.",
           execution: expect.objectContaining({ state: "resolved" }),
           reapproval: {
             reason: "legacy-text-only",
@@ -7265,6 +7490,16 @@ describe("DomovoiDaemon", () => {
 
   it("issues immutable connection IDs for approval attribution", async () => {
     const snapshot = structuredClone(demoWorkspace)
+    // A standing rule needs a card whose record still matches the command
+    // resolved in its worktree at the click, and an Allow in a worktree takes a
+    // checkpoint first (J34).
+    const workspacePath = await realpath(await mkdtemp(join(tmpdir(), "domovoi-connection-ids-")))
+    scratchDirectories.push(workspacePath)
+    const approval = snapshot.approvals[0]!
+    snapshot.sessions.find((session) => session.id === approval.sessionId)!.workspacePath = workspacePath
+    approval.directory = workspacePath
+    approval.command = "prisma migrate deploy"
+    approval.execution = await resolveExecution({ workspaceRoot: workspacePath, cwd: workspacePath, command: approval.command })
     snapshot.approvals[0]!.risk = "normal"
     snapshot.approvals[0]!.requestedAt = "2026-09-10T12:00:00.000Z"
     // Read before start: once raised, the array is the daemon's live state.
@@ -7273,6 +7508,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
+      workspaceService: checkpointingWorkspace(),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -13498,11 +13734,12 @@ describe("DomovoiDaemon", () => {
       command: "Edit",
     } as const
     // A credential file, named as written, relative to the worktree, and
-    // beside names that only share a prefix with it.
+    // beside a name that only holds its text (.env.example is itself secret,
+    // owner ruling 2026-09-25).
     listener!({
       ...request,
       requestId: 501,
-      reason: `Add a key to ${join(workspacePath, ".env")}, then to .env again; leave .env.example and src/index.ts alone`,
+      reason: `Add a key to ${join(workspacePath, ".env")}, then to .env again; leave x.envy.txt and src/index.ts alone`,
       path: join(workspacePath, ".env"),
     })
     // A file a link inside the worktree carries into a credential store,
@@ -13586,7 +13823,7 @@ describe("DomovoiDaemon", () => {
 
     expect(await card(501)).toMatchObject({
       risk: "hard-gate",
-      operation: "Add a key to [REDACTED], then to [REDACTED] again; leave .env.example and src/index.ts alone",
+      operation: "Add a key to [REDACTED], then to [REDACTED] again; leave x.envy.txt and src/index.ts alone",
       command: "Edit",
     })
     expect(await card(502)).toMatchObject({ risk: "hard-gate", operation: "Edit [REDACTED], which is [REDACTED]", command: "Edit" })
@@ -13662,7 +13899,7 @@ describe("DomovoiDaemon", () => {
     }).thread.filter((item) => item.kind === "receipt").map((item) => item.operation)
     expect(receipts).toEqual(expect.arrayContaining([
       "Build in [REDACTED]",
-      "Add a key to [REDACTED], then to [REDACTED] again; leave .env.example and src/index.ts alone",
+      "Add a key to [REDACTED], then to [REDACTED] again; leave x.envy.txt and src/index.ts alone",
       "Edit [REDACTED], which is [REDACTED]",
       "Claude requested permissions to use Edit on [REDACTED]",
       "Edit [REDACTED], which is [REDACTED] or [REDACTED]",
@@ -13772,7 +14009,10 @@ describe("DomovoiDaemon", () => {
 
     await rpc("session.send", { sessionId: session.id, prompt: "Edit the files", client: "desktop" })
     const slashed = (path: string) => path.split(sep).join("/")
-    const controls = ".env.example .envrc src/index.ts"
+    // .env.example and .envrc are secret file names (owner ruling
+    // 2026-09-25), so the controls keep ".env" inside names neither side's
+    // classifier hides.
+    const controls = "x.envy.txt app.envrc.md src/index.ts"
     const cases = [
       { file: ".env", cwds: [".", "lib", ".."] },
       { file: "src/.env", cwds: [".", "src", "lib", "via"] },

@@ -1,39 +1,16 @@
 import { isAbsolute, join, parse, relative, resolve, sep } from "node:path"
 
+import { approvalFacts, hiddenDirectory } from "./approval-facts.js"
+import { below, withTrailingSeparator } from "./credential-stores.js"
 import { followedTarget, followPath, requestedPath, type FollowedPath, type FollowedTarget } from "./followed-path.js"
+import type { OperationDeadline } from "./operation-deadline.js"
 import { namesSecretPath } from "./permission-policy.js"
 import { redactDurableText } from "./secret-redaction.js"
 
-// The Affects line of a file tool's card: the file the edit really reaches,
-// found the way execution resolution finds it, in the sentence form #541 uses
-// for approval facts (affectedFile in approval-facts.ts). Whichever of #541 and
-// #545 lands second folds this into approvalFacts.
-
-// The card is persisted and sent to phones, and the path is the agent's text.
-// It is redacted like the command, shown with its control characters escaped so
-// it cannot add a line to the card, and shortened in the middle past this many
-// characters.
-const maximumApprovalPathLength = 512
-
-// C0 and C1 controls, line and paragraph separators, and the bidirectional
-// overrides and isolates that can reorder what a person reads.
-const unsafeCharacter = /[\p{Cc}\u2028\u2029\u202a-\u202e\u2066-\u2069]/gu
-
-function escaped(character: string): string {
-  if (character === "\n") return "\\n"
-  if (character === "\r") return "\\r"
-  if (character === "\t") return "\\t"
-  return `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`
-}
-
-function shownPath(path: string): { text: string; redacted: boolean } {
-  const copy = redactDurableText(path)
-  const text = copy.value.replace(unsafeCharacter, escaped)
-  if (text.length <= maximumApprovalPathLength) return { text, redacted: copy.redacted }
-  const head = Math.ceil((maximumApprovalPathLength - 1) / 2)
-  const tail = maximumApprovalPathLength - 1 - head
-  return { text: `${text.slice(0, head)}…${text.slice(-tail)}`, redacted: copy.redacted }
-}
+// The spelling sets a card judges and hides its paths by, and the file tool
+// card's Affects line. The line itself is approvalFacts' file line, the one
+// sentence form every card uses (folded in when #541 landed after #545): it
+// names the file the edit really reaches.
 
 function within(workspace: string, target: string): string | undefined {
   const inside = relative(workspace, target)
@@ -41,10 +18,6 @@ function within(workspace: string, target: string): string | undefined {
     ? inside.split(sep).join("/")
     : undefined
 }
-
-// A path that names a credential file is hidden whole on the card; the line
-// keeps only where the file is.
-const hiddenPath = { text: "[REDACTED]", redacted: false }
 
 // One path on a card: the file or directory, the worktree, and the directory
 // the request runs in.
@@ -63,8 +36,11 @@ type CardPath = { workspace: string; path: string; cwd?: string | undefined }
 // whole and the line keeps only where it is, in the form #541 uses
 // (hiddenDirectory in approval-facts.ts). Hidden is true then, and the card is
 // a hard gate.
-export async function cardDirectory(input: { directory: string; workspace: string }): Promise<{ text: string; hidden: boolean; forms: string[]; complete: boolean }> {
-  const spellings = await pathSpellings({ workspace: input.workspace, path: input.directory })
+export async function cardDirectory(
+  input: { directory: string; workspace: string },
+  deadline?: OperationDeadline,
+): Promise<{ text: string; hidden: boolean; forms: string[]; complete: boolean }> {
+  const spellings = await pathSpellings({ workspace: input.workspace, path: input.directory }, deadline)
   const { forms, complete } = spellings
   if (!namesCredential(spellings) && !redactDurableText(input.directory).redacted) {
     return { text: input.directory, hidden: false, forms, complete }
@@ -73,7 +49,7 @@ export async function cardDirectory(input: { directory: string; workspace: strin
   const directory = resolve(workspace, input.directory)
   const inside = directory === workspace || within(workspace, directory) !== undefined
   return {
-    text: inside ? "[REDACTED] in the session worktree" : "[REDACTED], outside the session worktree",
+    text: hiddenDirectory(inside),
     hidden: true,
     forms,
     complete,
@@ -91,32 +67,21 @@ export async function cardDirectory(input: { directory: string; workspace: strin
 // in any spelling of the file, of the worktree it lies in, or of the directory
 // the request runs in hides the file, even when the file itself is public,
 // since the card's text may name it that way.
-export async function fileTargetAffects(input: CardPath): Promise<{ text: string; redacted: boolean; sensitive: boolean; forms: string[]; complete: boolean }> {
-  const lexicalTarget = resolve(input.workspace, input.cwd ?? ".", input.path)
-  const spellings = await pathSpellings(input)
+export async function fileTargetAffects(
+  input: CardPath,
+  deadline?: OperationDeadline,
+): Promise<{ text: string; redacted: boolean; sensitive: boolean; forms: string[]; complete: boolean }> {
+  const spellings = await pathSpellings(input, deadline)
   const { forms, followed, complete } = spellings
-  const hide = namesCredential(spellings)
-  const shown = (path: string) => hide ? hiddenPath : shownPath(path)
-  const lexical = within(resolve(input.workspace), lexicalTarget)
-  const real = followed ? within(followed.workspace, followed.target) : lexical
-  if (real !== undefined) {
-    // The file the edit reaches, which is the one a rule made here names.
-    const name = shown(real)
-    return { text: `The file ${name.text} in the session worktree.`, redacted: name.redacted, sensitive: hide, forms, complete }
-  }
-  if (lexical !== undefined && followed) {
-    const destination = shown(followed.target)
-    const link = shown(lexical)
-    return {
-      text: `The file ${destination.text}, outside the session worktree, through a link at ${link.text}.`,
-      redacted: destination.redacted || link.redacted,
-      sensitive: hide,
-      forms,
-      complete,
-    }
-  }
-  const name = shown(lexicalTarget)
-  return { text: `The file ${name.text}, outside the session worktree.`, redacted: name.redacted, sensitive: hide, forms, complete }
+  const facts = approvalFacts({
+    path: input.path,
+    workspace: input.workspace,
+    cwd: input.cwd,
+    scope: undefined,
+    resolved: followed && { target: followed.target, workspace: followed.workspace, hops: followed.walks.target.hops },
+    spellings,
+  })
+  return { text: facts.affects, redacted: facts.redacted, sensitive: facts.sensitive, forms, complete }
 }
 
 // The path from a directory to a target, with "/", when one can be written:
@@ -134,7 +99,7 @@ function from(directory: string, target: string): string | undefined {
 // that way. Undefined outside the root, and for a rest of only "." and ".."
 // steps.
 function writtenWithin(root: string, path: string): string | undefined {
-  const prefix = root.endsWith(sep) ? root : `${root}${sep}`
+  const prefix = withTrailingSeparator(root)
   if (!path.startsWith(prefix)) return undefined
   const steps = path.slice(prefix.length).split(sep).filter((step) => step !== "")
   return steps.length === 0 || steps.every((step) => step === "." || step === "..") ? undefined : steps.join("/")
@@ -142,7 +107,7 @@ function writtenWithin(root: string, path: string): string | undefined {
 
 // A root and a rest from writtenWithin, joined without collapsing "..".
 function writtenBelow(root: string, rest: string): string {
-  return `${root.endsWith(sep) ? root : `${root}${sep}`}${rest.split("/").join(sep)}`
+  return below(root, rest.split("/"))
 }
 
 // How many directories a path goes down from its filesystem root.
@@ -180,7 +145,7 @@ function sameSpellings(
 ): { spellings: string[]; complete: boolean } {
   const found = new Set(seeds)
   let frontier = seeds.filter((path) => isAbsolute(path))
-  const prefix = (path: string) => path.endsWith(sep) ? path : `${path}${sep}`
+  const prefix = (path: string) => withTrailingSeparator(path)
   while (frontier.length > 0) {
     const next: string[] = []
     for (const path of frontier) {
@@ -221,15 +186,18 @@ function sameSpellings(
 // would spell a path that is not there.
 export type PathSpellings = { forms: string[]; complete: boolean }
 
-async function pathSpellings(input: CardPath): Promise<PathSpellings & { followed: FollowedTarget | undefined }> {
+export async function pathSpellings(
+  input: CardPath,
+  deadline?: OperationDeadline,
+): Promise<PathSpellings & { followed: FollowedTarget | undefined }> {
   const workspace = resolve(input.workspace)
-  const followed = await followedTarget(input.workspace, input.path, input.cwd)
+  const followed = await followedTarget(input.workspace, input.path, input.cwd, deadline)
   const lexical = resolve(workspace, input.cwd ?? ".", input.path)
   const directoryGiven = input.cwd === undefined
     ? input.workspace
     : isAbsolute(input.cwd) ? input.cwd : `${input.workspace}${sep}${input.cwd}`
   const directory = resolve(workspace, input.cwd ?? ".")
-  const directoryWalk = await followPath(directory)
+  const directoryWalk = await followPath(directory, deadline)
   const targetWalk = followed?.walks.target
   const workspaceWalk = followed?.walks.workspace
   const walks = [targetWalk, workspaceWalk, directoryWalk].flatMap((walk) => walk ?? [])
@@ -286,7 +254,7 @@ async function pathSpellings(input: CardPath): Promise<PathSpellings & { followe
 
 // The judge every card path goes through: a credential name in any form of
 // the set, or a set that could not be closed.
-function namesCredential(spellings: PathSpellings): boolean {
+export function namesCredential(spellings: PathSpellings): boolean {
   return !spellings.complete || spellings.forms.some(namesSecretPath)
 }
 
