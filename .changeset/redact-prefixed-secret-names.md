@@ -54,4 +54,12 @@ output stream as they already did in stored output and the terminal, so that str
 line until the next one arrives. A name inside another name's quoted value, as in
 `java -Dpassword="a API_KEY=b" -jar app.jar`, is part of that value: it is hidden with it, and what
 follows the value is kept. A doubled separator or terminal formatting where a value starts, as in
-`TOKEN==(a b)` or a colour code before the value, still lets an array's `(` open there.
+`TOKEN==(a b)` or a colour code before the value, still lets an array's `(` open there. The
+terminal no longer shows a value that ends in or holds a sensitive word when a read ends inside it,
+as in `TOKEN=abctoken` followed by more, or a flag typed one character at a time: it holds from the
+name that value belongs to. A sensitive word glued to the end of a value, with a separator after it
+(`TOKEN=abctoken: value`), hides the value after it. At an idle beat the terminal keeps dropping a
+word it was reading, a closed quote's word included, up to its delimiter, and a name and separator
+at the end of what it shows drop the value typed after the beat. A name after the closing quote of
+`set "NAME=value"` hides its own value in every copy. A long chain of glued names
+(`API_KEY=a_token=a_token=…`) is read in linear time.

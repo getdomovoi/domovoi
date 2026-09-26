@@ -106,6 +106,9 @@ const reviewCases: readonly { name: string, steps: readonly Step[], value: strin
   { name: "a closed oversized quote, then the rest of the word", steps: ["API_KEY=\"", "q".repeat(9_000), "\"zqxjwvkm\r\n"], value: "zqxjwvkm" },
   { name: "a property value with an escaped quote, split", steps: ["-", "Dpassword", "=\"aaaa\\\"zqxjwvkm\" done\r\n"], value: "zqxjwvkm" },
   { name: "a property separator, a long run of spaces, then the value", steps: ["-Dpassword=", " ".repeat(8_300), "zqxjwvkm\r\n"], value: "zqxjwvkm" },
+  // Held open with it.fails before #539's round 7: an idle beat after a name
+  // and its separator now starts a drop of the value that follows.
+  { name: "a carriage return and cursor move before the value", steps: ["export API_KEY=", "idle", "\r\x1b[8Czqxjwvkm\r\n"], value: "zqxjwvkm" },
 ]
 
 describe("terminal redaction on the cases review reported", () => {
@@ -125,7 +128,6 @@ describe("terminal redaction on the cases review reported", () => {
 // follow-up: each assertion fails today, and turns this test red when fixed.
 const openCases: readonly { name: string, steps: readonly Step[] }[] = [
   { name: "an ANSI sequence between the name and its separator", steps: ["export API_KEY\x1b[0m=zqxjwvkm\r\n"] },
-  { name: "a carriage return and cursor move before the value", steps: ["export API_KEY=", "idle", "\r\x1b[8Czqxjwvkm\r\n"] },
   { name: "a bare token longer than a line keeps", steps: ["echo ghp_", "zqxj", "a".repeat(8_300), "wvkm done\r\n"] },
   // A bare token has no name, so what an idle beat releases of it is not
   // context for the rest.

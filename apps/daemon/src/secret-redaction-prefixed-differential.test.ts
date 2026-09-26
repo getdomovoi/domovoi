@@ -9,14 +9,17 @@ import {
   groupingConstructs,
   redactDurableCommand,
   redactDurableOutput,
+  redactDurableText,
   TerminalOutputRedactor,
 } from "./secret-redaction.js"
 import {
   DurableOutputRedactor as MainDurableOutputRedactor,
   redactDurableCommand as mainRedactDurableCommand,
   redactDurableOutput as mainRedactDurableOutput,
+  redactDurableText as mainRedactDurableText,
   TerminalOutputRedactor as MainTerminalOutputRedactor,
 } from "./secret-redaction-baseline.js"
+import * as latest from "./secret-redaction-main-stage.js"
 
 // Differential fuzz for secret names, against main's own code
 // (secret-redaction-baseline.ts, pinned by its own test). Inputs are secret
@@ -235,7 +238,10 @@ function generatePrefixed(next: () => number): Case {
   // goes on, a long run around the carry, or a wide quoted value.
   // A value past the durable 8,192-character bound is costly to split at
   // every point, so it comes up a third as often as the others.
-  let kind = pick(["word", "number", "number", "decimal", "boolean", "number-then-word", "carry", "long", "wide", "wide", "wide", "substitution", "substitution", "substitution"])
+  // A value may end in a sensitive word, or hold one, perhaps with a
+  // separator and a second value after it (TOKEN=abctoken: value), as the
+  // round 7 review of #539 found.
+  let kind = pick(["word", "number", "number", "decimal", "boolean", "number-then-word", "carry", "long", "wide", "wide", "wide", "substitution", "substitution", "substitution", "sensitive-word", "sensitive-word"])
   if (kind === "long" && !chance(1 / 3)) kind = "carry"
   // An enclosed value and a JSON string with a following key hold no
   // substitution here.
@@ -289,6 +295,11 @@ function generatePrefixed(next: () => number): Case {
       value = `${lead}${built.text}${tail}`
       break
     }
+    case "sensitive-word": {
+      value = `${word(3 + Math.floor(next() * 4))}${pick(["token", "_token", "secret", "password", "Password", "-api-key", "passwd", "_SECRET_KEY"])}`
+      if (chance(0.35)) { features.push("sensitive-inside"); value += word(3) } else if (chance(0.4)) { features.push("sensitive-then-separator"); value += `${pick([": ", "= ", ":", "="])}${word(4 + Math.floor(next() * 3))}` }
+      break
+    }
     default: value = word(6 + Math.floor(next() * 7)); break
   }
   features.push(`value-${kind}`)
@@ -298,8 +309,12 @@ function generatePrefixed(next: () => number): Case {
   // the closing quote, as in set "NAME=a b"c, and belong to the value.
   const enclosedClosed = enclosed && chance(0.7)
   if (enclosed && !enclosedClosed) features.push("unclosed-enclosure")
-  if (enclosedClosed && chance(0.2)) { features.push("enclosed-tail"); value = `${value}${close}${word(2)}` }
-  const enclosedCloser = enclosedClosed && !features.includes("enclosed-tail") ? close : ""
+  if (enclosedClosed && chance(0.2)) { features.push("enclosed-tail"); value = `${value}${close}${word(2)}` } else if (enclosedClosed && chance(0.15)) {
+    // A name after the closing quote, with its own value: set "NAME='a'"token: b.
+    features.push("enclosed-name-tail")
+    value = `${value}${close}${pick(sensitiveNames)}: ${word(4)}`
+  }
+  const enclosedCloser = enclosedClosed && !features.includes("enclosed-tail") && !features.includes("enclosed-name-tail") ? close : ""
   const plain = /^(?:\d+(?:\.\d+)?|true|false)$/iu.test(value)
 
   // Inside a substitution that never closes, a closing quote would be part of
@@ -323,6 +338,8 @@ function generatePrefixed(next: () => number): Case {
       nested = `${pick([
         `${inner}=`, `${inner}=${gap(" ")}`, `--${inner}${gap(" ")}`, `--${inner}=`, `-D${inner}=`, `${inner}:${gap(" ")}`,
         `"${inner}":`, "=", ":", `/${inner}:`,
+        // A chain of glued names: a_token=a_token=.
+        `${pick(otherWords)}_${inner}=`.repeat(1 + Math.floor(next() * 3)),
       ])}${nested}`
     }
   }
@@ -463,10 +480,37 @@ function syntaxPoints(item: Case): number[] {
 // into three reads (three times, each cut at a syntax point of the value half
 // the time and at random otherwise), and cut into random reads with idle
 // beats.
+// A text up to this long is also read one character at a time, as typing
+// reaches the terminal.
+const perCharacterLength = 120
+
+// How many readings a case gets, and how many of them are idle splits, which
+// only the terminal takes: the same split with no beat reaches the others.
+function readingCount(item: Case): { total: number, idleSplits: number } {
+  const splits = splitPoints(item).length
+  const total = 1 + splits * 2 + (item.text.length >= 3 ? 3 : 0) + 1 + (item.text.length <= perCharacterLength ? 1 : 0)
+  return { total, idleSplits: splits }
+}
+
+// A reading split in two with an idle beat between.
+function isIdleSplit(steps: readonly Step[]): boolean {
+  return steps.length === 3 && steps[1] === "idle"
+}
+
+function redactionsOf(item: Case): number {
+  const { total, idleSplits } = readingCount(item)
+  const streamingPairs = pairs.filter((pair) => pair.streaming)
+  return streamingPairs.reduce((sum, pair) => sum + (pair.idleMatters ? total : total - idleSplits), 0) + pairs.length - streamingPairs.length
+}
+
 function readings(item: Case, next: () => number): Step[][] {
   const text = item.text
   const all: Step[][] = [[text]]
-  for (const at of splitPoints(item)) all.push([text.slice(0, at), text.slice(at)])
+  // Every split into two reads, and every split with an idle beat between,
+  // as main's release (security review round 7 of #539: names and values cut
+  // by a beat).
+  for (const at of splitPoints(item)) all.push([text.slice(0, at), text.slice(at)], [text.slice(0, at), "idle", text.slice(at)])
+  if (text.length <= perCharacterLength) all.push([...text])
   if (text.length >= 3) {
     const syntax = syntaxPoints(item)
     const point = (from: number) => {
@@ -503,25 +547,80 @@ function occurrences(text: string, piece: string): number {
   return text.split(piece).length - 1
 }
 
-function exposed(item: Case, output: string): string | undefined {
-  const value = item.value!
-  const at = item.text.indexOf(value)
-  if (at < 0) throw new Error(`the value of ${item.shape} is not in its text`)
-  const around = `${item.text.slice(0, at)}${item.text.slice(at + value.length)}`
-  const shown = markers.reduce((text, marker) => text.replaceAll(marker, "\u0000"), output)
-  const pieces = fragments(value)
-  if (pieces.length === 0) throw new Error(`the value of ${item.shape} has nothing to check`)
-  return pieces.find((piece) => occurrences(shown, piece) > occurrences(around, piece))
+
+// How often each piece occurs in a text once the redactors' markers are taken
+// out, counted in one pass rather than a split per piece.
+function countPieces(text: string, pieces: readonly string[]): Map<string, number> {
+  const counts = new Map(pieces.map((piece) => [piece, 0]))
+  for (const character of text) {
+    const count = counts.get(character)
+    if (count !== undefined) counts.set(character, count + 1)
+  }
+  for (const marker of markers) {
+    let found = 0
+    for (let at = text.indexOf(marker); at >= 0; at = text.indexOf(marker, at + marker.length)) found += 1
+    if (found === 0) continue
+    for (const character of marker) {
+      const count = counts.get(character)
+      if (count !== undefined) counts.set(character, count - found)
+    }
+  }
+  return counts
 }
 
+// A case is judged many times in a row, so the counts around its value are
+// worked out once.
+let lastAround: { item: Case, pieces: string[], around: Map<string, number> } | undefined
+
+function exposed(item: Case, output: string): string | undefined {
+  if (lastAround?.item !== item) {
+    const value = item.value!
+    const at = item.text.indexOf(value)
+    if (at < 0) throw new Error(`the value of ${item.shape} is not in its text`)
+    const pieces = fragments(value)
+    if (pieces.length === 0) throw new Error(`the value of ${item.shape} has nothing to check`)
+    const around = `${item.text.slice(0, at)}${item.text.slice(at + value.length)}`
+    lastAround = { item, pieces, around: new Map(pieces.map((piece) => [piece, occurrences(around, piece)])) }
+  }
+  const { pieces, around } = lastAround
+  const shown = countPieces(output, pieces)
+  return pieces.find((piece) => shown.get(piece)! > around.get(piece)!)
+}
+
+// main: main's code at 8bda137f (secret-redaction-baseline.ts), with an idle
+// beat as a flush, as the terminal took it then. latest: main's current code
+// (secret-redaction-main-stage.ts, the #598 terminal redactor included), with
+// an idle beat as a release. A value either one hides must stay hidden
+// (security review round 7 of #539).
 type Pair = {
   name: string
   // Whether the reads reach this redactor, or only the whole text.
   streaming: boolean
   // Whether an idle beat in the reads reaches this redactor.
   idleMatters: boolean
+  // A peek reads an unfinished record, whose last value may still grow, so a
+  // counting value at its end is not yet complete and need not show.
+  unfinished?: true
   main: (item: Case, steps: readonly Step[]) => string
+  latest: (item: Case, steps: readonly Step[]) => string
   current: (item: Case, steps: readonly Step[]) => string
+}
+
+type Terminal = { push: (chunk: string) => string, release?: () => string, flush: () => string }
+type Stream = { push: (chunk: string) => string, peek?: () => string, flush: () => string }
+
+function terminal(redactor: Terminal, steps: readonly Step[]): string {
+  return steps.map((step) => step !== "idle" ? redactor.push(step) : redactor.release ? redactor.release() : redactor.flush()).join("") + redactor.flush()
+}
+
+function stream(redactor: Stream, steps: readonly Step[]): string {
+  return steps.map((step) => step === "idle" ? "" : redactor.push(step)).join("") + redactor.flush()
+}
+
+// What the stream has emitted and what its peek shows of the rest, as the
+// daemon reads an unfinished stream's output.
+function peeked(redactor: Stream, steps: readonly Step[]): string {
+  return steps.map((step) => step === "idle" ? "" : redactor.push(step)).join("") + redactor.peek!()
 }
 
 const pairs: readonly Pair[] = [
@@ -529,32 +628,42 @@ const pairs: readonly Pair[] = [
     name: "terminal",
     streaming: true,
     idleMatters: true,
-    main: (_item, steps) => {
-      const redactor = new MainTerminalOutputRedactor()
-      return steps.map((step) => step === "idle" ? redactor.flush() : redactor.push(step)).join("") + redactor.flush()
-    },
+    main: (_item, steps) => terminal(new MainTerminalOutputRedactor(), steps),
+    latest: (_item, steps) => terminal(new latest.TerminalOutputRedactor(), steps),
     // An idle beat is a release, as server.ts sends it since #598; the end of
     // the output is a flush.
-    current: (_item, steps) => {
-      const redactor = new TerminalOutputRedactor()
-      return steps.map((step) => step === "idle" ? redactor.release() : redactor.push(step)).join("") + redactor.flush()
-    },
+    current: (_item, steps) => terminal(new TerminalOutputRedactor(), steps),
   },
   {
     name: "durable output stream",
     streaming: true,
     idleMatters: false,
-    main: (_item, steps) => {
-      const redactor = new MainDurableOutputRedactor()
-      return steps.map((step) => step === "idle" ? "" : redactor.push(step)).join("") + redactor.flush()
-    },
-    current: (_item, steps) => {
-      const redactor = new DurableOutputRedactor()
-      return steps.map((step) => step === "idle" ? "" : redactor.push(step)).join("") + redactor.flush()
-    },
+    main: (_item, steps) => stream(new MainDurableOutputRedactor(), steps),
+    latest: (_item, steps) => stream(new latest.DurableOutputRedactor(), steps),
+    current: (_item, steps) => stream(new DurableOutputRedactor(), steps),
   },
-  { name: "durable output", streaming: false, idleMatters: false, main: (item) => mainRedactDurableOutput(item.text).value, current: (item) => redactDurableOutput(item.text).value },
-  { name: "durable command", streaming: false, idleMatters: false, main: (item) => mainRedactDurableCommand(item.text).value, current: (item) => redactDurableCommand(item.text).value },
+  // Main's code at 8bda137f had no peek; its current code is the reference.
+  {
+    name: "durable output peek",
+    streaming: true,
+    idleMatters: false,
+    unfinished: true,
+    main: (_item, steps) => peeked(new latest.DurableOutputRedactor(), steps),
+    latest: (_item, steps) => peeked(new latest.DurableOutputRedactor(), steps),
+    current: (_item, steps) => peeked(new DurableOutputRedactor(), steps),
+  },
+  {
+    name: "durable output", streaming: false, idleMatters: false,
+    main: (item) => mainRedactDurableOutput(item.text).value, latest: (item) => latest.redactDurableOutput(item.text).value, current: (item) => redactDurableOutput(item.text).value,
+  },
+  {
+    name: "durable command", streaming: false, idleMatters: false,
+    main: (item) => mainRedactDurableCommand(item.text).value, latest: (item) => latest.redactDurableCommand(item.text).value, current: (item) => redactDurableCommand(item.text).value,
+  },
+  {
+    name: "durable text", streaming: false, idleMatters: false,
+    main: (item) => mainRedactDurableText(item.text).value, latest: (item) => latest.redactDurableText(item.text).value, current: (item) => redactDurableText(item.text).value,
+  },
 ]
 
 // A durable command is cut at 8,192 characters, so a text longer than that is
@@ -582,7 +691,7 @@ function judge(pair: Pair, item: Case, steps: readonly Step[]): Failure | undefi
     return undefined
   }
   if (item.rule === "show") {
-    if (absolute && current !== item.text) return fail("complete counting value not shown", JSON.stringify(current.slice(0, 160)))
+    if (absolute && !pair.unfinished && current !== item.text) return fail("complete counting value not shown", JSON.stringify(current.slice(0, 160)))
     return undefined
   }
   if (item.rule === "either") return undefined
@@ -596,6 +705,7 @@ function judge(pair: Pair, item: Case, steps: readonly Step[]): Failure | undefi
   if (shown === undefined) return undefined
   const mainHides = exposed(item, main()) === undefined
   if (mainHides) return fail("shows a value main hides", JSON.stringify(shown))
+  if (exposed(item, pair.latest(item, steps)) === undefined) return fail("shows a value current main hides", JSON.stringify(shown))
   if (absolute) return fail("shows a value (main shows it too)", JSON.stringify(shown))
   return undefined
 }
@@ -603,6 +713,7 @@ function judge(pair: Pair, item: Case, steps: readonly Step[]): Failure | undefi
 function failure(item: Case, all: readonly (readonly Step[])[], under: readonly Pair[] = pairs): Failure | undefined {
   for (const pair of under) {
     for (const steps of pair.streaming ? all : all.slice(0, 1)) {
+      if (!pair.idleMatters && isIdleSplit(steps)) continue
       const problem = judge(pair, item, steps)
       if (problem) return problem
     }
@@ -645,9 +756,7 @@ if (!Number.isSafeInteger(cases) || cases < 1 || !Number.isSafeInteger(seed)) {
 function plannedRedactions(): number {
   let total = 0
   for (let index = 0; index < cases; index += 1) {
-    const item = generate(random(seed + index))
-    const readingsOfCase = 1 + splitPoints(item).length + (item.text.length >= 3 ? 3 : 0) + 1
-    total += readingsOfCase * 2 + 2
+    total += redactionsOf(generate(random(seed + index)))
   }
   return total
 }
@@ -664,7 +773,8 @@ function family(item: Case): string {
   const features = item.shape.split("+")
   const kept = features.filter((feature) => feature.startsWith("quote-") || feature === "unclosed-quote" || feature === "unclosed-enclosure" || feature.startsWith("enclosed-") || feature === "value-wide" || feature === "long-prefix"
     || feature === "value-substitution" || feature === "unclosed-substitution" || feature.startsWith("outer-") || feature.startsWith("in-word-")
-    || feature === "nested" || feature === "cross-line" || feature === "ansi" || feature === "spaced-equals")
+    || feature === "nested" || feature === "cross-line" || feature === "ansi" || feature === "spaced-equals"
+    || feature.startsWith("sensitive-") || feature === "enclosed-name-tail")
   return [features[0], ...kept].join("+")
 }
 
@@ -678,7 +788,8 @@ describe("secret names against main", () => {
       const next = random(caseSeed)
       const item = generate(next)
       const all = readings(item, next)
-      redactions += all.length * 2 + 2
+      expect(all.length).toBe(readingCount(item).total)
+      redactions += redactionsOf(item)
       if (!failure(item, all)) continue
       for (const pair of pairs) {
         const problem = failure(item, all, [pair])

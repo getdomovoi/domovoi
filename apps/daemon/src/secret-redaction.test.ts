@@ -1128,3 +1128,88 @@ describe("shell quoting in flag and property values", () => {
     expect(`${terminal.push("Authorization: Bearer\nzqxjwvkm\n")}${terminal.flush()}`).not.toContain("zqxjwvkm")
   })
 })
+
+// Security review round 7 of #539, each shape as the reviewer ran it. Each
+// showed a value main hides. Main's redactor now runs first on every path,
+// so what it hides reaches this branch's reader already replaced.
+describe("security review round 7: never less than main", () => {
+  function run(reads: readonly string[]): string {
+    const redactor = new TerminalOutputRedactor()
+    return reads.map((read) => read === "idle" ? redactor.release() : redactor.push(read)).join("") + redactor.flush()
+  }
+
+  const terminalRows: ReadonlyArray<{ name: string, reads: readonly string[], hidden: readonly string[] }> = [
+    { name: "a value that ends in a sensitive word, then more", reads: ["TOKEN=zqxjwvtoken ", "more\r\n"], hidden: ["zqxjwv"] },
+    { name: "a value that ends in a sensitive word and a separator", reads: ["TOKEN=zqxjwvtoken: kmjwq"], hidden: ["zqxjwv", "kmjwq"] },
+    { name: "a flag typed one character per read", reads: [..."mysql --password=supersecret -h db\r\n"], hidden: ["super"] },
+    { name: "a quoted flag value that ends in a sensitive word", reads: ["--password=\"zqxjwv_token\" ", "more\r\n"], hidden: ["zqxjwv"] },
+    { name: "a flag value that ends in a name and separator, idle", reads: ["run --token xwwxxclient_secret= q", "idle", "wxjwwq -s\n"], hidden: ["xwwxx"] },
+    { name: "an inner name and separator before an idle beat", reads: ["curl --GITHUB_TOKEN\r=\"GITHUB_TOKEN\":API_KEY=", "idle", " zqxjwv -s\n"], hidden: ["zqxjwv"] },
+    { name: "a closed set quote, then an idle beat in the word", reads: ["set 'TOKEN=zqx'", "idle", "jwvk & echo -s\n"], hidden: ["zqx", "jwvk"] },
+    { name: "a closed echo quote, then an idle beat in the word", reads: ["echo \"-NPM-API_KEY=3\"", "idle", "vv -s\n"], hidden: ["vv"] },
+    { name: "a name cut by an idle beat after a quoted property", reads: ["-Dsecret='kjwmjw',passw", "idle", "ord= xmzxq", "z\r\n"], hidden: ["kjwmjw", "xmzxq"] },
+    // Found by the long local run of the fuzzes after the fix: a name inside
+    // a value cut by two idle beats, as main's terminal reads it from the
+    // typed line.
+    { name: "an inner flag cut by two idle beats", reads: ["$env:db-secre", "idle", "t_key=--coo", "idle", "kie=\"vxzqzxtoken\""], hidden: ["vxzqzx"] },
+    { name: "an inner flag and its value cut by idle beats", reads: ["curl ---DB-SECRET_KE", "idle", "Y  =--acc", "idle", "ess_token zqwjztokenxjw -s"], hidden: ["zqwjz"] },
+    { name: "an inner name whose value is quoted, cut by idle beats", reads: ["$env:DB.S", "idle", "ECRET_KEY=--access_toke", "idle", "n='mxkmvj_SECRET_KEY'"], hidden: ["mxkmvj"] },
+    { name: "a set quote cut by a beat, then a name after it", reads: ["set \"clie", "idle", "nt_secret='vjv'\"GITHUB_TOKEN: ", "zkxmwjqkz & echo -s\r\n"], hidden: ["vjv", "zkxmwjqkz"] },
+    { name: "a property cut by a beat, then a name on the next line", reads: ["java -Dclien", "idle", "t_secret\r\n==Password=\n", "jxjjmmv -jar app.jar\n"], hidden: ["jxjjmmv"] },
+    { name: "a flag cut by a beat, then an inner flag", reads: ["curl --API_KE", "idle", "Y = --API_KEY ", "qvzkmmwmk -s\r\n"], hidden: ["qvzkmmwmk"] },
+  ]
+
+  it.each(terminalRows)("hides what main hides in the terminal: $name", ({ reads, hidden }) => {
+    const shown = run(reads)
+    for (const part of hidden) expect(shown).not.toContain(part)
+  })
+
+  it("hides a name after a set quote's closing quote in every durable copy", () => {
+    const text = "set \"password='zqx'\"token: jwvk & echo -s"
+    const stream = new DurableOutputRedactor()
+    const streamed = `${stream.push(`${text}\n`)}${stream.flush()}`
+    const peeked = new DurableOutputRedactor()
+    peeked.push(text)
+    for (const shown of [redactDurableOutput(text).value, redactDurableCommand(text).value, redactDurableText(text).value, streamed, peeked.peek()]) {
+      expect(shown).not.toContain("zqx")
+      expect(shown).not.toContain("jwvk")
+    }
+    expect(redactDurableCommand(text).redacted).toBe(true)
+  })
+
+  // Found by the long local run: a name inside a JSON string is part of the
+  // string, and the fields after it are kept.
+  it("keeps the fields after a JSON string that holds a name and separator", () => {
+    const text = "{\"npm_access_token\":\"zqx_SECRET_KEY= jwvk\",\"safe\":\"visible\"}\r\n"
+    const expected = "{\"npm_access_token\":\"[REDACTED]\",\"safe\":\"visible\"}\r\n"
+    expect(redactDurableOutput(text).value).toBe(expected)
+    expect(run([text])).toBe(expected)
+  })
+
+  // Found by the long local run: a long quoted value, a name after its
+  // closing quote, and that name's value split across reads, in the terminal
+  // and in a stream record longer than the durable bound.
+  it("keeps what follows a name after a long quoted value's closing quote", () => {
+    const text = `echo 'my.private-key=${"w".repeat(270)}'credentials: zqxj -s\n`
+    const at = text.indexOf("xj")
+    const shown = run([text.slice(0, at), text.slice(at)])
+    expect(shown).not.toMatch(/zq|qx|xj|wwww/u)
+    expect(shown).toMatch(/ -s\n$/u)
+    const long = `echo 'npm.API_KEY=${"j".repeat(9_040)}'api-key: zqxv -s\r\nvisible output\r\n`
+    const cut = long.indexOf("'api") + 4
+    const stream = new DurableOutputRedactor()
+    expect(`${stream.push(long.slice(0, cut))}${stream.push(long.slice(cut))}${stream.flush()}`).toBe("[Long command output line omitted]\nvisible output\r\n")
+  })
+
+  it("reads a chain of glued inner names in linear time", () => {
+    const chain = (length: number) => `API_KEY=${"a_token=".repeat(Math.ceil(length / 8))}\n`
+    let started = performance.now()
+    expect(redactDurableOutput(chain(65_536)).value).not.toContain("a_token=a_token")
+    const whole = performance.now() - started
+    expect(whole).toBeLessThan(200)
+    started = performance.now()
+    const redactor = new TerminalOutputRedactor()
+    expect(`${redactor.push(chain(65_536))}${redactor.flush()}`).not.toContain("a_token=a_token")
+    expect(performance.now() - started).toBeLessThan(200)
+  })
+})
