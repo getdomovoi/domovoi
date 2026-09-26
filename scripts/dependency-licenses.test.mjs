@@ -5,7 +5,7 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 
 import {
-  auditedPackages, collectAuditGraph, desktopPackages, evaluateDependencyLicenses, mergeLicenseGraphs,
+  auditedPackages, collectAuditGraph, desktopPackages, desktopRuntimeWorkspacePackages, evaluateDependencyLicenses, mergeLicenseGraphs,
 } from "./dependency-licenses.mjs"
 import { publishablePackages } from "./release-packages.mjs"
 import { collectWorkspacePackages } from "./version-lockstep.mjs"
@@ -34,7 +34,10 @@ test("names every workspace package the desktop app and the npm packages carry a
   const manifests = new Map(await Promise.all(packages.map(async ({ name, path }) =>
     [name, JSON.parse(await readFile(join(root, path), "utf8"))])))
   const seen = new Set()
-  const pending = ["@getdomovoi/desktop"]
+  // The daemon ships as the runtime beside the archive, not as a dependency.
+  const builder = await readFile(join(root, "apps/desktop/electron-builder.yml"), "utf8")
+  assert.match(builder, /^  - from: daemon-runtime\/\$\{platform\}-\$\{arch\}$/mu)
+  const pending = ["@getdomovoi/desktop", ...desktopRuntimeWorkspacePackages]
   while (pending.length) {
     const name = pending.pop()
     if (seen.has(name)) continue
