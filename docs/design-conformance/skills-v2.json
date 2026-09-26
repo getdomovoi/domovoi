@@ -163,7 +163,7 @@
       "blocked": {
         "since": "2026-09-26",
         "needs": "protocol",
-        "reason": "no RPC reports what a repository's config would load or that it is held back; the daemon holds repository settings back for every session (changeset repository-provider-config-held-back) with no trust step to lift it, so no client can draw this state"
+        "reason": "no RPC reports what a repository's config would load or that it is held back, and no trust step lifts the hold (changeset repository-provider-config-held-back): Claude Code, OpenCode and Kilo sessions start without repository settings, and a Kilo or Codex session is refused instead when the worktree holds config the provider would load anyway, so no client can draw this state"
       }
     },
     {
@@ -248,7 +248,7 @@
       "blocked": {
         "since": "2026-09-26",
         "needs": "protocol",
-        "reason": "session refusals carry no untrusted-repository or untrusted-git-filter reason; the daemon refuses a Kilo session over legacy repository config and names the file, but with no review path and not as drawn"
+        "reason": "session refusals carry no untrusted-repository or untrusted-git-filter reason; the daemon refuses a Kilo session over legacy repository config, and a Codex thread/start, thread/resume or turn/start over a repository .codex config, hooks or rules file, and names the file, but with no review path and not as drawn"
       }
     },
     {
