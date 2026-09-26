@@ -13,6 +13,25 @@ import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
+// A barrier the round 6 test can hold inside card construction. It passes
+// straight through unless a test arms it.
+const cardBarrier = vi.hoisted(() => ({ held: undefined as undefined | { entered: () => void; release: Promise<void> } }))
+vi.mock("./file-target-affects.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./file-target-affects.js")>()
+  return {
+    ...actual,
+    cardDirectory: async (...args: Parameters<typeof actual.cardDirectory>) => {
+      const held = cardBarrier.held
+      if (held) {
+        cardBarrier.held = undefined
+        held.entered()
+        await held.release
+      }
+      return actual.cardDirectory(...args)
+    },
+  }
+})
+
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
 const scratchDirectories: string[] = []
@@ -237,6 +256,48 @@ describe("the service handoff fence", () => {
     await waitForDaemon(async () => {
       const read = await reader("workspace.get", {})
       expect((read.result as WorkspaceSnapshot).approvals).toMatchObject([{ sessionId, providerRequestId: 41 }])
+    })
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+  })
+
+  // Security review round 6: a request already building its card when the
+  // fence is taken must not become a gate either. The card's directory is
+  // held until the fence is in place, then let go.
+  it("holds a request whose card was being built when the fence was taken", async () => {
+    const { workspace, sessionId } = await readySession()
+    const session = workspace.sessions.find(({ id }) => id === sessionId)!
+    session.runtime.permissionMode = "ask"
+    session.runtime.auto = false
+    const { agent, emit } = agentWithHeldTurns(false)
+    const endpoint = await daemonWith(workspace, agent)
+    const reader = await desktopConnection(endpoint)
+    // The fence is taken on a connection whose hello was answered before the
+    // request arrived. A fresh connection's hello waits behind the card being
+    // built, which closes the window for the desktop today, but the daemon
+    // must not rely on that.
+    const fencer = await desktopConnection(endpoint)
+    const fencerSocket = sockets.at(-1)!
+    let entered!: () => void
+    const building = new Promise<void>((resolve) => { entered = resolve })
+    let release!: () => void
+    cardBarrier.held = { entered, release: new Promise<void>((resolve) => { release = resolve }) }
+    emit({ type: "approval-requested", requestId: 43, threadId: "thread-fence", command: "rm -rf build", cwd: session.workspacePath!, reason: "Remove the build output" })
+    await building
+    await expect(fencer("system.serviceHandoffFence", {})).resolves.toMatchObject({ result: { outcome: "fenced" } })
+    release()
+    emit({ type: "diff-updated", threadId: "thread-fence", diff: "after the card" })
+    await waitForDaemon(async () => {
+      const read = await reader("workspace.get", {})
+      expect((read.result as WorkspaceSnapshot).artifacts).toContainEqual(expect.objectContaining({ id: `diff-${sessionId}`, content: "after the card" }))
+    })
+    const during = await reader("workspace.get", {})
+    expect((during.result as WorkspaceSnapshot).approvals).toEqual([])
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+
+    fencerSocket.terminate()
+    await waitForDaemon(async () => {
+      const read = await reader("workspace.get", {})
+      expect((read.result as WorkspaceSnapshot).approvals).toMatchObject([{ sessionId, providerRequestId: 43 }])
     })
     expect(agent.resolveApproval).not.toHaveBeenCalled()
   })

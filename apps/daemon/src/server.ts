@@ -9199,7 +9199,8 @@ export class DomovoiDaemon {
     if (event.type === "approval-requested") {
       // Security review round 1 of #576: no gate is raised while the service
       // handoff fence is held, whatever the request's turn id. Checked again
-      // after the await below, where the fence may have been taken.
+      // after the last await of card construction below (round 6), where the
+      // fence may have been taken.
       if (this.#serviceHandoffFence) {
         this.#fencedApprovalRequests.push({ provider, event })
         return
@@ -9239,10 +9240,6 @@ export class DomovoiDaemon {
         ...(event.blockedPath === undefined ? {} : { blockedPath: event.blockedPath }),
         ...(event.tool === undefined ? {} : { tool: event.tool }),
       })
-      if (this.#serviceHandoffFence) {
-        this.#fencedApprovalRequests.push({ provider, event })
-        return
-      }
       const decision = permissionDecisionFor({
         runtime: session.runtime,
         ...(command ? { command } : {}),
@@ -9260,6 +9257,16 @@ export class DomovoiDaemon {
       const blockedCopy = event.blockedPath === undefined
         ? undefined
         : await fileTargetAffects({ workspace: workspaceRoot, path: event.blockedPath, cwd: requestCwd })
+      // Past the last await of card construction (the file target, the
+      // execution, the card's directory and paths). From here the request is
+      // denied, allowed by policy, or published as a card without yielding,
+      // so the fence is either seen here or taken after it is settled. The
+      // one later await records a standing rule's use; the rule was chosen
+      // here, before any fence, and no card forms on that path.
+      if (this.#serviceHandoffFence) {
+        this.#fencedApprovalRequests.push({ provider, event })
+        return
+      }
       const hidesBlockedPath = blockedCopy !== undefined && (blockedCopy.redacted || blockedCopy.sensitive)
       // Ruled 2026-09-24: the operation and command lines hide each path the
       // card hides, in every form, and keep the rest of the agent's text. The
