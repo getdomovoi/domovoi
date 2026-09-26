@@ -1346,6 +1346,64 @@ function hideOpenValue(text: string, open: OpenValue, complete: boolean, exemptF
   return `${before}${open.shown}`
 }
 
+// A readable position mapped back to the text: right after the character
+// before it, so a control sequence between a separator and its value goes
+// with the value.
+function rawIndexAfter(origins: readonly number[], at: number): number {
+  return at > 0 ? origins[at - 1]! + 1 : 0
+}
+
+// openValue on the text as it reads on screen, with its positions mapped back
+// to the text. Asked only where main's reading finds none: a control sequence
+// inside a name or its separator (API_KEY ESC[0m='a b) must not end a value
+// main would hold open (#608).
+function openReadableValue(text: string, words: boolean | "all"): OpenValue | undefined {
+  const view = readableText(text)
+  if (view === undefined) return undefined
+  const open = openValue(view.text, words)
+  if (open === undefined) return undefined
+  return { ...open, start: view.origins[open.start]!, valueStart: rawIndexAfter(view.origins, open.valueStart) }
+}
+
+// A value whose name began before an idle beat and which begins after it.
+// match: as the patterns found it in read, the text they read; valueAt and
+// end: where the value starts and ends in the text itself.
+type AcrossBeat = { match: ValueMatch, valueAt: number, end: number, read: string }
+
+function valueAcrossBeat(joined: string, beat: number): AcrossBeat | undefined {
+  const matches = [...scanValues(joined), ...valueMatches(lostContextAssignment, joined)]
+  const match = matches.flatMap((found) => [found, ...found.inner])
+    .filter((found) => found.index < beat && found.index + found.prefix.length >= beat)
+    // A counting name keeps its value in view here as anywhere: total_token= then 5.
+    .filter((found) => {
+      let nameStart = found.index
+      while (nameStart > 0 && isNameCharacter(joined.charCodeAt(nameStart - 1), false)) nameStart -= 1
+      return !countingName.test(nameOf(joined.slice(nameStart, found.index + found.prefix.length)).name)
+    })
+    .sort((left, right) => left.index - right.index)[0]
+  return match === undefined ? undefined : { match, valueAt: match.index + match.prefix.length, end: match.end, read: joined }
+}
+
+// valueAcrossBeat on the text as it reads on screen, asked only where main's
+// reading finds none: a control sequence inside a name or its separator
+// (access ESC[2K-token = then 'value') must not hide the name (#608).
+function readableValueAcrossBeat(joined: string, beat: number): AcrossBeat | undefined {
+  const view = readableText(joined)
+  if (view === undefined) return undefined
+  let readableBeat = 0
+  while (readableBeat < view.origins.length && view.origins[readableBeat]! < beat) readableBeat += 1
+  const found = valueAcrossBeat(view.text, readableBeat)
+  if (found === undefined) return undefined
+  const { match } = found
+  return {
+    match,
+    // What the beat already showed stays shown.
+    valueAt: Math.max(beat, rawIndexAfter(view.origins, match.index + match.prefix.length)),
+    end: match.end < view.origins.length ? view.origins[match.end]! : joined.length,
+    read: view.text,
+  }
+}
+
 // Where the terminal holds back from, and what it holds: see #holdFrom.
 type Hold = {
   start: number, value?: string, syntax?: string, flag?: boolean, word?: string, cut?: boolean,
@@ -1503,7 +1561,7 @@ class HeldTailRedactor {
     // its end.
     let scanned: readonly ValueMatch[] | undefined
     const values = () => scanned ??= scanValues(combined)
-    const open = openValue(combined, true, values)
+    const open = openValue(combined, true, values) ?? openReadableValue(combined, true)
     if (open) {
       // A value still open may itself sit inside the value of an earlier
       // name, one read only where context is lost (Dtoken='a password=b…):
@@ -1524,7 +1582,7 @@ class HeldTailRedactor {
       return `${lead}${redactTerminalText(emitted, false, exemptFrom, this.#carry[0])}`
     }
 
-    const hold = this.#holdFrom(combined, values, exemptFrom)
+    const hold = this.#readableHold(combined, this.#holdFrom(combined, values, exemptFrom))
     const held = combined.length - hold.start
     if (held > terminalRedactionCarryCharacters && hold.value !== undefined) {
       // The held text is an assignment whose value has already run past the
@@ -1560,34 +1618,25 @@ class HeldTailRedactor {
     const text = `${this.#carry}${input}`
     const beat = this.#beforeBeat.length
     const joined = `${this.#beforeBeat}${text}`
-    const matches = [...scanValues(joined), ...valueMatches(lostContextAssignment, joined)]
-    const across = matches.flatMap((match) => [match, ...match.inner])
-      .filter((match) => match.index < beat && match.index + match.prefix.length >= beat)
-      // A counting name keeps its value in view here as anywhere: total_token= then 5.
-      .filter((match) => {
-        let nameStart = match.index
-        while (nameStart > 0 && isNameCharacter(joined.charCodeAt(nameStart - 1), false)) nameStart -= 1
-        return !countingName.test(nameOf(joined.slice(nameStart, match.index + match.prefix.length)).name)
-      })
-      .sort((left, right) => left.index - right.index)[0]
-    if (across === undefined) return undefined
+    const found = valueAcrossBeat(joined, beat) ?? readableValueAcrossBeat(joined, beat)
+    if (found === undefined) return undefined
+    const { match: across, valueAt, end, read } = found
     this.#beforeBeat = ""
     this.#carry = ""
-    const valueAt = across.index + across.prefix.length - beat
-    const shown = `${text.slice(0, valueAt)}${hiddenValue("", across.secret, across.enclosing)}`
-    this.#settle(text.slice(0, valueAt))
-    if (across.open !== undefined && across.end >= joined.length) {
+    const shown = `${text.slice(0, valueAt - beat)}${hiddenValue("", across.secret, across.enclosing)}`
+    this.#settle(text.slice(0, valueAt - beat))
+    if (across.open !== undefined && end >= joined.length) {
       this.#dropping = { kind: "value", state: across.open }
       this.#dropped = joined.slice(-terminalRedactionCarryCharacters)
       return shown
     }
     // A name and separator at the end of the hidden value take the value
     // that follows them, as a drop's end does.
-    const trailing = this.#trailingName(joined.slice(Math.max(0, across.end - terminalRedactionCarryCharacters), across.end))
+    const trailing = this.#trailingName(read.slice(Math.max(0, across.end - terminalRedactionCarryCharacters), across.end))
     if (trailing !== undefined && (/[:=]/u.test(trailing.syntax ?? "") || trailing.flag === true)) {
       this.#dropping = this.#startDropping("", trailing.syntax ?? "", trailing.flag ?? false, trailing.word ?? "", undefined)
     }
-    const rest = text.slice(across.end - beat)
+    const rest = text.slice(end - beat)
     return rest === "" ? shown : `${shown}${this.#push(rest)}`
   }
 
@@ -1719,7 +1768,7 @@ class HeldTailRedactor {
     const remainder = this.#carry
     this.#carry = ""
     const exemptFrom = this.#exemptFrom(remainder)
-    const open = remainder === "" ? undefined : openValue(remainder, idle ? "all" : false)
+    const open = remainder === "" ? undefined : openValue(remainder, idle ? "all" : false) ?? openReadableValue(remainder, idle ? "all" : false)
     if (open) {
       this.#dropping = { kind: "value", state: open.state }
       this.#dropped = remainder.slice(-terminalRedactionCarryCharacters)
@@ -1821,6 +1870,21 @@ class HeldTailRedactor {
     }
   }
 
+  // The hold main's reading makes, or, when the text read as it reads on
+  // screen ends in an assignment held from further back, that one: a control
+  // sequence inside a name or its separator (API_KEY ESC[0m = zq) must not
+  // let the value go out before it is complete (#608).
+  #readableHold(combined: string, hold: Hold): Hold {
+    const view = readableText(combined)
+    if (view === undefined) return hold
+    const readable = this.#danglingHold(view.text)
+    if (readable.value === undefined || readable.start >= view.text.length) return hold
+    const start = view.origins[readable.start]!
+    if (start >= hold.start) return hold
+    const valueStart = rawIndexAfter(view.origins, view.text.length - readable.value.length)
+    return { ...readable, start, value: readable.value === "" ? "" : combined.slice(valueStart) }
+  }
+
   #danglingHold(combined: string): Hold {
     const assignment = findDanglingSecret(combined)
     if (assignment) {
@@ -1905,8 +1969,10 @@ function valueEndingRead(partial: string): ValueRead | undefined {
   for (let index = 0; index < partial.length; index += 1) {
     const character = partial[index]!
     if (read.quote !== undefined) {
+      // A backslash escapes the next character inside either quote (owner
+      // ruling 2026-09-25), so an escaped quote does not close the value.
       if (read.escaped) read.escaped = false
-      else if (character === "\\" && read.quote === '"') read.escaped = true
+      else if (character === "\\") read.escaped = true
       else if (character === read.quote) return undefined
     } else if (index === 0 && !read.marked && (character === '"' || character === "'")) {
       read.quote = character
@@ -1934,8 +2000,9 @@ function valueOpenInTypedLine(line: string): (ValueRead & { from: number }) | un
     for (; index < line.length; index += 1) {
       const character = line[index]!
       if (read.quote !== undefined) {
+        // A backslash escapes the next character inside either quote.
         if (read.escaped) read.escaped = false
-        else if (character === "\\" && read.quote === '"') read.escaped = true
+        else if (character === "\\") read.escaped = true
         else if (character === read.quote) break
         continue
       }
@@ -2226,8 +2293,9 @@ export class TerminalOutputRedactor {
   // value when it does not.
   #hides(value: ValueRead, character: string): boolean {
     if (value.quote !== undefined) {
+      // A backslash escapes the next character inside either quote.
       if (value.escaped) value.escaped = false
-      else if (character === "\\" && value.quote === '"') value.escaped = true
+      else if (character === "\\") value.escaped = true
       else if (character === value.quote) this.#value = undefined
       return true
     }

@@ -165,16 +165,18 @@ function generate(next: () => number): Case {
   if (quote && chance(0.1)) { features.push("separator"); value = `${word(4)}${pick(separators)}${value}` }
   if (quote && chance(0.1)) { features.push("escaped-separator"); value = `${word(4)}\\${pick(separators)}${value}` }
   if (quote === '"' && chance(0.3)) { features.push("escaped-quote"); value = `${word(4)}\\"${value}` }
-  // In shell single quotes a backslash is literal and cannot escape the quote.
-  if (quote === "'" && chance(0.3)) { features.push("single-quote-backslash"); value = `${value}\\` }
+  // A backslash inside single quotes escapes the next character, as it does
+  // inside double quotes (owner ruling 2026-09-25): an escaped quote is part
+  // of the value.
+  if (quote === "'" && chance(0.3)) { features.push("escaped-single-quote"); value = `${word(4)}\\'${value}` }
   const closed = !quote || chance(0.85)
   if (quote && !closed) features.push("unclosed")
-  // A double quote whose closing quote is escaped never closes.
-  const escapedClose = quote === '"' && closed && chance(0.08)
+  // A quote whose closing quote is escaped never closes.
+  const escapedClose = quote !== "" && closed && chance(0.08)
   if (escapedClose) features.push("escaped-closing-quote")
   const after = quote && closed && chance(0.2) ? (features.push("after-quote"), word(8)) : ""
-  const quoted = escapedClose ? `"${value}\\"` : `${quote}${value}${closed ? quote : ""}${after}`
-  const secretText = quote ? value.replace(/\\"/g, "") + after : value + after
+  const quoted = escapedClose ? `${quote}${value}\\${quote}` : `${quote}${value}${closed ? quote : ""}${after}`
+  const secretText = quote ? value.replace(/\\["']/g, "") + after : value + after
   const newlineBeforeValue = chance(0.08) ? (features.push("newline-before-value"), "\n") : ""
   const redraw = chance(0.06) ? (features.push("redraw"), "\r\x1b[4C") : ""
   const form = pick(["assignment", "export", "json", "json-mixed", "flag-space", "flag-equals", "property", "prompt", "env", "bare-token"])
@@ -222,6 +224,55 @@ function cut(text: string, next: () => number): Step[] {
   steps.push(text.slice(from))
   if (next() < 0.3) steps.push("idle")
   return steps
+}
+
+// The leak shapes of #608, each cut into reads with idle beats between some,
+// and judged on their own terms rather than against main: formatting between
+// a name and its separator, a carriage return redraw after a name and its
+// separator, a bare token longer than the carry, and a bare token an idle beat
+// cuts. A single-quoted value may hold an escaped quote (owner ruling
+// 2026-09-25). The secret is never the token's prefix, which stays visible.
+const tokenPrefixes = ["sk-", "ghp_", "gho_", "github_pat_", "xoxb-"]
+
+function generateLeak(next: () => number): { item: Case, steps: Step[] } {
+  const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!
+  const word = (length: number) => Array.from({ length }, () => pick(valueLetters.split(""))).join("")
+  const secret = word(8 + Math.floor(next() * 6))
+  const name = pick(names)
+  const ending = pick(["\r\n", "\n", ""])
+  const shape = pick(["ansi-name", "redraw", "long-token", "beat-token"])
+  let text: string
+  switch (shape) {
+    case "ansi-name": {
+      // An escaped single quote does not close the value, so the secret after
+      // it is still inside it.
+      const quoted = pick([secret, `"${secret}"`, `'${secret}'`, `'${word(3)}\\'${secret}'`, `'${word(3)}\\'${secret} rest'`])
+      text = `${pick(["export ", ""])}${name}${pick(formatting)}${pick(["=", " = "])}${quoted} done${ending}`
+      break
+    }
+    case "redraw":
+      text = `${pick([`export ${name}=`, `${name}=`, `${name}: `, `${name}:`])}\r${pick(["", "\x1b[8C", "\x1b[12C", "\x1b[2K"])}${secret}${ending}`
+      break
+    case "long-token":
+      text = `echo ${pick(tokenPrefixes)}${"a".repeat(260 + Math.floor(next() * 300))}${secret}${pick(["", "a".repeat(40)])} done${ending}`
+      break
+    default: {
+      text = `echo ${pick(tokenPrefixes)}${secret} done${ending}`
+      // The first beat falls inside the token, at or before the secret; the
+      // rest is cut at random.
+      const beat = "echo ".length + 1 + Math.floor(next() * (text.indexOf(secret) - "echo ".length))
+      return {
+        item: { shape, text, value: secret, kept: [] },
+        steps: [text.slice(0, beat), "idle", ...cut(text.slice(beat), next)],
+      }
+    }
+  }
+  return { item: { shape, text, value: secret, kept: [] }, steps: cut(text, next) }
+}
+
+// Every three consecutive characters of a secret.
+function fragments(value: string): string[] {
+  return Array.from({ length: Math.max(1, value.length - 2) }, (_, index) => value.slice(index, index + 3))
 }
 
 function runMain(steps: readonly Step[]): string {
@@ -398,6 +449,8 @@ const seed = Number(process.env.TERMINAL_REDACTION_FUZZ_SEED ?? 20_260_923)
 if (!Number.isSafeInteger(cases) || cases < 1 || !Number.isSafeInteger(seed)) {
   throw new Error("TERMINAL_REDACTION_FUZZ_CASES and TERMINAL_REDACTION_FUZZ_SEED must be integers")
 }
+const leakCases = Number(process.env.TERMINAL_REDACTION_LEAK_CASES ?? 2_000)
+if (!Number.isSafeInteger(leakCases) || leakCases < 1) throw new Error("TERMINAL_REDACTION_LEAK_CASES must be an integer")
 
 describe("terminal redaction against main", () => {
   it(`hides at least what main hid and keeps what main kept, ${cases} cases from seed ${seed}`, () => {
@@ -429,6 +482,21 @@ describe("terminal redaction against main", () => {
     if (process.env.TERMINAL_REDACTION_FUZZ_REPORT) writeFileSync(process.env.TERMINAL_REDACTION_FUZZ_REPORT, report.join("\n"))
     expect(report).toEqual([])
   }, 10_000 + cases * 2)
+
+  it(`hides the leak shapes of #608 on their own terms, ${leakCases} cases from seed ${seed}`, () => {
+    const failures = new Map<string, string>()
+    for (let index = 0; index < leakCases; index += 1) {
+      const caseSeed = seed + index
+      const { item, steps } = generateLeak(random(caseSeed))
+      // The check has teeth: the text itself shows the secret.
+      expect(exposed(item, item.text), item.shape).toBeDefined()
+      const output = runNew(steps)
+      const shown = fragments(item.value!).find((piece) => output.includes(piece)) ?? exposed(item, output)
+      if (shown === undefined || failures.has(item.shape)) continue
+      failures.set(item.shape, `seed ${caseSeed}: shows ${JSON.stringify(shown)}\n  reads ${JSON.stringify(steps.map((step) => step !== "idle" && step.length > 60 ? `${step.slice(0, 40)}…(${step.length})` : step))}`)
+    }
+    expect([...failures].map(([shape, detail]) => `${shape}\n  ${detail}`)).toEqual([])
+  })
 
   it("fails a redactor that shows everything wherever main hides a value", () => {
     let hidden = 0

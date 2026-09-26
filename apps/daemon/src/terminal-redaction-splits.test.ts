@@ -151,6 +151,13 @@ const redrawCases: readonly { name: string, steps: readonly Step[] }[] = [
   { name: "a cursor move to the value's column, as review reported", steps: ["API_KEY=", "idle", "\r\x1b[8Czqxjwvkm\r\n"] },
   { name: "a prompt redrawn before its answer", steps: ["Password: ", "idle", "\r\x1b[10Czqxjwvkm\r\n"] },
   { name: "formatting inside the value", steps: ["export API_KEY=zqxj\x1b[1mwvkm\x1b[0m\r\n"] },
+  // Security review round 1 of #617: a backslash inside single quotes escapes
+  // the next character (owner ruling 2026-09-25), so the quote stays open
+  // across the beat and the rest of it is hidden.
+  { name: "formatting in the name, an escaped single quote, then an idle beat", steps: ["API_KEY\x1b[0m='abc\\'", "idle", "zqxjwvkm rest' done\r\n"] },
+  // Found by the leak-shape fuzz: a name cut by one beat, formatting before
+  // its separator, and a quoted value after another beat.
+  { name: "a name cut by a beat, formatting before its separator, then a quoted value", steps: ["export a", "ccess", "idle", "-token\x1b[2K =", "idle", " 'zqxjwvkmqk' done\n", "idle"] },
 ]
 
 describe("terminal redaction across formatting, redraws and long tokens", () => {
