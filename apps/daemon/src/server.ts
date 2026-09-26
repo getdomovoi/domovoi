@@ -2157,6 +2157,7 @@ export class DomovoiDaemon {
     const failures: unknown[] = []
     try {
       await fleetStopped
+      await this.#settleEmergencyStops()
       await this.#providerRefresh
       try {
         await withTimeout(
@@ -2207,6 +2208,8 @@ export class DomovoiDaemon {
     try { await this.#machineCredentials?.close(keyringShutdown) }
     catch (error) { failures.push(error) }
     finally { keyringShutdown.clear() }
+    // A stop asked for just before shutdown may have been queued since.
+    await this.#settleEmergencyStops()
     try {
       await this.#store.close()
     } catch (error) {
@@ -2233,6 +2236,20 @@ export class DomovoiDaemon {
     }
     this.#stopped = true
     if (failures.length > 0) throw new AggregateError(failures, "Domovoi shutdown failed")
+  }
+
+  // Security review of #628: a shutdown (stopOwned, a signal, a service
+  // replace) can meet an emergency stop still saving its state. The stop
+  // finishes first, its save included, so its record is written or its
+  // failure reported before the store closes. No extra deadline: the stop's
+  // provider calls carry their own, and its save is awaited as shutdown's is.
+  // The tail never rejects.
+  async #settleEmergencyStops(): Promise<void> {
+    let tail: Promise<unknown>
+    do {
+      tail = this.#emergencyStopTail
+      await tail
+    } while (tail !== this.#emergencyStopTail)
   }
 
   #dispatch(socket: RpcOutboundSocket, raw: string): void {

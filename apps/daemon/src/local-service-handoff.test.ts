@@ -2,7 +2,7 @@ import { demoWorkspace, protocolVersion, serviceHandoffRefusal, type WorkspaceSn
 import { execFileSync } from "node:child_process"
 import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import WebSocket from "ws"
 
@@ -11,6 +11,7 @@ import type { AgentAdapter } from "./codex.js"
 import { holdServiceHandoffFence, readLocalServiceHandoffRefusal } from "./local-service-handoff.js"
 import { DomovoiDaemon, serviceHandoffFencedMessage, serviceHandoffStopRefusal } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
+import type { TerminalProcess } from "./terminal.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
@@ -708,6 +709,71 @@ describe("the service handoff fence and an emergency stop", () => {
       const retry = await reader("session.send", { sessionId, prompt: "go", client: "desktop" })
       expect(retry.error).toBeUndefined()
     })
+  })
+
+  // Security review of #628: with the fence held, the holder goes on to stop
+  // the daemon (the desktop's stopOwned ends in DomovoiDaemon.stop, as the
+  // signal handlers do). A shutdown that meets a stop still saving must wait
+  // for that save before it closes the store, so the stop's record survives.
+  it("waits for a running stop's save before it closes the store, and the stop's record survives a restart", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = join(await mkdtemp(join(tmpdir(), "domovoi-fence-state-")), "workspace.sqlite")
+    scratchDirectories.push(dirname(statePath))
+    const order: string[] = []
+    const stopRecorded = (snapshot: WorkspaceSnapshot) => snapshot.thread.some((item) => item.kind === "system" && item.body.startsWith("Emergency stop requested"))
+    const saves = heldSaves()
+    const store = saves.wrap(new SqliteWorkspaceStore(statePath, workspace))
+    const saveAsync = store.saveAsync.bind(store)
+    store.saveAsync = async (snapshot) => {
+      const recorded = stopRecorded(snapshot)
+      await saveAsync(snapshot)
+      if (recorded) order.push("stop saved")
+    }
+    const close = store.close.bind(store)
+    store.close = async () => { order.push("store closed"); await close() }
+    const profileDirectory = await mkdtemp(join(tmpdir(), "domovoi-fence-"))
+    scratchDirectories.push(profileDirectory)
+    const terminal = {
+      process: "bash", write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+      onData: vi.fn(() => ({ dispose: vi.fn() })), onExit: vi.fn(() => ({ dispose: vi.fn() })),
+    } satisfies TerminalProcess
+    const daemon = new DomovoiDaemon({
+      port: 0, store, profileDirectory, agents: {},
+      skillCatalog: { list: async () => [], read: async () => { throw new Error("No skills here") } },
+      terminalService: { spawn: vi.fn(() => terminal) },
+    })
+    daemons.push(daemon)
+    const address = await daemon.start()
+    const endpoint = { url: `ws://${address.host}:${address.port}/rpc`, token: daemon.authToken }
+    const reader = await desktopConnection(endpoint)
+    // An open terminal gives the stop a session to record itself on, and does
+    // not refuse the fence.
+    await expect(reader("terminal.create", {
+      terminalId: "terminal-fence", sessionId, cols: 80, rows: 24, client: "desktop", clientId: "desktop-fence-test",
+    })).resolves.toMatchObject({ result: expect.anything() })
+    const fence = await holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })
+    expect(fence).toEqual({ release: expect.any(Function) })
+    const save = saves.hold(stopRecorded)
+    void reader("system.emergencyStop", { client: "desktop" })
+    let stopped: Promise<void> | undefined
+    try {
+      await save.reached
+      stopped = daemon.stop()
+      // Let the shutdown run as far as it goes without the save.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    } finally {
+      save.release("succeeds")
+    }
+    await stopped
+    expect(order).toEqual(["stop saved", "store closed"])
+    const reopened = new SqliteWorkspaceStore(statePath, quiet())
+    try {
+      expect(reopened.load().thread).toContainEqual(expect.objectContaining({
+        sessionId, kind: "system", body: "Emergency stop requested by desktop.",
+      }))
+    } finally {
+      await reopened.close()
+    }
   })
 })
 
