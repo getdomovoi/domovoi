@@ -1,0 +1,85 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/Domovoi Turn Skills Options.dc.html",
+  "sha256": "4aaa524c161fb625eb61370ca531e9fbf6b9a77ff4ae0d66fe9fd3f603642e35",
+  "derivedOn": "2026-09-26",
+  "sources": [
+    "packages/ui/src/**/*.{ts,tsx}",
+    "packages/protocol/src/**/*.ts"
+  ],
+  "note": "A study of where the per-turn skill selection shows: 1a, a line in the composer before send (the design's recommendation), or 1b, only on the sent message. Neither option is ruled on. Option labels, eyebrows and captions are annotations; the composer chips and the sample prompt are the fictional session.",
+  "sample": [
+    "sql-explain",
+    "Build · ask",
+    "High",
+    "claude-sonnet-4.6",
+    "Triage the open PRs on the webhook branch before you touch the handler.",
+    "pr-triage · acme-deploy",
+    "sql-explain · review-changed"
+  ],
+  "annotations": [
+    "Per-turn skill selection in the composer",
+    "Typing",
+    "/skill <name>",
+    "sets which skills the next turn uses. The daemon can refuse a selection. Recommended:",
+    "1a",
+    "A quiet line in the composer",
+    "The selection is state for the next turn, so it shows where you change it. A refusal arrives before you send, while it can still be fixed.",
+    "1b",
+    "Only in the sent message",
+    "The composer stays clean. The record is exact, but you learn of a refusal after the turn has started without that skill.",
+    "COMPOSER, AFTER TYPING /SKILL",
+    "Nothing shows the selection before send.",
+    "SENT MESSAGE, ONE REFUSED",
+    "The refusal is on the record, but only after the turn started.",
+    "SELECTION SET",
+    "The line appears only once a skill is selected. Without one, the composer is unchanged.",
+    "ONE REFUSED BY THE DAEMON",
+    "The refused skill stays on the line, struck through, with the daemon's reason. Send still works; that turn runs without it."
+  ],
+  "elements": [
+    {
+      "id": "turn-skills.composer-line",
+      "name": "Next-turn skill line in the composer (option 1a)",
+      "where": "above the composer field, only once a skill is selected: Next turn, a chip per selected skill, a refused skill struck through with the daemon's reason, the count of the per-turn limit, Clear or Review <skill>",
+      "states": [
+        "selection set",
+        "one refused by the daemon"
+      ],
+      "copy": [
+        "Next turn",
+        "refused",
+        "review-changed",
+        "Review sql-explain"
+      ],
+      "evidence": [
+        "Next turn"
+      ],
+      "missing": {
+        "since": "2026-09-26",
+        "reason": "study option 1a, recommended by the design and not ruled on; /skill keeps the selection in the composer draft (thread.tsx skillSelection) but nothing draws it before send, and no refusal reaches the composer before send"
+      }
+    },
+    {
+      "id": "turn-skills.sent-record",
+      "name": "Skills on the sent message (option 1b)",
+      "where": "under the sent user message: Skills this turn with the delivered skills, then a refused skill with its reason and The turn runs without it",
+      "copy": [
+        "Skills this turn",
+        "Refused",
+        "The turn runs without it."
+      ],
+      "presence": [
+        "omitted before send"
+      ],
+      "evidence": [
+        "Skills this turn",
+        "The turn runs without it."
+      ],
+      "partial": {
+        "since": "2026-09-26",
+        "reason": "study option 1b, not ruled on; PromptDeliveryNote already records delivered and omitted skills under the sent turn in its own words (Sent with, omitted before send), not the drawn Skills this turn and Refused lines"
+      }
+    }
+  ],
+  "humanRead": []
+}

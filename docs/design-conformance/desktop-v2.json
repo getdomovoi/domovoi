@@ -1,7 +1,7 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html",
-  "sha256": "6972659927566825664a28f6b60749069aa55e75e70cd237267999e8f438e3c7",
-  "derivedOn": "2026-09-23",
+  "sha256": "52bafd8d3bae523a0e1d26813de3ca07b3630ac5cc6e5b9f4baa1ef52428da4c",
+  "derivedOn": "2026-09-26",
   "sources": [
     "packages/ui/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts",
@@ -1756,6 +1756,41 @@
       ]
     },
     {
+      "id": "composer.effort-levels",
+      "name": "Effort levels each model reports",
+      "where": "effort menu from the composer effort chip (steps 2j to 2l): the levels the active model reports, each with its word and the value sent in mono, the model's own default marked Model default, a level with no word shown as its value with No word yet; the clamp note after a model change is neutral, not amber",
+      "states": [
+        "codex, six levels",
+        "claude-code, four levels, default High",
+        "a level with no word"
+      ],
+      "copy": [
+        "No word yet",
+        "Model default",
+        "Short thinking. Enough for a single-file edit or a question with one answer.",
+        "Holds a multi-file change in view while it plans.",
+        "Thinks longer before acting. Slower per turn.",
+        "The longest this model will think. Slow and dear, for a plan you cannot check yourself.",
+        "No reasoning before it answers. Fastest, and it misses things.",
+        "The least reasoning that still plans. Fine for renames and lookups.",
+        "Stops reasoning early. Fine for triage.",
+        "Extra high",
+        "The longest codex will reason. Slow, for a plan you cannot check yourself.",
+        "Model's own",
+        "Sends no effort value, so the model uses its own setting.",
+        "The longest this model will reason. Slow and dear, for a plan you cannot check yourself.",
+        "Reported by the model. Domovoi has no word for this level yet, so it shows the value it sends."
+      ],
+      "evidence": [
+        "Model default",
+        "No word yet"
+      ],
+      "missing": {
+        "since": "2026-09-26",
+        "reason": "main draws no effort chip or menu; PR #622, open, builds the chip against the 2026-09-23 digest, before these per-model levels, the Model default marker and the no-word level were drawn"
+      }
+    },
+    {
       "id": "editor.dialog",
       "name": "The prompt editor",
       "where": "a modal over the whole surface, opened by the composer expand control or Cmd+Shift+E",
@@ -1852,7 +1887,13 @@
   "annotations": [
     "LATER · PREVIEW STATE",
     "PREVIEW STATE",
-    "TRY AN INPUT"
+    "TRY AN INPUT",
+    "Effort on codex",
+    "Each model reports its own levels and its own default, marked. This one reports six. A change applies from the next turn.",
+    "Effort on claude-code",
+    "claude-code reports low, medium, high and max. The default marker sits where this model reports it, here High.",
+    "Level with no word",
+    "A level Domovoi has no word for reads as the value it sends, in mono, and is still a choice. No level is ever renamed."
   ],
   "scriptBacklog": {
     "since": "2026-09-26",
@@ -2044,18 +2085,10 @@
       "Reads and proposes. It cannot write or run anything.",
       "Writes and commands ask first, one at a time.",
       "Writes and runs inside the worktree. Gates still apply.",
-      "thinking budget",
-      "A short budget. Enough for a single-file edit or a question with one answer.",
-      "The default here. Holds a multi-file change in view while it plans.",
-      "The longest budget this harness offers. Slow and dear, and worth it on a plan you cannot check yourself.",
       "reasoning effort",
-      "Answers quickly and stops reasoning early. Fine for triage.",
-      "The default. Balances the time it spends against what it catches.",
       "Reasons longer before acting. Noticeably slower per turn.",
-      "Whatever the model does unprompted. The only level that is not a choice.",
       "Stops reasoning early. Fine for triage and single-file edits.",
       "Balances the time it spends against what it catches.",
-      "The longest this model will reason. Slow and dear, and worth it on a plan you cannot check yourself.",
       "The default here. Reasoning high, 200k context.",
       "Slower and dearer. Worth it on a plan you cannot check yourself.",
       "Fast and cheap. Fine for triage, weak on multi-file edits.",

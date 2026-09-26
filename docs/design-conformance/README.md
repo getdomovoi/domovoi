@@ -8,8 +8,9 @@ structural contracts through `pnpm design:conformance` and `pnpm release:invaria
 
 Components and studies vendored beside the v2 designs have inventories of their own, outside the
 manifest: `TailnetReach`, `PairingCard` and `RemoteBrowser` (imported by Desktop V2 and v2
-Onboarding, whose template holds only the import), `Domovoi Pairing Layouts`, `Domovoi Projects`
-and `Domovoi CLI Transcripts`. The gate checks every `*-v2.json` in this directory.
+Onboarding, whose template holds only the import), `Domovoi Pairing Layouts`, `Domovoi Projects`,
+`Domovoi CLI Transcripts` and `Domovoi Turn Skills Options`. The gate checks every `*-v2.json` in
+this directory.
 
 Every other invariant in this repository has a gate because it drifted once. Design conformance
 drifted for weeks with none: the designs were converted into itemised change lists and the items

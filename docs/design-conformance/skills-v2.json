@@ -1,7 +1,7 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 Skills.dc.html",
-  "sha256": "bf89650c0858632c1e74bd813dacbb920dac170d35440feda89be3e23e993b61",
-  "derivedOn": "2026-09-23",
+  "sha256": "794a6547da2a95f479f836feb2a3cc1d69bf43095824c3b76ba5fb8dfffb1576",
+  "derivedOn": "2026-09-26",
   "sources": [
     "packages/ui/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts"
@@ -75,7 +75,7 @@
     {
       "id": "tools.tab",
       "name": "Tools each agent will load",
-      "where": "second tab beside Skills (J45): the read-only statement, By agent and By source file views, rows listed before any session opens, what runs at session start, files that could not be read, the no-tool-servers footer, tools on other machines",
+      "where": "second tab beside Skills (J45): the read-only statement, By agent and By source file views, rows listed before any session opens, what runs at session start once the repository is trusted, files that could not be read, the no-tool-servers footer, tools on other machines; plugin and env-key rows beside tool servers, hooks and rules",
       "states": [
         "by agent",
         "by source file",
@@ -98,7 +98,13 @@
         "Could not read",
         "Its entries are not listed. Domovoi does not guess what the file holds.",
         "Tools on your other machines",
-        "Each daemon reads its own files."
+        "Each daemon reads its own files.",
+        "Env keys",
+        "env entries",
+        "key names only",
+        "Project settings and repository files. Trusted here, so they run when a session starts.",
+        "entries from this repository run when a session starts",
+        "acme-api · trusted 12 Sep 10:41 from desktop"
       ],
       "evidence": [
         "Domovoi reads these files and reports what they declare",
@@ -114,13 +120,17 @@
     {
       "id": "tools.gate-facts",
       "name": "A tool call at the gate",
-      "where": "desktop thread lane and phone (J45): Waiting on your decision, Tool from server <server> (<file>), the call, Allow once, Always for <tool> here, Deny",
+      "where": "desktop thread lane and phone (J45): Waiting on your decision, Tool from server <server> (<file>), the call, the facts including the repository's trust and why it asks, Allow once and Deny; a tool-server call has no Always",
       "copy": [
         "Waiting on your decision",
         "Tool from server",
         "Allow once",
-        "Always for postgres-dev.run_query here",
-        "Deny"
+        "Deny",
+        "Tool-server calls have no Always. Each call asks.",
+        "ENV KEYS",
+        "WHY IT ASKS",
+        "tool-server call · trust skips no gate",
+        "acme-api · trusted on this machine"
       ],
       "evidence": [
         "Tool from server"
@@ -130,13 +140,182 @@
         "needs": "protocol",
         "reason": "approval requests carry no tool server or declaring file, so a gate cannot name them"
       }
+    },
+    {
+      "id": "trust.held-back",
+      "name": "Repository held back until trusted",
+      "where": "Tools tab (step 12): a card naming the repository held back on this machine for all agents, Review what it would run, what does not load and what still loads, one row per config file with its counts; repository rows tagged held back",
+      "copy": [
+        "all agents · this machine",
+        "Review what it would run",
+        "Its hooks, tool servers, plugins, env, rules and git filter do not load for any agent.",
+        "CLAUDE.md",
+        "and",
+        "AGENTS.md",
+        "still load.",
+        "Held back until you trust this repository",
+        "Project settings and repository files. Held back until you trust this repository.",
+        "acme-api is held back on"
+      ],
+      "evidence": [
+        "Held back until you trust this repository"
+      ],
+      "blocked": {
+        "since": "2026-09-26",
+        "needs": "protocol",
+        "reason": "no RPC reports what a repository's config would load or that it is held back; the daemon holds repository settings back for every session (changeset repository-provider-config-held-back) with no trust step to lift it, so no client can draw this state"
+      }
+    },
+    {
+      "id": "trust.sheet",
+      "name": "Trust review sheet",
+      "where": "sheet over the Tools tab (step 13), desktop and web only: every file the repository brings with its digest and entries (tool servers, env key names, hooks, plugins, rules, git filter and filter driver), instruction files load either way, the three limits of trust, Trust for this machine and Keep held back",
+      "copy": [
+        "Everything this repository would run for any agent here. None of it has run.",
+        "Instruction files load either way:",
+        "CLAUDE.md · AGENTS.md",
+        "Trust is for this machine and this repository only.",
+        "It is pinned to these four files. Any change, an agent's edit included, holds it back again.",
+        "Trust does not skip a gate, and its allow rules cannot either. Reads outside the worktree and gated actions still ask.",
+        "Trust for this machine",
+        "Keep held back",
+        "Granted from desktop or web only.",
+        "After trust, start the session again.",
+        "Trust acme-api on",
+        "Trust acme-api again on",
+        "Key names only. Values are not shown.",
+        "local git config",
+        "Git filter",
+        "git filter",
+        "git filters",
+        "Filter driver",
+        "filter driver",
+        "filter drivers",
+        "tool server",
+        "env key",
+        "env keys"
+      ],
+      "evidence": [
+        "Trust for this machine"
+      ],
+      "blocked": {
+        "since": "2026-09-26",
+        "needs": "protocol",
+        "reason": "no protocol method records trust per machine and repository pinned to file digests, and none lists what a repository would run, its env key names or its git filter drivers"
+      }
+    },
+    {
+      "id": "trust.changed",
+      "name": "Changed since trust",
+      "where": "Tools tab (step 14): a trusted config file changed, so the repository is held back again; what changed by digest, the added entry and who changed it; Review and trust again, Keep held back, the unchanged files; rows and sheet entries tagged new or changed since trust",
+      "copy": [
+        "acme-api changed since you trusted it",
+        "trusted 12 Sep 10:41 from desktop · no longer applies",
+        "A trusted config file changed, so everything the repository brings is held back again.",
+        "Review and trust again",
+        "Unchanged:",
+        "Changed by",
+        "New since you trusted it",
+        "Changed since you trusted it"
+      ],
+      "evidence": [
+        "Review and trust again"
+      ],
+      "blocked": {
+        "since": "2026-09-26",
+        "needs": "protocol",
+        "reason": "no trust record exists, so no digest comparison, no change report and no attribution of the change to a session turn"
+      }
+    },
+    {
+      "id": "trust.refusal",
+      "name": "Session refused for an untrusted repository",
+      "where": "new session thread (step 15): a refusal card naming the agent or Domovoi, the reason code, the file or the filter it names, Review what it would run and Open Tools; the session does not start by itself",
+      "copy": [
+        "Open Tools",
+        "Nothing from the repository ran.",
+        "claude-code did not start",
+        "Domovoi did not start this session",
+        "refused · untrusted repository file",
+        "refused · untrusted git filter",
+        "claude-code will not start in acme-api until the repository is trusted on",
+        "Checking out acme-api would run the sops filter driver, which is not trusted on",
+        "It names"
+      ],
+      "evidence": [
+        "refused · untrusted repository file"
+      ],
+      "blocked": {
+        "since": "2026-09-26",
+        "needs": "protocol",
+        "reason": "session refusals carry no untrusted-repository or untrusted-git-filter reason; the daemon refuses a Kilo session over legacy repository config and names the file, but with no review path and not as drawn"
+      }
+    },
+    {
+      "id": "trust.revoke",
+      "name": "Take back trust",
+      "where": "Take back trust link on the trusted Tools tab and its confirmation dialog (step 17): the running threads it restarts and what each loses, Take back trust and restart, Cancel",
+      "copy": [
+        "Take back trust",
+        "Take back trust for acme-api?",
+        "Domovoi restarts this repository's 2 running agent threads now. A running turn stops, and so do its tool servers.",
+        "They come back without its hooks, tool servers, plugins, env, rules and git filter.",
+        "Take back trust and restart 2 threads",
+        "Cancel",
+        "Turn stops, restarts"
+      ],
+      "evidence": [
+        "Take back trust"
+      ],
+      "blocked": {
+        "since": "2026-09-26",
+        "needs": "protocol",
+        "reason": "no trust to take back, and no RPC restarts a repository's running threads without its config"
+      }
+    },
+    {
+      "id": "trust.phone",
+      "name": "Held back on the phone",
+      "where": "phone Tools screen (step 18): held back with every entry grouped by file, and a footer saying trust is granted from desktop or web; the phone cannot trust",
+      "copy": [
+        "None of it loads for any agent.",
+        "Trust from desktop or web",
+        "A phone shows this but cannot trust it."
+      ],
+      "evidence": [
+        "Trust from desktop or web"
+      ],
+      "blocked": {
+        "since": "2026-09-26",
+        "needs": "protocol",
+        "reason": "no RPC reports held-back repository entries to any client, a paired phone included"
+      }
     }
   ],
   "annotations": [
     "The card names the server and the file that declared it. A phone stacks the facts and keeps every one.",
     "DESKTOP, THREAD LANE",
     "PHONE, FACTS STACKED",
-    "A tool call at the gate"
+    "A tool call at the gate",
+    "Editing a skill invalidates the review, and the daemon refuses it with review-changed. A state, not a gate, so it is not amber.",
+    "Read and report only. This repository is trusted, so its entries lead: they run when a session starts.",
+    "Tool-server calls get Allow once or Deny, never Always. Trusting the repository skips no gate.",
+    "Held back",
+    "Held back is a state, not a gate. Untrusted, a repository's hooks, tool servers, plugins, env, rules and git filter load for no agent.",
+    "Trust review",
+    "The one review surface, on desktop and web. Per machine and per repository, pinned to four file digests.",
+    "Changed since trust",
+    "Any change to a trusted config file, an agent's own edit included, holds the repository back and asks again.",
+    "Session refused",
+    "A refusing agent names the file; a git filter refusal names the filter. Review opens the same sheet, and the session does not start by itself.",
+    "Inline review, not built",
+    "Not built. One review surface: the sheet in step 13.",
+    "Taking trust back restarts the repository's running threads now. A running turn and its tool servers stop.",
+    "The phone shows what is held back and why, with every entry. It cannot trust: that is desktop or web.",
+    "New session",
+    "acme-api held back",
+    "refused · acme-api",
+    "Agent refuses"
   ],
   "sample": [
     "codex",
@@ -144,7 +323,26 @@
     ".mcp.json",
     "postgres-dev.run_query",
     "sql: DELETE FROM webhook_replay WHERE received_at < now() - interval '30 days'",
-    "step 3 of 4 · claude-code · ask"
+    "step 3 of 4 · claude-code · ask",
+    ".claude/settings.json · .gitattributes",
+    "Migrate billing webhooks to the new idempotency table",
+    "Start on the idempotency migration. Plan first, then the handler.",
+    "9:41",
+    "stdio · ./bin/s3-sync --bucket acme-dev-assets",
+    "marketplace acme-plugins",
+    "ACME_ENV · DATABASE_URL",
+    "PGHOST · PGUSER · PGPASSWORD",
+    "stdio · npx -y @acme/pg-mcp",
+    "http · mcp.linear.app",
+    "for postgres-dev",
+    "smudge sops -d --ignore-mac · clean sops -e",
+    "smudge sops -d · clean sops -e",
+    "tool server s3-sync · stdio · ./bin/s3-sync --bucket acme-dev-assets",
+    "claude-code · turn 6 · session s_7f24 · 14:18",
+    "claude-code · turn 4 running · postgres-dev, linear",
+    "Backfill replay ids for March",
+    "codex · idle",
+    "sops · .gitattributes · .git/config"
   ],
   "humanRead": [],
   "scriptBacklog": {
@@ -171,7 +369,6 @@
       "read, nothing declared",
       "not present",
       "FROM THIS REPOSITORY",
-      "Project settings and repository files. They can run when a session starts.",
       "THIS MACHINE ONLY",
       "User and local settings, not committed.",
       "These can run when a session starts.",
@@ -190,27 +387,21 @@
       "STARTED WITH",
       "npx -y @acme/pg-mcp",
       "dev database acme_dev",
-      "values not read",
       "Tools on",
       "queue-worker · ~/srv/queue-worker",
       "acme-api ·",
       "read 14:02:31 ·",
-      "entries from this repository can run when a session starts",
-      "acme-api · all agents",
       "Grouped by scope and source, with the real trust states: untrusted, trusted, blocked.",
       "A path is the only source in the protocol. No bundle, no registry, no installer command, so nothing executes to install.",
       "Skill and review",
       "Signature and trust are separate. Enablement is a per-project review pinned to a digest and a manifest.",
       "Review changed",
-      "Editing a skill invalidates the review. The turn refusal reason is review-changed, and it comes from the daemon.",
       "This turn's skills",
       "Eight at most, and every omission carries one of four reasons: not-enabled, unavailable, review-changed, policy.",
       "Tools by agent",
-      "Read and report only. Every entry names its source, and repository entries lead because they can run when a session starts.",
       "Tools by source file",
       "The same entries, one panel per file read. Repository files come first, before anyone starts a session.",
       "Tool at the gate",
-      "The gate names the server and its source file. A phone stacks the facts but drops none of them.",
       "None found",
       "Nothing found is a result, so the panel lists every file it read to reach it.",
       "An unreadable file is named with its reason. Its entries are not listed or guessed.",
