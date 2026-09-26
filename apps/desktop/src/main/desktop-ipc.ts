@@ -55,6 +55,11 @@ export type DesktopIpcDependencies = {
     allowRoot(path: string): void
     open(value: unknown): Promise<boolean>
   }
+  daemonService: {
+    status(): Promise<unknown>
+    install(): Promise<unknown>
+    remove(): Promise<unknown>
+  }
   releasePage: {
     open(): Promise<boolean>
   }
@@ -186,6 +191,20 @@ export function registerDesktopIpc(ipcMain: DesktopIpcMain, deps: DesktopIpcDepe
     return deps.externalTargets.open(request)
   })
 
+  // J24: the login service. Three narrow calls; the main process decides what
+  // runs, the renderer only asks and shows the answer.
+  ipcMain.handle("domovoi:daemon-service-status", (event) => {
+    if (!deps.authorized(event)) throw new Error("Desktop request is not authorized")
+    return deps.daemonService.status()
+  })
+  ipcMain.handle("domovoi:daemon-service-install", (event) => {
+    if (!deps.authorized(event)) throw new Error("Desktop request is not authorized")
+    return deps.daemonService.install()
+  })
+  ipcMain.handle("domovoi:daemon-service-remove", (event) => {
+    if (!deps.authorized(event)) throw new Error("Desktop request is not authorized")
+    return deps.daemonService.remove()
+  })
   ipcMain.handle("domovoi:open-release-page", (event) => {
     if (!deps.authorized(event)) throw new Error("Desktop request is not authorized")
     return deps.releasePage.open()

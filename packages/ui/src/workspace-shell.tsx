@@ -19,7 +19,7 @@ import type {
   SystemEmergencyStopResult,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
-import { selectableTurnSkills, turnSkillSelectionFor } from "@getdomovoi/protocol"
+import { selectableTurnSkills, serviceHandoffRefusal, turnSkillSelectionFor } from "@getdomovoi/protocol"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { StateRecoveryNotice } from "./state-recovery-notice"
 import {
@@ -109,6 +109,8 @@ import {
   enqueueDesktopDeepLink,
   openDesktopPath,
   openProjectFromDesktop,
+  type DaemonServiceOutcome,
+  type DaemonServiceStatusReport,
   type DesktopExternalEditor,
   type DesktopWindowBridge,
   type WorkspaceWindowDecoration,
@@ -170,6 +172,9 @@ export type WorkspaceShellProps = {
   rpcToken?: string
   resolveRpcEndpoint?: () => Promise<{ url: string; token: string }>
   localDaemon?: LocalDaemonDescription
+  // J24: told after the login service is installed or removed, so the desktop
+  // can resolve its daemon again and hand the shell the new endpoint.
+  onLocalDaemonChanged?: (() => void) | undefined
   windowBridge?: DesktopWindowBridge
   platform?: WorkspacePlatform
   onChangeCredential?: () => void
@@ -203,8 +208,76 @@ export { providerHandoffChoices, openProviderChoice, forkProviderChoice, type Pr
 export { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked }
 
 
-export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
+// Whether a service read shows the change the action set out to make, in
+// whole or in part: installed after an install; removed or no longer running
+// after a removal. An unknown read shows nothing.
+function serviceChangedBy(action: "install" | "remove", service: { installed: boolean | null; running: boolean }): boolean {
+  if (service.installed === null) return false
+  return action === "install" ? service.installed : !(service.installed && service.running)
+}
+
+function serviceOutcomeMovesDaemon(action: "install" | "remove", outcome: DaemonServiceOutcome): boolean {
+  if (outcome.ok || outcome.reason === "installed-not-attached") return true
+  if (outcome.reason !== "failed") return false
+  if (outcome.daemon === "restarted" || outcome.daemon === "attached") return true
+  return outcome.service !== null && serviceChangedBy(action, outcome.service)
+}
+
+export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
+  // J24: whether the login service is installed, from the desktop's own
+  // status read. A daemon outside the app is drawn as the service only when
+  // this says so; an unreadable or unverified status leaves it unnamed.
+  const [serviceInstalled, setServiceInstalled] = useState<boolean | undefined>(undefined)
+  // Whether the service itself runs, from the same read (security review
+  // round 9). Unknown whenever the installed fact is unknown.
+  const [serviceRunning, setServiceRunning] = useState<boolean | undefined>(undefined)
+  // Reads are numbered and only the newest one's answer is kept, so a read
+  // that started before an install or a removal cannot answer after the read
+  // that followed it and put the old fact back (security review round 4).
+  const serviceStatusGeneration = useRef(0)
+  const readServiceStatus = useCallback(async (): Promise<DaemonServiceStatusReport | undefined> => {
+    const service = windowBridge?.daemonService
+    if (!service) return undefined
+    const generation = ++serviceStatusGeneration.current
+    try {
+      const status = await service.status()
+      if (generation === serviceStatusGeneration.current) {
+        const read = "installed" in status && status.installed !== null ? status : undefined
+        setServiceInstalled(read ? read.installed ?? undefined : undefined)
+        setServiceRunning(read?.running)
+      }
+      return status
+    } catch (cause) {
+      if (generation === serviceStatusGeneration.current) {
+        setServiceInstalled(undefined)
+        setServiceRunning(undefined)
+      }
+      throw cause
+    }
+  }, [windowBridge])
+  useEffect(() => { void readServiceStatus().catch(() => {}) }, [readServiceStatus])
+  // An install or a removal, then a status read. The desktop is told the
+  // daemon changed, so it resolves its daemon again, whenever the change may
+  // have moved who holds it: a success; a service installed but not attached;
+  // a failure that started the app's daemon again, attached this app to one
+  // it did not start, or left the service changed in its read-back; and a
+  // reply this window cannot read when the read-back shows the service
+  // changed (security review rounds 4 and 5). A failure that only stopped the
+  // app's daemon keeps the section, and its line says to quit and reopen.
+  const changeService = useCallback(async (action: "install" | "remove", call: () => Promise<DaemonServiceOutcome>): Promise<DaemonServiceOutcome> => {
+    let outcome: DaemonServiceOutcome
+    try {
+      outcome = await call()
+    } catch (cause) {
+      const after = await readServiceStatus().catch(() => undefined)
+      if (after && "installed" in after && serviceChangedBy(action, after)) onLocalDaemonChanged?.()
+      throw cause
+    }
+    void readServiceStatus().catch(() => {})
+    if (serviceOutcomeMovesDaemon(action, outcome)) onLocalDaemonChanged?.()
+    return outcome
+  }, [readServiceStatus, onLocalDaemonChanged])
   // The queue outlives the thread view and is not limited to the session on
   // screen. Thread is keyed by session, so a switch unmounts it; and a message
   // queued in A must leave at A's next turn boundary whether or not anyone is
@@ -1340,7 +1413,24 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             providers={snapshot.machine.providers}
             secrets={providerSecrets}
             readOnly={watching}
-            {...(localDaemon && !attached ? { localDaemon: { ...localDaemon, ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}) } } : {})}
+            {...(localDaemon && !attached ? { localDaemon: {
+              ...localDaemon,
+              ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}),
+              ...(localDaemon.serviceInstalled === undefined && serviceInstalled !== undefined ? { serviceInstalled } : {}),
+              ...(localDaemon.serviceRunning === undefined && serviceRunning !== undefined ? { serviceRunning } : {}),
+              ...(windowBridge?.daemonService && !watching ? { service: {
+                install: () => changeService("install", () => windowBridge.daemonService!.install()),
+                remove: () => changeService("remove", () => windowBridge.daemonService!.remove()),
+                // Through the same numbered read, so the section's own state
+                // follows the newest answer.
+                status: async () => {
+                  const status = await readServiceStatus()
+                  if (!status) throw new Error("The desktop offers no service status")
+                  return status
+                },
+                refusal: serviceHandoffRefusal(snapshot),
+              } } : {}),
+            } } : {})}
             about={about}
             {...(attached || clientKind !== "desktop" ? {} : {
               pairing: {

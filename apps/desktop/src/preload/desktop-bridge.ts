@@ -1,5 +1,7 @@
 import type {
   DesktopDirectoryResult,
+  DaemonServiceOutcome,
+  DaemonServiceStatusReport,
   DesktopOpenExternalRequest,
   DesktopWindowBridge,
   WorkspaceWindowDecoration,
@@ -72,6 +74,70 @@ function captureResult(value: unknown): DesktopAnnotationCapture {
     || result.data.length > maximumCaptureDataLength
   ) throw new Error("Desktop returned an invalid annotation capture response")
   return { mimeType: "image/png", width: result.width, height: result.height, data: result.data }
+}
+
+const maximumServiceTextLength = 4_096
+
+function serviceText(value: unknown): value is string {
+  return typeof value === "string" && value.length <= maximumServiceTextLength
+}
+
+// The main process answers with plain data; the renderer reads only the
+// fields it draws, and refuses a shape it does not know.
+const profileRecoveries = ["recorded", "not-needed", "operator-confirmation-required", "proof-unavailable"] as const
+
+// The service as the main process read it back after a failure: null when it
+// could not be read, undefined when the answer is malformed.
+function serviceReadBack(value: unknown): { installed: boolean | null; running: boolean } | null | undefined {
+  if (value === null) return null
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const read = value as Record<string, unknown>
+  if ((read.installed === true || read.installed === false || read.installed === null) && typeof read.running === "boolean") {
+    return { installed: read.installed, running: read.running }
+  }
+  return undefined
+}
+
+function serviceOutcome(value: unknown): DaemonServiceOutcome {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Desktop returned an invalid service outcome")
+  const result = value as Record<string, unknown>
+  const kind = result.kind === "file" || result.kind === "task" ? result.kind : undefined
+  if (result.ok === true && kind && serviceText(result.target) && typeof result.daemonRunning === "boolean") {
+    const recovery = profileRecoveries.find((candidate) => candidate === result.profileRecovery)
+    if (result.profileRecovery !== undefined && !recovery) throw new Error("Desktop returned an invalid service outcome")
+    if (result.daemonAttached !== undefined && typeof result.daemonAttached !== "boolean") throw new Error("Desktop returned an invalid service outcome")
+    return {
+      ok: true, kind, target: result.target, daemonRunning: result.daemonRunning,
+      ...(typeof result.daemonAttached === "boolean" ? { daemonAttached: result.daemonAttached } : {}),
+      ...(recovery ? { profileRecovery: recovery } : {}),
+      ...(recovery && serviceText(result.profileRecoveryDetail) ? { profileRecoveryDetail: result.profileRecoveryDetail } : {}),
+    }
+  }
+  if (result.ok === false && result.reason === "runtime-missing" && (result.part === "node" || result.part === "daemon") && serviceText(result.path) && serviceText(result.message)) {
+    return { ok: false, reason: "runtime-missing", part: result.part, path: result.path, message: result.message }
+  }
+  if (result.ok === false && result.reason === "installed-not-attached" && kind && serviceText(result.target) && serviceText(result.message)) {
+    return { ok: false, reason: "installed-not-attached", kind, target: result.target, message: result.message }
+  }
+  if (result.ok === false && (result.reason === "busy" || result.reason === "refused" || result.reason === "check-failed") && serviceText(result.message)) {
+    return { ok: false, reason: result.reason, message: result.message }
+  }
+  const readBack = serviceReadBack(result.service)
+  if (result.ok === false && result.reason === "failed" && serviceText(result.message) && readBack !== undefined
+    && (result.daemon === "untouched" || result.daemon === "restarted" || result.daemon === "attached" || result.daemon === "stopped")) {
+    return { ok: false, reason: "failed", message: result.message, daemon: result.daemon, service: readBack }
+  }
+  throw new Error("Desktop returned an invalid service outcome")
+}
+
+function serviceStatusReport(value: unknown): DaemonServiceStatusReport {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Desktop returned an invalid service status")
+  const result = value as Record<string, unknown>
+  if (serviceText(result.unavailable)) return { unavailable: result.unavailable }
+  if ((result.installed === true || result.installed === false || result.installed === null) && typeof result.running === "boolean" && serviceText(result.detail)) {
+    return { installed: result.installed, running: result.running, detail: result.detail }
+  }
+  throw new Error("Desktop returned an invalid service status")
 }
 
 function externalRequest(value: DesktopOpenExternalRequest, platform: DesktopPlatform): DesktopOpenExternalRequest {
@@ -184,6 +250,11 @@ export function createDesktopWindowBridge(
       await ipc.invoke("domovoi:open-external", externalRequest(request, platform)),
       "external editor",
     ),
+    daemonService: {
+      status: async () => serviceStatusReport(await ipc.invoke("domovoi:daemon-service-status")),
+      install: async () => serviceOutcome(await ipc.invoke("domovoi:daemon-service-install")),
+      remove: async () => serviceOutcome(await ipc.invoke("domovoi:daemon-service-remove")),
+    },
     openReleasePage: async () => booleanResult(await ipc.invoke("domovoi:open-release-page"), "release page"),
     onDeepLink: (listener) => {
       const handler = (_event: unknown, sessionId: unknown) => {

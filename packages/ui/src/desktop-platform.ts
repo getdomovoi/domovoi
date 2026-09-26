@@ -32,6 +32,29 @@ export function workspaceWindowDecorationLabel(decoration: WorkspaceWindowDecora
   return decoration === "domovoi" ? "Domovoi" : "System"
 }
 
+// What the main process answers about the login service, as the renderer
+// draws it. Plain data: the desktop keeps the paths and errors, the page keeps
+// the words.
+export type DaemonServiceProfileRecovery = "recorded" | "not-needed" | "operator-confirmation-required" | "proof-unavailable"
+
+// What the main process reports after an install or a removal. A removal
+// carries what the daemon's installer said about the profile owner, whether a
+// daemon this app reaches is running, and whether it is one the app did not
+// start (daemonAttached). A failure carries the service as read back
+// afterwards, null when it could not be read.
+export type DaemonServiceOutcome =
+  | { ok: true; kind: "file" | "task"; target: string; daemonRunning: boolean; daemonAttached?: boolean; profileRecovery?: DaemonServiceProfileRecovery; profileRecoveryDetail?: string }
+  | { ok: false; reason: "runtime-missing"; part: "node" | "daemon"; path: string; message: string }
+  | { ok: false; reason: "installed-not-attached"; kind: "file" | "task"; target: string; message: string }
+  | { ok: false; reason: "busy"; message: string }
+  | { ok: false; reason: "refused"; message: string }
+  | { ok: false; reason: "check-failed"; message: string }
+  | { ok: false; reason: "failed"; message: string; daemon: "untouched" | "restarted" | "attached" | "stopped"; service: { installed: boolean | null; running: boolean } | null }
+
+export type DaemonServiceStatusReport =
+  | { installed: boolean | null; running: boolean; detail: string }
+  | { unavailable: string }
+
 export type DesktopWindowBridge = {
   fleetRoute?(machineId: string, budgetMs: number): Promise<unknown>
   forgetFleetRoute?(machineId: string): Promise<unknown>
@@ -56,6 +79,12 @@ export type DesktopWindowBridge = {
   readClipboardText(): Promise<string>
   writeClipboardText(value: string): Promise<boolean>
   openExternal(request: DesktopOpenExternalRequest): Promise<boolean>
+  // J24: the login service, on desktops that ship a daemon runtime.
+  daemonService?: {
+    status(): Promise<DaemonServiceStatusReport>
+    install(): Promise<DaemonServiceOutcome>
+    remove(): Promise<DaemonServiceOutcome>
+  }
   // One fixed address, the release page, opened in the person's browser. The
   // renderer names no URL, so this cannot become a way to open any address.
   openReleasePage?(): Promise<boolean>

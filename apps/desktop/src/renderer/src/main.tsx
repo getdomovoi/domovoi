@@ -82,6 +82,7 @@ function DesktopApp() {
           rpcToken={state.rpcToken}
           {...(resolveRpcEndpoint ? { resolveRpcEndpoint } : {})}
           localDaemon={daemonConnectionCopy(state.daemon)}
+          onLocalDaemonChanged={retry}
           windowBridge={window.domovoiDesktop}
           {...(relayPinStorage ? { relayPinStorage } : {})}
         />
