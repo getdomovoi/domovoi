@@ -1686,14 +1686,32 @@
       "id": "palette",
       "name": "Command palette",
       "where": "over the shell: query, the scope line, SESSIONS and COMMANDS groups with meta",
-      "copy": [],
+      "copy": [
+        "Run a migration on this machine",
+        "Open the changes sheet",
+        "Revert to a checkpoint",
+        "Review what you have allowed",
+        "Show all machines",
+        "Pair a phone or tablet",
+        "Read the audit log"
+      ],
       "evidence": [
+        "Run a migration on this machine",
+        "Open the changes sheet",
+        "Revert to a checkpoint",
+        "Review what you have allowed",
+        "Show all machines",
+        "Pair a phone or tablet",
+        "Read the audit log"
+      ],
+      "presence": [
         "Search commands",
         "sessions, machines, commands, skills"
       ],
-      "presence": [
-        "Search commands"
-      ]
+      "partial": {
+        "since": "2026-09-26",
+        "reason": "the design lists ten commands in its data script; seven of them are not commands anywhere in the implementation, which offers its own list"
+      }
     },
     {
       "id": "palette.other-machines",
@@ -2335,15 +2353,8 @@
       "titles and summaries, every machine",
       "sessions, machines, commands, skills",
       "wsl-ubuntu-24, unreachable",
-      "Run a migration on this machine",
       "needs approval",
-      "Open the changes sheet",
       "branch pushed",
-      "Revert to a checkpoint",
-      "Review what you have allowed",
-      "Show all machines",
-      "Pair a phone or tablet",
-      "Read the audit log",
       "on this machine",
       "SESSIONS ON THIS MACHINE",
       "Step 3 needs the migration applied. PROD_DATABASE_URL was set in the environment, so I aimed at it and the daemon stopped me. I have not retried and I will not, since the refusal is a policy rather than a question.",
