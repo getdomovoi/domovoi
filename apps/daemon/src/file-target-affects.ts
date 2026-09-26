@@ -1,6 +1,7 @@
 import { isAbsolute, join, parse, relative, resolve, sep } from "node:path"
 
 import { approvalFacts, hiddenDirectory } from "./approval-facts.js"
+import { below, withTrailingSeparator } from "./credential-stores.js"
 import { followedTarget, followPath, requestedPath, type FollowedPath, type FollowedTarget } from "./followed-path.js"
 import type { OperationDeadline } from "./operation-deadline.js"
 import { namesSecretPath } from "./permission-policy.js"
@@ -98,7 +99,7 @@ function from(directory: string, target: string): string | undefined {
 // that way. Undefined outside the root, and for a rest of only "." and ".."
 // steps.
 function writtenWithin(root: string, path: string): string | undefined {
-  const prefix = root.endsWith(sep) ? root : `${root}${sep}`
+  const prefix = withTrailingSeparator(root)
   if (!path.startsWith(prefix)) return undefined
   const steps = path.slice(prefix.length).split(sep).filter((step) => step !== "")
   return steps.length === 0 || steps.every((step) => step === "." || step === "..") ? undefined : steps.join("/")
@@ -106,7 +107,7 @@ function writtenWithin(root: string, path: string): string | undefined {
 
 // A root and a rest from writtenWithin, joined without collapsing "..".
 function writtenBelow(root: string, rest: string): string {
-  return `${root.endsWith(sep) ? root : `${root}${sep}`}${rest.split("/").join(sep)}`
+  return below(root, rest.split("/"))
 }
 
 // How many directories a path goes down from its filesystem root.
@@ -144,7 +145,7 @@ function sameSpellings(
 ): { spellings: string[]; complete: boolean } {
   const found = new Set(seeds)
   let frontier = seeds.filter((path) => isAbsolute(path))
-  const prefix = (path: string) => path.endsWith(sep) ? path : `${path}${sep}`
+  const prefix = (path: string) => withTrailingSeparator(path)
   while (frontier.length > 0) {
     const next: string[] = []
     for (const path of frontier) {

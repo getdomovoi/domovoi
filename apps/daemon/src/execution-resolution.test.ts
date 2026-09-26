@@ -30,12 +30,16 @@ describe("resolveExecution under a deadline", () => {
     expect(await settled).toBeInstanceOf(OperationDeadlineExceededError)
   })
 
+  // The directory is the one the command runs in. A POSIX system follows the
+  // link before the "..", so it is packages. Windows removes a ".." from the
+  // written path before it reads any link (Win32 path normalization), so the
+  // command runs in the worktree root, and the record says so.
   it("reads a relative directory through a link before its '..'", async () => {
     const root = await realpath(await project())
     await mkdir(join(root, "packages", "deep"), { recursive: true })
     await symlink(join(root, "packages", "deep"), join(root, "deep-link"))
     expect(await resolveExecution({ workspaceRoot: root, cwd: `deep-link${sep}..`, command: "git status" }))
-      .toMatchObject({ state: "resolved", record: { cwd: "packages" } })
+      .toMatchObject({ state: "resolved", record: { cwd: process.platform === "win32" ? "." : "packages" } })
   })
 })
 

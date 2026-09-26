@@ -1,6 +1,7 @@
 import { lstat, readlink, realpath } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path"
 
+import { below } from "./credential-stores.js"
 import { beforeDeadline, type OperationDeadline } from "./operation-deadline.js"
 
 // Where a path really leads, read the way the filesystem reads it. The one
@@ -68,7 +69,7 @@ export async function followPath(path: string, deadline?: OperationDeadline): Pr
 // A directory and the parts after it, joined as written.
 function written(directory: string, parts: readonly string[]): string {
   if (parts.length === 0) return directory
-  return `${directory.endsWith(sep) ? directory : `${directory}${sep}`}${parts.join(sep)}`
+  return below(directory, parts)
 }
 
 // The walk behind followPath. Unreadable is true when a component could not be

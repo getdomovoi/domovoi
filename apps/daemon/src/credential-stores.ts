@@ -171,6 +171,21 @@ function isAbsent(error: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR"
 }
 
+// A directory and parts below it, joined as written with the separator given.
+// A directory that already ends in a separator takes none: on Windows "/" is a
+// root as well as "\", and "/" followed by "\" starts a UNC path, so a missing
+// path written "/worktrees/x" would name the network share "worktrees", whose
+// real path cannot be read (Windows CI after round 15).
+export function below(directory: string, parts: readonly string[], separator: string = sep): string {
+  return `${withTrailingSeparator(directory, separator)}${parts.join(separator)}`
+}
+
+// The directory with one separator after it, as a prefix of the paths below it.
+export function withTrailingSeparator(directory: string, separator: string = sep): string {
+  const endsInSeparator = separator === "\\" ? /[\\/]$/u : /\/$/u
+  return endsInSeparator.test(directory) ? directory : `${directory}${separator}`
+}
+
 // Where a path really is on this machine, so a link, or a name the filesystem
 // treats as another, reads as the name it reaches. A path that does not exist
 // yet is followed one component at a time from its root the way the
@@ -182,7 +197,7 @@ function isAbsent(error: unknown): boolean {
 export async function canonicalPath(path: string, base?: string, deadline?: OperationDeadline): Promise<RealPath> {
   const expanded = /^~(?:[/\\]|$)/u.test(path) ? `${homedir()}${path.slice(1)}` : path
   if (expanded.length > maximumResolvedPathLength || (!isAbsolute(expanded) && base === undefined)) return undefined
-  const requested = isAbsolute(expanded) ? expanded : `${base!}${sep}${expanded}`
+  const requested = isAbsolute(expanded) ? expanded : below(base!, [expanded])
   const clock = deadline ?? OperationDeadline.start(realPathLookupBudgetMs)
   try {
     try { return await realpathBefore(requested, clock) } catch (error) {
@@ -196,7 +211,7 @@ export async function canonicalPath(path: string, base?: string, deadline?: Oper
       if (part === "..") { current = dirname(current); continue }
       try { current = await realpathBefore(join(current, part), clock) } catch (error) {
         if (!isAbsent(error)) return unreadablePath
-        return `${current.endsWith(sep) ? current : `${current}${sep}`}${parts.slice(index).join(sep)}`
+        return below(current, parts.slice(index))
       }
     }
     return current

@@ -109,6 +109,9 @@ async function setup(
   const stateDirectory = await mkdtemp(join(tmpdir(), "domovoi-settle-state-"))
   roots.push(stateDirectory)
   const store = new SqliteWorkspaceStore(join(stateDirectory, "state.sqlite"), snapshot)
+  // A live test hands the daemon the snapshot itself, so the SQLite store goes
+  // unused; it is closed here, or Windows refuses to delete its open file.
+  if (options.live) store.close()
   const errorSink = vi.fn()
   const daemon = new DomovoiDaemon({
     port: 0,
@@ -482,6 +485,16 @@ describe("approval settlement", () => {
     return outside
   }
 
+  // A plain line reads back as it is. A saved Windows path whose "\" is
+  // followed by n, r, t or u reads as an escaped control character, so its
+  // line is sealed rather than judged at a guessed path (a stated limit): the
+  // Windows runner's temporary directory holds "\runneradmin".
+  function plainLineSettled(affects: string): Partial<Approval> {
+    return /\\(?:[nrt]|u[0-9a-f]{4})/u.test(affects)
+      ? { risk: "hard-gate", affects: "The file [REDACTED], outside the session worktree." }
+      : { risk: "normal", affects }
+  }
+
   function wordedCards(root: string, outside: string): Approval[] {
     return [...wordedLines(outside), ...plainLines(outside)]
       .map((line) => ({ ...savedFileCard(root, line.id), affects: line.affects }))
@@ -509,7 +522,7 @@ describe("approval settlement", () => {
     const settled = await settleSaved(wordedCards(root, outside), root)
     expectSealed(settled, outside)
     for (const line of plainLines(outside)) {
-      expect(settled.get(line.id), line.affects).toMatchObject({ risk: "normal", affects: line.affects })
+      expect(settled.get(line.id), line.affects).toMatchObject(plainLineSettled(line.affects))
     }
   })
 
@@ -524,7 +537,7 @@ describe("approval settlement", () => {
     const settled = await settleSaved(wordedCards(root, outside), root)
     expectSealed(settled, outside)
     for (const line of plainLines(outside)) {
-      expect(settled.get(line.id), line.affects).toMatchObject({ risk: "normal", affects: line.affects })
+      expect(settled.get(line.id), line.affects).toMatchObject(plainLineSettled(line.affects))
     }
   })
 })

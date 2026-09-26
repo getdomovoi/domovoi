@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join, sep } from "node:path"
+import { dirname, join, resolve, sep, win32 } from "node:path"
 
 import { type Runtime } from "@getdomovoi/protocol"
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
@@ -9,6 +9,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 import { approvalDirectory, approvalFacts, resolveApprovalPath } from "./approval-facts.js"
 import { codexAppServerArguments, codexSecretLocations } from "./codex.js"
 import {
+  below,
   canonicalPath,
   commandOperands,
   credentialStores,
@@ -429,11 +430,13 @@ describe("negative controls", () => {
     { path: "src/process.envHOME.ts", affects: "The file src/process.envHOME.ts in the session worktree." },
     {
       path: `${home}/.domovoi/worktrees/x/file.ts`,
-      affects: `The file ${home}/.domovoi/worktrees/x/file.ts, outside the session worktree.`,
+      // A file outside the worktree is named at its absolute path, which on
+      // Windows gains the drive and backslashes.
+      affects: `The file ${resolve(`${home}/.domovoi/worktrees/x/file.ts`)}, outside the session worktree.`,
     },
     {
       path: `${home}/.domovoi/worktrees/x`,
-      affects: `The file ${home}/.domovoi/worktrees/x, outside the session worktree.`,
+      affects: `The file ${resolve(`${home}/.domovoi/worktrees/x`)}, outside the session worktree.`,
     },
     { path: ".docker/compose.yml", affects: "The file .docker/compose.yml in the session worktree." },
     { path: "ﬁle.txt", affects: "The file ﬁle.txt in the session worktree." },
@@ -448,5 +451,23 @@ describe("negative controls", () => {
   it("gives a command that reads an environment variable in code a normal gate", () => {
     const command = `node -e "console.log(process.env.HOME)"`
     expect(permissionDecisionFor({ runtime, command })).toEqual({ action: "review", risk: "normal" })
+  })
+})
+
+// Windows CI: canonicalPath joined a missing path's rest to the root "/" with a
+// "\", which starts a UNC path on Windows ("/\worktrees\x" names the network
+// share "worktrees"). Its real path could not be read, so every operand read
+// from that directory reached a credential path, and a card in a worktree
+// written "/worktrees/..." hid "pnpm build" and was a hard gate, differently
+// at each reading. "/" is a root on Windows too, and takes no second separator.
+describe("below", () => {
+  it("adds no separator after a root, so a Windows path under \"/\" never names a network share", () => {
+    const joined = below("/", ["worktrees", "session"], win32.sep)
+    expect(joined).toBe("/worktrees\\session")
+    expect(win32.parse(joined).root).toBe("/")
+    expect(below("C:\\", ["x"], win32.sep)).toBe("C:\\x")
+    expect(below("/worktrees", ["x", "y"], win32.sep)).toBe("/worktrees\\x\\y")
+    expect(below("/", ["worktrees", "session"], "/")).toBe("/worktrees/session")
+    expect(below("/worktrees", ["x"], "/")).toBe("/worktrees/x")
   })
 })

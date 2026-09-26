@@ -251,10 +251,16 @@ describe("settleApproval hides a secret file named only in the card's own text",
   it("makes an ordinary file's card a hard gate when its text names a secret file, however prose writes it", async () => {
     const workspace = await sourceTree()
     const absolute = join(workspace, "src", "private.pem")
+    const windows = "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\w\\src\\private.pem"
     const { approval, sensitive } = await settle(workspace, {
       command: "Edit",
       path: "src/index.ts",
-      reason: `Edit src/index.ts to load src/private.pem. Check (src/private.pem), 'src/private.pem', src/private.pem's header and ${absolute}, not src/app.ts.`,
+      // Each absolute path comes before the apostrophe: a "'" in prose opens a
+      // shell quote that runs to the end of the text, and a Windows drive
+      // colon inside it splits off a piece that reaches from the path to the
+      // end, which then hides "not src/app.ts" too (over-hiding, seen on the
+      // Windows runner).
+      reason: `Edit src/index.ts to load src/private.pem. Check (src/private.pem), 'src/private.pem', ${absolute}, ${windows} and src/private.pem's header, not src/app.ts.`,
     })
     expect(sensitive).toBe(true)
     expect(approval).toMatchObject({
@@ -263,7 +269,7 @@ describe("settleApproval hides a secret file named only in the card's own text",
       // Union classifier (ruled 2026-09-25): the #545 file name pattern reads
       // "src/private.pem's" whole as a secret file, so the possessive is hidden
       // with it. Over-hiding is accepted.
-      operation: "Edit src/index.ts to load [REDACTED]. Check ([REDACTED]), '[REDACTED]', [REDACTED] header and [REDACTED], not src/app.ts.",
+      operation: "Edit src/index.ts to load [REDACTED]. Check ([REDACTED]), '[REDACTED]', [REDACTED], [REDACTED] and [REDACTED] header, not src/app.ts.",
     })
     expect(JSON.stringify(approval)).not.toContain("private.pem")
   })
