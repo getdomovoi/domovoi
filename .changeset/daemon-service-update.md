@@ -23,3 +23,9 @@ else, and any install whose service.json has no such record, is refused before a
 with the outcome `changed-outside`: "The installed service file was changed outside Domovoi, so
 Domovoi will not update it. Remove the service and install it again to replace it." A service
 that is not installed keeps the outcome `not-installed` and its own words.
+
+On macOS the update and its restore boot out a job under Domovoi's label only when `launchctl`
+says it was loaded from Domovoi's plist; a job from another plist refuses the update with nothing
+changed (`LaunchdJobNotDomovoiError`). On Windows an update refuses, with nothing changed, when the
+previous task action it would register again contains `%`, `$(` or a path Windows would not report
+in that form.

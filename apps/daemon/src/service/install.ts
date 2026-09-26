@@ -721,7 +721,24 @@ function domovoiTaskCommand(action: WindowsTaskAction, configurationPath: string
   const [, entry = "", saved = ""] = quoted
   const program = { execPath, args: [entry, "--service-config", saved] }
   if (!isRecordedServiceProgram(program, { paths: "win32", flag: "--service-config", configurationPath }, recorded)) return undefined
+  // Security review round 5: a failed step registers this command again, so
+  // it must pass the refusals an install applies to a new one. A recorded
+  // path with %, $( or a form Windows would not report refuses the update
+  // before anything changes.
+  try {
+    for (const path of [execPath, entry, configurationPath]) refuseWindowsTaskPath(path)
+  } catch (cause) {
+    throw new DaemonServiceUpdateError("nothing-changed", cause)
+  }
   return `"${execPath}" "${entry}" --service-config "${configurationPath}"`
+}
+
+// The install's refusals for one Windows task path (security review rounds
+// 1 to 3 on #574), for a path that did not come through servicePlan.
+function refuseWindowsTaskPath(path: string): void {
+  if (path.includes("%")) throw new WindowsTaskPercentSignError(path)
+  if (path.includes("$(")) throw new WindowsTaskArgumentVariableError(path)
+  if (!plainWindowsPath(path)) throw new WindowsTaskPathError(path)
 }
 
 // Ruled 2026-09-23: an update swaps the installed service to a new runtime in
@@ -825,7 +842,20 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
         if (printed.code === 113 && isMissingServiceFailure("darwin", printed)) return false
         throw captureFailure("launchctl", printed)
       }
+      // Security review round 5: the plist the loaded job came from, or
+      // undefined when none is loaded. launchd binds the label to whichever
+      // plist was bootstrapped, so a job from another plist is never booted
+      // out, by the swap or by the restore.
+      const loadedFrom = async (deadline: OperationDeadline) => {
+        const printed = await withinServiceDeadline(deadline, () => effects.capture("launchctl", ["print", job], deadline))
+        if (printed.code === 113 && isMissingServiceFailure("darwin", printed)) return undefined
+        if (printed.code !== 0) throw captureFailure("launchctl", printed)
+        return launchdJobPath(printed.stdout)
+      }
       const bootoutIn = (deadline: OperationDeadline) => async () => {
+        const from = await loadedFrom(deadline)
+        if (from === undefined) return
+        if (from !== plan.path) throw new DaemonServiceUpdateError("nothing-changed", new LaunchdJobNotDomovoiError(from))
         try {
           await runIn(deadline)(bootout)
         } catch (cause) {
@@ -852,7 +882,9 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
           return plan
         },
         restore: async (deadline) => {
-          if (await loaded(deadline)) await runIn(deadline)(bootout)
+          const from = await loadedFrom(deadline)
+          if (from !== undefined && from !== plan.path) throw new LaunchdJobNotDomovoiError(from)
+          if (from !== undefined) await runIn(deadline)(bootout)
           if (wroteNew) {
             await writeIn(deadline)(plan.path, previous)
             await writeIn(deadline)(plan.configuration.path, previousConfiguration)

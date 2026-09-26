@@ -10,7 +10,10 @@ import { ProfileAlreadyOwnedError } from "../profile-lease.js"
 import {
   DaemonServiceRuntimeMissingError,
   DaemonServiceUpdateError,
+  LaunchdJobNotDomovoiError,
   updateDaemonService,
+  WindowsTaskArgumentVariableError,
+  WindowsTaskPercentSignError,
   type DaemonServiceDependencies,
 } from "../public.js"
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
@@ -61,6 +64,11 @@ type Fake = DaemonServiceDependencies & ServiceEffects & {
   // A start whose daemon reports ready only this long after it; a stop before
   // then means it never does.
   lateReadyMs: number
+  // The plist launchd says the loaded job came from, as launchctl print's
+  // path line shows it. A bootstrap loads from its plist, or from
+  // bootstrapLoadsFrom when set, as a foreign job taking the label would.
+  agentLoadedFrom: string
+  bootstrapLoadsFrom: string | undefined
 }
 
 const oldWindowsCommand = "\"C:\\Program Files\\Domovoi\\runtime-1\\node.exe\" \"C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js\" --service-config \"C:\\Users\\dl\\.domovoi\\service.json\""
@@ -106,6 +114,8 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
     files,
     task: { definition: oldWindowsCommand, running: true, runningDefinition: oldWindowsCommand },
     lateReadyMs: 0,
+    agentLoadedFrom: agent,
+    bootstrapLoadsFrom: undefined,
     crashingStarts: 0,
     owner: { instanceId: "instance-old", state: "ready" },
     instances: ["instance-old"],
@@ -138,7 +148,10 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
     run: vi.fn(async (command: string, args: string[]) => {
       order.push(`${command} ${args.join(" ")}`)
       if (args[0] === "bootout") agentLoaded = false
-      if (args[0] === "bootstrap") agentLoaded = true
+      if (args[0] === "bootstrap") {
+        agentLoaded = true
+        effects.agentLoadedFrom = effects.bootstrapLoadsFrom ?? args[2]!
+      }
       if (args[0] === "/create") effects.task.definition = args[args.indexOf("/tr") + 1]!
       if (args[0] === "/run") {
         if (effects.task.running) return
@@ -151,7 +164,7 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
       const body = script(args)
       if (command === "launchctl" && args[0] === "print") {
         order.push("launchctl print")
-        return agentLoaded ? { code: 0, stdout: "\tstate = running\n" } : { code: 113, stdout: "", stderr: "Could not find service \"sh.domovoi.domovoid\" in domain for user gui: 501" }
+        return agentLoaded ? { code: 0, stdout: `\tpath = ${effects.agentLoadedFrom}\n\tstate = running\n` } : { code: 113, stdout: "", stderr: "Could not find service \"sh.domovoi.domovoid\" in domain for user gui: 501" }
       }
       if (body.includes("domovoi-task-action")) {
         order.push("read task action")
@@ -237,6 +250,8 @@ describe("updateDaemonService with launchd", () => {
     const effects = fake("darwin", "/Users/dl")
     expect(await updateDaemonService({ runtime }, effects)).toEqual({ kind: "file", path: agent, configurationPath: "/Users/dl/.domovoi/service.json" })
     expect(effects.order).toEqual([
+      // Security review round 5: which plist the loaded job came from.
+      "launchctl print",
       "launchctl bootout gui/501/sh.domovoi.domovoid",
       "claim",
       `write ${agent}`,
@@ -352,7 +367,7 @@ describe("updateDaemonService with launchd", () => {
     await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(
       "Domovoi could not update the service: Boot-out failed: 36: Operation now in progress. Nothing was changed, and the service was left as it was.",
     )
-    expect(effects.order).toEqual(["launchctl bootout gui/501/sh.domovoi.domovoid", "launchctl print"])
+    expect(effects.order).toEqual(["launchctl print", "launchctl bootout gui/501/sh.domovoi.domovoid", "launchctl print"])
   })
 
   it("boots the previous agent in when the bootout fails but unloaded it", async () => {
@@ -712,10 +727,11 @@ describe("review round 2 probes", () => {
       await run(command, args, deadline)
     })
     effects.capture = vi.fn(async (command: string, args: string[], deadline) => {
-      if (command === "launchctl" && args[0] === "print" && ++prints <= 2) {
+      if (command === "launchctl" && args[0] === "print" && ++prints <= 3) {
         effects.order.push("launchctl print")
-        // Loaded at first, unloaded from the second look on.
-        return prints === 1 ? { code: 0, stdout: "\tstate = running\n" } : { code: 113, stdout: "", stderr: "Could not find service \"sh.domovoi.domovoid\" in domain for user gui: 501" }
+        // Loaded for the check before the bootout (security review round 5)
+        // and at the watch's first look, unloaded from its second look on.
+        return prints <= 2 ? { code: 0, stdout: `\tpath = ${agent}\n\tstate = running\n` } : { code: 113, stdout: "", stderr: "Could not find service \"sh.domovoi.domovoid\" in domain for user gui: 501" }
       }
       return capture(command, args, deadline)
     })
@@ -1378,5 +1394,41 @@ describe("security review of #577: the restore waits for manager calls", () => {
     expect(during, "no restore step may run while the first bootstrap is still running").toEqual([])
     expect(effects.files.get(agent)).toBe(oldAgent)
     expect(effects.serviceLease.release).toHaveBeenCalledOnce()
+  })
+})
+
+// Security review round 5: #574's ownership and path rules carried into the
+// update and its restore.
+describe("security review round 5", () => {
+  const other = "/Users/dl/Library/LaunchAgents/other.plist"
+  const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime-2\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index.js" }
+
+  it("never boots out a job under the label that was loaded from another plist", async () => {
+    const effects = fake("darwin", "/Users/dl", { agentLoadedFrom: other })
+    const refused = updateDaemonService({ runtime }, effects)
+    await expect(refused).rejects.toMatchObject({ outcome: "nothing-changed", cause: expect.any(LaunchdJobNotDomovoiError) })
+    expect(effects.order.filter((entry) => entry.startsWith("launchctl bootout"))).toEqual([])
+    expect(effects.files.get(agent)).toBe(oldAgent)
+  })
+
+  it("does not boot out a foreign job found loaded when it restores", async () => {
+    const effects = fake("darwin", "/Users/dl", { crashingStarts: 1, bootstrapLoadsFrom: other })
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toMatchObject({ outcome: "swap-and-restore-failed" })
+    const bootouts = effects.order.filter((entry) => entry.startsWith("launchctl bootout"))
+    expect(bootouts).toHaveLength(1)
+    expect(effects.order.indexOf(bootouts[0]!)).toBeLessThan(effects.order.findIndex((entry) => entry.startsWith("launchctl bootstrap")))
+  })
+
+  it.each([
+    ["a percent sign", "C:\\Program Files\\%ODD%\\runtime-1\\node.exe", WindowsTaskPercentSignError],
+    ["$(", "C:\\Program Files\\$(Arg0)\\runtime-1\\node.exe", WindowsTaskArgumentVariableError],
+  ] as const)("refuses to update when the previous task action it would restore contains %s", async (_what, executable, refusal) => {
+    const record = { ...oldWindowsRecord, executable }
+    const configuration = { ...saved("win32", "C:\\Users\\dl"), serviceRuntime: record }
+    const effects = fake("win32", "C:\\Users\\dl", {}, configuration)
+    effects.task = { definition: oldWindowsCommand.replace(oldWindowsRecord.executable, executable), running: true, runningDefinition: oldWindowsCommand }
+    const refused = updateDaemonService({ runtime: windowsRuntime }, effects)
+    await expect(refused).rejects.toMatchObject({ outcome: "nothing-changed", cause: expect.any(refusal) })
+    expect(effects.order.filter((entry) => entry !== "read task action")).toEqual([])
   })
 })
