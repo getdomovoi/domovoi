@@ -23,3 +23,8 @@ A stop finished at restart now leaves each session as a completed stop leaves it
 stop caught in flight has its provider thread reset and its session marked failed. A journal row
 that does not read back no longer keeps the daemon from starting: it is moved whole to a separate
 table, reported once, and the readable stops are still finished.
+
+A journal row goes to that table only when no stop can be read from it. A row that holds a stop
+beside fields it does not know is finished from the fields it can read, and a copy of it is kept.
+A dispatch's provider thread id is kept whole in the intent, so a thread id with any character in
+it is reset at restart as a completed stop resets it.

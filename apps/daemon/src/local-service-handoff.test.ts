@@ -874,7 +874,16 @@ describe("the service handoff fence and an emergency stop", () => {
   // provider thread of a dispatch it caught in flight and marks the session
   // failed, so no later send resumes that thread. A restart has no provider
   // left to reset, which is the reset's own outcome.
-  it("leaves a dispatch caught in flight as a completed stop leaves it when the stop is finished at restart", async () => {
+  // Round 4: a provider thread id may hold any character, NUL included, and
+  // the restart compares the whole of it.
+  it.each([
+    { threadId: "thread-fence" },
+    { threadId: "thread\u0000fence\u0000tail" },
+  ])("leaves a dispatch caught in flight as a completed stop leaves it when the stop is finished at restart (thread $threadId)", async ({ threadId }) => {
+    const onThread = (ready: Awaited<ReturnType<typeof readySession>>) => {
+      ready.workspace.sessions.find(({ id }) => id === ready.sessionId)!.providerThreadId = threadId
+      return ready
+    }
     const sessionState = (snapshot: WorkspaceSnapshot, id: string) => {
       const { state, providerThreadId, activeTurnId } = snapshot.sessions.find((candidate) => candidate.id === id)!
       return { state, providerThreadId, activeTurnId }
@@ -891,7 +900,7 @@ describe("the service handoff fence and an emergency stop", () => {
     }
 
     // A completed stop.
-    const completedCase = await readySession()
+    const completedCase = onThread(await readySession())
     const completed = await daemonOnFile(await stateFile(), completedCase.workspace, { heldTurns: true })
     const completedReader = await dispatching(completed.daemon, completed.agent, completedCase.sessionId)
     const stopped = await completedReader("system.emergencyStop", { client: "desktop" })
@@ -902,7 +911,7 @@ describe("the service handoff fence and an emergency stop", () => {
     expect(expected).toEqual({ state: "failed", providerThreadId: undefined, activeTurnId: undefined })
 
     // The same stop, cut off at its save, then finished by a restart.
-    const { workspace, sessionId } = await readySession()
+    const { workspace, sessionId } = onThread(await readySession())
     const statePath = await stateFile()
     const saves = heldSaves()
     const first = await daemonOnFile(statePath, workspace, { wrap: saves.wrap, heldTurns: true })
@@ -992,6 +1001,44 @@ describe("the service handoff fence and an emergency stop", () => {
     const second = await daemonOnFile(statePath, workspace, { errorSink: (entry) => { again.push(entry.context) } })
     await second.daemon.start()
     expect(again).not.toContain("Domovoi set aside an unreadable emergency stop intent")
+  })
+
+  // Round 4: a row that holds a readable stop beside something it does not
+  // know is still that stop. It is finished from the fields it can read; the
+  // row as stored is copied aside, so nothing in it is lost.
+  it("finishes a journal row that holds a stop beside an unknown field, and keeps a copy of the row", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopId = `stop-${"3".repeat(8)}-3333-4333-8333-${"3".repeat(12)}`
+    const record = JSON.stringify({
+      version: 1, stopId, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z", sessionIds: [sessionId],
+      inFlight: [{ sessionId, provider: "codex", providerThreadId: "thread-fence", note: "from a later build" }],
+      addedLater: true,
+    })
+    const database = new DatabaseSync(statePath)
+    try {
+      database.prepare("INSERT INTO emergency_stop_intents (stop_id, record) VALUES (?, ?)").run(stopId, record)
+    } finally {
+      database.close()
+    }
+
+    const first = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await first.daemon.start(), first.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.thread).toContainEqual(expect.objectContaining({ sessionId, kind: "system", body: "Emergency stop requested by desktop." }))
+    const session = after.sessions.find(({ id }) => id === sessionId)!
+    expect({ state: session.state, providerThreadId: session.providerThreadId }).toEqual({ state: "failed", providerThreadId: undefined })
+    await first.daemon.stop()
+
+    const kept = new DatabaseSync(statePath, { readOnly: true })
+    try {
+      expect(kept.prepare("SELECT stop_id, record FROM emergency_stop_intent_quarantine").all()).toEqual([
+        expect.objectContaining({ stop_id: stopId, record }),
+      ])
+      expect(kept.prepare("SELECT stop_id FROM emergency_stop_intents").all()).toEqual([])
+    } finally {
+      kept.close()
+    }
   })
 })
 

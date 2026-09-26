@@ -9945,11 +9945,18 @@ export class DomovoiDaemon {
     const activeThreadKeys = new Set(active.map((session) =>
       providerThreadKey(session.runtime.provider, session.providerThreadId!),
     ))
+    // Each dispatch caught in flight, with the thread the stop resets: the
+    // session's own provider and thread id, whole, when its thread is still the
+    // one dispatched to (a thread id may hold any character, so the key is
+    // never split). Otherwise the stop only marks the session failed.
     const inFlightThreads = [...this.#inFlightProviderThreads]
       .filter(([threadKey]) => !activeThreadKeys.has(threadKey))
       .map(([threadKey, sessionId]) => {
-        const [provider = "", providerThreadId = ""] = threadKey.split("\u0000", 2)
-        return { sessionId, provider, providerThreadId }
+        const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
+        return session?.providerThreadId
+          && providerThreadKey(session.runtime.provider, session.providerThreadId) === threadKey
+          ? { sessionId, provider: session.runtime.provider, providerThreadId: session.providerThreadId }
+          : { sessionId }
       })
     // Security review round 2 of #628: durable before the first effect, so a
     // restart on this store finishes a stop the process did not live to save.
@@ -10528,9 +10535,12 @@ export class DomovoiDaemon {
   #recoverEmergencyStops(): void {
     const journal = this.#store.emergencyStops
     if (!journal) return
-    const { intents: entries, setAside } = journal.pending()
+    const { intents: entries, partial, setAside } = journal.pending()
     for (const { key, reason } of setAside) {
       this.#reportError("Domovoi set aside an unreadable emergency stop intent", new Error(`${key}: ${reason}`))
+    }
+    for (const { key, reason } of partial) {
+      this.#reportError("Domovoi read part of an emergency stop intent", new Error(`${key}: ${reason}`))
     }
     if (entries.length === 0) return
     const candidate = structuredClone(this.#snapshot)
@@ -10544,18 +10554,21 @@ export class DomovoiDaemon {
         if (!session) continue
         session.updatedAt = intent.requestedAt
         session.state = "failed"
-        if (session.runtime.provider === dispatch.provider && session.providerThreadId === dispatch.providerThreadId) {
+        if (dispatch.providerThreadId !== undefined
+          && session.runtime.provider === dispatch.provider && session.providerThreadId === dispatch.providerThreadId) {
           delete session.providerThreadId
         }
       }
-      for (const sessionId of intent.sessionIds) {
+      // A stop whose client cannot be read is finished without its line.
+      const client = intent.client
+      for (const sessionId of client === undefined ? [] : intent.sessionIds) {
         const session = candidate.sessions.find(({ id }) => id === sessionId)
         if (!session || sessionIsReadOnly(session)) continue
         candidate.thread.push({
           id: lineId(sessionId),
           sessionId,
           kind: "system",
-          body: `Emergency stop requested by ${intent.client}.`,
+          body: `Emergency stop requested by ${client}.`,
           createdAt: intent.requestedAt,
         })
       }
