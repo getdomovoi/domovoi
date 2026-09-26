@@ -1313,9 +1313,9 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       and the palette; a Think chip with no drawing in the design; the titlebar as a text bar
       rather than v2's icon row (drawer toggle with a needs-you badge, New session, the
       centred palette pill carrying the title, machine chip opening Fleet, stop, settings,
-      theme). Auto is inside the mode menu in both the design and the code. Ruled 2026-09-22:
-      the Think chip stays until reasoning effort returns as a group in the v2 model menu
-      (see "Audit fix rulings, 2026-09-22").
+      theme). Auto is inside the mode menu in both the design and the code. Ruled 2026-09-26
+      (Q9 B, superseding 2026-09-22): reasoning effort is the design's effort chip beside the
+      mode chip, and the Think chip is removed (see "Audit fix rulings, 2026-09-22").
       **The gate**: `docs/design-conformance/desktop-v2.json`, checked by `pnpm design:conformance`
       and `release:invariants` (`docs/design-conformance/README.md` says what it holds and what it
       does not). Seeded 2026-09-18 from the whole vendored file: 23 elements built, 42
@@ -2023,8 +2023,9 @@ repository. Each ruling stands until the maintainer changes it.
    Instruction files (`CLAUDE.md`, `AGENTS.md`) still load [A7, J45]. Unresolved decision 3,
    about commands Build auto runs, is not settled by this.
 4. An agent's read outside its worktree goes through an approval [A9].
-5. Reasoning effort comes back as a group in the v2 model menu [J33]. `ThinkChip` and
-   `ReasoningCatalog` stay until then.
+5. Reasoning effort comes back [J33]. Superseded 2026-09-26 (Q9 B): it is the design's effort
+   chip beside the mode chip, not a group in the model menu. `ThinkChip` and `ReasoningCatalog`
+   are removed [D21].
 6. Checkpoints are taken automatically before each approved write, and the palette gains
    "Take a checkpoint" [J34].
 7. Archive keeps today's behaviour: the worktree is removed, the branch and the checkpoint are

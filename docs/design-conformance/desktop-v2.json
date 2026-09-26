@@ -1729,7 +1729,7 @@
     {
       "id": "composer.action-row",
       "name": "Composer action row holds only composer controls",
-      "where": "composer action row: attach, model chip, mode chip, sheet, usage, stop, send. Checkpoint, Archive session and the machine switch live in the drawer row menu and the palette, not here",
+      "where": "composer action row: attach, model chip, mode chip, effort chip, sheet, usage, stop, send. Checkpoint, Archive session and the machine switch live in the drawer row menu and the palette, not here",
       "evidence": [
         {
           "absent": "<ArchiveSessionAction",
@@ -1746,13 +1746,37 @@
     },
     {
       "id": "composer.think",
-      "name": "No Think control",
-      "where": "the composer action row draws no Think chip; reasoning effort is not a v2 control",
+      "name": "Effort chip and menu",
+      "where": "composer action row after the mode chip, hidden when the model reports no levels: the level's word; menu EFFORT ON <harness> with the harness's scale name, rows with bars, word, the value sent and a line, then the next-turn rule or the moved-effort note after a model change",
+      "states": [
+        "closed",
+        "open",
+        "moved by a model change"
+      ],
+      "copy": [
+        "EFFORT ON",
+        "reasoning effort",
+        "Reasons longer before acting. Noticeably slower per turn.",
+        "Stops reasoning early. Fine for triage and single-file edits.",
+        "Balances the time it spends against what it catches.",
+        "Applies from the next turn. A turn already in flight keeps the effort it started with.",
+        "has no",
+        "when you changed model. It stays there."
+      ],
       "evidence": [
-        {
-          "absent": "<ThinkChip",
-          "in": "packages/ui/src/thread.tsx"
-        }
+        "<EffortChip",
+        "export function EffortChip",
+        "`EFFORT ON ${provider.toUpperCase()}`",
+        "Applies from the next turn. A turn already in flight keeps the effort it started with.",
+        "so this moved to",
+        "when you changed model. It stays there.",
+        "kind: \"reasoning effort\"",
+        "Stops reasoning early. Fine for triage and single-file edits.",
+        "Balances the time it spends against what it catches.",
+        "Reasons longer before acting. Noticeably slower per turn."
+      ],
+      "notes": [
+        "Rows are the levels the session's model reports, not the design's sample scale. A level gets a word and line only where the scales in effort-scales.ts name that harness and value; other values show as reported. Those scales follow the 2026-09-23 digest: the claude-code and codex words and lines the 2026-09-26 design redraws, Model's own, Extra high and the Model default marker are composer.effort-levels. Single-word level names are not collected as script copy."
       ]
     },
     {
@@ -1783,11 +1807,19 @@
       ],
       "evidence": [
         "Model default",
-        "No word yet"
+        "No word yet",
+        "Extra high",
+        "Model's own",
+        "Sends no effort value, so the model uses its own setting.",
+        "Short thinking. Enough for a single-file edit or a question with one answer."
       ],
-      "missing": {
+      "presence": [
+        "model?.supportedReasoningEfforts ?? []",
+        "effortLevel(provider, id, model?.defaultReasoningEffort)"
+      ],
+      "partial": {
         "since": "2026-09-26",
-        "reason": "main draws no effort chip or menu; PR #622, open, builds the chip against the 2026-09-23 digest, before these per-model levels, the Model default marker and the no-word level were drawn"
+        "reason": "the effort menu from PR #622 lists the levels the model reports, the value sent in mono beside each word, and a level with no word as its value; it uses the 2026-09-23 scales, so the claude-code effort and codex none to xhigh words and lines, Model's own, the Model default marker, the No word yet tag and the neutral clamp note are not built"
       }
     },
     {
@@ -2085,10 +2117,6 @@
       "Reads and proposes. It cannot write or run anything.",
       "Writes and commands ask first, one at a time.",
       "Writes and runs inside the worktree. Gates still apply.",
-      "reasoning effort",
-      "Reasons longer before acting. Noticeably slower per turn.",
-      "Stops reasoning early. Fine for triage and single-file edits.",
-      "Balances the time it spends against what it catches.",
       "The default here. Reasoning high, 200k context.",
       "Slower and dearer. Worth it on a plan you cannot check yourself.",
       "Fast and cheap. Fine for triage, weak on multi-file edits.",
@@ -2765,10 +2793,6 @@
       "Reply, or steer the plan",
       "Also cover the claim-expiry case in replay.spec.ts",
       "queued, sends when this turn ends",
-      "EFFORT ON",
-      "has no",
-      "when you changed model. It stays there.",
-      "Applies from the next turn. A turn already in flight keeps the effort it started with.",
       "watching only",
       "No sends, approvals, terminal or writes. Reads stream as normal.",
       "Archived, so the daemon accepts reads only.",

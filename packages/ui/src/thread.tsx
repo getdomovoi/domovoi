@@ -84,7 +84,8 @@ import { ApprovalReceipt } from "./approval-receipt"
 import { PlanStrip } from "./plan-strip"
 import { ModelPopover } from "./model-popover.js"
 import { FloatingSurface } from "./floating-surface"
-import { ModeChip } from "./mode-chip.js"
+import { EffortChip, ModeChip } from "./mode-chip.js"
+import { effortName } from "./effort-scales.js"
 import { permissionModeLabel, withPermissionMode } from "./permission-mode.js"
 import type { WorkingPlanEdit } from "./plan-step-editor.js"
 import { groupThreadActivity, type ThreadRow } from "./thread-activity-groups"
@@ -804,6 +805,10 @@ export function Thread({
   const [sendError, setSendError] = useState("")
   const [recoveryError, setRecoveryError] = useState("")
   const [runtimeError, setRuntimeError] = useState("")
+  // A model change that could not carry the effort moved it to the new
+  // model's default. The effort menu says so until a level is picked or the
+  // runtime moves on.
+  const [effortDropped, setEffortDropped] = useState<{ sessionId: string, from: string, to: string }>()
   const [restartPending, setRestartPending] = useState(false)
   const [restartError, setRestartError] = useState("")
   const archiveReadOnly = sessionIsArchiveReadOnly(active)
@@ -850,9 +855,22 @@ export function Thread({
       setAttachmentError(cause instanceof Error ? cause.message : "Terminal output could not be read from the clipboard")
     }
   }
-  // The Think chip offers what the current model reports. The catalog is read
-  // once per provider change; a read that fails leaves the chip shut with its
-  // reason rather than offering a guess. Hooks sit above the no-session return.
+  // The effort chip offers what the session's model reports, read once per
+  // provider change. Until a read answers, or when it fails, there is no chip.
+  // Hooks sit above the no-session return.
+  const activeProvider = active?.runtime.provider
+  // Held with the provider it answered for, so a re-read keeps the chip up and
+  // a provider change drops it until the new harness answers.
+  const [providerModels, setProviderModels] = useState<{ provider: string, models: ProviderModel[] }>()
+  useEffect(() => {
+    if (!activeProvider) return
+    let live = true
+    void onListModels(activeProvider).then(
+      (models) => { if (live) setProviderModels({ provider: activeProvider, models }) },
+      () => { if (live) setProviderModels(undefined) },
+    )
+    return () => { live = false }
+  }, [onListModels, activeProvider])
   // The editor answers a shortcut as well as its control, because a long prompt
   // usually starts at the keyboard.
   useEffect(() => {
@@ -1126,14 +1144,33 @@ export function Thread({
     if (watching || runtimePending) return
     setRuntimePending(true)
     setRuntimeError("")
+    const sessionId = active.id
+    const previous = active.runtime
+    // Only a level the previous model reported was ever on screen. A model
+    // with no levels shows no chip, so moving off it drops nothing the person
+    // saw, and the note would name a value they never chose.
+    const previousShown = effortModel?.supportedReasoningEfforts.includes(previous.reasoning) ?? false
     try {
       await onSetRuntime(runtime)
+      // As the design does: a model change sets or clears the note, a picked
+      // level clears it, and a mode change leaves it.
+      const modelChanged = runtime.provider !== previous.provider || runtime.model !== previous.model
+      if (modelChanged && previousShown && runtime.reasoning !== previous.reasoning) {
+        setEffortDropped({ sessionId, from: effortName(previous.provider, previous.reasoning), to: effortName(runtime.provider, runtime.reasoning) })
+      } else if (modelChanged || runtime.reasoning !== previous.reasoning) {
+        setEffortDropped(undefined)
+      }
     } catch (cause) {
       setRuntimeError(cause instanceof Error ? cause.message : "The runtime could not be updated")
     } finally {
       setRuntimePending(false)
     }
   }
+
+  const effortModel = providerModels?.provider !== active.runtime.provider ? undefined : providerModels.models.find((model) => model.provider === active.runtime.provider && model.id === active.runtime.model)
+  const effortDroppedHere = effortDropped?.sessionId === active.id && effortDropped.to === effortName(active.runtime.provider, active.runtime.reasoning)
+    ? { from: effortDropped.from, to: effortDropped.to }
+    : undefined
 
   const forkRuntime = async (runtime: Runtime, checkpointId: string, requestId: string) => {
     if (watching || runtimePending || forkReason) return
@@ -1548,9 +1585,16 @@ export function Thread({
                 onChange={(runtime) => void updateRuntime(runtime)}
                 onFork={forkRuntime}
               />
-              {/* v2's mode chip sits beside the model. Think has no drawing in
-                  v2; the runtime carries it, so it stays as a plain chip here. */}
+              {/* v2's mode chip sits beside the model, and the effort chip
+                  after it. */}
               <ModeChip runtime={active.runtime} pending={runtimePending || readOnly} onSetRuntime={(runtime) => void updateRuntime(runtime)} />
+              <EffortChip
+                runtime={active.runtime}
+                model={effortModel}
+                dropped={effortDroppedHere}
+                pending={runtimePending || readOnly}
+                onSetRuntime={(runtime) => void updateRuntime(runtime)}
+              />
               {/* v2 opens the machine surfaces from the row itself, on Changes.
                   It is the only control here that looks at the machine rather
                   than at what the next turn sends. */}
