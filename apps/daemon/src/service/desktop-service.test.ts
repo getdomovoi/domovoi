@@ -492,6 +492,8 @@ function managerFake(platform: "darwin" | "linux" | "win32", start: {
   failingWrite?: string
   // A bootout that unloads the job and still reports failure.
   bootoutUnloadsThenFails?: boolean
+  // A foreign job that takes the label when the failing command fails.
+  foreignLoadsOnFailure?: string
 } = {}) {
   const home = platform === "win32" ? windowsHome : platform === "darwin" ? "/Users/dl" : "/home/dl"
   const files = new Map(Object.entries(start.files ?? {}))
@@ -521,6 +523,7 @@ function managerFake(platform: "darwin" | "linux" | "win32", start: {
       ran.push(line)
       if (start.failing === args[0] && failuresLeft > 0) {
         failuresLeft -= 1
+        if (start.foreignLoadsOnFailure) job = { path: start.foreignLoadsOnFailure, running: true }
         throw new Error(`${line} failed`)
       }
       if (args[0] === "/create") task = { path: `"${args[args.indexOf("/tr") + 1]!.split('" "')[0]!.slice(1)}"`, arguments: args[args.indexOf("/tr") + 1]!.split('" ').slice(1).join('" ') }
@@ -739,5 +742,22 @@ describe("security review round 5 (systemd paths)", () => {
       expect(effects.write).not.toHaveBeenCalled()
       expect(effects.run).not.toHaveBeenCalled()
     }
+  })
+})
+
+// Security review round 6: a job listed under the label after the install
+// failed is Domovoi's previous agent only when it came from Domovoi's plist.
+describe("security review round 6 (install)", () => {
+  const agent = "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist"
+  const configuration = "/Users/dl/.domovoi/service.json"
+  const other = "/Users/dl/Library/LaunchAgents/other.plist"
+
+  it("says the previous agent could not be loaded again when a foreign job took the label", async () => {
+    const fake = managerFake("darwin", { files: { [agent]: "old agent", [configuration]: "old configuration" }, job: { path: agent, running: false }, failing: "bootstrap", foreignLoadsOnFailure: other })
+    await expect(installDaemonService({ runtime }, fake.effects)).rejects.toThrow(
+      `launchctl bootstrap failed. Putting back the previous service files also failed: A job named sh.domovoi.domovoid is loaded from ${other}, which is not Domovoi's launch agent.`,
+    )
+    expect(fake.job()).toEqual({ path: other, running: true })
+    expect(fake.ran).toEqual(["launchctl bootout", "launchctl bootstrap"])
   })
 })

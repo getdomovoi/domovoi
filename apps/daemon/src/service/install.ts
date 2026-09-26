@@ -506,9 +506,23 @@ async function loadPreviousAgent(target: ServiceTarget, plan: ServicePlan, previ
   } catch (restoreCause) {
     throw restoreFailure(cause, restoreCause)
   }
-  if (printed.code === 0) return
-  if (printed.code !== 113 || !isMissingServiceFailure("darwin", printed)) throw restoreFailure(cause, captureFailure("launchctl", printed))
   const path = plan.kind === "file" ? plan.path : undefined
+  if (printed.code === 0) {
+    // Security review round 6: a job listed under the label is the previous
+    // agent only when it came from Domovoi's plist. A job from another plist
+    // took the label, so the previous agent could not be loaded again. The
+    // approved foreign-job line's last sentence, "Nothing was stopped or
+    // changed.", is not true here, so only its first sentence is used.
+    let loadedFrom: string
+    try {
+      loadedFrom = launchdJobPath(printed.stdout)
+    } catch (restoreCause) {
+      throw restoreFailure(cause, restoreCause)
+    }
+    if (loadedFrom === path) return
+    throw restoreFailure(cause, new Error(`A job named sh.domovoi.domovoid is loaded from ${loadedFrom}, which is not Domovoi's launch agent`))
+  }
+  if (printed.code !== 113 || !isMissingServiceFailure("darwin", printed)) throw restoreFailure(cause, captureFailure("launchctl", printed))
   if (path === undefined || previous.find((file) => file.path === path)?.contents === undefined) {
     throw restoreFailure(cause, new Error("the previous launch agent file was not there to load again"))
   }
