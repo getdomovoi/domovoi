@@ -589,3 +589,22 @@ it("says the login service is not installed when a daemon outside the app runs a
   expect(within(section).getByText("domovoid service status")).toBeTruthy()
   expect(section.textContent).toContain("Install and Remove are off: this app did not start that daemon.")
 })
+
+// Security review round 8 of #576: a failed install can leave the service
+// installed but stopped while the daemon is back inside this app. The owner
+// line stays the app's; the installed service is its own fact, so Remove is
+// live, Install is off, and nothing says nothing is installed.
+it("keeps Remove live for an installed service while the daemon runs inside this app", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{
+    title: "Running Domovoi inside this app", detail: "", owner: "app", serviceInstalled: true, platform: "darwin",
+    service: { install: vi.fn() as never, remove: vi.fn() as never },
+  }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(within(section).getByText("Off")).toBeTruthy()
+  expect(section.textContent).toContain("Quitting Domovoi stops the daemon and every session on it.")
+  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(false)
+  expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
+  expect(section.textContent).toContain("Install is off: the service is already installed.")
+  expect(section.textContent).toContain("WHAT IT WROTE")
+  expect(section.textContent).not.toContain("nothing is installed")
+})

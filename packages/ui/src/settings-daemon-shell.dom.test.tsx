@@ -310,5 +310,15 @@ it.each(failureCases)("refreshes the owner after a failed $action (read-back $se
     : running ? "Quitting this app leaves the daemon and its sessions running." : "A daemon this app did not start. Quitting this app leaves it running."
   expect(within(section).getByText(toggle)).toBeTruthy()
   expect(section.textContent).toContain(quitLine)
-  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(!running)
+  // Security review round 8: whether the service is installed is its own
+  // fact, taken from the read-back, not from who holds the daemon. Remove is
+  // live whenever the service reads back installed, and nothing says nothing
+  // is installed then. (This walk first tied Remove to the owner as well, so
+  // it expected the bug.)
+  const installed = service?.installed === true
+  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(!installed)
+  if (installed) {
+    expect(section.textContent).not.toContain("nothing is installed")
+    expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
+  }
 })
