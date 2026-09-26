@@ -486,12 +486,17 @@ function managerFake(platform: "darwin" | "linux" | "win32", start: {
   task?: { path: string; arguments: string }
   job?: { path: string; running: boolean }
   failing?: string
+  // How many calls of the failing command fail, from the first. Default 1.
+  failures?: number
+  // A file write that fails, by path.
+  failingWrite?: string
 } = {}) {
   const home = platform === "win32" ? windowsHome : platform === "darwin" ? "/Users/dl" : "/home/dl"
   const files = new Map(Object.entries(start.files ?? {}))
   let task = start.task
   let job = start.job
   const ran: string[] = []
+  let failuresLeft = start.failures ?? 1
   const effects = dependencies({
     platform, home, ...(platform === "win32" ? { user: "dl" } : {}),
     exists: vi.fn(async (path: string) => files.has(path)),
@@ -500,7 +505,10 @@ function managerFake(platform: "darwin" | "linux" | "win32", start: {
       if (text === undefined) throw Object.assign(new Error(`ENOENT ${path}`), { code: "ENOENT" })
       return text
     }),
-    write: vi.fn(async (path: string, contents: string) => { files.set(path, contents) }),
+    write: vi.fn(async (path: string, contents: string) => {
+      if (path === start.failingWrite && contents !== start.files?.[path]) throw new Error(`write ${path} failed`)
+      files.set(path, contents)
+    }),
     remove: vi.fn(async (path: string) => { files.delete(path) }),
     readConfiguration: vi.fn(() => {
       const text = files.get(platform === "win32" ? windowsConfigurationPath : `${home}/.domovoi/service.json`)
@@ -509,7 +517,10 @@ function managerFake(platform: "darwin" | "linux" | "win32", start: {
     run: vi.fn(async (command: string, args: string[]) => {
       const line = `${command} ${args[0]}`
       ran.push(line)
-      if (start.failing === args[0]) throw new Error(`${line} failed`)
+      if (start.failing === args[0] && failuresLeft > 0) {
+        failuresLeft -= 1
+        throw new Error(`${line} failed`)
+      }
       if (args[0] === "/create") task = { path: `"${args[args.indexOf("/tr") + 1]!.split('" "')[0]!.slice(1)}"`, arguments: args[args.indexOf("/tr") + 1]!.split('" ').slice(1).join('" ') }
       if (args[0] === "bootout") job = undefined
       if (args[0] === "bootstrap") {
@@ -640,5 +651,42 @@ describe("security review round 3", () => {
     expect(releaseInAppDaemon).not.toHaveBeenCalled()
     expect(fake.ran).toEqual([])
     expect(fake.files.size).toBe(0)
+  })
+})
+
+// Security review round 4 on #574: a failed install leaves the previous service
+// files and the manager's state, loaded or not, as they were.
+describe("security review round 4", () => {
+  const agent = "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist"
+  const configuration = "/Users/dl/.domovoi/service.json"
+  const unit = "/home/dl/.config/systemd/user/domovoid.service"
+
+  it("loads the previous launch agent again when the new one fails to bootstrap after the bootout", async () => {
+    const fake = managerFake("darwin", { files: { [agent]: "old agent", [configuration]: "old configuration" }, job: { path: agent, running: false }, failing: "bootstrap" })
+    await expect(installDaemonService({ runtime }, fake.effects)).rejects.toThrow("launchctl bootstrap failed")
+    expect(Object.fromEntries(fake.files)).toEqual({ [agent]: "old agent", [configuration]: "old configuration" })
+    expect(fake.job()?.path).toBe(agent)
+    expect(fake.ran).toEqual(["launchctl bootout", "launchctl bootstrap", "launchctl bootstrap"])
+  })
+
+  it("says so when the previous launch agent cannot be loaded again either", async () => {
+    const fake = managerFake("darwin", { files: { [agent]: "old agent", [configuration]: "old configuration" }, job: { path: agent, running: false }, failing: "bootstrap", failures: 2 })
+    await expect(installDaemonService({ runtime }, fake.effects))
+      .rejects.toThrow("launchctl bootstrap failed. Putting back the previous service files also failed: launchctl bootstrap failed.")
+    expect(Object.fromEntries(fake.files)).toEqual({ [agent]: "old agent", [configuration]: "old configuration" })
+  })
+
+  it("puts service.json back when the launch agent cannot be written", async () => {
+    const fake = managerFake("darwin", { files: { [agent]: "old agent", [configuration]: "old configuration" }, failingWrite: agent })
+    await expect(installDaemonService({ runtime }, fake.effects)).rejects.toThrow(`write ${agent} failed`)
+    expect(Object.fromEntries(fake.files)).toEqual({ [agent]: "old agent", [configuration]: "old configuration" })
+    expect(fake.ran).toEqual([])
+  })
+
+  it("removes a new service.json when a first systemd unit cannot be written", async () => {
+    const fake = managerFake("linux", { failingWrite: unit })
+    await expect(installDaemonService({ runtime }, fake.effects)).rejects.toThrow(`write ${unit} failed`)
+    expect(fake.files.size).toBe(0)
+    expect(fake.ran).toEqual([])
   })
 })
