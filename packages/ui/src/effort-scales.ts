@@ -7,7 +7,9 @@
 // the harness reported and no line.
 type EffortScale = {
   kind: string
-  levels: readonly { id: string, label: string, note: string }[]
+  // claimsDefault: the line says this level is the default. Each model
+  // reports its own default, so the line shows only on that level.
+  levels: readonly { id: string, label: string, note: string, claimsDefault?: true }[]
 }
 
 const effortScales: Readonly<Record<string, EffortScale>> = {
@@ -15,7 +17,7 @@ const effortScales: Readonly<Record<string, EffortScale>> = {
     kind: "thinking budget",
     levels: [
       { id: "think", label: "Low", note: "A short budget. Enough for a single-file edit or a question with one answer." },
-      { id: "think-hard", label: "Medium", note: "The default here. Holds a multi-file change in view while it plans." },
+      { id: "think-hard", label: "Medium", note: "The default here. Holds a multi-file change in view while it plans.", claimsDefault: true },
       { id: "ultrathink", label: "High", note: "The longest budget this harness offers. Slow and dear, and worth it on a plan you cannot check yourself." },
     ],
   },
@@ -23,14 +25,14 @@ const effortScales: Readonly<Record<string, EffortScale>> = {
     kind: "reasoning effort",
     levels: [
       { id: "low", label: "Low", note: "Answers quickly and stops reasoning early. Fine for triage." },
-      { id: "medium", label: "Medium", note: "The default. Balances the time it spends against what it catches." },
+      { id: "medium", label: "Medium", note: "The default. Balances the time it spends against what it catches.", claimsDefault: true },
       { id: "high", label: "High", note: "Reasons longer before acting. Noticeably slower per turn." },
     ],
   },
   opencode: {
     kind: "reasoning effort",
     levels: [
-      { id: "default", label: "Default", note: "Whatever the model does unprompted. The only level that is not a choice." },
+      { id: "default", label: "Default", note: "Whatever the model does unprompted. The only level that is not a choice.", claimsDefault: true },
       { id: "low", label: "Low", note: "Stops reasoning early. Fine for triage and single-file edits." },
       { id: "medium", label: "Medium", note: "Balances the time it spends against what it catches." },
       { id: "high", label: "High", note: "Reasons longer before acting. Noticeably slower per turn." },
@@ -40,7 +42,7 @@ const effortScales: Readonly<Record<string, EffortScale>> = {
   kilo: {
     kind: "reasoning effort",
     levels: [
-      { id: "default", label: "Default", note: "Whatever the model does unprompted. The only level that is not a choice." },
+      { id: "default", label: "Default", note: "Whatever the model does unprompted. The only level that is not a choice.", claimsDefault: true },
       { id: "low", label: "Low", note: "Stops reasoning early. Fine for triage and single-file edits." },
       { id: "medium", label: "Medium", note: "Balances the time it spends against what it catches." },
       { id: "high", label: "High", note: "Reasons longer before acting. Noticeably slower per turn." },
@@ -59,9 +61,12 @@ export function effortScaleKind(provider: string): string | undefined {
   return effortScales[provider]?.kind
 }
 
-export function effortLevel(provider: string, id: string): EffortLevel {
+// A line that says the level is the default shows only when the model
+// reports that level as its default; elsewhere the level has no line rather
+// than a false claim.
+export function effortLevel(provider: string, id: string, modelDefault?: string): EffortLevel {
   const named = effortScales[provider]?.levels.find((level) => level.id === id)
-  if (named) return named
+  if (named) return { id, label: named.label, note: named.claimsDefault && id !== modelDefault ? undefined : named.note }
   return { id, label: sharedWords.find((word) => word.toLowerCase() === id.toLowerCase()), note: undefined }
 }
 

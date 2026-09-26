@@ -75,3 +75,34 @@ it("locks the chip while a runtime update is pending", () => {
   render(<EffortChip runtime={runtime} model={model("codex", ["low", "medium", "high"])} pending onSetRuntime={vi.fn()} />)
   expect((screen.getByRole("button", { name: "Medium" }) as HTMLButtonElement).disabled).toBe(true)
 })
+
+// Some of the design's lines say a level is the default. Each model reports
+// its own default, so such a line shows only on the level the model reports
+// as its default, and any other level gets no line rather than a false claim.
+it("shows a line that claims the default only on the model's reported default", async () => {
+  const user = userEvent.setup()
+  const view = render(<EffortChip runtime={runtime} model={model("codex", ["low", "medium", "high"], "high")} pending={false} onSetRuntime={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: "Medium" }))
+  let rows = screen.getAllByRole("menuitemradio")
+  expect(rows[1]!.textContent).toBe("Mediummedium")
+  expect(screen.queryByText(/^The default\./)).toBeNull()
+  expect(within(rows[2]!).getByText("Reasons longer before acting. Noticeably slower per turn.")).toBeTruthy()
+
+  view.rerender(<EffortChip runtime={runtime} model={model("codex", ["low", "medium", "high"], "medium")} pending={false} onSetRuntime={vi.fn()} />)
+  rows = screen.getAllByRole("menuitemradio")
+  expect(within(rows[1]!).getByText("The default. Balances the time it spends against what it catches.")).toBeTruthy()
+})
+
+it("holds the Default level's line to a model that reports Default as its default", async () => {
+  const user = userEvent.setup()
+  const opencode = { ...runtime, provider: "opencode", reasoning: "high" }
+  const view = render(<EffortChip runtime={opencode} model={model("opencode", ["default", "low", "high"], "high")} pending={false} onSetRuntime={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: "High" }))
+  let rows = screen.getAllByRole("menuitemradio")
+  expect(rows[0]!.textContent).toBe("Defaultdefault")
+  expect(screen.queryByText("Whatever the model does unprompted. The only level that is not a choice.")).toBeNull()
+
+  view.rerender(<EffortChip runtime={opencode} model={model("opencode", ["default", "low", "high"], "default")} pending={false} onSetRuntime={vi.fn()} />)
+  rows = screen.getAllByRole("menuitemradio")
+  expect(within(rows[0]!).getByText("Whatever the model does unprompted. The only level that is not a choice.")).toBeTruthy()
+})

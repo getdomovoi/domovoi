@@ -197,7 +197,7 @@ export function EffortChip({
           onValueChange={(reasoning) => { if (!pending && reasoning !== runtime.reasoning) onSetRuntime({ ...runtime, reasoning }) }}
         >
           {efforts.map((id, index) => {
-            const level = effortLevel(provider, id)
+            const level = effortLevel(provider, id, model?.defaultReasoningEffort)
             const selected = id === runtime.reasoning
             return (
               <DropdownMenuRadioItem
