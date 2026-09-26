@@ -13,15 +13,17 @@ const inventoryDirectory = "docs/design-conformance"
 // elements a design draws, the copy each one carries, and the evidence in the
 // implementation that it exists. The design file's digest ties the inventory
 // to the design it was read from, and every literal string the template draws
-// must be claimed by an element or classed as sample data, so a design change
-// nothing implements is red on the day it is vendored. What it does not hold,
+// or the data script holds must be claimed by an element or classed as sample
+// data, so a design change nothing implements is red on the day it is
+// vendored. Script strings not yet read are listed by name in a dated
+// backlog, never waved through by count. What it does not hold,
 // and never claims to: where an element sits, how a state looks, whether the
 // behaviour behind the copy is right. That remains a human reading against
 // the design; the inventory's `where` and `states` are notes for that reader.
 
 // Literal copy the template draws: text nodes and the attributes a person
-// reads or a screen reader speaks. Bindings ({{ }}) are values, not copy, and
-// the script's strings are reached through the elements that name them.
+// reads or a screen reader speaks. Bindings ({{ }}) are values, not copy; the
+// strings they draw from the data script are designScriptCopy's.
 export function designCopy(html) {
   const templateStart = html.indexOf("</helmet>")
   const templateEnd = html.indexOf("</x-dc>")
@@ -38,6 +40,116 @@ export function designCopy(html) {
   for (const match of template.matchAll(/\b(?:aria-label|placeholder|title)="([^"{}]+)"/g)) push(match[1])
   for (const match of template.matchAll(/>([^<>]+)</g)) push(match[1])
   return copy
+}
+
+// Copy the design builds in its data script: menus, notices, palette commands
+// and launcher chips live there and reach the template through a binding, so
+// designCopy cannot see them. A literal counts when it reads as prose: it
+// starts with a letter, holds a space, and is neither markup, an
+// interpolation nor a style value. Single words and strings assembled at run
+// time are not collected; the README says so.
+export function designScriptCopy(html) {
+  const marker = html.search(/<script\b[^>]*\bdata-dc-script\b/)
+  if (marker === -1) return []
+  const bodyStart = scriptBodyStart(html, marker)
+  const bodyEnd = html.indexOf("</script>", bodyStart)
+  const script = html.slice(bodyStart, bodyEnd === -1 ? html.length : bodyEnd)
+  const template = new Set(designCopy(html))
+  const copy = []
+  const seen = new Set()
+  for (const literal of scriptLiterals(script)) {
+    if (literal.quote === "`" && literal.raw.includes("${")) continue
+    const text = unescapeScript(literal.raw).replace(/\s+/g, " ").trim()
+    if (!/^\p{L}/u.test(text) || !text.includes(" ") || /[{}<>=\\$]/.test(text) || styleValue(text)) continue
+    if (template.has(text) || seen.has(text)) continue
+    seen.add(text)
+    copy.push(text)
+  }
+  return copy
+}
+
+// The opening tag carries its props as a quoted attribute that can hold ">",
+// so the body starts after the tag's own closing bracket, found outside quotes.
+function scriptBodyStart(html, tagStart) {
+  let quote = ""
+  for (let index = tagStart; index < html.length; index += 1) {
+    const char = html[index]
+    if (quote) {
+      if (char === quote) quote = ""
+    } else if (char === "\"" || char === "'") {
+      quote = char
+    } else if (char === ">") {
+      return index + 1
+    }
+  }
+  return html.length
+}
+
+// String literals outside comments. The data scripts hold no regular
+// expression literals that contain a quote; one would be read as a string.
+function scriptLiterals(script) {
+  const literals = []
+  let index = 0
+  while (index < script.length) {
+    const char = script[index]
+    if (char === "/" && script[index + 1] === "/") {
+      const end = script.indexOf("\n", index)
+      index = end === -1 ? script.length : end
+      continue
+    }
+    if (char === "/" && script[index + 1] === "*") {
+      const end = script.indexOf("*/", index + 2)
+      index = end === -1 ? script.length : end + 2
+      continue
+    }
+    if (char !== "\"" && char !== "'" && char !== "`") {
+      index += 1
+      continue
+    }
+    let cursor = index + 1
+    let closed = false
+    while (cursor < script.length) {
+      const next = script[cursor]
+      if (next === "\\") {
+        cursor += 2
+        continue
+      }
+      if (next === char) {
+        closed = true
+        break
+      }
+      if (next === "\n" && char !== "`") break
+      cursor += 1
+    }
+    if (closed) literals.push({ quote: char, raw: script.slice(index + 1, cursor) })
+    index = cursor + 1
+  }
+  return literals
+}
+
+function unescapeScript(raw) {
+  return raw.replace(/\\(u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|[\s\S])/g, (_, escape) => {
+    if (escape.startsWith("u{")) return String.fromCodePoint(Number.parseInt(escape.slice(2, -1), 16))
+    if (/^[ux][0-9a-fA-F]/.test(escape) && escape.length > 1) return String.fromCodePoint(Number.parseInt(escape.slice(1), 16))
+    return { n: "\n", t: "\t", r: "\r" }[escape] ?? escape
+  })
+}
+
+// A style value is made of lengths, durations, colours, CSS functions and
+// lowercase keywords, with at least one of the first four; a font stack ends
+// in a generic family; an inline style holds a declaration ended by a
+// semicolon, or is the tail of one cut by a binding. Prose has none of those
+// shapes.
+function styleValue(text) {
+  if (/,\s*(?:monospace|sans-serif|serif|system-ui|cursive)$/.test(text)) return true
+  if (/(?:^|;\s*)[a-z]+(?:-[a-z]+)*:\s*[^;]*;/.test(text) || /^(?:px|em|rem|ms|s|%)?;\s/.test(text)) return true
+  const declaration = /^[a-z]+(?:-[a-z]+)*:\s+(.+)$/.exec(text)
+  if (declaration && styleValue(declaration[1])) return true
+  const tokens = text.split(/[\s,]+/).filter(Boolean)
+  const measured = (token) => /^-?\d*\.?\d+(?:px|em|rem|%|ms|s|fr|deg|vh|vw|ch)?$/.test(token)
+    || /^#[0-9a-fA-F]{3,8}$/.test(token)
+    || /^[a-z-]+\(/.test(token)
+  return tokens.some(measured) && tokens.every((token) => measured(token) || /^[a-z]+(?:-[a-z]+)*\)?$/.test(token) || /^[\d.)]+\)?$/.test(token))
 }
 
 function decode(text) {
@@ -124,7 +236,8 @@ export async function checkConformance(root, inventoryPath) {
     failures.push(`${inventoryPath}: design digest ${sha256.slice(0, 12)} differs from the recorded ${String(inventory.sha256).slice(0, 12)}; re-read ${inventory.design}, classify its copy, and record the new digest with today's derivedOn`)
   }
   const copy = designCopy(html)
-  const drawn = new Set(copy)
+  const scriptCopy = designScriptCopy(html)
+  const drawn = new Set([...copy, ...scriptCopy])
   const claimed = new Map()
   const claim = (text, owner) => {
     if (!drawn.has(text)) failures.push(`${inventoryPath}: ${owner} claims stale copy "${text}" that ${inventory.design} no longer draws`)
@@ -189,7 +302,26 @@ export async function checkConformance(root, inventoryPath) {
   for (const text of copy) {
     if (!claimed.has(text)) failures.push(`${inventoryPath}: unclaimed copy "${text}"; add it to an element's copy or to sample with the design as the source`)
   }
-  return { inventory: inventoryPath, design: inventory.design, sha256, copy: copy.length, built, partial, missing, blocked, humanRead, failures }
+  // Script copy nobody has classified yet is listed by name and dated, so a
+  // re-vendored design that adds a string still fails, a classified string
+  // leaves the list, and the count is printed beside the built count.
+  const backlog = inventory.scriptBacklog
+  const backlogged = new Set()
+  if (backlog !== undefined) {
+    if (!datedReason({ scriptBacklog: backlog }, "scriptBacklog") || !Array.isArray(backlog.strings)) failures.push(`${inventoryPath}: scriptBacklog needs since (YYYY-MM-DD), reason and strings`)
+    const held = new Set(scriptCopy)
+    for (const text of backlog.strings ?? []) {
+      if (backlogged.has(text)) failures.push(`${inventoryPath}: scriptBacklog lists "${text}" twice`)
+      backlogged.add(text)
+      if (!held.has(text)) failures.push(`${inventoryPath}: scriptBacklog lists "${text}", which is no longer script copy in ${inventory.design}; remove it`)
+      else if (claimed.has(text)) failures.push(`${inventoryPath}: scriptBacklog lists "${text}", which ${claimed.get(text)} already claims; remove it from the backlog`)
+    }
+  }
+  for (const text of scriptCopy) {
+    if (!claimed.has(text) && !backlogged.has(text)) failures.push(`${inventoryPath}: unclaimed script copy "${text}"; the design's data script holds it, so add it to an element's copy, to sample or to annotations`)
+  }
+  const scriptBacklog = scriptCopy.filter((text) => backlogged.has(text) && !claimed.has(text)).length
+  return { inventory: inventoryPath, design: inventory.design, sha256, copy: copy.length, scriptCopy: scriptCopy.length, scriptBacklog, built, partial, missing, blocked, humanRead, failures }
 }
 
 const v2Designs = new Map([
@@ -283,7 +415,7 @@ export async function checkV2Manifest(root, manifestPath = `${inventoryDirectory
     }
   }
   for (const id of ["desktop-v2", "phone-v2"]) if (!contractIds.has(id)) failures.push(`${manifestPath}: missing structural contract ${id}`)
-  return { inventory: manifestPath, design: "v2 manifest", sha256: "", copy: 0, built: [], partial: [], missing: [], blocked: [], humanRead: [], failures }
+  return { inventory: manifestPath, design: "v2 manifest", sha256: "", copy: 0, scriptCopy: 0, scriptBacklog: 0, built: [], partial: [], missing: [], blocked: [], humanRead: [], failures }
 }
 
 export async function checkAll(root = repositoryRoot) {
@@ -299,7 +431,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   const results = await checkAll()
   let failed = false
   for (const result of results) {
-    const line = `${result.inventory}: ${result.built.length} built, ${result.partial.length} partial, ${result.missing.length} missing, ${result.blocked.length} blocked; ${result.humanRead.length} human-read notes this gate does not verify; ${result.copy} copy strings; digest ${result.sha256.slice(0, 12)}`
+    const line = `${result.inventory}: ${result.built.length} built, ${result.partial.length} partial, ${result.missing.length} missing, ${result.blocked.length} blocked; ${result.humanRead.length} human-read notes this gate does not verify; ${result.copy} copy strings; ${result.scriptCopy} script copy strings, ${result.scriptBacklog} of them not yet classified; digest ${result.sha256.slice(0, 12)}`
     console.log(line)
     for (const failure of result.failures) {
       failed = true
