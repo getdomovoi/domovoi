@@ -42,6 +42,11 @@ const secrets: readonly { line: string, value: string }[] = [
   { line: "java -Dpassword=zqxj7wvkmq -jar app.jar\r\n", value: "zqxj7wvkmq" },
   { line: "{\"client_secret\": \"zqxj wvkm\"}\r\n", value: "zqxj wvkm" },
   { line: "$env:GITHUB_TOKEN=\"zqxj7wvkmq\"\r\n", value: "zqxj7wvkmq" },
+  // Issue #608: formatting between a name and its value, and a value a
+  // carriage return and cursor move write after the name.
+  { line: "export API_KEY\x1b[0m=zqxj7wvkmq\r\n", value: "zqxj7wvkmq" },
+  { line: "\x1b[32mexport API_KEY=\x1b[0mzqxj7wvkmq\r\n", value: "zqxj7wvkmq" },
+  { line: "API_KEY=\r\x1b[8Czqxj7wvkmq\r\n", value: "zqxj7wvkmq" },
 ]
 
 function fragments(value: string): string[] {
@@ -70,6 +75,8 @@ const plain: readonly string[] = [
   "password\r\nhello world\r\n",
   "token count 5\r\n",
   "me@host:~$ ls -la\r\n",
+  "\x1b[32mpasswords are hashed\x1b[0m\r\n",
+  "Downloading 10%\rDownloading 20%\r\n",
 ]
 
 describe("terminal redaction at every split point", () => {
@@ -123,20 +130,32 @@ describe("terminal redaction on the cases review reported", () => {
   }
 })
 
-// Review cases that leak on main as well, before this change. They are held
-// open with it.fails until the owner decides whether they belong here or in a
-// follow-up: each assertion fails today, and turns this test red when fixed.
-const openCases: readonly { name: string, steps: readonly Step[] }[] = [
+// Issue #608: cases that leaked on main before this change. Formatting
+// between a name and its value, a carriage return or cursor move that redraws
+// the line before the value, and a bare token longer than a line keeps or
+// split by an idle beat.
+const redrawCases: readonly { name: string, steps: readonly Step[] }[] = [
   { name: "an ANSI sequence between the name and its separator", steps: ["export API_KEY\x1b[0m=zqxjwvkm\r\n"] },
   { name: "a bare token longer than a line keeps", steps: ["echo ghp_", "zqxj", "a".repeat(8_300), "wvkm done\r\n"] },
+  // The terminal carries 256 characters, so a token past that bound leaked
+  // too, well within a line.
+  { name: "a bare token longer than the carry", steps: ["echo ghp_", "zqxj", "a".repeat(300), "wvkm done\r\n"] },
   // A bare token has no name, so what an idle beat releases of it is not
   // context for the rest.
   { name: "a bare token split by an idle beat", steps: ["echo g", "idle", "hp_zqxj7wvkmqzqxj done\r\n"] },
+  { name: "a bare token split by an idle beat after its prefix", steps: ["echo ghp_", "idle", "zqxj7wvkmqzqxj done\r\n"] },
+  { name: "a bare token split by two idle beats", steps: ["echo ghp_", "idle", "zqxj", "idle", "wvkm done\r\n"] },
+  // What follows a long token is still read with it: a name glued to its
+  // end keeps its value hidden, as on main.
+  { name: "a name glued to the end of a long token", steps: ["echo ghp_", "a".repeat(300), "_token=zqxjwvkm done\r\n"] },
+  { name: "a cursor move to the value's column, as review reported", steps: ["API_KEY=", "idle", "\r\x1b[8Czqxjwvkm\r\n"] },
+  { name: "a prompt redrawn before its answer", steps: ["Password: ", "idle", "\r\x1b[10Czqxjwvkm\r\n"] },
+  { name: "formatting inside the value", steps: ["export API_KEY=zqxj\x1b[1mwvkm\x1b[0m\r\n"] },
 ]
 
-describe("terminal redaction cases still open, pre-existing on main", () => {
-  for (const { name, steps } of openCases) {
-    it.fails(name, () => {
+describe("terminal redaction across formatting, redraws and long tokens", () => {
+  for (const { name, steps } of redrawCases) {
+    it(name, () => {
       const output = run(steps)
       expect(output).not.toContain("zqxj")
       expect(output).not.toContain("wvkm")
