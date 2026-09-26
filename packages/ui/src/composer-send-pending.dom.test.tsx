@@ -30,7 +30,6 @@ function ThreadWith({ snapshot, onSend }: {
       onCheckpoint={vi.fn(async () => {})}
       onRestoreCheckpoint={vi.fn(async () => {})}
       onPauseSession={vi.fn(async () => {})}
-      onArchiveSession={vi.fn(async () => {})}
     />
   )
 }

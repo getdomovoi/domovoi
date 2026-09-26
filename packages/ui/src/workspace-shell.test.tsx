@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 
 import { demoWorkspace, maximumEffectiveClientThreadItems, providerFailureSchema } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
 import { buildWorkspaceCommands } from "./command-palette"
 import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
 
@@ -124,7 +124,7 @@ describe("Thread", () => {
       createdAt: "2026-08-31T12:00:00.000Z",
     })
 
-    const markup = renderToStaticMarkup(<Thread onQueuedChange={vi.fn()} snapshot={snapshot} connected onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})} onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})} onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})} onPauseSession={vi.fn(async () => {})} onArchiveSession={vi.fn(async () => {})} />)
+    const markup = renderToStaticMarkup(<Thread onQueuedChange={vi.fn()} snapshot={snapshot} connected onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})} onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})} onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})} onPauseSession={vi.fn(async () => {})} />)
 
     expect(markup).toContain("decided from web, connection 11111111-1111-4111-8111-111111111111")
   })
@@ -148,7 +148,7 @@ describe("Thread", () => {
 
   it("draws mode in the composer's action row, with Think nowhere", () => {
     const snapshot = structuredClone(demoWorkspace)
-    const markup = renderToStaticMarkup(<Thread onQueuedChange={vi.fn()} snapshot={snapshot} connected onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})} onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})} onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})} onPauseSession={vi.fn(async () => {})} onArchiveSession={vi.fn(async () => {})} />)
+    const markup = renderToStaticMarkup(<Thread onQueuedChange={vi.fn()} snapshot={snapshot} connected onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})} onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})} onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})} onPauseSession={vi.fn(async () => {})} />)
     const actions = markup.slice(markup.indexOf("data-workspace-composer-actions"))
     expect(actions).toMatch(/aria-label="Mode: (Plan|Ask|Build)/)
     expect(markup).not.toContain("Think: ")
@@ -166,7 +166,7 @@ describe("Thread", () => {
       { id: "assistant-md", sessionId, kind: "assistant", body: "## Agent plan\n\n`pnpm test`", createdAt: "2026-08-30T10:01:00.000Z" },
       { id: "system-md", sessionId, kind: "system", body: "**System note** <script>alert(1)</script>", createdAt: "2026-08-30T10:02:00.000Z" },
     )
-    const markup = renderToStaticMarkup(<Thread onQueuedChange={vi.fn()} snapshot={snapshot} connected onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})} onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})} onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})} onPauseSession={vi.fn(async () => {})} onArchiveSession={vi.fn(async () => {})} />)
+    const markup = renderToStaticMarkup(<Thread onQueuedChange={vi.fn()} snapshot={snapshot} connected onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})} onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})} onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})} onPauseSession={vi.fn(async () => {})} />)
     expect(markup).toContain("<strong>User note</strong>")
     expect(markup).toContain("<h2")
     expect(markup).toContain("font-machine")
@@ -469,14 +469,9 @@ describe("Thread", () => {
     expect(commands.find((command) => command.id === "open-in-editor")?.label).toBe("Open in Cursor")
   })
 
-  it("offers a signed archive confirmation describing retained history and cleanup", () => {
-    const markup = renderToStaticMarkup(
-      <ArchiveSessionAction disabled={false} onArchive={vi.fn()} />,
-    )
-
+  it("describes archive in the design's one line", () => {
     // I69, 2026-09-23: the description is the design's one line; what is
     // removed and kept is listed by the dialog body, not restated here.
-    expect(markup).toContain("Archive session")
     expect(archiveSessionDescription).toBe("Domovoi takes a final checkpoint, stops the agent and its terminals, then removes the worktree directory. Nothing is merged.")
   })
 
@@ -506,7 +501,6 @@ describe("Thread", () => {
         onCheckpoint={vi.fn(async () => {})}
         onRestoreCheckpoint={vi.fn(async () => {})}
         onPauseSession={vi.fn(async () => {})}
-        onArchiveSession={vi.fn(async () => {})}
       />,
     )
 
@@ -541,7 +535,6 @@ describe("Thread", () => {
         onCheckpoint={vi.fn(async () => {})}
         onRestoreCheckpoint={vi.fn(async () => {})}
         onPauseSession={vi.fn(async () => {})}
-        onArchiveSession={vi.fn(async () => {})}
       />,
     )
 
@@ -577,7 +570,6 @@ describe("provider failure state", () => {
         onCheckpoint={vi.fn(async () => {})}
         onRestoreCheckpoint={vi.fn(async () => {})}
         onPauseSession={vi.fn(async () => {})}
-        onArchiveSession={vi.fn(async () => {})}
       />,
     )
 

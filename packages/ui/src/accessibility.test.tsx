@@ -111,7 +111,6 @@ describe("shared workspace accessibility contract", () => {
         onCheckpoint={vi.fn(async () => {})}
         onRestoreCheckpoint={vi.fn(async () => {})}
         onPauseSession={vi.fn(async () => {})}
-        onArchiveSession={vi.fn(async () => {})}
       />,
     )
 

@@ -48,7 +48,6 @@ describe("provider recovery in the shared failed-read state", () => {
         onCheckpoint={vi.fn(async () => {})}
         onRestoreCheckpoint={vi.fn(async () => {})}
         onPauseSession={vi.fn(async () => {})}
-        onArchiveSession={vi.fn(async () => {})}
       />
     )
     const view = render(thread(snapshot))

@@ -504,42 +504,6 @@ export function ArchiveConfirmBody({ worktreePath, branch }: { worktreePath?: st
   )
 }
 
-export function ArchiveSessionAction({
-  disabled,
-  onArchive,
-  worktreePath,
-  branch,
-}: {
-  disabled: boolean
-  onArchive: () => void
-  worktreePath?: string | undefined
-  branch?: string | undefined
-}) {
-  return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button variant="ghost" size="sm" disabled={disabled}>
-          <ArchiveIcon data-icon="inline-start" />
-          Archive session
-        </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Archive this session?</AlertDialogTitle>
-          <AlertDialogDescription>
-            {archiveSessionDescription}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <ArchiveConfirmBody worktreePath={worktreePath} branch={branch} />
-        <AlertDialogFooter>
-          <AlertDialogCancel>Keep the session</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={onArchive}>Archive and remove the worktree</AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
-
 // I69: the head of an archived thread says what archive did, naming the kept
 // branch and the files never merged when the daemon reported them.
 function ArchivedSessionNotice({ session }: { session: SessionSummary }) {
@@ -731,10 +695,6 @@ export function Thread({
   pendingTransferTargetId?: string | null | undefined
   onPendingTransferTargetChange?: ((machineId: string | null) => void) | undefined
   onPauseSession: (sessionId: string) => Promise<void>
-  // v2 draws no archive control in the composer, so nothing here calls this.
-  // The prop stays because the shell and the tests still pass it, and dropping
-  // it would be a rename of Thread's surface rather than a design change.
-  onArchiveSession?: (sessionId: string) => Promise<void>
   onPairMachine?: ((request: PairMachineRequest) => Promise<PairedMachine>) | undefined
   onSelectMachine?: ((machineId: string) => void) | undefined
   onTransferSession?: ((
@@ -764,7 +724,6 @@ export function Thread({
   // Bumped by the sessions drawer's "Move to another machine" so the composer's
   // machine menu opens on the session it just activated.
   machineMenuRequest?: number | undefined
-  onOpenSkills?: (() => void) | undefined
   skillNames?: Record<string, string> | undefined
   skillCatalog?: readonly SkillSummary[] | undefined
   surface?: "desktop" | "web" | undefined

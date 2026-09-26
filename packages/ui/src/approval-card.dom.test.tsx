@@ -26,7 +26,6 @@ it("sends the selected approval-card decision", async () => {
       onCheckpoint={vi.fn(async () => {})}
       onRestoreCheckpoint={vi.fn(async () => {})}
       onPauseSession={vi.fn(async () => {})}
-      onArchiveSession={vi.fn(async () => {})}
     />,
   )
 
@@ -62,7 +61,6 @@ it.each(["desktop", "web"] as const)("shows the rewritten file target on the %s 
       onCheckpoint={vi.fn(async () => {})}
       onRestoreCheckpoint={vi.fn(async () => {})}
       onPauseSession={vi.fn(async () => {})}
-      onArchiveSession={vi.fn(async () => {})}
     />
   )
   const { rerender } = render(thread(snapshot))
@@ -108,7 +106,6 @@ function renderThread(surface: "desktop" | "web" = "desktop", risk?: "normal" | 
       onCheckpoint={vi.fn(async () => {})}
       onRestoreCheckpoint={vi.fn(async () => {})}
       onPauseSession={vi.fn(async () => {})}
-      onArchiveSession={vi.fn(async () => {})}
     />,
   )
   return snapshot.approvals[0]!
@@ -218,7 +215,6 @@ it.each(["desktop", "web"] as const)("offers no Always on the %s card for a requ
       onCheckpoint={vi.fn(async () => {})}
       onRestoreCheckpoint={vi.fn(async () => {})}
       onPauseSession={vi.fn(async () => {})}
-      onArchiveSession={vi.fn(async () => {})}
     />,
   )
   expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy()
