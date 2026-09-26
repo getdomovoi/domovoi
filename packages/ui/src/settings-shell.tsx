@@ -1,6 +1,6 @@
 import { loginServiceHomePaths, loginServiceTaskName, type ApprovalRule, type ClientKind, type PairedDeviceSummary, type ProviderRuntime, type UpdateStatus } from "@getdomovoi/protocol"
 import { ChevronRightIcon, ExternalLinkIcon, TerminalIcon } from "lucide-react"
-import { useEffect, useState, type MouseEvent, type ReactNode } from "react"
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react"
 
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -205,10 +205,15 @@ function AboutBuildSection({ about, inCard = false }: { about: AboutBuild; inCar
   const openReleasePage = about.onOpenReleasePage
   // Owner ruling 2026-09-25: when the desktop could not open the browser, the
   // row says so and gives the address as selectable mono text to copy.
+  // Only the latest click may set or clear the line, so an earlier open that
+  // settles late cannot contradict a later one.
   const [browserFailed, setBrowserFailed] = useState(false)
+  const latestOpen = useRef(0)
   const openInBrowser = (open: () => Promise<boolean>) => {
+    const request = ++latestOpen.current
     setBrowserFailed(false)
-    open().then((opened) => setBrowserFailed(!opened), () => setBrowserFailed(true))
+    const settle = (failed: boolean) => { if (latestOpen.current === request) setBrowserFailed(failed) }
+    open().then((opened) => settle(!opened), () => settle(true))
   }
   // The design's row: facts on the left, the release page as a link on the
   // right. A link, not a button, so a watching window (its controls disabled
@@ -233,9 +238,14 @@ function AboutBuildSection({ about, inCard = false }: { about: AboutBuild; inCar
         ) : (
           <p className="m-0 text-[11.5px] leading-[1.5] text-muted-foreground">This build is not signed and does not update itself. Get new versions from the release page.</p>
         )}
-        {browserFailed ? (
-          <p role="status" className="m-0 text-[11.5px] leading-[1.5] text-warning">
-            Could not open the browser. The release page is <span className="font-machine select-text break-all">{releasePageUrl}</span>
+        {openReleasePage ? (
+          // Mounted empty before any click so a screen reader announces the
+          // line when it appears; the negative margin cancels the column gap
+          // while it is empty.
+          <p role="status" className="m-0 text-[11.5px] leading-[1.5] text-warning empty:-mt-1.5">
+            {browserFailed ? (
+              <>Could not open the browser. The release page is <span className="font-machine select-text break-all">{releasePageUrl}</span></>
+            ) : null}
           </p>
         ) : null}
       </div>
