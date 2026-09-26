@@ -34,7 +34,9 @@ The Windows logon task, from the desktop and from `domovoid service install` ali
 daemon entry through the named Node runtime, and a runtime, entry or configuration path that
 contains a percent sign is refused (`WindowsTaskPercentSignError`), because Task Scheduler expands
 `%NAME%` when the task runs. A path that contains `$(` is refused (`WindowsTaskArgumentVariableError`),
-because Task Scheduler substitutes `$(Arg0)` and the like in task arguments. A path that is not in the plain form
+because Task Scheduler substitutes `$(Arg0)` and the like in task arguments. On Linux, a runtime, entry or
+configuration path that contains `$` or `%` is refused (`SystemdPathCharacterError`), because systemd
+expands variables and specifiers in `ExecStart`. A path that is not in the plain form
 Windows reports (`.` or `..` parts, doubled or forward slashes, a DEL character) is refused
 (`WindowsTaskPathError`), because Domovoi could not recognise that task later. Install refuses a
 same-named task Domovoi did not register (`WindowsTaskNotDomovoiError`) rather than replace it.
@@ -42,7 +44,8 @@ same-named task Domovoi did not register (`WindowsTaskNotDomovoiError`) rather t
 When the service manager refuses the new definition (`schtasks /create`, `launchctl bootstrap` or
 `systemctl daemon-reload`), or a service file cannot be written, install puts the previous
 `service.json` and service file back, or removes them when there were none, so the record still
-names what the manager runs. On macOS, when the install had booted out Domovoi's idle job and the
-new agent then fails to bootstrap, the previous agent is loaded again. On macOS,
+names what the manager runs. On macOS, when the install had sent a bootout for Domovoi's idle
+job and a later step fails, or the bootout reports failure after unloading the job, the previous
+agent is loaded again. On macOS,
 install boots out an idle job loaded from Domovoi's plist before bootstrapping the new one, and
 refuses before the handoff when the label is loaded from another plist (`LaunchdJobNotDomovoiError`).

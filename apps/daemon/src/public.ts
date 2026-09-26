@@ -25,6 +25,7 @@ export {
   LaunchdJobNotDomovoiError,
   readDaemonServiceStatus,
   removeDaemonService,
+  SystemdPathCharacterError,
   updateDaemonService,
   type DaemonServiceDependencies,
   type DaemonServiceInstallResult,

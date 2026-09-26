@@ -582,6 +582,17 @@ describe("the CLI and a same-named job with no Domovoi file", () => {
   })
 })
 
+// Security review round 5 on #574: the CLI refuses the same Linux paths.
+describe("the CLI and systemd expansion characters", () => {
+  it("refuses a daemon path containing $ before any file or manager call", async () => {
+    const dependencies = command({ ...linux, execPath: "/opt/do$main/domovoid.js", runtime: "/usr/bin/node" })
+    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+    expect(dependencies.stderr).toHaveBeenCalledWith(expect.stringContaining("/opt/do$main/domovoid.js contains $"))
+    expect(dependencies.write).not.toHaveBeenCalled()
+    expect(dependencies.run).not.toHaveBeenCalled()
+  })
+})
+
 describe("runServiceCommand", () => {
   it.each([
     { ...linux, cwd: "/srv/runner", credentialPath: "/srv/runner/relative/daemon.token" },

@@ -24,6 +24,7 @@ export { DaemonServiceUpdateError, type DaemonServiceUpdateOutcome } from "./upd
 export {
   DaemonServiceHandoffError,
   LaunchdJobNotDomovoiError,
+  SystemdPathCharacterError,
   WindowsTaskArgumentVariableError,
   WindowsTaskNotDomovoiError,
   WindowsTaskPathError,

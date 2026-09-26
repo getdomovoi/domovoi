@@ -14,6 +14,7 @@ assert.equal(typeof bootstrap.install, "function")
 // remains as a package-artifact compatibility surface, not a construction API.
 assert.deepEqual(Object.keys(publicApi).sort(), [
   "DaemonServiceHandoffError", "DaemonServiceRuntimeMissingError", "DaemonServiceUpdateError", "LaunchdJobNotDomovoiError",
+  "SystemdPathCharacterError",
   "WindowsTaskArgumentVariableError", "WindowsTaskNotDomovoiError", "WindowsTaskPathError", "WindowsTaskPercentSignError",
   "acquireLocalDaemon", "adoptRelayProfileSuccessor", "createProductionDaemon", "installDaemonService", "prepareRelayProfileSuccessor",
   "readDaemonServiceStatus", "removeDaemonService", "updateDaemonService", "verifyLocalFleetClientRoute", "verifyRelayProfileSuccessor",
