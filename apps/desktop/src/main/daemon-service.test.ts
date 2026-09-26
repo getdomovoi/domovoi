@@ -373,7 +373,9 @@ describe("staging the shipped runtime under the profile", () => {
       await symlink("../daemon/dist/index.js", join(resources, "daemon-runtime", "node", "daemon-entry"), "file")
       const runtime = await stage({ resources, home, version: "0.9.4" })
       expect(runtime).toEqual(daemonRuntimeLayoutUnder(join(home, ".domovoi", "runtime", "0.9.4")))
-      expect(await readlink(join(home, ".domovoi", "runtime", "0.9.4", "node", "daemon-entry"))).toBe("../daemon/dist/index.js")
+      // The link text is kept as the platform wrote it: Windows stores the
+      // relative target with its own separators.
+      expect(await readlink(join(home, ".domovoi", "runtime", "0.9.4", "node", "daemon-entry"))).toBe(join("..", "daemon", "dist", "index.js"))
     })
   })
 
