@@ -19,3 +19,23 @@ export {
   type LocalDaemonHandle,
   type LocalDaemonRefusalReason,
 } from "./local-daemon.js"
+export {
+  DaemonServiceHandoffError,
+  DaemonServiceRuntimeMissingError,
+  installDaemonService,
+  LaunchdJobNotDomovoiError,
+  readDaemonServiceStatus,
+  removeDaemonService,
+  SystemdPathCharacterError,
+  type DaemonServiceDependencies,
+  type DaemonServiceInstallResult,
+  type DaemonServiceOptions,
+  type DaemonServiceRemovalResult,
+  type DaemonServiceRuntime,
+  type DaemonServiceStatus,
+  type RuntimeFileState,
+  WindowsTaskArgumentVariableError,
+  WindowsTaskNotDomovoiError,
+  WindowsTaskPathError,
+  WindowsTaskPercentSignError,
+} from "./service/desktop-service.js"

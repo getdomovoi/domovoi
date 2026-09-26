@@ -18,6 +18,7 @@ const configurationSchema = z.object({
   version: z.literal(1),
   registrationId: z.uuid().optional(),
   wsl: wslInstallationSchema.optional(),
+  serviceRuntime: z.object({ executable: pathSchema, entry: pathSchema }).strict().optional(),
   homeDirectory: pathSchema,
   profileDirectory: pathSchema.optional(),
   host: z.string(),
@@ -35,10 +36,17 @@ const configurationSchema = z.object({
   allowRemoteTransport: z.boolean(),
 }).strict()
 
+// Ruled 2026-09-24 (A): the Node executable and daemon entry the service runs,
+// as Domovoi installed them, or as an update left them once the new runtime
+// reported ready. An update puts back only exactly these, never what a plist,
+// unit, task action or saved WSL runtime names on its own.
+export type ServiceRuntimeRecord = { executable: string; entry: string }
+
 export type ServiceConfiguration = Omit<DaemonEnvironmentConfig, "authToken"> & {
   version: 1
   registrationId?: string
   wsl?: WslInstallation
+  serviceRuntime?: ServiceRuntimeRecord
   homeDirectory: string
 }
 
@@ -121,11 +129,12 @@ function webAppUrlSetting(value: unknown): string | undefined {
 export function parseServiceConfiguration(text: string): ServiceConfiguration {
   try {
     if (Buffer.byteLength(text, "utf8") > maximumConfigurationBytes) throw new Error("oversized")
-    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, webAppUrl: savedWebAppUrl, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, ...required } = configurationSchema.parse(JSON.parse(text))
+    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, webAppUrl: savedWebAppUrl, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, serviceRuntime, ...required } = configurationSchema.parse(JSON.parse(text))
     const webAppUrl = webAppUrlSetting(savedWebAppUrl)
     const config: ServiceConfiguration = {
       ...required,
       ...(wsl !== undefined ? { wsl } : {}),
+      ...(serviceRuntime !== undefined ? { serviceRuntime } : {}),
       ...(profileDirectory !== undefined ? { profileDirectory } : {}),
       ...(relayIdentityPublicKey !== undefined ? { relayIdentityPublicKey } : {}),
       ...(relayCredentialFile !== undefined ? { relayCredentialFile } : {}),

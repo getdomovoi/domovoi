@@ -83,7 +83,9 @@ describe("service command exclusion", () => {
       // Completion releases the operation lease, rather than leaving a busy
       // marker whose age somebody later guesses from timestamps.
       await within(() => serviceStatus(target, contender))
-      expect(contender.capture).toHaveBeenCalledOnce()
+      // Security review round 2: with the unit file gone after a removal,
+      // status asks no manager about a unit of the same name.
+      expect(contender.capture).toHaveBeenCalledTimes(first === "remove" ? 0 : 1)
     } finally {
       resume.release()
       deadline.clear()

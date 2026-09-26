@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { localOwnerRecordPath, type ReadyLocalOwner } from "../local-owner-record.js"
-import { serviceConfigurationPath } from "./configuration.js"
+import { createServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { removeService, runServiceCommand, type ServiceEffects } from "./install.js"
 import { readServiceRemovalSnapshot, serviceRemovalRecovery, type ServiceRemovalSnapshot } from "./removal-recovery.js"
 import { removeScratchDirectories } from "../test-scratch.js"
@@ -36,11 +36,25 @@ function manager(platform: "linux" | "darwin" | "win32") {
     removalSnapshot: vi.fn().mockImplementationOnce(() => before).mockImplementation(() => after),
     writeRemovalReceipt: vi.fn(), write: vi.fn(async () => {}),
     run: vi.fn(async () => {}), exists: vi.fn(async () => true), remove: vi.fn(async () => {}),
-    capture: vi.fn(async (_command, args) => ({
-      code: 0,
-      stdout: Buffer.from(args.at(-1)!, "base64").toString("utf16le").includes("$folder.DeleteTask(")
-        ? "domovoi-task:deleted" : "domovoi-task:1",
-    })),
+    // Ruled 2026-09-25: Windows removal first checks that Domovoi registered
+    // the task, from service.json and the task's action.
+    ...(platform === "win32"
+      ? { readConfiguration: vi.fn((home: string) => ({
+        ...createServiceConfiguration({}, { platform: "win32", homeDirectory: home, workingDirectory: home }),
+        serviceRuntime: { executable: "C:\\Domovoi\\node.exe", entry: "C:\\Domovoi\\index.js" },
+      })) }
+      : {}),
+    capture: vi.fn(async (command, args) => {
+      // Round 2: launchd removal first asks which plist the loaded job came from.
+      if (command === "launchctl") return { code: 0, stdout: "\tpath = /home/operator/Library/LaunchAgents/sh.domovoi.domovoid.plist\n\tstate = running\n" }
+      const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+      if (script.includes("domovoi-task-action:")) {
+        const configurationPath = serviceConfigurationPath("C:\\Users\\operator", "win32")
+        const action = { path: "C:\\Domovoi\\node.exe", arguments: `"C:\\Domovoi\\index.js" --service-config "${configurationPath}"`, enabled: true, state: 4 }
+        return { code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}` }
+      }
+      return { code: 0, stdout: script.includes("$folder.DeleteTask(") ? "domovoi-task:deleted" : "domovoi-task:1" }
+    }),
   }
   const target = { platform, home: platform === "win32" ? "C:\\Users\\operator" : "/home/operator", uid: 501 }
   return { target, effects, before, after, owner, release }
