@@ -2,7 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { CheckpointFork } from "./workspace-shell"
+import { CheckpointFork, HistoryPanel } from "./workspace-shell"
 
 afterEach(cleanup)
 
@@ -43,7 +43,6 @@ it("offers nothing to click while forking is held shut", async () => {
 // you can resume from, and offering it there implies a capability the protocol
 // does not have.
 it("offers fork on a checkpoint row and not on a tool row", async () => {
-  const { HistoryPanel } = await import("./workspace-shell")
   const page = {
     sessionId: "session-billing",
     hasMore: false,
@@ -84,7 +83,6 @@ it("offers fork on a checkpoint row and not on a tool row", async () => {
 // Fork and restore are two decisions about the same row, not one control with
 // two buttons. A client that offers fork and not restore still offers fork.
 it("offers fork on a checkpoint row when the shell supplies no restore", async () => {
-  const { HistoryPanel } = await import("./workspace-shell")
   const page = {
     sessionId: "session-billing",
     hasMore: false,
@@ -113,7 +111,6 @@ it("offers fork on a checkpoint row when the shell supplies no restore", async (
 // A checkpoint with no commit names no state to branch from, so neither
 // decision is offered on it.
 it("offers neither decision on a checkpoint with no commit", async () => {
-  const { HistoryPanel } = await import("./workspace-shell")
   const page = {
     sessionId: "session-billing",
     hasMore: false,

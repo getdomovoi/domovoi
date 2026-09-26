@@ -15,6 +15,7 @@ import {
   rpcMethodAuthorizations,
   maximumJsonValueDepth,
   persistenceRecoveryRpcMethods,
+  maximumTerminalReplayCharacters,
   phoneAndTabletPromise,
   phoneAndTabletRpcMethods,
   projectSwitchConfirmationErrorCode,
@@ -22,6 +23,16 @@ import {
   rpcMethodMutations,
   protocolVersionMismatchErrorCode,
   rpcMethods,
+  terminalClosedRetentionMilliseconds,
+  terminalListParamsSchema,
+  terminalListResultSchema,
+  terminalUnwatchParamsSchema,
+  terminalWatchParamsSchema,
+  terminalWatchResultSchema,
+  maximumSessionSearchQueryLength,
+  maximumSessionSearchResults,
+  sessionSearchParamsSchema,
+  sessionSearchResultSchema,
   rpcNotificationSchema,
   rpcRequestSchema,
   rpcResponseSchema,
@@ -52,6 +63,14 @@ describe("audit RPC contracts", () => {
     } as const
 
     expect(auditActorSchema.parse(actor)).toEqual(actor)
+  })
+
+  it("records which credential a client actor connected with", () => {
+    for (const credential of ["daemon", "device"] as const) {
+      const actor = { kind: "client", client: "phone", clientId: "phone-1", credential } as const
+      expect(auditActorSchema.parse(actor)).toEqual(actor)
+    }
+    expect(auditActorSchema.safeParse({ kind: "client", client: "phone", credential: "stolen" }).success).toBe(false)
   })
 
   it("strictly describes project switch confirmation", () => {
@@ -532,6 +551,35 @@ describe("authenticated client identity", () => {
     expect(schema.parse({ ...demoWorkspace, clientAccess: "full" }).clientAccess).toBe("full")
     expect(schema.parse({ ...demoWorkspace, clientAccess: "watching" }).clientAccess).toBe("watching")
     expect(schema.safeParse({ ...demoWorkspace, clientAccess: "read-only" }).success).toBe(false)
+  })
+
+  it("names stored state the daemon moved aside at startup", () => {
+    const schema = rpcMethods["system.hello"].result
+    const stateRecovery = {
+      kind: "snapshot",
+      quarantinedPath: "/Users/person/.domovoi/state.sqlite.snapshot-corrupt-2026-09-22T12-00-00-000Z.json",
+      reason: "ZodError: protocolVersion is invalid",
+      occurredAt: "2026-09-22T12:00:00.000Z",
+      pairedDevicesKept: true,
+      workspaceKept: false,
+    }
+    expect(schema.parse(demoWorkspace).stateRecovery).toBeUndefined()
+    expect(schema.parse({ ...demoWorkspace, stateRecovery }).stateRecovery).toEqual(stateRecovery)
+    const { quarantinedPath: _path, reason: _reason, ...flag } = stateRecovery
+    expect(schema.parse({ ...demoWorkspace, stateRecovery: flag }).stateRecovery).toEqual(flag)
+    expect(schema.parse({ ...demoWorkspace, stateRecovery: { ...stateRecovery, kind: "database", pairedDevicesKept: false } })
+      .stateRecovery?.kind).toBe("database")
+    for (const invalid of [
+      { ...stateRecovery, kind: "project" },
+      { ...stateRecovery, quarantinedPath: "" },
+      { ...stateRecovery, occurredAt: "yesterday" },
+      { ...stateRecovery, pairedDevicesKept: "yes" },
+      { ...stateRecovery, workspaceKept: undefined },
+      { ...stateRecovery, reason: "x".repeat(4_097) },
+      { ...stateRecovery, extra: true },
+    ]) {
+      expect(schema.safeParse({ ...demoWorkspace, stateRecovery: invalid }).success).toBe(false)
+    }
   })
 
   it("carries the protocol version in the handshake", () => {
@@ -1353,6 +1401,55 @@ describe("RPC method authorization classification", () => {
       expect(rpcMethodMutations[method]).toBe("read-only")
       expect(rpcMethodAuthorizations[method]).toBe("control")
     }
+    for (const method of ["terminal.list", "terminal.watch", "terminal.unwatch"] as const) {
+      expect(rpcMethodMutations[method]).toBe("read-only")
+      expect(rpcMethodAuthorizations[method]).toBe("observe")
+    }
+  })
+})
+
+describe("read-only terminal methods", () => {
+  it("take a terminal or session id and nothing else", () => {
+    expect(terminalWatchParamsSchema.parse({ terminalId: "terminal-1" })).toEqual({ terminalId: "terminal-1" })
+    expect(terminalUnwatchParamsSchema.parse({ terminalId: "terminal-1" })).toEqual({ terminalId: "terminal-1" })
+    expect(terminalListParamsSchema.parse({ sessionId: "session-1" })).toEqual({ sessionId: "session-1" })
+    // A watcher names no client identity: it types nothing, so nothing it
+    // says about itself could authorize anything.
+    expect(terminalWatchParamsSchema.safeParse({ terminalId: "terminal-1", client: "phone", clientId: "p" }).success).toBe(false)
+    expect(terminalWatchParamsSchema.safeParse({ terminalId: "" }).success).toBe(false)
+    expect(terminalListParamsSchema.safeParse({}).success).toBe(false)
+  })
+
+  it("describe a terminal without its buffer in a list, and with it in a watch", () => {
+    const summary = {
+      terminalId: "terminal-1", sessionId: "session-1", cols: 120, rows: 34, shell: "zsh", cwd: "/worktrees/wt",
+      owner: { client: "desktop", clientId: "desktop-1", device: { id: `device-${"7f24".repeat(8)}`, label: "MacBook Pro" } },
+      claimHeld: true, openedAt: "2026-09-23T13:52:04.000Z", state: "live",
+    }
+    expect(terminalListResultSchema.parse({ terminals: [summary] })).toEqual({ terminals: [summary] })
+    // A root bearer names no device; a closed terminal names its end and holds no claim.
+    const rootOwned = { ...summary, owner: { client: "desktop", clientId: "desktop-1" } }
+    expect(terminalListResultSchema.parse({ terminals: [rootOwned] })).toEqual({ terminals: [rootOwned] })
+    const closed = { ...summary, state: "closed", claimHeld: false, closedAt: "2026-09-23T14:09:40.000Z", exitCode: 0 }
+    expect(terminalListResultSchema.parse({ terminals: [closed] })).toEqual({ terminals: [closed] })
+    expect(terminalListResultSchema.safeParse({ terminals: [{ ...closed, closedAt: undefined }] }).success).toBe(false)
+    expect(terminalListResultSchema.safeParse({ terminals: [{ ...closed, claimHeld: true }] }).success).toBe(false)
+    expect(terminalListResultSchema.safeParse({ terminals: [{ ...summary, exitCode: 0 }] }).success).toBe(false)
+    expect(terminalClosedRetentionMilliseconds).toBe(3_600_000)
+    expect(terminalListResultSchema.safeParse({ terminals: [{ ...summary, buffer: "x" }] }).success).toBe(false)
+    const watched = {
+      ...summary, buffer: "$ pnpm vitest run\r\n", bufferStartsAt: "2026-09-23T13:52:04.000Z",
+      earlierOutputDropped: false, watchedAt: "2026-09-23T14:07:18.000Z",
+    }
+    expect(terminalWatchResultSchema.parse(watched)).toEqual(watched)
+    const empty = { ...summary, buffer: "", earlierOutputDropped: false, watchedAt: "2026-09-23T14:07:18.000Z" }
+    expect(terminalWatchResultSchema.parse(empty)).toEqual(empty)
+    expect(terminalWatchResultSchema.safeParse({ ...watched, buffer: "x".repeat(maximumTerminalReplayCharacters + 1) }).success).toBe(false)
+    expect(terminalWatchResultSchema.safeParse({ ...watched, claimHeld: "yes" }).success).toBe(false)
+    expect(terminalWatchResultSchema.safeParse({ ...watched, state: "closed", claimHeld: false }).success).toBe(false)
+    expect(terminalWatchResultSchema.parse({ ...watched, state: "closed", claimHeld: false, closedAt: watched.watchedAt, signal: 15 }))
+      .toMatchObject({ state: "closed", signal: 15 })
+    expect(terminalWatchResultSchema.safeParse({ ...watched, watchedAt: "yesterday" }).success).toBe(false)
   })
 })
 
@@ -1384,20 +1481,55 @@ describe("phone and tablet credential scope", () => {
   it("names only registered methods and keeps file and machine reach out", () => {
     for (const method of phoneAndTabletRpcMethods) expect(Object.hasOwn(rpcMethods, method), method).toBe(true)
     for (const method of [
-      "terminal.create", "terminal.input", "terminal.claim", "session.revertFile", "checkpoint.restore",
+      "terminal.create", "terminal.input", "terminal.claim", "terminal.resize", "terminal.close",
+      "session.revertFile", "checkpoint.restore",
       "skill.read", "skill.install", "audit.export", "device.pair", "device.revoke",
       "device.rotate", "device.rename", "device.issueCode", "device.list", "fleet.enroll", "fleet.forget",
       "session.transfer", "provider.secret.list",
     ] as const) expect(phoneAndTabletRpcMethods.has(method), method).toBe(false)
   })
 
+  it("lets a phone read a terminal and never type into one", () => {
+    // Phone v2 frame 04: the phone reads the shell, and only the device
+    // holding the claim types into it. The read is three methods; the claim
+    // model is untouched.
+    for (const method of ["terminal.list", "terminal.watch", "terminal.unwatch"] as const) {
+      expect(phoneAndTabletRpcMethods.has(method), method).toBe(true)
+      expect(rpcMethodAuthorizations[method]).toBe("observe")
+    }
+  })
+
   it("carries the pairing card's list", () => {
-    // The card's list as step 10 draws it: the limit last, and the line the
-    // daemon does not keep yet marked rather than dropped.
-    expect(phoneAndTabletPromise).toHaveLength(5)
+    // The card's list as PairingCard draws it (2026-09-23): the three grants,
+    // the gates-while-open limit, the line the daemon does not keep yet marked
+    // rather than dropped, and the repository limit last.
+    expect(phoneAndTabletPromise).toHaveLength(6)
+    expect(phoneAndTabletPromise[3]).toEqual({ text: "Gates reach it only while its app is open. Nothing is pushed to a phone yet.", tone: "limit" })
     expect(phoneAndTabletPromise.at(-1)).toEqual({ text: "It cannot pull the repository down. Files stay here.", tone: "limit" })
+    // The short form, ruled 2026-09-23; the line goes when the phone reads terminals.
     expect(phoneAndTabletPromise.filter((line) => line.tone === "unbuilt")).toEqual([
-      { text: "Terminal output is not on a phone yet. Everything else here works.", tone: "unbuilt" },
+      { text: "Terminal output is not on a phone yet.", tone: "unbuilt" },
     ])
+  })
+})
+
+describe("session search", () => {
+  it("takes a bounded query and limit, and answers with matches and whether it cut them", () => {
+    expect(sessionSearchParamsSchema.parse({ query: " webhooks " })).toEqual({ query: "webhooks", limit: 20 })
+    expect(sessionSearchParamsSchema.parse({ query: "webhooks", limit: 5 })).toEqual({ query: "webhooks", limit: 5 })
+    expect(sessionSearchParamsSchema.safeParse({ query: "   " }).success).toBe(false)
+    expect(sessionSearchParamsSchema.safeParse({ query: "x".repeat(maximumSessionSearchQueryLength + 1) }).success).toBe(false)
+    expect(sessionSearchParamsSchema.safeParse({ query: "webhooks", limit: 0 }).success).toBe(false)
+    expect(sessionSearchParamsSchema.safeParse({ query: "webhooks", limit: maximumSessionSearchResults + 1 }).success).toBe(false)
+    expect(sessionSearchParamsSchema.safeParse({ query: "webhooks", sessionId: "session-1" }).success).toBe(false)
+    const session = demoWorkspace.sessions[0]!
+    const result = { query: "webhooks", matches: [{ session, matchedIn: "title" }], truncated: false }
+    expect(sessionSearchResultSchema.parse(result)).toEqual(result)
+    expect(sessionSearchResultSchema.safeParse({ ...result, matches: [{ session, matchedIn: "body" }] }).success).toBe(false)
+    expect(sessionSearchResultSchema.safeParse({ query: "webhooks", matches: [] }).success).toBe(false)
+    expect(rpcMethodAuthorizations["session.search"]).toBe("observe")
+    expect(rpcMethodMutations["session.search"]).toBe("read-only")
+    // The palette fans out from a desktop or web client; the phone list is unchanged.
+    expect(phoneAndTabletRpcMethods.has("session.search")).toBe(false)
   })
 })

@@ -14,9 +14,9 @@ import { GitWorkspaceService } from "./workspace.js"
 
 const execute = promisify(execFile)
 const directories: string[] = []
-// The ancestry snapshot spawns PowerShell on Windows and reads the whole
-// process table; it gets its own budget rather than the fixture's, per the
-// rule in test-wait-for.ts that a wait names its class.
+// The ancestry snapshot spawns PowerShell on Windows to walk the holder's
+// parents; it gets its own budget rather than the fixture's, per the rule in
+// test-wait-for.ts that a wait names its class.
 const processSnapshotTimeoutMs = process.platform === "win32" ? 45_000 : 10_000
 const budgets = recoveryFixtureBudgets(fixtureStartupTimeoutMs(process.platform), processSnapshotTimeoutMs)
 afterEach(async () => { await removeScratchDirectories(directories) })
@@ -179,11 +179,20 @@ async function processAncestry(pid: number, deadline: OperationDeadline): Promis
   }
   let records: unknown
   if (process.platform === "win32") {
-    const { stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-      // -Property asks CIM for the two columns instead of every property of
-      // every process, which is most of what the enumeration costs.
-      '$ErrorActionPreference = "Stop"; $rows = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId | Select-Object ProcessId, ParentProcessId); ConvertTo-Json -InputObject $rows -Compress',
-    ], options)
+    // Walk the parents with Get-Process rather than enumerating Win32_Process
+    // through WMI. The first WMI query on a runner starts its provider host:
+    // measured at 3.4 to 8.8 s when idle and past 45 s under the suite's load,
+    // while this walk stayed under 0.7 s on its first call. PowerShell 7 is
+    // required for Process.Parent; without it the CIM query is the fallback.
+    const walk = `$ErrorActionPreference = "Stop"; $rows = @(); $id = ${pid}; while ($id -gt 0 -and $rows.Count -lt 64) { $process = Get-Process -Id $id -ErrorAction SilentlyContinue; if (-not $process) { break }; $parent = if ($process.Parent) { $process.Parent.Id } else { 0 }; $rows += [pscustomobject]@{ ProcessId = $id; ParentProcessId = $parent }; if ($parent -eq 0 -or ($rows.ProcessId -contains $parent)) { break }; $id = $parent }; ConvertTo-Json -InputObject $rows -Compress`
+    const enumerate = '$ErrorActionPreference = "Stop"; $rows = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId | Select-Object ProcessId, ParentProcessId); ConvertTo-Json -InputObject $rows -Compress'
+    let stdout: string
+    try {
+      stdout = (await execute("pwsh.exe", ["-NoProfile", "-NonInteractive", "-Command", walk], options)).stdout
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      stdout = (await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", enumerate], options)).stdout
+    }
     records = JSON.parse(stdout)
   } else {
     const { stdout } = await execute("ps", ["-e", "-o", "pid=", "-o", "ppid="], options)

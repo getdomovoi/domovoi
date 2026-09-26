@@ -105,6 +105,16 @@ describe("ApprovalScreen", () => {
     expect(screen.getByText(/stops asking for this command in this project/)).toBeOnTheScreen()
   })
 
+  // Ruled by fetzy 2026-09-24: the daemon refuses a standing rule for a request
+  // it could not resolve, so the button is absent there too.
+  it("does not offer a standing rule for a request the daemon could not resolve", async () => {
+    await draw({ approval: { ...approval(), risk: "normal", execution: { state: "unresolved", reason: "cwd-outside-project" } } })
+
+    expect(screen.queryByRole("button", { name: "Always allow this" })).toBeNull()
+    expect(screen.queryByText(/stops asking for this command in this project/)).toBeNull()
+    expect(buttons()).toEqual(["Back", "Allow once", "Deny"])
+  })
+
   it("does not offer a standing rule on a hard gate, because the daemon refuses one", async () => {
     await draw({ approval: { ...approval(), risk: "hard-gate" } })
 

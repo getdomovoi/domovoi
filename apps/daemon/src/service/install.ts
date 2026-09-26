@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, posix, win32 } from "node:path"
 import { userInfo } from "node:os"
+import { loginServiceAgentLabel, loginServiceHomePaths, loginServiceTaskName, loginServiceUnitFile } from "@getdomovoi/protocol"
 import { installedWslTask } from "./wsl-registration.js"
 import { runWslServiceCommand } from "./wsl-install.js"
 import { stopGuestSupervisor } from "./supervisor-command.js"
@@ -24,10 +25,9 @@ import { readGuestSupervisorStatus } from "./supervisor-command.js"
 import { profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
 
 const serviceName = "domovoid"
-const unitFile = `${serviceName}.service`
-const agentFile = "sh.domovoi.domovoid.plist"
-const agentLabel = "sh.domovoi.domovoid"
-const displayName = "Domovoi daemon"
+const unitFile = loginServiceUnitFile
+const agentLabel = loginServiceAgentLabel
+const displayName = loginServiceTaskName
 
 export type ServiceCommand = { command: string; args: string[] }
 
@@ -170,11 +170,11 @@ function assertUid(uid: number | undefined): number {
 }
 
 function unitPath(home: string | undefined): string {
-  return posix.join(assertHome(home), ".config", "systemd", "user", unitFile)
+  return posix.join(assertHome(home), loginServiceHomePaths.linux)
 }
 
 function agentPath(home: string | undefined): string {
-  return posix.join(assertHome(home), "Library", "LaunchAgents", agentFile)
+  return posix.join(assertHome(home), loginServiceHomePaths.darwin)
 }
 
 // A service is installed for the user who asked for it: a systemd user unit, a
@@ -526,9 +526,23 @@ async function loadPreviousAgent(target: ServiceTarget, plan: ServicePlan, previ
   } catch (restoreCause) {
     throw restoreFailure(cause, restoreCause)
   }
-  if (printed.code === 0) return
-  if (printed.code !== 113 || !isMissingServiceFailure("darwin", printed)) throw restoreFailure(cause, captureFailure("launchctl", printed))
   const path = plan.kind === "file" ? plan.path : undefined
+  if (printed.code === 0) {
+    // Security review round 6: a job listed under the label is the previous
+    // agent only when it came from Domovoi's plist. A job from another plist
+    // took the label, so the previous agent could not be loaded again. The
+    // approved foreign-job line's last sentence, "Nothing was stopped or
+    // changed.", is not true here, so only its first sentence is used.
+    let loadedFrom: string
+    try {
+      loadedFrom = launchdJobPath(printed.stdout)
+    } catch (restoreCause) {
+      throw restoreFailure(cause, restoreCause)
+    }
+    if (loadedFrom === path) return
+    throw restoreFailure(cause, new Error(`A job named sh.domovoi.domovoid is loaded from ${loadedFrom}, which is not Domovoi's launch agent`))
+  }
+  if (printed.code !== 113 || !isMissingServiceFailure("darwin", printed)) throw restoreFailure(cause, captureFailure("launchctl", printed))
   if (path === undefined || previous.find((file) => file.path === path)?.contents === undefined) {
     throw restoreFailure(cause, new Error("the previous launch agent file was not there to load again"))
   }

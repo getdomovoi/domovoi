@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { posix, win32 } from "node:path"
 import { isDeepStrictEqual } from "node:util"
+import { loginServiceHomePaths } from "@getdomovoi/protocol"
 
 import type { OperationDeadline } from "../operation-deadline.js"
 import { profileLocation } from "../profile-directory.js"
@@ -354,7 +355,7 @@ export async function runWslServiceCommand(verb: string, dependencies: ServiceCo
   }
   if (verb === "install") {
     if (saved) throw new Error("Remove the existing service registration before installing the WSL service")
-    if (await withinServiceDeadline(deadline, () => dependencies.exists(posix.join(home, ".config/systemd/user/domovoid.service"), deadline))) {
+    if (await withinServiceDeadline(deadline, () => dependencies.exists(posix.join(home, loginServiceHomePaths.linux), deadline))) {
       throw new Error("Remove the existing systemd registration before installing the WSL service")
     }
     const wsl = await discover(dependencies, deadline)

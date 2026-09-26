@@ -5,7 +5,7 @@ import { homedir, hostname, userInfo } from "node:os"
 import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { runPairCommand } from "./pair-command.js"
-import { isLoopbackHost, pairingAddressFor } from "./pairing-address.js"
+import { NewerWorkspaceStateError } from "./store.js"
 import { renderQrToTerminal } from "./qr-terminal.js"
 import { runProfileCommand } from "./profile-command.js"
 import { configuredProfileDirectory, profileLocation } from "./profile-directory.js"
@@ -13,9 +13,9 @@ import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
 import { exitAfterStderr } from "./flushed-exit.js"
 import { MachineCredentialWorker } from "./machine-credential-worker.js"
 import { OperationDeadline } from "./operation-deadline.js"
-import { callDaemon, type CliRpcTarget } from "./cli-rpc.js"
+import { callDaemon, readDaemonResult, type CliRpcTarget } from "./cli-rpc.js"
 import { runOpenCommand } from "./open-command.js"
-import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
+import { publishEndpointFile, publishesEndpointFor, removeEndpointFile } from "./endpoint-file.js"
 import { installShutdownHandlers } from "./shutdown.js"
 import type { OpenTarget } from "./wsl-open-target.js"
 import { connectionForTarget } from "./open-connection.js"
@@ -24,7 +24,7 @@ import { listWslDistributions } from "./wsl-list.js"
 import { distributionPath } from "./wsl-path.js"
 import { discoverWslMachines } from "./wsl-discovery.js"
 import { runWslCommand } from "./wsl-command.js"
-import { type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
+import { rpcMethods, type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
@@ -38,14 +38,10 @@ async function requestPairingCode(
   token: string,
   targetClient?: ClientKind,
 ): Promise<DeviceIssueCodeResult> {
-  return await callDaemon({
+  return readDaemonResult("device.issueCode", rpcMethods["device.issueCode"].result, await callDaemon({
     target: config, token, method: "device.issueCode",
     params: targetClient === undefined ? {} : { targetClient },
-  }) as DeviceIssueCodeResult
-}
-
-function isLoopbackListener(host: string): boolean {
-  return isLoopbackHost(host)
+  }))
 }
 
 async function requestProjectOpen(
@@ -114,12 +110,17 @@ Environment:
   DOMOVOI_CREDENTIAL_PATH         Credential file (default: <profile>/daemon.token)
   DOMOVOI_MACHINE_IDENTITY_PATH   Machine identity file (default: <profile>/machine.json)
   DOMOVOI_ALLOWED_ORIGINS         Comma-separated trusted browser origins
+  DOMOVOI_WEB_APP_URL             Web app a pairing code can be opened in (absolute http or https URL)
   DOMOVOI_ALLOW_REMOTE_TRANSPORT  Set to 1 to permit non-loopback listeners
   DOMOVOI_TLS_CERT_PATH           TLS certificate chain, required off loopback
   DOMOVOI_TLS_KEY_PATH            TLS private key, required off loopback
   DOMOVOI_ADVERTISE_HOST          Name an encrypted listener is reachable by
   DOMOVOI_TAILNET_HOST            Explicit tailnet host for a non-loopback TLS listener
   DOMOVOI_SSH_TUNNELS             JSON list of source-local {machineId, endpoint} forwards
+  DOMOVOI_TOOL_PATH               Directories searched first for agent CLIs
+  DOMOVOI_RELAY_IDENTITY_PUBLIC_KEY  Off-machine signer's relay public key
+  DOMOVOI_RELAY_CREDENTIAL_FILE   Absolute relay credential file instead of the keychain
+  DOMOVOI_WINDOWS_POWERSHELL      Guest path to powershell.exe for WSL service install
 `
 
 async function main() {
@@ -234,7 +235,6 @@ async function main() {
     const token = config.authToken ?? await loadOrCreateDaemonToken(config.credentialPath)
     process.exitCode = await runPairCommand(args, {
       issue: (targetClient) => requestPairingCode(config, token, targetClient),
-      pairingAddress: () => pairingAddressFor(config, (path) => readFileSync(path, "utf8")),
       renderCode: (payload) => renderQrToTerminal(payload),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
@@ -274,12 +274,22 @@ async function main() {
     return
   }
 
-  const daemon = await createProductionDaemon({
-    environment: serviceConfig ? serviceEnvironment(serviceConfig) : process.env,
-    homeDirectory: serviceConfig?.homeDirectory ?? homedir(),
-    ...(serviceConfig?.registrationId ? { serviceRegistrationId: serviceConfig.registrationId } : {}),
-    machineLabel: hostname(),
-  })
+  let daemon: Awaited<ReturnType<typeof createProductionDaemon>>
+  try {
+    daemon = await createProductionDaemon({
+      environment: serviceConfig ? serviceEnvironment(serviceConfig) : process.env,
+      homeDirectory: serviceConfig?.homeDirectory ?? homedir(),
+      ...(serviceConfig?.registrationId ? { serviceRegistrationId: serviceConfig.registrationId } : {}),
+      machineLabel: hostname(),
+    })
+  } catch (error) {
+    // State a newer daemon wrote says what wrote it and what to do; that is
+    // the whole message, not a stack.
+    if (!(error instanceof NewerWorkspaceStateError)) throw error
+    process.stderr.write(`${error.message}\n`)
+    process.exitCode = 1
+    return
+  }
 
   const address = await daemon.start()
   process.stdout.write(`domovoid listening on ${address.url}\n`)
@@ -290,7 +300,7 @@ async function main() {
   // A daemon inside a WSL distribution is found by its endpoint file, which is
   // why it is published only once the listener is actually up, and taken away
   // when it stops.
-  const published = isLoopbackListener(address.host)
+  const published = publishesEndpointFor(address.host)
     ? { host: address.host, port: address.port, token: daemon.authToken }
     : undefined
   const daemonHome = profileLocation(serviceConfig?.homeDirectory ?? homedir(),

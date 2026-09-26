@@ -7,8 +7,10 @@ import { DatabaseSync } from "node:sqlite"
 import { createEmptyWorkspace, demoWorkspace, machineIdSchema, protocolVersion, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { resolveCommandExecution } from "./execution-resolution.js"
 import {
   isCorruption,
+  storedProtocolVersion,
   projectWorkspaceState,
   resolveWorkspaceRedactionModule,
   SqliteWorkspaceStore,
@@ -461,6 +463,219 @@ describe("SqliteWorkspaceStore", () => {
     const raw = repaired.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
     repaired.close()
     expect(JSON.stringify(raw)).not.toMatch(/legacy-command-secret|legacy-output-secret/)
+  })
+
+  // Approvals saved before the directory was classified keep a raw
+  // credential-store directory. It is hidden whole on load, keeps its
+  // location, makes the approval a hard gate, and the stored copy is repaired.
+  it("hides a credential-store directory in a saved approval and repairs the stored copy", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-legacy-directory-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    const approval = legacy.approvals[0]!
+    const session = legacy.sessions.find((candidate) => candidate.id === approval.sessionId)!
+    session.workspacePath = "/worktrees/legacy-directory"
+    approval.risk = "normal"
+    approval.directory = "/home/u/.aws"
+    legacy.approvals.push({ ...structuredClone(approval), id: "approval-legacy-inside", directory: "/worktrees/legacy-directory/.ssh" })
+    legacy.approvals.push({ ...structuredClone(approval), id: "approval-legacy-ordinary", directory: "/worktrees/legacy-directory/src" })
+    const injected = new DatabaseSync(databasePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const visible = reopened.load()
+    expect(visible.approvals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: approval.id, directory: "[REDACTED], outside the session worktree", risk: "hard-gate" }),
+      expect.objectContaining({ id: "approval-legacy-inside", directory: "[REDACTED] in the session worktree", risk: "hard-gate" }),
+      expect.objectContaining({ id: "approval-legacy-ordinary", directory: "/worktrees/legacy-directory/src", risk: "normal" }),
+    ]))
+    const readStored = () => {
+      const database = new DatabaseSync(databasePath)
+      const raw = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
+      database.close()
+      return JSON.stringify(raw)
+    }
+    expect(readStored()).not.toMatch(/\/home\/u\/\.aws|legacy-directory\/\.ssh/)
+
+    // A later save of a snapshot that still carries the raw directory writes
+    // the hidden form.
+    reopened.save(legacy)
+    expect(readStored()).not.toMatch(/\/home\/u\/\.aws|legacy-directory\/\.ssh/)
+    expect(readStored()).toContain("[REDACTED], outside the session worktree")
+    reopened.close()
+  })
+
+  // Every other saved approval field that can hold a path: the directory in
+  // the execution record, the manifest a script came from, and a file line
+  // written before its path was classified. Each is hidden and hard-gates the
+  // approval; a standing rule that holds one is dropped.
+  it("hides credential paths in a saved approval's execution record and file line", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-legacy-paths-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    const approval = legacy.approvals[0]!
+    approval.risk = "normal"
+    approval.directory = "/worktrees/legacy-paths/src"
+    approval.affects = "The file src/app.ts in the session worktree."
+    const inStore = resolveCommandExecution({ command: "ls", cwd: ".aws" })
+    const fromManifest = resolveCommandExecution({
+      command: "pnpm test",
+      packageScripts: { test: "vitest run" },
+      manifest: ".ssh/package.json",
+    })
+    const ordinary = resolveCommandExecution({ command: "ls", cwd: "src" })
+    legacy.approvals = [
+      { ...structuredClone(approval), id: "approval-record-cwd", execution: inStore },
+      { ...structuredClone(approval), id: "approval-record-manifest", execution: fromManifest },
+      {
+        ...structuredClone(approval),
+        id: "approval-legacy-affects",
+        affects: "The file /home/u/.conﬁg/gh/config.yml, outside the session worktree.",
+      },
+      { ...structuredClone(approval), id: "approval-ordinary", execution: ordinary },
+    ]
+    legacy.approvalRules = [{
+      id: "rule-record-cwd", projectId: legacy.project!.id,
+      operation: "List files", command: "ls", status: "active",
+      execution: inStore as Extract<typeof inStore, { state: "resolved" }>,
+      createdBy: "desktop", createdAt: "2026-09-01T00:00:00.000Z", useCount: 0,
+    }]
+    const injected = new DatabaseSync(databasePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const visible = reopened.load()
+    const hidden = { state: "unresolved", reason: "sensitive-content" }
+    expect(visible.approvals).toEqual([
+      expect.objectContaining({ id: "approval-record-cwd", risk: "hard-gate", execution: hidden }),
+      expect.objectContaining({ id: "approval-record-manifest", risk: "hard-gate", execution: hidden }),
+      expect.objectContaining({
+        id: "approval-legacy-affects",
+        risk: "hard-gate",
+        affects: "The file [REDACTED], outside the session worktree.",
+      }),
+      expect.objectContaining({ id: "approval-ordinary", risk: "normal", execution: ordinary }),
+    ])
+    expect(visible.approvalRules).toEqual([])
+    const database = new DatabaseSync(databasePath)
+    const stored = JSON.stringify(database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get())
+    database.close()
+    expect(stored).not.toMatch(/\.aws|\.ssh|\.conﬁg/u)
+    reopened.close()
+  })
+
+  // A saved approval whose command or operation line names a path the card
+  // hides keeps the rest of its text, with only that path replaced, on load
+  // and on every save.
+  it("hides a hidden path in a saved approval's command and operation lines", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-legacy-text-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    const approval = legacy.approvals[0]!
+    const session = legacy.sessions.find((candidate) => candidate.id === approval.sessionId)!
+    session.workspacePath = "/worktrees/legacy-text"
+    approval.risk = "normal"
+    legacy.approvals = [
+      { ...structuredClone(approval), id: "approval-command-path", command: "cat ~/.aws/credentials", operation: "Read ~/.aws/credentials" },
+      {
+        ...structuredClone(approval),
+        id: "approval-directory-path",
+        directory: "/home/u/.ssh",
+        command: "ls /home/u/.ssh",
+        operation: "List /home/u/.ssh",
+      },
+      { ...structuredClone(approval), id: "approval-ordinary-text", command: "cat notes.txt", operation: "Read notes.txt" },
+    ]
+    const injected = new DatabaseSync(databasePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    expect(reopened.load().approvals).toEqual([
+      expect.objectContaining({ id: "approval-command-path", risk: "hard-gate", command: "cat [REDACTED]", operation: "Read [REDACTED]" }),
+      expect.objectContaining({ id: "approval-directory-path", risk: "hard-gate", command: "ls [REDACTED]", operation: "List [REDACTED]" }),
+      expect.objectContaining({ id: "approval-ordinary-text", risk: "normal", command: "cat notes.txt", operation: "Read notes.txt" }),
+    ])
+    const readStored = () => {
+      const database = new DatabaseSync(databasePath)
+      const raw = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
+      database.close()
+      return JSON.stringify(raw)
+    }
+    expect(readStored()).not.toMatch(/\.aws|\.ssh/u)
+    reopened.save(legacy)
+    expect(readStored()).not.toMatch(/\.aws|\.ssh/u)
+    reopened.close()
+  })
+
+  // Owner ruling 2026-09-25 (round 14): a secret file that only a saved
+  // card's operation, or its receipt, names is replaced in that copy too, and
+  // the card becomes a hard gate. An ordinary second path stays.
+  it("hides a secret file that only a saved approval's operation or its receipt names", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-operation-path-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    const approval = legacy.approvals[0]!
+    const session = legacy.sessions.find((candidate) => candidate.id === approval.sessionId)!
+    session.workspacePath = "/worktrees/operation-path"
+    approval.risk = "normal"
+    legacy.approvals = [
+      { ...structuredClone(approval), id: "approval-operation-secret", command: "cat notes.txt", operation: "Read notes.txt and src/private.pem" },
+      { ...structuredClone(approval), id: "approval-operation-ordinary", command: "cat notes.txt", operation: "Read notes.txt and src/index.ts" },
+    ]
+    legacy.thread = [
+      ...legacy.thread,
+      {
+        id: "receipt-operation-secret",
+        sessionId: approval.sessionId,
+        kind: "receipt",
+        decision: "deny",
+        operation: "Edit src/.env,prod with the key in src/private.pem",
+        checkpoint: "unavailable",
+        client: "cli",
+        createdAt: "2026-09-25T00:00:00.000Z",
+      },
+    ]
+    const injected = new DatabaseSync(databasePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const loaded = reopened.load()
+    expect(loaded.approvals).toEqual([
+      expect.objectContaining({ id: "approval-operation-secret", risk: "hard-gate", command: "cat notes.txt", operation: "Read notes.txt and [REDACTED]" }),
+      expect.objectContaining({ id: "approval-operation-ordinary", risk: "normal", command: "cat notes.txt", operation: "Read notes.txt and src/index.ts" }),
+    ])
+    expect(loaded.thread.find((item) => item.id === "receipt-operation-secret"))
+      .toMatchObject({ operation: "Edit [REDACTED] with the key in [REDACTED]" })
+    const readStored = () => {
+      const database = new DatabaseSync(databasePath)
+      const raw = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
+      database.close()
+      return JSON.stringify(raw)
+    }
+    expect(readStored()).not.toMatch(/private\.pem|\.env,prod/u)
+    reopened.save(legacy)
+    expect(readStored()).not.toMatch(/private\.pem|\.env,prod/u)
+    reopened.close()
   })
 
   it("keeps audit receipts across workspace-store reopen", async () => {
@@ -958,12 +1173,14 @@ describe("SqliteWorkspaceStore", () => {
     async function seedThenDamage(
       name: string,
       damage: (databasePath: string) => Promise<string>,
+      prepare?: (seed: SqliteWorkspaceStore) => void,
     ): Promise<{ scratch: string; databasePath: string; damaged: string }> {
       const scratch = await mkdtemp(join(tmpdir(), `domovoi-store-${name}-`))
       scratchDirectories.push(scratch)
       const databasePath = join(scratch, "state.sqlite")
       const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
       seed.auditLog.append(auditEntry)
+      prepare?.(seed)
       seed.close()
       const damaged = await damage(databasePath)
       return { scratch, databasePath, damaged }
@@ -983,6 +1200,15 @@ describe("SqliteWorkspaceStore", () => {
         sessionId: initial.activeSessionId,
         kind: "system",
         detail: expect.stringContaining(quarantinedPath),
+      })
+    }
+
+    function quarantineReceipt(quarantinedPath: string) {
+      return expect.objectContaining({
+        action: "state.quarantine",
+        outcome: "succeeded",
+        actor: { kind: "daemon", component: "state-store" },
+        target: quarantinedPath,
       })
     }
 
@@ -1054,11 +1280,15 @@ describe("SqliteWorkspaceStore", () => {
         kind: "snapshot",
         quarantinedPath: expect.stringMatching(/state\.sqlite\.snapshot-corrupt-[0-9TZ-]+\.json$/),
         reason: expect.stringContaining("JSON"),
+        occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+        pairedDevicesKept: true,
+        workspaceKept: false,
       })
       expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(damaged)
       expect(await readdir(scratch)).toContain(join(recovery!.quarantinedPath).slice(scratch.length + 1))
       expect(store.load()).toEqual(recovered(recovery!.quarantinedPath))
       expect(store.auditLog.query({ limit: 10 }).entries).toEqual([
+        quarantineReceipt(recovery!.quarantinedPath),
         expect.objectContaining({ id: "audit-before-corruption" }),
       ])
       store.close()
@@ -1078,11 +1308,15 @@ describe("SqliteWorkspaceStore", () => {
         kind: "snapshot",
         quarantinedPath: expect.stringMatching(/state\.sqlite\.snapshot-corrupt-[0-9TZ-]+\.json$/),
         reason: expect.stringContaining("ZodError"),
+        occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+        pairedDevicesKept: true,
+        workspaceKept: false,
       })
       expect(damaged).toBe(incompatible)
       expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(incompatible)
       expect(store.load()).toEqual(recovered(recovery!.quarantinedPath))
       expect(store.auditLog.query({ limit: 10 }).entries).toEqual([
+        quarantineReceipt(recovery!.quarantinedPath),
         expect.objectContaining({ id: "audit-before-corruption" }),
       ])
       store.close()
@@ -1104,29 +1338,319 @@ describe("SqliteWorkspaceStore", () => {
         kind: "database",
         quarantinedPath: expect.stringMatching(/state\.sqlite\.corrupt-[0-9TZ-]+$/),
         reason: expect.stringContaining("not a database"),
+        occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+        pairedDevicesKept: false,
+        workspaceKept: false,
       })
       expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(garbage)
       const freshSidecar = await readFile(`${databasePath}-wal`, "utf8").catch(() => "")
       expect(freshSidecar).not.toBe("stale wal")
       expect((await stat(databasePath)).size).toBeGreaterThan(0)
       expect(store.load()).toEqual(recovered(recovery!.quarantinedPath))
-      expect(store.auditLog.query({ limit: 10 }).entries).toEqual([])
+      expect(store.auditLog.query({ limit: 10 }).entries).toEqual([quarantineReceipt(recovery!.quarantinedPath)])
       store.close()
 
       await expectPersistedRecovery(scratch, databasePath, recovery!.quarantinedPath)
     })
 
-    it("starts an unopened workspace from the initial snapshot and reports the recovery", async () => {
+    it("records the recovery of the daemon's empty initial workspace and keeps paired devices", async () => {
+      // The daemon always opens with an empty initial workspace, which has no
+      // session thread to carry a notice. The recovery must still be recorded
+      // where the person can find it, and phones paired in the kept database
+      // must still be accepted.
       const empty = createEmptyWorkspace(demoWorkspace.machine)
-      const { databasePath, damaged } = await seedThenDamage("unopened", async (path) =>
-        replaceSnapshotRow(path, "{}"),
+      let paired: ReturnType<SqliteWorkspaceStore["devices"]["pair"]> | undefined
+      const { databasePath, damaged } = await seedThenDamage(
+        "unopened",
+        async (path) => replaceSnapshotRow(path, "{}"),
+        (seed) => {
+          paired = seed.devices.pair({ label: "studio-phone", binding: { kind: "client", client: "phone" } })
+        },
       )
 
       const store = new SqliteWorkspaceStore(databasePath, empty, { legacySnapshots: [demoWorkspace] })
-      expect(store.recovery).toMatchObject({ kind: "snapshot" })
-      expect(await readFile(store.recovery!.quarantinedPath, "utf8")).toBe(damaged)
+      const recovery = store.recovery
+      expect(recovery).toEqual({
+        kind: "snapshot",
+        quarantinedPath: expect.stringMatching(/state\.sqlite\.snapshot-corrupt-[0-9TZ-]+\.json$/),
+        reason: expect.stringContaining("ZodError"),
+        occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+        pairedDevicesKept: true,
+        workspaceKept: false,
+      })
+      expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(damaged)
       expect(store.load()).toEqual(empty)
+      expect(store.devices.verify(paired!.token)?.device).toEqual(paired!.device)
+      const receipt = expect.objectContaining({
+        action: "state.quarantine",
+        outcome: "succeeded",
+        actor: { kind: "daemon", component: "state-store" },
+        target: recovery!.quarantinedPath,
+      })
+      expect(store.auditLog.query({ action: "state.quarantine" }).entries).toEqual([receipt])
       store.close()
+
+      const reopened = new SqliteWorkspaceStore(databasePath, empty, { legacySnapshots: [demoWorkspace] })
+      try {
+        expect(reopened.recovery).toBeUndefined()
+        expect(reopened.auditLog.query({ action: "state.quarantine" }).entries).toEqual([receipt])
+        expect(reopened.devices.verify(paired!.token)?.device).toEqual(paired!.device)
+      } finally { reopened.close() }
+    })
+
+    it("refuses state written by a newer protocol and leaves it where it is", async () => {
+      const [major, minor] = protocolVersion.split(".").map(Number)
+      const newer = `${major}.${minor! + 1}.0`
+      const written = JSON.stringify({ ...demoWorkspace, protocolVersion: newer })
+      const { scratch, databasePath } = await seedThenDamage("newer-protocol", async (path) => {
+        // A newer build may have retired a table this build would create.
+        const database = new DatabaseSync(path)
+        database.exec("DROP TABLE queued_session_sends")
+        database.close()
+        return replaceSnapshotRow(path, written)
+      })
+      const entriesBefore = (await readdir(scratch)).sort()
+      const bytesBefore = await readFile(databasePath)
+
+      expect(() => new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine)))
+        .toThrow(`was written by a newer daemon (protocol ${newer}), and this daemon speaks protocol ${protocolVersion}`)
+      expect((await readdir(scratch)).sort()).toEqual(entriesBefore)
+      expect((await readFile(databasePath)).equals(bytesBefore)).toBe(true)
+      const database = new DatabaseSync(databasePath)
+      try {
+        const row = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as { snapshot: string }
+        expect(row.snapshot).toBe(written)
+      } finally { database.close() }
+    })
+
+    function corruptOverflowPage(bytes: Buffer, marker: string): Buffer {
+      const offset = bytes.indexOf(marker)
+      expect(offset).toBeGreaterThan(0)
+      // The marker sits on an overflow page; pointing that page past the end
+      // of the file makes its record unreadable and leaves other tables.
+      bytes.writeUInt32BE(0x7fff_ffff, Math.floor(offset / 4_096) * 4_096)
+      return bytes
+    }
+
+    function insertLargeAuditRow(path: string, marker: string): void {
+      const database = new DatabaseSync(path)
+      database.prepare(`
+        INSERT INTO audit_log (id, occurred_at, actor_kind, action, outcome, detail)
+        VALUES ('audit-large', '2026-08-29T12:00:00.000Z', 'daemon', 'test.large', 'succeeded', ?)
+      `).run(`${"a".repeat(6_000)}${marker}${"b".repeat(20_000)}`)
+      database.close()
+    }
+
+    it("keeps a readable workspace when another project's saved state is damaged too", async () => {
+      const marker = "unreadable-project-page"
+      const { databasePath } = await seedThenDamage("project-page", async (path) => {
+        const database = new DatabaseSync(path)
+        database.prepare("INSERT INTO workspace_projects (project_id, state, updated_at) VALUES (?, ?, ?)")
+          .run("project-other", `${"a".repeat(6_000)}${marker}${"b".repeat(20_000)}`, "2026-08-29T12:00:00.000Z")
+        database.close()
+        await writeFile(path, corruptOverflowPage(await readFile(path), marker))
+        return ""
+      })
+
+      const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine))
+      try {
+        expect(store.recovery).toMatchObject({ kind: "database", workspaceKept: true })
+        expect(store.load()).toEqual(demoWorkspace)
+        expect(store.loadProject("project-other")).toBeUndefined()
+      } finally { store.close() }
+    })
+
+    it("skips the whole-file check above its size bound", async () => {
+      const marker = "unreadable-audit-page"
+      const { databasePath } = await seedThenDamage("large-file", async (path) => {
+        insertLargeAuditRow(path, marker)
+        await writeFile(path, corruptOverflowPage(await readFile(path), marker))
+        return ""
+      })
+
+      const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine), {
+        integrityCheckMaximumBytes: 1,
+      })
+      try {
+        expect(store.recovery).toBeUndefined()
+        expect(store.load()).toEqual(demoWorkspace)
+      } finally { store.close() }
+    })
+
+    it.skipIf(process.platform === "win32")("refuses to start when the stored version cannot be read for an operational reason", async () => {
+      const { databasePath } = await seedThenDamage("unreadable-version", async () => "")
+      await chmod(databasePath, 0o000)
+      try {
+        expect(() => storedProtocolVersion(databasePath)).toThrow()
+      } finally { await chmod(databasePath, 0o600) }
+      expect(storedProtocolVersion(databasePath)).toBe(demoWorkspace.protocolVersion)
+    })
+
+    it("reads the version of a newer build that is still only in the write-ahead log", async () => {
+      const [major, minor] = protocolVersion.split(".").map(Number)
+      const newer = `${major}.${minor! + 1}.0`
+      const { scratch, databasePath } = await seedThenDamage("wal-only", async () => "")
+      const writer = new DatabaseSync(databasePath)
+      try {
+        writer.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0")
+        writer.prepare("UPDATE workspace_state SET snapshot = json_set(snapshot, '$.protocolVersion', ?) WHERE id = 1").run(newer)
+        const entries = (await readdir(scratch)).sort()
+        expect(entries).toContain("state.sqlite-wal")
+        expect(storedProtocolVersion(databasePath)).toBe(newer)
+        expect((await readdir(scratch)).sort()).toEqual(entries)
+        writer.prepare("SELECT 1").get()
+      } finally { writer.close() }
+    })
+
+    it("moves a database damaged outside the workspace aside and keeps its workspace and devices", async () => {
+      const marker = "unreadable-audit-page"
+      let paired: ReturnType<SqliteWorkspaceStore["devices"]["pair"]> | undefined
+      const { databasePath } = await seedThenDamage(
+        "audit-page",
+        async (path) => {
+          insertLargeAuditRow(path, marker)
+          await writeFile(path, corruptOverflowPage(await readFile(path), marker))
+          return ""
+        },
+        (seed) => {
+          paired = seed.devices.pair({ label: "studio-phone", binding: { kind: "client", client: "phone" } })
+        },
+      )
+
+      const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine))
+      try {
+        expect(store.recovery).toEqual({
+          kind: "database",
+          quarantinedPath: expect.stringMatching(/state\.sqlite\.corrupt-[0-9TZ-]+$/),
+          reason: expect.stringContaining("malformed"),
+          occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+          pairedDevicesKept: true,
+          workspaceKept: true,
+        })
+        expect(store.load()).toEqual(demoWorkspace)
+        expect(store.devices.verify(paired!.token)?.device).toEqual(paired!.device)
+        expect(store.auditLog.query({ action: "state.quarantine" }).entries).toEqual([
+          expect.objectContaining({ target: store.recovery!.quarantinedPath }),
+        ])
+      } finally { store.close() }
+    })
+
+    it("keeps only the salvaged devices that still read as paired devices", async () => {
+      const marker = "unreadable-audit-page"
+      let paired: ReturnType<SqliteWorkspaceStore["devices"]["pair"]> | undefined
+      const { databasePath } = await seedThenDamage(
+        "invalid-device",
+        async (path) => {
+          const database = new DatabaseSync(path)
+          database.prepare(`
+            INSERT INTO paired_devices (id, label, token_hash, paired_at, credential_role, client_kind, client_access)
+            VALUES ('device-damaged', 'damaged', ?, 'yesterday', 'client', 'phone', 'full')
+          `).run("f".repeat(64))
+          database.close()
+          insertLargeAuditRow(path, marker)
+          await writeFile(path, corruptOverflowPage(await readFile(path), marker))
+          return ""
+        },
+        (seed) => {
+          paired = seed.devices.pair({ label: "studio-phone", binding: { kind: "client", client: "phone" } })
+        },
+      )
+
+      const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine))
+      try {
+        expect(store.recovery).toMatchObject({ kind: "database", pairedDevicesKept: false })
+        expect(store.devices.list()).toEqual([paired!.device])
+        expect(store.devices.verify(paired!.token)?.device).toEqual(paired!.device)
+      } finally { store.close() }
+    })
+
+    // Ruled 2026-09-23: a salvage that SQLite ends on its own (a full database)
+    // starts the daemon and reports the pairings as not kept.
+    it("starts and reports pairings not kept when SQLite ends the salvage transaction itself", async () => {
+      const marker = "unreadable-audit-page"
+      const { databasePath } = await seedThenDamage(
+        "salvage-full",
+        async (path) => {
+          insertLargeAuditRow(path, marker)
+          await writeFile(path, corruptOverflowPage(await readFile(path), marker))
+          return ""
+        },
+        (seed) => {
+          for (let index = 0; index < 60; index += 1) {
+            seed.devices.pair({ label: `phone-${index}`, binding: { kind: "client", client: "phone" } })
+          }
+        },
+      )
+      const prepare = DatabaseSync.prototype.prepare
+      const limited: DatabaseSync[] = []
+      const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql: string) {
+        const statement = prepare.call(this, sql)
+        if (sql.includes('INSERT INTO paired_devices ("') && limited.length === 0) {
+          limited.push(this)
+          const pages = prepare.call(this, "PRAGMA page_count").get() as { page_count: number }
+          this.exec(`PRAGMA max_page_count = ${pages.page_count}`)
+          // Lift the limit once the salvage insert has failed, so the rest of
+          // the start writes normally and only the salvage meets a full file.
+          const run = statement.run.bind(statement)
+          const unlimit = () => { for (const database of limited) database.exec("PRAGMA max_page_count = 1073741823") }
+          Object.defineProperty(statement, "run", {
+            value: (...values: Parameters<typeof run>) => {
+              try { return run(...values) } catch (error) { unlimit(); throw error }
+            },
+          })
+        }
+        return statement
+      })
+      let store: SqliteWorkspaceStore | undefined
+      try {
+        store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine))
+        expect(limited).toHaveLength(1)
+        expect(store.recovery).toMatchObject({ kind: "database", pairedDevicesKept: false })
+      } finally {
+        spy.mockRestore()
+        for (const database of limited) database.exec("PRAGMA max_page_count = 1073741823")
+        store?.close()
+      }
+    })
+
+    it("moves a database with an unreadable snapshot page aside and keeps its paired devices", async () => {
+      const marker = "unreadable-overflow-page"
+      let paired: ReturnType<SqliteWorkspaceStore["devices"]["pair"]> | undefined
+      const { databasePath } = await seedThenDamage(
+        "malformed-page",
+        async (path) => {
+          replaceSnapshotRow(path, `${"a".repeat(6_000)}${marker}${"b".repeat(20_000)}`)
+          const bytes = await readFile(path)
+          const offset = bytes.indexOf(marker)
+          expect(offset).toBeGreaterThan(0)
+          // The marker sits on an overflow page; pointing that page past the
+          // end of the file makes the row unreadable and leaves other tables.
+          bytes.writeUInt32BE(0x7fff_ffff, Math.floor(offset / 4_096) * 4_096)
+          await writeFile(path, bytes)
+          return ""
+        },
+        (seed) => {
+          paired = seed.devices.pair({ label: "studio-phone", binding: { kind: "client", client: "phone" } })
+        },
+      )
+
+      const store = new SqliteWorkspaceStore(databasePath, initial)
+      try {
+        const recovery = store.recovery
+        expect(recovery).toEqual({
+          kind: "database",
+          quarantinedPath: expect.stringMatching(/state\.sqlite\.corrupt-[0-9TZ-]+$/),
+          reason: expect.stringContaining("malformed"),
+          occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+          pairedDevicesKept: true,
+          workspaceKept: false,
+        })
+        expect(store.load()).toEqual(recovered(recovery!.quarantinedPath))
+        expect(store.devices.verify(paired!.token)?.device).toEqual(paired!.device)
+        expect(store.auditLog.query({ action: "state.quarantine" }).entries).toEqual([
+          expect.objectContaining({ target: recovery!.quarantinedPath }),
+        ])
+      } finally { store.close() }
     })
   })
 

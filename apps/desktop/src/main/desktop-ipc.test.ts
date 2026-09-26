@@ -74,6 +74,7 @@ const channels: readonly ChannelSpec[] = [
     unauthorized: { rejects: notAuthorized },
     argument: externalRequest,
   },
+  { channel: "domovoi:open-release-page", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   { channel: "domovoi:window-decoration-get", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   {
     channel: "domovoi:window-decoration-set",
@@ -150,6 +151,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     "clipboard.writeText": vi.fn(async () => true),
     "externalTargets.allowRoot": vi.fn(),
     "externalTargets.open": vi.fn(async () => true),
+    "releasePage.open": vi.fn(async () => true),
     "notifications.notify": vi.fn((_input: unknown, _activate: (sessionId: string) => void) => true),
     "deepLinks.enqueue": vi.fn(),
     "deepLinks.ready": vi.fn(),
@@ -179,6 +181,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     openDirectoryDialog: { showOpenDirectory: effects["openDirectoryDialog.showOpenDirectory"] },
     clipboard: { readText: effects["clipboard.readText"], writeText: effects["clipboard.writeText"] },
     externalTargets: { allowRoot: effects["externalTargets.allowRoot"], open: effects["externalTargets.open"] },
+    releasePage: { open: effects["releasePage.open"] },
     notifications: { notify: effects["notifications.notify"] },
     deepLinks: {
       enqueue: effects["deepLinks.enqueue"],
@@ -307,6 +310,8 @@ describe("registerDesktopIpc", () => {
     expect(target.effects["clipboard.writeText"]).toHaveBeenCalledWith("copy me")
     expect(await target.listener("handle", "domovoi:open-external")(target.event, externalRequest)).toBe(true)
     expect(target.effects["externalTargets.open"]).toHaveBeenCalledWith(externalRequest)
+    expect(await target.listener("handle", "domovoi:open-release-page")(target.event)).toBe(true)
+    expect(target.effects["releasePage.open"]).toHaveBeenCalledOnce()
 
     const capture = await target.listener("handle", "domovoi:capture-annotation")(target.event, rect)
     expect(target.effects["webContents.capturePage"]).toHaveBeenCalledWith(rect)

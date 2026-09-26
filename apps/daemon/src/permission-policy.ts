@@ -6,6 +6,8 @@ import type {
   Runtime,
 } from "@getdomovoi/protocol"
 
+import { commandOperands, credentialStoreNames, isCredentialPath, operandPieces } from "./credential-stores.js"
+
 export type PermissionDecision = {
   action: "allow" | "review"
   risk: ApprovalRisk
@@ -23,9 +25,31 @@ export function permissionPolicyRefusalFor(runtime: Runtime): PolicyRefusalFacts
   }
 }
 
+const pathSeparator = String.raw`[/\\]`
+const credentialStorePatterns = credentialStoreNames.map(
+  (parts) => parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)).join(pathSeparator),
+)
+
+// The command-line reading of secret names, kept beside the path classifier so
+// nothing it matched stops matching: a name is a run of letters, digits,
+// underscores, dots and hyphens in any script.
+const commandNameCharacter = String.raw`[\p{L}\p{M}\p{N}_.-]`
+const commandNameStart = String.raw`(?:^|[\s:=/\\'"])`
+const secretFilePattern = new RegExp(`${commandNameStart}(?:${[
+  String.raw`\.env${commandNameCharacter}*`,
+  String.raw`${commandNameCharacter}*\.env(?:rc)?`,
+  String.raw`${commandNameCharacter}+\.(?:pem|key|p12|pfx)`,
+  String.raw`gh[/\\]hosts\.yml`,
+  String.raw`daemon\.token`,
+  String.raw`credentials\.json`,
+  ...credentialStorePatterns,
+].join("|")})(?!${commandNameCharacter})`, "iu")
+// The secret file names #545 judged file targets by, kept beside the reading
+// above so a name either one matches is secret (union ruled 2026-09-25): the
+// .env family with any extension after it, and the named credential files.
 const secretPathStart = String.raw`(?:^|[\s:=/\\'"])`
 const secretPathEnd = String.raw`(?![\w.-])`
-const secretFileNames = [
+const listedSecretFileNames = [
   String.raw`[\w.-]*\.env(?:rc|\.[\w.-]+)?`,
   String.raw`\.ssh`,
   String.raw`\.aws[/\\]credentials`,
@@ -39,10 +63,31 @@ const secretFileNames = [
   String.raw`\.pypirc`,
   String.raw`[\w.-]+\.(?:pem|key|p12|pfx)`,
 ] as const
-const secretFilePattern = new RegExp(
-  `${secretPathStart}(?:${secretFileNames.join("|")})${secretPathEnd}`,
+const listedSecretFilePattern = new RegExp(
+  `${secretPathStart}(?:${listedSecretFileNames.join("|")})${secretPathEnd}`,
   "i",
 )
+// A private key keeps its name with any suffix: id_rsa, id_rsa.pub, id_rsa_work.
+const privateKeyFileName = /\bid_(?:rsa|dsa|ecdsa|ed25519)/i
+
+// Whether text names a credential file or private key: the same patterns that
+// put a command in the credentials hard-gate group.
+function namesSecretFile(text: string): boolean {
+  return secretFilePattern.test(text) || listedSecretFilePattern.test(text) || privateKeyFileName.test(text)
+}
+
+// Whether a path names a credential store or secret file, by the one path
+// classifier or the way a command line would. One judge for file targets,
+// directories, and command and operation operands.
+export function namesSecretPath(path: string): boolean {
+  return isCredentialPath(path) || namesSecretFile(path)
+}
+
+// Whether any operand of a command line names a credential store or secret
+// file, each operand read by the same path classifier as a card path.
+function commandNamesSecretPath(command: string): boolean {
+  return commandOperands(command).some(namesSecretPath)
+}
 
 const hardGateGroups: Record<HardGateCategory["id"], { label: string; patterns: readonly RegExp[] }> = {
   "privileged-operations": { label: "privilege escalation and file permission changes", patterns: [
@@ -62,7 +107,8 @@ const hardGateGroups: Record<HardGateCategory["id"], { label: string; patterns: 
   "database-migrations": { label: "database migrations", patterns: [/\b(?:migrate|migration)\b/i] },
   credentials: { label: "read credentials, private keys or environment secrets", patterns: [
     secretFilePattern,
-    /\bid_(?:rsa|dsa|ecdsa|ed25519)\b/i,
+    listedSecretFilePattern,
+    privateKeyFileName,
     /\b(?:printenv|keychain|security\s+find-(?:generic|internet)-password|pass\s+show)\b/i,
   ] },
   network: { label: "network calls through curl, wget, SSH or file transfer tools", patterns: [/\b(?:curl|wget|ssh|scp|sftp)\b/i] },
@@ -78,8 +124,11 @@ export function permissionHardGates(): { categories: HardGateCategory[] } {
 
 const fileToolCommands = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
 
+// Whether an approval card is a file tool's, which names its target file.
+// Execution resolution trims the command before it names the tool, so a padded
+// name is the same tool here too.
 export function isFileToolCommand(command: string): boolean {
-  return fileToolCommands.has(command)
+  return fileToolCommands.has(command.trim())
 }
 
 const gitSummaryFlag = String.raw`--(?:stat|shortstat|numstat|name-only|name-status)`
@@ -92,6 +141,11 @@ const safeBuildAutoPatterns = [
   ),
   /^pwd$/i,
 ] as const
+
+// A Git read that prints no file content and names no path or output file.
+export function isReadOnlyGitCommand(command: string): boolean {
+  return /^git\s/i.test(command) && safeBuildAutoPatterns.some((pattern) => pattern.test(command))
+}
 
 const ambiguousShellSyntax = /[\r\n`$<>(){}\\]/
 const skillInstallerPackage = String.raw`(?:@[a-z0-9._-]+\/)?(?:skills?|skill-installer)(?:@[^\s]+)?`
@@ -171,11 +225,10 @@ type BodyDecision = "allow" | "review" | "hard-gate"
 // patterns describe what is known dangerous rather than what is known safe.
 // Anything outside this list is reviewed, so an unrecognised runner cannot ride
 // in on a script name a human once trusted.
-const boundedScriptRunners = new Set([
-  "vitest", "jest", "mocha", "ava", "tsc", "tsd", "eslint", "biome", "prettier",
-  "stylelint", "oxlint", "tsup", "vite", "rollup", "esbuild", "swc", "webpack",
-  "next", "astro", "changeset", "attw", "publint", "knip", "madge",
-])
+// A runner that loads worktree code (test files, a JavaScript config, plugins or
+// lifecycle scripts) runs whatever the agent last wrote there, so vitest, jest,
+// eslint, vite and the like ask on every Build-auto run and are not listed.
+const boundedScriptRunners = new Set(["tsc", "tsd", "biome"])
 
 // Only these flags may appear before the runner. Anything else can change what
 // actually executes: `npx --package=@attacker/payload vitest` runs the attacker's
@@ -210,22 +263,24 @@ function resolvedExecutionDecision(execution: ExecutionResolution): BodyDecision
     return execution.reason === "sensitive-content" ? "hard-gate" : "review"
   }
   if (execution.record.kind !== "shell") return "review"
+  let decision: BodyDecision = "allow"
   for (const entry of execution.record.entries) {
     for (const part of entry.parts) {
       const command = part.argv.join(" ")
       if (
         isSkillInstallCommand(command)
         || hardGatePatterns.some((pattern) => pattern.test(command))
+        || part.argv.some((word) => operandPieces(word).some(namesSecretPath))
       ) return "hard-gate"
       if (part.expandsTo.length > 0) continue
       if (entry.source.kind === "request") {
-        if (!safeBuildAutoPatterns.some((pattern) => pattern.test(command))) return "review"
+        if (!safeBuildAutoPatterns.some((pattern) => pattern.test(command))) decision = "review"
       } else if (!boundedLeafCommand(part.argv)) {
-        return "review"
+        decision = "review"
       }
     }
   }
-  return "allow"
+  return decision
 }
 
 export function permissionDecisionFor(input: {
@@ -240,6 +295,9 @@ export function permissionDecisionFor(input: {
     return { action: "review", risk: "hard-gate" }
   }
   if (hardGatePatterns.some((pattern) => pattern.test(operation))) {
+    return { action: "review", risk: "hard-gate" }
+  }
+  if (command && commandNamesSecretPath(command)) {
     return { action: "review", risk: "hard-gate" }
   }
   const executionDecision = input.execution

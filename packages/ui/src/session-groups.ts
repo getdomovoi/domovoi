@@ -13,6 +13,9 @@ export type GroupedSession = {
   // that changes a session already on its way out.
   running: boolean
   archiving: boolean
+  // Archived rows stay listed (I69): the thread is readable, but the
+  // worktree is gone, so the menu says why nothing else is offered.
+  archived: boolean
 }
 
 export type SessionGroup = {
@@ -33,9 +36,12 @@ export function groupSessions(snapshot: WorkspaceSnapshot): SessionGroup[] {
   const quiet: GroupedSession[] = []
 
   for (const session of snapshot.sessions) {
-    if (session.state === "archived") continue
+    if (session.state === "archived") {
+      quiet.push({ id: session.id, title: session.title, meaning: "idle", note: "archived", running: false, archiving: false, archived: true })
+      continue
+    }
     const waiting = gated.has(session.id)
-    const flags = { running: Boolean(session.activeTurnId), archiving: session.state === "archiving" }
+    const flags = { running: Boolean(session.activeTurnId), archiving: session.state === "archiving", archived: false }
     if (waiting) {
       needsYou.push({ id: session.id, title: session.title, meaning: "waiting", note: "waiting on you", ...flags })
       continue

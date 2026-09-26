@@ -6,6 +6,7 @@ import type {
   WorkingPlanStepStatus,
 } from "@getdomovoi/protocol"
 import type { NormalizedUsage, UsageSource } from "./usage.js"
+import type { ApprovalScope } from "./approval-facts.js"
 
 export type ProviderApprovalDecision = Exclude<ApprovalDecision, "always-project">
 
@@ -32,6 +33,8 @@ export type AgentEvent =
       path?: string
       blockedPath?: string
       reason?: string
+      /** The provider tool, when the request is neither a shell command nor a file tool. */
+      tool?: string
     }
   | {
       type: "policy-refused"
@@ -51,6 +54,7 @@ export type AgentPermissionCapabilities = Readonly<{
 }>
 
 export type AgentCapabilities = Readonly<{ vision: boolean }>
+export type { ApprovalScope } from "./approval-facts.js"
 
 export type AgentVisualContext = {
   mimeType: "image/png" | "image/jpeg" | "image/webp"
@@ -60,6 +64,8 @@ export type AgentVisualContext = {
 export interface AgentAdapter {
   readonly permissionCapabilities?: AgentPermissionCapabilities
   readonly capabilities?: AgentCapabilities
+  /** What an approved command can reach in this runtime. Absent means no sandbox at all. */
+  approvalScope?(runtime: Runtime): ApprovalScope
   connect(): Promise<void>
   /** Discard connection state while keeping the adapter reusable. */
   resetConnection?(): Promise<void>

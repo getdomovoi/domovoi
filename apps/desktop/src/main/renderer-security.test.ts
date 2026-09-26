@@ -4,7 +4,7 @@ import { resolve } from "node:path"
 import { describe, expect, it } from "vitest"
 
 import {
-  developmentDaemonEnvironment,
+  developmentDaemonOverrides,
   inlineScriptHashes,
   isAuthorizedRendererEvent,
   isTrustedRendererFrameUrl,
@@ -256,24 +256,25 @@ describe("rendererContentSecurityPolicy script sources", () => {
   })
 })
 
-describe("developmentDaemonEnvironment", () => {
+// Returned as overrides for the daemon to add on top of process.env, never as
+// a copy of it: a copy is read as given, so a second acquisition from a fresh
+// copy would lose the inherited bearer the first one took out of process.env.
+describe("developmentDaemonOverrides", () => {
   const devTarget = { kind: "url", url: "http://localhost:5173/" } as const
   const bundledTarget = { kind: "file", path: "/opt/domovoi/index.html" } as const
 
   it("names the development renderer's own origin, whatever port Vite took", () => {
-    expect(developmentDaemonEnvironment({ PATH: "/usr/bin" }, devTarget))
-      .toEqual({ PATH: "/usr/bin", DOMOVOI_ALLOWED_ORIGINS: "http://localhost:5173" })
-    expect(developmentDaemonEnvironment({}, { kind: "url", url: "http://127.0.0.1:5174/" }))
+    expect(developmentDaemonOverrides({ PATH: "/usr/bin" }, devTarget))
+      .toEqual({ DOMOVOI_ALLOWED_ORIGINS: "http://localhost:5173" })
+    expect(developmentDaemonOverrides({}, { kind: "url", url: "http://127.0.0.1:5174/" }))
       .toEqual({ DOMOVOI_ALLOWED_ORIGINS: "http://127.0.0.1:5174" })
   })
 
   it("leaves the packaged app alone", () => {
-    expect(developmentDaemonEnvironment({ PATH: "/usr/bin" }, bundledTarget)).toEqual({ PATH: "/usr/bin" })
+    expect(developmentDaemonOverrides({ PATH: "/usr/bin" }, bundledTarget)).toEqual({})
   })
 
   it("never overrides an origin list the operator set", () => {
-    const environment = { DOMOVOI_ALLOWED_ORIGINS: "http://localhost:5178" }
-
-    expect(developmentDaemonEnvironment(environment, devTarget)).toEqual(environment)
+    expect(developmentDaemonOverrides({ DOMOVOI_ALLOWED_ORIGINS: "http://localhost:5178" }, devTarget)).toEqual({})
   })
 })
