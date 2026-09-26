@@ -6,14 +6,14 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
 import { realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
-import { acquireLocalDaemon, holdServiceHandoffFence, installDaemonService, readDaemonServiceStatus, readLocalServiceHandoffRefusal, removeDaemonService, verifyLocalFleetClientRoute } from "@getdomovoi/daemon"
+import { acquireLocalDaemon, verifyLocalFleetClientRoute } from "@getdomovoi/daemon"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, protocol, session, shell } from "electron"
 
 import { DesktopDaemon } from "./desktop-daemon.js"
 import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
 import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
-import { DesktopDaemonService, nodeRuntimeFileSystem, stageDaemonRuntime } from "./daemon-service.js"
+import type { DesktopDaemonService } from "./daemon-service.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
   developmentDaemonOverrides,
@@ -143,40 +143,21 @@ const fleetOrigins = new FleetOriginAdmission(async (machineId, timeoutMs) => {
   if (!endpoint || endpoint.kind === "refused") return { outcome: "refused", reason: "machine-unavailable" }
   return verifyLocalFleetClientRoute({ endpoint, machineId, timeoutMs })
 })
-// J24: the login service. The shipped runtime is copied under the profile
-// first, so the service never points into the app bundle.
-const desktopDaemonService = new DesktopDaemonService({
-  stageRuntime: () => stageDaemonRuntime({
-    resourcesPath: process.resourcesPath,
-    home: homedir(),
-    version: app.getVersion(),
-    platform: process.platform,
-    fileSystem: nodeRuntimeFileSystem(),
-  }),
-  install: (options) => installDaemonService(options),
-  status: () => readDaemonServiceStatus(),
-  remove: () => removeDaemonService(),
-  // The same check the renderer draws, applied to the daemon's own workspace.
-  refusal: async () => {
-    const endpoint = desktopDaemon.current()
-    if (!endpoint || endpoint.kind === "refused") throw new Error("This app is not connected to a daemon")
-    return readLocalServiceHandoffRefusal({ endpoint, timeoutMs: 5_000 })
-  },
-  // The same check inside the daemon, held from right before the stop until
-  // the handoff settles, so no turn starts after the read above.
-  fence: async () => {
-    const endpoint = desktopDaemon.current()
-    if (!endpoint || endpoint.kind === "refused") throw new Error("This app is not connected to a daemon")
-    return holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })
-  },
-  daemon: {
-    beginHandoff: () => desktopDaemon.beginHandoff(),
-    endHandoff: () => desktopDaemon.endHandoff(),
-    stopOwned: () => desktopDaemon.stopOwned(),
-    attachOnly: () => desktopDaemon.attachOnly(),
-    restart: () => desktopDaemon.restart(),
-  },
-})
+// J24: the login service. Its code (the service calls, the runtime copy and
+// the handoff) loads only when Settings first asks, so it stays out of the
+// startup bundle. One instance serves every call; a load that fails is tried
+// again on the next call.
+let desktopDaemonService: Promise<DesktopDaemonService> | undefined
+const daemonService = (): Promise<DesktopDaemonService> => {
+  desktopDaemonService ??= import("./daemon-service-assembly.js").then(
+    (assembly) => assembly.createDesktopDaemonService(desktopDaemon, { resourcesPath: process.resourcesPath, version: app.getVersion() }),
+    (error: unknown) => {
+      desktopDaemonService = undefined
+      throw error
+    },
+  )
+  return desktopDaemonService
+}
 const daemonLifecycle = new DesktopDaemonLifecycle(() => desktopDaemon.release(), (error) => {
   console.error("Local daemon failed to release during desktop shutdown", error)
 })
@@ -370,9 +351,9 @@ registerDesktopIpc(ipcMain, {
   clipboard: safeClipboard,
   externalTargets,
   daemonService: {
-    status: () => desktopDaemonService.status(),
-    install: () => desktopDaemonService.install(),
-    remove: () => desktopDaemonService.remove(),
+    status: async () => (await daemonService()).status(),
+    install: async () => (await daemonService()).install(),
+    remove: async () => (await daemonService()).remove(),
   },
   // The one address the renderer may ask the browser to open, fixed here.
   releasePage: { open: () => shell.openExternal("https://github.com/getdomovoi/domovoi/releases").then(() => true, () => false) },
