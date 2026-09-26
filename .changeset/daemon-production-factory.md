@@ -9,5 +9,4 @@ transport protection, so shipped entry points cannot omit production
 dependencies that tests inject.
 
 This is a breaking embedding API change. Consumers must await the factory and
-use its returned handle. The `@getdomovoi/daemon/internal` package path remains
-present for artifact compatibility but no longer exports the raw constructor.
+use its returned handle.
