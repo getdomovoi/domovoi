@@ -128,12 +128,11 @@ jobs:
       - uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
           install: false
-      - run: pnpm audit --prod --audit-level=high
+      # Every dependency type: electron is a devDependency of apps/desktop, yet
+      # it is the runtime every desktop build ships.
+      - run: pnpm audit --audit-level=high
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         if: github.event_name == 'pull_request'
         with:
           fail-on-severity: high
-          # image-size has no published fix on either line it ships in; both
-          # advisories name a version npm does not have. The same two ids are
-          # ignored in pnpm-workspace.yaml with the reasoning. Lift together.
-          allow-ghsas: GHSA-5p2g-fcmc-qvqq, GHSA-w3rx-r6r6-pgpr
+          fail-on-scopes: runtime, development

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { AppearanceSettings, ExternalEditorSettings, ProviderSettings, type ProviderSecretStatus } from "./provider-settings.js"
 import type { WorkspaceTheme } from "./appearance.js"
-import type { DesktopExternalEditor, WorkspaceWindowDecoration } from "./desktop-platform.js"
+import type { DaemonServiceOutcome, DaemonServiceStatusReport, DesktopExternalEditor, WorkspaceWindowDecoration } from "./desktop-platform.js"
 import { NotificationSettings } from "./notification-settings.js"
 import type { NotificationPreferences } from "./notification-preferences.js"
 import type { WorkspaceClientCapabilities } from "./workspace-platform.js"
@@ -33,7 +33,22 @@ export type LocalDaemonDescription = {
   // Whether the login service is installed is its own fact. A daemon started
   // outside the app is only drawn as the service when a source reports it.
   serviceInstalled?: boolean | undefined
+  // Whether the service itself runs, from the same read. Only then is a
+  // daemon outside the app drawn as the running service (security review
+  // round 9): a daemon answering is not proof the service runs.
+  serviceRunning?: boolean | undefined
   platform?: "darwin" | "linux" | "win32" | undefined
+  // Present on a desktop that ships a daemon runtime and can install the
+  // login service. The refusal names the work in flight; while it is set the
+  // switch waits and nothing is interrupted.
+  service?: {
+    install: () => Promise<DaemonServiceOutcome>
+    remove: () => Promise<DaemonServiceOutcome>
+    // The service as the desktop reads it now, for an answer this window
+    // could not read.
+    status?: (() => Promise<DaemonServiceStatusReport>) | undefined
+    refusal?: string | undefined
+  } | undefined
   // True while this app owns the daemon, so quitting it disconnects every
   // paired device; the pairing card says so.
   inApp?: boolean | undefined
@@ -52,10 +67,129 @@ const loginServices = {
   win32: { kind: "logon task", manager: "Task Scheduler", definition: `Task Scheduler task "${loginServiceTaskName}"`, removeLabel: "Delete the logon task", crash: "Nothing restarts it until you next sign in." },
 } as const
 
+type ServicePhase =
+  | { kind: "idle" }
+  | { kind: "installing" }
+  | { kind: "removing" }
+  | { kind: "installed"; target: string }
+  | { kind: "removed"; daemonRunning: boolean; attached: boolean; recovery?: string | undefined }
+  | { kind: "waits"; refusal: string }
+  | { kind: "unchecked"; message: string }
+  | { kind: "not-attached"; message: string }
+  | { kind: "failed"; action: "install" | "remove"; message: string; still: string; header?: string | undefined }
+
+const profileRecoverCommand = "domovoid profile recover --confirm-no-supervisor"
+
+// Security review round 1 of #576, lines approved by fetzy on 2026-09-25: a
+// failed install or removal the service manager left half done, a read-back
+// that could not be taken, or a daemon this app did not start.
+
+type FailedOutcome = Extract<DaemonServiceOutcome, { ok: false; reason: "failed" }>
+
+function readBackFact(kind: string, action: "install" | "remove", service: FailedOutcome["service"]): string {
+  if (!service || service.installed === null) return `Whether the ${kind} is installed is not known from here.`
+  if (action === "install") return service.installed ? `The ${kind} is installed${service.running ? " and running" : " but not running"}.` : "Nothing was installed."
+  return service.installed ? `The ${kind} is still installed ${service.running ? "and running" : "but not running"}.` : `The ${kind} is gone, but the removal did not finish.`
+}
+
+function daemonFact(daemon: FailedOutcome["daemon"]): string {
+  if (daemon === "restarted") return "The daemon is running inside this app again."
+  if (daemon === "attached") return "This app is connected to a daemon it did not start."
+  if (daemon === "stopped") return "No daemon is running for this app, so no session is running. Quit and reopen Domovoi to start it."
+  return "The daemon inside this app was not stopped."
+}
+
+async function readServiceBack(status: (() => Promise<DaemonServiceStatusReport>) | undefined): Promise<FailedOutcome["service"]> {
+  if (!status) return null
+  try {
+    const report = await status()
+    return "unavailable" in report ? null : { installed: report.installed, running: report.running }
+  } catch {
+    return null
+  }
+}
+
+// Review round 3 of #576: what is still true after an answer this window could
+// not read. Only the read-back speaks; the daemon's state is not known here.
+function unknownAnswerStill(kind: string, action: "install" | "remove", service: FailedOutcome["service"]): string {
+  // Approved by fetzy on 2026-09-25: a removal whose answer was unreadable and
+  // whose read-back shows no service. "Gone, but the removal did not finish"
+  // would claim more than is known.
+  if (action === "remove" && service?.installed === false) return `The ${kind} is not installed.`
+  return readBackFact(kind, action, service)
+}
+
+// Ruled 2026-09-25: an unreadable answer whose read-back shows the change
+// happened, in whole or in part, is not headed "Could not install" or "Could
+// not remove". The headers were approved by fetzy on 2026-09-25.
+function unknownAnswerHeader(action: "install" | "remove", service: FailedOutcome["service"]): string | undefined {
+  if (!service || service.installed === null) return undefined
+  const happened = action === "install" ? service.installed : !(service.installed && service.running)
+  if (!happened) return undefined
+  return action === "install" ? "Could not confirm the install" : "Could not confirm the removal"
+}
+
+// What is still true after a failed install or removal. The approved lines
+// hold only when the service read back afterwards shows nothing changed.
+function failedStill(kind: string, action: "install" | "remove", outcome: FailedOutcome): string {
+  const service = outcome.service
+  if (action === "install" && service?.installed === false && outcome.daemon !== "attached") {
+    return outcome.daemon === "restarted"
+      ? "The daemon is back inside this app. Nothing else was touched."
+      : outcome.daemon === "stopped"
+        ? "Nothing was installed. The daemon inside this app stopped and did not start again, so no session is running. Quit and reopen Domovoi to start it."
+        : "Nothing was installed."
+  }
+  if (action === "remove" && service?.installed === true && service.running && outcome.daemon === "untouched") {
+    return `Nothing was removed. The ${kind} still holds the daemon, and every session keeps running.`
+  }
+  return `${readBackFact(kind, action, service)} ${daemonFact(outcome.daemon)}`
+}
+
+// The daemon installer's own words for a removal that leaves the profile owner
+// unresolved (service/install.ts), led by what did happen.
+function removalRecovery(outcome: Extract<DaemonServiceOutcome, { ok: true }>): string | undefined {
+  if (outcome.profileRecovery === "proof-unavailable" && outcome.profileRecoveryDetail) {
+    return `Removed. ${outcome.profileRecoveryDetail}. No recovery receipt was written. Repair or inspect that file, then after confirming no custom or legacy supervisor will restart the daemon, run this in a terminal.`
+  }
+  if (outcome.profileRecovery === "operator-confirmation-required" || outcome.profileRecovery === "proof-unavailable") {
+    return "Removed. The profile owner remains unresolved. After confirming no custom or legacy supervisor will restart it, run this in a terminal."
+  }
+  return undefined
+}
+
 // `footer` is the design's last row of the card: About this build.
 function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { owner: NonNullable<LocalDaemonDescription["owner"]>; platform: NonNullable<LocalDaemonDescription["platform"]> }; footer?: ReactNode }) {
   const service = loginServices[daemon.platform]
-  const on = daemon.owner === "outside" && daemon.serviceInstalled === true
+  const [phase, setPhase] = useState<ServicePhase>({ kind: "idle" })
+  const live = daemon.service
+  const busy = phase.kind === "installing" || phase.kind === "removing"
+  const run = async (action: "install" | "remove") => {
+    if (!live) return
+    setPhase({ kind: action === "install" ? "installing" : "removing" })
+    try {
+      const outcome = await (action === "install" ? live.install() : live.remove())
+      if (outcome.ok) setPhase(action === "install" ? { kind: "installed", target: outcome.target } : { kind: "removed", daemonRunning: outcome.daemonRunning, attached: outcome.daemonAttached === true, recovery: removalRecovery(outcome) })
+      else if (outcome.reason === "refused") setPhase({ kind: "waits", refusal: outcome.message })
+      else if (outcome.reason === "check-failed") setPhase({ kind: "unchecked", message: outcome.message })
+      else if (outcome.reason === "installed-not-attached") setPhase({ kind: "not-attached", message: outcome.message })
+      else setPhase({ kind: "failed", action, message: outcome.message, still: outcome.reason === "runtime-missing"
+        ? "No service was installed and no service files were changed."
+        : outcome.reason === "busy" ? "Nothing changed." : failedStill(service.kind, action, outcome) })
+    } catch (cause) {
+      // The desktop may have finished the change before its answer failed
+      // here, so what changed is read back rather than assumed.
+      const readBack = await readServiceBack(live.status)
+      setPhase({ kind: "failed", action, message: cause instanceof Error ? cause.message : "The desktop did not answer.", still: unknownAnswerStill(service.kind, action, readBack), header: unknownAnswerHeader(action, readBack) })
+    }
+  }
+  // Security review round 8: whether the service is installed is its own
+  // fact, from the desktop's read of it, and decides Install, Remove and what
+  // was written. Who holds the daemon decides the toggle and its quit line. A
+  // failed install can leave the service installed while the daemon is back
+  // inside this app; Remove is live then.
+  const installed = daemon.serviceInstalled === true
+  const on = daemon.owner === "outside" && installed && daemon.serviceRunning === true
   const unknown = daemon.owner === "outside" && !on
   const state = on
     ? { label: "Running", tone: "bg-success", line: "Quitting this app leaves the daemon and its sessions running." }
@@ -65,14 +199,18 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
         ? { label: "Off", tone: "bg-faint", line: "Quitting Domovoi stops the daemon and every session on it." }
         : { label: "Off", tone: "bg-faint", line: daemon.detail }
   const facts = [
-    { label: "Service", value: service.definition, note: `A ${service.kind}, for your user only.`, item: on ? "written" : "will write" },
-    { label: "Record", value: "~/.domovoi/service.json", note: "What Domovoi installed, so removing undoes exactly that.", item: on ? "written" : "will write" },
+    { label: "Service", value: service.definition, note: `A ${service.kind}, for your user only.`, item: installed ? "written" : "will write" },
+    { label: "Record", value: "~/.domovoi/service.json", note: "What Domovoi installed, so removing undoes exactly that.", item: installed ? "written" : "will write" },
     ...(on ? [{ label: "After a crash", value: "", note: service.crash, item: "" }] : []),
   ]
-  const command = unknown ? "domovoid service status" : on ? "domovoid service remove" : "domovoid service install"
-  const lockReason = unknown
-    ? "Install and Remove are off: this app did not start that daemon."
-    : on ? "Install is off: the service is already installed." : "Remove is off: nothing is installed."
+  const command = unknown ? "domovoid service status" : installed ? "domovoid service remove" : "domovoid service install"
+  const lockReason = busy
+    ? (phase.kind === "installing" ? "Both wait until the install finishes." : "Both wait until the removal finishes.")
+    : installed
+      ? "Install is off: the service is already installed."
+      : unknown ? "Install and Remove are off: this app did not start that daemon." : "Remove is off: nothing is installed."
+  const installLocked = !live || installed || unknown || busy || Boolean(live.refusal)
+  const removeLocked = !live || !installed || busy || Boolean(live.refusal)
   return (
     <section aria-labelledby="settings-daemon" className="flex flex-col gap-3 rounded-lg border bg-card p-4">
       <div className="flex flex-col gap-1">
@@ -85,12 +223,58 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           <span className="text-[11px] text-muted-foreground">{state.line}</span>
         </div>
         <span className="flex items-center gap-2 text-[11.5px] font-medium text-strong">
-          <span aria-hidden className={`size-[7px] rounded-full ${state.tone}`} />
-          {state.label}
+          <span aria-hidden className={`size-[7px] rounded-full ${busy ? "bg-primary" : state.tone}`} />
+          {phase.kind === "installing" ? "Installing" : phase.kind === "removing" ? "Removing" : state.label}
         </span>
       </div>
-      {unknown ? null : <div className="flex flex-col gap-1.5">
-        <span className="text-[10.5px] tracking-[0.13em] text-faint">{on ? "WHAT IT WROTE" : "WHAT TURNING IT ON WRITES"}</span>
+      {phase.kind === "installing" ? <p className="m-0 text-[11.5px] text-muted-foreground">{`The daemon moves under ${service.manager}. The switch waits.`}</p> : null}
+      {phase.kind === "removing" ? <p className="m-0 text-[11.5px] text-muted-foreground">Unloading the service, then starting the daemon inside this app again. The switch waits.</p> : null}
+      {live?.refusal && !busy ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground">{`The switch waits: ${live.refusal} Nothing is interrupted.`}</p> : null}
+      {phase.kind === "installed" ? (
+        <div className="flex flex-col gap-1 rounded-md border border-ok-border bg-ok-background px-3 py-2 text-[11.5px] text-ok-foreground" role="status">
+          <span>Installed. Quitting this app now leaves the daemon and its sessions running.</span>
+          <span className="font-machine text-[10.5px] opacity-80">{phase.target}</span>
+        </div>
+      ) : null}
+      {phase.kind === "removed" ? (
+        <div className="flex flex-col gap-1.5 rounded-md border px-3 py-2 text-[11.5px]" role="status">
+          {phase.recovery ? (
+            <>
+              <span>{phase.recovery}</span>
+              <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{profileRecoverCommand}</span>
+            </>
+          ) : phase.daemonRunning && !phase.attached ? <span>Removed. Quitting Domovoi now stops the daemon and every session on it.</span> : null}
+          {phase.daemonRunning && phase.attached ? <span>{`${phase.recovery ? "" : "Removed. "}This app is connected to a daemon it did not start. Quitting this app leaves it running.`}</span> : null}
+          {phase.daemonRunning ? null : <span>{`${phase.recovery ? "" : "Removed. "}The daemon did not start again inside this app, so no session is running. Quit and reopen Domovoi to start it.`}</span>}
+        </div>
+      ) : null}
+      {phase.kind === "waits" ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="status">{`The switch waits: ${phase.refusal} Nothing is interrupted.`}</p> : null}
+      {phase.kind === "unchecked" ? (
+        <div className="flex flex-col gap-1.5 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="status">
+          <span>Could not check for running turns or waiting gates, so the switch waits. Nothing is interrupted.</span>
+          <span className="font-machine text-[10.5px] opacity-80">{phase.message}</span>
+        </div>
+      ) : null}
+      {phase.kind === "not-attached" ? (
+        <div className="flex flex-col gap-1.5 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="alert">
+          <span className="font-medium">Installed, but this window could not reach the daemon</span>
+          <span className="font-machine text-[10.5px] opacity-80">{phase.message}</span>
+          <span>{`The ${service.kind} is installed and the daemon inside this app is stopped. Whether the service started is not known from here.`}</span>
+          <span>To check, run this in a terminal.</span>
+          <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />domovoid service status</span>
+        </div>
+      ) : null}
+      {phase.kind === "failed" ? (
+        <div className="flex flex-col gap-1.5 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] text-danger-foreground" role="alert">
+          <span className="font-medium">{phase.header ?? (phase.action === "install" ? "Could not install the service" : "Could not remove the service")}</span>
+          <span className="font-machine text-[10.5px] opacity-80">{phase.message}</span>
+          <span>{phase.still}</span>
+          <span>To finish by hand, run this in a terminal.</span>
+          <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{phase.action === "install" ? "domovoid service install" : "domovoid service remove"}</span>
+        </div>
+      ) : null}
+      {unknown && !installed ? null : <div className="flex flex-col gap-1.5">
+        <span className="text-[10.5px] tracking-[0.13em] text-faint">{installed ? "WHAT IT WROTE" : "WHAT TURNING IT ON WRITES"}</span>
         <ul className="m-0 flex list-none flex-col gap-1.5 p-0 text-[11.5px]">
           {facts.map((fact) => (
             <li key={fact.label} className="flex flex-col gap-0.5">
@@ -104,17 +288,25 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           ))}
         </ul>
       </div>}
-      <div className="flex flex-col gap-1.5 rounded-md border border-info-border bg-info-background px-3 py-2 text-[11.5px] text-info-foreground">
-        {unknown ? <span>This app cannot tell whether that daemon is the installed service. To check by hand, run this in a terminal.</span> : <>
-          <span>{on ? "Removing the service from this window is not built yet." : "Installing the service from this window is not built yet."}</span>
+      {!live || unknown ? <div className="flex flex-col gap-1.5 rounded-md border border-info-border bg-info-background px-3 py-2 text-[11.5px] text-info-foreground">
+        {unknown ? <span>{daemon.serviceInstalled === false
+          // Approved by fetzy on 2026-09-25 for a service known not installed.
+          ? "The login service is not installed. This daemon was started outside any app and runs until it is stopped. To check by hand, run this in a terminal."
+          : installed
+            // Approved by fetzy on 2026-09-25 (security review round 9): the
+            // service reads back installed but not running, so the daemon
+            // outside the app is not the service.
+            ? "The login service is installed but not running. This daemon was started outside any app and runs until it is stopped. To check by hand, run this in a terminal."
+            : "This app cannot tell whether that daemon is the installed service. To check by hand, run this in a terminal."}</span> : <>
+          <span>{installed ? "Removing the service from this window is not built yet." : "Installing the service from this window is not built yet."}</span>
           <span>To finish by hand, run this in a terminal.</span>
         </>}
         <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{command}</span>
-      </div>
+      </div> : null}
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" disabled title="Not built yet">Install</Button>
-        <Button size="sm" variant="outline" disabled title="Not built yet">{service.removeLabel}</Button>
-        <span className="text-[11px] text-faint">{lockReason}</span>
+        <Button size="sm" disabled={installLocked} {...(live ? {} : { title: "Not built yet" })} onClick={() => void run("install")}>Install</Button>
+        <Button size="sm" variant="outline" disabled={removeLocked} {...(live ? {} : { title: "Not built yet" })} onClick={() => void run("remove")}>{service.removeLabel}</Button>
+        {live?.refusal && !installed && !unknown && !busy ? null : <span className="text-[11px] text-faint">{lockReason}</span>}
       </div>
       {footer}
     </section>

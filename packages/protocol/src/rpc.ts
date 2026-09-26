@@ -3,6 +3,7 @@ import { imageUploadSchema, maximumSessionAttachments, sessionAttachmentSchema }
 
 import { protocolVersionSchema } from "./protocol-version.js"
 import { relayRecoveryParamsSchema, relayRecoveryResultSchema } from "./relay-recovery.js"
+import { serviceHandoffFenceParamsSchema, serviceHandoffFenceResultSchema } from "./service-handoff.js"
 import { dateTimeSchema, utf16Length, utf16MaxLength } from "./validation.js"
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
@@ -1519,6 +1520,11 @@ export const rpcMethods = {
     params: systemEmergencyStopParamsSchema,
     result: systemEmergencyStopResultSchema,
   },
+  // J24 handoff fence (service-handoff.ts). Loopback, daemon credential only.
+  "system.serviceHandoffFence": {
+    params: serviceHandoffFenceParamsSchema,
+    result: serviceHandoffFenceResultSchema,
+  },
   // A diagnostic and test-harness read. Clients receive the same snapshot from
   // `system.hello` on every connection and resync through it after a reconnect,
   // so a client with no call to this method is behaving normally, not missing one.
@@ -1707,6 +1713,7 @@ export const rpcMethodAuthorizations = {
   "device.rename": "control",
   "system.pauseAll": "control",
   "system.emergencyStop": "control",
+  "system.serviceHandoffFence": "control",
   "workspace.get": "observe",
   "session.evidence": "observe",
   "session.history": "observe",
@@ -1819,6 +1826,8 @@ export const rpcMethodMutations = {
   "transfer.abort": "mutating",
   "system.pauseAll": "mutating",
   "system.emergencyStop": "mutating",
+  // The fence lives in the daemon process and ends with it; nothing is written.
+  "system.serviceHandoffFence": "read-only",
   "skill.setEnabled": "mutating",
   "skill.review": "mutating",
   "skill.install": "mutating",

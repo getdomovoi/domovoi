@@ -85,5 +85,31 @@
       }
     }
   ],
-  "humanRead": []
+  "humanRead": [],
+  "scriptBacklog": {
+    "since": "2026-09-26",
+    "reason": "Copy the design builds in its data script, collected by the gate since audit G23 and not yet read against the implementation. Classify each string as an element's copy, sample or annotations, and remove it here.",
+    "strings": [
+      "Denied. Nothing outside the roots was read.",
+      "Allowed once, for this browse only. No root was recorded.",
+      "as a root on",
+      "not followed",
+      "permission denied",
+      "symlink to",
+      "transparent; border: 1px solid var(--border)",
+      "var(--accent); border: 1px solid var(--border)",
+      "The system refused to list it for dana. The daemon does not retry as another user.",
+      "The daemon lists links but does not follow them. Go to",
+      "by path.",
+      "added just now",
+      "allowed once",
+      "tailnet · 38ms",
+      "RECENT ON",
+      "Always for",
+      "Always records a new root on",
+      "Showing the first 500 names. The daemon stops a list at 500 and does not fetch the rest. Go to a name by path.",
+      "Use this folder",
+      "Pick a folder"
+    ]
+  }
 }

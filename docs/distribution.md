@@ -407,9 +407,9 @@ That is the whole of the gate, and it is deliberately not a second run of the su
 inherits what `ci.yml` proves: lint, typecheck, tests, build, performance budgets,
 `pnpm release:invariants`, the license audit and `pnpm test:install` on Linux, macOS, and Windows,
 `pnpm release:artifacts` and the packed daemon's musl runtime check on Linux, and the `audit` job's
-`pnpm audit --prod --audit-level=high`. Re-running a Linux-only copy of those commands inside the
-release workflow would have published on a weaker result than `main` is held to, and would have
-said nothing about whether `ci` passed.
+`pnpm audit --audit-level=high`, which covers development dependencies because Electron is one.
+Re-running a Linux-only copy of those commands inside the release workflow would have published on
+a weaker result than `main` is held to, and would have said nothing about whether `ci` passed.
 
 `wsl.yml` is not part of the gate. It is path filtered and scheduled rather than run on every
 commit, so requiring it per commit would block every release whose commit does not touch its

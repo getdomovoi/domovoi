@@ -35,7 +35,7 @@ daemon-ready milestones plus main-process RSS. Interpret it as local diagnostic 
 
 | Surface | Alpha budget | Stable gate |
 | --- | --- | --- |
-| Startup | Web JS 1,250,000 startup bytes and 400,000 lazy bytes; web CSS 124,000; desktop renderer JS 1,250,000 startup bytes and 400,000 lazy bytes; renderer CSS 124,000; main 37,888; preload 8,192 | Startup graph measured from the built `index.html` entry and `modulepreload` links, lazy chunks reported separately; desktop creates its hidden window before awaiting daemon startup and records bounded milestones |
+| Startup | Web JS 1,250,000 startup bytes and 400,000 lazy bytes; web CSS 124,000; desktop renderer JS 1,250,000 startup bytes and 400,000 lazy bytes; renderer CSS 124,000; main 39,936; preload 9,728 | Startup graph measured from the built `index.html` entry and `modulepreload` links, lazy chunks reported separately; desktop creates its hidden window before awaiting daemon startup and records bounded milestones |
 | Memory | 100 thread items in a client snapshot; 200 retained history items; 65,536 terminal replay characters | Active-session snapshot window, bounded history merge/DOM, bounded terminal replay |
 | Long threads | 100 snapshot/rendered items; 100 items per history page; 32,768 Markdown characters and 500 lines per item | Durable history remains daemon-owned and pageable; client and quick-view tests enforce windows |
 | Terminal throughput | 65,536 characters per notification; 16 ms batching; WebSocket pause/resume at 1,048,576/262,144 buffered bytes | Fake-clock batching and backpressure tests plus protocol payload validation; bytes remain ordered and lossless |
@@ -59,6 +59,15 @@ and the fixed release-page URL, kept in main so the renderer names no address; w
 bundle measures 37,274 bytes locally. The owner had ruled a raise to 37,376 for About alone rather
 than a trim that rewrote the IPC authorization guards, which stay as they are; the later raise to
 37,888 covers it.
+
+It was 37,888, and the preload budget 8,192, until 2026-09-26. The login service from Settings
+(#576) adds to both. Its code (the service calls, the runtime copy and the handoff) loads with a
+lazy `import()` when Settings first asks, which saved 11,159 bytes from the main bundle. What stays
+at startup is the handoff hold a renderer reconnect needs at any time, the three service IPC
+handlers with their authorization checks, and the loader: the main bundle measures 39,176 bytes.
+The preload is one sandboxed bundle with no lazy path, and it keeps its checks on the service's
+answers: it measures 9,417 bytes. The owner ruled on 2026-09-26 to raise main to 39,936 and preload
+to 9,728, keeping the lazy import and the validation in the preload.
 
 Budget failures require reducing work or an explicit documented budget revision. Do not replace
 these gates with wall-clock or RSS assertions: CI runner speed and memory vary by OS and load.

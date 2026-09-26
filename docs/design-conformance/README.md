@@ -28,6 +28,15 @@ never edited, and the check fails when the two disagree.
   (frame names and numbers, section eyebrows, step captions: the design's intent for a human
   reader, which no rule holds). A string the design adds that nothing claims fails; a string an
   element claims that the design no longer draws fails.
+- The same holds for copy the design builds in its data script (the `data-dc-script` block) and
+  draws through a binding: menus, notices, palette commands, launcher chips. A script string
+  counts when it reads as prose: a string literal outside comments that starts with a letter,
+  holds a space, and is not markup, an interpolation or a style value.
+- Script strings nobody has classified yet sit under `scriptBacklog` (`since`, `reason`,
+  `strings`), each named. The check prints how many remain beside the built count. A script
+  string that is neither claimed nor listed fails, so a re-vendored design cannot add one
+  unread; a listed string the design no longer holds, or one an element now claims, fails until
+  it leaves the list.
 - Each element is one of:
   - **built**: every `evidence` entry is met in the implementation sources.
   - **partial** (dated reason): `presence` proves the element exists today, `evidence` names what
@@ -53,12 +62,21 @@ Those are a human reading against the design; `where` and `states` on each eleme
 that reader, and `humanRead` lists, dated, the elements whose remaining gap is arrangement rather
 than copy. The check prints that count so nobody mistakes a green gate for a conformance review.
 
+Script copy under `scriptBacklog` has been collected but not read against the implementation, so
+an element whose drawn copy is only in the backlog can still count as built. Built counts are not
+a conformance figure until the backlog is empty. The script reading also misses single-word
+labels and strings the design assembles at run time. It does not parse regular expression
+literals: one that holds a quote would read as a string, and one that holds `//` hides the rest
+of its line. No current design has the first; the one case of the second hides only a
+backslash.
+
 ## Re-deriving after a design change
 
 1. Read the whole vendored file (it is a repository file; the 256 KiB cap is on fetching the live
    project, not on reading this copy).
 2. Run `pnpm design:conformance`. It names the new digest, every unclaimed string and every stale
    claim.
-3. Classify each new string: an element's copy, or sample. Add elements for anything the design
-   now draws that no element covers, with a dated `missing` or `partial` entry.
+3. Classify each new string, template or script: an element's copy, sample or annotations. Add
+   elements for anything the design now draws that no element covers, with a dated `missing` or
+   `partial` entry. Do not add new strings to `scriptBacklog`; it only shrinks.
 4. Record the digest and today's `derivedOn`.

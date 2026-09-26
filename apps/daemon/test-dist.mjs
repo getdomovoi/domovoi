@@ -6,27 +6,23 @@ import { join } from "node:path"
 
 const publicApi = await import("./dist/public.js")
 const { createProductionDaemon } = publicApi
-const internal = await import("./dist/server.js")
 const bootstrap = await import("./dist/bootstrap-install.js")
 assert.equal(typeof bootstrap.install, "function")
 
-// Published entry points cannot bypass production assembly. The internal path
-// remains as a package-artifact compatibility surface, not a construction API.
+// The published entry point cannot bypass production assembly.
 assert.deepEqual(Object.keys(publicApi).sort(), [
   "DaemonServiceHandoffError", "DaemonServiceRuntimeMissingError", "DaemonServiceUpdateError", "LaunchdJobNotDomovoiError",
   "SystemdPathCharacterError",
   "WindowsTaskArgumentVariableError", "WindowsTaskNotDomovoiError", "WindowsTaskPathError", "WindowsTaskPercentSignError",
-  "acquireLocalDaemon", "adoptRelayProfileSuccessor", "captureInheritedCredentials", "createProductionDaemon", "installDaemonService",
-  "prepareRelayProfileSuccessor", "readDaemonServiceStatus", "removeDaemonService", "updateDaemonService", "verifyLocalFleetClientRoute",
+  "acquireLocalDaemon", "adoptRelayProfileSuccessor", "captureInheritedCredentials", "createProductionDaemon", "holdServiceHandoffFence",
+  "installDaemonService", "prepareRelayProfileSuccessor", "readDaemonServiceStatus", "readLocalServiceHandoffRefusal", "removeDaemonService",
+  "updateDaemonService", "verifyLocalFleetClientRoute",
   "verifyRelayProfileSuccessor",
 ])
-assert.equal("DomovoiDaemon" in internal, false)
 
 const publicTypes = readFileSync(new URL("./dist/public.d.ts", import.meta.url), "utf8")
-const internalTypes = readFileSync(new URL("./dist/server.d.ts", import.meta.url), "utf8")
 assert.doesNotMatch(publicTypes, /\bDomovoiDaemon(?:Constructor|Instance|Options)?\b/)
 assert.doesNotMatch(publicTypes, /\bDaemonServerOptions\b/)
-assert.doesNotMatch(internalTypes, /\bDomovoiDaemon\b/)
 
 const productionHome = mkdtempSync(join(tmpdir(), "domovoi-dist-factory-"))
 try {

@@ -89,8 +89,6 @@ const contracts = [
       "dist/index.js",
       "dist/public.js",
       "dist/public.d.ts",
-      "dist/server.js",
-      "dist/server.d.ts",
       // The bootstrap installer ships inside the daemon so an installed
       // runtime can stage its own update without the repository's scripts.
       "dist/bootstrap-install.js",
@@ -99,7 +97,10 @@ const contracts = [
       "runtime/package.json",
       "runtime/protocol.tgz",
     ],
-    exports: [".", "./internal"],
+    exports: ["."],
+    // The retired ./internal entry point. An unpublished package keeps no
+    // compatibility surface, and a stale build must not bring it back.
+    absentFiles: ["dist/server.js", "dist/server.d.ts"],
   },
   {
     selector: "@getdomovoi/cli",
@@ -143,6 +144,10 @@ for (const contract of contracts) {
 
   for (const requiredFile of contract.requiredFiles) {
     assert.ok(files.has(requiredFile), `${contract.selector} must pack ${requiredFile}`)
+  }
+
+  for (const absentFile of contract.absentFiles ?? []) {
+    assert.equal(files.has(absentFile), false, `${contract.selector} must not pack ${absentFile}`)
   }
 
   for (const file of files) {

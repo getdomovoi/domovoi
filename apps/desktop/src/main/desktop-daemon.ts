@@ -35,6 +35,10 @@ export class DesktopDaemon {
   #fresh = false
   readonly #detached = new WeakSet<AttachedHandle>()
   #releasing: Promise<void> | undefined
+  // Set while the login service takes over the profile or gives it back.
+  // Acquisitions wait for it to end, so a renderer reconnect between the stop
+  // and the attach cannot start an in-app daemon beside the service.
+  #handoff: { ended: Promise<void>; end: () => void } | undefined
 
   constructor(
     private readonly seam: DesktopDaemonSeam,
@@ -52,15 +56,68 @@ export class DesktopDaemon {
 
   release(): Promise<void> {
     this.#releasing ??= this.#release()
+    this.endHandoff()
     return this.#releasing
+  }
+
+  beginHandoff(): void {
+    if (this.#handoff) return
+    let end!: () => void
+    const ended = new Promise<void>((resolve) => { end = resolve })
+    this.#handoff = { ended, end }
+  }
+
+  endHandoff(): void {
+    const handoff = this.#handoff
+    this.#handoff = undefined
+    handoff?.end()
   }
 
   current(): DesktopDaemonAcquisition | undefined {
     return this.#handle ? describeAcquisition(this.#handle) : undefined
   }
 
+  // The J24 handoff (2026-09-23). The service installer calls this once its
+  // checks pass: the app stops the daemon it owns so the service can claim
+  // the profile. An attached daemon is not this app's to stop.
+  async stopOwned(): Promise<void> {
+    await this.#attempt?.catch(() => {})
+    const handle = this.#handle
+    if (handle?.kind !== "owned") return
+    this.beginHandoff()
+    this.#handle = undefined
+    this.#failed = false
+    this.#fresh = false
+    await handle.stop()
+  }
+
+  // After the service is installed: attach to it, and publish the endpoint so
+  // the renderer's next reconnect reads it.
+  attachOnly(): Promise<DesktopDaemonAcquisition> {
+    if (this.#releasing) return Promise.reject(new Error("Desktop is quitting"))
+    if (this.#attempt) return this.#attempt.then(describeAcquisition)
+    return this.#acquireWith("attach-only", true)
+  }
+
+  // A handoff that failed after the stop, or a removed service, leaves the
+  // profile free: start the app's own daemon again rather than sit on a
+  // refusal. An attachment to the removed service is dropped first; the
+  // profile lock still decides, so this never starts a second daemon.
+  async restart(): Promise<DesktopDaemonAcquisition> {
+    if (this.#releasing) throw new Error("Desktop is quitting")
+    await this.#attempt?.catch(() => {})
+    const handle = this.#handle
+    if (handle?.kind === "owned") return describeAcquisition(handle)
+    if (handle?.kind === "attached") {
+      this.#handle = undefined
+      this.#detach(handle)
+    }
+    return this.#acquireWith("start-or-attach", true)
+  }
+
   #serve(reconnect: boolean): Promise<DesktopDaemonAcquisition> {
     if (this.#releasing) return Promise.reject(new Error("Desktop is quitting"))
+    if (this.#handoff) return this.#handoff.ended.then(() => this.#serve(reconnect))
     if (this.#attempt) return this.#attempt.then(describeAcquisition)
     const handle = this.#handle
     if (!handle) return this.#acquireWith(this.#failed ? "attach-only" : "start-or-attach", false)
@@ -104,7 +161,7 @@ export class DesktopDaemon {
   }
 
   #closed(handle: AttachedHandle): void {
-    if (this.#detached.has(handle) || this.#releasing || this.#attempt || this.#handle !== handle) return
+    if (this.#detached.has(handle) || this.#releasing || this.#handoff || this.#attempt || this.#handle !== handle) return
     void this.#acquireWith("attach-only", true).catch(() => {})
   }
 

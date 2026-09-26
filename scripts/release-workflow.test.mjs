@@ -146,3 +146,14 @@ test("the alpha check holds on the commit that merges the version PR", { timeout
 test("the alpha check refuses a merged version PR that wrote a plain version", { timeout: 30_000 }, async (t) => {
   await assert.rejects(assertAlphaVersioning(await versionedFixture(t, "0.1.0")), /@getdomovoi\/protocol is at 0\.1\.0/u)
 })
+
+test("advisory gates cover development dependencies, where Electron sits", async () => {
+  const steps = (await workflow("ci")).jobs.audit.steps
+  const audit = steps.find((step) => /\bpnpm audit\b/.test(step.run ?? ""))
+  assert.ok(audit, "the audit job must run pnpm audit")
+  assert.doesNotMatch(audit.run, /\s(?:--prod|--production|-P|--dev|-D)(?=\s|$)/)
+  const review = steps.find((step) => step.uses?.startsWith("actions/dependency-review-action@"))
+  const scopes = String(review?.with?.["fail-on-scopes"] ?? "").split(",").map((scope) => scope.trim())
+  assert.ok(scopes.includes("runtime"), "dependency review must fail on runtime advisories")
+  assert.ok(scopes.includes("development"), "dependency review must fail on development advisories")
+})

@@ -397,3 +397,102 @@ describe("DesktopDaemon", () => {
     })
   })
 })
+
+// J24 handoff (2026-09-23): the service installer stops the in-app daemon
+// only after its checks pass, through releaseInAppDaemon; afterwards the app
+// attaches to the service and never starts a daemon of its own again unless
+// the handoff failed after the stop.
+describe("DesktopDaemon handoff", () => {
+  it("stops the owned daemon on request, then attaches only", async () => {
+    const mine = owned()
+    const service = attached("daemon", restarted)
+    const { seam, modes } = scriptedSeam([mine, service])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+    await daemon.acquire()
+    await daemon.stopOwned()
+    expect(mine.stop).toHaveBeenCalledOnce()
+    expect(daemon.current()).toBeUndefined()
+    await expect(daemon.attachOnly()).resolves.toEqual({ kind: "attached", owner: "daemon", url: restarted.url, token: restarted.token })
+    expect(modes()).toEqual(["start-or-attach", "attach-only"])
+    expect(daemon.current()?.kind).toBe("attached")
+  })
+
+  it("does nothing on stopOwned while attached, and starts its own daemon again after a failed handoff", async () => {
+    const service = attached("daemon")
+    const mine = owned()
+    const { seam, modes } = scriptedSeam([service, refused("owner-unreachable"), mine])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+    await daemon.acquire()
+    await daemon.stopOwned()
+    expect(service.detach).not.toHaveBeenCalled()
+    expect(daemon.current()?.kind).toBe("attached")
+    // A stop that the handoff did not complete: the next acquire may start
+    // an in-app daemon again, because the profile is free.
+    const own = new DesktopDaemon(scriptedSeam([owned(), refused("owner-unreachable"), owned(restarted)]).seam, () => factoryOptions)
+    await own.acquire()
+    await own.stopOwned()
+    await expect(own.attachOnly()).resolves.toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+    await expect(own.restart()).resolves.toMatchObject({ kind: "owned", url: restarted.url })
+    expect(modes()).toEqual(["start-or-attach"])
+  })
+
+  it("holds a renderer reconnect that lands mid-install until the handoff ends, and never starts a daemon for it", async () => {
+    const mine = owned()
+    const service = attached("daemon", restarted)
+    const { seam, modes } = scriptedSeam([mine, service])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+    await daemon.acquire()
+    await daemon.stopOwned()
+    const reconnect = daemon.reacquire()
+    const first = daemon.acquire()
+    await settled()
+    expect(modes()).toEqual(["start-or-attach"])
+    await daemon.attachOnly()
+    daemon.endHandoff()
+    await expect(reconnect).resolves.toMatchObject({ kind: "attached", url: restarted.url })
+    await expect(first).resolves.toMatchObject({ kind: "attached", url: restarted.url })
+    expect(modes()).toEqual(["start-or-attach", "attach-only"])
+  })
+
+  it("answers a reconnect held by the handoff in attach-only mode when the service could not be reached", async () => {
+    const { seam, modes } = scriptedSeam([owned(), refused("owner-unreachable"), refused("owner-unreachable")])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+    await daemon.acquire()
+    await daemon.stopOwned()
+    const reconnect = daemon.reacquire()
+    await daemon.attachOnly()
+    daemon.endHandoff()
+    await expect(reconnect).resolves.toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+    await expect(daemon.reacquire()).resolves.toMatchObject({ kind: "refused" })
+    expect(modes()).toEqual(["start-or-attach", "attach-only", "attach-only"])
+  })
+
+  it("rejects a reconnect held by the handoff when the desktop quits", async () => {
+    const { seam, modes } = scriptedSeam([owned()])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+    await daemon.acquire()
+    await daemon.stopOwned()
+    const reconnect = daemon.reacquire()
+    await daemon.release()
+    await expect(reconnect).rejects.toThrow("Desktop is quitting")
+    expect(modes()).toEqual(["start-or-attach"])
+  })
+
+  it("on removal, holds reconnects, ignores the service's closure, and restarts in place of the stale attachment", async () => {
+    const service = attached("daemon")
+    const mine = owned(restarted)
+    const { seam, modes } = scriptedSeam([service, mine])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+    await daemon.acquire()
+    daemon.beginHandoff()
+    const reconnect = daemon.reacquire()
+    service.close()
+    await settled()
+    expect(modes()).toEqual(["start-or-attach"])
+    await expect(daemon.restart()).resolves.toMatchObject({ kind: "owned", url: restarted.url })
+    expect(service.detach).toHaveBeenCalledOnce()
+    daemon.endHandoff()
+    await expect(reconnect).resolves.toMatchObject({ kind: "owned", url: restarted.url })
+    expect(modes()).toEqual(["start-or-attach", "start-or-attach"])
+  })
+})

@@ -13,6 +13,7 @@ import { DesktopDaemon } from "./desktop-daemon.js"
 import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
 import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
+import type { DesktopDaemonService } from "./daemon-service.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
   developmentDaemonOverrides,
@@ -142,6 +143,21 @@ const fleetOrigins = new FleetOriginAdmission(async (machineId, timeoutMs) => {
   if (!endpoint || endpoint.kind === "refused") return { outcome: "refused", reason: "machine-unavailable" }
   return verifyLocalFleetClientRoute({ endpoint, machineId, timeoutMs })
 })
+// J24: the login service. Its code (the service calls, the runtime copy and
+// the handoff) loads only when Settings first asks, so it stays out of the
+// startup bundle. One instance serves every call; a load that fails is tried
+// again on the next call.
+let desktopDaemonService: Promise<DesktopDaemonService> | undefined
+const daemonService = (): Promise<DesktopDaemonService> => {
+  desktopDaemonService ??= import("./daemon-service-assembly.js").then(
+    (assembly) => assembly.createDesktopDaemonService(desktopDaemon, { resourcesPath: process.resourcesPath, version: app.getVersion() }),
+    (error: unknown) => {
+      desktopDaemonService = undefined
+      throw error
+    },
+  )
+  return desktopDaemonService
+}
 const daemonLifecycle = new DesktopDaemonLifecycle(() => desktopDaemon.release(), (error) => {
   console.error("Local daemon failed to release during desktop shutdown", error)
 })
@@ -334,6 +350,11 @@ registerDesktopIpc(ipcMain, {
   },
   clipboard: safeClipboard,
   externalTargets,
+  daemonService: {
+    status: async () => (await daemonService()).status(),
+    install: async () => (await daemonService()).install(),
+    remove: async () => (await daemonService()).remove(),
+  },
   // The one address the renderer may ask the browser to open, fixed here.
   releasePage: { open: () => shell.openExternal("https://github.com/getdomovoi/domovoi/releases").then(() => true, () => false) },
   notifications: desktopNotifications,
