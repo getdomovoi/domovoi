@@ -21,35 +21,48 @@ describe("desktop daemon assembly", () => {
     for (const [file, source] of await desktopSources()) {
       if (/\bDomovoiDaemon\b/u.test(source)) offenders.push(`${file}: names the daemon constructor`)
       if (/@getdomovoi\/daemon\/internal/u.test(source)) offenders.push(`${file}: imports the internal daemon surface`)
+      // The daemon is loaded at run time from the runtime the app ships
+      // (daemon-module.ts), so no source imports a value from the package:
+      // a static import would pull the daemon back into the archive.
       for (const match of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*"@getdomovoi\/daemon"/gu)) {
         const values = match[1]!
           .split(",")
           .map((name) => name.trim())
           .filter((name) => name.length > 0 && !name.startsWith("type "))
-        for (const name of values) {
-          // Route verification, the handoff check and the handoff fence talk
-          // to an existing home owner; none can construct or acquire a daemon.
-          // Credential capture only takes the inherited credentials out of
-          // process.env. The login-service calls (J24, ruled 2026-09-23) hand
-          // the daemon to the platform's service manager; none constructs one
-          // here. Neither the constructor nor factory is allowed.
-          if (![
-            "acquireLocalDaemon",
-            "verifyLocalFleetClientRoute",
-            "captureInheritedCredentials",
-            "readLocalServiceHandoffRefusal",
-            "holdServiceHandoffFence",
-            "installDaemonService",
-            "readDaemonServiceStatus",
-            "removeDaemonService",
-            "DaemonServiceRuntimeMissingError",
-          ].includes(name)) {
-            offenders.push(`${file}: imports ${name} from @getdomovoi/daemon`)
-          }
-        }
+        for (const name of values) offenders.push(`${file}: imports ${name} from @getdomovoi/daemon`)
+      }
+      // `import { type A }` keeps an empty side-effect import under
+      // verbatimModuleSyntax, which loads the whole daemon into the bundle.
+      // Only `import type` is erased.
+      for (const match of source.matchAll(/^import\s*\{[^}]*\}\s*from\s*"@getdomovoi\/daemon"/gmu)) {
+        if (!offenders.some((offender) => offender.startsWith(file))) offenders.push(`${file}: ${match[0].slice(0, 40)}... keeps a runtime import of @getdomovoi/daemon; use import type`)
+      }
+      if (/^import\s+(?!type\b)[^\n{]*from\s*"@getdomovoi\/daemon"/mu.test(source)) {
+        if (!offenders.some((offender) => offender.startsWith(file))) offenders.push(`${file}: imports a value from @getdomovoi/daemon`)
       }
     }
     expect(offenders).toEqual([])
+  })
+
+  // Route verification, the handoff check and the handoff fence (#576) talk to
+  // an existing home owner, and the service calls install a manager-owned service; none of
+  // them constructs a daemon in this process. The constructor and the internal surface stay out.
+  it("loads only the ownership seam and the service calls from the daemon", async () => {
+    const { daemonModuleExports } = await import("./daemon-module.js")
+    expect([...daemonModuleExports].sort()).toEqual([
+      "DaemonServiceRuntimeMissingError",
+      "acquireLocalDaemon",
+      "captureInheritedCredentials",
+      "holdServiceHandoffFence",
+      "installDaemonService",
+      "readDaemonServiceRuntimeVersion",
+      "readDaemonServiceStatus",
+      "readLocalServiceHandoffRefusal",
+      "removeDaemonService",
+      "serviceProfileMismatch",
+      "updateDaemonService",
+      "verifyLocalFleetClientRoute",
+    ])
   })
 
   it("resolves only the published daemon entry through its tsconfig", async () => {

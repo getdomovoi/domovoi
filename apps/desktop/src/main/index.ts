@@ -6,7 +6,6 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
 import { realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
-import { acquireLocalDaemon, verifyLocalFleetClientRoute } from "@getdomovoi/daemon"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, protocol, session, shell } from "electron"
 
 import { DesktopDaemon } from "./desktop-daemon.js"
@@ -14,6 +13,8 @@ import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
 import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import type { DesktopDaemonService } from "./daemon-service.js"
+import { loadDaemonModule } from "./daemon-module.js"
+import { withServiceMismatch } from "./service-mismatch.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
   developmentDaemonOverrides,
@@ -119,13 +120,31 @@ const developmentLoopEndpoint = developmentLoopModule?.devLoopEndpoint({
   isPackaged: false,
   environment: developmentLoop,
 })
+// One copy of the daemon (fetzy, 2026-09-23): a packaged app runs its in-app
+// daemon from the runtime it ships in resources, the files the login service
+// runs; the archive carries none of it.
+// A runtime that is missing or does not load stops startup here, before any
+// window, with the path and what is missing, instead of Electron's own error.
+const daemonModule = await loadDaemonModule({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appPath: app.getAppPath() }).catch(async (error: unknown) => {
+  if (launchSmoke) {
+    console.error("Desktop launch smoke could not load the daemon runtime", error)
+  } else {
+    // The report loads only on this failure (owner ruling 2026-09-26, B).
+    const { recordDaemonRuntimeFailure } = await import("./daemon-runtime-failure.js")
+    dialog.showErrorBox("Domovoi could not start", recordDaemonRuntimeFailure({ error, logPath: domovoiMainLogPath(), append: appendDomovoiMainLog }))
+  }
+  app.exit(1)
+  return process.exit(1)
+})
+const { acquireLocalDaemon, verifyLocalFleetClientRoute, readDaemonServiceRuntimeVersion } = daemonModule.module
+if (launchSmoke) console.info(`DOMOVOI_DESKTOP_DAEMON_MODULE ${daemonModule.from}`)
 const daemonSeam = developmentLoopModule
   ? developmentLoopModule.resolveDesktopDaemonSeam({
       isPackaged: false,
       environment: developmentLoop,
       acquire: acquireLocalDaemon,
     })
-  : acquireLocalDaemon
+  : withServiceMismatch(acquireLocalDaemon, () => readDaemonServiceRuntimeVersion())
 
 // Attach to the profile's owner, or own a daemon only when the profile is free.
 const desktopDaemon = new DesktopDaemon(daemonSeam, () => ({
@@ -150,7 +169,7 @@ const fleetOrigins = new FleetOriginAdmission(async (machineId, timeoutMs) => {
 let desktopDaemonService: Promise<DesktopDaemonService> | undefined
 const daemonService = (): Promise<DesktopDaemonService> => {
   desktopDaemonService ??= import("./daemon-service-assembly.js").then(
-    (assembly) => assembly.createDesktopDaemonService(desktopDaemon, { resourcesPath: process.resourcesPath, version: app.getVersion() }),
+    (assembly) => assembly.createDesktopDaemonService(desktopDaemon, { resourcesPath: process.resourcesPath, version: app.getVersion() }, daemonModule.module),
     (error: unknown) => {
       desktopDaemonService = undefined
       throw error
@@ -354,6 +373,7 @@ registerDesktopIpc(ipcMain, {
     status: async () => (await daemonService()).status(),
     install: async () => (await daemonService()).install(),
     remove: async () => (await daemonService()).remove(),
+    update: async () => (await daemonService()).update(),
   },
   // The one address the renderer may ask the browser to open, fixed here.
   releasePage: { open: () => shell.openExternal("https://github.com/getdomovoi/domovoi/releases").then(() => true, () => false) },

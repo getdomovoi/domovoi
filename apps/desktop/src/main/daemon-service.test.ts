@@ -1,4 +1,4 @@
-import { DaemonServiceRuntimeMissingError, type AcquireLocalDaemonOptions, type DaemonServiceInstallResult, type LocalDaemonHandle } from "@getdomovoi/daemon"
+import { DaemonServiceRuntimeMissingError, DaemonServiceUpdateError, type AcquireLocalDaemonOptions, type DaemonServiceInstallResult, type LocalDaemonHandle } from "@getdomovoi/daemon"
 import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -16,9 +16,11 @@ function harness(overrides: Partial<ConstructorParameters<typeof DesktopDaemonSe
     stageRuntime: vi.fn(async () => { calls.push("stage"); return runtime }),
     install: vi.fn(async (options: { releaseInAppDaemon?: () => Promise<void> }) => { calls.push("checks"); await options.releaseInAppDaemon?.(); calls.push("install"); return { kind: "file" as const, path: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/Users/dana/.domovoi/service.json" } }),
     status: vi.fn(async () => ({ installed: true, running: true, detail: "pid 48213" })),
+    profile: vi.fn(async (): Promise<{ app: string; service: string } | undefined> => undefined),
     refusal: vi.fn(async (): Promise<string | undefined> => undefined),
     fence: vi.fn(async (): Promise<{ refusal: string } | { release: () => void }> => { calls.push("fence"); return { release: () => { calls.push("unfence") } } }),
     remove: vi.fn(async () => ({ kind: "file" as const, path: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", profileRecovery: "not-needed" as const })),
+    update: vi.fn(async () => { calls.push("update"); return { kind: "file" as const, path: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/Users/dana/.domovoi/service.json" } }),
     daemon: {
       beginHandoff: vi.fn(() => { calls.push("hold") }),
       endHandoff: vi.fn(() => { calls.push("release") }),
@@ -30,6 +32,35 @@ function harness(overrides: Partial<ConstructorParameters<typeof DesktopDaemonSe
   }
   return { service: new DesktopDaemonService(deps), deps, calls }
 }
+
+// Security review of #577 (P1): the turn check and the fence go through the
+// daemon this app reaches, while install, remove and update act on the login
+// service the saved configuration names. DOMOVOI_PROFILE_DIR can make those two
+// profiles; then the check says nothing about the service, so nothing runs.
+describe("DesktopDaemonService on another profile than the service's", () => {
+  const mismatch = { app: "/Users/dana/profiles/work", service: "/Users/dana/.domovoi" }
+  const words = "This app's daemon uses the profile at /Users/dana/profiles/work, and the login service uses the profile at /Users/dana/.domovoi."
+
+  it("refuses install, remove and update before any check, fence or change", async () => {
+    for (const action of ["install", "remove", "update"] as const) {
+      const { service, deps, calls } = harness({ profile: vi.fn(async () => mismatch) })
+      await expect(service[action](), action).resolves.toEqual({ ok: false, reason: "refused", message: words })
+      expect(deps.refusal, action).not.toHaveBeenCalled()
+      expect(deps.fence, action).not.toHaveBeenCalled()
+      expect(deps.stageRuntime, action).not.toHaveBeenCalled()
+      expect(deps[action], action).not.toHaveBeenCalled()
+      expect(calls, action).toEqual([])
+    }
+  })
+
+  it("waits when the profiles cannot be compared", async () => {
+    for (const action of ["install", "remove", "update"] as const) {
+      const { service, deps } = harness({ profile: vi.fn(async () => { throw new Error("service.json is not a Domovoi service configuration") }) })
+      await expect(service[action](), action).resolves.toEqual({ ok: false, reason: "check-failed", message: "service.json is not a Domovoi service configuration" })
+      expect(deps[action], action).not.toHaveBeenCalled()
+    }
+  })
+})
 
 describe("DesktopDaemonService", () => {
   it("stages the runtime, lets the installer stop the in-app daemon after its checks, then attaches to the service", async () => {
@@ -233,6 +264,102 @@ describe("DesktopDaemonService install, round 9", () => {
 // socket, and the renderer reconnects while the installer still holds the
 // profile. The real DesktopDaemon with a scripted seam shows what that
 // reconnect asks for.
+// Ruled 2026-09-23 (#577, B): "Update the service" moves the running service
+// to the runtime this app ships, in place, with the same refusal as install
+// and remove. Its failures carry the daemon's approved words.
+describe("updating the service in place", () => {
+  it("stages the runtime, updates the service while holding reconnects, then attaches to it", async () => {
+    const { service, deps, calls } = harness()
+    await expect(service.update()).resolves.toEqual({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/Users/dana/.domovoi/service.json", daemonRunning: true })
+    expect(deps.update).toHaveBeenCalledWith({ runtime })
+    // Owner ruling 2026-09-26 (#577, A): the daemon's fence, taken right
+    // before the service restarts, as install and remove take it.
+    expect(calls).toEqual(["fence", "stage", "hold", "update", "attach", "unfence", "release"])
+    expect(deps.daemon.stopOwned).not.toHaveBeenCalled()
+    expect(deps.daemon.restart).not.toHaveBeenCalled()
+  })
+
+  it("refuses while a turn runs or a gate waits, and when that cannot be read, before touching anything", async () => {
+    const refused = harness({ refusal: vi.fn(async () => "1 gate is waiting (Fix login).") })
+    await expect(refused.service.update()).resolves.toEqual({ ok: false, reason: "refused", message: "1 gate is waiting (Fix login)." })
+    expect(refused.calls).toEqual([])
+    const unread = harness({ refusal: vi.fn(async () => { throw new Error("connect ECONNREFUSED 127.0.0.1:47831") }) })
+    await expect(unread.service.update()).resolves.toEqual({ ok: false, reason: "check-failed", message: "connect ECONNREFUSED 127.0.0.1:47831" })
+    expect(unread.calls).toEqual([])
+  })
+
+  it("carries the daemon's words when the update does not end with the new service running", async () => {
+    const error = new DaemonServiceUpdateError("swap-failed-restored", new Error("launchctl bootstrap exited 5"))
+    const { service, deps, calls } = harness({ update: vi.fn(async () => { throw error }) })
+    await expect(service.update()).resolves.toEqual({ ok: false, reason: "update-failed", message: error.message })
+    expect(error.message).toBe("Domovoi could not start the service on the new runtime: launchctl bootstrap exited 5. The previous service was put back and is running.")
+    expect(deps.daemon.restart).not.toHaveBeenCalled()
+    expect(calls.at(-1)).toBe("release")
+  })
+
+  it("reports a missing shipped runtime without changing the service", async () => {
+    const { service, deps } = harness({ stageRuntime: vi.fn(async () => { throw new DaemonServiceRuntimeMissingError("daemon", "/Applications/Domovoi.app/Contents/Resources/daemon-runtime/daemon/dist/index.js", "missing") }) })
+    await expect(service.update()).resolves.toMatchObject({ ok: false, reason: "runtime-missing", part: "daemon" })
+    expect(deps.update).not.toHaveBeenCalled()
+  })
+
+  it("reports an updated service this app could not attach to", async () => {
+    const { service, deps } = harness()
+    vi.mocked(deps.daemon.attachOnly).mockImplementationOnce(async () => ({ kind: "refused", reason: "owner-unreachable", message: "The daemon did not answer" }) as never)
+    await expect(service.update()).resolves.toEqual({ ok: false, reason: "installed-not-attached", kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", message: "The daemon did not answer" })
+  })
+
+  // Owner ruling 2026-09-26 (#577, A): a turn can start after the first read,
+  // so the update takes the daemon's fence right before the service restarts.
+  it("takes the daemon's fence before the update, and updates nothing when it refuses or cannot be taken", async () => {
+    const refused = harness()
+    vi.mocked(refused.deps.fence).mockImplementationOnce(async () => ({ refusal: "1 turn is running (Fix login)." }))
+    await expect(refused.service.update()).resolves.toEqual({ ok: false, reason: "refused", message: "1 turn is running (Fix login)." })
+    expect(refused.deps.update).not.toHaveBeenCalled()
+    expect(refused.calls).toEqual([])
+    expect(refused.deps.stageRuntime).not.toHaveBeenCalled()
+    const unfenced = harness()
+    vi.mocked(unfenced.deps.fence).mockImplementationOnce(async () => { throw new Error("The daemon closed the connection") })
+    await expect(unfenced.service.update()).resolves.toEqual({ ok: false, reason: "check-failed", message: "The daemon closed the connection" })
+    expect(unfenced.deps.update).not.toHaveBeenCalled()
+    expect(unfenced.calls).toEqual([])
+    expect(unfenced.deps.stageRuntime).not.toHaveBeenCalled()
+  })
+
+  it("releases the fence when the update fails", async () => {
+    const { service, calls } = harness({ update: vi.fn(async () => { throw new Error("launchctl bootstrap exited 5") }) })
+    await expect(service.update()).resolves.toMatchObject({ ok: false, reason: "update-failed" })
+    expect(calls).toEqual(["fence", "stage", "hold", "unfence", "release"])
+  })
+
+  // Owner ruling 2026-09-26 (#577, A), as security review round 9 of #576
+  // ruled for install: reaching a daemon after the update is not proof the
+  // updated service runs it.
+  it("reports success only when the attached daemon is the running service's", async () => {
+    for (const [label, attach, status] of [
+      ["another app's daemon", { kind: "attached", owner: "desktop", url: "ws://127.0.0.1:47831/rpc", token: "t" }, { installed: true, running: true, detail: "" }],
+      ["a daemon of this app", { kind: "owned", url: "ws://127.0.0.1:47831/rpc", token: "t" }, { installed: true, running: true, detail: "" }],
+      ["a stopped service", attachedToService, { installed: true, running: false, detail: "not loaded" }],
+      ["a service whose state is unknown", attachedToService, { installed: null, running: false, detail: "" }],
+    ] as const) {
+      const partial = harness({ status: vi.fn(async () => status) })
+      vi.mocked(partial.deps.daemon.attachOnly).mockImplementationOnce(async () => attach as never)
+      await expect(partial.service.update(), label).resolves.toEqual({ ok: false, reason: "installed-not-attached", kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", message: "The daemon this window reached is not the running service." })
+    }
+    const unreadable = harness({ status: vi.fn(async () => { throw new Error("launchctl could not be run") }) })
+    await expect(unreadable.service.update()).resolves.toMatchObject({ ok: false, reason: "installed-not-attached" })
+  })
+
+  it("refuses an update while another service change runs", async () => {
+    let release!: () => void
+    const { service } = harness({ install: vi.fn(() => new Promise<DaemonServiceInstallResult>((resolve) => { release = () => resolve({ kind: "file", path: "/p", configurationPath: "/c" }) })) })
+    const first = service.install()
+    await expect(service.update()).resolves.toMatchObject({ ok: false, reason: "busy" })
+    release()
+    await first
+  })
+})
+
 describe("a renderer reconnect during the handoff", () => {
   it("never starts an in-app daemon mid-install, and gets the service's endpoint once it is attached", async () => {
     const modes: AcquireLocalDaemonOptions["mode"][] = []
@@ -250,6 +377,7 @@ describe("a renderer reconnect during the handoff", () => {
     let reconnect: Promise<unknown> | undefined
     const service = new DesktopDaemonService({
       stageRuntime: async () => runtime,
+      update: async () => { throw new Error("not in this test") },
       install: async (options) => {
         await options.releaseInAppDaemon?.()
         reconnect = daemon.reacquire()
@@ -258,6 +386,7 @@ describe("a renderer reconnect during the handoff", () => {
       },
       status: async () => ({ installed: true, running: true, detail: "" }),
       remove: async () => ({ kind: "file", path: "/p", profileRecovery: "not-needed" }),
+      profile: async () => undefined,
       refusal: async () => undefined,
       fence: async () => ({ release: () => {} }),
       daemon,
@@ -507,6 +636,21 @@ describe("staging the shipped runtime under the profile", () => {
       await expect(stage({ resources, home, version: "0.9.4", copy })).rejects.toMatchObject({ name: "DaemonServiceRuntimeMissingError", part: "node", path: nodePath })
       expect(copy).not.toHaveBeenCalled()
     })
+  })
+
+  // The daemon's approved words for an update (update-outcome, 2026-09-23).
+  it("says the service was not updated when the shipped part is missing for an update", async () => {
+    const { stageDaemonRuntime } = await import("./daemon-service.js")
+    await expect(stageDaemonRuntime({
+      resourcesPath: "/r", home: "/Users/dana", version: "0.9.4", platform: "darwin", operation: "update",
+      fileSystem: nodeRuntimeFileSystem({ entry: async () => "missing", copy: vi.fn(), remove: async () => {}, rename: async () => {} }),
+    })).rejects.toThrow("The Node runtime this app ships was not found at /r/daemon-runtime/node/bin/node. The service was not updated and no service files were changed.")
+  })
+
+  it("stages for an update when the service is updated", async () => {
+    const { service, deps } = harness()
+    await service.update()
+    expect(deps.stageRuntime).toHaveBeenCalledWith("update")
   })
 })
 

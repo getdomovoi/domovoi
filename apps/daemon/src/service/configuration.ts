@@ -8,7 +8,7 @@ import { DaemonConfigurationError, parseDaemonEnvironment, type DaemonEnvironmen
 import { OperationDeadline } from "../operation-deadline.js"
 import { configuredSshTunnelsSchema, tailnetHostSchema } from "../transport-config.js"
 import { withinServiceDeadline } from "./deadline.js"
-import { profileDirectory, profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
+import { configuredProfileDirectory, profileDirectory, profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
 import { readLocalProfileFile } from "../local-owner-record.js"
 import { installedWslTask, wslInstallationSchema, type WslInstallation } from "./wsl-registration.js"
 
@@ -124,6 +124,25 @@ export function serviceRegistrationBlocksProfile(home: string, profile: ProfileL
 function webAppUrlSetting(value: unknown): string | undefined {
   if (value === undefined || typeof value === "string") return value
   throw new DaemonConfigurationError("DOMOVOI_WEB_APP_URL must be a string")
+}
+
+// Security review of #577 (P1): the profile a caller's own daemon runs (its
+// environment's DOMOVOI_PROFILE_DIR, read as the daemon reads it) against the
+// one the login service runs (the saved configuration's, or the default
+// profile an install from the desktop writes when nothing is saved). When they
+// differ, a turn check or a fence taken through the caller's daemon says
+// nothing about the service, so both directories are returned. Throws when
+// the saved configuration cannot be read. Reads only.
+export function serviceProfileMismatch(input: { environment: NodeJS.ProcessEnv; homeDirectory: string }): { app: string; service: string } | undefined {
+  const home = input.homeDirectory
+  const app = profileLocation(home, configuredProfileDirectory(input.environment.DOMOVOI_PROFILE_DIR, home))
+  const path = serviceConfigurationPath(home, process.platform)
+  let service: ProfileLocation = home
+  if (existsSync(path)) {
+    const config = parseServiceConfiguration(readLocalProfileFile(path, maximumConfigurationBytes))
+    service = profileLocation(config.homeDirectory, config.profileDirectory)
+  }
+  return sameProfileDirectory(app, service) ? undefined : { app: profileDirectory(app), service: profileDirectory(service) }
 }
 
 export function parseServiceConfiguration(text: string): ServiceConfiguration {

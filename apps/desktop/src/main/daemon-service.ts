@@ -1,10 +1,37 @@
-import { DaemonServiceRuntimeMissingError, type DaemonServiceInstallResult, type DaemonServiceOptions, type DaemonServiceRemovalResult, type DaemonServiceRuntime, type DaemonServiceStatus } from "@getdomovoi/daemon"
+import type { DaemonServiceInstallResult, DaemonServiceOptions, DaemonServiceRemovalResult, DaemonServiceRuntime, DaemonServiceStatus } from "@getdomovoi/daemon"
 import { publishFileDurably } from "@getdomovoi/credential-store"
 import { randomUUID } from "node:crypto"
 import { cp, lstat, mkdir, readdir, readlink, realpath, rm } from "node:fs/promises"
 import { posix, win32 } from "node:path"
 
 import type { DesktopDaemonAcquisition } from "../shared/daemon-acquisition.js"
+
+// The daemon's own runtime-missing refusal, made here for the shipped parts
+// this module checks itself. The daemon is loaded at run time (daemon-module),
+// so its class is not importable here; both are recognised by name and shape.
+export class DaemonServiceRuntimeMissingError extends Error {
+  constructor(
+    readonly part: "node" | "daemon",
+    readonly path: string,
+    reason: "missing" | "not-file",
+    operation: "install" | "update" = "install",
+  ) {
+    const what = part === "node" ? "The Node runtime this app ships" : "The Domovoi daemon this app ships"
+    const why = reason === "not-file" ? `is not a runnable file at ${path}` : `was not found at ${path}`
+    const outcome = operation === "install"
+      ? "No service was installed and no service files were changed."
+      : "The service was not updated and no service files were changed."
+    super(`${what} ${why}. ${outcome}`)
+    this.name = "DaemonServiceRuntimeMissingError"
+  }
+}
+
+function runtimeMissing(cause: unknown): { part: "node" | "daemon"; path: string; message: string } | undefined {
+  if (!(cause instanceof Error) || cause.name !== "DaemonServiceRuntimeMissingError") return undefined
+  const { part, path } = cause as Error & { part?: unknown; path?: unknown }
+  if ((part !== "node" && part !== "daemon") || typeof path !== "string") return undefined
+  return { part, path, message: cause.message }
+}
 
 // J24 (2026-09-23): keep Domovoi running after the app quits. The app ships
 // Node and the daemon under its resources, copies them under the profile so
@@ -32,6 +59,9 @@ export type DaemonServiceOutcome =
   // service as read back after the failure, since a manager can fail after it
   // wrote or removed part of it; null when it could not be read.
   | { ok: false; reason: "failed"; message: string; daemon: "untouched" | "restarted" | "attached" | "stopped"; service: ServiceReadBack | null }
+  // An in-place update that did not end with the new service running. The
+  // message is the daemon's own, approved 2026-09-23 (update-outcome.ts).
+  | { ok: false; reason: "update-failed"; message: string }
 
 export type ServiceReadBack = { installed: boolean | null; running: boolean }
 
@@ -42,10 +72,18 @@ export type ServiceHandoffFence = { refusal: string } | { release: () => void }
 export type DesktopDaemonServiceDependencies = {
   // Copies the shipped runtime under the profile and names the copy, or
   // throws DaemonServiceRuntimeMissingError naming the part that is not there.
-  stageRuntime: () => Promise<DaemonServiceRuntime>
+  stageRuntime: (operation: "install" | "update") => Promise<DaemonServiceRuntime>
   install: (options: DaemonServiceOptions) => Promise<DaemonServiceInstallResult>
   status: () => Promise<DaemonServiceStatus>
   remove: () => Promise<DaemonServiceRemovalResult>
+  // Moves the installed service to the staged runtime in place (ruled
+  // 2026-09-23, B). Throws the daemon's DaemonServiceUpdateError on failure.
+  update: (options: { runtime: DaemonServiceRuntime }) => Promise<DaemonServiceInstallResult>
+  // Security review of #577 (P1): the profile this app's daemon runs against
+  // the one the login service runs, both directories when they differ. The
+  // turn check and the fence below reach only this app's daemon, so they bind
+  // the service only when both are one profile. Throws when unreadable.
+  profile: () => Promise<{ app: string; service: string } | undefined>
   // The turns running and gates waiting in the daemon's own workspace, named
   // as the renderer names them, or undefined when there are none. Throws when
   // the workspace cannot be read.
@@ -156,7 +194,7 @@ function inside(pathApi: typeof posix, root: string, path: string): boolean {
 // and every link in the shipped tree must be relative and stay inside it, so
 // the copy runs nothing from outside the app and still works after the app
 // moves. All of it is checked before any byte is copied.
-async function checkShippedRuntime(fs: RuntimeFileSystem, pathApi: typeof posix, shippedRoot: string, platform: string): Promise<void> {
+async function checkShippedRuntime(fs: RuntimeFileSystem, pathApi: typeof posix, shippedRoot: string, platform: string, operation: "install" | "update"): Promise<void> {
   const shipped = daemonRuntimeLayout(pathApi.dirname(shippedRoot), platform)
   for (const [part, path] of [["node", shipped.nodePath], ["daemon", shipped.daemonEntryPath]] as const) {
     const steps = pathApi.relative(shippedRoot, path).split(pathApi.sep)
@@ -164,8 +202,8 @@ async function checkShippedRuntime(fs: RuntimeFileSystem, pathApi: typeof posix,
     for (const [index, step] of ["", ...steps].entries()) {
       at = step === "" ? at : pathApi.join(at, step)
       const found = await fs.entry(at)
-      if (found === "missing") throw new DaemonServiceRuntimeMissingError(part, path, "missing")
-      if (found !== (index === steps.length ? "file" : "directory")) throw new DaemonServiceRuntimeMissingError(part, path, "not-file")
+      if (found === "missing") throw new DaemonServiceRuntimeMissingError(part, path, "missing", operation)
+      if (found !== (index === steps.length ? "file" : "directory")) throw new DaemonServiceRuntimeMissingError(part, path, "not-file", operation)
     }
   }
   const realRoot = await fs.realpath(shippedRoot)
@@ -227,12 +265,14 @@ export async function stageDaemonRuntime(input: {
   version: string
   platform: string
   fileSystem: RuntimeFileSystem
+  // The words for a missing part follow what was asked (approved 2026-09-23).
+  operation?: "install" | "update"
 }): Promise<DaemonServiceRuntime> {
   const fs = input.fileSystem
   const pathApi = input.platform === "win32" ? win32 : posix
   const destination = profileRuntimeDirectory(input.home, input.version, input.platform)
   const shippedRoot = pathApi.join(input.resourcesPath, runtimeDirectory)
-  await checkShippedRuntime(fs, pathApi, shippedRoot, input.platform)
+  await checkShippedRuntime(fs, pathApi, shippedRoot, input.platform, input.operation ?? "install")
   // Stated limit, ruled by fetzy on 2026-09-25: the checks above hold against
   // a profile that is already redirected, not against a process running as
   // the same user that swaps ~/.domovoi or its runtime directory for a link
@@ -344,11 +384,11 @@ export class DesktopDaemonService {
     let released = false
     let fence: { release: () => void } | undefined
     try {
-      const refused = await this.#refusal()
+      const refused = (await this.#profileRefusal()) ?? (await this.#refusal())
       if (refused) return refused
       let installed: DaemonServiceInstallResult
       try {
-        const runtime = await this.deps.stageRuntime()
+        const runtime = await this.deps.stageRuntime("install")
         installed = await this.deps.install({
           runtime,
           releaseInAppDaemon: async () => {
@@ -362,9 +402,9 @@ export class DesktopDaemonService {
         })
       } catch (cause) {
         if (cause instanceof HandoffNotFenced) return cause.outcome
-        if (cause instanceof DaemonServiceRuntimeMissingError) {
-          return { ok: false, reason: "runtime-missing", part: cause.part, path: cause.path, message: cause.message }
-        }
+        // Recognised by name: the daemon's own class is loaded at run time.
+        const missing = runtimeMissing(cause)
+        if (missing) return { ok: false, reason: "runtime-missing", ...missing }
         // The stop happened and the install did not finish: the profile may
         // be free, so the app takes a daemon back rather than sit idle. The
         // manager may have written part of the service, so it is read back.
@@ -404,7 +444,7 @@ export class DesktopDaemonService {
     let held = false
     let fence: { release: () => void } | undefined
     try {
-      const refused = await this.#refusal()
+      const refused = (await this.#profileRefusal()) ?? (await this.#refusal())
       if (refused) return refused
       const fenced = await this.#fence()
       if (!("release" in fenced)) return fenced
@@ -431,6 +471,68 @@ export class DesktopDaemonService {
       fence?.release()
       if (held) this.deps.daemon.endHandoff()
       this.#busy = false
+    }
+  }
+
+  // The app is attached to the service, so there is no daemon of its own to
+  // stop. Reconnects are held while the service restarts on the new runtime.
+  async update(): Promise<DaemonServiceOutcome> {
+    if (this.#busy) return { ok: false, reason: "busy", message: "A service change is already in progress." }
+    this.#busy = true
+    let held = false
+    let fence: { release: () => void } | undefined
+    try {
+      const refused = (await this.#profileRefusal()) ?? (await this.#refusal())
+      if (refused) return refused
+      // Owner ruling 2026-09-26 (#577, A): the daemon's own fence, as install
+      // and remove take it. The read above is only a snapshot; a turn can start
+      // after it. Security review of #577 (P2): taken before staging, because
+      // staging replaces the copy of this version under the profile, which the
+      // running service may be using; no turn starts on it once fenced.
+      const fenced = await this.#fence()
+      if (!("release" in fenced)) return fenced
+      fence = fenced
+      let updated: DaemonServiceInstallResult
+      try {
+        const runtime = await this.deps.stageRuntime("update")
+        held = true
+        this.deps.daemon.beginHandoff()
+        updated = await this.deps.update({ runtime })
+      } catch (cause) {
+        const missing = runtimeMissing(cause)
+        if (missing) return { ok: false, reason: "runtime-missing", ...missing }
+        return { ok: false, reason: "update-failed", message: message(cause) }
+      }
+      const target = updated.kind === "file" ? updated.path : updated.name
+      let attached: DesktopDaemonAcquisition
+      try {
+        attached = await this.deps.daemon.attachOnly()
+      } catch (cause) {
+        return { ok: false, reason: "installed-not-attached", kind: updated.kind, target, message: message(cause) }
+      }
+      if (attached.kind === "refused") {
+        return { ok: false, reason: "installed-not-attached", kind: updated.kind, target, message: attached.message }
+      }
+      // As security review round 9 ruled for install: reaching a daemon is not
+      // proof the updated service runs it.
+      if (attached.kind !== "attached" || attached.owner !== "daemon" || !(await this.#serviceRuns())) {
+        return { ok: false, reason: "installed-not-attached", kind: updated.kind, target, message: "The daemon this window reached is not the running service." }
+      }
+      return { ok: true, kind: updated.kind, target, configurationPath: updated.configurationPath, daemonRunning: true }
+    } finally {
+      fence?.release()
+      if (held) this.deps.daemon.endHandoff()
+      this.#busy = false
+    }
+  }
+
+  async #profileRefusal(): Promise<DaemonServiceOutcome | undefined> {
+    try {
+      const mismatch = await this.deps.profile()
+      if (!mismatch) return undefined
+      return { ok: false, reason: "refused", message: `This app's daemon uses the profile at ${mismatch.app}, and the login service uses the profile at ${mismatch.service}.` }
+    } catch (cause) {
+      return { ok: false, reason: "check-failed", message: message(cause) }
     }
   }
 

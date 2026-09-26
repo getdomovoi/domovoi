@@ -37,6 +37,10 @@ export type LocalDaemonDescription = {
   // daemon outside the app drawn as the running service (security review
   // round 9): a daemon answering is not proof the service runs.
   serviceRunning?: boolean | undefined
+  // The daemon version the service answered with, and this app's, so an app
+  // update that left the service on its old runtime is said (ruled 2026-09-23).
+  serviceVersion?: string | undefined
+  appVersion?: string | undefined
   platform?: "darwin" | "linux" | "win32" | undefined
   // Present on a desktop that ships a daemon runtime and can install the
   // login service. The refusal names the work in flight; while it is set the
@@ -44,6 +48,9 @@ export type LocalDaemonDescription = {
   service?: {
     install: () => Promise<DaemonServiceOutcome>
     remove: () => Promise<DaemonServiceOutcome>
+    // Moves an older service to this app's runtime in place (ruled
+    // 2026-09-23, B). Absent where the desktop cannot update it.
+    update?: (() => Promise<DaemonServiceOutcome>) | undefined
     // The service as the desktop reads it now, for an answer this window
     // could not read.
     status?: (() => Promise<DaemonServiceStatusReport>) | undefined
@@ -77,8 +84,25 @@ type ServicePhase =
   | { kind: "unchecked"; message: string }
   | { kind: "not-attached"; message: string }
   | { kind: "failed"; action: "install" | "remove"; message: string; still: string; header?: string | undefined }
+  | { kind: "updating" }
+  | { kind: "updated" }
+  | { kind: "update-not-attached"; message: string }
+  // Only the daemon's own words (update-outcome, approved 2026-09-23).
+  | { kind: "update-failed"; message: string }
 
 const profileRecoverCommand = "domovoid profile recover --confirm-no-supervisor"
+
+// Release versions are major.minor.patch; anything else is not compared.
+function olderRelease(version: string, than: string): boolean {
+  const parse = (value: string) => /^(\d+)\.(\d+)\.(\d+)$/u.exec(value)?.slice(1).map(Number)
+  const left = parse(version)
+  const right = parse(than)
+  if (!left || !right) return false
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index]! !== right[index]!) return left[index]! < right[index]!
+  }
+  return false
+}
 
 // Security review round 1 of #576, lines approved by fetzy on 2026-09-25: a
 // failed install or removal the service manager left half done, a read-back
@@ -173,6 +197,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
       else if (outcome.reason === "refused") setPhase({ kind: "waits", refusal: outcome.message })
       else if (outcome.reason === "check-failed") setPhase({ kind: "unchecked", message: outcome.message })
       else if (outcome.reason === "installed-not-attached") setPhase({ kind: "not-attached", message: outcome.message })
+      else if (outcome.reason === "update-failed") setPhase({ kind: "failed", action, message: outcome.message, still: "Nothing changed." })
       else setPhase({ kind: "failed", action, message: outcome.message, still: outcome.reason === "runtime-missing"
         ? "No service was installed and no service files were changed."
         : outcome.reason === "busy" ? "Nothing changed." : failedStill(service.kind, action, outcome) })
@@ -183,6 +208,20 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
       setPhase({ kind: "failed", action, message: cause instanceof Error ? cause.message : "The desktop did not answer.", still: unknownAnswerStill(service.kind, action, readBack), header: unknownAnswerHeader(action, readBack) })
     }
   }
+  const update = async () => {
+    if (!live?.update) return
+    setPhase({ kind: "updating" })
+    try {
+      const outcome = await live.update()
+      if (outcome.ok) setPhase({ kind: "updated" })
+      else if (outcome.reason === "refused") setPhase({ kind: "waits", refusal: outcome.message })
+      else if (outcome.reason === "check-failed") setPhase({ kind: "unchecked", message: outcome.message })
+      else if (outcome.reason === "installed-not-attached") setPhase({ kind: "update-not-attached", message: outcome.message })
+      else setPhase({ kind: "update-failed", message: outcome.message })
+    } catch (cause) {
+      setPhase({ kind: "update-failed", message: cause instanceof Error ? cause.message : String(cause) })
+    }
+  }
   // Security review round 8: whether the service is installed is its own
   // fact, from the desktop's read of it, and decides Install, Remove and what
   // was written. Who holds the daemon decides the toggle and its quit line. A
@@ -191,6 +230,8 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
   const installed = daemon.serviceInstalled === true
   const on = daemon.owner === "outside" && installed && daemon.serviceRunning === true
   const unknown = daemon.owner === "outside" && !on
+  const serviceBehind = on && phase.kind !== "updated" && daemon.serviceVersion !== undefined && daemon.appVersion !== undefined && olderRelease(daemon.serviceVersion, daemon.appVersion)
+  const updating = phase.kind === "updating"
   const state = on
     ? { label: "Running", tone: "bg-success", line: "Quitting this app leaves the daemon and its sessions running." }
     : unknown
@@ -209,8 +250,8 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
     : installed
       ? "Install is off: the service is already installed."
       : unknown ? "Install and Remove are off: this app did not start that daemon." : "Remove is off: nothing is installed."
-  const installLocked = !live || installed || unknown || busy || Boolean(live.refusal)
-  const removeLocked = !live || !installed || busy || Boolean(live.refusal)
+  const installLocked = !live || installed || unknown || busy || updating || Boolean(live.refusal)
+  const removeLocked = !live || !installed || busy || updating || Boolean(live.refusal)
   return (
     <section aria-labelledby="settings-daemon" className="flex flex-col gap-3 rounded-lg border bg-card p-4">
       <div className="flex flex-col gap-1">
@@ -227,6 +268,21 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           {phase.kind === "installing" ? "Installing" : phase.kind === "removing" ? "Removing" : state.label}
         </span>
       </div>
+      {serviceBehind ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground">
+          <p className="m-0 min-w-0 flex-1">{`The login service runs Domovoi ${daemon.serviceVersion}. This app is ${daemon.appVersion}.`}</p>
+          {live?.update ? <Button type="button" variant="outline" size="sm" disabled={busy || updating || Boolean(live.refusal)} onClick={() => void update()}>Update the service</Button> : null}
+        </div>
+      ) : null}
+      {phase.kind === "update-failed" ? (
+        <p className="m-0 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] text-danger-foreground" role="alert">{phase.message}</p>
+      ) : null}
+      {phase.kind === "update-not-attached" ? (
+        <div className="flex flex-col gap-1.5 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="alert">
+          <span className="font-medium">Updated, but this window could not reach the daemon</span>
+          <span className="font-machine text-[10.5px] opacity-80">{phase.message}</span>
+        </div>
+      ) : null}
       {phase.kind === "installing" ? <p className="m-0 text-[11.5px] text-muted-foreground">{`The daemon moves under ${service.manager}. The switch waits.`}</p> : null}
       {phase.kind === "removing" ? <p className="m-0 text-[11.5px] text-muted-foreground">Unloading the service, then starting the daemon inside this app again. The switch waits.</p> : null}
       {live?.refusal && !busy ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground">{`The switch waits: ${live.refusal} Nothing is interrupted.`}</p> : null}

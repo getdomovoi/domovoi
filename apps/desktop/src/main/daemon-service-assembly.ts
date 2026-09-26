@@ -1,7 +1,6 @@
 import { homedir } from "node:os"
 
-import { holdServiceHandoffFence, installDaemonService, readDaemonServiceStatus, readLocalServiceHandoffRefusal, removeDaemonService } from "@getdomovoi/daemon"
-
+import type { DaemonModule } from "./daemon-module.js"
 import { DesktopDaemonService, nodeRuntimeFileSystem, stageDaemonRuntime } from "./daemon-service.js"
 import type { DesktopDaemon } from "./desktop-daemon.js"
 
@@ -9,31 +8,37 @@ import type { DesktopDaemon } from "./desktop-daemon.js"
 // with import() only when Settings first asks about the service, so none of
 // it counts toward the main process's startup bundle. The shipped runtime is
 // copied under the profile first, so the service never points into the app
-// bundle.
-export function createDesktopDaemonService(desktopDaemon: DesktopDaemon, app: { resourcesPath: string; version: string }): DesktopDaemonService {
+// bundle. The service calls come from the daemon index.ts loaded at startup
+// (daemon-module.ts), never from a static import (#577, one copy).
+export function createDesktopDaemonService(desktopDaemon: DesktopDaemon, app: { resourcesPath: string; version: string }, daemon: DaemonModule): DesktopDaemonService {
   return new DesktopDaemonService({
-    stageRuntime: () => stageDaemonRuntime({
+    stageRuntime: (operation) => stageDaemonRuntime({
+      operation,
       resourcesPath: app.resourcesPath,
       home: homedir(),
       version: app.version,
       platform: process.platform,
       fileSystem: nodeRuntimeFileSystem(),
     }),
-    install: (options) => installDaemonService(options),
-    status: () => readDaemonServiceStatus(),
-    remove: () => removeDaemonService(),
+    install: (options) => daemon.installDaemonService(options),
+    status: () => daemon.readDaemonServiceStatus(),
+    // The profile this app's daemon runs, read as its acquisition reads it,
+    // against the one the saved service configuration names.
+    profile: async () => daemon.serviceProfileMismatch({ environment: process.env, homeDirectory: homedir() }),
+    remove: () => daemon.removeDaemonService(),
+    update: (options) => daemon.updateDaemonService(options),
     // The same check the renderer draws, applied to the daemon's own workspace.
     refusal: async () => {
       const endpoint = desktopDaemon.current()
       if (!endpoint || endpoint.kind === "refused") throw new Error("This app is not connected to a daemon")
-      return readLocalServiceHandoffRefusal({ endpoint, timeoutMs: 5_000 })
+      return daemon.readLocalServiceHandoffRefusal({ endpoint, timeoutMs: 5_000 })
     },
     // The same check inside the daemon, held from right before the stop until
     // the handoff settles, so no turn starts after the read above.
     fence: async () => {
       const endpoint = desktopDaemon.current()
       if (!endpoint || endpoint.kind === "refused") throw new Error("This app is not connected to a daemon")
-      return holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })
+      return daemon.holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })
     },
     daemon: {
       beginHandoff: () => desktopDaemon.beginHandoff(),

@@ -35,7 +35,7 @@ daemon-ready milestones plus main-process RSS. Interpret it as local diagnostic 
 
 | Surface | Alpha budget | Stable gate |
 | --- | --- | --- |
-| Startup | Web JS 1,250,000 startup bytes and 400,000 lazy bytes; web CSS 124,000; desktop renderer JS 1,250,000 startup bytes and 400,000 lazy bytes; renderer CSS 124,000; main 39,936; preload 9,728 | Startup graph measured from the built `index.html` entry and `modulepreload` links, lazy chunks reported separately; desktop creates its hidden window before awaiting daemon startup and records bounded milestones |
+| Startup | Web JS 1,250,000 startup bytes and 400,000 lazy bytes; web CSS 124,000; desktop renderer JS 1,250,000 startup bytes and 400,000 lazy bytes; renderer CSS 124,000; main 43,008; preload 9,728 | Startup graph measured from the built `index.html` entry and `modulepreload` links, lazy chunks reported separately; desktop creates its hidden window before awaiting daemon startup and records bounded milestones |
 | Memory | 100 thread items in a client snapshot; 200 retained history items; 65,536 terminal replay characters | Active-session snapshot window, bounded history merge/DOM, bounded terminal replay |
 | Long threads | 100 snapshot/rendered items; 100 items per history page; 32,768 Markdown characters and 500 lines per item | Durable history remains daemon-owned and pageable; client and quick-view tests enforce windows |
 | Terminal throughput | 65,536 characters per notification; 16 ms batching; WebSocket pause/resume at 1,048,576/262,144 buffered bytes | Fake-clock batching and backpressure tests plus protocol payload validation; bytes remain ordered and lossless |
@@ -68,6 +68,19 @@ handlers with their authorization checks, and the loader: the main bundle measur
 The preload is one sandboxed bundle with no lazy path, and it keeps its checks on the service's
 answers: it measures 9,417 bytes. The owner ruled on 2026-09-26 to raise main to 39,936 and preload
 to 9,728, keeping the lazy import and the validation in the preload.
+
+It was 39,936 until 2026-09-26, when the daemon runtime beside the app (#577) moved the in-app
+daemon out of the archive. The app loads it at startup from the runtime it ships, so the loader,
+its export check and the hand-over of the credentials the first module held must run before the
+first window. The mismatch wording and the runtime-load failure report load lazily on their
+failure paths. The main bundle measures 41,674 bytes; the preload, 9,606. The owner ruled on
+2026-09-26 to raise main to 41,984 and keep preload at 9,728.
+
+It was 41,984 until later on 2026-09-26, when the security review of #577 had the loader check the
+shipped daemon before importing it: its dist and node_modules must resolve inside the app's
+resources, and every dist file must match the sha256 digests packaging recorded in app.asar. The
+check runs before the first window and before the credential hand-over, so it cannot load lazily.
+The main bundle measures 42,787 bytes. The owner ruled to raise main to 43,008.
 
 Budget failures require reducing work or an explicit documented budget revision. Do not replace
 these gates with wall-clock or RSS assertions: CI runner speed and memory vary by OS and load.

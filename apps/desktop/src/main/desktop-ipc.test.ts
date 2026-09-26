@@ -77,6 +77,7 @@ const channels: readonly ChannelSpec[] = [
   { channel: "domovoi:daemon-service-status", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   { channel: "domovoi:daemon-service-install", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   { channel: "domovoi:daemon-service-remove", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
+  { channel: "domovoi:daemon-service-update", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   { channel: "domovoi:open-release-page", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   { channel: "domovoi:window-decoration-get", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   {
@@ -157,6 +158,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     "daemonService.status": vi.fn(async () => ({ installed: false, running: false, detail: "" })),
     "daemonService.install": vi.fn(async () => ({ ok: true, kind: "file", target: "/p", configurationPath: "/c" })),
     "daemonService.remove": vi.fn(async () => ({ ok: true, kind: "file", target: "/p", profileRecovery: "not-needed" })),
+    "daemonService.update": vi.fn(async () => ({ ok: true, kind: "file", target: "/p", configurationPath: "/c", daemonRunning: true })),
     "releasePage.open": vi.fn(async () => true),
     "notifications.notify": vi.fn((_input: unknown, _activate: (sessionId: string) => void) => true),
     "deepLinks.enqueue": vi.fn(),
@@ -187,7 +189,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     openDirectoryDialog: { showOpenDirectory: effects["openDirectoryDialog.showOpenDirectory"] },
     clipboard: { readText: effects["clipboard.readText"], writeText: effects["clipboard.writeText"] },
     externalTargets: { allowRoot: effects["externalTargets.allowRoot"], open: effects["externalTargets.open"] },
-    daemonService: { status: effects["daemonService.status"], install: effects["daemonService.install"], remove: effects["daemonService.remove"] },
+    daemonService: { status: effects["daemonService.status"], install: effects["daemonService.install"], remove: effects["daemonService.remove"], update: effects["daemonService.update"] },
     releasePage: { open: effects["releasePage.open"] },
     notifications: { notify: effects["notifications.notify"] },
     deepLinks: {
@@ -321,6 +323,8 @@ describe("registerDesktopIpc", () => {
     expect(target.effects["daemonService.install"]).toHaveBeenCalledOnce()
     expect(await target.listener("handle", "domovoi:daemon-service-remove")(target.event)).toMatchObject({ ok: true })
     expect(await target.listener("handle", "domovoi:daemon-service-status")(target.event)).toMatchObject({ installed: false })
+    expect(await target.listener("handle", "domovoi:daemon-service-update")(target.event)).toMatchObject({ ok: true, daemonRunning: true })
+    expect(target.effects["daemonService.update"]).toHaveBeenCalledOnce()
     expect(await target.listener("handle", "domovoi:open-release-page")(target.event)).toBe(true)
     expect(target.effects["releasePage.open"]).toHaveBeenCalledOnce()
 

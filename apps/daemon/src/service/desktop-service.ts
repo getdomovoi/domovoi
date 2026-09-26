@@ -1,9 +1,12 @@
 import { constants } from "node:fs"
-import { access, stat } from "node:fs/promises"
+import { access, readFile, stat } from "node:fs/promises"
 import { homedir, userInfo } from "node:os"
 import { posix, win32 } from "node:path"
 
+import { loginServiceHomePaths, loginServiceTaskName } from "@getdomovoi/protocol"
+
 import type { DaemonEnvironment } from "../config.js"
+import { OperationDeadline } from "../operation-deadline.js"
 import { createServiceConfiguration } from "./configuration.js"
 import type { ServiceConfiguration } from "./configuration.js"
 import {
@@ -258,5 +261,62 @@ export function nodeDaemonServiceDependencies(): DaemonServiceDependencies & Ser
         return "not-file"
       }
     },
+  }
+}
+
+// Ruled 2026-09-23 (#577, A): which runtime the login service runs, read from
+// the service's own definition. The desktop stages its runtime at
+// <profile>/runtime/<version>/ and the definition names that path, so the
+// version is the folder name. A service that runs any other runtime (the CLI's
+// own Node, a hand-edited unit) reads as installed with no version. Nothing is
+// written; on Windows the task is only queried.
+export type DaemonServiceRuntimeReport = { installed: false } | { installed: true; version?: string }
+
+export type DaemonServiceRuntimeReader = {
+  platform: string
+  home: string
+  readDefinition: (path: string) => Promise<string | undefined>
+  capture: ServiceEffects["capture"]
+}
+
+const stagedRuntime = /[\\/]\.domovoi[\\/]runtime[\\/](\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)[\\/]/u
+
+export function stagedRuntimeVersion(definition: string): string | undefined {
+  return stagedRuntime.exec(definition)?.[1]
+}
+
+export async function readDaemonServiceRuntimeVersion(
+  reader: DaemonServiceRuntimeReader = nodeDaemonServiceRuntimeReader(),
+): Promise<DaemonServiceRuntimeReport> {
+  let definition: string | undefined
+  if (reader.platform === "win32") {
+    const deadline = OperationDeadline.start(10_000)
+    try {
+      const queried = await reader.capture("schtasks", ["/query", "/tn", loginServiceTaskName, "/xml"], deadline)
+      definition = queried.code === 0 ? queried.stdout : undefined
+    } finally {
+      deadline.clear()
+    }
+  } else if (reader.platform === "darwin" || reader.platform === "linux") {
+    definition = await reader.readDefinition(posix.join(reader.home, loginServiceHomePaths[reader.platform]))
+  }
+  if (definition === undefined) return { installed: false }
+  const version = stagedRuntimeVersion(definition)
+  return version === undefined ? { installed: true } : { installed: true, version }
+}
+
+export function nodeDaemonServiceRuntimeReader(): DaemonServiceRuntimeReader {
+  return {
+    platform: process.platform,
+    home: homedir(),
+    readDefinition: async (path) => {
+      try {
+        return await readFile(path, "utf8")
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+        throw error
+      }
+    },
+    capture: nodeServiceEffects().capture,
   }
 }

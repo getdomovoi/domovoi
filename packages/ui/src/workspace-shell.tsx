@@ -43,7 +43,7 @@ import {
 import { fleetMachines } from "./fleet-entries.js"
 import { machineAttachment } from "./machine-selection.js"
 import { TooltipProvider } from "./components/ui/tooltip"
-import { DaemonRpcError, ProjectSwitchConfirmationError } from "./client"
+import { DaemonRpcError, ProjectSwitchConfirmationError, clientVersion } from "./client"
 import { SessionsDrawerColumn, SessionsDrawerTrigger, type SessionRowAction } from "./sessions-drawer"
 import { useWorkspace } from "./use-workspace"
 import type { RelayPinStorage } from "./relay-pin"
@@ -211,12 +211,15 @@ export { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointB
 // Whether a service read shows the change the action set out to make, in
 // whole or in part: installed after an install; removed or no longer running
 // after a removal. An unknown read shows nothing.
-function serviceChangedBy(action: "install" | "remove", service: { installed: boolean | null; running: boolean }): boolean {
+function serviceChangedBy(action: "install" | "remove" | "update", service: { installed: boolean | null; running: boolean }): boolean {
   if (service.installed === null) return false
+  // An update restarts the service it moves (security review of #577, P3):
+  // any read of an installed service may be the new one.
+  if (action === "update") return service.installed
   return action === "install" ? service.installed : !(service.installed && service.running)
 }
 
-function serviceOutcomeMovesDaemon(action: "install" | "remove", outcome: DaemonServiceOutcome): boolean {
+function serviceOutcomeMovesDaemon(action: "install" | "remove" | "update", outcome: DaemonServiceOutcome): boolean {
   if (outcome.ok || outcome.reason === "installed-not-attached") return true
   if (outcome.reason !== "failed") return false
   if (outcome.daemon === "restarted" || outcome.daemon === "attached") return true
@@ -265,7 +268,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // reply this window cannot read when the read-back shows the service
   // changed (security review rounds 4 and 5). A failure that only stopped the
   // app's daemon keeps the section, and its line says to quit and reopen.
-  const changeService = useCallback(async (action: "install" | "remove", call: () => Promise<DaemonServiceOutcome>): Promise<DaemonServiceOutcome> => {
+  const changeService = useCallback(async (action: "install" | "remove" | "update", call: () => Promise<DaemonServiceOutcome>): Promise<DaemonServiceOutcome> => {
     let outcome: DaemonServiceOutcome
     try {
       outcome = await call()
@@ -1418,9 +1421,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}),
               ...(localDaemon.serviceInstalled === undefined && serviceInstalled !== undefined ? { serviceInstalled } : {}),
               ...(localDaemon.serviceRunning === undefined && serviceRunning !== undefined ? { serviceRunning } : {}),
+              ...(localDaemon.owner === "outside" ? { serviceVersion: snapshot.machine.version, appVersion: clientVersion } : {}),
               ...(windowBridge?.daemonService && !watching ? { service: {
                 install: () => changeService("install", () => windowBridge.daemonService!.install()),
                 remove: () => changeService("remove", () => windowBridge.daemonService!.remove()),
+                update: () => changeService("update", () => windowBridge.daemonService!.update()),
                 // Through the same numbered read, so the section's own state
                 // follows the newest answer.
                 status: async () => {

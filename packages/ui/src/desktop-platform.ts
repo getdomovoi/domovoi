@@ -50,6 +50,9 @@ export type DaemonServiceOutcome =
   | { ok: false; reason: "refused"; message: string }
   | { ok: false; reason: "check-failed"; message: string }
   | { ok: false; reason: "failed"; message: string; daemon: "untouched" | "restarted" | "attached" | "stopped"; service: { installed: boolean | null; running: boolean } | null }
+  // An in-place update that did not end with the new service running; the
+  // message is the daemon's own (ruled 2026-09-23).
+  | { ok: false; reason: "update-failed"; message: string }
 
 export type DaemonServiceStatusReport =
   | { installed: boolean | null; running: boolean; detail: string }
@@ -84,6 +87,9 @@ export type DesktopWindowBridge = {
     status(): Promise<DaemonServiceStatusReport>
     install(): Promise<DaemonServiceOutcome>
     remove(): Promise<DaemonServiceOutcome>
+    // Ruled 2026-09-23 (#577, B): moves the running service to this app's
+    // runtime in place.
+    update(): Promise<DaemonServiceOutcome>
   }
   // One fixed address, the release page, opened in the person's browser. The
   // renderer names no URL, so this cannot become a way to open any address.

@@ -53,6 +53,14 @@ describe("createDesktopWindowBridge", () => {
       target.invoke.mockImplementationOnce(async () => answer)
       await expect(bridge.daemonService?.remove()).rejects.toThrow("invalid service outcome")
     }
+    // Ruled 2026-09-23 (#577, B): the in-place update, with the daemon's own words on failure.
+    target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/p", configurationPath: "/c", daemonRunning: true }))
+    await expect(bridge.daemonService?.update()).resolves.toEqual({ ok: true, kind: "file", target: "/p", daemonRunning: true })
+    expect(target.invoke).toHaveBeenLastCalledWith("domovoi:daemon-service-update")
+    target.invoke.mockImplementationOnce(async () => ({ ok: false, reason: "update-failed", message: "The previous service was put back and is running." }))
+    await expect(bridge.daemonService?.update()).resolves.toEqual({ ok: false, reason: "update-failed", message: "The previous service was put back and is running." })
+    target.invoke.mockImplementationOnce(async () => ({ ok: false, reason: "update-failed" }))
+    await expect(bridge.daemonService?.update()).rejects.toThrow("invalid service outcome")
     target.invoke.mockImplementationOnce(async () => ({ installed: true, running: true, detail: "pid 1" }))
     await expect(bridge.daemonService?.status()).resolves.toEqual({ installed: true, running: true, detail: "pid 1" })
     target.invoke.mockImplementationOnce(async () => ({ nonsense: true }))

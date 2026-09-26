@@ -4,6 +4,7 @@ import { ProfileAlreadyOwnedError } from "../profile-lease.js"
 import {
   DaemonServiceRuntimeMissingError,
   installDaemonService,
+  readDaemonServiceRuntimeVersion,
   readDaemonServiceStatus,
   removeDaemonService,
   WindowsTaskNotDomovoiError,
@@ -176,6 +177,47 @@ describe("readDaemonServiceStatus and removeDaemonService", () => {
       kind: "file", path: "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist", profileRecovery: "not-needed",
     })
     expect(effects.run).toHaveBeenCalledWith("launchctl", ["bootout", "gui/501/sh.domovoi.domovoid"], expect.anything())
+  })
+})
+
+// Ruled 2026-09-23 (#577, A): the version of the runtime a login service runs
+// is read from the service's own definition, where the desktop's staged copy
+// names it (<profile>/runtime/<version>/). Read-only: nothing is written or run
+// except the Windows query, which only reads the task.
+describe("readDaemonServiceRuntimeVersion", () => {
+  const plist = (program: string, entry: string) => `<?xml version="1.0"?><plist><dict><key>ProgramArguments</key><array><string>${program}</string><string>${entry}</string></array></dict></plist>`
+
+  it("names the staged runtime version a launchd agent runs", async () => {
+    const readDefinition = vi.fn(async () => plist("/Users/dana/.domovoi/runtime/0.9.2/node/bin/node", "/Users/dana/.domovoi/runtime/0.9.2/daemon/dist/index.js"))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition, capture: vi.fn() }))
+      .resolves.toEqual({ installed: true, version: "0.9.2" })
+    expect(readDefinition).toHaveBeenCalledWith("/Users/dana/Library/LaunchAgents/sh.domovoi.domovoid.plist")
+  })
+
+  it("names the staged runtime version a systemd user unit runs", async () => {
+    const unit = "[Service]\nExecStart=\"/home/dana/.domovoi/runtime/0.10.0-rc.1/node/bin/node\" \"/home/dana/.domovoi/runtime/0.10.0-rc.1/daemon/dist/index.js\" --service-config x\n"
+    await expect(readDaemonServiceRuntimeVersion({ platform: "linux", home: "/home/dana", readDefinition: async () => unit, capture: vi.fn() }))
+      .resolves.toEqual({ installed: true, version: "0.10.0-rc.1" })
+  })
+
+  it("names the staged runtime version a Windows logon task runs", async () => {
+    const xml = "<Task><Actions><Exec><Command>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\node\\node.exe\"</Command><Arguments>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\daemon\\dist\\index.js\"</Arguments></Exec></Actions></Task>"
+    const capture = vi.fn(async () => ({ code: 0, stdout: xml }))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture }))
+      .resolves.toEqual({ installed: true, version: "0.9.2" })
+    expect(capture).toHaveBeenCalledWith("schtasks", ["/query", "/tn", "Domovoi daemon", "/xml"], expect.anything())
+  })
+
+  it("says installed with no version when the service runs a runtime the desktop did not stage", async () => {
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: async () => plist("/opt/homebrew/bin/node", "/opt/homebrew/lib/node_modules/@getdomovoi/daemon/dist/index.js"), capture: vi.fn() }))
+      .resolves.toEqual({ installed: true })
+  })
+
+  it("says not installed when there is no definition", async () => {
+    await expect(readDaemonServiceRuntimeVersion({ platform: "linux", home: "/home/dana", readDefinition: async () => undefined, capture: vi.fn() }))
+      .resolves.toEqual({ installed: false })
+    await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture: vi.fn(async () => ({ code: 1, stdout: "" })) }))
+      .resolves.toEqual({ installed: false })
   })
 })
 

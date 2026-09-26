@@ -105,6 +105,8 @@ function sameIdentity(left: ProfileIdentity, right: ProfileIdentity): boolean {
   return left.kind === "path" && right.kind === "path" && left.path === right.path
 }
 
+export type InheritedCredentialValues = Readonly<Partial<Record<(typeof inheritedNames)[number], string>>>
+
 // The first statement of every acquisition, before its arguments are checked:
 // the values leave process.env before anything else can throw, so no failure
 // leaves them for a child or a later acquisition to inherit. They are pinned to
@@ -113,10 +115,18 @@ function sameIdentity(left: ProfileIdentity, right: ProfileIdentity): boolean {
 // The home directory is passed as a function, called only after the scrub, so
 // an entry point hands over its options unread: a getter that throws cannot
 // run before the values are out of process.env.
-export function captureInheritedCredentials(homeDirectory: () => unknown): void {
+//
+// held: values a caller already took out of process.env and kept in memory
+// until this module loaded (the desktop, whose daemon loads at run time from
+// the runtime it ships; owner ruling 2026-09-26 on #577). They are pinned here
+// exactly as values read from process.env are, and a held value wins over one
+// still in process.env. Limit: the profile is pinned when this call runs, at
+// daemon load, not when the caller took the values; a DOMOVOI_PROFILE_DIR
+// retargeted in between is the profile they are pinned to.
+export function captureInheritedCredentials(homeDirectory: () => unknown, held: InheritedCredentialValues = {}): void {
   const values: KeptCredentials["values"] = {}
   for (const name of inheritedNames) {
-    const value = process.env[name]
+    const value = Object.hasOwn(held, name) ? held[name] : process.env[name]
     if (value !== undefined && value !== "") values[name] = value
     delete process.env[name]
   }
