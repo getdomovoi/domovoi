@@ -74,9 +74,18 @@ function effects(overrides: Partial<ServiceEffects> = {}): ServiceEffects {
   }
 }
 
+afterEach(() => { vi.unstubAllEnvs() })
+
+// Security review round 3: a darwin or Windows install first asks the manager
+// what is registered under Domovoi's name. These answer that nothing is.
+const nothingRegistered = () => vi.fn(async (command: string) => command === "launchctl"
+  ? { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
+  : command.endsWith("powershell.exe") ? { code: 0, stdout: "domovoi-task:missing\r\n" } : { code: 0, stdout: "" })
+
 function command(overrides: Partial<ServiceCommandDependencies> = {}): ServiceCommandDependencies {
+  vi.stubEnv("SystemRoot", "C:\\Windows")
   return {
-    ...effects(),
+    ...effects({ capture: nothingRegistered() }),
     platform: "linux",
     execPath: "/usr/local/bin/domovoid",
     home: "/home/dl",

@@ -23,8 +23,10 @@ export { DaemonServiceUpdateError, type DaemonServiceUpdateOutcome } from "./upd
 
 export {
   DaemonServiceHandoffError,
+  LaunchdJobNotDomovoiError,
   WindowsTaskArgumentVariableError,
   WindowsTaskNotDomovoiError,
+  WindowsTaskPathError,
   WindowsTaskPercentSignError,
 } from "./install.js"
 

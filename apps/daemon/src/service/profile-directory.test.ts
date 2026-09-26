@@ -28,10 +28,15 @@ async function fixture() {
   const configurationPath = serviceConfigurationPath(home, process.platform)
   // Removal first asks which task action or plist the job runs from (security
   // review rounds 1 and 2); these answer with Domovoi's own.
-  const effects = { ...nodeServiceEffects({ userHomeDirectory: home }), run: vi.fn(async () => {}),
+  // A Windows install first asks whether a task exists (security review
+  // round 3); none does until this fixture's /create.
+  let registered = false
+  const effects = { ...nodeServiceEffects({ userHomeDirectory: home }),
+    run: vi.fn(async (_command: string, args: string[]) => { if (args[0] === "/create") registered = true }),
     capture: vi.fn(async (command: string, args: string[]) => {
       if (process.platform === "win32") {
         const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+        if (!registered) return { code: 0, stdout: "domovoi-task:missing" }
         if (script.includes("domovoi-task-action:")) {
           const action = { path: `"${runtime}"`, arguments: `"${execPath}" --service-config "${configurationPath}"`, enabled: true, state: 1 }
           return { code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}` }

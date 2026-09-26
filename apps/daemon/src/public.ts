@@ -22,6 +22,7 @@ export {
   DaemonServiceRuntimeMissingError,
   DaemonServiceUpdateError,
   installDaemonService,
+  LaunchdJobNotDomovoiError,
   readDaemonServiceStatus,
   removeDaemonService,
   updateDaemonService,
@@ -36,5 +37,6 @@ export {
   type RuntimeFileState,
   WindowsTaskArgumentVariableError,
   WindowsTaskNotDomovoiError,
+  WindowsTaskPathError,
   WindowsTaskPercentSignError,
 } from "./service/desktop-service.js"
