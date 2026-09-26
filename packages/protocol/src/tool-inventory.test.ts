@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   approvalRequestSchema,
   executionResolutionSchema,
+  maximumToolInventoryBytes,
   phoneAndTabletRpcMethods,
   rpcMethodAuthorizations,
   rpcMethodMutations,
@@ -22,6 +23,7 @@ const sample = {
     {
       provider: "claude-code",
       toolServers: "read-from-files",
+      omittedEntries: 0,
       files: [
         { path: ".mcp.json", source: "repository-file", state: "read" },
         { path: ".claude/settings.json", source: "project-settings", state: "read" },
@@ -46,6 +48,7 @@ const sample = {
     {
       provider: "codex",
       toolServers: "read-from-files",
+      omittedEntries: 0,
       files: [
         { path: ".codex/config.toml", source: "project-settings", state: "absent" },
         { path: `${home}/.codex/config.toml`, source: "user-settings", state: "read" },
@@ -55,7 +58,7 @@ const sample = {
         { kind: "permission-rule", rule: "sandbox_mode", detail: "workspace-write", file: `${home}/.codex/config.toml`, startsAtSessionStart: false, heldBack: false },
       ],
     },
-    { provider: "acp-gemini", toolServers: "none-passed", files: [], entries: [] },
+    { provider: "acp-gemini", toolServers: "none-passed", omittedEntries: 0, files: [], entries: [] },
   ],
 } as const
 
@@ -137,6 +140,83 @@ describe("tool inventory", () => {
   })
 })
 
+describe("tool inventory text", () => {
+  const remote = sample.providers[0].entries[1]
+  const hook = sample.providers[0].entries[2]
+  const rule = sample.providers[0].entries[4]
+  const parses = (value: unknown) => toolInventorySchema.safeParse(value).success
+
+  it("refuses a credential in any free-text field as a backstop to the reader's redaction", () => {
+    const leaks = [
+      "DATABASE_URL=postgres://u:p@db ./start.sh",
+      "env API_KEY=abc123 npx mcp",
+      "npx mcp --token=abc123",
+      "npx mcp --api-key abc123",
+      "curl -H 'Authorization: Bearer abc123def456'",
+      "npx mcp ghp_abcdefghijklmnop1234",
+      "npx mcp sk-proj-abcdefghijklmnop",
+      "npx mcp AKIAABCDEFGHIJKLMNOP",
+      "curl https://user:hunter2@db.internal/x",
+      "npx mcp eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghij",
+      "-----BEGIN OPENSSH PRIVATE KEY-----",
+    ]
+    for (const leak of leaks) {
+      expect(parses(withEntry({ ...server, command: leak })), `command ${leak}`).toBe(false)
+      expect(parses(withEntry({ ...hook, command: leak })), `hook ${leak}`).toBe(false)
+      expect(parses(withEntry({ ...rule, detail: `Bash(${leak})` })), `detail ${leak}`).toBe(false)
+      expect(parses(withEntry({ ...server, name: leak.slice(0, 256) })), `name ${leak}`).toBe(false)
+      expect(parses(claude((provider) => { (provider.files[2] as Record<string, unknown>).reason = leak })), `reason ${leak}`).toBe(false)
+    }
+    expect(parses(withEntry({ ...hook, matcher: "TOKEN=abc123" }))).toBe(false)
+    expect(parses({ ...sample, repository: { ...sample.repository, root: "/src/SECRET=abc123" } })).toBe(false)
+  })
+
+  it("keeps commands the reader redacted, and ordinary flags", () => {
+    for (const command of [
+      "DATABASE_URL=[REDACTED] ./start.sh",
+      "npx mcp --token=[REDACTED]",
+      "npx mcp --api-key [REDACTED]",
+      "git log --format=%H --port=5432",
+      "npx -y @acme/pg-mcp --token-file ~/.config/pg",
+    ]) expect(parses(withEntry({ ...server, command })), command).toBe(true)
+    expect(parses(withEntry({ ...rule, detail: "Bash(pnpm test:*)" }))).toBe(true)
+  })
+
+  it("refuses line separators, format controls and padding in display text", () => {
+    for (const name of ["a\u2028b", "a\u2029b", "a\u200bb", "a\u202eb", "a\u0085b", " padded", "padded "]) {
+      expect(parses(withEntry({ ...server, name })), JSON.stringify(name)).toBe(false)
+    }
+  })
+
+  it("takes environment keys as identifiers, unnormalized", () => {
+    expect(parses(withEntry({ ...server, envKeys: ["_PRIVATE_1"] }))).toBe(true)
+    for (const key of [" KEY", "KEY ", "TOKEN:madeup", "1KEY", "KEY-NAME", "K.EY"]) {
+      expect(parses(withEntry({ ...server, envKeys: [key] })), key).toBe(false)
+      expect(parses(withEntry({ kind: "env-key", key })), key).toBe(false)
+    }
+  })
+
+  it("takes a real host and a port from 1 to 65535", () => {
+    for (const host of ["mcp.linear.app", "localhost:3000", "127.0.0.1:65535", "[::1]:8080", "[2001:db8::1]", "xn--bcher-kva.example"]) {
+      expect(parses(withEntry({ ...remote, host })), host).toBe(true)
+    }
+    for (const host of ["[:::]", "[.]", "[::1", "-bad-.com", "bad-.com", "a..b", "host:0", "host:99999", "host:080", "host:", "999.1.1.1", "1.2.3", `${"a".repeat(64)}.com`]) {
+      expect(parses(withEntry({ ...remote, host })), host).toBe(false)
+    }
+  })
+
+  it("keeps a response well under the daemon's outbound limit, and counts what it left out", () => {
+    // The daemon closes a connection whose buffered output reaches 1 MiB.
+    expect(maximumToolInventoryBytes).toBeLessThanOrEqual(256 * 1_024)
+    const big = { ...server, command: "x".repeat(2_000) }
+    expect(parses(claude((provider) => { provider.entries = Array.from({ length: 200 }, () => big) }))).toBe(false)
+    expect(parses(claude((provider) => { provider.entries = Array.from({ length: 100 }, () => big) }))).toBe(true)
+    expect(parses(claude((provider) => { provider.omittedEntries = 100 }))).toBe(true)
+    expect(parses(claude((provider) => { provider.omittedEntries = -1 }))).toBe(false)
+    expect(parses(claude((provider) => { delete provider.omittedEntries }))).toBe(false)
+  })
+})
+
 describe("approval tool server fact", () => {
   const approval = {
     id: "approval-tool",
@@ -166,6 +246,8 @@ describe("approval tool server fact", () => {
     expect(approvalRequestSchema.safeParse({ ...approval, toolServer: { ...approval.toolServer, env: { TOKEN: "x" } } }).success).toBe(false)
     expect(approvalRequestSchema.safeParse({ ...approval, toolServer: { ...approval.toolServer, transport: "carrier-pigeon" } }).success).toBe(false)
     expect(approvalRequestSchema.safeParse({ ...approval, toolServer: { ...approval.toolServer, name: "" } }).success).toBe(false)
+    expect(approvalRequestSchema.safeParse({ ...approval, value: "postgres://u:p@db" }).success).toBe(false)
+    expect(approvalRequestSchema.safeParse({ ...approval, toolServer: { ...approval.toolServer, file: "TOKEN=abc123" } }).success).toBe(false)
   })
 
   it("never pairs a tool server call with a resolved record, so no Always rule can stand", () => {

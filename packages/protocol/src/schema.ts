@@ -537,7 +537,7 @@ export const approvalRequestSchema = z.object({
   // Set when the gated call is a tool from a tool server: the card names the
   // server and the file that declared it.
   toolServer: approvalToolServerSchema.optional(),
-}).refine(
+}).strict().refine(
   // Such a call gets Allow once and Deny, never Always (ruled 2026-09-26): a
   // tool's arguments fit no execution record, so none may resolve to one.
   (request) => request.toolServer === undefined || request.execution.state === "unresolved",
