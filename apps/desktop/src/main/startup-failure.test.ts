@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { daemonErrorLogSink, recordDaemonRuntimeFailure, recordStartupFailure } from "./startup-failure.js"
+import { recordDaemonRuntimeFailure } from "./daemon-runtime-failure.js"
+import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 
 describe("recordStartupFailure", () => {
   it("appends the failure cause to the log and names the log in the dialog detail", () => {
