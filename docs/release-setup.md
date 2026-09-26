@@ -19,9 +19,9 @@ Read-only checks against `getdomovoi/domovoi` and the public npm registry found:
 
 Since that check, `@getdomovoi/cli` (2026-09-11) and `@getdomovoi/credential-store` (2026-09-13)
 were added as non-private packages, so eight manifests exist and four are publishable by their
-manifests. Ruled 2026-09-22: the first release publishes all four. Steps 8 and 9 below and the
-release tooling still cover only protocol and daemon; do not run them until the tooling names all
-four. See [distribution](distribution.md#versioning-and-release-metadata).
+manifests. Ruled 2026-09-22: the first release publishes all four, and the release tooling names
+all four in `scripts/release-packages.mjs`. See
+[distribution](distribution.md#versioning-and-release-metadata).
 
 npm organization ownership and name availability were not established by those package 404s.
 Do not treat missing packages as proof that the organization is available.
@@ -58,6 +58,11 @@ same protected environment as subsequent OIDC releases. [npm trust prerequisites
 5. **Enter prerelease mode in a reviewed PR.** Run `pnpm changeset pre enter alpha` and commit
    `.changeset/pre.json`. Merge after its checks pass. Do not run `pre exit` until a stable
    release is intended. No publish follows this step while the variable remains absent.
+   The repository is now in this mode: `.changeset/pre.json` names the `alpha` tag, and
+   `scripts/release-workflow.test.mjs` fails when the version Changesets would write next is
+   not an `-alpha.N` prerelease, or, when a merged version PR has consumed every changeset,
+   when a public manifest is not at one. A version PR generated before this file existed carries
+   plain `0.1.0` versions and must not merge.
 6. **Enable versioning only.** In Settings, Secrets and variables, Actions, Variables, create
    **`RELEASE_PUBLISHING=version-only`**. The next main push or a manual `release` run with
    **first_publish unchecked** can open the version PR after that commit's CI passes.
@@ -74,13 +79,14 @@ same protected environment as subsequent OIDC releases. [npm trust prerequisites
 8. **Authorize the first public publish.** Change the variable to
    **`RELEASE_PUBLISHING=enabled`**. In Actions, `release`, Run workflow, select **main** and
    explicitly check **first_publish**. Confirm the selected commit is the reviewed alpha,
-   then approve the `npm` environment job. This step publishes protocol before daemon, both
-   with provenance, and creates the canonical `v<version>` GitHub prerelease and its assets.
+   then approve the `npm` environment job. This step publishes the protocol and the credential
+   store, then the daemon and the CLI, all four with provenance, and creates the canonical
+   `v<version>` GitHub prerelease and its assets.
    Avoid unrelated main pushes during initial setup. A normal run has no bootstrap token and
    cannot substitute one if OIDC is not configured.
-9. **Check the result before removing bootstrap access.** Verify both registry versions,
+9. **Check the result before removing bootstrap access.** Verify all four registry versions,
    their `alpha` dist-tags, and the provenance source commit/run. Verify the canonical tag
-   names the same commit and the release has both tarballs, both SBOMs and `SHA256SUMS`.
+   names the same commit and the release has four tarballs, four SBOMs and `SHA256SUMS`.
    Test the bootstrap installer against that version. The first successful hosted run, not
    the local tests of this code, establishes that account admission and provenance work.
 10. **Configure ordinary trusted publishing for each package.** On npm, each package's Settings,

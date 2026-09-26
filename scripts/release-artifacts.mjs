@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto"
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
-import { basename, dirname, join, resolve } from "node:path"
+import { basename, dirname, join, posix, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
@@ -10,11 +11,17 @@ import { collectDependencyLicenses } from "./dependency-licenses.mjs"
 import { inspectArchive, packPackage, readArchiveEntry } from "./pack-package.mjs"
 import { resolveRuntimeDependency } from "./runtime-lock.mjs"
 import { hashRuntimeFile, validateRuntimeLock } from "./runtime-verification.mjs"
+import { publishablePackages } from "./release-packages.mjs"
+import { collectWorkspacePackages } from "./version-lockstep.mjs"
+
+export { publishDependencies, publishablePackages } from "./release-packages.mjs"
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, "..")
-export const publishablePackages = ["@getdomovoi/protocol", "@getdomovoi/daemon"]
 const protocolPath = "node_modules/@getdomovoi/protocol"
+// The daemon ships its runtime lock, and the protocol archive is verified to be
+// the bytes that lock pins, so both take their inventory from it.
+const runtimeLockRoots = { "@getdomovoi/daemon": "", "@getdomovoi/protocol": protocolPath }
 
 export function packageUrl(name, version) {
   return `pkg:npm/${name.replace("@", "%40")}@${version}`
@@ -60,16 +67,7 @@ function licenseEntries(license) {
 export function lockedSbomComponents(lock, graph, { rootPath = "" } = {}) {
   validateRuntimeLock(lock, lock.packages[""], lock.version)
   if (!Object.hasOwn(lock.packages, rootPath)) throw new Error(`Missing SBOM root: ${rootPath}`)
-  const licenses = new Map()
-  for (const component of sbomComponents(graph)) {
-    if (component.licenses.length === 0) continue
-    const key = component.purl
-    const previous = licenses.get(key)
-    if (previous && JSON.stringify(previous) !== JSON.stringify(component.licenses)) {
-      throw new Error(`Conflicting license observations for ${key}`)
-    }
-    licenses.set(key, component.licenses)
-  }
+  const licenses = observedLicenses(graph)
   const paths = new Set()
   const pending = rootPath === "" ? Object.keys(lock.packages) : [rootPath]
   while (pending.length) {
@@ -97,6 +95,71 @@ export function lockedSbomComponents(lock, graph, { rootPath = "" } = {}) {
   return [...components.values()].sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version))
 }
 
+function observedLicenses(graph) {
+  const licenses = new Map()
+  for (const component of sbomComponents(graph)) {
+    if (component.licenses.length === 0) continue
+    const key = component.purl
+    const previous = licenses.get(key)
+    if (previous && JSON.stringify(previous) !== JSON.stringify(component.licenses)) {
+      throw new Error(`Conflicting license observations for ${key}`)
+    }
+    licenses.set(key, component.licenses)
+  }
+  return licenses
+}
+
+// A package with no runtime lock of its own, the CLI or the credential store,
+// takes its inventory from pnpm-lock.yaml: the importer's production closure
+// on every platform, following workspace links into the packed first-party
+// archives. Like the runtime lock, this is the reviewed graph at release, not
+// a prediction of an unfrozen consumer install or an inventory of build tools.
+export function workspaceSbomComponents(lock, importerPath, graph, firstParty) {
+  const refuse = (message) => { throw new Error(`pnpm lock: ${message}`) }
+  if (String(lock?.lockfileVersion) !== "9.0") refuse("unsupported lockfile version")
+  const licenses = observedLicenses(graph)
+  const components = new Map()
+  const add = (name, version, integrity) => {
+    if (typeof integrity !== "string" || !integrity.startsWith("sha512-")) refuse(`missing SHA512 integrity for ${name}@${version}`)
+    const purl = packageUrl(name, version)
+    const hashes = [{ alg: "SHA-512", content: Buffer.from(integrity.slice(7), "base64").toString("hex") }]
+    const previous = components.get(purl)
+    if (previous && previous.hashes[0].content !== hashes[0].content) refuse(`conflicting integrity for ${purl}`)
+    components.set(purl, { type: "library", name, version, purl, hashes, licenses: licenses.get(purl) ?? [] })
+  }
+  const edges = (record, from) => ["dependencies", "optionalDependencies"].flatMap((field) =>
+    Object.entries(record[field] ?? {}).map(([name, target]) => ({ name, reference: from ? target?.version : target, from })))
+  const visited = new Set()
+  const pending = [{ importer: importerPath }]
+  while (pending.length) {
+    const node = pending.pop()
+    const key = node.importer === undefined ? `${node.name}@${node.reference}` : `importer ${node.importer}`
+    if (visited.has(key)) continue
+    visited.add(key)
+    let children
+    if (node.importer === undefined) {
+      const version = node.reference.split("(", 1)[0]
+      const metadata = lock.packages?.[`${node.name}@${version}`]
+      const snapshot = lock.snapshots?.[key]
+      if (!metadata || !snapshot) refuse(`missing graph node ${key}`)
+      add(node.name, version, metadata.resolution?.integrity)
+      children = edges(snapshot)
+    } else {
+      const record = lock.importers?.[node.importer]
+      if (!record) refuse(`missing workspace importer ${node.importer}`)
+      children = edges(record, node.importer)
+    }
+    for (const { name, reference, from } of children) {
+      if (typeof reference !== "string") refuse(`unresolved dependency ${name}`)
+      if (!reference.startsWith("link:")) { pending.push({ name, reference }); continue }
+      if (from === undefined || !Object.hasOwn(firstParty, name)) refuse(`${name} is linked but is not a packed release archive`)
+      add(name, firstParty[name].version, firstParty[name].integrity)
+      pending.push({ importer: posix.join(from, reference.slice("link:".length)) })
+    }
+  }
+  return [...components.values()].sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version))
+}
+
 export function verifyProtocolArtifact(lock, manifest, integrity) {
   const expected = lock.packages[protocolPath]
   if (manifest.name !== "@getdomovoi/protocol" || manifest.version !== lock.version || expected?.version !== manifest.version) {
@@ -105,15 +168,26 @@ export function verifyProtocolArtifact(lock, manifest, integrity) {
   if (expected.integrity !== integrity) throw new Error("Protocol artifact bytes differ from the packed daemon runtime lock")
 }
 
-export function sbomDocument({ name, version, sha256, components, lockSha256 }) {
+const inventories = {
+  runtime: {
+    description: "all-platform locked production graph; excludes external toolchains and unfrozen consumer installs",
+    lockProperty: "domovoi:sbom:runtime-lock-sha256",
+  },
+  workspace: {
+    description: "all-platform pnpm-lock.yaml production closure; excludes external toolchains and unfrozen consumer installs",
+    lockProperty: "domovoi:sbom:pnpm-lock-sha256",
+  },
+}
+
+export function sbomDocument({ name, version, sha256, components, lockSha256, inventory = "runtime" }) {
   return {
     bomFormat: "CycloneDX",
     specVersion: "1.6",
     version: 1,
     metadata: {
       ...(lockSha256 ? { properties: [
-        { name: "domovoi:sbom:inventory", value: "all-platform locked production graph; excludes external toolchains and unfrozen consumer installs" },
-        { name: "domovoi:sbom:runtime-lock-sha256", value: lockSha256 },
+        { name: "domovoi:sbom:inventory", value: inventories[inventory].description },
+        { name: inventories[inventory].lockProperty, value: lockSha256 },
         { name: "domovoi:sbom:licenses", value: "exact-version local observations; empty means unavailable or undeclared" },
       ] } : {}),
       component: {
@@ -169,23 +243,35 @@ async function buildWithinDeadline(root, destination, deadline) {
   const runtimeManifest = JSON.parse(await readArchiveEntry(daemon.archive, "package/runtime/package.json", { deadline }))
   validateRuntimeLock(lock, runtimeManifest, daemon.manifest.version)
   verifyProtocolArtifact(lock, protocol.manifest, `sha512-${await hashRuntimeFile(protocol.archive, "sha512", deadline)}`)
-  const graph = await collectDependencyLicenses(root, ["@getdomovoi/daemon"], { deadline })
-  if (protocol.manifest.license) {
-    const license = protocol.manifest.license
-    graph[license] = [...(graph[license] ?? []), { name: protocol.manifest.name, versions: [protocol.manifest.version] }]
+  const graph = await collectDependencyLicenses(root, publishablePackages, { deadline })
+  const firstParty = {}
+  for (const { archive, manifest } of artifacts.values()) {
+    firstParty[manifest.name] = { version: manifest.version, integrity: `sha512-${await hashRuntimeFile(archive, "sha512", deadline)}` }
+    if (!manifest.license) continue
+    graph[manifest.license] = [...(graph[manifest.license] ?? []), { name: manifest.name, versions: [manifest.version] }]
   }
   const lockSha256 = createHash("sha256").update(lockBytes).digest("hex")
+  const workspaceLockBytes = readFileSync(join(root, "pnpm-lock.yaml"), "utf8")
+  // yaml is already a daemon dependency, as in prepare-daemon-runtime.mjs.
+  const { parse: parseYaml } = createRequire(join(root, "apps/daemon/package.json"))("yaml")
+  const workspaceLock = parseYaml(workspaceLockBytes)
+  const workspaceLockSha256 = createHash("sha256").update(workspaceLockBytes).digest("hex")
+  const { packages: workspacePackages } = await deadline.run(() => collectWorkspacePackages(root))
   const checksums = []
   for (const { archive, manifest } of artifacts.values()) {
     deadline.check()
     const file = basename(archive)
     const sha256 = sha256File(archive)
+    const runtimeRoot = runtimeLockRoots[manifest.name]
+    const importer = workspacePackages.find((entry) => entry.name === manifest.name)?.path
+    if (runtimeRoot === undefined && importer === undefined) throw new Error(`${manifest.name} is not a workspace package`)
     const document = sbomDocument({
       name: manifest.name,
       version: manifest.version,
       sha256,
-      components: lockedSbomComponents(lock, graph, { rootPath: manifest.name === "@getdomovoi/protocol" ? protocolPath : "" }),
-      lockSha256,
+      ...(runtimeRoot === undefined
+        ? { components: workspaceSbomComponents(workspaceLock, posix.dirname(importer), graph, firstParty), lockSha256: workspaceLockSha256, inventory: "workspace" }
+        : { components: lockedSbomComponents(lock, graph, { rootPath: runtimeRoot }), lockSha256 }),
     })
     const sbomFile = file.replace(/\.tgz$/, ".sbom.json")
 

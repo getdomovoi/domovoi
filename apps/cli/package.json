@@ -24,6 +24,7 @@
   ],
   "scripts": {
     "build": "tsup",
+    "prepack": "pnpm run build",
     "predev": "pnpm --filter @getdomovoi/protocol build",
     "dev": "tsx src/index.ts",
     "pretest": "pnpm --filter @getdomovoi/protocol build && pnpm build",
@@ -43,5 +44,9 @@
     "tsx": "^4.23.13",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }

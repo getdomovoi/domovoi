@@ -49,7 +49,7 @@ async function describeRelease(root, directory, commit, deadline) {
       throw new Error(`${sbom} describes a different release package`)
     }
     packages.push({ name, version, archive, sbom, directory: dirname(pkg.path),
-      integrity: `sha512-${Buffer.from(await hashRuntimeFile(join(directory, archive), "sha512", deadline), "hex").toString("base64")}` })
+      integrity: `sha512-${await hashRuntimeFile(join(directory, archive), "sha512", deadline)}` })
   }
   if (sums.trim().split(/\r?\n/u).length !== files.length) throw new Error("SHA256SUMS must name exactly this release's archives and SBOMs")
   files.push({ name: "SHA256SUMS", sha256: await hashRuntimeFile(join(directory, "SHA256SUMS"), "sha256", deadline) })

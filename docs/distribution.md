@@ -282,14 +282,21 @@ its dependency closure in that lock. The separately packed protocol must match t
 bound by the daemon lock before metadata is written. Duplicate coordinates with conflicting
 integrity refuse generation. Metadata records the lock's SHA-256 and the inventory scope.
 
+The CLI and the credential store ship no runtime lock. Their inventory is the package's
+production closure in the repository's `pnpm-lock.yaml`: every platform package the lock names,
+with the lock's SHA-512 integrity, and each workspace package they link to recorded at the
+version and SHA-512 of its archive in the same release. Metadata records the SHA-256 of
+`pnpm-lock.yaml` under its own property name, so the two inventory sources stay distinguishable.
+
 This is the reviewed all-platform runtime graph, not a claim that every component is installed
 on one host or contained inside the daemon tarball. Manual daemon installs through npm, pnpm or
-Bun are not frozen; future protocol consumer installs can also resolve different versions.
+Bun are not frozen; future protocol, CLI and credential store installs can also resolve
+different versions.
 Native compilation, external toolchains, separately installed provider CLIs and provider services
 remain outside this inventory and the reproducibility guarantee described above.
 
 License observations from `pnpm licenses list --prod` annotate only matching name/version pairs.
-The verified first-party protocol manifest supplies its own license. A component with no local
+Each packed first-party manifest supplies its own license. A component with no local
 license observation, or an observation marked unknown, has an empty `licenses` array. Empty
 does not imply permissive licensing or prove the publisher declared no license. Non-host native
 packages can have missing observations; the proprietary Claude Code agent SDK is a separate
@@ -323,11 +330,14 @@ Ruled 2026-09-22: the first release publishes all four. `@getdomovoi/cli` depend
 `@getdomovoi/protocol` and `@getdomovoi/credential-store` through `workspace:*`, so both publish
 before it, the same reason the protocol publishes before the daemon.
 
-The release tooling does not do this yet. `release.yml`, `publishablePackages` in
-`scripts/release-artifacts.mjs` and the publish-order check in `scripts/publish-order.mjs` name
-protocol and daemon only, and parts of this document describe that two-package publish. Until the
-tooling names all four, the publish plan Changesets builds and the set the tooling accepts
-disagree, so do not run a first publish before that change lands.
+`scripts/release-packages.mjs` names the four and the workspace packages each needs at runtime.
+`release:artifacts` packs and describes each of them, `release:prepare` and `release:verify`
+require each to declare public access and provenance, and `scripts/publish-order.mjs` refuses a
+publish plan that puts a package in the same chunk as, or an earlier chunk than, one it depends
+on. Packages with no edge between them, such as the protocol and the credential store, may share
+a chunk, as Changesets plans them. `scripts/publish-order.test.mjs` compares that list with the
+workspace manifests, so a package that becomes public or gains a workspace dependency fails the
+test until the list names it.
 
 `@getdomovoi/protocol` exports `buildVersion`, compiled directly from its package manifest.
 Daemon machine facts, every daemon and client greeting, and provider initialization use that
@@ -428,8 +438,8 @@ again after artifact download in the publish job. A read-only preflight rejects 
 conflicts and mismatched existing npm bytes before the first registry write. Final publication
 checks again; the preflight is not a cross-service transaction. `changeset publish --from-pack-dir` publishes
 those bytes in ordered chunks. Changesets creates package tags. `release:github` creates the
-canonical `v<version>` tag and combined changelog release only after npm reports both exact
-archive integrities and provenance references. It uploads tarballs, SBOMs and `SHA256SUMS` into
+canonical `v<version>` tag and combined changelog release only after npm reports every package's
+exact archive integrity and provenance reference. It uploads tarballs, SBOMs and `SHA256SUMS` into
 a draft and verifies their reported hashes before making it public. Existing conflicting tags
 or assets are never overwritten. Alpha releases are prereleases, not GitHub's latest release.
 
@@ -438,9 +448,9 @@ or assets are never overwritten. Alpha releases are prereleases, not GitHub's la
 Ordinary publishing has no stored npm token. The `publish` job requests
 `id-token: write`, and pnpm exchanges the GitHub OIDC token for a short-lived npm credential
 scoped to this repository and workflow. npm records the workflow run as the publisher and
-generates a provenance attestation. Protocol, daemon and credential-store declare
-`publishConfig.provenance`, so a publish of those that cannot produce an attestation fails
-instead of shipping unattested; `@getdomovoi/cli` does not declare it yet. The job runs in
+generates a provenance attestation. All four public packages declare
+`publishConfig.provenance`, so a publish that cannot produce an attestation fails instead of
+shipping unattested, and `release:prepare` refuses a package that drops the declaration. The job runs in
 the `npm` GitHub environment so that the trusted publisher on npm can be bound to that
 environment name and so a maintainer can require a reviewer before the job starts.
 

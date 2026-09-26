@@ -17,6 +17,7 @@ import {
   launchSmokeTimeoutMs,
   packagedAppCandidates,
   packagedAsarPath,
+  packagedNoticePaths,
 } from "./launch-smoke-args.mjs"
 import {
   assertDaemonProfile,
@@ -61,6 +62,13 @@ if (!executablePath) {
 const asar = packagedAsarPath({ platform: process.platform, executablePath })
 if (!await access(asar, constants.R_OK).then(() => true, () => false)) {
   throw new Error(`${description} found no application archive at ${asar}`)
+}
+const missingNotices = []
+for (const notice of packagedNoticePaths({ platform: process.platform, executablePath })) {
+  if (!await access(notice, constants.R_OK).then(() => true, () => false)) missingNotices.push(notice)
+}
+if (missingNotices.length > 0) {
+  throw new Error(`${description} found no license notice at ${missingNotices.join(", ")}`)
 }
 
 const timeoutMs = launchSmokeTimeoutMs({ platform: process.platform, env: process.env })
