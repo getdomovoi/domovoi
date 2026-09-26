@@ -2162,9 +2162,15 @@ type ScreenValue = {
 // construct the replaced value was in.
 const replacementClosers = ["'", "\"", ")", "}", "`"]
 
-// Most of the raw text kept while it waits to be lined up with what main
-// shows: main holds at most its carry, but a value it drops shows nothing.
-const screenPendingLimit = 65_536
+// The screen reads raw text in pieces of this size, lining main's output up
+// with each before it reads the next, so a long read is never kept whole.
+const screenPiece = 4_096
+// Once main's output for a read is lined up, main shows raw text again only
+// from its carry, so raw text older than this is never shown again.
+const screenKept = 4 * terminalRedactionCarryCharacters
+// How far the screen reads past a value that may still go on while it looks
+// for where main goes on after a replacement.
+const screenLookahead = 8_192
 
 // The second stage of the terminal redactor (#608). It reads the raw
 // terminal stream as it reads on screen: control sequences and control
@@ -2204,18 +2210,6 @@ class ScreenReader {
   #resuming = false
   // What was shown last is a replacement.
   #replaced = false
-
-  read(chunk: string): void {
-    for (let at = 0; at < chunk.length; at += 1) {
-      this.#pending += chunk[at]!
-      this.#kinds.push(this.#mark(chunk[at]!))
-    }
-    if (this.#pending.length > screenPendingLimit) {
-      const cut = this.#pending.length - screenPendingLimit / 2
-      this.#pending = this.#pending.slice(cut)
-      this.#kinds = this.#kinds.slice(cut)
-    }
-  }
 
   // Whether this raw character is part of a value or of a bare token after
   // its prefix.
@@ -2315,9 +2309,44 @@ class ScreenReader {
     return undefined
   }
 
-  // What main shows with the marked characters taken off.
-  show(output: string): string {
-    if (output === "") return ""
+  // The most raw text kept at once.
+  retained = 0
+  // A marked character was left behind without being lined up since main's
+  // output was last found in the raw text.
+  #markedLeft = false
+
+  #readPiece(piece: string): void {
+    for (let at = 0; at < piece.length; at += 1) this.#kinds.push(this.#mark(piece[at]!))
+    this.#pending += piece
+    this.retained = Math.max(this.retained, this.#pending.length)
+  }
+
+  // Reads a raw read and what main shows for it together, a piece at a time,
+  // and returns what main shows with the marked characters taken off. Main's
+  // output lines up with raw text already read; more is read only when it
+  // runs out, and raw text main can no longer show is let go as it goes.
+  step(chunk: string, output: string): string {
+    let read = 0
+    const readPiece = (): boolean => {
+      if (read >= chunk.length) return false
+      const piece = chunk.slice(read, read + screenPiece)
+      read += piece.length
+      this.#readPiece(piece)
+      return true
+    }
+    let from = 0
+    // Lets go of the raw text before a point. Past what is lined up, main
+    // left it out, and where it goes on is found again.
+    const leave = (to: number) => {
+      if (to <= 0) return
+      if (to > from) {
+        if (this.#kinds.slice(from, to).includes(markedKind)) this.#markedLeft = true
+        this.#resuming = true
+      }
+      this.#pending = this.#pending.slice(to)
+      this.#kinds = this.#kinds.slice(to)
+      from = Math.max(0, from - to)
+    }
     let shown = ""
     const keep = (text: string) => {
       if (text === "") return
@@ -2328,15 +2357,36 @@ class ScreenReader {
       if (!this.#replaced) shown += replacement
       this.#replaced = true
     }
-    let from = 0
+    // What cannot be lined up is shown only when nothing left unlined was
+    // marked; otherwise it is hidden, its line breaks kept.
+    const unlined = (text: string) => {
+      if (!this.#markedLeft && !this.#kinds.slice(from).includes(markedKind)) {
+        keep(text)
+        return
+      }
+      for (const part of text.split(/(\r\n|\r|\n)/u)) {
+        if (part === "") continue
+        if (/^[\r\n]+$/u.test(part)) keep(part)
+        else hide()
+      }
+    }
     let at = 0
     while (at < output.length) {
-      if (!this.#resuming && from < this.#pending.length && output[at] === this.#pending[from]) {
-        if (this.#kinds[from] === markedKind) hide()
-        else keep(output[at]!)
-        from += 1
-        at += 1
-        continue
+      if (!this.#resuming) {
+        // One character of raw text is read ahead of what is lined up: $
+        // before a quote is the quote's opener, shown, not the value.
+        if (from + 1 >= this.#pending.length && read < chunk.length) {
+          leave(from)
+          readPiece()
+          continue
+        }
+        if (from < this.#pending.length && output[at] === this.#pending[from]) {
+          if (this.#kinds[from] === markedKind) hide()
+          else keep(output[at]!)
+          from += 1
+          at += 1
+          continue
+        }
       }
       if (output.startsWith(replacement, at)) {
         hide()
@@ -2353,6 +2403,13 @@ class ScreenReader {
       const nextReplacement = output.indexOf(replacement, at)
       let next = output.slice(at, Math.min(at + 64, nextReplacement < 0 ? output.length : nextReplacement))
       let resume = this.#resumeAt(next, from)
+      // Not found yet, or found only inside a value that may still go on in
+      // raw text not yet read: read on, letting go of what cannot hold it.
+      if (read < chunk.length && (resume < 0 || this.#early(resume, from))) {
+        if (resume < 0) leave(Math.max(from, this.#pending.length - screenKept))
+        readPiece()
+        continue
+      }
       // Main writes the closer of what a replacement stood for right after
       // it, as the closing quote of a quoted value, whether or not the raw
       // text has one there: where the raw text has none, or has one only
@@ -2365,20 +2422,17 @@ class ScreenReader {
       }
       if (next === "") continue
       if (resume < 0) {
-        if (at + next.length === output.length) {
-          // What ends main's output is not in the raw text yet, as the
-          // closing quote main writes after a replacement.
+        if (at + next.length === output.length && !/[\p{L}\p{N}]/u.test(next)) {
+          // What ends main's output is not in the raw text yet and carries
+          // no letter or digit, as the closing quote main writes after a
+          // replacement.
           keep(next)
           at += next.length
           continue
         }
-        // Lost: the rest is shown as main shows it, and lining up starts
-        // again with the raw text still to come.
-        keep(output.slice(at))
-        this.#pending = ""
-        this.#kinds = []
-        from = 0
-        this.#resuming = false
+        // Lost: the rest is shown only where nothing unlined was marked, and
+        // lining up starts again from main's carry.
+        unlined(output.slice(at))
         break
       }
       for (let index = 0; index < next.length; index += 1) {
@@ -2388,12 +2442,31 @@ class ScreenReader {
       from = resume + next.length
       at += next.length
       this.#resuming = false
+      this.#markedLeft = false
     }
-    if (from > 0) {
-      this.#pending = this.#pending.slice(from)
-      this.#kinds = this.#kinds.slice(from)
-    }
+    // What is lined up is let go, and of the rest of the read main shows
+    // none again but its carry.
+    leave(from)
+    while (readPiece()) leave(this.#pending.length - screenKept)
+    leave(this.#pending.length - screenKept)
     return shown
+  }
+
+  // Where the value marked from here ends, past the name's syntax before it;
+  // here when none is marked.
+  #markedEnd(from: number): number {
+    let end = from
+    while (end < this.#kinds.length && this.#kinds[end] === syntaxKind) end += 1
+    if (this.#kinds[end] !== markedKind) return from
+    while (end < this.#kinds.length && this.#kinds[end] !== keptKind) end += 1
+    return end
+  }
+
+  // Whether main's next text was found only inside a value that runs to the
+  // end of what is read, and more may be read to find it after the value.
+  #early(resume: number, from: number): boolean {
+    const end = this.#markedEnd(from)
+    return resume < end && end === this.#pending.length && this.#pending.length - from < screenLookahead
   }
 
   // Where main goes on in the raw text, found by what it shows next: after
@@ -2402,11 +2475,7 @@ class ScreenReader {
   // the marked characters; otherwise where it first occurs. -1 when it does
   // not occur.
   #resumeAt(next: string, from: number): number {
-    let markedEnd = from
-    while (markedEnd < this.#kinds.length && this.#kinds[markedEnd] === syntaxKind) markedEnd += 1
-    if (this.#kinds[markedEnd] !== markedKind) markedEnd = from
-    while (markedEnd < this.#kinds.length && this.#kinds[markedEnd] !== keptKind) markedEnd += 1
-    const after = this.#pending.indexOf(next, markedEnd)
+    const after = this.#pending.indexOf(next, this.#markedEnd(from))
     return after >= 0 ? after : this.#pending.indexOf(next, from)
   }
 }
@@ -2416,19 +2485,26 @@ class ScreenReader {
 export class TerminalOutputRedactor {
   readonly #main = new MainTerminalRedactor()
   #screen = new ScreenReader()
+  #retained = 0
 
   push(chunk: string): string {
-    this.#screen.read(chunk)
-    return this.#screen.show(this.#main.push(chunk))
+    return this.#screen.step(chunk, this.#main.push(chunk))
   }
 
   release(): string {
-    return this.#screen.show(this.#main.release())
+    return this.#screen.step("", this.#main.release())
   }
 
   flush(): string {
-    const output = this.#screen.show(this.#main.flush())
+    const output = this.#screen.step("", this.#main.flush())
+    this.#retained = Math.max(this.#retained, this.#screen.retained)
     this.#screen = new ScreenReader()
     return output
+  }
+
+  // The most raw text the second stage has kept at once, reads in progress
+  // included: a bound, however long the output runs.
+  get retained(): number {
+    return Math.max(this.#retained, this.#screen.retained)
   }
 }

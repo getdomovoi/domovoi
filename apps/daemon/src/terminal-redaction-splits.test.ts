@@ -177,3 +177,35 @@ describe("terminal redaction across formatting, redraws and long tokens", () => 
     })
   }
 })
+
+// Security review round 3 of #617: output far longer than the raw text the
+// second stage keeps, in one read or many, with the secret anywhere in it,
+// right at 65,536 characters included. The second stage keeps a bounded
+// amount of raw text however long the output runs.
+const screenBound = 16_384
+const line = " API_KEY\x1b[0m=zqxj7wvkmq\r\n"
+const longCases: readonly { name: string, steps: readonly Step[] }[] = [
+  { name: "one read past 65,536 characters", steps: [`${"a".repeat(65_520)}${line}`] },
+  { name: "one read of a megabyte", steps: [`${"a ".repeat(500_000)}${line}`] },
+  { name: "many reads past 65,536 characters", steps: [...Array.from({ length: 70 }, () => "a".repeat(1_000)), line] },
+  { name: "the value across 65,536 characters in one read", steps: [`${"a".repeat(65_536 - " API_KEY\x1b[0m=zq".length)}${line}`] },
+  { name: "the value across 65,536 characters over many reads", steps: [...Array.from({ length: 64 }, () => "a".repeat(1_024)), line.slice(0, 18), line.slice(18)] },
+  { name: "a long read, an idle beat, then the value", steps: [`${"a".repeat(70_000)} API_KEY\x1b[0m=`, "idle", "zqxj7wvkmq\r\n"] },
+  { name: "a long quoted value main drops, then the secret", steps: [`export API_KEY\x1b[0m='${"q".repeat(80_000)}`, " zqxj7wvkmq' done\r\n"] },
+]
+
+describe("terminal redaction of long output", () => {
+  for (const { name, steps } of longCases) {
+    it(name, () => {
+      const redactor = new TerminalOutputRedactor()
+      let output = ""
+      for (const step of steps) output += step === "idle" ? redactor.release() : redactor.push(step)
+      output += redactor.flush()
+      expect(output).not.toContain("zqxj")
+      expect(output).not.toContain("wvkm")
+      // The most raw text the second stage kept at once, reads in progress
+      // included.
+      expect(redactor.retained).toBeLessThanOrEqual(screenBound)
+    })
+  }
+})

@@ -252,12 +252,48 @@ function oscString(next: () => number, other: string): string {
   ])
 }
 
+// Output far longer than the raw text the terminal redactor keeps (security
+// review round 3 of #617): a leak shape after 65,000 or more characters of
+// ordinary output, in one read, in many reads with idle beats between some,
+// or with the secret starting right at 65,536 characters.
+const fillerPieces = ["a", "b", " ", "lorem ", "ipsum ", "\r\n", "\x1b[32mok\x1b[0m ", "done\n"]
+
+function generateLongLeak(next: () => number, secret: string, name: string, ending: string): { item: Case, others: string[], steps: Step[] } {
+  const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!
+  const [form, tail] = pick([
+    ["ansi-name", ` ${pick(["export ", ""])}${name}${pick(formatting)}=${secret}`],
+    ["redraw", ` ${name}=\r${pick(["", "\x1b[8C"])}${secret}`],
+    ["token", ` echo ${pick(tokenPrefixes)}${"a".repeat(pick([0, 300]))}${secret} done`],
+    ["osc", ` ${name}\x1b]0;'\x07='${"q".repeat(pick([4, 300]))} ${secret} rest'`],
+  ] as const)
+  const kind = pick(["read", "stream", "boundary"])
+  const target = kind === "boundary" ? 65_536 - tail.indexOf(secret) + Math.floor(next() * 9) - 4 : 65_000 + Math.floor(next() * 2_000)
+  // Whole pieces, then plain letters to the length: a control sequence cut
+  // short would take the name's first letters as its own.
+  let filler = ""
+  while (filler.length < target - 16) filler += pick(fillerPieces)
+  filler = filler.padEnd(target, "a")
+  const text = `${filler}${tail}${ending}`
+  const item: Case = { shape: `long-${kind}-${form}`, text, value: secret, kept: [] }
+  if (kind === "read") return { item, others: [], steps: cut(text, next) }
+  if (kind === "boundary") return { item, others: [], steps: pick([[text], [text.slice(0, 65_536), text.slice(65_536)], [text.slice(0, 65_536), "idle", text.slice(65_536)]]) }
+  const steps: Step[] = []
+  for (let from = 0; from < text.length;) {
+    const to = Math.min(text.length, from + 300 + Math.floor(next() * 2_700))
+    steps.push(text.slice(from, to))
+    if (next() < 0.1) steps.push("idle")
+    from = to
+  }
+  return { item, others: [], steps }
+}
+
 function generateLeak(next: () => number): { item: Case, others: string[], steps: Step[] } {
   const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!
   const word = (length: number) => Array.from({ length }, () => pick(valueLetters.split(""))).join("")
   const secret = word(8 + Math.floor(next() * 6))
   const name = pick(names)
   const ending = pick(["\r\n", "\n", ""])
+  if (next() < 0.04) return generateLongLeak(next, secret, name, ending)
   const shape = pick(["ansi-name", "redraw", "long-token", "beat-token", "osc"])
   const others: string[] = []
   let text: string
@@ -522,19 +558,30 @@ describe("terminal redaction against main", () => {
 
   it(`hides the leak shapes of #608 on their own terms, ${leakCases} cases from seed ${seed}`, () => {
     const failures = new Map<string, string>()
+    // Every failing case's reads in full, where asked for.
+    const full: string[] = []
+    // The most raw text the second stage kept in any case.
+    let retained = 0
     for (let index = 0; index < leakCases; index += 1) {
       const caseSeed = seed + index
       const { item, others, steps } = generateLeak(random(caseSeed))
       // The check has teeth: the text itself shows the secret.
       expect(exposed(item, item.text), item.shape).toBeDefined()
-      const output = runNew(steps)
+      const redactor = new TerminalOutputRedactor()
+      const output = steps.map((step) => step === "idle" ? redactor.release() : redactor.push(step)).join("") + redactor.flush()
+      retained = Math.max(retained, redactor.retained)
       // A secret an OSC string carries stays hidden too.
       const shown = fragments(item.value!).find((piece) => output.includes(piece)) ?? exposed(item, output)
         ?? others.flatMap(fragments).find((piece) => output.includes(piece))
-      if (shown === undefined || failures.has(item.shape)) continue
+      if (shown === undefined) continue
+      full.push(JSON.stringify({ seed: caseSeed, shape: item.shape, steps }))
+      if (failures.has(item.shape)) continue
       failures.set(item.shape, `seed ${caseSeed}: shows ${JSON.stringify(shown)}\n  reads ${JSON.stringify(steps.map((step) => step !== "idle" && step.length > 60 ? `${step.slice(0, 40)}…(${step.length})` : step))}`)
     }
+    if (process.env.TERMINAL_REDACTION_LEAK_REPORT) writeFileSync(process.env.TERMINAL_REDACTION_LEAK_REPORT, full.join("\n"))
     expect([...failures].map(([shape, detail]) => `${shape}\n  ${detail}`)).toEqual([])
+    // It stays bounded, however long the output runs.
+    expect(retained).toBeLessThanOrEqual(16_384)
   })
 
   it("fails a redactor that shows everything wherever main hides a value", () => {
