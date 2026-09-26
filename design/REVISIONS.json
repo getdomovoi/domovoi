@@ -6,6 +6,14 @@
   },
   "recordedOn": "2026-09-23",
   "files": {
+    "design/assets/mark-reduced.svg": {
+      "bytes": 519,
+      "sha256": "5d02fe1e6f8ef39271399a6666d531432d393738cdbe2187915a4a078e13af10"
+    },
+    "design/assets/mark.svg": {
+      "bytes": 598,
+      "sha256": "e0f0cc653b7d6b21db1dd697e1e1d07be5e8e34da6440c9a4dcaf23864c24f56"
+    },
     "design/design_handoff_domovoi/HANDOFF-NOTES.md": {
       "bytes": 103,
       "sha256": "5a00d61e3a1b9fb0a4a90ca7555d8a309428ea801fc4d6aafae1775e53d23898"

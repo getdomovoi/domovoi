@@ -1383,11 +1383,14 @@ type ActiveTerminal = {
   redactor: TerminalOutputRedactor
   redactorFlush: ReturnType<typeof setTimeout> | undefined
   owner: TerminalOwner
-  // Ownership is the connection that holds it. The owner's identity is
-  // broadcast to every client, so a caller-supplied one authorizes nothing.
-  // A released ownership waits through a grace window for the next connection
-  // to re-claim it, then the terminal is reaped rather than stranded forever.
+  // Ownership is the connection that holds it, and any later direct connection
+  // that authenticated as the same client (its hello identity, or its paired
+  // device). The owner broadcast to every client is caller-supplied and
+  // authorizes nothing. A released ownership waits through a grace window for
+  // that client to reconnect, then the terminal is reaped rather than
+  // stranded forever.
   ownerSocket: RpcOutboundSocket | undefined
+  ownerKey: string | undefined
   // The connections that opened, claimed or watch this terminal. Its output,
   // owner changes and close go to these and nowhere else.
   audience: Set<RpcOutboundSocket>
@@ -1530,6 +1533,9 @@ export class DomovoiDaemon {
   #inFlightProviderThreads = new Map<string, string>()
   #emergencyStopTail: Promise<unknown> = Promise.resolve()
   #emergencyStopInProgress = false
+  // Snapshot and delta broadcasts held while a stop runs. The stop's own
+  // notification goes out first, then one snapshot carries every change.
+  #snapshotBroadcastHeld = false
   #stopping = false
   #stopped = false
   #stopPromise: Promise<void> | undefined
@@ -1783,7 +1789,7 @@ export class DomovoiDaemon {
         } else {
           void this.#mutations.enqueue(
             this.#resourceForAgentEvent(provider, event),
-            () => this.#handleAgentEvent(provider, event),
+            (signal) => this.#handleAgentEvent(provider, event, signal),
           )
         }
       }),
@@ -2493,15 +2499,24 @@ export class DomovoiDaemon {
     return { refusal, otherNames }
   }
   #broadcastSnapshot(): void {
+    if (this.#emergencyStopInProgress) {
+      this.#snapshotBroadcastHeld = true
+      return
+    }
+    this.#sendSnapshot()
+  }
+
+  #sendSnapshot(): void {
+    this.#snapshotBroadcastHeld = false
     this.#forgetDepartedFileApprovalTargets()
-    this.#flushPendingWorkspaceDeltas()
+    this.#flushPendingWorkspaceDeltas(true)
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.(
       this.#snapshot.sessions.flatMap((session) => session.providerThreadId && session.activeTurnId
         ? [{ provider: session.runtime.provider, threadId: session.providerThreadId, turnId: session.activeTurnId }]
         : []),
     ))
     this.#sealUnsettledApprovals()
-    this.#broadcastNotification("workspace.changed", workspaceSnapshotForClient(this.#snapshot))
+    this.#broadcastNotification("workspace.changed", workspaceSnapshotForClient(this.#snapshot), true)
     this.#syncArtifactWatchActivity()
   }
 
@@ -2546,7 +2561,15 @@ export class DomovoiDaemon {
     return record
   }
 
-  #broadcastNotification<M extends NotificationMethod>(method: M, params: NotificationParams<M>): void {
+  #broadcastNotification<M extends NotificationMethod>(method: M, params: NotificationParams<M>, duringStop = false): void {
+    if (
+      (method === "workspace.changed" || method === "workspace.delta")
+      && this.#emergencyStopInProgress
+      && !duringStop
+    ) {
+      this.#snapshotBroadcastHeld = true
+      return
+    }
     this.#notifyClients(this.#rpcClients, method, params)
   }
 
@@ -3072,7 +3095,7 @@ export class DomovoiDaemon {
       && device.binding.clientAccess === "full"
   }
 
-  async #releaseQueuedSessionSend(sessionId: string): Promise<void> {
+  async #releaseQueuedSessionSend(sessionId: string, signal?: AbortSignal): Promise<void> {
     const queued = this.#queuedSessionSends.get(sessionId)
     if (!queued || queued.state !== "waiting") return
     const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
@@ -3118,7 +3141,7 @@ export class DomovoiDaemon {
         ...(queued.skillSelection ? { skillSelection: queued.skillSelection } : {}),
         ...(queued.uploads ? { attachments: queued.uploads } : {}),
       },
-    }))
+    }), signal)
     const result = await response
     if (!("error" in result)) {
       this.#store.deleteQueuedSessionSend?.(sessionId, queued.id)
@@ -4835,6 +4858,7 @@ export class DomovoiDaemon {
         })
       }
       this.#connectionIds.set(socket, randomUUID())
+      this.#reattachTerminals(socket)
       const deadline = this.#authenticationDeadlines.get(socket)
       if (deadline) clearTimeout(deadline)
       this.#authenticationDeadlines.delete(socket)
@@ -5245,13 +5269,14 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, invalidParams, "Terminal belongs to another session")
             return
           }
-          if (existing.ownerSocket === socket) {
+          if (this.#ownsTerminal(params.terminalId, existing, socket)) {
             existing.process.resize(params.cols, params.rows)
             existing.cols = params.cols
             existing.rows = params.rows
           } else if (existing.ownerSocket === undefined) {
             existing.owner = this.#terminalOwner(socket, params)
             existing.ownerSocket = socket
+            existing.ownerKey = this.#terminalClientKey(socket)
             if (existing.reapTimer !== undefined) {
               clearTimeout(existing.reapTimer)
               existing.reapTimer = undefined
@@ -5308,6 +5333,7 @@ export class DomovoiDaemon {
           redactorFlush: undefined,
           owner: this.#terminalOwner(socket, params),
           ownerSocket: socket,
+          ownerKey: this.#terminalClientKey(socket),
           audience: new Set([socket]),
           watchers: new Set(),
           openedAt: Date.now(),
@@ -5411,6 +5437,7 @@ export class DomovoiDaemon {
         }
         terminal.owner = this.#terminalOwner(socket, params)
         terminal.ownerSocket = socket
+        terminal.ownerKey = this.#terminalClientKey(socket)
         terminal.audience.add(socket)
         if (terminal.reapTimer !== undefined) {
           clearTimeout(terminal.reapTimer)
@@ -5487,7 +5514,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal.ownerSocket !== socket) {
+        if (!this.#ownsTerminal(params.terminalId, terminal, socket)) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
@@ -5507,7 +5534,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal.ownerSocket !== socket) {
+        if (!this.#ownsTerminal(params.terminalId, terminal, socket)) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
@@ -5529,7 +5556,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal.ownerSocket !== socket) {
+        if (!this.#ownsTerminal(params.terminalId, terminal, socket)) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
@@ -7220,6 +7247,18 @@ export class DomovoiDaemon {
         let targetHasOtherNames = false
         if (params.decision !== "deny" && params.decision !== "deny-explain" && session) {
           const settled = await this.#settleBeforeAllow(approval, session)
+          // An emergency stop can deny and remove this approval while it is
+          // settled again; the stop's answer must stand. Settlement leaves a
+          // card the stop removed as it is and refuses nothing, so the Allow
+          // ends here, before a checkpoint or any later step.
+          if (
+            signal?.aborted
+            || this.#emergencyStopInProgress
+            || !this.#snapshot.approvals.some((candidate) => candidate.id === approval.id)
+          ) {
+            this.#error(socket, request.id, invalidParams, "The approval was withdrawn before it could be allowed")
+            return
+          }
           targetHasOtherNames = settled.otherNames
           if (settled.refusal !== undefined) {
             this.#error(socket, request.id, invalidParams, settled.refusal)
@@ -8871,7 +8910,7 @@ export class DomovoiDaemon {
     }
   }
 
-  async #handleAgentEvent(provider: string, event: AgentEvent): Promise<void> {
+  async #handleAgentEvent(provider: string, event: AgentEvent, signal?: AbortSignal): Promise<void> {
     if (event.type === "provider-disconnected") {
       this.#appendAudit({
         actor: { kind: "provider", provider },
@@ -9525,7 +9564,7 @@ export class DomovoiDaemon {
     } else {
       await this.#flushAgentState()
     }
-    if (releaseQueuedSend) await this.#releaseQueuedSessionSend(session.id)
+    if (releaseQueuedSend) await this.#releaseQueuedSessionSend(session.id, signal)
   }
 
   async #handleProviderDisconnect(provider: string, reason: string): Promise<void> {
@@ -9683,6 +9722,8 @@ export class DomovoiDaemon {
       return await this.#runEmergencyStop(client)
     } finally {
       this.#emergencyStopInProgress = false
+      // A stop that failed before its notification still releases what it held.
+      if (this.#snapshotBroadcastHeld) this.#sendSnapshot()
     }
   }
 
@@ -9892,8 +9933,10 @@ export class DomovoiDaemon {
       },
       failures: failures.slice(0, 100),
     }
-    this.#broadcastSnapshot()
+    // A client holding a queued message releases it when a session goes idle.
+    // The stop has to reach it first, or the idle snapshot restarts the work.
     this.#broadcastNotification("system.emergencyStopped", result)
+    this.#sendSnapshot()
     return result
   }
 
@@ -10501,11 +10544,68 @@ export class DomovoiDaemon {
     return true
   }
 
+  // Relay channels stay bound to the channel that admitted them; only direct
+  // connections share a terminal across a reconnect of the same client.
+  #terminalClientKey(socket: RpcOutboundSocket): string | undefined {
+    if (socket instanceof DaemonRelaySocket) return undefined
+    const actor = this.#authenticatedActors.get(socket)
+    if (actor?.kind !== "client" || actor.clientId === undefined) return undefined
+    return `${actor.client}\u0000${actor.clientId}`
+  }
+
+  // A connection that authenticated as the owning client holds the terminal,
+  // so the owner's reconnect is not refused as another client's.
+  #ownsTerminal(terminalId: string, terminal: ActiveTerminal, socket: RpcOutboundSocket): boolean {
+    if (terminal.ownerSocket === socket) return true
+    const key = this.#terminalClientKey(socket)
+    if (key === undefined || terminal.ownerKey !== key) return false
+    // Wherever ownership moves, the new owner also hears the terminal, from
+    // the same boundary as any other connection that joins.
+    terminal.ownerSocket = socket
+    this.#joinTerminalAudience(terminalId, terminal, socket)
+    if (terminal.reapTimer !== undefined) {
+      clearTimeout(terminal.reapTimer)
+      terminal.reapTimer = undefined
+    }
+    this.#announceTerminalOwnership(terminalId, terminal)
+    return true
+  }
+
+  // A move by a matching client key is a claim, and is said like one: every
+  // window, the connection that held it included, sees who holds the shell.
+  #announceTerminalOwnership(terminalId: string, terminal: ActiveTerminal): void {
+    this.#notifyTerminalAudience(terminal, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
+      terminalId,
+      owner: terminal.owner,
+    }))
+  }
+
+  #reattachTerminals(socket: RpcOutboundSocket): void {
+    const key = this.#terminalClientKey(socket)
+    if (key === undefined) return
+    for (const [terminalId, terminal] of this.#terminals) {
+      if (terminal.ownerSocket !== undefined || terminal.ownerKey !== key) continue
+      this.#ownsTerminal(terminalId, terminal, socket)
+    }
+  }
+
   #releaseTerminalOwnership(socket: RpcOutboundSocket): void {
+    const key = this.#terminalClientKey(socket)
+    const sameClient = key === undefined
+      ? undefined
+      : [...this.#rpcClients].find((candidate) => candidate !== socket && this.#terminalClientKey(candidate) === key)
     for (const [terminalId, terminal] of this.#terminals) {
       terminal.audience.delete(socket)
       terminal.watchers.delete(socket)
       if (terminal.ownerSocket !== socket) continue
+      if (sameClient) {
+        // No record is read here, so output still waiting in the batch goes on
+        // to the same client's other connection rather than being cut off.
+        terminal.ownerSocket = sameClient
+        terminal.audience.add(sameClient)
+        this.#announceTerminalOwnership(terminalId, terminal)
+        continue
+      }
       terminal.ownerSocket = undefined
       if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)
       terminal.reapTimer = setTimeout(() => {
@@ -10666,8 +10766,12 @@ export class DomovoiDaemon {
     }, workspaceDeltaBatchDelayMilliseconds)
   }
 
-  #flushPendingWorkspaceDeltas(): void {
+  #flushPendingWorkspaceDeltas(duringStop = false): void {
     if (this.#pendingWorkspaceDeltas.length === 0) return
+    if (this.#emergencyStopInProgress && !duringStop) {
+      this.#snapshotBroadcastHeld = true
+      return
+    }
     const pending = this.#pendingWorkspaceDeltas
     this.#pendingWorkspaceDeltas = []
     const validated = validWorkspaceDeltaBatches(pending)
@@ -10676,10 +10780,11 @@ export class DomovoiDaemon {
       this.#broadcastNotification(
         "workspace.changed",
         structuredClone(workspaceSnapshotForClient(this.#snapshot)),
+        duringStop,
       )
       return
     }
-    for (const batch of validated.batches) this.#broadcastNotification("workspace.delta", batch)
+    for (const batch of validated.batches) this.#broadcastNotification("workspace.delta", batch, duringStop)
   }
 
   async #flushAgentState(broadcast = true): Promise<void> {
