@@ -33,7 +33,6 @@
   "dependencies": {
     "@getdomovoi/credential-store": "workspace:*",
     "@getdomovoi/protocol": "workspace:*",
-    "@napi-rs/keyring": "^2.0.0",
     "ws": "^8.18.3",
     "zod": "catalog:"
   },
