@@ -294,6 +294,14 @@ function generateLeak(next: () => number): { item: Case, others: string[], steps
   const name = pick(names)
   const ending = pick(["\r\n", "\n", ""])
   if (next() < 0.04) return generateLongLeak(next, secret, name, ending)
+  // A value nested hundreds or thousands deep (security review round 4 of
+  // #617), after formatting in the name or not.
+  if (next() < 0.03) {
+    const depth = next() < 0.2 ? 16_400 + Math.floor(next() * 4_000) : 200 + Math.floor(next() * 1_800)
+    const openers = Array.from({ length: depth }, () => pick([["$(", ")"], ["${", "}"], ["<(", ")"], ["$((", "))"]] as const))
+    const text = `${pick(["export ", "echo "])}${name}${pick(["", ...formatting])} = ${openers.map(([opener]) => opener).join("")}${secret}${openers.map(([, closer]) => closer).reverse().join("")} done${ending}`
+    return { item: { shape: "deep", text, value: secret, kept: [] }, others: [], steps: cut(text, next) }
+  }
   const shape = pick(["ansi-name", "redraw", "long-token", "beat-token", "osc"])
   const others: string[] = []
   let text: string
@@ -560,8 +568,10 @@ describe("terminal redaction against main", () => {
     const failures = new Map<string, string>()
     // Every failing case's reads in full, where asked for.
     const full: string[] = []
-    // The most raw text the second stage kept in any case.
+    // The most raw text the second stage kept in any case, and the deepest
+    // its reading of a value nested.
     let retained = 0
+    let nesting = 0
     for (let index = 0; index < leakCases; index += 1) {
       const caseSeed = seed + index
       const { item, others, steps } = generateLeak(random(caseSeed))
@@ -570,6 +580,7 @@ describe("terminal redaction against main", () => {
       const redactor = new TerminalOutputRedactor()
       const output = steps.map((step) => step === "idle" ? redactor.release() : redactor.push(step)).join("") + redactor.flush()
       retained = Math.max(retained, redactor.retained)
+      nesting = Math.max(nesting, redactor.nesting)
       // A secret an OSC string carries stays hidden too.
       const shown = fragments(item.value!).find((piece) => output.includes(piece)) ?? exposed(item, output)
         ?? others.flatMap(fragments).find((piece) => output.includes(piece))
@@ -580,8 +591,10 @@ describe("terminal redaction against main", () => {
     }
     if (process.env.TERMINAL_REDACTION_LEAK_REPORT) writeFileSync(process.env.TERMINAL_REDACTION_LEAK_REPORT, full.join("\n"))
     expect([...failures].map(([shape, detail]) => `${shape}\n  ${detail}`)).toEqual([])
-    // It stays bounded, however long the output runs.
+    // They stay bounded, however long the output runs and however deep a
+    // value nests.
     expect(retained).toBeLessThanOrEqual(16_384)
+    expect(nesting).toBeLessThanOrEqual(16_384)
   })
 
   it("fails a redactor that shows everything wherever main hides a value", () => {

@@ -2154,9 +2154,18 @@ const syntaxKind: Kind = 2
 // characters have been read. counting: a counting name's value, which main
 // shows when it is a complete count and hides otherwise; it is read, so that
 // its quotes are followed, and left to main.
+// deep: the value nests past screenNesting, so its reading is dropped and
+// the rest of it is hidden until the reader starts again.
 type ScreenValue = {
   delimiter: RegExp, enclosing: GroupingName | undefined, state: ValueState | undefined, quoted: boolean, read: number, counting: boolean,
+  deep: boolean,
 }
+
+// How deep a value's quotes and constructs may nest while the screen reads
+// it, as many as the raw text it keeps. Past this, where the value ends
+// cannot be told without keeping every opener, so the rest of the output is
+// hidden up to the end of the output.
+const screenNesting = 16_384
 
 // What main may write right after a replacement: the closer of the quote or
 // construct the replaced value was in.
@@ -2215,8 +2224,16 @@ class ScreenReader {
   // its prefix.
   #mark(character: string): Kind {
     const code = character.charCodeAt(0)
-    if (this.#controls.invisible(code)) return (this.#value?.state !== undefined && !this.#value.counting) || this.#token ? markedKind : syntaxKind
+    if (this.#controls.invisible(code)) {
+      const value = this.#value
+      return (value !== undefined && (value.deep || (value.state !== undefined && !value.counting))) || this.#token ? markedKind : syntaxKind
+    }
     const value = this.#value
+    if (value?.deep === true) {
+      if (character === "\n" || character === "\r") this.#newLine()
+      else this.#see(character, code)
+      return markedKind
+    }
     if (value !== undefined) {
       if (value.state === undefined) {
         // A name and separator wait for their value across spaces, and across
@@ -2236,6 +2253,15 @@ class ScreenReader {
         value.quoted = value.enclosing !== undefined
       }
       if (readValue(character, 0, value.state).end < 0) {
+        this.nesting = Math.max(this.nesting, value.state.stack.length)
+        if (value.state.stack.length >= screenNesting) {
+          // Too deep to follow: the reading is let go, and the rest is hidden.
+          value.deep = true
+          value.state = undefined
+          if (character === "\n" || character === "\r") this.#newLine()
+          else this.#see(character, code)
+          return markedKind
+        }
         if (character === "\n" || character === "\r") this.#newLine()
         else this.#see(character, code)
         value.read += 1
@@ -2304,13 +2330,15 @@ class ScreenReader {
       // A quote the value read last took, as its closer, opens nothing.
       const matchAt = this.#line.length - tail.length + match.index
       const quote = matchAt > this.#valueEnded ? openNameQuote(match[0], tail[match.index - 1]) : openNameQuote(match[0].replace(/^["']/u, ""))
-      return { delimiter: pattern.delimiter, enclosing: quote === undefined ? undefined : quoteNamed(quote), state: undefined, quoted: false, read: 0, counting }
+      return { delimiter: pattern.delimiter, enclosing: quote === undefined ? undefined : quoteNamed(quote), state: undefined, quoted: false, read: 0, counting, deep: false }
     }
     return undefined
   }
 
-  // The most raw text kept at once.
+  // The most raw text kept at once, and the deepest a value's reading
+  // nested.
   retained = 0
+  nesting = 0
   // A marked character was left behind without being lined up since main's
   // output was last found in the raw text.
   #markedLeft = false
@@ -2486,6 +2514,7 @@ export class TerminalOutputRedactor {
   readonly #main = new MainTerminalRedactor()
   #screen = new ScreenReader()
   #retained = 0
+  #nesting = 0
 
   push(chunk: string): string {
     return this.#screen.step(chunk, this.#main.push(chunk))
@@ -2498,8 +2527,14 @@ export class TerminalOutputRedactor {
   flush(): string {
     const output = this.#screen.step("", this.#main.flush())
     this.#retained = Math.max(this.#retained, this.#screen.retained)
+    this.#nesting = Math.max(this.#nesting, this.#screen.nesting)
     this.#screen = new ScreenReader()
     return output
+  }
+
+  // The deepest the second stage's reading of a value nested: a bound too.
+  get nesting(): number {
+    return Math.max(this.#nesting, this.#screen.nesting)
   }
 
   // The most raw text the second stage has kept at once, reads in progress

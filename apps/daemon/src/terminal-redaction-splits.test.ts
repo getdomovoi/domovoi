@@ -209,3 +209,29 @@ describe("terminal redaction of long output", () => {
     })
   }
 })
+
+// Security review round 4 of #617: a value nested 100,000 deep, in one read
+// and over many. Its reader keeps a bounded stack, and past the bound the
+// rest of the value is hidden.
+const nestingBound = 16_384
+const deep = `echo API_KEY\x1b[0m = ${"$(".repeat(100_000)}zqxjwvkm${")".repeat(100_000)} done\r\n`
+const deepCases: readonly { name: string, steps: readonly Step[] }[] = [
+  { name: "a value nested 100,000 deep in one read", steps: [deep] },
+  { name: "a value nested 100,000 deep over many reads", steps: Array.from({ length: Math.ceil(deep.length / 997) }, (_, index) => deep.slice(index * 997, (index + 1) * 997)) },
+  { name: "a value nested 100,000 deep with idle beats", steps: Array.from({ length: Math.ceil(deep.length / 20_000) }, (_, index) => [deep.slice(index * 20_000, (index + 1) * 20_000), "idle"]).flat() },
+]
+
+describe("terminal redaction of deeply nested values", () => {
+  for (const { name, steps } of deepCases) {
+    it(name, () => {
+      const redactor = new TerminalOutputRedactor()
+      let output = ""
+      for (const step of steps) output += step === "idle" ? redactor.release() : redactor.push(step)
+      output += redactor.flush()
+      expect(output).not.toContain("zqxj")
+      expect(output).not.toContain("wvkm")
+      expect(redactor.nesting).toBeLessThanOrEqual(nestingBound)
+      expect(redactor.retained).toBeLessThanOrEqual(screenBound)
+    })
+  }
+})
