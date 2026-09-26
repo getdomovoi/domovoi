@@ -42,13 +42,11 @@
   },
   "dependencies": {
     "@getdomovoi/credential-store": "workspace:*",
-    "@getdomovoi/daemon": "workspace:*",
-    "@getdomovoi/ui": "workspace:*",
-    "react": "^19.2.8",
-    "react-dom": "^19.1.1"
+    "@getdomovoi/daemon": "workspace:*"
   },
   "devDependencies": {
     "@getdomovoi/protocol": "workspace:*",
+    "@getdomovoi/ui": "workspace:*",
     "@tailwindcss/vite": "4.3.3",
     "@types/node": "^26.4.0",
     "@types/react": "^19.1.10",
@@ -58,6 +56,8 @@
     "electron": "44.4.5",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.1.1",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vitest": "catalog:",

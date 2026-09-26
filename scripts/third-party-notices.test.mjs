@@ -6,6 +6,7 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 
 import { collectDesktopNotices, readNoticeTexts, renderThirdPartyNotices } from "./third-party-notices.mjs"
+import { rendererBundlePackages } from "./renderer-bundle-packages.mjs"
 
 const root = fileURLToPath(new URL("../", import.meta.url))
 
@@ -48,4 +49,16 @@ test("the desktop notices carry the renderer fonts' license and leave out the ag
   assert.ok(byName.has("@anthropic-ai/claude-agent-sdk"), "the bundled SDK library is named")
   assert.deepEqual(entries.filter((entry) => entry.name.startsWith("@anthropic-ai/claude-agent-sdk-")), [])
   assert.deepEqual(entries.filter((entry) => entry.name.startsWith("@getdomovoi/")), [], "first-party packages are not third-party")
+})
+
+// The notices read the UI's own production graph, not the desktop app's, so a
+// package vite inlines into out/renderer keeps its notice when the desktop
+// manifest does not list it. The fonts' OFL texts are among them.
+test("every package the renderer bundle contains has a desktop notice", { timeout: 60_000 }, async () => {
+  const bundled = await rendererBundlePackages(root)
+  for (const name of ["@fontsource-variable/instrument-sans", "@fontsource-variable/jetbrains-mono", "lucide-react", "@xterm/xterm", "react", "react-dom"]) {
+    assert.ok(bundled.includes(name), `the renderer bundle contains ${name}`)
+  }
+  const noticed = new Set((await collectDesktopNotices(root)).map((entry) => entry.name))
+  assert.deepEqual(bundled.filter((name) => !noticed.has(name)), [], "renderer packages without a notice")
 })
