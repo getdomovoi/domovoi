@@ -55,7 +55,6 @@ function Harness({
       onCheckpoint={vi.fn(async () => {})}
       onRestoreCheckpoint={vi.fn(async () => {})}
       onPauseSession={onPauseSession}
-      onArchiveSession={vi.fn(async () => {})}
     />
   )
 }

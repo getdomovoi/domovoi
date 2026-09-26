@@ -18,7 +18,6 @@ const handlers = {
   onCheckpoint: vi.fn(async () => {}),
   onRestoreCheckpoint: vi.fn(async () => {}),
   onPauseSession: vi.fn(async () => {}),
-  onArchiveSession: vi.fn(async () => {}),
 }
 
 it("opens the device menu from the composer machine chip", async () => {
