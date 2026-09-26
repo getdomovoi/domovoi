@@ -255,6 +255,18 @@ test("finds the archive beside the packaged executable on every platform", () =>
   }
 })
 
+test("names the license notices every packaged build must carry", () => {
+  for (const [platform, notices] of [
+    ["linux", ["/dist/linux-unpacked/resources/THIRD_PARTY_NOTICES.txt", "/dist/linux-unpacked/LICENSE.electron.txt", "/dist/linux-unpacked/LICENSES.chromium.html"]],
+    ["win32", ["/dist/win-unpacked/resources/THIRD_PARTY_NOTICES.txt", "/dist/win-unpacked/LICENSE.electron.txt", "/dist/win-unpacked/LICENSES.chromium.html"]],
+    ["darwin", ["THIRD_PARTY_NOTICES.txt", "LICENSE.electron.txt", "LICENSES.chromium.html"].map((file) => `/dist/mac/Domovoi.app/Contents/Resources/${file}`)],
+  ]) {
+    const [executablePath] = packagedAppCandidates({ platform, ...packagedOptions })
+    assert.equal(typeof launch.packagedNoticePaths, "function", "the package smoke checks the notices")
+    assert.deepEqual(launch.packagedNoticePaths({ platform, executablePath }).map(hostPath), notices, platform)
+  }
+})
+
 test("gives Windows a longer launch budget, where Electron starts slowest on CI", () => {
   assert.equal(launchSmokeTimeoutMs({ platform: "win32", env: {} }), 90_000)
   assert.equal(launchSmokeTimeoutMs({ platform: "linux", env: {} }), 60_000)

@@ -38,6 +38,14 @@ files:
   - "!node_modules/react-dom/**"
   - "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
 
+# The renderer's bundles carry no license comments, so the notices for the
+# graph this build contains travel as one file in the resources directory.
+# prepackage runs scripts/third-party-notices.mjs, which writes build/notices/
+# and fails when Electron's own notice files are missing.
+extraResources:
+  - from: build/notices/THIRD_PARTY_NOTICES.txt
+    to: THIRD_PARTY_NOTICES.txt
+
 # @napi-rs/keyring and node-pty are Node-API modules and load unchanged in
 # Electron, so there is nothing to rebuild and no compiler to require.
 npmRebuild: false
@@ -108,6 +116,14 @@ mac:
   # Inert layout default. The policy enables both signing and notarization
   # together or deliberately chooses an ad-hoc development build.
   notarize: false
+  # Linux and Windows builds keep Electron's LICENSE (as LICENSE.electron.txt)
+  # and LICENSES.chromium.html beside the executable. electron-builder deletes
+  # both from a macOS bundle, so they go into its resources directory instead.
+  extraResources:
+    - from: build/notices/LICENSE.electron.txt
+      to: LICENSE.electron.txt
+    - from: build/notices/LICENSES.chromium.html
+      to: LICENSES.chromium.html
 
 dmg:
   writeUpdateInfo: false

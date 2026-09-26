@@ -49,6 +49,20 @@ export function packagedAsarPath({ platform, executablePath }) {
     : join(dirname(executablePath), "resources", "app.asar")
 }
 
+// electron-builder keeps Electron's LICENSE (renamed LICENSE.electron.txt) and
+// LICENSES.chromium.html beside the executable on Linux and Windows and deletes
+// them from a macOS bundle, where electron-builder.yml copies them into
+// Resources. THIRD_PARTY_NOTICES.txt goes into resources everywhere.
+export function packagedNoticePaths({ platform, executablePath }) {
+  const resources = dirname(packagedAsarPath({ platform, executablePath }))
+  const electron = platform === "darwin" ? resources : dirname(executablePath)
+  return [
+    join(resources, "THIRD_PARTY_NOTICES.txt"),
+    join(electron, "LICENSE.electron.txt"),
+    join(electron, "LICENSES.chromium.html"),
+  ]
+}
+
 // Electron cold start on a Windows CI runner is far slower than on Linux or
 // macOS, so a single budget either flakes there or hides a hang elsewhere.
 export function launchSmokeTimeoutMs({ platform, env }) {

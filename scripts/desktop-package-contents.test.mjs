@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import { createRequire } from "node:module"
-import { dirname, join } from "node:path"
+import { dirname, join, relative } from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 
@@ -9,7 +9,7 @@ const desktopRoot = fileURLToPath(new URL("../apps/desktop/", import.meta.url))
 const desktopRequire = createRequire(join(desktopRoot, "package.json"))
 const builderRequire = createRequire(desktopRequire.resolve("electron-builder"))
 const { getConfig } = builderRequire("app-builder-lib/out/util/config/config.js")
-const { FileMatcher, getNodeModuleFileMatcher } = builderRequire("app-builder-lib/out/fileMatcher.js")
+const { FileMatcher, getFileMatchers, getNodeModuleFileMatcher } = builderRequire("app-builder-lib/out/fileMatcher.js")
 
 const sdkName = "@anthropic-ai/claude-agent-sdk"
 
@@ -62,6 +62,32 @@ test("the desktop app ships the SDK library and none of its agent binaries", asy
       ]) {
         assert.equal(packaged(path), false, `${platform} excludes ${path}`)
       }
+    }
+  }
+})
+
+// electron-builder deletes Electron's LICENSE and LICENSES.chromium.html from a
+// macOS bundle and keeps them beside the executable on Linux and Windows. The
+// notices for the bundled graph ship on every platform.
+test("every desktop build carries the notices for the software it bundles", async () => {
+  const config = await effectiveConfig()
+  const { desktopNoticesDirectory } = await import("./third-party-notices.mjs")
+  const manifest = JSON.parse(readFileSync(join(desktopRoot, "package.json"), "utf8"))
+  assert.match(manifest.scripts.prepackage, /third-party-notices\.mjs/u, "packaging writes the notices first")
+  const resources = "/resources"
+  for (const [platform, expected] of [
+    ["mac", ["THIRD_PARTY_NOTICES.txt", "LICENSE.electron.txt", "LICENSES.chromium.html"]],
+    ["linux", ["THIRD_PARTY_NOTICES.txt"]],
+    ["win", ["THIRD_PARTY_NOTICES.txt"]],
+  ]) {
+    const matchers = getFileMatchers(config, "extraResources", resources, {
+      defaultSrc: desktopRoot, customBuildOptions: config[platform] ?? {}, macroExpander: (value) => value,
+      globalOutDir: join(desktopRoot, "dist"),
+    }) ?? []
+    const copied = new Map(matchers.map((matcher) => [relative(resources, matcher.to), relative(desktopRoot, matcher.from)]))
+    for (const file of expected) {
+      assert.equal(copied.get(file), join(relative(desktopRoot, join(fileURLToPath(new URL("../", import.meta.url)), desktopNoticesDirectory)), file),
+        `${platform} copies ${file} from the generated notices`)
     }
   }
 })

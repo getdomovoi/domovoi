@@ -1,15 +1,35 @@
 import { execFile } from "node:child_process"
 import { readFile } from "node:fs/promises"
+import { createRequire } from "node:module"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 
 import { pnpmInvocation } from "./package-artifact-command.mjs"
 import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
+import { publishablePackages } from "./release-packages.mjs"
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, "..")
-export const publishablePackages = ["@getdomovoi/protocol", "@getdomovoi/daemon"]
+
+// The desktop app ships its own production graph, the UI graph electron-vite
+// inlines into out/renderer, and the workspace packages electron-builder
+// copies. pnpm licenses list does not follow workspace links, so each one is
+// named. scripts/dependency-licenses.test.mjs checks this against the manifests.
+export const desktopPackages = [
+  "@getdomovoi/desktop",
+  "@getdomovoi/ui",
+  "@getdomovoi/daemon",
+  "@getdomovoi/credential-store",
+  "@getdomovoi/protocol",
+]
+export const auditedPackages = [...new Set([...publishablePackages, ...desktopPackages])]
+
+// Electron is a development dependency of apps/desktop because electron-builder
+// bundles it into every desktop build rather than installing it, so the
+// production graph never lists it. Chromium's own third-party licenses ship as
+// LICENSES.chromium.html; this audit reads Electron's declared license only.
+export const bundledRuntimes = [{ name: "electron", workspace: "apps/desktop" }]
 
 function exceptionMatcher(key) {
   if (!key.includes("*")) return (name) => name === key
@@ -64,7 +84,54 @@ export function evaluateDependencyLicenses(graph, policy) {
   return failures
 }
 
-export async function collectDependencyLicenses(root = repositoryRoot, packages = publishablePackages, { deadline: parent } = {}) {
+// Adds each bundled runtime as pnpm licenses list would describe it, so the
+// policy and the notices treat it like any other shipped package.
+export async function collectRuntimeLicenses(root = repositoryRoot, runtimes = bundledRuntimes) {
+  const graph = {}
+  for (const { name, workspace } of runtimes) {
+    let path
+    try {
+      path = createRequire(join(root, workspace, "package.json")).resolve(`${name}/package.json`)
+    } catch (error) {
+      throw new Error(`${name} is not installed for ${workspace}: ${error.message}`, { cause: error })
+    }
+    const manifest = JSON.parse(await readFile(path, "utf8"))
+    const license = typeof manifest.license === "string" ? manifest.license : "Unknown"
+    graph[license] = [...(graph[license] ?? []), { name, versions: [manifest.version], paths: [dirname(path)], license }]
+  }
+  return graph
+}
+
+export function mergeLicenseGraphs(...graphs) {
+  const merged = {}
+  for (const graph of graphs) {
+    for (const [license, entries] of Object.entries(graph)) {
+      merged[license] ??= []
+      for (const entry of entries) {
+        const existing = merged[license].find((item) => item.name === entry.name)
+        if (!existing) {
+          merged[license].push({ ...entry, versions: [...entry.versions], paths: [...(entry.paths ?? [])] })
+          continue
+        }
+        for (const [index, version] of entry.versions.entries()) {
+          if (existing.versions.includes(version)) continue
+          existing.versions.push(version)
+          if (entry.paths?.[index]) existing.paths.push(entry.paths[index])
+        }
+      }
+    }
+  }
+  return merged
+}
+
+export async function collectAuditGraph(root = repositoryRoot, { deadline } = {}) {
+  return mergeLicenseGraphs(
+    await collectDependencyLicenses(root, auditedPackages, { deadline }),
+    await collectRuntimeLicenses(root),
+  )
+}
+
+export async function collectDependencyLicenses(root = repositoryRoot, packages = auditedPackages, { deadline: parent } = {}) {
   const deadline = bootstrapDeadline(30_000, "Dependency license inventory exceeded 30000 ms", parent)
   try {
     const { command, args } = pnpmInvocation()
@@ -95,7 +162,7 @@ export async function checkDependencyLicenses(root = repositoryRoot) {
   let graph
   try {
     policy = await readPolicy(root)
-    graph = await collectDependencyLicenses(root)
+    graph = await collectAuditGraph(root)
   } catch (error) {
     return { licenses: [], failures: [error.message] }
   }

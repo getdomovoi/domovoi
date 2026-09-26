@@ -13,6 +13,8 @@
   ],
   "exceptions": {
     "@anthropic-ai/claude-agent-sdk": "Proprietary: 'All rights reserved', used under the Claude Code legal agreements. Required by the Claude Code session adapter and reviewed as a runtime dependency of the Apache-2.0 daemon.",
-    "@anthropic-ai/claude-agent-sdk-*": "Per-platform binaries of @anthropic-ai/claude-agent-sdk. Which one is installed depends on the host, so this is a pattern rather than one name, and it carries the same terms."
+    "@anthropic-ai/claude-agent-sdk-*": "Per-platform binaries of @anthropic-ai/claude-agent-sdk. Which one is installed depends on the host, so this is a pattern rather than one name, and it carries the same terms.",
+    "@fontsource-variable/instrument-sans": "OFL-1.1 font. The desktop renderer bundles its .woff2 files. OFL-1.1 condition 2 permits bundling the font with software provided each copy contains the font's copyright notice and the license; the desktop app carries both in THIRD_PARTY_NOTICES.txt. Condition 1 forbids selling the font by itself, which Domovoi does not do.",
+    "@fontsource-variable/jetbrains-mono": "OFL-1.1 font, under the same terms and the same notice as @fontsource-variable/instrument-sans."
   }
 }
