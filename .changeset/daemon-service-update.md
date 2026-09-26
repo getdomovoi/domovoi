@@ -28,4 +28,6 @@ On macOS the update and its restore boot out a job under Domovoi's label only wh
 says it was loaded from Domovoi's plist; a job from another plist refuses the update with nothing
 changed (`LaunchdJobNotDomovoiError`). On Windows an update refuses, with nothing changed, when the
 previous task action it would register again contains `%`, `$(` or a path Windows would not report
-in that form.
+in that form. A WSL update refuses, with nothing changed, when the old or the new task would carry `%` or `$(`
+in its `wsl.exe` path or arguments, and a Linux update refuses when the recorded old runtime or entry
+contains `$` or `%`.

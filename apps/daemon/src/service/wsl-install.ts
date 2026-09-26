@@ -10,6 +10,7 @@ import { z } from "zod"
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration, type ServiceRuntimeRecord } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceCommand, ServiceCommandDependencies, ServiceEffects } from "./install.js"
+import { refuseTaskSchedulerExpansion } from "./install.js"
 import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, type InFlight, type ServiceSwap } from "./update-outcome.js"
 import { hasDomovoiServiceShape, isRecordedServiceProgram } from "./restore-target.js"
 import { serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
@@ -231,6 +232,17 @@ export function prepareWslUpdate(
     const restored = { ...previous, serviceRuntime: recorded }
     const updated = { ...restored, wsl: { ...previous.wsl, executable: runtime.nodePath, args: [runtime.daemonEntryPath] } }
     const ready = { ...updated, serviceRuntime: { executable: runtime.nodePath, entry: runtime.daemonEntryPath } }
+    // Security review round 6: Task Scheduler expands %NAME% and substitutes
+    // $( in the wsl.exe path and arguments of either task, the old one a
+    // failed step registers again and the new one, so any value either would
+    // carry is refused before anything changes, with the install's refusals.
+    try {
+      for (const wsl of [previous.wsl, updated.wsl]) {
+        for (const value of [wsl.wsl, wsl.distribution, wsl.linuxUser, wsl.executable, ...wsl.args, path]) refuseTaskSchedulerExpansion(value)
+      }
+    } catch (cause) {
+      throw new DaemonServiceUpdateError("nothing-changed", cause)
+    }
     const next = installedWslTask(updated.wsl, registrationId, path)
     const candidates = [old.removal, next.removal,
       ...(interrupted?.wsl ? [installedWslTask(interrupted.wsl, registrationId, path).removal] : [])]

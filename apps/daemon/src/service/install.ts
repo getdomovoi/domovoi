@@ -224,6 +224,18 @@ export class WindowsTaskPathError extends Error {
 // Text ruled 2026-09-25.
 const systemdExpansions: Record<string, string> = { "$": "a variable", "%": "a specifier" }
 
+export function refuseSystemdPath(path: string): void {
+  const character = [...path].find((c) => c in systemdExpansions)
+  if (character !== undefined) throw new SystemdPathCharacterError(path, character)
+}
+
+// Task Scheduler expands %NAME% and substitutes $( in an action's program and
+// arguments when the task runs (security review rounds 1 and 2 on #574).
+export function refuseTaskSchedulerExpansion(value: string): void {
+  if (value.includes("%")) throw new WindowsTaskPercentSignError(value)
+  if (value.includes("$(")) throw new WindowsTaskArgumentVariableError(value)
+}
+
 export class SystemdPathCharacterError extends Error {
   constructor(readonly path: string, readonly character: string) {
     super(`${path} contains ${character}, which systemd reads as ${systemdExpansions[character] ?? "a special character"} when the service starts. No service files were changed.`)
@@ -276,8 +288,7 @@ export function servicePlan({
   const args = runtime === undefined ? serviceArgs : [execPath, ...serviceArgs]
   if (platform === "linux") {
     for (const path of [runtime, execPath, configurationFile.path]) {
-      const character = path === undefined ? undefined : [...path].find((c) => c in systemdExpansions)
-      if (path !== undefined && character !== undefined) throw new SystemdPathCharacterError(path, character)
+      if (path !== undefined) refuseSystemdPath(path)
     }
     return {
       configuration: configurationFile,
@@ -736,8 +747,7 @@ function domovoiTaskCommand(action: WindowsTaskAction, configurationPath: string
 // The install's refusals for one Windows task path (security review rounds
 // 1 to 3 on #574), for a path that did not come through servicePlan.
 function refuseWindowsTaskPath(path: string): void {
-  if (path.includes("%")) throw new WindowsTaskPercentSignError(path)
-  if (path.includes("$(")) throw new WindowsTaskArgumentVariableError(path)
+  refuseTaskSchedulerExpansion(path)
   if (!plainWindowsPath(path)) throw new WindowsTaskPathError(path)
 }
 
@@ -795,6 +805,15 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
       const program = (target.platform === "linux" ? systemdUnitProgram : launchdPlistProgram)(previous)
       if (!program || !isRecordedServiceProgram(program, { paths: "posix", flag: "--service-config", configurationPath: plan.configuration.path }, recorded)) {
         throw new DaemonServiceUpdateError("changed-outside")
+      }
+      // Security review round 6: a failed step starts the old unit again, so
+      // its runtime and entry must pass the refusals an install applies.
+      if (target.platform === "linux") {
+        try {
+          for (const path of [program.execPath, program.args[0] ?? ""]) refuseSystemdPath(path)
+        } catch (cause) {
+          throw new DaemonServiceUpdateError("nothing-changed", cause)
+        }
       }
 
       if (target.platform === "linux") {

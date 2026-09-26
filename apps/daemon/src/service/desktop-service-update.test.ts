@@ -11,6 +11,7 @@ import {
   DaemonServiceRuntimeMissingError,
   DaemonServiceUpdateError,
   LaunchdJobNotDomovoiError,
+  SystemdPathCharacterError,
   updateDaemonService,
   WindowsTaskArgumentVariableError,
   WindowsTaskPercentSignError,
@@ -1430,5 +1431,40 @@ describe("security review round 5", () => {
     const refused = updateDaemonService({ runtime: windowsRuntime }, effects)
     await expect(refused).rejects.toMatchObject({ outcome: "nothing-changed", cause: expect.any(refusal) })
     expect(effects.order.filter((entry) => entry !== "read task action")).toEqual([])
+  })
+})
+
+// Security review round 6: the install's expansion refusals carried into the
+// WSL update and the Linux rollback. Each refusal comes before any change.
+describe("security review round 6", () => {
+  const guest = (executable: string, entry: string): ServiceConfiguration => ({
+    ...saved("linux", "/home/dl"),
+    serviceRuntime: { executable, entry },
+    wsl: {
+      distribution: "Ubuntu", linuxUser: "dl", powershell: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      wsl: "C:\\Windows\\System32\\wsl.exe", executable, args: [entry],
+    },
+  })
+
+  it.each([
+    ["the old guest runtime has a percent sign", guest("/opt/do%PATH%main/node", oldRuntime.daemonEntryPath), runtime, WindowsTaskPercentSignError],
+    ["the old guest entry has $(", guest(oldRuntime.nodePath, "/opt/$(Arg0)/index.js"), runtime, WindowsTaskArgumentVariableError],
+    ["the new runtime has a percent sign", guest(oldRuntime.nodePath, oldRuntime.daemonEntryPath), { ...runtime, nodePath: "/opt/do%PATH%main/node" }, WindowsTaskPercentSignError],
+    ["the new entry has $(", guest(oldRuntime.nodePath, oldRuntime.daemonEntryPath), { ...runtime, daemonEntryPath: "/opt/$(Arg1)/index.js" }, WindowsTaskArgumentVariableError],
+  ] as const)("refuses a WSL update when %s, before the old task is touched", async (_what, configuration, next, refusal) => {
+    const effects = fake("linux", "/home/dl", {}, configuration)
+    await expect(updateDaemonService({ runtime: next }, effects)).rejects.toMatchObject({ outcome: "nothing-changed", cause: expect.any(refusal) })
+    expect(effects.order).toEqual([])
+  })
+
+  it.each([
+    ["$", "/opt/do$main/node"],
+    ["%", "/opt/do%hmain/node"],
+  ])("refuses a Linux update whose recorded old runtime has %s, before the swap", async (_character, executable) => {
+    const old = { executable, entry: oldRuntime.daemonEntryPath }
+    const effects = fake("linux", "/home/dl", {}, { ...saved("linux", "/home/dl"), serviceRuntime: old })
+    effects.files.set(unit, systemdUnit({ execPath: executable, args: [old.entry, "--service-config", "/home/dl/.domovoi/service.json"] }))
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toMatchObject({ outcome: "nothing-changed", cause: expect.any(SystemdPathCharacterError) })
+    expect(effects.order).toEqual([])
   })
 })
