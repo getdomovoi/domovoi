@@ -4,7 +4,8 @@ import type { Readable } from "node:stream"
 
 import { buildVersion, type ApprovalDecision, type ProviderModel, type ProviderUsageLimits, type Runtime } from "@getdomovoi/protocol"
 
-import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep } from "./agents.js"
+import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep, ApprovalScope } from "./agents.js"
+import { codexSandboxReach } from "./approval-facts.js"
 import {
   codexMainCheckoutConfigFile,
   codexMainCheckoutConfigRefusal,
@@ -12,6 +13,7 @@ import {
   codexRepositoryConfigFile,
   codexRepositoryConfigRefusal,
 } from "./codex-repository-config.js"
+import { credentialStores } from "./credential-stores.js"
 import { projectInstructions } from "./project-instructions.js"
 import { redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
@@ -45,34 +47,7 @@ export type CodexPolicy = {
 // allow-list exists (it needs a survey of the toolchains commands load), both
 // Domovoi profiles keep today's read access and refuse these credential
 // stores. Every other read outside the worktree still runs without a card.
-export const codexSecretLocations = [
-  "~/.ssh",
-  "~/.aws",
-  "~/.domovoi",
-  "~/.config/gh",
-  "~/.kube",
-  "~/.docker",
-  "~/.netrc",
-  "~/.gnupg",
-  "~/.azure",
-  "~/.config/gcloud",
-  "~/.git-credentials",
-  "~/.config/git/credentials",
-  "~/.npmrc",
-  "~/.pypirc",
-  "~/.password-store",
-  "~/.terraform.d",
-  "~/.vault-token",
-  "~/.pgpass",
-  "~/.my.cnf",
-  "~/.cargo/credentials.toml",
-  "~/.gem/credentials",
-  "~/.config/op",
-  "~/.local/share/keyrings",
-  "~/Library/Keychains",
-  "~/.codex/auth.json",
-  "~/.claude/.credentials.json",
-] as const
+export const codexSecretLocations: readonly string[] = credentialStores.map(({ location }) => location)
 
 // Secret files inside the worktree are refused too (owner ruling, 2026-09-22),
 // in every mode. A test or build that loads one of them inside the sandbox
@@ -332,7 +307,21 @@ export class StdioCodexTransport implements CodexTransport {
   }
 }
 
+// Codex runs a command inside its sandbox unless the request is to run outside
+// it, which is what most approvals are. The sandbox is the one codexPolicyFor
+// picks for the mode: read-only in Ask and Plan, workspace-write in Build, and
+// both read the whole disk. Neither has network: workspace-write sets it off,
+// and read-only's networkAccess defaults to false in the app-server schema.
+export function codexApprovalScope(runtime: Runtime): ApprovalScope {
+  const profile = codexPolicyFor(runtime).permissions
+  return {
+    command: profile === "domovoi-read" ? codexSandboxReach.read : codexSandboxReach.write,
+    network: "None inside the Codex sandbox. A request to run outside the sandbox has this machine's network access.",
+  }
+}
+
 export class CodexAppServerAdapter implements AgentAdapter {
+  approvalScope(runtime: Runtime): ApprovalScope { return codexApprovalScope(runtime) }
   readonly permissionCapabilities = { ask: "read-only", buildAuto: "unsupported" } as const
   #transportFactory: () => CodexTransport
   #transport: CodexTransport | undefined

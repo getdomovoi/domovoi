@@ -1,11 +1,13 @@
 import { lstat, readlink, realpath } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path"
 
-// Where a path really leads, read the way the filesystem reads it. This is the
-// resolver #541 wrote for approval facts (resolveApprovalPath in
-// approval-facts.ts), moved here so execution resolution and approval facts
-// follow a path the same way. Whichever of #541 and #545 lands second switches
-// its caller to this module.
+import { below } from "./credential-stores.js"
+import { beforeDeadline, type OperationDeadline } from "./operation-deadline.js"
+
+// Where a path really leads, read the way the filesystem reads it. The one
+// walk for execution resolution, approval facts (resolveApprovalPath in
+// approval-facts.ts) and the spelling sets a card hides, so none of them
+// follows a path differently.
 
 // The path as the request gave it, relative to the directory the request runs
 // in, before anything is collapsed: ".." is applied only after the links
@@ -37,34 +39,49 @@ const maximumLinksFollowed = 40
 // collapsed. A chain of links gives one alias per link, from the first to the
 // last. Links pairs each link, as the walk wrote its path, with the place it
 // leads to, as the link wrote its target: the two name the same directory or
-// file, so any path that starts with one can be written with the other.
+// file, so any path that starts with one can be written with the other. Hops
+// lists, for each link followed, the link's own path, its target as written,
+// and that target read from the link's directory, which approval facts judge
+// one by one.
 export type FollowedPath = {
   path: string
   walked: string
   aliases: string[]
   links: Array<readonly [link: string, leadsTo: string]>
+  hops: string[]
 }
 
-export async function followPath(path: string): Promise<FollowedPath | undefined> {
-  const walk = await walkPath(path)
-  return walk && { path: walk.path, walked: walk.walked, aliases: walk.aliases, links: walk.links }
+// A lookup past the deadline rejects the whole walk instead of reading as a
+// missing path, so a card is sealed rather than judged on a guess.
+function bounded<T>(operation: Promise<T>, deadline: OperationDeadline | undefined): Promise<T> {
+  return deadline === undefined ? operation : beforeDeadline(operation, deadline)
+}
+
+function rethrowExpired(error: unknown, deadline: OperationDeadline | undefined): void {
+  if (deadline?.signal.aborted) throw error
+}
+
+export async function followPath(path: string, deadline?: OperationDeadline): Promise<FollowedPath | undefined> {
+  const walk = await walkPath(path, deadline)
+  return walk && { path: walk.path, walked: walk.walked, aliases: walk.aliases, links: walk.links, hops: walk.hops }
 }
 
 // A directory and the parts after it, joined as written.
 function written(directory: string, parts: readonly string[]): string {
   if (parts.length === 0) return directory
-  return `${directory.endsWith(sep) ? directory : `${directory}${sep}`}${parts.join(sep)}`
+  return below(directory, parts)
 }
 
 // The walk behind followPath. Unreadable is true when a component could not be
 // read for a reason other than being absent: what lies there, a link included,
 // is then unknown, and the path is only a guess, left as walked.
-async function walkPath(path: string): Promise<(FollowedPath & { unreadable: boolean }) | undefined> {
+async function walkPath(path: string, deadline?: OperationDeadline): Promise<(FollowedPath & { unreadable: boolean }) | undefined> {
   const root = parse(path).root
   let current = root
   const pending = path.slice(root.length).split(separators).filter((part) => part !== "")
   const aliases: string[] = []
   const linked: Array<readonly [link: string, leadsTo: string]> = []
+  const hops: string[] = []
   let links = 0
   let unreadable = false
   while (pending.length > 0) {
@@ -74,15 +91,17 @@ async function walkPath(path: string): Promise<(FollowedPath & { unreadable: boo
     const next = join(current, part)
     let isLink = false
     try {
-      isLink = (await lstat(next)).isSymbolicLink()
+      isLink = (await bounded(lstat(next), deadline)).isSymbolicLink()
     } catch (error) {
+      rethrowExpired(error, deadline)
       // Absent or unreadable: kept as written.
       const code = (error as NodeJS.ErrnoException).code
       if (code !== "ENOENT" && code !== "ENOTDIR") unreadable = true
     }
     if (!isLink) { current = next; continue }
     if (++links > maximumLinksFollowed) return undefined
-    const target = await readlink(next)
+    const target = await bounded(readlink(next), deadline)
+    hops.push(next, target, isAbsolute(target) ? target : join(current, target))
     const targetRoot = parse(target).root
     if (targetRoot !== "") current = targetRoot
     const targetParts = target.slice(targetRoot.length).split(separators).filter((item) => item !== "")
@@ -90,7 +109,7 @@ async function walkPath(path: string): Promise<(FollowedPath & { unreadable: boo
     pending.unshift(...targetParts)
     aliases.push(written(current, pending))
   }
-  return { path: unreadable ? current : await spelledPath(current), walked: current, aliases, links: linked, unreadable }
+  return { path: unreadable ? current : await spelledPath(current, deadline), walked: current, aliases, links: linked, hops, unreadable }
 }
 
 // The walked path written the way native realpath writes it, as canonicalCwd
@@ -103,14 +122,15 @@ async function walkPath(path: string): Promise<(FollowedPath & { unreadable: boo
 // in its place since: realpath then follows it, and the path names where that
 // link leads, which a later reading or the worktree check sees. Any failure
 // other than a missing part keeps the path as walked.
-async function spelledPath(path: string): Promise<string> {
+async function spelledPath(path: string, deadline?: OperationDeadline): Promise<string> {
   if (!isAbsolute(path)) return path
   const missing: string[] = []
   let existing = path
   for (;;) {
     try {
-      return join(await realpath(existing), ...missing)
+      return join(await bounded(realpath(existing), deadline), ...missing)
     } catch (error) {
+      rethrowExpired(error, deadline)
       const code = (error as NodeJS.ErrnoException).code
       const parent = dirname(existing)
       if ((code !== "ENOENT" && code !== "ENOTDIR") || parent === existing) return path
@@ -129,9 +149,9 @@ export type FollowedTarget = {
   walks: { workspace: FollowedPath; target: FollowedPath }
 }
 
-export async function followedTarget(workspace: string, path: string, cwd?: string): Promise<FollowedTarget | undefined> {
-  const target = await followPath(requestedPath(workspace, path, cwd))
-  const realWorkspace = await followPath(resolve(workspace))
+export async function followedTarget(workspace: string, path: string, cwd?: string, deadline?: OperationDeadline): Promise<FollowedTarget | undefined> {
+  const target = await followPath(requestedPath(workspace, path, cwd), deadline)
+  const realWorkspace = await followPath(resolve(workspace), deadline)
   if (target === undefined || realWorkspace === undefined) return undefined
   return { workspace: realWorkspace.path, target: target.path, walks: { workspace: realWorkspace, target } }
 }
