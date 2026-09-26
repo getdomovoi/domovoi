@@ -43,14 +43,38 @@ export function fixtureStartupTimeoutMs(platform: NodeJS.Platform): number {
   return platform === "win32" ? 25_000 : 10_000
 }
 
+// What a spawned fixture has printed, and whether it can still start. The
+// assertion says only what ready looks like: a condition that can never become
+// true again (the child exited) belongs in `stopped`, which ends the wait at
+// once, and never in the assertion, where it would be retried until the budget
+// ran out and then reported as "did not start". 2026-09-19: a stderr check in
+// the assertion turned one handled, retried error into a 25 s Windows timeout.
+export interface FixtureWatch {
+  readonly output: () => string
+  readonly stopped: () => string | undefined
+}
+
 // An expiry here reads as "the fixture has not printed yet", which does not say
 // whether the runner stalled or the child never intended to listen. Name the
-// budget and keep the assertion underneath as the cause.
-export function waitForFixtureStartup<T>(fixture: string, assertion: () => T | Promise<T>): Promise<T> {
+// budget, keep the assertion underneath as the cause, and print the fixture's
+// output when there is a watch.
+export async function waitForFixtureStartup<T>(
+  fixture: string,
+  assertion: () => T | Promise<T>,
+  watch?: FixtureWatch,
+): Promise<T> {
   const timeout = fixtureStartupTimeoutMs(process.platform)
-  return vi.waitFor(assertion, { timeout }).catch((cause: unknown) => {
-    throw new Error(`${fixture} did not start within its ${timeout}ms startup budget`, { cause })
+  const printed = () => watch === undefined ? "" : `\n${watch.output()}`
+  let stopped: string | undefined
+  const observed = await vi.waitFor(async (): Promise<{ readonly value: T } | undefined> => {
+    stopped = watch?.stopped()
+    if (stopped !== undefined) return undefined
+    return { value: await assertion() }
+  }, { timeout }).catch((cause: unknown) => {
+    throw new Error(`${fixture} did not start within its ${timeout}ms startup budget${printed()}`, { cause })
   })
+  if (observed === undefined) throw new Error(`${fixture} stopped before it started: ${stopped ?? "no reason given"}${printed()}`)
+  return observed.value
 }
 
 // One call over the production fleet harness socket is a third class again. It
