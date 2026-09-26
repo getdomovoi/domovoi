@@ -223,3 +223,83 @@ it("draws no local daemon section for a client that cannot say how the daemon is
   expect(screen.queryByRole("region", { name: /local daemon/iu })).toBeNull()
   expect(screen.queryByText(/Domovoi service/u)).toBeNull()
 })
+
+// J24 (2026-09-23): Settings opens with the daemon on this machine and says
+// what quitting does. Install and Remove are drawn locked until the app can
+// do them; the by-hand command is beside the lock so nobody is left guessing.
+it("draws the daemon section for a daemon inside this app, with Install locked and the command beside it", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Running Domovoi inside this app", detail: "This app started the local daemon and stops it when the app quits.", owner: "app", platform: "darwin" }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(section.textContent).toContain("It owns every session here. This window and a paired phone are both its clients.")
+  expect(section.textContent).toContain("Keep Domovoi running after I quit")
+  expect(within(section).getByText("Off")).toBeTruthy()
+  expect(section.textContent).toContain("Quitting Domovoi stops the daemon and every session on it.")
+  expect(section.textContent).toContain("WHAT TURNING IT ON WRITES")
+  expect(section.textContent).toContain("~/Library/LaunchAgents/sh.domovoi.domovoid.plist")
+  expect(section.textContent).toContain("A LaunchAgent, for your user only.")
+  expect(section.textContent).toContain("~/.domovoi/service.json")
+  const install = within(section).getByRole("button", { name: "Install" })
+  expect(install.hasAttribute("disabled")).toBe(true)
+  expect(section.textContent).toContain("To finish by hand, run this in a terminal.")
+  expect(within(section).getByText("domovoid service install")).toBeTruthy()
+  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(true)
+})
+
+it("draws the installed service as running, with what it wrote", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", serviceInstalled: true, platform: "linux" }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(within(section).getByText("Running")).toBeTruthy()
+  expect(section.textContent).toContain("Quitting this app leaves the daemon and its sessions running.")
+  expect(section.textContent).toContain("WHAT IT WROTE")
+  expect(section.textContent).toContain("~/.config/systemd/user/domovoid.service")
+  expect(section.textContent).toContain("systemd starts it again.")
+  expect(section.textContent).toContain("Install is off: the service is already installed.")
+  expect(within(section).getByRole("button", { name: "Stop, disable and delete the user unit" }).hasAttribute("disabled")).toBe(true)
+  expect(within(section).getByText("domovoid service remove")).toBeTruthy()
+})
+
+// The names come from the installer (packages/protocol login-service), not
+// from the design's sample values.
+it("names the Linux unit the installer writes and no lingering it does not turn on", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Running Domovoi inside this app", detail: "This app started the local daemon and stops it when the app quits.", owner: "app", platform: "linux" }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(section.textContent).toContain("~/.config/systemd/user/domovoid.service")
+  expect(section.textContent).not.toContain("Lingering")
+  expect(section.textContent).not.toContain("loginctl")
+})
+
+// Native Windows runs the logon task unsupervised; only the WSL task has the
+// crash supervisor, so nothing restarts a crashed daemon before the next sign-in.
+it("names the Windows logon task the installer registers and says nothing restarts it", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", serviceInstalled: true, platform: "win32" }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(section.textContent).toContain('Task Scheduler task "Domovoi daemon"')
+  expect(section.textContent).toContain("Nothing restarts it until you next sign in.")
+  expect(section.textContent).not.toContain("restarts it up to")
+})
+
+// A daemon this app did not start may be the service or a domovoid run by
+// hand. Without a separate installed-service fact, Settings does not guess.
+it("does not call a daemon this app did not start the installed service", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", platform: "darwin" }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(within(section).getByText("Not started here")).toBeTruthy()
+  expect(section.textContent).toContain("A daemon this app did not start. Quitting this app leaves it running.")
+  expect(section.textContent).not.toContain("WHAT IT WROTE")
+  expect(section.textContent).not.toContain("WHAT TURNING IT ON WRITES")
+  expect(section.textContent).not.toContain("Running")
+  expect(section.textContent).toContain("This app cannot tell whether that daemon is the installed service. To check by hand, run this in a terminal.")
+  expect(within(section).getByText("domovoid service status")).toBeTruthy()
+  expect(section.textContent).toContain("Install and Remove are off: this app did not start that daemon.")
+  expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
+})
+
+// Another Domovoi window holds the daemon: quitting this one does not stop it,
+// so the section keeps that window's own line.
+it("keeps the other window's line for a daemon another Domovoi window started", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the daemon another Domovoi Desktop started", detail: "That app owns the daemon and stops it when it quits.", owner: "other-app", platform: "darwin" }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(section.textContent).toContain("That app owns the daemon and stops it when it quits.")
+  expect(section.textContent).not.toContain("Quitting Domovoi stops the daemon")
+  expect(section.textContent).not.toContain("Quitting this app leaves the daemon and its sessions running.")
+})
