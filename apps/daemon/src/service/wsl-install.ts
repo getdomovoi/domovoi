@@ -9,6 +9,7 @@ import { createServiceConfiguration, serializeServiceConfiguration, serviceConfi
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceCommand, ServiceCommandDependencies } from "./install.js"
 import { serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
+import { refuseTaskSchedulerExpansion } from "./task-scheduler-expansion.js"
 import { installedWslTask, type WslInstallation } from "./wsl-registration.js"
 import { removeWindowsTask } from "./windows-task.js"
 
@@ -57,6 +58,9 @@ export async function runWslServiceCommand(verb: string, dependencies: ServiceCo
       throw new Error("Remove the existing systemd registration before installing the WSL service")
     }
     const wsl = await discover(dependencies, deadline)
+    // The task carries these in its wsl.exe path and arguments; refuse any
+    // Task Scheduler would expand before a file is written or a task registered.
+    for (const value of [wsl.wsl, wsl.distribution, wsl.linuxUser, wsl.executable, ...wsl.args, path]) refuseTaskSchedulerExpansion(value)
     const configuration = { ...createServiceConfiguration(dependencies.environment ?? {}, {
       platform: "linux", homeDirectory: home, workingDirectory: dependencies.workingDirectory ?? process.cwd(),
     }), registrationId: randomUUID(), wsl }
