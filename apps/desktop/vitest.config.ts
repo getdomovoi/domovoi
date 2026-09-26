@@ -6,7 +6,6 @@ export default defineConfig({
   resolve: { alias: { "@": fileURLToPath(new URL("../../packages/ui/src", import.meta.url)) } },
   test: {
     coverage: {
-      enabled: true,
       provider: "v8",
       reporter: ["text-summary"],
       include: ["src/**/*.{ts,tsx}"],
