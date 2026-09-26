@@ -11,6 +11,15 @@ export type MachineIdentity = {
   label: string
 }
 
+// Thrown when the stored workspace belongs to a different machine identity
+// than this profile's. Startup callers match the class, never the message.
+export class StoredMachineIdentityMismatchError extends Error {
+  constructor() {
+    super("Stored workspace machine identity does not match this daemon; restore the matching identity and state before restarting")
+    this.name = "StoredMachineIdentityMismatchError"
+  }
+}
+
 export const defaultMachineLabel = "domovoi-machine"
 
 const maximumLabelLength = 128

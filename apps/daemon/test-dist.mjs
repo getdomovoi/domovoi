@@ -15,8 +15,8 @@ assert.equal(typeof bootstrap.install, "function")
 assert.deepEqual(Object.keys(publicApi).sort(), [
   "DaemonServiceHandoffError", "DaemonServiceRuntimeMissingError", "LaunchdJobNotDomovoiError", "SystemdPathCharacterError",
   "WindowsTaskArgumentVariableError", "WindowsTaskNotDomovoiError", "WindowsTaskPathError", "WindowsTaskPercentSignError",
-  "acquireLocalDaemon", "adoptRelayProfileSuccessor", "createProductionDaemon", "installDaemonService", "prepareRelayProfileSuccessor",
-  "readDaemonServiceStatus", "removeDaemonService", "verifyLocalFleetClientRoute", "verifyRelayProfileSuccessor",
+  "acquireLocalDaemon", "adoptRelayProfileSuccessor", "captureInheritedCredentials", "createProductionDaemon", "installDaemonService",
+  "prepareRelayProfileSuccessor", "readDaemonServiceStatus", "removeDaemonService", "verifyLocalFleetClientRoute", "verifyRelayProfileSuccessor",
 ])
 assert.equal("DomovoiDaemon" in internal, false)
 

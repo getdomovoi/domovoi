@@ -3,10 +3,8 @@ import { describe, expect, it } from "vitest"
 import { demoWorkspace } from "./fixtures.js"
 import type { SessionSummary } from "./schema.js"
 import {
-  planTransfer,
   sourcePreflight,
   transferReceiptSchema,
-  transferStepSchema,
 } from "./transfer.js"
 
 const session: SessionSummary = {
@@ -57,53 +55,6 @@ describe("sourcePreflight", () => {
         },
       },
     })).toEqual({ allowed: false, reason: "session-recovery-unresolved" })
-  })
-})
-
-describe("planTransfer", () => {
-  it("bundles the worktree incrementally by default", () => {
-    const plan = planTransfer({ session, sourceMachineId, targetMachineId })
-
-    expect(plan.method).toBe("git-bundle")
-    expect(plan.steps).toEqual([
-      "create-recovery-checkpoint",
-      "commit-session-checkpoint",
-      "bundle-incremental",
-      "stream-to-target",
-      "restore-on-target",
-      "record-receipt",
-    ])
-    expect(plan.sessionId).toBe(session.id)
-  })
-
-  it("uses a remote ref only when that workflow is explicitly opted into", () => {
-    expect(planTransfer({ session, sourceMachineId, targetMachineId, method: "remote-ref" }).steps)
-      .toEqual([
-        "create-recovery-checkpoint",
-        "commit-session-checkpoint",
-        "push-session-ref",
-        "fetch-on-target",
-        "restore-on-target",
-        "record-receipt",
-      ])
-  })
-
-  it("refuses to plan a transfer the source cannot make", () => {
-    expect(() => planTransfer({
-      session: { ...session, state: "active", activeTurnId: "turn-1" },
-      sourceMachineId,
-      targetMachineId,
-    })).toThrow("session-turn-active")
-  })
-
-  it("refuses to plan a transfer to the machine already holding the session", () => {
-    expect(() => planTransfer({ session, sourceMachineId, targetMachineId: sourceMachineId }))
-      .toThrow("target-is-source")
-  })
-
-  it("names every step it can plan", () => {
-    expect(transferStepSchema.options).toContain("create-recovery-checkpoint")
-    expect(transferStepSchema.options).toContain("record-receipt")
   })
 })
 

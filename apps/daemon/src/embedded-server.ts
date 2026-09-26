@@ -21,6 +21,7 @@ export async function createAuthenticatedEmbeddedRuntime<TClient, TConfig>({
   passwordEnvironment,
   usernameEnvironment,
   username,
+  environment = {},
   config,
   createPassword = () => randomBytes(32).toString("base64url"),
   startServer,
@@ -29,19 +30,23 @@ export async function createAuthenticatedEmbeddedRuntime<TClient, TConfig>({
   passwordEnvironment: string
   usernameEnvironment: string
   username: string
+  environment?: Readonly<Record<string, string>>
   config: TConfig
   createPassword?: () => string
   startServer: (options: EmbeddedServerOptions<TConfig>) => Promise<EmbeddedServer>
   createClient: (options: EmbeddedClientOptions) => TClient
 }): Promise<{ client: TClient; server: EmbeddedServer }> {
   const password = createPassword()
-  const previousPassword = process.env[passwordEnvironment]
-  const previousUsername = process.env[usernameEnvironment]
+  const childEnvironment: Record<string, string> = {
+    ...environment,
+    [passwordEnvironment]: password,
+    [usernameEnvironment]: username,
+  }
+  const previous = new Map(Object.keys(childEnvironment).map((name) => [name, process.env[name]]))
   let pendingServer: Promise<EmbeddedServer>
   try {
     // Both provider SDKs copy process.env synchronously while startServer spawns its child.
-    process.env[passwordEnvironment] = password
-    process.env[usernameEnvironment] = username
+    Object.assign(process.env, childEnvironment)
     pendingServer = startServer({
       hostname: "127.0.0.1",
       port: 0,
@@ -49,10 +54,10 @@ export async function createAuthenticatedEmbeddedRuntime<TClient, TConfig>({
       config,
     })
   } finally {
-    if (previousPassword === undefined) delete process.env[passwordEnvironment]
-    else process.env[passwordEnvironment] = previousPassword
-    if (previousUsername === undefined) delete process.env[usernameEnvironment]
-    else process.env[usernameEnvironment] = previousUsername
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
   }
 
   const server = await pendingServer

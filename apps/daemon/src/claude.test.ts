@@ -1,7 +1,10 @@
 import { waitForDaemon } from "./test-wait-for.js"
-import { resolve } from "node:path"
+import { execFileSync } from "node:child_process"
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join, sep } from "node:path"
 
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
@@ -17,6 +20,10 @@ import {
   type ClaudeUserMessage,
 } from "./claude.js"
 import { providerTurnCompletion } from "./provider-failures.js"
+import { removeScratchDirectories } from "./test-scratch.js"
+
+const scratchDirectories: string[] = []
+afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
 
 class MessageStream implements AsyncIterable<ClaudeSdkMessage> {
   #messages: ClaudeSdkMessage[] = []
@@ -724,7 +731,9 @@ describe("ClaudeAgentSdkAdapter", () => {
       threadId: "22222222-2222-4222-8222-222222222222",
       itemId: "tool-edit-blocked",
       command: "Edit",
-      cwd: "/worktree/.claude/settings.json",
+      // The request runs in the thread's directory; the blocked path is
+      // named beside it, never as it.
+      cwd: "/worktree",
       path: "/worktree/src/index.ts",
       blockedPath: "/worktree/.claude/settings.json",
       reason: "Edit a settings file",
@@ -752,10 +761,10 @@ describe("ClaudeAgentSdkAdapter", () => {
       itemId: "tool-write-relative",
       command: "Write",
       cwd: "/worktree",
-      // A relative tool path is resolved against the thread cwd, and resolve()
-      // anchors a bare posix root to the current drive on Windows, so the
-      // expectation has to be computed the same way rather than hardcoded.
-      path: resolve("/worktree", "src/generated.ts"),
+      // A relative tool path is joined to the thread cwd with the platform
+      // separator and nothing else: ".." is not collapsed and no drive is
+      // added, so the daemon follows it the way the filesystem does.
+      path: `/worktree${sep}src/generated.ts`,
       reason: "Write a generated file",
     })))
     adapter.resolveApproval(2, "deny")
@@ -1036,5 +1045,388 @@ describe("changing the mode on a live session", () => {
     await expect(
       adapter.startTurn({ threadId, cwd: "/worktree", prompt: "retry", runtime: runtime("build") }),
     ).resolves.toBeTruthy()
+  })
+})
+
+describe("the file behind an approval request", () => {
+  it("sends the daemon the file name exactly as the provider will use it", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const ask = (input: Record<string, unknown>, id: string) => void calls[0]!.options.canUseTool!("Edit", input, {
+      signal: new AbortController().signal, toolUseID: id, requestId: id,
+    })
+
+    ask({ file_path: "/worktree/target.txt ", old_string: "a", new_string: "b" }, "spaced")
+    ask({ file_path: "link/../src/index.ts", old_string: "a", new_string: "b" }, "relative")
+
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(2))
+    const paths = Object.fromEntries(events.flatMap((event) => event.type === "approval-requested" ? [[event.itemId, event.path]] : []))
+    expect(paths).toEqual({ spaced: "/worktree/target.txt ", relative: `/worktree${sep}link/../src/index.ts` })
+    await adapter.close()
+  })
+})
+
+describe("the tool behind an approval request", () => {
+  it("names a provider tool that is neither a command nor a file tool, so no rule can stand for all its uses", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const ask = (toolName: string, input: Record<string, unknown>, id: string) => void calls[0]!.options.canUseTool!(toolName, input, {
+      signal: new AbortController().signal, toolUseID: id, requestId: id,
+    })
+
+    ask("WebFetch", { url: "https://docs.example.com/page", prompt: "Summarise" }, "fetch")
+    ask("mcp__github__create_issue", { title: "x" }, "mcp")
+    ask("Edit", { file_path: "/worktree/src/index.ts", old_string: "a", new_string: "b" }, "edit")
+    ask("Bash", { command: "pnpm test" }, "bash")
+
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(4))
+    const tools = Object.fromEntries(events.flatMap((event) => event.type === "approval-requested" ? [[event.itemId, event.tool]] : []))
+    expect(tools).toEqual({ fetch: "WebFetch", mcp: "mcp__github__create_issue", edit: undefined, bash: undefined })
+    await adapter.close()
+  })
+
+  it("takes the request's identity from the tool that runs, not from fields the tool input supplies", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const ask = (toolName: string, input: Record<string, unknown>, id: string) => void calls[0]!.options.canUseTool!(toolName, input, {
+      signal: new AbortController().signal, toolUseID: id, requestId: id,
+    })
+
+    ask("mcp__github__create_issue", { command: "Edit", file_path: "/worktree/src/index.ts", title: "x" }, "mcp")
+    ask("Edit", { command: "pnpm test", file_path: "/worktree/src/index.ts", old_string: "a", new_string: "b" }, "edit")
+    ask("Bash", { command: "Edit", file_path: "/worktree/src/index.ts" }, "bash")
+
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(3))
+    const requests = Object.fromEntries(events.flatMap((event) => event.type === "approval-requested"
+      ? [[event.itemId, { command: event.command, path: event.path, tool: event.tool }]]
+      : []))
+    expect(requests).toEqual({
+      mcp: { command: "Edit", path: "/worktree/src/index.ts", tool: "mcp__github__create_issue" },
+      edit: { command: "Edit", path: "/worktree/src/index.ts", tool: undefined },
+      bash: { command: "Edit", path: undefined, tool: undefined },
+    })
+    await adapter.close()
+  })
+})
+
+describe("repository-brought configuration", () => {
+  it("loads no project or local settings and gives Claude the worktree's instruction files", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-claude-project-"))
+    scratchDirectories.push(scratch)
+    const worktree = join(scratch, "worktree")
+    await mkdir(join(worktree, ".claude"), { recursive: true })
+    await writeFile(join(scratch, "outside.md"), "Outside the worktree\n")
+    await writeFile(join(worktree, "CLAUDE.md"), "@AGENTS.md\n@../outside.md\nClaude project rule\n")
+    await writeFile(join(worktree, "AGENTS.md"), "Shared agent rule\n")
+    await writeFile(join(worktree, ".claude", "settings.json"), JSON.stringify({
+      env: { PLANTED: "1" },
+      hooks: { SessionStart: [{ hooks: [{ type: "command", command: "touch planted-hook" }] }] },
+    }))
+    await writeFile(join(worktree, ".mcp.json"), JSON.stringify({
+      mcpServers: { planted: { command: "planted-server" } },
+    }))
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+
+    await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+
+    const options = calls[0]!.options
+    expect(options.settingSources).toEqual(["user"])
+    expect(options.systemPrompt).toMatchObject({ type: "preset", preset: "claude_code" })
+    const appended = options.systemPrompt?.append ?? ""
+    expect(appended).toContain("Claude project rule")
+    expect(appended).toContain("Shared agent rule")
+    expect(appended).not.toContain("Outside the worktree")
+    expect(JSON.stringify(options)).not.toContain("planted")
+    await adapter.close()
+  })
+
+  it("keeps the preset prompt unchanged for a worktree with no instruction files", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-claude-bare-"))
+    scratchDirectories.push(scratch)
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+
+    await adapter.startThread({ cwd: scratch, runtime: runtime("build") })
+
+    expect(calls[0]!.options.settingSources).toEqual(["user"])
+    expect(calls[0]!.options.systemPrompt).toEqual({ type: "preset", preset: "claude_code" })
+    await adapter.close()
+  })
+})
+
+describe("reads Claude would approve before Domovoi sees them", () => {
+  const inherited = new Map<string, string>()
+  beforeEach(() => {
+    for (const [name, value] of Object.entries(process.env)) {
+      if (!name.startsWith("GIT_") || value === undefined) continue
+      inherited.set(name, value)
+      delete process.env[name]
+    }
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null")
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1")
+    vi.stubEnv("PAGER", "")
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    for (const [name, value] of inherited) process.env[name] = value
+    inherited.clear()
+  })
+
+  async function session(mode: Runtime["permissionMode"]) {
+    const scratch = await realpath(await mkdtemp(join(tmpdir(), "domovoi-claude-reads-")))
+    scratchDirectories.push(scratch)
+    const worktree = join(scratch, "worktree")
+    await mkdir(join(worktree, "src"), { recursive: true })
+    await writeFile(join(worktree, "src", "index.ts"), "export {}\n")
+    execFileSync("git", ["-C", worktree, "init", "-q"])
+    await writeFile(join(scratch, "credentials"), "secret\n")
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime(mode) })
+    const options = calls[0]!.options
+    const hook = options.hooks?.PreToolUse?.[0]?.hooks[0]
+    const screen = (toolName: string, toolInput: Record<string, unknown>, toolUseId = "tool-1") => {
+      if (!hook) throw new Error("No PreToolUse hook registered")
+      return hook({
+        hook_event_name: "PreToolUse",
+        cwd: worktree,
+        tool_name: toolName,
+        tool_input: toolInput,
+        tool_use_id: toolUseId,
+      }, toolUseId, { signal: new AbortController().signal })
+    }
+    return { adapter, events, options, scratch, screen, threadId, worktree }
+  }
+
+  it.each([
+    ["Bash", (scratch: string) => ({ command: `cat ${join(scratch, "credentials")}` })],
+    ["Bash", () => ({ command: "cat ~/.aws/credentials" })],
+    ["Bash", () => ({ command: "grep -r AKIA ../" })],
+    ["Bash", () => ({ command: "echo $HOME" })],
+    ["Bash", () => ({ command: "cd && cat .gitconfig" })],
+    ["Read", (scratch: string) => ({ file_path: join(scratch, "credentials") })],
+    ["Grep", (scratch: string) => ({ pattern: "secret", path: scratch })],
+    ["Glob", () => ({ pattern: "../**/*.pem" })],
+  ] as const)("sends a %s read outside the worktree to an approval in Build", async (toolName, input) => {
+    const { adapter, events, options, scratch, screen } = await session("build")
+    const toolInput = input(scratch)
+
+    await expect(screen(toolName, toolInput)).resolves.toMatchObject({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask" },
+    })
+    const approval = options.canUseTool!(toolName, toolInput, {
+      signal: new AbortController().signal,
+      toolUseID: "tool-1",
+      requestId: "claude-request-1",
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "approval-requested",
+      itemId: "tool-1",
+      reason: expect.stringContaining("outside the session worktree"),
+    })))
+    adapter.resolveApproval(1, "deny")
+    await expect(approval).resolves.toMatchObject({ behavior: "deny" })
+    await adapter.close()
+  })
+
+  it("sends a read-only command that names a secret to an approval even inside the worktree", async () => {
+    const { adapter, screen } = await session("build")
+
+    await expect(screen("Bash", { command: "git show HEAD:.env" })).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: "ask" },
+    })
+    await expect(screen("Read", { file_path: ".env" })).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: "ask" },
+    })
+    await adapter.close()
+  })
+
+  it.each([
+    ["Bash", { command: "ls -la src 2>/dev/null" }],
+    ["Bash", { command: "git status --short" }],
+    ["Bash", { command: "cat src/index.ts | wc -l" }],
+    ["Read", { file_path: "src/index.ts" }],
+    ["Grep", { pattern: "export", path: "src" }],
+    ["Glob", { pattern: "**/*.ts" }],
+    ["Edit", { file_path: "/elsewhere/file.ts" }],
+  ] as const)("leaves %s to Claude when it reads only inside the worktree or is not a read", async (toolName, toolInput) => {
+    const { adapter, screen } = await session("build")
+
+    await expect(screen(toolName, toolInput)).resolves.toEqual({})
+    await adapter.close()
+  })
+
+  it.each([
+    "grep -R secret src",
+    "find src -type l -exec cat {} +",
+    "echo L2V0Yy9wYXNzd2Q= | base64 -d | xargs cat",
+    "cd src && cat index.ts",
+  ])("sends a read Domovoi cannot resolve at parse time to an approval in Build: %s", async (command) => {
+    const { adapter, events, options, screen } = await session("build")
+
+    await expect(screen("Bash", { command })).resolves.toMatchObject({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask" },
+    })
+    const approval = options.canUseTool!("Bash", { command }, {
+      signal: new AbortController().signal,
+      toolUseID: "tool-1",
+      requestId: "claude-request-1",
+      title: "Claude wants to run a command",
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "approval-requested",
+      itemId: "tool-1",
+      command,
+      reason: "Claude wants to run a command",
+    })))
+    adapter.resolveApproval(1, "deny")
+    await expect(approval).resolves.toMatchObject({ behavior: "deny" })
+    await adapter.close()
+  })
+
+  it.each([
+    ["core.fsmonitor", "helper"],
+    ["diff.external", "differ"],
+  ])("sends a read-only Git command to an approval in Build when %s can run a program", async (key, value) => {
+    const { adapter, screen, worktree } = await session("build")
+    execFileSync("git", ["-C", worktree, "config", key, join(worktree, value)])
+
+    await expect(screen("Bash", { command: "git status --short" })).resolves.toMatchObject({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask" },
+    })
+    await expect(screen("Bash", { command: "git diff --stat" })).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: "ask" },
+    })
+    await adapter.close()
+  })
+
+  it.each([
+    "GIT_PAGER=cat git status --short",
+    "git -c core.fsmonitor=helper status --short",
+    "git log --show-signature",
+    "script -q /dev/null git log",
+    "git log --format=%G?",
+    "git log --pretty=format:%GG",
+  ])("asks when the command itself sets Git configuration: %s", async (command) => {
+    const { adapter, screen } = await session("build")
+
+    await expect(screen("Bash", { command })).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: "ask" },
+    })
+    await adapter.close()
+  })
+
+  it("refuses a read it cannot resolve at parse time in Ask, which has no approvals", async () => {
+    const { adapter, events, screen, threadId } = await session("ask")
+
+    await expect(screen("Bash", { command: "grep -R secret src" }, "tool-ask")).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: "deny" },
+    })
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "policy-refused",
+      threadId,
+      itemId: "tool-ask",
+      command: "grep -R secret src",
+      reason: "Domovoi cannot tell which files this command reads",
+    }))
+    await adapter.close()
+  })
+
+  it("refuses a read outside the worktree in Ask, which has no approvals", async () => {
+    const { adapter, events, screen, threadId } = await session("ask")
+
+    await expect(screen("Bash", { command: "cat ~/.ssh/id_ed25519" }, "tool-ask")).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: "deny" },
+    })
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "policy-refused",
+      threadId,
+      itemId: "tool-ask",
+      command: "cat ~/.ssh/id_ed25519",
+    }))
+    await adapter.close()
+  })
+})
+
+describe("a result that arrives after its turn was interrupted", () => {
+  it("does not complete the turn sent after the interrupt", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    await adapter.interruptTurn(threadId, first)
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+
+    calls[0]!.query.emit({
+      type: "result", subtype: "error_during_execution", session_id: threadId, is_error: true,
+      user_message_uuid: first, user_message_uuids: [first],
+    } as ClaudeSdkMessage)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(events.filter((event) => event.type === "turn-completed")).toEqual([])
+
+    calls[0]!.query.emit({
+      type: "result", subtype: "success", session_id: threadId, is_error: false,
+      user_message_uuid: second, user_message_uuids: [second],
+    } as ClaudeSdkMessage)
+    await waitForDaemon(() => expect(events).toContainEqual({
+      type: "turn-completed",
+      params: { threadId, turnId: second, turn: { id: second, status: "completed" } },
+    }))
+    await adapter.close()
+  })
+
+  // A result may name a uuid the SDK made itself (a compaction, a merged
+  // queue). Only a result naming an interrupted turn's messages is dropped.
+  it("completes the turn on a result naming a message the SDK made itself", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "11111111-1111-4111-8111-111111111111")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+
+    calls[0]!.query.emit({
+      type: "result", subtype: "success", session_id: threadId, is_error: false,
+      user_message_uuid: "44444444-4444-4444-8444-444444444444",
+    } as ClaudeSdkMessage)
+    await waitForDaemon(() => expect(events).toContainEqual({
+      type: "turn-completed",
+      params: { threadId, turnId, turn: { id: turnId, status: "completed" } },
+    }))
+    await adapter.close()
+  })
+})
+
+describe("the install check before a query", () => {
+  // The check runs before the synchronous factory, so a claude the SDK cannot
+  // drive is refused without starting a query at all.
+  it("refuses a session and a model list without calling the factory", async () => {
+    const { calls, factory } = factoryHarness()
+    const problem = "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100."
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, async () => { throw new Error(problem) })
+
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow(problem)
+    await expect(adapter.listModels()).rejects.toThrow(problem)
+    expect(calls).toHaveLength(0)
+    await adapter.close()
   })
 })

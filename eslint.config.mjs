@@ -29,7 +29,6 @@ const durablePublishImport = {
 // outright; a fixture asserting a shape it wrote is not a trust decision.
 const durabilityAllowlist = {
   parse: [
-    "apps/daemon/src/cli-rpc.ts",
     "apps/daemon/src/index.ts",
     "apps/daemon/src/local-daemon.ts",
     "apps/daemon/src/providers.ts",

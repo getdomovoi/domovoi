@@ -382,18 +382,26 @@ test("a missing proof report is named without replacing the original failure", a
 
 test("a silent provisioning call expires and cleanup gets its own finite budget", { timeout: 3_000 }, async () => {
   let aborted
-  const { calls, effects } = fixture({ run: async (command, args, options) => {
-    calls.push({ command, args, options })
-    if (args.includes("--install")) {
-      aborted = options.signal
-      return new Promise(() => {})
-    }
-    return ""
-  } })
+  const removed = []
+  const { calls, effects } = fixture({
+    run: async (command, args, options) => {
+      calls.push({ command, args, options })
+      if (args.includes("--install")) {
+        aborted = options.signal
+        return new Promise(() => {})
+      }
+      return ""
+    },
+    // The 100 ms budgets measure the deadlines, not the host disk. A real
+    // staging removal on a Windows runner outlived the cleanup budget.
+    createStaging: async () => "fixture-staging",
+    removeStaging: async (path) => { removed.push(path) },
+  })
   await assert.rejects(runWslCi({ platform: "win32", effects, budgets: { provision: 100, proofs: 100, cleanup: 100 } }), /provision.*deadline/)
   assert.equal(aborted.aborted, true)
   assert.equal(calls.at(-1).args[0], "--unregister")
   assert.equal(calls.at(-1).options.signal.aborted, false)
+  assert.deepEqual(removed, ["fixture-staging"])
 })
 
 test("expiry during staging creation keeps its promise for cleanup", { timeout: 3_000 }, async () => {

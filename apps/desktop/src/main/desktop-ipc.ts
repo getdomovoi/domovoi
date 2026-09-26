@@ -55,6 +55,9 @@ export type DesktopIpcDependencies = {
     allowRoot(path: string): void
     open(value: unknown): Promise<boolean>
   }
+  releasePage: {
+    open(): Promise<boolean>
+  }
   notifications: {
     notify(input: unknown, activate: (sessionId: string) => void): boolean
   }
@@ -181,6 +184,11 @@ export function registerDesktopIpc(ipcMain: DesktopIpcMain, deps: DesktopIpcDepe
   ipcMain.handle("domovoi:open-external", (event, request: unknown) => {
     if (!deps.authorized(event)) throw new Error("Desktop request is not authorized")
     return deps.externalTargets.open(request)
+  })
+
+  ipcMain.handle("domovoi:open-release-page", (event) => {
+    if (!deps.authorized(event)) throw new Error("Desktop request is not authorized")
+    return deps.releasePage.open()
   })
 
   ipcMain.on("domovoi:deep-link-ready", (event) => {

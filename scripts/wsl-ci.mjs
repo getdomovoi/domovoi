@@ -112,6 +112,7 @@ export function assertWslServiceReport(report) {
 
 const nodeEffects = {
   createStaging: () => mkdtemp(join(tmpdir(), "domovoi-wsl-ci-")),
+  removeStaging: rm,
   downloadImage: downloadWslImage,
   downloadNode: (path, deadline) => downloadWslImage(path, deadline, { image: wslNode }),
   run: async (command, args, options) => {
@@ -262,7 +263,7 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
         if (created) {
           try {
             const directory = await deadline.run(() => created)
-            await deadline.run(() => removeStaging(directory, rm, deadline))
+            await deadline.run(() => removeStaging(directory, effects.removeStaging ?? nodeEffects.removeStaging, deadline))
           } catch (error) { errors.push(error) }
         }
         if (errors.length > 0) throw new AggregateError(errors,
