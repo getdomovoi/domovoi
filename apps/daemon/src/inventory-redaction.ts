@@ -6,10 +6,10 @@
 // Every `NAME=value` at a word start, every value after a sensitive key, flag
 // or authorization scheme, every header value after a header flag whatever the
 // header is called (the next word too, when an unquoted header ends at its
-// colon), every URL query and fragment part (a bare part with no
-// equals sign in whole), and all URL user info become [REDACTED]. A header
-// value that opens with an authorization scheme keeps the scheme word, as a
-// bare `Bearer x` does. The daemon's durable-text redaction leaves
+// colon), every URL path after the host (in whole), every URL query and
+// fragment part (a bare part with no equals sign in whole), and all URL user
+// info become [REDACTED]. A header value that opens with an authorization
+// scheme keeps the scheme word, as a bare `Bearer x` does. The daemon's durable-text redaction leaves
 // `DATABASE_URL=x`, `https://tok@host` and `Bearer tok` alone, so this pass is
 // separate from it. It errs toward redacting: inside a quoted string a value
 // runs to the closing quote, so `sh -c 'A=1 run'` reads `sh -c 'A=[REDACTED]'`.
@@ -125,7 +125,10 @@ function redactUrlParts(payload: string): string {
   }).join("")
 }
 
-// A URL's user info, and every query and fragment part, redacted.
+// A URL's user info, its whole path after the host, and every query and
+// fragment part, redacted. A path can be the credential itself (a webhook's
+// /services/T0/B0/XXXX) and no rule tells which segment is, so the path goes
+// whole; an empty path or a bare `/` stays.
 function redactUrl(url: string): string {
   const authorityStart = url.indexOf("://") + 3
   const authorityEnd = url.slice(authorityStart).search(/[/?#]/u)
@@ -137,7 +140,8 @@ function redactUrl(url: string): string {
   const hash = rest.indexOf("#")
   const beforeHash = hash === -1 ? rest : rest.slice(0, hash)
   const question = beforeHash.indexOf("?")
-  const path = question === -1 ? beforeHash : beforeHash.slice(0, question)
+  const givenPath = question === -1 ? beforeHash : beforeHash.slice(0, question)
+  const path = givenPath === "" || givenPath === "/" ? givenPath : `/${marker}`
   const query = question === -1 ? "" : `?${redactUrlParts(beforeHash.slice(question + 1))}`
   const fragment = hash === -1 ? "" : `#${redactUrlParts(rest.slice(hash + 1))}`
   return `${url.slice(0, authorityStart)}${host}${path}${query}${fragment}`

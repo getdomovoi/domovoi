@@ -78,7 +78,7 @@ describe("readRepositoryProviderConfig: Claude Code", () => {
       { kind: "hook", event: "SessionStart", command: "NODE_ENV=[REDACTED] pnpm build", file: ".claude/settings.json", startsAtSessionStart: true, heldBack: true },
       { kind: "hook", event: "PreToolUse", matcher: "Bash", command: "PGPASSWORD=[REDACTED] psql -c 'select 1'", file: ".claude/settings.json", startsAtSessionStart: false, heldBack: true },
       {
-        kind: "hook", event: "PostToolUse", command: "curl -H 'X-Custom: [REDACTED]' https://hooks.example.com/cb#[REDACTED]",
+        kind: "hook", event: "PostToolUse", command: "curl -H 'X-Custom: [REDACTED]' https://hooks.example.com/[REDACTED]#[REDACTED]",
         file: ".claude/settings.json", startsAtSessionStart: false, heldBack: true,
       },
       { kind: "env-key", key: "DATABASE_URL", file: ".claude/settings.json", startsAtSessionStart: true, heldBack: true },

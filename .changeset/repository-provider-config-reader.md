@@ -9,6 +9,7 @@ the configuration digest a trust grant pins to. The scope includes Kilo's `confi
 `tui.json` and `tui.jsonc` plugin files OpenCode and Kilo load. A repository root that is itself a link
 is refused like any other link. Every command, rule and name is redacted before it leaves the reader:
 each `NAME=value`, each value after a sensitive key, flag or authorization scheme, each header value
-after a header flag, every URL query and fragment part and URL user info read `[REDACTED]`, and
+after a header flag, every URL path after the host, every URL query and fragment part and URL user
+info read `[REDACTED]`, and
 environment values are never read. Nothing calls the reader yet; the `tool.inventory` handler and the
 trust store come later.

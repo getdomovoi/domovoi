@@ -23,14 +23,20 @@ describe("redactInventoryText", () => {
     ["env \"PASSWORD=correct horse\" run", "env \"PASSWORD=[REDACTED]\" run"],
     ["sh -c 'TOKEN=abc run'", "sh -c 'TOKEN=[REDACTED]'"],
     ["cd x;SECRET=1 make", "cd x;SECRET=[REDACTED] make"],
-    ["curl https://tok@example.com/x", "curl https://[REDACTED]@example.com/x"],
-    ["curl https://user:pass@example.com:8443/x", "curl https://[REDACTED]@example.com:8443/x"],
-    ["curl 'https://example.com/p?key=abc&mode=fast'", "curl 'https://example.com/p?key=[REDACTED]&mode=[REDACTED]'"],
-    ["open https://example.com/cb#access_token=zzz", "open https://example.com/cb#access_token=[REDACTED]"],
+    ["curl https://tok@example.com/x", "curl https://[REDACTED]@example.com/[REDACTED]"],
+    ["curl https://user:pass@example.com:8443/x", "curl https://[REDACTED]@example.com:8443/[REDACTED]"],
+    ["curl 'https://example.com/p?key=abc&mode=fast'", "curl 'https://example.com/[REDACTED]?key=[REDACTED]&mode=[REDACTED]'"],
+    ["open https://example.com/cb#access_token=zzz", "open https://example.com/[REDACTED]#access_token=[REDACTED]"],
     // A query or fragment part without an equals sign is a value too.
-    ["open https://example.com/cb#opaque-fragment-secret", "open https://example.com/cb#[REDACTED]"],
-    ["curl 'https://example.com/p?token-without-equals'", "curl 'https://example.com/p?[REDACTED]'"],
-    ["curl 'https://example.com/p?a=1&bare;b=&d#x;c=2'", "curl 'https://example.com/p?a=[REDACTED]&[REDACTED];b=&[REDACTED]#[REDACTED];c=[REDACTED]'"],
+    ["open https://example.com/cb#opaque-fragment-secret", "open https://example.com/[REDACTED]#[REDACTED]"],
+    ["curl 'https://example.com/p?token-without-equals'", "curl 'https://example.com/[REDACTED]?[REDACTED]'"],
+    ["curl 'https://example.com/p?a=1&bare;b=&d#x;c=2'", "curl 'https://example.com/[REDACTED]?a=[REDACTED]&[REDACTED];b=&[REDACTED]#[REDACTED];c=[REDACTED]'"],
+    // The whole path after the host is a value: a webhook path is its token.
+    ["curl -X POST https://hooks.example.com/services/T0/B0/XXXX", "curl -X POST https://hooks.example.com/[REDACTED]"],
+    ["curl 'https://h.example.com:8443/a/b?key=abc#frag'", "curl 'https://h.example.com:8443/[REDACTED]?key=[REDACTED]#[REDACTED]'"],
+    ["curl https://example.com/?q=1", "curl https://example.com/?q=[REDACTED]"],
+    ["https://example.com/path", "https://example.com/[REDACTED]"],
+    ["https://example.com/p?a=", "https://example.com/[REDACTED]?a="],
     ["curl -H 'Authorization: Bearer tok' x", "curl -H 'Authorization: Bearer [REDACTED]' x"],
     // A header's value is redacted whatever the header is called.
     ["curl -H 'X-Custom: opaque-header-secret' x", "curl -H 'X-Custom: [REDACTED]' x"],
@@ -90,8 +96,10 @@ describe("redactInventoryText", () => {
     "tool --token-file ./token --max-tokens 10",
     "Bearer [REDACTED]",
     "NODE_ENV=[REDACTED] pnpm build",
-    "https://example.com/path",
-    "https://example.com/p?a=",
+    // A URL with no path, or only `/`, keeps it.
+    "curl https://example.com",
+    "curl https://example.com/",
+    "https://example.com:8443/",
     "curl -H @headers.txt x",
     "grep -Hn pattern file",
     // An empty header with nothing after it, or a quoted one the author closed.
@@ -122,6 +130,13 @@ describe("redactInventoryText", () => {
     expect(backstopAccepts(once)).toBe(true)
   })
 
+  it("is idempotent for a redacted URL path", () => {
+    const once = redactInventoryText("curl https://u:p@h.example.com:8443/a/b?k=v&bare#f")
+    expect(once).toBe("curl https://[REDACTED]@h.example.com:8443/[REDACTED]?k=[REDACTED]&[REDACTED]#[REDACTED]")
+    expect(redactInventoryText(once)).toBe(once)
+    expect(backstopAccepts(once)).toBe(true)
+  })
+
   it("is idempotent for a quoted header name with its value glued on", () => {
     const once = redactInventoryText("curl -H 'X-Foo':v -H \"X-Bar\":v -H 'X-Baz: a':v x")
     expect(once).toBe("curl -H 'X-Foo':[REDACTED] -H \"X-Bar\":[REDACTED] -H 'X-Baz: [REDACTED]' x")
@@ -135,7 +150,7 @@ describe("redactInventoryArgv", () => {
     const command = redactInventoryArgv([
       "npx", "server", "--api-key", "abc", "DATABASE_URL=postgres://u:p@h/db", "--url", "https://t@h/x", "env", "PASSWORD=correct horse",
     ])
-    expect(command).toBe("npx server --api-key [REDACTED] DATABASE_URL=[REDACTED] --url https://[REDACTED]@h/x env PASSWORD=[REDACTED]")
+    expect(command).toBe("npx server --api-key [REDACTED] DATABASE_URL=[REDACTED] --url https://[REDACTED]@h/[REDACTED] env PASSWORD=[REDACTED]")
     expect(backstopAccepts(command)).toBe(true)
   })
 
@@ -145,7 +160,7 @@ describe("redactInventoryArgv", () => {
       "https://example.com/cb?bare-query-secret#opaque-fragment-secret",
     ])
     expect(command).toBe(
-      "curl -H \"X-Custom: [REDACTED]\" \"--header=X-Other: [REDACTED]\" \"-HX-Third: [REDACTED]\" --proxy-header \"X-Proxy: [REDACTED]\" https://example.com/cb?[REDACTED]#[REDACTED]",
+      "curl -H \"X-Custom: [REDACTED]\" \"--header=X-Other: [REDACTED]\" \"-HX-Third: [REDACTED]\" --proxy-header \"X-Proxy: [REDACTED]\" https://example.com/[REDACTED]?[REDACTED]#[REDACTED]",
     )
     expect(backstopAccepts(command)).toBe(true)
   })
@@ -161,6 +176,14 @@ describe("redactInventoryArgv", () => {
       "curl", "-H", "X-Foo:", "s3cr3t-value", "-HX-Bar:", "hunter2", "--header=X-Baz:", "tok abc", "-H", "X-Empty:", "-H", "X-Real: q-secret", "x",
     ])
     expect(command).toBe("curl -H X-Foo: [REDACTED] -HX-Bar: [REDACTED] --header=X-Baz: [REDACTED] -H X-Empty: -H \"X-Real: [REDACTED]\" x")
+    expect(backstopAccepts(command)).toBe(true)
+  })
+
+  it("redacts a URL's whole path and keeps a bare host", () => {
+    const command = redactInventoryArgv([
+      "curl", "https://hooks.example.com/services/T0/B0/XXXX", "--url", "https://example.com/", "https://example.com", "https://h.example.com/a?key=v#f",
+    ])
+    expect(command).toBe("curl https://hooks.example.com/[REDACTED] --url https://example.com/ https://example.com https://h.example.com/[REDACTED]?key=[REDACTED]#[REDACTED]")
     expect(backstopAccepts(command)).toBe(true)
   })
 
