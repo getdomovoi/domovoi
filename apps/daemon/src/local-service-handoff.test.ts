@@ -1217,6 +1217,169 @@ describe("the service handoff fence and an emergency stop", () => {
     await daemon.daemon.stop()
     expect(journalTables(statePath).pending).toEqual([])
   })
+
+  // Review round 1 of #641: the same two passes, with the startup cut off
+  // between them. The first pass saved the stop's line and cleared its row.
+  // That line came from a recovery that did not finish, not from the stop or
+  // a finished restart, so the next startup still acts on the later row, and
+  // still writes the line once.
+  it("finishes a stop that rows in two passes name when a startup ended between the passes", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopId = `stop-${"9".repeat(8)}-9999-4999-8999-${"9".repeat(12)}`
+    const row = (id: string, extra: Record<string, unknown> = {}) =>
+      JSON.stringify({ version: 1, stopId: id, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z", ...extra })
+    for (let index = 0; index < emergencyStopRowsPerPass - 1; index += 1) {
+      const filler = `stop-${index.toString(16).padStart(8, "0")}-eeee-4eee-8eee-${"e".repeat(12)}`
+      await journalRow(statePath, filler, row(filler, { sessionIds: [] }))
+    }
+    await journalRow(statePath, stopId, row(stopId, { sessionIds: [sessionId] }))
+    await journalRow(statePath, "stop-in-the-next-pass", row(stopId, {
+      sessionIds: [sessionId], inFlight: [{ sessionId, provider: "codex", providerThreadId: "thread-fence" }],
+    }))
+
+    const cut = await daemonOnFile(statePath, workspace, {
+      wrap: (store) => {
+        const pending = store.emergencyStops.pending.bind(store.emergencyStops)
+        let passes = 0
+        store.emergencyStops.pending = (after) => {
+          passes += 1
+          if (passes === 2) throw new Error("The startup ended between passes")
+          return pending(after)
+        }
+        return store
+      },
+      errorSink: () => {},
+    })
+    await expect(cut.daemon.start()).rejects.toThrow("The startup ended between passes")
+    await cut.daemon.stop().catch(() => {})
+    expect(journalTables(statePath).pending).toEqual([{ stop_id: "stop-in-the-next-pass" }])
+
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.thread.filter((item) => item.kind === "system" && item.body === "Emergency stop requested by desktop.").map((item) => item.sessionId)).toEqual([sessionId])
+    const session = after.sessions.find(({ id }) => id === sessionId)!
+    expect({ state: session.state, providerThreadId: session.providerThreadId }).toEqual({ state: "failed", providerThreadId: undefined })
+    await daemon.daemon.stop()
+    expect(journalTables(statePath).pending).toEqual([])
+  })
+
+  // The other side of that rule: once a restart has finished, the lines it
+  // wrote record their stop. A row kept for overflow is read at every start,
+  // and does not act again on a session resumed since.
+  it("does not act again on a kept row's stop once a finished restart recorded it", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopId = `stop-${"f".repeat(8)}-ffff-4fff-8fff-${"f".repeat(12)}`
+    await journalRow(statePath, stopId, JSON.stringify({
+      version: 1, stopId, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z",
+      sessionIds: [sessionId, ...Array.from({ length: 10_000 }, (_, index) => `other-${index}`)],
+      inFlight: [{ sessionId, provider: "codex", providerThreadId: "thread-fence" }],
+    }))
+
+    const first = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    await first.daemon.start()
+    await first.daemon.stop()
+    expect(journalTables(statePath).pending).toEqual([{ stop_id: stopId }])
+    const store = new SqliteWorkspaceStore(statePath, workspace)
+    const resumed = store.load()
+    const stopped = resumed.sessions.find(({ id }) => id === sessionId)!
+    expect(stopped.state).toBe("failed")
+    stopped.state = "idle"
+    stopped.providerThreadId = "thread-resumed"
+    store.save(resumed)
+    await store.close()
+
+    const second = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await second.daemon.start(), second.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    const session = after.sessions.find(({ id }) => id === sessionId)!
+    expect({ state: session.state, providerThreadId: session.providerThreadId }).toEqual({ state: "idle", providerThreadId: "thread-resumed" })
+    expect(after.thread.filter((item) => item.kind === "system" && item.sessionId === sessionId && item.body === "Emergency stop requested by desktop.")).toHaveLength(1)
+    await second.daemon.stop()
+  })
+
+  // Review round 1 of #641: a row can reach the journal behind the pass that
+  // has read past its rowid, from another writer on the store or a trigger
+  // in it. Startup still finishes it before the listener opens.
+  it("finishes a row written behind a pass that already read past its rowid", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const row = (id: string, sessionIds: string[]) =>
+      JSON.stringify({ version: 1, stopId: id, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z", sessionIds })
+    const at = (rowid: number, id: string, record: string) => {
+      const database = new DatabaseSync(statePath)
+      try {
+        database.prepare("INSERT INTO emergency_stop_intents (rowid, stop_id, record) VALUES (?, ?, ?)").run(rowid, id, record)
+      } finally {
+        database.close()
+      }
+    }
+    for (let index = 1; index <= emergencyStopRowsPerPass + 1; index += 1) {
+      const filler = `stop-${index.toString(16).padStart(8, "0")}-eeee-4eee-8eee-${"e".repeat(12)}`
+      at(index * 10, filler, row(filler, []))
+    }
+    const late = `stop-${"c".repeat(8)}-cccc-4ccc-8ccc-${"0".repeat(12)}`
+
+    const daemon = await daemonOnFile(statePath, workspace, {
+      wrap: (store) => {
+        const pending = store.emergencyStops.pending.bind(store.emergencyStops)
+        let passes = 0
+        store.emergencyStops.pending = (after) => {
+          const pass = pending(after)
+          passes += 1
+          if (passes === 1) at(15, late, row(late, [sessionId]))
+          return pass
+        }
+        return store
+      },
+      errorSink: () => {},
+    })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.thread.filter((item) => item.kind === "system" && item.body === "Emergency stop requested by desktop.").map((item) => item.id))
+      .toEqual([`system-${late}-desktop-${sessionId}`])
+    await daemon.daemon.stop()
+    expect(journalTables(statePath).pending).toEqual([])
+  })
+
+  // Review round 1 of #641: one row can name two stops. It is cleared once,
+  // so a row that took its rowid after the first clear (here, from a trigger
+  // in the store) is not cleared with it, and is finished in turn.
+  it("clears a row that names two stops once, and finishes the row that took its place", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const first = `stop-${"1".repeat(8)}-aaaa-4aaa-8aaa-${"1".repeat(12)}`
+    const second = `stop-${"2".repeat(8)}-aaaa-4aaa-8aaa-${"2".repeat(12)}`
+    const replacement = `stop-${"3".repeat(8)}-aaaa-4aaa-8aaa-${"3".repeat(12)}`
+    const record = `{"version":1,"stopId":"${first}","client":"desktop","requestedAt":"2026-09-26T10:00:00.000Z",`
+      + `"sessionIds":["${sessionId}"],"stopId":"${second}"}`
+    await journalRow(statePath, first, record)
+    const database = new DatabaseSync(statePath)
+    try {
+      database.exec("CREATE TABLE replacement_row (stop_id, record)")
+      database.prepare("INSERT INTO replacement_row (stop_id, record) VALUES (?, ?)").run(replacement, JSON.stringify({
+        version: 1, stopId: replacement, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z", sessionIds: [sessionId],
+      }))
+      database.exec(`CREATE TRIGGER replace_cleared_row AFTER DELETE ON emergency_stop_intents
+        WHEN EXISTS (SELECT 1 FROM replacement_row)
+        BEGIN
+          INSERT INTO emergency_stop_intents (rowid, stop_id, record) SELECT old.rowid, stop_id, record FROM replacement_row;
+          DELETE FROM replacement_row;
+        END`)
+    } finally {
+      database.close()
+    }
+
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.thread.filter((item) => item.kind === "system" && item.body === "Emergency stop requested by desktop.").map((item) => item.id).sort())
+      .toEqual([first, second, replacement].map((stopId) => `system-${stopId}-desktop-${sessionId}`).sort())
+    await daemon.daemon.stop()
+    expect(journalTables(statePath)).toEqual({ pending: [], quarantined: [{ stop_id: first, record }] })
+  })
 })
 
 // A journal row written as a store file holds it, as a damaged or foreign
