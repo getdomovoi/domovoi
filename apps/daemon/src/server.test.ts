@@ -11519,6 +11519,47 @@ describe("DomovoiDaemon", () => {
       expect(errorSink).not.toHaveBeenCalledWith(expect.objectContaining({ context: expect.stringMatching(/archive|provider/i) }))
     })
 
+    // An older build could save a session mid-turn while its archive ran.
+    // Startup resumes that archive; there is no turn of a turned-off provider
+    // to interrupt, so the archive finishes instead of stopping there.
+    it.each(["cursor-agent", "grok"])("finishes the archive of a %s session saved mid-turn", async (provider) => {
+      const snapshot = structuredClone(demoWorkspace)
+      const session = snapshot.sessions[0]!
+      session.runtime = { provider, model: "stored-model", reasoning: "none", permissionMode: "build", auto: false }
+      session.state = "archiving"
+      session.archiveRequestedAt = "2026-09-20T10:00:00.000Z"
+      session.workspacePath = "/worktrees/stored"
+      session.providerThreadId = "thread-stored"
+      session.activeTurnId = "turn-stored"
+      const store = {
+        snapshot,
+        load() { return this.snapshot },
+        save(next: typeof snapshot) { this.snapshot = structuredClone(next) },
+        close: vi.fn(),
+      } satisfies WorkspaceStore & { snapshot: typeof snapshot }
+      const errorSink = vi.fn()
+      const workspaceService = {
+        ...checkpointingWorkspace(),
+        checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
+        archiveSessionWorkspace: vi.fn(async () => {}),
+      }
+      const daemon = new DomovoiDaemon({ port: 0, store, workspaceService, errorSink })
+      running.push(daemon)
+
+      await daemon.start()
+
+      const archived = store.snapshot.sessions.find(({ id }) => id === session.id)
+      expect(archived).toMatchObject({ state: "archived", archiveCheckpoint: "d".repeat(40) })
+      expect(archived).not.toHaveProperty("providerThreadId")
+      expect(archived).not.toHaveProperty("activeTurnId")
+      expect(archived).not.toHaveProperty("workspacePath")
+      expect(workspaceService.archiveSessionWorkspace).toHaveBeenCalledWith("/worktrees/stored", expect.any(AbortSignal))
+      expect(errorSink).not.toHaveBeenCalledWith(expect.objectContaining({
+        context: `Domovoi could not resume archive cleanup for ${session.id}`,
+      }))
+      expect(errorSink).not.toHaveBeenCalledWith(expect.objectContaining({ context: expect.stringMatching(/archive|provider/i) }))
+    })
+
     it.each(["cursor-agent", "grok"])("has no session adapter for %s", async (provider) => {
       const { daemon } = storedDaemon("codex")
 

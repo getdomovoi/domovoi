@@ -10576,6 +10576,13 @@ export class DomovoiDaemon {
       await this.#saveAgentState(false)
     }
 
+    // A turned-off provider is never run, so a turn saved for it by an older
+    // build has nothing to interrupt.
+    if (session.activeTurnId && this.#agents.isUnavailable(session.runtime.provider)) {
+      delete session.activeTurnId
+      await this.#saveAgentState(false)
+    }
+
     if (session.activeTurnId && session.providerThreadId) {
       await this.#loadProviderThreadForArchive(session)
       try {
