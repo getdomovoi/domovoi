@@ -109,6 +109,12 @@ import {
 } from "./identifiers.js"
 import { previewBridgeChannelSchema, previewParentOriginSchema } from "./preview-bridge.js"
 import { maximumProviderPromptCodeUnits } from "./prompt-delivery.js"
+import {
+  repositoryRevokeTrustParamsSchema,
+  repositoryRevokeTrustResultSchema,
+  repositoryTrustParamsSchema,
+  repositoryTrustResultSchema,
+} from "./repository-trust.js"
 import { toolInventorySchema } from "./tool-inventory.js"
 import {
   skillCapabilityManifestSchema,
@@ -1538,6 +1544,8 @@ export const rpcMethods = {
   "skill.list": { params: z.object({}).strict(), result: skillSummariesSchema },
   "skill.inventory": { params: z.object({}).strict(), result: skillInventorySchema },
   "tool.inventory": { params: z.object({}).strict(), result: toolInventorySchema },
+  "repository.trust": { params: repositoryTrustParamsSchema, result: repositoryTrustResultSchema },
+  "repository.revokeTrust": { params: repositoryRevokeTrustParamsSchema, result: repositoryRevokeTrustResultSchema },
   "skill.read": {
     params: z.object({ id: skillIdSchema }),
     result: skillDocumentSchema,
@@ -1725,6 +1733,8 @@ export const rpcMethodAuthorizations = {
   "skill.list": "observe",
   "skill.inventory": "observe",
   "tool.inventory": "observe",
+  "repository.trust": "control",
+  "repository.revokeTrust": "control",
   "skill.read": "observe",
   "skill.reviewRevision": "observe",
   "skill.setEnabled": "control",
@@ -1835,6 +1845,8 @@ export const rpcMethodMutations = {
   "skill.setEnabled": "mutating",
   "skill.review": "mutating",
   "skill.install": "mutating",
+  "repository.trust": "mutating",
+  "repository.revokeTrust": "mutating",
   "provider.refresh": "mutating",
   "annotation.create": "mutating",
   "annotation.reply": "mutating",
@@ -1937,6 +1949,14 @@ export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
   // The composer offers skills by name; their files stay on the machine
   // (skill.read is not here).
   "skill.list",
+])
+
+// Methods that grant or take back repository trust. The daemon admits them
+// only on a direct connection that holds the owner's bearer credential or a
+// paired desktop or web credential with full access; see repository-trust.ts.
+export const repositoryTrustRpcMethods = new Set<RpcMethod>([
+  "repository.trust",
+  "repository.revokeTrust",
 ])
 
 // The pairing card's grant list, verbatim from PairingCard in the 2026-09-23

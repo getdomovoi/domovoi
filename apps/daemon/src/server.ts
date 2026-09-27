@@ -33,6 +33,8 @@ import {
   daemonShuttingDownErrorCode,
   isRefusedWithoutPersistence,
   phoneAndTabletRpcMethods,
+  repositoryTrustGrantClients,
+  repositoryTrustRpcMethods,
   serviceHandoffRefusal,
   demoWorkspace,
   maximumTerminalOutputChunkCharacters,
@@ -333,6 +335,11 @@ export const serviceHandoffFencedMessage =
 // The fence's refusal while an emergency stop runs. The stop clears turns and
 // gates before it saves its state, so the turn and gate check finds nothing.
 export const serviceHandoffStopRefusal = "An emergency stop is still running."
+// Ruling Q68 A, 2026-09-27: who may grant or take back repository trust, and
+// who may mint a desktop credential.
+export const repositoryTrustCredentialRefusal =
+  "Repository trust requires the daemon credential or a paired desktop or web credential with full access"
+export const desktopPairingRefusal = "A web, phone or tablet connection cannot pair a desktop credential"
 export const persistenceUnavailableMessage =
   "Daemon cannot persist state, so changes are refused"
 
@@ -1938,6 +1945,32 @@ export class DomovoiDaemon {
     if (verified === undefined) return false
     this.#deviceCredentials.set(socket, { token, verified })
     return true
+  }
+
+  // Repository trust is decided on the connection's credential, never on the
+  // client it declares (ruling Q68 A). The owner's bearer counts as desktop: the
+  // daemon token is readable by any process running as the owner, so any such
+  // process can grant trust. A paired credential needs a desktop or web binding
+  // with full access. A relay channel, a machine credential, and a connection
+  // that declared no client or another client are refused.
+  #grantsRepositoryTrust(socket: RpcOutboundSocket): boolean {
+    if (socket instanceof DaemonRelaySocket) return false
+    const actor = this.#authenticatedActors.get(socket)
+    const grants = (client: string) => (repositoryTrustGrantClients as readonly string[]).includes(client)
+    if (actor?.kind !== "client" || !grants(actor.client)) return false
+    const credential = this.#deviceCredentials.get(socket)?.verified
+    if (credential === undefined) return actor.credential === "daemon"
+    return credential.binding.kind === "client"
+      && credential.binding.clientAccess === "full"
+      && credential.binding.client === actor.client
+      && actor.credential === "device"
+  }
+
+  // The connection declared web, phone or tablet. Such a connection may hold a
+  // pasted bearer, so it must not mint a desktop credential (rulings Q68 A, Q72 A).
+  #declaredWebOrHandheld(socket: RpcOutboundSocket): boolean {
+    const actor = this.#authenticatedActors.get(socket)
+    return actor?.kind === "client" && (actor.client === "web" || actor.client === "phone" || actor.client === "tablet")
   }
 
   // Revocation has to reach a device that is only listening, so its socket is
@@ -4839,6 +4872,7 @@ export class DomovoiDaemon {
       method === "device.pair" || method === "device.claim" || method === "device.confirmClaim"
       || method === "device.redeemCode"
       || method === "device.issueCode" || method === "artifact.authorize"
+      || repositoryTrustRpcMethods.has(method)
     )) {
       this.#error(socket, request.id, invalidParams, "This method requires a direct connection")
       return
@@ -4877,6 +4911,10 @@ export class DomovoiDaemon {
         daemonAuthenticationErrorCode,
         "A phone or tablet credential may only watch sessions, answer gates, and start, stop or steer sessions",
       )
+      return
+    }
+    if (repositoryTrustRpcMethods.has(method) && !this.#grantsRepositoryTrust(socket)) {
+      this.#error(socket, request.id, daemonAuthenticationErrorCode, repositoryTrustCredentialRefusal)
       return
     }
     const paramsResult = rpcMethods[method].params.safeParse(request.params ?? {})
@@ -6570,6 +6608,12 @@ export class DomovoiDaemon {
           return
         }
         const params = paramsResult.data as RpcParams<"device.issueCode">
+        // A desktop code redeems to a desktop credential, so it takes the same
+        // refusal as device.pair (ruling Q72 A).
+        if (params.targetClient === "desktop" && this.#declaredWebOrHandheld(socket)) {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, desktopPairingRefusal)
+          return
+        }
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -6614,6 +6658,16 @@ export class DomovoiDaemon {
         const channelPublicKey = method === "device.pair" ? (params as RpcParams<"device.pair">).channelPublicKey : undefined
         if (channelPublicKey !== undefined && (!this.#relayRecovery || this.#relayRecovery.identity.machineId !== this.#snapshot.machine.id)) {
           this.#error(socket, request.id, internalError, "Relay admission is unavailable")
+          return
+        }
+        // A browser, phone or tablet holding a pasted bearer must not mint
+        // itself a desktop credential (ruling Q68 A).
+        if (
+          method === "device.pair"
+          && ((params as RpcParams<"device.pair">).targetClient ?? (params as RpcParams<"device.pair">).client) === "desktop"
+          && this.#declaredWebOrHandheld(socket)
+        ) {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, desktopPairingRefusal)
           return
         }
         try {

@@ -123,6 +123,18 @@ describe("daemon relay admission", () => {
     expect(claim).not.toHaveBeenCalled()
   })
 
+  it("never takes repository trust over a relay channel, even from a desktop credential", async () => {
+    const { daemon, store } = await fixture()
+    const desktop = store.devices.pair({ label: "desktop", binding: { kind: "client", client: "desktop", clientAccess: "full" }, channelPublicKey: relayPublicKeyFromPrivateKey(otherKey) })
+    const relay = connect(daemon, desktop.token, otherKey)
+    expect(await relay.hello({ client: "desktop" })).toHaveProperty("result")
+    const digest = `sha256:${"a".repeat(64)}`
+    expect(await relay.rpc("repository.trust", { projectId: "project-acme", configDigest: digest, client: "desktop" }))
+      .toMatchObject({ error: { message: "This method requires a direct connection" } })
+    expect(await relay.rpc("repository.revokeTrust", { projectId: "project-acme", client: "desktop" }))
+      .toMatchObject({ error: { message: "This method requires a direct connection" } })
+  })
+
   it("does not accept a second bearer in hello", async () => {
     const { daemon, paired } = await fixture()
     const relay = connect(daemon, paired.token)
