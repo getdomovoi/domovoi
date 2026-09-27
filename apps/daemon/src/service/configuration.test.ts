@@ -220,8 +220,13 @@ describe("assertServiceProfile by the service platform's path rules", () => {
   })
 
   it("compares Windows profiles as Windows does, ignoring case and separator form", () => {
-    expect(() => assertServiceProfile({ profileDirectory: "C:\\Users\\dl\\Profiles\\Work" }, { profileDirectory: "c:\\users\\dl\\profiles\\work" }, "win32")).not.toThrow()
-    expect(() => assertServiceProfile({ profileDirectory: "C:\\Users\\dl\\.domovoi" }, "C:\\Users\\DL", "win32")).not.toThrow()
+    // Security review round 14 of #577 (P2): on a Windows host two missing
+    // paths match only by exact text, so the case-free match is checked as
+    // a remote comparison (owner ruling: exact case applies to local checks).
+    onHost("linux", () => {
+      expect(() => assertServiceProfile({ profileDirectory: "C:\\Users\\dl\\Profiles\\Work" }, { profileDirectory: "c:\\users\\dl\\profiles\\work" }, "win32")).not.toThrow()
+      expect(() => assertServiceProfile({ profileDirectory: "C:\\Users\\dl\\.domovoi" }, "C:\\Users\\DL", "win32")).not.toThrow()
+    })
     expect(() => assertServiceProfile({ profileDirectory: "C:\\Users\\dl\\profiles\\other" }, { profileDirectory: "C:\\Users\\dl\\profiles\\work" }, "win32"))
       .toThrow(ServiceProfileMismatchError)
   })

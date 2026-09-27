@@ -30,7 +30,7 @@ export function configuredProfileDirectory(value: string | undefined, home: stri
 
 // platform: the platform whose path rules apply. A directory is looked up on
 // disk only when those rules are this process's; otherwise the paths are
-// compared by the platform's own rules. Windows paths compare without case.
+// compared by the platform's own rules, and Windows paths without case.
 // No platform keeps this process's rules, as before.
 export function sameProfileDirectory(left: ProfileLocation, right: ProfileLocation, platform?: string): boolean {
   const windows = platform === "win32"
@@ -59,10 +59,13 @@ export function sameProfileDirectory(left: ProfileLocation, right: ProfileLocati
     }
     if (leftIdentity !== undefined || rightIdentity !== undefined) return false
   }
+  // Round 14 (P2): two missing paths on this host have no identity, and their
+  // parent may be case-sensitive, so a Windows path keeps its case here. A
+  // check from another host cannot look, so it matches without case.
   const canonical = (location: ProfileLocation) => {
     const directory = profileDirectory(location, platform)
     const resolved = local ? resolve(directory) : (windows ? win32 : posix).resolve(directory)
-    return windows ? resolved.toLowerCase() : resolved
+    return windows && !local ? resolved.toLowerCase() : resolved
   }
   return canonical(left) === canonical(right)
 }
