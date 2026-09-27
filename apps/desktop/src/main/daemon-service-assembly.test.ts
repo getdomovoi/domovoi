@@ -71,8 +71,8 @@ describe("the login service assembled for this app's profile", () => {
     expect(installed).toEqual(daemonRuntimeLayoutUnder(dirname(dirname(dirname(installed.daemonEntryPath)))))
     expect(dirname(dirname(dirname(dirname(installed.daemonEntryPath))))).toBe(join(profile, "runtime", "0.9.4"))
     // Round 4 (P2): the fake service call never published, so nothing is in
-    // place and the inert copy was discarded.
-    expect(await readdir(join(profile, "runtime"))).toEqual([])
+    // place. Round 8: not even the runtime directory was made.
+    expect(await readdir(profile)).toEqual([])
     await expect(service.update()).resolves.toMatchObject({ ok: true })
     expect(daemon.updateDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: { DOMOVOI_PROFILE_DIR: profile } }))
     await expect(service.remove()).resolves.toMatchObject({ ok: true })
