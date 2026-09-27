@@ -389,6 +389,26 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     ])
   })
 
+  it("escapes pattern characters in commands and keeps them in rules and matchers", async () => {
+    const root = await scratch()
+    await put(root, ".claude/settings.json", JSON.stringify({
+      hooks: { PreToolUse: [{ matcher: "mcp__.*", hooks: [{ type: "command", command: "prettier --write src/*.ts" }] }] },
+      permissions: { allow: ["Bash(git push *)"] },
+      apiKeyHelper: "cat keys/{a,b}.txt",
+    }))
+    const claude = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "claude-code")
+    expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+    expect(claude.omittedEntries).toBe(0)
+    expect(claude.entries).toEqual(expect.arrayContaining([
+      {
+        kind: "hook", event: "PreToolUse", matcher: "mcp__.*", command: "prettier --write src/\\*.ts",
+        file: ".claude/settings.json", startsAtSessionStart: false, heldBack: true,
+      },
+      { kind: "permission-rule", rule: "allow", detail: "Bash(git push *)", file: ".claude/settings.json", startsAtSessionStart: false, heldBack: true },
+      { kind: "helper", name: "apiKeyHelper", command: "cat keys/\\{a,b}.txt", file: ".claude/settings.json", startsAtSessionStart: true, heldBack: true },
+    ]))
+  })
+
   it("drops and counts an entry the protocol backstop still refuses, and entries past the cap", async () => {
     const root = await scratch()
     const servers = Object.fromEntries(Array.from({ length: 600 }, (_, index) => [`s${index}`, { command: `server-${index}` }]))

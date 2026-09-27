@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { toolInventoryEntrySchema } from "@getdomovoi/protocol"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
-import { inventoryShellWords, redactInventoryArgv, redactInventoryText } from "./inventory-redaction.js"
+import { inventoryShellWords, redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
 
 // The protocol backstop judges each emitted text; a hook entry is the smallest
 // shape that carries a free-text command.
@@ -39,10 +39,9 @@ describe("redactInventoryText", () => {
     // The whole path after the host is a value: a webhook path is its token.
     ["curl -X POST https://hooks.example.com/services/T0/B0/XXXX", "curl -X POST https://hooks.example.com/[REDACTED]"],
     ["curl 'https://h.example.com:8443/a/b?key=abc#frag'", "curl 'https://h.example.com:8443/[REDACTED]?key=[REDACTED]#[REDACTED]'"],
-    // A `?` is a pattern character, so it is quoted when written again.
-    ["curl https://example.com/?q=1", "curl https://example.com/'?q=[REDACTED]'"],
+    ["curl https://example.com/?q=1", "curl https://example.com/?q=[REDACTED]"],
     ["https://example.com/path", "https://example.com/[REDACTED]"],
-    ["https://example.com/p?a=", "https://example.com/[REDACTED]'?a='"],
+    ["https://example.com/p?a=", "https://example.com/[REDACTED]?a="],
     // A URL is the whole shell word, quoted runs included, and its assembled
     // path goes whole; the quotes the word opens or closes stay balanced.
     ["curl https://hooks.example.com/'opaque-secret' x", "curl https://hooks.example.com/[REDACTED] x"],
@@ -173,9 +172,8 @@ describe("redactInventoryText", () => {
 
   it("is idempotent for a redacted URL path", () => {
     const once = redactInventoryText("curl https://u:p@h.example.com:8443/a/b?k=v&bare#f")
-    // The `?` and the `&` read into the URL are quoted, so the word reads back
-    // as one word and expands to nothing else.
-    expect(once).toBe("curl https://[REDACTED]@h.example.com:8443/[REDACTED]'?k=[REDACTED]&[REDACTED]#[REDACTED]'")
+    // The `&` read into the URL is quoted, so the word reads back as one word.
+    expect(once).toBe("curl https://[REDACTED]@h.example.com:8443/[REDACTED]?k=[REDACTED]'&[REDACTED]#[REDACTED]'")
     expect(redactInventoryText(once)).toBe(once)
     expect(backstopAccepts(once)).toBe(true)
   })
@@ -376,8 +374,8 @@ describe("shell text that runs, expands or escapes an operator", () => {
     ["echo \"${TOKEN:-opaque-secret}\" x", "echo [REDACTED]"],
     ["sh -c 'curl -H X-Foo: <(printf opaque-secret) x'", "sh -c 'curl -H X-Foo: [REDACTED]'"],
     ["sh -c 'echo ${TOKEN-opaque-secret} x'", "sh -c 'echo [REDACTED]'"],
-    ["curl https://h.example.com/p?a=one\\&b=two", "curl https://h.example.com/[REDACTED]'?a=[REDACTED]&b=[REDACTED]'"],
-    ["curl https://h.example.com/p?a=one\\;b=two x", "curl https://h.example.com/[REDACTED]'?a=[REDACTED];b=[REDACTED]' x"],
+    ["curl https://h.example.com/p?a=one\\&b=two", "curl https://h.example.com/[REDACTED]?a=[REDACTED]'&b=[REDACTED]'"],
+    ["curl https://h.example.com/p?a=one\\;b=two x", "curl https://h.example.com/[REDACTED]?a=[REDACTED]';b=[REDACTED]' x"],
   ])("redacts %j", (input, expected) => {
     const redacted = redactInventoryText(input)
     expect(redacted).toBe(expected)
@@ -530,11 +528,19 @@ describe("redactInventoryArgv with ANSI C and localized quoting", () => {
 })
 
 // Pathname patterns (`*`, `?`, `[`) and brace expansion (`{a,b}`, `{1..3}`)
-// turn one word into several or none, and the reader does not model them. An
-// emitted word never holds one unquoted: text keeps its source with each such
-// character escaped, and an argument holding one is quoted.
+// turn one word into several or none, and the reader does not model them. A
+// word of a command a shell runs never holds one unquoted: a command line
+// keeps its source with each such character escaped, and an argument holding
+// one is quoted. Text no shell runs (a rule, a matcher) keeps its source.
 describe("pattern and brace characters in emitted words", () => {
   const textCases: ReadonlyArray<[string, string]> = [
+    // A `?` is a pattern character, so in a command it is quoted when a
+    // rewritten URL is written again.
+    ["curl https://example.com/?q=1", "curl https://example.com/'?q=[REDACTED]'"],
+    ["https://example.com/p?a=", "https://example.com/[REDACTED]'?a='"],
+    ["curl https://u:p@h.example.com:8443/a/b?k=v&bare#f", "curl https://[REDACTED]@h.example.com:8443/[REDACTED]'?k=[REDACTED]&[REDACTED]#[REDACTED]'"],
+    ["curl https://h.example.com/p?a=one\\&b=two", "curl https://h.example.com/[REDACTED]'?a=[REDACTED]&b=[REDACTED]'"],
+    ["curl https://h.example.com/p?a=one\\;b=two x", "curl https://h.example.com/[REDACTED]'?a=[REDACTED];b=[REDACTED]' x"],
     ["echo {a,b}", "echo \\{a,b}"],
     ["echo {1..3} x", "echo \\{1..3} x"],
     ["ls a?b", "ls a\\?b"],
@@ -548,13 +554,28 @@ describe("pattern and brace characters in emitted words", () => {
     ["tool --token opaque-secret a?b", "tool --token [REDACTED] a\\?b"],
   ]
 
-  it.each(textCases)("writes %j so no pattern expands", (input, expected) => {
-    const redacted = redactInventoryText(input)
+  it.each(textCases)("writes the command %j so no pattern expands", (input, expected) => {
+    const redacted = redactInventoryCommand(input)
     expect(redacted).toBe(expected)
     expect(redacted).not.toMatch(/opaque-secret/u)
-    expect(redactInventoryText(redacted)).toBe(redacted)
+    expect(redactInventoryCommand(redacted)).toBe(redacted)
     expect(backstopAccepts(redacted)).toBe(true)
-    expect(inventoryShellWords(redacted)).toEqual(inventoryShellWords(input)!.map((word) => word.replace("opaque-secret", "[REDACTED]")))
+    // A shell's script is compared by the words it reads as in turn.
+    const words = (text: string) => inventoryShellWords(text)!.map((word, index, all) => (index === 2 && /^(?:sh|bash)$/u.test(all[0]!) ? inventoryShellWords(word) : word))
+    expect(words(redacted)).toEqual(words(redactInventoryText(input)))
+  })
+
+  // Text no shell runs keeps each pattern character as written.
+  it.each([
+    "Bash(pnpm test:*)",
+    "bash git push *",
+    "mcp__.*",
+    "Edit|Write",
+    "Read(src/**/*.ts)",
+    "WebFetch(domain:*.example.com)",
+    "echo {a,b} a?b a[bc]",
+  ])("keeps the rule or matcher %j", (input) => {
+    expect(redactInventoryText(input)).toBe(input)
   })
 
   // A `[` or `[[` word is the test command, `$?` and `$*` are parameters, and
@@ -566,8 +587,8 @@ describe("pattern and brace characters in emitted words", () => {
     "find . -exec rm {} +",
     "echo {a} '{a,b}' \"a?b\" a\\*b \\[x]",
     "echo [REDACTED]",
-  ])("keeps %j", (input) => {
-    expect(redactInventoryText(input)).toBe(input)
+  ])("keeps the command %j", (input) => {
+    expect(redactInventoryCommand(input)).toBe(input)
   })
 
   const argvCases: ReadonlyArray<[string[], string]> = [
@@ -599,9 +620,8 @@ describe("pattern and brace characters in emitted words", () => {
       cwd: directory, encoding: "utf8", env: { PATH: "/usr/bin:/bin" },
     }).split("\0").slice(0, -1)
     const outputs = [
-      ...textCases.filter(([input]) => !/\$|sh -c|-lc/u.test(input)).map(([input]) => redactInventoryText(input)),
+      ...textCases.filter(([input]) => !/\$|sh -c|-lc/u.test(input)).map(([input]) => redactInventoryCommand(input)),
       ...argvCases.map(([argv]) => redactInventoryArgv(argv)),
-      redactInventoryText("curl https://example.com/?q=1"),
       redactInventoryArgv(["curl", "https://h.example.com/a?key=v#f"]),
     ]
 
@@ -630,13 +650,15 @@ describe("control characters in emitted text", () => {
     [`echo "a${rightToLeftOverride}b" x`, "echo [REDACTED]"],
     ["sh -c 'npm test\nnpm run lint'", "sh -c 'npm test [REDACTED]'"],
     ["sh -c \"TOKEN=a\tb\"", "sh -c \"TOKEN=[REDACTED]\""],
-  ])("redacts %j", (input, expected) => {
-    const redacted = redactInventoryText(input)
-    expect(redacted).toBe(expected)
-    expect(redacted).not.toMatch(/opaque-secret/u)
-    expect(redactInventoryText(redacted)).toBe(redacted)
-    expect(backstopAccepts(redacted)).toBe(true)
-    expect(inventoryShellWords(redacted)).toBeDefined()
+  ])("redacts %j as text and as a command", (input, expected) => {
+    for (const redact of [redactInventoryText, redactInventoryCommand]) {
+      const redacted = redact(input)
+      expect(redacted).toBe(expected)
+      expect(redacted).not.toMatch(/opaque-secret/u)
+      expect(redact(redacted)).toBe(redacted)
+      expect(backstopAccepts(redacted)).toBe(true)
+      expect(inventoryShellWords(redacted)).toBeDefined()
+    }
   })
 
   it.each([
