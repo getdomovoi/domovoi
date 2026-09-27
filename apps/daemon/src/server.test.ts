@@ -11397,6 +11397,105 @@ describe("DomovoiDaemon", () => {
       })
     })
 
+    // Closing a project stops every provider thread. One that does not stop
+    // keeps its id and fails the session, so no second agent starts in files
+    // it may still be writing. Nothing stops a turned-off provider's thread,
+    // so switching the session is refused instead of starting another one.
+    it.each(["cursor-agent", "grok"])("refuses to switch a %s session whose stop failed", async (provider) => {
+      const projectPath = "/code/stored"
+      const projectId = `project-${createHash("sha256").update(projectPath).digest("hex").slice(0, 12)}`
+      const snapshot = structuredClone(demoWorkspace)
+      snapshot.project = { ...snapshot.project!, id: projectId, path: projectPath }
+      for (const candidate of snapshot.sessions) candidate.projectId = projectId
+      const session = snapshot.sessions[0]!
+      session.runtime = { provider, model: "stored-model", reasoning: "none", permissionMode: "build", auto: false }
+      session.state = "idle"
+      session.workspacePath = "/worktrees/stored"
+      session.providerThreadId = "thread-stored"
+      delete session.activeTurnId
+      const codex = {
+        connect: vi.fn(async () => {}),
+        listModels: vi.fn(async () => codexModels()),
+        startThread: vi.fn(async () => "codex-thread"),
+        resumeThread: vi.fn(async () => {}),
+        stopThread: vi.fn(async () => {}),
+        startTurn: vi.fn(async () => "turn"),
+        steerTurn: vi.fn(async () => {}),
+        interruptTurn: vi.fn(async () => {}),
+        resolveApproval: vi.fn(),
+        onEvent: vi.fn(() => () => {}),
+        close: vi.fn(async () => {}),
+      } satisfies AgentAdapter
+      const daemon = new DomovoiDaemon({
+        port: 0,
+        store: new SqliteWorkspaceStore(":memory:", snapshot),
+        agents: { codex },
+        workspaceService: {
+          ...checkpointingWorkspace(),
+          inspect: vi.fn(async (path: string, _signal?: AbortSignal) => ({
+            root: path,
+            name: path === projectPath ? "stored" : "elsewhere",
+            branch: "main",
+            head: "a".repeat(40),
+          })),
+          checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
+        },
+      })
+      running.push(daemon)
+      const address = await daemon.start()
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+      onTestFinished(() => { socket.close() })
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      await identifyClient(socket)
+      let requestId = 0
+      const call = (method: string, params: Record<string, unknown>) => {
+        const id = ++requestId
+        const response = new Promise<Record<string, unknown>>((resolve) => {
+          const receive = (data: WebSocket.RawData) => {
+            const message = JSON.parse(data.toString()) as { id?: number }
+            if (message.id !== id) return
+            socket.off("message", receive)
+            resolve(message as Record<string, unknown>)
+          }
+          socket.on("message", receive)
+        })
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+        return response
+      }
+      const refusedOpen = await call("project.open", { path: "/code/elsewhere", client: "desktop" })
+      expect(refusedOpen).toMatchObject({ error: { code: -32010 } })
+      await call("project.open", {
+        path: "/code/elsewhere",
+        client: "desktop",
+        confirmation: projectSwitchConfirmationSchema.parse((refusedOpen.error as { data?: unknown }).data),
+      })
+      const back = await call("project.open", { path: projectPath, client: "desktop" })
+      expect((back.result as { sessions: unknown[] }).sessions).toContainEqual(expect.objectContaining({
+        id: session.id,
+        state: "failed",
+        providerThreadId: "thread-stored",
+      }))
+
+      const response = await call("session.setRuntime", {
+        sessionId: session.id,
+        client: "desktop",
+        runtime: { provider: "codex", model: "gpt-5.6-sol", reasoning: "xhigh", permissionMode: "build", auto: false },
+      })
+
+      expect(response).toMatchObject({ error: { code: -32602, message: "Session already has a live provider thread" } })
+      expect(codex.startThread).not.toHaveBeenCalled()
+      const current = await call("workspace.get", {})
+      expect((current.result as { sessions: unknown[] }).sessions).toContainEqual(expect.objectContaining({
+        id: session.id,
+        state: "failed",
+        runtime: expect.objectContaining({ provider }),
+        providerThreadId: "thread-stored",
+      }))
+    })
+
     it.each(["cursor-agent", "grok"])("has no session adapter for %s", async (provider) => {
       const { daemon } = storedDaemon("codex")
 

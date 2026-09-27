@@ -7693,6 +7693,13 @@ export class DomovoiDaemon {
           : undefined
         const recoveringFailedThread = previousKey !== undefined
           && this.#failedEmergencyThreads.has(previousKey)
+        // Recovery stops the failed thread before the new one is kept. Nothing
+        // can stop a turned-off provider's thread, so its exit cannot be
+        // established and a second agent must not start in the same worktree.
+        if (recoveringFailedThread && this.#agents.isUnavailable(currentSession.runtime.provider)) {
+          this.#error(socket, request.id, invalidParams, "Session already has a live provider thread")
+          return
+        }
         if (runtime.provider !== currentSession.runtime.provider || recoveringFailedThread) {
           if (!currentSession.workspacePath || !currentSession.providerThreadId) {
             this.#error(socket, request.id, invalidParams, "Session is not ready for provider handoff")
@@ -7736,6 +7743,7 @@ export class DomovoiDaemon {
                 : "Provider handoff checkpoint timed out",
             )
             // A turned-off provider is never run, so it has no thread to stop.
+            // One whose stop failed was refused above.
             if (!this.#agents.isUnavailable(previousRuntime.provider)) {
               await withTimeout(
                 this.#agents.require(previousRuntime.provider).stopThread(previousThreadId),
