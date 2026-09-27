@@ -50,15 +50,17 @@ import { nodeServiceEffects } from "./install.js"
 //   nothing. A kept copy whose profile, runtime, version or id directory, as
 //   the definition spells it, is a link removes nothing either (round 2): a
 //   link inside a candidate can lead on to a copy outside it.
-// - Every component of the two paths the service runs for each kept copy,
-//   its Node and its daemon entry, is walked as the definition spells it,
-//   from the filesystem root to the file (round 3). Nothing is removed when
-//   one is a link at or below the runtime directory, or a link that sits or
-//   leads there; when one lies in the runtime directory apart from that
-//   copy's own directory and those above it; when a read fails; or when the
-//   copy is there but a file the service runs is not. Only a copy that is
-//   not there at all ends its walk early. A link above the runtime directory that stays out
-//   of it, a linked home directory for one, still cleans up.
+// - Every component of the profile as it is given, and of the two paths the
+//   service runs for each kept copy, its Node and its daemon entry, as the
+//   definition spells them, is walked from the filesystem root (rounds 3 and
+//   4). Nothing is removed when any of them is a link, wherever it sits and
+//   wherever it leads: a link's route can pass through another link inside a
+//   candidate, which its final target does not show (round 4, ruled Q96 A).
+//   So a home directory or profile reached through a link never has its old
+//   copies removed. Nothing is removed either when a component lies in the
+//   runtime directory apart from that copy's own directory and those above
+//   it, when a read fails, or when the copy is there but a file the service
+//   runs is not. Only a copy that is not there at all ends its walk early.
 // - A candidate is moved to a private name beside the copies, by one rename,
 //   and removed only if what moved is still the directory that was checked.
 //   Anything else is moved back. When anything after the rename fails, what
@@ -179,6 +181,7 @@ export async function removeUnusedDaemonRuntimes(
     const profile = paths.dirname(root)
     if (!paths.isAbsolute(options.profileDirectory) || same(paths.dirname(paths.dirname(published)), root) !== true
       || same(options.profileDirectory, profile) !== true
+      || !await spelledWithoutLinks(fs, paths, options.profileDirectory)
       || await fs.entry(profile) !== "directory" || await fs.entry(root) !== "directory") {
       return { skipped: "runtime-directory" }
     }
@@ -243,6 +246,28 @@ export async function removeUnusedDaemonRuntimes(
   }
 }
 
+// Security review round 4 of #635 (P2), ruled Q96 A: true only when every
+// component of the profile, as it is given, is a real directory. Each is read
+// as spelled, from the filesystem root; a "." or ".." is not an entry of its
+// own, and with no link before it means what it says. A link anywhere, or a
+// read that fails, is false. No link is followed to judge where it leads.
+async function spelledWithoutLinks(fs: RuntimeCleanupFileSystem, paths: typeof posix, path: string): Promise<boolean> {
+  const separators = paths === win32 ? /[\\/]/u : /\//u
+  const top = paths.parse(path).root
+  let spelled = top
+  try {
+    for (const part of path.slice(top.length).split(separators)) {
+      if (part === "") continue
+      spelled = separators.test(spelled.slice(-1)) ? spelled + part : spelled + paths.sep + part
+      if (part === "." || part === "..") continue
+      if (await fs.entry(spelled) !== "directory") return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 // True when the kept copy's profile, runtime, version and id directories, as
 // the definition spells them, are each a real directory, up to the first that
 // is not there: a copy that is not there holds nothing. A link, anything else
@@ -267,13 +292,12 @@ async function namedThroughDirectories(fs: RuntimeCleanupFileSystem, paths: type
 // runtime directory can take away a component of the paths the service runs
 // for this kept copy: <copy>/node/bin/node (node\node.exe on Windows) and
 // <copy>/daemon/dist/index.js, as the definition spells them. Each path is
-// walked from the filesystem root one component at a time. For each
-// component the walk reads where the entry itself really is and, for a link,
-// where it really leads. It is false when
-// - a component at or below the copy's runtime directory, by its spelling, is
-//   a link;
-// - a link really sits, or really leads, at or inside the real runtime
-//   directory (runtime);
+// walked from the filesystem root one component at a time, reading each
+// entry itself and where it really is. It is false when
+// - any component is a link, wherever it sits and wherever it leads (round
+//   4, ruled Q96 A): the route a link takes can pass through another link
+//   inside a candidate, and neither where the link sits nor its final target
+//   shows that, so no link is followed to judge it;
 // - anything really at or inside the runtime directory is neither the copy's
 //   own real directory, a directory above it, nor inside it: that is where a
 //   candidate is, whatever the spelling;
@@ -291,8 +315,7 @@ async function executablesStayClear(fs: RuntimeCleanupFileSystem, paths: typeof 
   const inRuntime = (path: string) => within(fold(runtime), fold(path))
   // <profile>/runtime/<version>/<id>: the runtime directory is two above.
   const copyDepth = split(copy).parts.length
-  const runtimeIndex = copyDepth - 3
-  if (runtimeIndex < 0) return false
+  if (copyDepth < 3) return false
   const executables = [
     platform === "win32" ? paths.join(copy, "node", "node.exe") : paths.join(copy, "node", "bin", "node"),
     paths.join(copy, "daemon", "dist", "index.js"),
@@ -308,18 +331,14 @@ async function executablesStayClear(fs: RuntimeCleanupFileSystem, paths: typeof 
       for (const [index, part] of parts.entries()) {
         spelled = paths.join(spelled, part)
         const found = await fs.entry(spelled)
+        if (found === "link") return false
         if (found === "missing") {
           // The copy is there, but not what the service runs: not known.
           if (index >= copyDepth) return false
           copyReal = paths.join(real, ...parts.slice(index, copyDepth))
           break
         }
-        const own = paths.join(real, part)
         real = await fs.realpath(spelled)
-        if (found === "link") {
-          if (index >= runtimeIndex || inRuntime(own) || inRuntime(real)) return false
-          locations.push(own)
-        }
         locations.push(real)
         if (index === copyDepth - 1) copyReal = real
       }
