@@ -1040,7 +1040,100 @@ describe("the service handoff fence and an emergency stop", () => {
       kept.close()
     }
   })
+
+  // Round 5: a row can repeat a field, and JSON.parse keeps only the last
+  // value. The restart acts on every value the row gives, keeps a copy of the
+  // row, and so neither misnames nor skips the stop.
+  it("acts on every value of a repeated field in a journal row, and keeps a copy of the row", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const first = `stop-${"4".repeat(8)}-4444-4444-8444-${"4".repeat(12)}`
+    const second = `stop-${"5".repeat(8)}-5555-4555-8555-${"5".repeat(12)}`
+    const record = `{"version":1,"stopId":"${first}","client":"desktop","requestedAt":"2026-09-26T10:00:00.000Z",`
+      + `"sessionIds":["${sessionId}"],"inFlight":[{"sessionId":"${sessionId}","provider":"codex","providerThreadId":"thread-fence"}],`
+      + `"stopId":"${second}","sessionIds":[],"inFlight":[]}`
+    await journalRow(statePath, first, record)
+
+    const reports: string[] = []
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: (entry) => { reports.push(entry.context) } })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    const lines = after.thread.filter((item) => item.kind === "system" && item.sessionId === sessionId && item.body === "Emergency stop requested by desktop.")
+    expect(lines).toHaveLength(2)
+    const session = after.sessions.find(({ id }) => id === sessionId)!
+    expect({ state: session.state, providerThreadId: session.providerThreadId }).toEqual({ state: "failed", providerThreadId: undefined })
+    expect(reports).toContain("Domovoi read part of an emergency stop intent")
+    await daemon.daemon.stop()
+    expect(journalTables(statePath)).toEqual({ pending: [], quarantined: [{ stop_id: first, record }] })
+  })
+
+  // The reader behind the round 5 fix walks the row itself: brackets and
+  // quotes inside strings, and unknown fields nested far deeper than the
+  // stop's own, must not hide the stop's fields.
+  it("reads a stop past deeply nested unknown fields and strings that look like JSON", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopId = `stop-${"8".repeat(8)}-8888-4888-8888-${"8".repeat(12)}`
+    const depth = 100_000
+    const record = `{"note":"}]\\",\\"stopId\\":\\"x","deep":${"[".repeat(depth)}{"sessionIds":["elsewhere"]}${"]".repeat(depth)},`
+      + `"version":1,"stopId":"${stopId}","client":"desktop","requestedAt":"2026-09-26T10:00:00.000Z","sessionIds":["${sessionId}"]}`
+    await journalRow(statePath, stopId, record)
+
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.thread.filter((item) => item.kind === "system" && item.body === "Emergency stop requested by desktop.").map((item) => item.sessionId)).toEqual([sessionId])
+    await daemon.daemon.stop()
+    expect(journalTables(statePath)).toEqual({ pending: [], quarantined: [{ stop_id: stopId, record }] })
+  })
+
+  // Round 5: a row may hold many entries that do not read before one that
+  // does. The restart reads the whole row. More readable entries than it
+  // keeps leave the row pending and reported, never cleared.
+  it("reads every entry of a journal row past unreadable ones, and keeps a row with more entries than it holds pending", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const late = `stop-${"6".repeat(8)}-6666-4666-8666-${"6".repeat(12)}`
+    const many = `stop-${"7".repeat(8)}-7777-4777-8777-${"7".repeat(12)}`
+    const row = (stopId: string, sessionIds: unknown[]) => JSON.stringify({ version: 1, stopId, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z", sessionIds })
+    await journalRow(statePath, late, row(late, [...Array.from({ length: 10_000 }, () => ""), sessionId]))
+    await journalRow(statePath, many, row(many, [sessionId, ...Array.from({ length: 10_000 }, (_, index) => `other-${index}`)]))
+
+    const reports: string[] = []
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: (entry) => { reports.push(entry.context) } })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    const lines = after.thread.filter((item) => item.kind === "system" && item.sessionId === sessionId && item.body === "Emergency stop requested by desktop.")
+    expect(lines).toHaveLength(2)
+    expect(reports).toContain("Domovoi kept an emergency stop intent it could not finish whole")
+    await daemon.daemon.stop()
+    expect(journalTables(statePath).pending).toEqual([{ stop_id: many }])
+  })
 })
+
+// A journal row written as a store file holds it, as a damaged or foreign
+// build's row would be.
+async function journalRow(statePath: string, stopId: string, record: string): Promise<void> {
+  const database = new DatabaseSync(statePath)
+  try {
+    database.prepare("INSERT INTO emergency_stop_intents (stop_id, record) VALUES (?, ?)").run(stopId, record)
+  } finally {
+    database.close()
+  }
+}
+
+function journalTables(statePath: string): { pending: unknown[]; quarantined: unknown[] } {
+  const database = new DatabaseSync(statePath, { readOnly: true })
+  try {
+    const quarantine = database.prepare("SELECT 1 FROM sqlite_master WHERE name = 'emergency_stop_intent_quarantine'").get()
+    return {
+      pending: database.prepare("SELECT stop_id FROM emergency_stop_intents").all().map((row) => ({ ...row })),
+      quarantined: quarantine ? database.prepare("SELECT stop_id, record FROM emergency_stop_intent_quarantine").all().map((row) => ({ ...row })) : [],
+    }
+  } finally {
+    database.close()
+  }
+}
 
 // A narrow text check on the approval-requested handler, not proof. It
 // catches a direct `resolveApproval(event.requestId` or `#putApproval(` call

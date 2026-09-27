@@ -28,3 +28,8 @@ A journal row goes to that table only when no stop can be read from it. A row th
 beside fields it does not know is finished from the fields it can read, and a copy of it is kept.
 A dispatch's provider thread id is kept whole in the intent, so a thread id with any character in
 it is reset at restart as a completed stop resets it.
+
+A row that repeats a field is finished for every value it gives (each stop id, every listed
+session) and a copy of it is kept. Every entry of a row is read, however many before it do not
+read. A row with more readable entries than a stop keeps is finished as far as it goes, reported
+on each start, and left in the journal.

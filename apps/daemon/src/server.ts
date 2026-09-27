@@ -10535,21 +10535,23 @@ export class DomovoiDaemon {
   #recoverEmergencyStops(): void {
     const journal = this.#store.emergencyStops
     if (!journal) return
-    const { intents: entries, partial, setAside } = journal.pending()
+    const { intents: entries, partial, overflow, setAside } = journal.pending()
     for (const { key, reason } of setAside) {
       this.#reportError("Domovoi set aside an unreadable emergency stop intent", new Error(`${key}: ${reason}`))
     }
     for (const { key, reason } of partial) {
       this.#reportError("Domovoi read part of an emergency stop intent", new Error(`${key}: ${reason}`))
     }
+    for (const { key, reason } of overflow) {
+      this.#reportError("Domovoi kept an emergency stop intent it could not finish whole", new Error(`${key}: ${reason}`))
+    }
     if (entries.length === 0) return
     const candidate = structuredClone(this.#snapshot)
     for (const { intent } of entries) {
-      const lineId = (sessionId: string) => `system-${intent.stopId}-${sessionId}`
       const recorded = candidate.thread.some((item) => item.kind === "system"
         && (item.detail?.startsWith(`${intent.stopId}:`) || item.id.startsWith(`system-${intent.stopId}-`)))
       if (recorded) continue
-      for (const dispatch of intent.inFlight ?? []) {
+      for (const dispatch of intent.inFlight) {
         const session = candidate.sessions.find(({ id }) => id === dispatch.sessionId)
         if (!session) continue
         session.updatedAt = intent.requestedAt
@@ -10559,24 +10561,28 @@ export class DomovoiDaemon {
           delete session.providerThreadId
         }
       }
-      // A stop whose client cannot be read is finished without its line.
-      const client = intent.client
-      for (const sessionId of client === undefined ? [] : intent.sessionIds) {
-        const session = candidate.sessions.find(({ id }) => id === sessionId)
-        if (!session || sessionIsReadOnly(session)) continue
-        candidate.thread.push({
-          id: lineId(sessionId),
-          sessionId,
-          kind: "system",
-          body: `Emergency stop requested by ${client}.`,
-          createdAt: intent.requestedAt,
-        })
+      // A line for each client the stop names; a stop whose client cannot be
+      // read is finished without one.
+      for (const client of intent.clients) {
+        for (const sessionId of intent.sessionIds) {
+          const session = candidate.sessions.find(({ id }) => id === sessionId)
+          if (!session || sessionIsReadOnly(session)) continue
+          candidate.thread.push({
+            id: `system-${intent.stopId}-${client}-${sessionId}`,
+            sessionId,
+            kind: "system",
+            body: `Emergency stop requested by ${client}.`,
+            createdAt: intent.requestedAt,
+          })
+        }
       }
     }
     workspaceSnapshotSchema.parse(candidate)
     this.#store.save(candidate)
     this.#snapshot = candidate
-    for (const { key } of entries) journal.clear(key)
+    // A row kept for overflow stays in the journal, so it is reported again.
+    const kept = new Set(entries.filter(({ keep }) => keep).map(({ key }) => key))
+    for (const { key } of entries) if (!kept.has(key)) journal.clear(key)
   }
 
   // `storedApprovalIds` names cards read from storage when startup resumes an
