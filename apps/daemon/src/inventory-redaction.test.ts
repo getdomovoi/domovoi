@@ -42,6 +42,14 @@ describe("redactInventoryText", () => {
     ["sh -c 'curl -H \"X-Custom: v\" x'", "sh -c 'curl -H \"X-Custom: [REDACTED]\" x'"],
     ["sh -c \"curl -H \\\"X-Custom: v\\\" x\"", "sh -c \"curl -H \\\"X-Custom: [REDACTED]\\\" x\""],
     ["sh -c \"curl -H \\\"X-Custom: v x\"", "sh -c \"curl -H \\\"X-Custom: [REDACTED]\""],
+    // A header name takes every RFC 9110 token character, quote marks included.
+    ["curl -H \"X'Foo: s3cr3t-value\" x", "curl -H \"X'Foo: [REDACTED]\" x"],
+    ["curl -H 'X`Foo: s3cr3t-value' x", "curl -H 'X`Foo: [REDACTED]' x"],
+    ["curl -H \"!#$%&'*+-.^_`|~Az09: s3cr3t-value\" x", "curl -H \"!#$%&'*+-.^_`|~Az09: [REDACTED]\" x"],
+    ["sh -c \"curl -H \\\"X'Foo: s3cr3t-value\\\" x\"", "sh -c \"curl -H \\\"X'Foo: [REDACTED]\\\" x\""],
+    // An unquoted name's quote opens a quoted run the value closes; the
+    // redacted value closes it again.
+    ["curl -H X'Foo: s3cr3t-value' x", "curl -H X'Foo: [REDACTED]' x"],
     ["Bearer tok", "Bearer [REDACTED]"],
     ["curl -H \"X-Api-Key: abc def\" x", "curl -H \"X-Api-Key: [REDACTED]\" x"],
     ["tool --api-key abc --port 8080", "tool --api-key [REDACTED] --port 8080"],
@@ -76,6 +84,13 @@ describe("redactInventoryText", () => {
     expect(redactInventoryText(once)).toBe(once)
     expect(backstopAccepts(once)).toBe(true)
   })
+
+  it("is idempotent for quote marks in header names", () => {
+    const once = redactInventoryText("curl -H \"X'Foo: v\" -H 'X`Bar: v' -H X'Baz: v w' x")
+    expect(once).toBe("curl -H \"X'Foo: [REDACTED]\" -H 'X`Bar: [REDACTED]' -H X'Baz: [REDACTED]' x")
+    expect(redactInventoryText(once)).toBe(once)
+    expect(backstopAccepts(once)).toBe(true)
+  })
 })
 
 describe("redactInventoryArgv", () => {
@@ -95,6 +110,12 @@ describe("redactInventoryArgv", () => {
     expect(command).toBe(
       "curl -H \"X-Custom: [REDACTED]\" \"--header=X-Other: [REDACTED]\" \"-HX-Third: [REDACTED]\" --proxy-header \"X-Proxy: [REDACTED]\" https://example.com/cb?[REDACTED]#[REDACTED]",
     )
+    expect(backstopAccepts(command)).toBe(true)
+  })
+
+  it("redacts header values whose names hold quote marks", () => {
+    const command = redactInventoryArgv(["curl", "-H", "X'Foo: s3cr3t-value", "--header=X`Bar: hunter2", "-HX'Baz: tok-abc"])
+    expect(command).toBe("curl -H \"X'Foo: [REDACTED]\" \"--header=X`Bar: [REDACTED]\" \"-HX'Baz: [REDACTED]\"")
     expect(backstopAccepts(command)).toBe(true)
   })
 

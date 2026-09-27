@@ -138,18 +138,23 @@ function redactUrl(url: string): string {
 // Flags that take a whole `Name: value` header line: curl's -H, --header and
 // --proxy-header, and wget's --header. -H can hold its value in the same word.
 const headerFlag = /(-H|--header|--proxy-header)(=|\s+)?/uy
-const headerLine = /^([A-Za-z0-9!#$%&*+.^_|~-]+)(\s*:\s*)([\s\S]+)$/u
+// A field name is an RFC 9110 token, apostrophe and backtick included.
+const headerLine = /^([A-Za-z0-9!#$%&'*+.^_`|~-]+)(\s*:\s*)([\s\S]+)$/u
 
 // A header line with its value redacted, or undefined when the text is not a
 // `Name: value` line (curl's `@file` form, or `Name;` for an empty header).
-function redactHeaderLine(header: string): string | undefined {
+// In an unquoted shell word an apostrophe in the name opens a quoted run that
+// the value closes (`X'Foo: v w'`), so the redacted value closes it again.
+function redactHeaderLine(header: string, shellWord: boolean): string | undefined {
   const match = headerLine.exec(header)
   if (!match) return undefined
   const [, name = "", separator = "", value = ""] = match
   scheme.lastIndex = 0
   const kept = scheme.exec(value)?.[0] ?? ""
   const rest = value.slice(kept.length)
-  return `${redactKnownShapes(name)}${separator}${kept}${rest === "" || isMarker(rest) ? rest : marker}`
+  const closing = shellWord && (name.split("'").length - 1) % 2 === 1 ? "'" : ""
+  const redacted = `${marker}${closing}`
+  return `${redactKnownShapes(name)}${separator}${kept}${rest === "" || isMarker(rest) || rest === redacted ? rest : redacted}`
 }
 
 function redactKnownShapes(text: string): string {
@@ -168,7 +173,7 @@ function headerAt(text: string, index: number, quote: Quote): { text: string; en
   if (separator === "" && flag !== "-H") return undefined
   const start = index + whole.length
   const argument = headerArgument(text, start, quote)
-  const header = redactHeaderLine(text.slice(start + argument.open.length, argument.end - argument.close.length))
+  const header = redactHeaderLine(text.slice(start + argument.open.length, argument.end - argument.close.length), argument.open === "")
   if (header === undefined) return undefined
   return { text: `${whole}${argument.open}${header}${argument.close}`, end: argument.end }
 }
@@ -256,12 +261,12 @@ export function redactInventoryArgv(argv: readonly string[]): string {
     const flag = /^-{1,2}([A-Za-z_][A-Za-z0-9_.-]*)$/u.exec(argument)
     const next = argv[index + 1]
     if (/^(?:-H|--header|--proxy-header)$/u.test(argument) && next !== undefined) {
-      words.push(argument, redactHeaderLine(next) ?? redactInventoryText(next))
+      words.push(argument, redactHeaderLine(next, false) ?? redactInventoryText(next))
       index += 1
       continue
     }
     const attached = /^(-H|--header=|--proxy-header=)([\s\S]+)$/u.exec(argument)
-    const attachedHeader = attached ? redactHeaderLine(attached[2]!) : undefined
+    const attachedHeader = attached ? redactHeaderLine(attached[2]!, false) : undefined
     if (attached && attachedHeader !== undefined) {
       words.push(`${attached[1]!}${attachedHeader}`)
       continue
