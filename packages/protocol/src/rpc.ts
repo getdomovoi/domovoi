@@ -1951,6 +1951,14 @@ export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
   "skill.list",
 ])
 
+// Methods that grant or take back repository trust. The daemon admits them
+// only on a direct connection that holds the owner's bearer credential or a
+// paired desktop or web credential with full access; see repository-trust.ts.
+export const repositoryTrustRpcMethods = new Set<RpcMethod>([
+  "repository.trust",
+  "repository.revokeTrust",
+])
+
 // The pairing card's grant list, verbatim from PairingCard in the 2026-09-23
 // desktop design, in the order it draws them. The unbuilt line is one of the
 // grants rather than a note correcting them, because a drawing that needs a

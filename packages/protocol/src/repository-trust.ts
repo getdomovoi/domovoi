@@ -13,9 +13,13 @@ import { offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
 // untrusted again until it is reviewed and trusted anew. Trust never answers or
 // skips a hard gate, so no field here or in the trust methods names one.
 
-// Only desktop and web clients grant or take back trust. A phone or tablet
-// credential does not get the trust methods (they are outside
-// phoneAndTabletRpcMethods), and a trust record names the client that granted it.
+// Only desktop and web clients grant or take back trust. The daemon decides
+// from the connection's credential, never from a declared client (ruling Q68,
+// 2026-09-27): the daemon owner's bearer credential counts as desktop, so any
+// process running as the owner can call the trust methods; a paired device
+// credential needs a desktop or web binding with full access. Every other
+// connection is refused (repositoryTrustRpcMethods in rpc.ts). A trust record
+// names the client that granted it.
 export const repositoryTrustGrantClients = ["desktop", "web"] as const
 export const repositoryTrustClientSchema = z.enum(repositoryTrustGrantClients)
 
@@ -23,10 +27,14 @@ export const repositoryConfigDigestSchema = skillContentDigestSchema
 // The same cap as tool.inventory's projectId, so an id read there can be sent here.
 export const repositoryTrustProjectIdSchema = z.string().min(1).check(utf16MaxLength(256))
 
+// ISO validation accepts any number of fractional digits, so the length is
+// capped first and an oversized value is refused before it is read as a time.
+export const repositoryTrustTimestampSchema = z.string().check(utf16MaxLength(40)).pipe(offsetDateTimeSchema)
+
 const grantFields = {
   // The configuration digest the grant covers.
   trustedDigest: repositoryConfigDigestSchema,
-  trustedAt: offsetDateTimeSchema,
+  trustedAt: repositoryTrustTimestampSchema,
   trustedBy: z.object({
     client: repositoryTrustClientSchema,
     clientId: clientIdentityIdSchema.optional(),

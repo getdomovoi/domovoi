@@ -13,7 +13,9 @@ carries its trust state.
 or that the configuration changed, with the repository's current digest and state.
 `repository.revokeTrust` leaves the repository not trusted and lists each session whose agent
 thread it restarted, or whose old thread it could not confirm stopped. Both are control methods
-that change stored state. Only desktop and web clients call them: phone and tablet credentials do
-not get them, and a grant names a desktop or web client. Neither method has a field for another
+that change stored state, listed in `repositoryTrustRpcMethods` for the daemon's credential check.
+Only desktop and web clients call them: phone and tablet credentials do not get them, and a grant
+names a desktop or web client. A grant time is at most 40 UTF-16 code units, checked before it is
+read as a timestamp. Neither method has a field for another
 machine, the fleet or a hard gate, so trust never skips a hard gate. The daemon does not answer
 them yet.

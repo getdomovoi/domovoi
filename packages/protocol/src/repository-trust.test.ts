@@ -4,6 +4,7 @@ import {
   demoWorkspace,
   phoneAndTabletRpcMethods,
   repositoryTrustGrantClients,
+  repositoryTrustRpcMethods,
   repositoryTrustSchema,
   repositoryTrustStateSchema,
   rpcMethodAuthorizations,
@@ -53,6 +54,12 @@ describe("repository trust state", () => {
       expect(repositoryTrustStateSchema.safeParse({ ...trusted, trustedDigest: digest }).success, digest).toBe(false)
       expect(trustMethod.params.safeParse({ ...trustParams, configDigest: digest }).success, digest).toBe(false)
     }
+  })
+
+  it("caps the grant time before reading it as a timestamp", () => {
+    expect(repositoryTrustStateSchema.safeParse({ ...trusted, trustedAt: "2026-09-26T10:00:00.123456789+05:30" }).success).toBe(true)
+    expect(repositoryTrustStateSchema.safeParse({ ...trusted, trustedAt: `2026-09-26T10:00:00.${"1".repeat(1_000_000)}Z` }).success).toBe(false)
+    expect(repositoryTrustStateSchema.safeParse({ ...changed, trustedAt: `2026-09-26T10:00:00.${"1".repeat(64)}Z` }).success).toBe(false)
   })
 
   it("records a grant from desktop or web only", () => {
@@ -137,6 +144,12 @@ describe("repository trust methods", () => {
     expect(rpcMethodAuthorizations[method]).toBe("control")
     expect(rpcMethodMutations[method]).toBe("mutating")
     expect(phoneAndTabletRpcMethods.has(method)).toBe(false)
+  })
+
+  it("names the trust methods for the daemon's credential check", () => {
+    expect([...repositoryTrustRpcMethods].sort()).toEqual(["repository.revokeTrust", "repository.trust"])
+    expect(Object.keys(rpcMethods).filter((method) => method.startsWith("repository.")).sort()).toEqual([...repositoryTrustRpcMethods].sort())
+    for (const method of repositoryTrustRpcMethods) expect(phoneAndTabletRpcMethods.has(method)).toBe(false)
   })
 
   it.each(["repository.trust", "repository.revokeTrust"] as const)("%s never reads a workspace snapshot as its answer", (method) => {
