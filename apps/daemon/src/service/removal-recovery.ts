@@ -57,7 +57,9 @@ export function readServiceRemovalSnapshot(homeDirectory: string, platform: stri
     // A malformed registration cannot authorize recovery.
     configurationUnknown = `The saved service configuration at ${configurationPath} is not a Domovoi service configuration.`
   }
-  const profile = profileLocation(homeDirectory, profileDirectory)
+  // Round 5 of #577 (P2): the owner is read under the profile the saved
+  // configuration names under its own home, the one the service runs.
+  const profile = profileLocation(homeDirectory, effectiveProfileDirectory ?? profileDirectory)
   try { owner = readLocalOwnerRecord(profile) }
   catch (error) {
     unreadable ??= `The profile owner record could not be read at ${localOwnerRecordPath(profile)}: ${failureDetail(error)}`

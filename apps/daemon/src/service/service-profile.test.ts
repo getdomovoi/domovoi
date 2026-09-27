@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -21,6 +22,7 @@ vi.mock("../local-owner-record.js", async (importOriginal) => {
 
 import { removeScratchDirectories } from "../test-scratch.js"
 import { readServiceRemovalSnapshot } from "./removal-recovery.js"
+import { writeLocalOwnerRecord } from "../local-owner-record.js"
 import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, serviceProfileMismatch } from "./configuration.js"
 
 const roots: string[] = []
@@ -119,5 +121,26 @@ describe("readServiceRemovalSnapshot", () => {
     const configuration = createServiceConfiguration({}, { homeDirectory: otherHome, workingDirectory: otherHome, platform: process.platform })
     await writeFile(path, serializeServiceConfiguration(configuration), { mode: 0o600 })
     expect(readServiceRemovalSnapshot(root, process.platform).effectiveProfileDirectory).toBe(join(otherHome, ".domovoi"))
+  })
+
+  // Round 5 (P2): the owner record is read under that effective profile too,
+  // not under the caller's home.
+  it("reads the owner record under the effective profile of a legacy configuration", async () => {
+    const root = await home()
+    const otherHome = join(root, "other-home")
+    await mkdir(join(otherHome, ".domovoi"), { recursive: true })
+    const path = serviceConfigurationPath(root, process.platform)
+    await mkdir(dirname(path), { recursive: true })
+    const configuration = createServiceConfiguration({}, { homeDirectory: otherHome, workingDirectory: otherHome, platform: process.platform })
+    // Legacy: written before service.json named its profile directory.
+    const { profileDirectory: _named, ...legacy } = JSON.parse(serializeServiceConfiguration(configuration)) as Record<string, unknown>
+    await writeFile(path, JSON.stringify(legacy), { mode: 0o600 })
+    const instanceId = randomUUID()
+    writeLocalOwnerRecord(otherHome, {
+      version: 1, state: "starting", owner: "daemon", instanceId,
+      machineId: `machine-${"a".repeat(32)}`, protocolVersion: "0.4.0",
+      serviceRegistrationId: configuration.registrationId ?? randomUUID(), credential: { source: "environment" },
+    })
+    expect(readServiceRemovalSnapshot(root, process.platform).owner).toMatchObject({ instanceId })
   })
 })

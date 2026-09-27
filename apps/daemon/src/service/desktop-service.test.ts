@@ -1019,4 +1019,17 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
     await expect(installDaemonService({ runtime, staged: { runtime: staged, publish: notPublished }, environment: {} }, refused)).rejects.toBeInstanceOf(ServiceProfileMismatchError)
     expect(notPublished).not.toHaveBeenCalled()
   })
+
+  // Security review round 5 of #577 (P2): the removal leases, and writes any
+  // recovery receipt into, the profile the saved configuration names under
+  // its own home, the one it checked, not the caller's home profile.
+  it("leases and records recovery in the effective profile it checked", async () => {
+    const claimProfile = vi.fn(() => ({ release: vi.fn() }))
+    const effects = dependencies({
+      claimProfile,
+      removalSnapshot: vi.fn(() => ({ owner: undefined, configurationDigest: "digest", effectiveProfileDirectory: "/Users/other/.domovoi" })),
+    })
+    await removeDaemonService(effects, { environment: { DOMOVOI_PROFILE_DIR: "/Users/other/.domovoi" } })
+    expect(claimProfile).toHaveBeenCalledWith({ profileDirectory: "/Users/other/.domovoi" })
+  })
 })

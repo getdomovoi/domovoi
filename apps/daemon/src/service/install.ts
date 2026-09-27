@@ -1122,7 +1122,9 @@ async function removeWithDeadline(
     }
   }
   deadline.throwIfExpired()
-  const profile = profileLocation(home, before.profileDirectory)
+  // Round 5 of #577 (P2): lease, and write any recovery receipt into, the
+  // profile the saved configuration names under its own home.
+  const profile = profileLocation(home, before.effectiveProfileDirectory ?? before.profileDirectory)
   const lease = effects.claimProfile(profile)
   try {
     const recovery = serviceRemovalRecovery(before, effects.removalSnapshot(home, target.platform), managerStopped)
