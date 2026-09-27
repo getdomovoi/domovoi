@@ -54,11 +54,21 @@ export type AcpPeerHandlers = {
   onDisconnect(reason?: string): void
 }
 
+// The agent answered a request to open or resume a session with an error, so
+// no session is open. Any other failure leaves that unknown.
+export class AcpSessionNotOpenedError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "AcpSessionNotOpenedError"
+  }
+}
+
 export interface AcpPeer {
   initialize(): Promise<void>
   startSession(cwd: string): Promise<AcpSessionSetup>
   resumeSession(sessionId: string, cwd: string): Promise<AcpSessionSetup>
-  closeSession(sessionId: string): Promise<void>
+  // Resolves false when the agent cannot close sessions.
+  closeSession(sessionId: string): Promise<boolean>
   setMode(sessionId: string, mode: string): Promise<void>
   setConfig(sessionId: string, optionId: string, value: string): Promise<void>
   prompt(sessionId: string, prompt: string): Promise<{ stopReason: string }>
@@ -158,7 +168,7 @@ export class AcpAgentAdapter implements AgentAdapter {
   async startThread(input: { cwd: string; runtime: Runtime }): Promise<string> {
     this.#refuseHeldBackRepositoryFiles(input.cwd)
     const peer = this.#requirePeer()
-    const setup = await peer.startSession(input.cwd)
+    const setup = await this.#open(peer, () => peer.startSession(input.cwd))
     this.#guardSession(setup.sessionId, input.cwd)
     await this.#configureOrClose(peer, setup, input.runtime)
     return setup.sessionId
@@ -167,7 +177,7 @@ export class AcpAgentAdapter implements AgentAdapter {
   async resumeThread(input: { threadId: string; cwd: string; runtime: Runtime }): Promise<void> {
     this.#refuseHeldBackRepositoryFiles(input.cwd)
     const peer = this.#requirePeer()
-    const setup = await peer.resumeSession(input.threadId, input.cwd)
+    const setup = await this.#open(peer, () => peer.resumeSession(input.threadId, input.cwd))
     this.#guardSession(input.threadId, input.cwd)
     await this.#configureOrClose(peer, { ...setup, sessionId: input.threadId }, input.runtime)
   }
@@ -290,12 +300,22 @@ export class AcpAgentAdapter implements AgentAdapter {
     }
     if (refusal === undefined) return
     const peer = this.#peer
-    if (peer) {
-      this.#handleDisconnect(peer, refusal)
-      void peer.close().catch(() => undefined)
-    }
-    this.#releaseSessions()
+    if (peer) this.#stopPeer(peer, refusal)
+    else this.#releaseSessions()
     throw new Error(refusal)
+  }
+
+  // The agent is told to stop before anyone is told, so a listener that throws
+  // cannot leave it running.
+  #stopPeer(peer: AcpPeer, reason: string): void {
+    void peer.close().catch(() => undefined)
+    if (this.#peer !== peer) return
+    this.#releaseSessions()
+    try {
+      this.#handleDisconnect(peer, reason)
+    } catch {
+      // The agent is already stopping.
+    }
   }
 
   #repositoryChanged(): void {
@@ -357,13 +377,33 @@ export class AcpAgentAdapter implements AgentAdapter {
     this.#watchers.clear()
   }
 
-  // A session left open after a failed setup would keep running unwatched.
+  // A request that failed without the agent saying it opened nothing may have
+  // left a session open that nothing watches, so the agent is stopped.
+  async #open(peer: AcpPeer, open: () => Promise<AcpSessionSetup>): Promise<AcpSessionSetup> {
+    try {
+      return await open()
+    } catch (error) {
+      if (!(error instanceof AcpSessionNotOpenedError)) {
+        const name = this.#definition.displayName
+        this.#stopPeer(peer, `${name} did not confirm whether it opened a session, so Domovoi stopped ${name} rather than leave that session unwatched.`)
+      }
+      throw error
+    }
+  }
+
+  // A session whose setup failed stays watched until the agent closes it, and
+  // the agent is stopped when it does not.
   async #configureOrClose(peer: AcpPeer, setup: AcpSessionSetup, runtime: Runtime): Promise<void> {
     try {
       await this.#configure(setup, runtime)
     } catch (error) {
-      this.#releaseSession(setup.sessionId)
-      await peer.closeSession(setup.sessionId).catch(() => undefined)
+      const closed = await peer.closeSession(setup.sessionId).catch(() => false)
+      if (closed) {
+        this.#releaseSession(setup.sessionId)
+      } else {
+        const name = this.#definition.displayName
+        this.#stopPeer(peer, `${name} could not close a session whose setup failed, so Domovoi stopped ${name} rather than leave that session unwatched.`)
+      }
       throw error
     }
   }

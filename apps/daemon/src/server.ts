@@ -1780,8 +1780,8 @@ export class DomovoiDaemon {
       options.agents ?? {
         "claude-code": new ClaudeAgentSdkAdapter(),
         codex: options.agent ?? new CodexAppServerAdapter(),
-        "cursor-agent": createCursorAgentAdapter(),
-        grok: createGrokAgentAdapter(),
+        "cursor-agent": createCursorAgentAdapter({ launchRoot: join(this.#profileDirectory, "acp") }),
+        grok: createGrokAgentAdapter({ launchRoot: join(this.#profileDirectory, "acp") }),
         kilo: new KiloSdkAdapter(),
         opencode: new OpenCodeSdkAdapter(),
       },

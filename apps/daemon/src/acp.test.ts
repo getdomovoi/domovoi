@@ -8,7 +8,7 @@ import type { Runtime } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { AcpPeer, AcpPeerHandlers, AcpSessionSetup, AcpUpdate } from "./acp.js"
-import { AcpAgentAdapter } from "./acp.js"
+import { AcpAgentAdapter, AcpSessionNotOpenedError } from "./acp.js"
 import { CURSOR_ACP_PROVIDER, GROK_ACP_PROVIDER, type AcpProviderDefinition } from "./acp-providers.js"
 import type { AgentEvent } from "./agents.js"
 import { classifyProviderFailure } from "./provider-failures.js"
@@ -51,7 +51,7 @@ class FakePeer implements AcpPeer {
   initialize = vi.fn(async () => undefined)
   startSession = vi.fn(async () => this.setup)
   resumeSession = vi.fn(async () => this.setup)
-  closeSession = vi.fn(async () => undefined)
+  closeSession = vi.fn(async () => true)
   setMode = vi.fn(async () => undefined)
   setConfig = vi.fn(async () => undefined)
   prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
@@ -414,6 +414,11 @@ describe("ACP repository configuration", () => {
     for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true })
   })
 
+  const unclosed = (name: string) =>
+    `${name} could not close a session whose setup failed, so Domovoi stopped ${name} rather than leave that session unwatched.`
+  const unconfirmed = (name: string) =>
+    `${name} did not confirm whether it opened a session, so Domovoi stopped ${name} rather than leave that session unwatched.`
+
   const unchecked = (name: string) =>
     `Domovoi could not check this worktree for ${name} configuration that can start programs or change agent permissions, so ${name} is not run here. `
     + "Domovoi does not load repository-brought configuration until a trust gate ships."
@@ -681,6 +686,64 @@ describe("ACP repository configuration", () => {
       : adapter.resumeThread({ threadId: "acp-session", cwd, runtime })
     await expect(opening).rejects.toThrow("mode refused")
     expect(peer.closeSession).toHaveBeenCalledWith("acp-session")
+  })
+
+  it.each([
+    ["the agent refuses to close it", (peer: FakePeer) => peer.closeSession.mockRejectedValueOnce(new Error("close refused"))],
+    ["the agent cannot close sessions", (peer: FakePeer) => peer.closeSession.mockResolvedValueOnce(false)],
+  ])("stops the agent when a session whose setup failed stays open because %s", async (_case, arrange) => {
+    const cwd = worktree()
+    const { adapter, peer } = connected()
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    peer.setMode.mockRejectedValueOnce(new Error("mode refused"))
+    arrange(peer)
+    await adapter.connect()
+
+    await expect(adapter.startThread({ cwd, runtime })).rejects.toThrow("mode refused")
+    expect(peer.close).toHaveBeenCalledOnce()
+    expect(events).toContainEqual({ type: "provider-disconnected", reason: unclosed("Cursor") })
+  })
+
+  it("stops the agent before telling listeners, so a listener that throws cannot keep it running", async () => {
+    const cwd = worktree()
+    const { adapter, peer } = connected()
+    adapter.onEvent(() => { throw new Error("listener failed") })
+    peer.startSession.mockImplementation(async () => {
+      write(cwd, { ".cursor/hooks.json": "{}\n" })
+      return peer.setup
+    })
+    await adapter.connect()
+
+    await expect(adapter.startThread({ cwd, runtime })).rejects.toThrow(refusal("Cursor", ".cursor/hooks.json"))
+    expect(peer.close).toHaveBeenCalledOnce()
+  })
+
+  it.each(["start", "resume"] as const)("stops the agent when it may have opened a session it could %s but did not confirm", async (entry) => {
+    const cwd = worktree()
+    const { adapter, peer } = connected()
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    peer.startSession.mockRejectedValueOnce(new Error("ACP connection closed"))
+    peer.resumeSession.mockRejectedValueOnce(new Error("ACP connection closed"))
+    await adapter.connect()
+
+    const opening = entry === "start"
+      ? adapter.startThread({ cwd, runtime })
+      : adapter.resumeThread({ threadId: "acp-session", cwd, runtime })
+    await expect(opening).rejects.toThrow("ACP connection closed")
+    expect(peer.close).toHaveBeenCalledOnce()
+    expect(events).toContainEqual({ type: "provider-disconnected", reason: unconfirmed("Cursor") })
+  })
+
+  it("keeps the agent running when it answered that it did not open the session", async () => {
+    const cwd = worktree()
+    const { adapter, peer } = connected()
+    peer.startSession.mockRejectedValueOnce(new AcpSessionNotOpenedError("Authentication required"))
+    await adapter.connect()
+
+    await expect(adapter.startThread({ cwd, runtime })).rejects.toThrow("Authentication required")
+    expect(peer.close).not.toHaveBeenCalled()
   })
 
   it("names every held-back file in the daemon README", () => {

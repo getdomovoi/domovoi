@@ -116,6 +116,15 @@ function heldBack(directory: string, file: string): boolean {
   return false
 }
 
+// The repository a path is in, found from the path as given and as resolved.
+export function repositoryRootOf(path: string): string | undefined {
+  for (const start of startsOf(path)) {
+    const root = repositoryRoot(start)
+    if (root !== undefined) return root
+  }
+  return undefined
+}
+
 // The session's directory as given and as the filesystem resolves it: a link
 // to a folder inside another repository belongs to that repository's root.
 function startsOf(cwd: string): string[] {

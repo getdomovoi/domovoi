@@ -7,7 +7,7 @@ const peer: AcpPeer = {
   initialize: vi.fn(async () => undefined),
   startSession: vi.fn(),
   resumeSession: vi.fn(),
-  closeSession: vi.fn(async () => undefined),
+  closeSession: vi.fn(async () => true),
   setMode: vi.fn(async () => undefined),
   setConfig: vi.fn(async () => undefined),
   prompt: vi.fn(),

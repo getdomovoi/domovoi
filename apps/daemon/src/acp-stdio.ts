@@ -1,8 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
-import { lstatSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { randomUUID } from "node:crypto"
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs"
 import { rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { homedir } from "node:os"
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { Readable, Writable } from "node:stream"
 
 import { buildVersion } from "@getdomovoi/protocol"
@@ -11,6 +12,7 @@ import {
   ClientSideConnection,
   ndJsonStream,
   PROTOCOL_VERSION,
+  RequestError,
   type AgentCapabilities,
   type Client,
   type NewSessionResponse,
@@ -21,6 +23,7 @@ import {
   type SessionUpdate,
 } from "@agentclientprotocol/sdk"
 
+import { AcpSessionNotOpenedError } from "./acp.js"
 import type {
   AcpConfigOption,
   AcpPeer,
@@ -30,7 +33,7 @@ import type {
   AcpUpdate,
 } from "./acp.js"
 import type { AcpProviderDefinition } from "./acp-providers.js"
-import { repositoryFileFrom } from "./codex-repository-config.js"
+import { repositoryFileFrom, repositoryRootOf } from "./codex-repository-config.js"
 import { onProcessEnd } from "./process-end.js"
 
 type ProcessSpawner = (
@@ -46,6 +49,8 @@ export class StdioAcpPeer implements AcpPeer {
   readonly #definition: AcpProviderDefinition
   readonly #handlers: AcpPeerHandlers
   readonly #spawn: ProcessSpawner
+  readonly #launchRoot: string
+  readonly #daemonDirectory: string
   #process: ChildProcessWithoutNullStreams | undefined
   #directory: string | undefined
   #connection: ClientSideConnection | undefined
@@ -55,10 +60,18 @@ export class StdioAcpPeer implements AcpPeer {
   constructor(input: {
     definition: AcpProviderDefinition
     handlers: AcpPeerHandlers
+    // A private folder outside any repository; each agent process starts in a
+    // new empty folder inside it.
+    launchRoot: string
+    // The daemon's own working directory, whose checkout the agent must not
+    // inherit through its environment.
+    daemonDirectory?: string
     spawnProcess?: ProcessSpawner
   }) {
     this.#definition = input.definition
     this.#handlers = input.handlers
+    this.#launchRoot = input.launchRoot
+    this.#daemonDirectory = input.daemonDirectory ?? process.cwd()
     this.#spawn = input.spawnProcess ?? spawnAcpProcess
   }
 
@@ -106,37 +119,35 @@ export class StdioAcpPeer implements AcpPeer {
       this.#process = undefined
       this.#connection = undefined
       this.#capabilities = undefined
-      try {
-        process.kill()
-      } catch {
-        // Preserve the initialization failure after detaching the child.
-      }
+      // Bounded: a child that ignores the first signal is killed.
+      await terminateProcess(process).catch(() => undefined)
       throw error
     }
   }
 
   async startSession(cwd: string): Promise<AcpSessionSetup> {
-    const response = await this.#requireConnection().newSession({ cwd, mcpServers: [] })
+    const connection = this.#requireConnection()
+    const response = await answered(connection.newSession({ cwd, mcpServers: [] }))
     return mapAcpSessionSetup(response)
   }
 
   async resumeSession(sessionId: string, cwd: string): Promise<AcpSessionSetup> {
     const connection = this.#requireConnection()
     if (this.#capabilities?.sessionCapabilities?.resume) {
-      const response = await connection.resumeSession({ sessionId, cwd, mcpServers: [] })
+      const response = await answered(connection.resumeSession({ sessionId, cwd, mcpServers: [] }))
       return mapAcpSessionSetup({ sessionId, ...response })
     }
     if (this.#capabilities?.loadSession) {
-      const response = await connection.loadSession({ sessionId, cwd, mcpServers: [] })
+      const response = await answered(connection.loadSession({ sessionId, cwd, mcpServers: [] }))
       return mapAcpSessionSetup({ sessionId, ...response })
     }
-    throw new Error(`${this.#definition.id} does not support session resume or load`)
+    throw new AcpSessionNotOpenedError(`${this.#definition.id} does not support session resume or load`)
   }
 
-  async closeSession(sessionId: string): Promise<void> {
-    if (this.#capabilities?.sessionCapabilities?.close) {
-      await this.#requireConnection().closeSession({ sessionId })
-    }
+  async closeSession(sessionId: string): Promise<boolean> {
+    if (!this.#capabilities?.sessionCapabilities?.close) return false
+    await this.#requireConnection().closeSession({ sessionId })
+    return true
   }
 
   async setMode(sessionId: string, mode: string): Promise<void> {
@@ -171,30 +182,24 @@ export class StdioAcpPeer implements AcpPeer {
     if (directory) await removeDirectory(directory)
   }
 
-  // The agent runs in an empty private folder, not the daemon's own directory,
-  // which may be a repository whose configuration the agent would load at
-  // startup. Each session's worktree reaches the agent as the ACP session cwd.
-  // The folder is refused when the temporary folder sits where the agent would
-  // load held-back configuration from, as a session directory would be.
+  // The agent runs in an empty folder inside a private launch root, not the
+  // daemon's own directory, which may be a repository whose configuration the
+  // agent would load at startup. Each session's worktree reaches the agent as
+  // the ACP session cwd. A launch root inside a repository, or below held-back
+  // configuration, is refused before anything is made in it: a repository's
+  // files can change while the agent runs, and nothing watches them there.
   async #spawnFirstAvailable(): Promise<ChildProcessWithoutNullStreams> {
     // Synchronous so the child is spawned in the same turn as before.
-    reapLaunchDirectories()
-    const directory = mkdtempSync(join(tmpdir(), `${launchPrefix}${process.pid}-`))
-    let reason: string | undefined
-    try {
-      const file = repositoryFileFrom(directory, this.#definition.heldBackRepositoryFiles)
-      if (file !== undefined) reason = `it would load ${file} from a folder above it`
-    } catch {
-      reason = "Domovoi could not check the folders above it"
-    }
-    if (reason !== undefined) {
-      rmSync(directory, { recursive: true, force: true })
+    const problem = launchRootProblem(this.#launchRoot, this.#definition.heldBackRepositoryFiles)
+    if (problem !== undefined) {
       throw new Error(
-        `${this.#definition.id} cannot start in the temporary folder, because ${reason}. `
-        + "Set TMPDIR, or TEMP on Windows, to a folder outside any repository.",
+        `${this.#definition.id} cannot start, because ${problem}. `
+        + "Domovoi starts it only from a private folder outside any repository.",
       )
     }
-    const environment = launchEnvironment(directory)
+    reapLaunchDirectories(this.#launchRoot)
+    const directory = mkdtempSync(join(this.#launchRoot, `${process.pid}-`))
+    const environment = launchEnvironment(directory, this.#daemonDirectory)
     let lastError: unknown
     for (const command of this.#definition.commands) {
       try {
@@ -319,8 +324,56 @@ function spawnAcpProcess(
   return spawn(command, [...args], { cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"] })
 }
 
-const launchPrefix = "domovoi-acp-"
 const staleLaunchMs = 10 * 60 * 1_000
+const launchName = /^(\d+)-[A-Za-z0-9]{6}$/
+
+// A request the agent answered with an error opened no session.
+async function answered<T>(request: Promise<T>): Promise<T> {
+  try {
+    return await request
+  } catch (error) {
+    if (error instanceof RequestError && error.code !== RequestError.invalidRequest().code) {
+      throw new AcpSessionNotOpenedError(error.message, { cause: error })
+    }
+    throw error
+  }
+}
+
+// Path-free, so the reason never names a folder outside the session.
+function launchRootProblem(root: string, files: readonly string[]): string | undefined {
+  try {
+    const resolved = resolvedPath(root)
+    if (repositoryRootOf(root) !== undefined || repositoryRootOf(resolved) !== undefined) {
+      return "its launch folder is inside a repository"
+    }
+    if (repositoryFileFrom(root, files) !== undefined || repositoryFileFrom(resolved, files) !== undefined) {
+      return "a folder above its launch folder holds configuration it would load"
+    }
+    mkdirSync(root, { recursive: true, mode: 0o700 })
+    const found = lstatSync(root)
+    const uid = process.getuid?.()
+    if (!found.isDirectory() || (uid !== undefined && found.uid !== uid)) {
+      return "its launch folder is not a private folder of this user"
+    }
+    if (process.platform !== "win32") chmodSync(root, 0o700)
+  } catch {
+    return "Domovoi could not check or prepare its launch folder"
+  }
+  return undefined
+}
+
+// The path with every existing part resolved through links.
+function resolvedPath(path: string): string {
+  const missing: string[] = []
+  for (let current = resolve(path); ; current = dirname(current)) {
+    try {
+      return join(realpathSync(current), ...missing)
+    } catch {
+      if (dirname(current) === current) return resolve(path)
+      missing.unshift(basename(current))
+    }
+  }
+}
 
 // Working directories the daemon inherited from its shell or package manager.
 // The agent gets its own launch folder as PWD and none of these.
@@ -328,18 +381,54 @@ const inheritedDirectoryVariables = [
   "OLDPWD", "INIT_CWD", "PROJECT_CWD", "npm_config_local_prefix", "npm_package_json", "DIRENV_DIR", "DIRENV_FILE",
 ]
 
-function launchEnvironment(directory: string): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = { ...process.env, PWD: directory }
-  for (const name of inheritedDirectoryVariables) delete environment[name]
+// Variables that make a program load code as it starts.
+const codeLoadingVariables = ["NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "BASH_ENV", "ENV"]
+
+// The agent's environment is the daemon's, less anything that points into the
+// checkout the daemon was started from: PATH keeps only absolute entries
+// outside it, which is also where the agent command is looked up, and any
+// other variable naming a path inside it is dropped.
+function launchEnvironment(directory: string, daemonDirectory: string): NodeJS.ProcessEnv {
+  const checkout = daemonCheckout(daemonDirectory)
+  const inside = (entry: string) => checkout !== undefined && isAbsolute(entry) && checkout.some((root) => {
+    const path = relative(root, resolve(entry))
+    return path === "" || (!path.startsWith("..") && !isAbsolute(path))
+  })
+  const environment: NodeJS.ProcessEnv = { ...process.env }
+  for (const name of [...inheritedDirectoryVariables, ...codeLoadingVariables]) delete environment[name]
+  for (const [name, value] of Object.entries(environment)) {
+    if (value === undefined) continue
+    if (name.toUpperCase() === "PATH") {
+      environment[name] = value.split(delimiter).filter((entry) => isAbsolute(entry) && !inside(entry)).join(delimiter)
+    } else if (value.split(delimiter).some(inside)) {
+      delete environment[name]
+    }
+  }
+  environment.PWD = directory
   return environment
 }
 
+// The repository the daemon runs in, as given and resolved. The home folder
+// is not treated as one, or every path under it would count.
+function daemonCheckout(directory: string): string[] | undefined {
+  try {
+    const root = repositoryRootOf(directory)
+    if (root === undefined) return undefined
+    const resolved = realpathSync(root)
+    if (resolved === realpathSync(homedir())) return undefined
+    return [...new Set([resolve(root), resolved])]
+  } catch {
+    return undefined
+  }
+}
+
 // A daemon that stopped without closing its agents leaves their launch folders
-// behind. A folder is removed only when this user owns it, it is a real folder,
-// the daemon that made it (named in the folder) is no longer running, and it
-// has not changed for staleLaunchMs.
-function reapLaunchDirectories(): void {
-  const root = tmpdir()
+// behind in the private launch root, which only this user can write. A folder
+// is removed only when it is a real folder this user owns, the daemon that made
+// it (named in the folder) is no longer running, and it has not changed for
+// staleLaunchMs. It is moved aside first and removed only if what was moved is
+// the folder that was checked.
+function reapLaunchDirectories(root: string): void {
   let names: string[]
   try {
     names = readdirSync(root)
@@ -348,14 +437,19 @@ function reapLaunchDirectories(): void {
   }
   const uid = process.getuid?.()
   for (const name of names) {
-    const pid = Number(name.slice(launchPrefix.length).match(/^(\d+)-/)?.[1])
-    if (!name.startsWith(launchPrefix) || !Number.isSafeInteger(pid) || pid === process.pid || isRunning(pid)) continue
+    const pid = Number(launchName.exec(name)?.[1])
+    if (!Number.isSafeInteger(pid) || pid === process.pid || isRunning(pid)) continue
     const path = join(root, name)
     try {
       const found = lstatSync(path)
       if (!found.isDirectory() || (uid !== undefined && found.uid !== uid)) continue
       if (Date.now() - found.mtimeMs < staleLaunchMs) continue
-      rmSync(path, { recursive: true, force: true })
+      const moved = join(root, `.reaping-${randomUUID()}`)
+      renameSync(path, moved)
+      const checked = lstatSync(moved)
+      if (checked.isDirectory() && checked.ino === found.ino && checked.dev === found.dev) {
+        rmSync(moved, { recursive: true, force: true })
+      }
     } catch {
       // Another daemon may be reaping the same folder.
     }

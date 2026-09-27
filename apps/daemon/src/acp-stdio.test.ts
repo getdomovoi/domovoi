@@ -1,17 +1,30 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process"
 import { EventEmitter } from "node:events"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { delimiter, join } from "node:path"
 import { PassThrough } from "node:stream"
 
 import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { AcpAgentAdapter } from "./acp.js"
+import { AcpAgentAdapter, AcpSessionNotOpenedError } from "./acp.js"
 import { CURSOR_ACP_PROVIDER } from "./acp-providers.js"
 import { mapAcpSessionSetup, mapAcpUpdate, StdioAcpPeer } from "./acp-stdio.js"
 import { classifyProviderFailure } from "./provider-failures.js"
+
+// Lets a test make folder removal fail, as it can on a busy or locked folder.
+const fsFaults = vi.hoisted(() => ({ rmFails: false }))
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>()
+  return {
+    ...actual,
+    rmSync: (...args: Parameters<typeof actual.rmSync>) => {
+      if (fsFaults.rmFails) throw Object.assign(new Error(`EBUSY: resource busy or locked, rmdir '${String(args[0])}'`), { code: "EBUSY" })
+      return actual.rmSync(...args)
+    },
+  }
+})
 
 vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
   ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
@@ -19,10 +32,11 @@ vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
 }))
 
 // Peers here start fake children that never exit, so their launch folders go
-// in a scratch temporary folder that is removed with the file's tests.
+// in a scratch folder that is removed with the file's tests.
 const temporaryVariables = ["TMPDIR", "TMP", "TEMP"] as const
 const outerTemporary = Object.fromEntries(temporaryVariables.map((name) => [name, process.env[name]]))
-const temporaryRoot = mkdtempSync(join(tmpdir(), "domovoi-acp-stdio-test-"))
+const temporaryRoot = realpathSync(mkdtempSync(join(tmpdir(), "domovoi-acp-stdio-test-")))
+const launchRoot = join(temporaryRoot, "acp")
 beforeAll(() => {
   for (const name of temporaryVariables) process.env[name] = temporaryRoot
 })
@@ -64,6 +78,7 @@ async function initializePeer(child: ReturnType<typeof fakeAcpProcess>) {
   const onDisconnect = vi.fn()
   const peer = new StdioAcpPeer({
     definition: CURSOR_ACP_PROVIDER,
+    launchRoot,
     handlers: {
       onUpdate: vi.fn(),
       onPermission: vi.fn(),
@@ -91,6 +106,7 @@ describe("ACP stdio mapping", () => {
     const spawnCwds: (string | undefined)[] = []
     const peer = new StdioAcpPeer({
       definition: CURSOR_ACP_PROVIDER,
+      launchRoot,
       handlers: { onUpdate: vi.fn(), onPermission: vi.fn(), onDisconnect: vi.fn() },
       spawnProcess: (_command, _args, options?: { cwd?: string }) => {
         spawnCwds.push(options?.cwd)
@@ -111,12 +127,14 @@ describe("ACP stdio mapping", () => {
   })
 
   describe("launch folder", () => {
+    const variables = ["TMPDIR", "TMP", "TEMP", "OLDPWD", "INIT_CWD", "PATH", "NODE_OPTIONS", "VIRTUAL_ENV"]
     let saved: Record<string, string | undefined> = {}
     const scratch: string[] = []
     beforeEach(() => {
-      saved = Object.fromEntries(["TMPDIR", "TMP", "TEMP", "OLDPWD", "INIT_CWD"].map((name) => [name, process.env[name]]))
+      saved = Object.fromEntries(variables.map((name) => [name, process.env[name]]))
     })
     afterEach(() => {
+      fsFaults.rmFails = false
       for (const [key, value] of Object.entries(saved)) {
         if (value === undefined) delete process.env[key]
         else process.env[key] = value
@@ -124,13 +142,29 @@ describe("ACP stdio mapping", () => {
       for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true })
     })
 
-    function useTemporaryRoot(root: string): void {
+    function folder(prefix: string): string {
+      const directory = realpathSync(mkdtempSync(join(temporaryRoot, prefix)))
+      scratch.push(directory)
+      return directory
+    }
+
+    function repository(files: Record<string, string> = {}): string {
+      const root = folder("repo-")
+      mkdirSync(join(root, ".git"))
+      writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n")
+      for (const [path, text] of Object.entries(files)) {
+        mkdirSync(join(root, path, ".."), { recursive: true })
+        writeFileSync(join(root, path), text)
+      }
+      return root
+    }
+
+    // The folder is given to the peer, and as the temporary folder too, so a
+    // peer that still launches from the temporary folder meets the same case.
+    function launching(root: string, options: { daemonDirectory?: string } = {}) {
       process.env.TMPDIR = root
       process.env.TMP = root
       process.env.TEMP = root
-    }
-
-    function launching() {
       const child = fakeAcpProcess((id) => ({
         jsonrpc: "2.0", id, result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} },
       }))
@@ -140,32 +174,53 @@ describe("ACP stdio mapping", () => {
       })
       const peer = new StdioAcpPeer({
         definition: CURSOR_ACP_PROVIDER,
+        launchRoot: root,
+        ...options,
         handlers: { onUpdate: vi.fn(), onPermission: vi.fn(), onDisconnect: vi.fn() },
         spawnProcess,
       })
       return { peer, spawnProcess }
     }
 
-    it("refuses to start the agent when the temporary folder is inside a repository with held-back configuration", async () => {
-      const repository = mkdtempSync(join(tmpdir(), "domovoi-acp-launch-repo-"))
-      scratch.push(repository)
-      mkdirSync(join(repository, ".git"))
-      writeFileSync(join(repository, ".git", "HEAD"), "ref: refs/heads/main\n")
-      mkdirSync(join(repository, ".cursor"))
-      writeFileSync(join(repository, ".cursor", "mcp.json"), "{}\n")
-      mkdirSync(join(repository, "tmp"))
-      useTemporaryRoot(join(repository, "tmp"))
-      const { peer, spawnProcess } = launching()
+    it("refuses to start the agent from a launch folder inside a repository, even one with no configuration yet", async () => {
+      const root = repository({ "tmp/.keep": "" })
+      const { peer, spawnProcess } = launching(join(root, "tmp"))
 
-      await expect(peer.initialize()).rejects.toThrow("cursor-agent cannot start in the temporary folder")
+      await expect(peer.initialize()).rejects.toThrow("cursor-agent cannot start")
       expect(spawnProcess).not.toHaveBeenCalled()
-      expect(readdirSync(join(repository, "tmp"))).toEqual([])
+      expect(readdirSync(join(root, "tmp"))).toEqual([".keep"])
+    })
+
+    it("refuses held-back configuration above the launch folder without naming a path, even when removal fails", async () => {
+      const outer = folder("plain-")
+      mkdirSync(join(outer, ".cursor"))
+      writeFileSync(join(outer, ".cursor", "mcp.json"), "{}\n")
+      mkdirSync(join(outer, "tmp"))
+      const { peer, spawnProcess } = launching(join(outer, "tmp"))
+      fsFaults.rmFails = true
+
+      const failure = await peer.initialize().then(() => undefined, (error: unknown) => error)
+      fsFaults.rmFails = false
+      expect(failure).toBeInstanceOf(Error)
+      expect((failure as Error).message).toContain("cursor-agent cannot start")
+      expect((failure as Error).message).not.toContain(outer)
+      expect(spawnProcess).not.toHaveBeenCalled()
+    })
+
+    it("refuses a launch folder that is a link", async () => {
+      const target = folder("target-")
+      const parent = folder("parent-")
+      symlinkSync(target, join(parent, "acp"))
+      const { peer, spawnProcess } = launching(join(parent, "acp"))
+
+      await expect(peer.initialize()).rejects.toThrow("cursor-agent cannot start")
+      expect(spawnProcess).not.toHaveBeenCalled()
     })
 
     it("gives the agent its launch folder as PWD and drops other inherited working directories", async () => {
       process.env.OLDPWD = "/previous/checkout"
       process.env.INIT_CWD = "/daemon/checkout"
-      const { peer, spawnProcess } = launching()
+      const { peer, spawnProcess } = launching(folder("acp-"))
       await peer.initialize()
       const options = spawnProcess.mock.calls[0]?.[2]
       try {
@@ -175,26 +230,76 @@ describe("ACP stdio mapping", () => {
       } finally { await peer.close() }
     })
 
-    it("removes launch folders a stopped daemon left behind, and keeps a running one's", async () => {
-      const root = mkdtempSync(join(tmpdir(), "domovoi-acp-reap-"))
-      scratch.push(root)
-      useTemporaryRoot(root)
+    // A daemon started from a checkout can inherit that checkout's tool folders
+    // on PATH and a preload in NODE_OPTIONS, either of which would run code
+    // from it when the agent starts.
+    it("drops the daemon checkout's PATH entries, relative entries and code preloads from the agent environment", async () => {
+      const checkout = repository({ "node_modules/.bin/agent": "", "apps/daemon/.keep": "" })
+      process.env.PATH = [join(checkout, "node_modules", ".bin"), "bin", "/usr/bin", "/bin"].join(delimiter)
+      process.env.NODE_OPTIONS = `--require ${join(checkout, "preload.cjs")}`
+      process.env.VIRTUAL_ENV = join(checkout, ".venv")
+      const { peer, spawnProcess } = launching(folder("acp-"), { daemonDirectory: join(checkout, "apps", "daemon") })
+      await peer.initialize()
+      const env = spawnProcess.mock.calls[0]?.[2].env
+      try {
+        expect(env?.PATH).toBe(["/usr/bin", "/bin"].join(delimiter))
+        expect(env?.NODE_OPTIONS).toBeUndefined()
+        expect(env?.VIRTUAL_ENV).toBeUndefined()
+      } finally { await peer.close() }
+    })
+
+    it("removes only real launch folders a stopped daemon left in its own launch folder", async () => {
+      const root = folder("acp-")
       const past = new Date(Date.now() - 24 * 60 * 60 * 1_000)
-      const stale = join(root, "domovoi-acp-2147483646-stale")
-      const running = join(root, `domovoi-acp-${process.pid}-running`)
-      const recent = join(root, "domovoi-acp-2147483646-recent")
+      const stale = join(root, "2147483646-aaaaaa")
+      const running = join(root, `${process.pid}-bbbbbb`)
+      const recent = join(root, "2147483646-cccccc")
       for (const directory of [stale, running, recent]) mkdirSync(directory)
-      utimesSync(stale, past, past)
-      utimesSync(running, past, past)
-      const { peer } = launching()
+      const outside = folder("outside-")
+      writeFileSync(join(outside, "keep.txt"), "")
+      symlinkSync(outside, join(root, "2147483646-dddddd"))
+      const forged = join(root, "..", "domovoi-acp-2147483646-forged")
+      mkdirSync(forged)
+      scratch.push(forged)
+      for (const directory of [stale, running, forged]) utimesSync(directory, past, past)
+      const { peer } = launching(root)
 
       await peer.initialize()
       try {
         expect(existsSync(stale)).toBe(false)
         expect(existsSync(running)).toBe(true)
         expect(existsSync(recent)).toBe(true)
+        expect(existsSync(join(outside, "keep.txt"))).toBe(true)
+        expect(existsSync(forged)).toBe(true)
       } finally { await peer.close() }
     })
+  })
+
+  it("stops an agent that ignores the first stop signal after a failed start", async () => {
+    const child = fakeAcpProcess((id) => ({
+      jsonrpc: "2.0", id, result: { protocolVersion: PROTOCOL_VERSION + 1, agentCapabilities: {} },
+    }))
+    child.kill.mockImplementation((signal?: NodeJS.Signals) => {
+      if (signal === "SIGKILL") child.emit("exit", null, "SIGKILL")
+      return true
+    })
+    await expect(initializePeer(child)).rejects.toThrow("unsupported")
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL")
+  })
+
+  it("reports a session the agent refused to open as not opened", async () => {
+    let initialized = false
+    const child = fakeAcpProcess((id) => {
+      if (initialized) return { jsonrpc: "2.0", id, error: { code: -32000, message: "Authentication required" } }
+      initialized = true
+      return { jsonrpc: "2.0", id, result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} } }
+    })
+    const { peer } = await initializePeer(child)
+    try {
+      const failure = await peer.startSession("/work/session-worktree").then(() => undefined, (error: unknown) => error)
+      expect(failure).toBeInstanceOf(AcpSessionNotOpenedError)
+      expect((failure as Error).message).toBe("Authentication required")
+    } finally { await peer.close() }
   })
 
   it("identifies the running build to the provider", async () => {
@@ -229,6 +334,7 @@ describe("ACP stdio mapping", () => {
     }))
     const peer = new StdioAcpPeer({
       definition: CURSOR_ACP_PROVIDER,
+      launchRoot,
       handlers: {
         onUpdate: vi.fn(),
         onPermission: vi.fn(),
@@ -452,6 +558,7 @@ describe("ACP stdio mapping", () => {
     const onDisconnect = vi.fn()
     const peer = new StdioAcpPeer({
       definition: CURSOR_ACP_PROVIDER,
+      launchRoot,
       handlers: {
         onUpdate: vi.fn(),
         onPermission: vi.fn(),
@@ -478,6 +585,7 @@ describe("ACP stdio mapping", () => {
     const onDisconnect = vi.fn()
     const peer = new StdioAcpPeer({
       definition: CURSOR_ACP_PROVIDER,
+      launchRoot,
       handlers: {
         onUpdate: vi.fn(),
         onPermission: vi.fn(),
@@ -508,6 +616,7 @@ describe("ACP stdio mapping", () => {
       definition: CURSOR_ACP_PROVIDER,
       createPeer: (handlers) => new StdioAcpPeer({
         definition: CURSOR_ACP_PROVIDER,
+        launchRoot,
         handlers,
         spawnProcess: () => child as unknown as ChildProcessWithoutNullStreams,
       }),

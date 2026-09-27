@@ -569,19 +569,25 @@ code or settings the repository brings:
     only in a folder the person has trusted, and the daemon does not send them. The lists follow
     Cursor's documentation and Grok's own list of trust-sensitive files; a file either agent
     loads that they do not name is not refused.
-  - While a session is open the daemon watches those directories and also checks them every two
-    seconds, so a listed file that appears is found within two seconds even when a watcher misses
-    it, and usually at once. It then stops the agent process, which ends every session that
-    process runs: each shows the disconnect with the refusal as its reason, and a session in that
-    worktree is refused when it resumes. Until then the agent can load the file, so a hook added
-    during a session can run for up to about two seconds. The agent is stopped the same way when a
-    directory cannot be watched or checked, or when more than 256 directories would be watched.
-  - The agent process starts in an empty private folder under the temporary folder, not the
-    daemon's own directory, with that folder as `PWD`; `OLDPWD`, `INIT_CWD` and other inherited
-    working-directory variables are removed. Each session's worktree reaches the agent as that
-    session's directory. If the temporary folder is inside a repository that holds a listed file,
-    the agent is not started. Folders left by a daemon that stopped without closing its agents are
-    removed on the next start once they are ten minutes old.
+  - While a session is open the daemon watches those directories and also checks them on a
+    two-second timer. A listed file that appears is usually found at once, and otherwise at the
+    next timer check; the timer can run late when the daemon is busy. The daemon then stops the
+    agent process, which ends every session that process runs: each shows the disconnect with the
+    refusal as its reason, and a session in that worktree is refused when it resumes. Stopping
+    sends a stop signal and, after a one-second grace, a kill. Until the agent has exited it can
+    load the file, so this is not a hard limit on how long a hook added during a session can run.
+  - The agent is stopped the same way when a directory cannot be watched or checked, when more
+    than 256 directories would be watched, when the agent did not confirm whether it opened a
+    session, and when a session whose setup failed could not be closed.
+  - The agent process starts in a new empty folder inside `acp` in the Domovoi profile folder,
+    not the daemon's own directory, with that folder as `PWD`. The agent is not started when that
+    folder is inside a repository or below a listed file, or is not a private folder of this user.
+    `OLDPWD`, `INIT_CWD`, other inherited working-directory variables and code preloads such as
+    `NODE_OPTIONS` are removed, and when the daemon runs inside a checkout, `PATH` entries and
+    other variables that point into it are removed too; `PATH` keeps only absolute entries, and the
+    agent command is looked up on it. Each session's worktree reaches the agent as that session's
+    directory. Folders left by a daemon that stopped without closing its agents are removed on the
+    next start once they are ten minutes old.
 
 Instruction files still reach the agent, because the daemon reads them itself as text. For Claude
 Code it reads `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` at the worktree root and
