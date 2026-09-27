@@ -5,9 +5,9 @@ import { SqliteEmergencyStopIntents } from "./emergency-stop-intents.js"
 
 const stopId = `stop-${"9".repeat(8)}-9999-4999-8999-${"9".repeat(12)}`
 
-function journalWith(record: string): SqliteEmergencyStopIntents {
+function journalWith(record: string, options: ConstructorParameters<typeof SqliteEmergencyStopIntents>[1] = {}): SqliteEmergencyStopIntents {
   const database = new DatabaseSync(":memory:")
-  const journal = new SqliteEmergencyStopIntents(database)
+  const journal = new SqliteEmergencyStopIntents(database, options)
   database.prepare("INSERT INTO emergency_stop_intents (stop_id, record) VALUES (?, ?)").run(stopId, record)
   return journal
 }
@@ -23,18 +23,17 @@ describe("reading a damaged emergency stop journal", () => {
     const threads = Array.from({ length: 2_000 }, (_, index) => `"providerThreadId":"t${index}"`).join(",")
     const record = `{"version":1,"stopId":"${stopId}","client":"desktop","requestedAt":"2026-09-26T10:00:00.000Z",`
       + `"sessionIds":["session-a"],"inFlight":[{"sessionId":"session-a",${providers},${threads}}]}`
-    const journal = journalWith(record)
+    let built = 0
+    const journal = journalWith(record, { onDispatchBuilt: () => { built += 1 } })
 
-    const started = performance.now()
     const { intents, overflow } = journal.pending()
-    const elapsed = performance.now() - started
 
     expect(intents).toHaveLength(1)
     expect(intents[0]!.intent.inFlight).toHaveLength(10_000)
     expect(overflow).toHaveLength(1)
-    // Reading the row's own 4,000 values takes milliseconds; building four
-    // million pairs takes far longer than this.
-    expect(elapsed).toBeLessThan(100)
+    // Counted, not timed: the kept 10,000 and the one that shows there are
+    // more, never the four million the row names.
+    expect(built).toBe(10_001)
   })
 
   // Round 6: a row that lists the same session twice in the stop's own format

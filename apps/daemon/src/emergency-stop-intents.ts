@@ -139,7 +139,8 @@ function readFields(text: string): unknown {
 // repeated field counts (each stop id is finished, the sessions of every
 // list are joined), and every entry of a list is read, however many before
 // it do not; past the kept number of readable entries the row is overflow.
-function readIntent(key: SQLInputValue, record: SQLInputValue): Read {
+// `built` is told of each dispatch entry as it is made, so a test can count them.
+function readIntent(key: SQLInputValue, record: SQLInputValue, built: () => void = () => {}): Read {
   if (typeof record !== "string") return { unreadable: "The record is not text" }
   let plain: unknown
   try {
@@ -173,18 +174,19 @@ function readIntent(key: SQLInputValue, record: SQLInputValue): Read {
   // built past it, and the work the kept stop ids ask is bounded too.
   const sessionIds = valid(sessionIdSchema, all(read, "sessionIds").flatMap((list) => Array.isArray(list) ? list : []))
   const inFlight: InFlight[] = []
+  const add = (dispatch: InFlight) => { built(); inFlight.push(dispatch) }
   fill: for (const entry of entries) {
     const providers = valid(inFlightFields.provider.unwrap(), all(entry, "provider"))
     const threads = valid(inFlightFields.providerThreadId.unwrap(), all(entry, "providerThreadId"))
     for (const sessionId of valid(sessionIdSchema, all(entry, "sessionId"))) {
       if (providers.length === 0 || threads.length === 0) {
-        inFlight.push({ sessionId })
+        add({ sessionId })
         if (inFlight.length > maximumEntries) break fill
         continue
       }
       for (const provider of providers) {
         for (const providerThreadId of threads) {
-          inFlight.push({ sessionId, provider, providerThreadId })
+          add({ sessionId, provider, providerThreadId })
           if (inFlight.length > maximumEntries) break fill
         }
       }
@@ -216,9 +218,13 @@ function readIntent(key: SQLInputValue, record: SQLInputValue): Read {
 // restart on the same store knows a stop was cut off and finishes it.
 export class SqliteEmergencyStopIntents {
   readonly #database: DatabaseSync
+  readonly #dispatchBuilt: (() => void) | undefined
 
-  constructor(database: DatabaseSync) {
+  // `onDispatchBuilt` is a test seam: it is told of each in-flight entry the
+  // restart's reader makes, so the cap on them can be counted, not timed.
+  constructor(database: DatabaseSync, options: { onDispatchBuilt?: () => void } = {}) {
     this.#database = database
+    this.#dispatchBuilt = options.onDispatchBuilt
     database.exec(`CREATE TABLE IF NOT EXISTS emergency_stop_intents (
       stop_id TEXT PRIMARY KEY,
       record TEXT NOT NULL CHECK(length(CAST(record AS BLOB)) <= ${maximumEmergencyStopIntentBytes})
@@ -253,7 +259,7 @@ export class SqliteEmergencyStopIntents {
     const overflow: Array<{ key: string; reason: string }> = []
     const setAside: Array<{ key: string; reason: string }> = []
     for (const row of rows) {
-      const read = readIntent(row.stop_id, row.record)
+      const read = readIntent(row.stop_id, row.record, this.#dispatchBuilt)
       if ("unreadable" in read) {
         this.#quarantine(row.stop_id, row.record, read.unreadable, true)
         setAside.push({ key: String(row.stop_id), reason: read.unreadable })
