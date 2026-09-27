@@ -2145,10 +2145,17 @@ function isTokenCharacter(code: number): boolean {
   return isNameCharacter(code, false)
 }
 
-// Text outside a value that is visible and is no separator: what #mark shows
-// as it is, one character at a time, until a token starts.
+// Text outside a value that is visible and on one line: what #mark shows as
+// it is, one character at a time, until a token starts or a separator
+// follows a sensitive name.
 // eslint-disable-next-line no-control-regex -- control characters are exactly what ends the run
-const ordinaryRun = /[^\x00-\x20\x7f=:\s]*/uy
+const ordinaryRun = /[^\x00-\x08\x0a-\x1f\x7f]*/uy
+// A whole CSI sequence (ESC [, parameters and intermediates, a final byte)
+// or OSC string (ESC ], up to BEL or ESC \\), as ControlReader reads them.
+// eslint-disable-next-line no-control-regex -- the sequences are made of control characters
+const wholeSequence = /\x1b(?:\[[\x20-\x3f]*[\x40-\x7e]|\][^\x07\x1b\n\r]*(?:\x07|\x1b\\))/y
+// A sensitive name followed by a character a name's syntax holds.
+const sensitiveNameFollowed = new RegExp(`(?:${sensitiveName})(?=["'=:\\s])`, "giu")
 // The rest of a token.
 const tokenRun = /[A-Za-z0-9_.-]*/uy
 // What a token's prefix ends in.
@@ -2176,6 +2183,18 @@ function sharedLength(left: string, leftAt: number, right: string, rightAt: numb
 // Printable text: no control character, no line break.
 // eslint-disable-next-line no-control-regex -- control characters are exactly what ends the run
 const printableRun = /[^\x00-\x1f\x7f]*/uy
+
+// A sensitive name at the end of a text of up to 32 characters, the longest
+// sensitive name being shorter than that.
+const sensitiveNameAtEnd = new RegExp(`(?:${sensitiveName})$`, "iu")
+
+// Whether the character at `at` is one a name's syntax holds after it: a
+// quote, =, : or whitespace.
+function isNameSyntax(text: string, at: number): boolean {
+  const code = text.charCodeAt(at)
+  if (code < 0x80) return code === 0x22 || code === 0x27 || code === 0x3d || code === 0x3a || code === 0x20 || (code >= 0x09 && code <= 0x0d)
+  return /\s/u.test(text[at]!)
+}
 
 // What readValue passes over as a run of plain characters: plainRun, and
 // plainRunInside within a construct, tested on a character code.
@@ -2385,8 +2404,16 @@ class ScreenReader {
       // where the run stops.
       pattern.lastIndex = at
       pattern.test(piece)
-      started = this.#tokenStart(piece, at, pattern.lastIndex)
+      const runEnd = pattern.lastIndex
+      started = this.#tokenStart(piece, at, runEnd)
       if (started >= 0) to = started + 1
+      // A separator after a sensitive name may start a value: the run stops
+      // before the first character that follows one, and #mark reads on.
+      const named = this.#nameFollowed(piece, at, Math.min(runEnd, to))
+      if (named >= 0) {
+        to = named
+        started = -1
+      }
     } else if (value.deep) {
       pattern = printableRun
       kind = markedKind
@@ -2431,14 +2458,57 @@ class ScreenReader {
   // it can be read without cutting the word at the last character outside a
   // token: the same prefixes end in both.
   #tokenStart(piece: string, at: number, to: number): number {
-    prefixEnd.lastIndex = at
-    for (let found = prefixEnd.exec(piece); found !== null && found.index < to; found = prefixEnd.exec(piece)) {
-      const index = found.index
+    for (let index = this.#prefixEndFrom(piece, at); index >= 0 && index < to; index = this.#prefixEndFrom(piece, index + 1)) {
       const before = index + 1 - 16
       const window = before >= at ? piece.slice(before, index + 1) : `${this.#word}${piece.slice(at, index + 1)}`.slice(-16)
       if (tokenPrefixAtEnd.test(window)) return index
     }
     return -1
+  }
+
+  // A whole CSI or OSC sequence from `at`, marked in one step: #mark finds
+  // each of its characters invisible, and leaves the reader outside every
+  // sequence after it, the value, token and line as they were. How long; 0
+  // when none starts there.
+  #markSequence(piece: string, at: number): number {
+    wholeSequence.lastIndex = at
+    if (!wholeSequence.test(piece)) return 0
+    const length = wholeSequence.lastIndex - at
+    const value = this.#value
+    const kind = (value !== undefined && (value.deep || (value.state !== undefined && !value.counting))) || this.#token ? markedKind : syntaxKind
+    this.#kinds += kind.repeat(length)
+    return length
+  }
+
+  // Where in piece, from `at` to `to`, the first character is that follows a
+  // sensitive name and is a quote, whitespace, = or :, the line before `at`
+  // included: -1 when there is none. Only there can #nameEnding find a name.
+  #nameFollowed(piece: string, at: number, to: number): number {
+    // The line may already end in a sensitive name and some of its syntax.
+    if (this.#nameBeforeSyntax()) return at
+    const lead = this.#line.slice(-32)
+    const text = `${lead}${piece.slice(at, to)}`
+    sensitiveNameFollowed.lastIndex = 0
+    for (let found = sensitiveNameFollowed.exec(text); found !== null; found = sensitiveNameFollowed.exec(text)) {
+      const end = found.index + found[0].length
+      if (end >= lead.length) return at + end - lead.length
+      sensitiveNameFollowed.lastIndex = found.index + 1
+    }
+    return -1
+  }
+
+  // Where the next _, - or J is in piece from `at`, -1 when there is none.
+  // The last one found is remembered, so a piece is searched through once
+  // however many runs it is read in.
+  #prefixEndCache: { piece: string, from: number, index: number } | undefined
+
+  #prefixEndFrom(piece: string, at: number): number {
+    const cache = this.#prefixEndCache
+    if (cache !== undefined && cache.piece === piece && cache.from <= at && (cache.index < 0 || cache.index >= at)) return cache.index
+    prefixEnd.lastIndex = at
+    const index = prefixEnd.exec(piece)?.index ?? -1
+    this.#prefixEndCache = { piece, from: at, index }
+    return index
   }
 
   // The line part of #see for each character of a run, in one step: the
@@ -2488,7 +2558,19 @@ class ScreenReader {
   // A name and separator at the end of the line, as main's value patterns
   // find them. A counting name's value is read but not marked: main shows a
   // complete count and hides anything else.
+  // Whether the line ends in a sensitive name and then only quotes, spaces,
+  // = and :, fewer than 128 of them. Every pattern #nameEnding tries ends so,
+  // and past 128 of them it finds no sensitive word.
+  #nameBeforeSyntax(): boolean {
+    const line = this.#line
+    let syntaxStart = line.length
+    while (syntaxStart > 0 && line.length - syntaxStart < 2 * nameWordLength && isNameSyntax(line, syntaxStart - 1)) syntaxStart -= 1
+    if (syntaxStart === 0 || line.length - syntaxStart >= 2 * nameWordLength) return false
+    return sensitiveNameAtEnd.test(line.slice(Math.max(0, syntaxStart - 32), syntaxStart))
+  }
+
   #nameEnding(): ScreenValue | undefined {
+    if (!this.#nameBeforeSyntax()) return undefined
     const tail = this.#line.slice(-2 * nameWordLength - terminalRedactionCarryCharacters)
     if (!sensitiveWord.test(tail.slice(-2 * nameWordLength))) return undefined
     for (const { pattern, atEnd } of screenNames) {
@@ -2513,7 +2595,7 @@ class ScreenReader {
 
   #readPiece(piece: string): void {
     for (let at = 0; at < piece.length;) {
-      const run = this.#controls.idle ? this.#markRun(piece, at) : 0
+      const run = !this.#controls.idle ? 0 : piece.charCodeAt(at) === 0x1b ? this.#markSequence(piece, at) : this.#markRun(piece, at)
       if (run > 0) {
         at += run
         continue
