@@ -35,6 +35,16 @@ export function configuredProfileDirectory(value: string | undefined, home: stri
 export function sameProfileDirectory(left: ProfileLocation, right: ProfileLocation, platform?: string): boolean {
   const windows = platform === "win32"
   const local = platform === undefined || windows === (process.platform === "win32")
+  // Security review round 13 of #577 (P2): posix follows a link before its
+  // "..", so link/../victim names victim beside the link's target. This host
+  // cannot follow links on another machine, so there a posix path with a ".."
+  // segment matches only the same text, never its lexical collapse.
+  if (!local && !windows) {
+    const leftDirectory = profileDirectory(left, platform)
+    const rightDirectory = profileDirectory(right, platform)
+    const dotDot = (directory: string) => directory.split("/").includes("..")
+    if (dotDot(leftDirectory) || dotDot(rightDirectory)) return leftDirectory === rightDirectory
+  }
   const canonical = (location: ProfileLocation) => {
     const directory = profileDirectory(location, platform)
     let resolved: string

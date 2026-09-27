@@ -197,6 +197,17 @@ describe("assertServiceProfile by the service platform's path rules", () => {
     })
   })
 
+  // Security review round 13 of #577 (P2): on a Linux service's machine,
+  // link/../victim names victim beside the link's target. A Windows host
+  // cannot follow that link, so such a path matches only the same path.
+  it("does not collapse a posix dot-dot the host cannot resolve on the service's machine", () => {
+    onHost("win32", () => {
+      expect(() => assertServiceProfile({ profileDirectory: "/home/dl/link/../victim" }, { profileDirectory: "/home/dl/victim" }, "linux"))
+        .toThrow(ServiceProfileMismatchError)
+      expect(() => assertServiceProfile({ profileDirectory: "/home/dl/link/../victim" }, { profileDirectory: "/home/dl/link/../victim" }, "linux")).not.toThrow()
+    })
+  })
+
   it("names a macOS service's default profile with posix separators", () => {
     expect(() => assertServiceProfile({ profileDirectory: "/Users/dl/profiles/other" }, "/Users/dl", "darwin"))
       .toThrow("This app's daemon uses the profile at /Users/dl/.domovoi, and the login service uses the profile at /Users/dl/profiles/other.")
