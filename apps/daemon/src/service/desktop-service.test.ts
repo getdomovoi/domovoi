@@ -256,6 +256,33 @@ describe("readDaemonServiceRuntimeVersion", () => {
     }
   })
 
+  // Round 8 (P2): the daemon entry the definition runs must be the one in the
+  // same published copy as its Node program, on every platform.
+  it("reports no version when the daemon entry is not in the same copy as the Node program", async () => {
+    const copy = "/Users/dana/.domovoi/runtime/0.9.2/0123456789ab"
+    for (const entry of [
+      "/Users/dana/profiles/other/runtime/0.9.2/0123456789ab/daemon/dist/index.js",
+      "/Users/dana/.domovoi/runtime/0.9.1/0123456789ab/daemon/dist/index.js",
+      "/Users/dana/.domovoi/runtime/0.9.2/ba9876543210/daemon/dist/index.js",
+      `${copy}/daemon/dist/other.js`,
+      `${copy}/daemon/dist/../../../ba9876543210/daemon/dist/index.js`,
+      "/tmp/entry.js",
+    ]) {
+      const readDefinition = vi.fn(async () => plist(`${copy}/node/bin/node`, entry))
+      await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }), entry)
+        .resolves.toEqual({ installed: true })
+    }
+    const programOnly = vi.fn(async () => `<?xml version="1.0"?><plist><dict><key>ProgramArguments</key><array><string>${copy}/node/bin/node</string></array></dict></plist>`)
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: programOnly, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }))
+      .resolves.toEqual({ installed: true })
+    const unit = "[Service]\nExecStart=\"/home/dana/.domovoi/runtime/0.9.2/0123456789ab/node/bin/node\" \"/home/dana/.domovoi/runtime/0.9.1/0123456789ab/daemon/dist/index.js\" --service-config x\n"
+    await expect(readDaemonServiceRuntimeVersion({ platform: "linux", home: "/home/dana", readDefinition: async () => unit, capture: vi.fn(), readConfiguration: saved("linux", "/home/dana") }))
+      .resolves.toEqual({ installed: true })
+    const xml = "<Task><Actions><Exec><Command>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab\\node\\node.exe\"</Command><Arguments>\"C:\\Users\\dana\\profiles\\other\\runtime\\0.9.2\\0123456789ab\\daemon\\dist\\index.js\" --service-config \"C:\\Users\\dana\\.domovoi\\service.json\"</Arguments></Exec></Actions></Task>"
+    await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture: vi.fn(async () => ({ code: 0, stdout: xml })), readConfiguration: saved("win32", "C:\\Users\\dana") }))
+      .resolves.toEqual({ installed: true })
+  })
+
   it("says installed with no version when the service runs a runtime the desktop did not stage", async () => {
     await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: async () => plist("/opt/homebrew/bin/node", "/opt/homebrew/lib/node_modules/@getdomovoi/daemon/dist/index.js"), capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }))
       .resolves.toEqual({ installed: true })

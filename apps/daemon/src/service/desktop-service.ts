@@ -336,20 +336,25 @@ export type DaemonServiceRuntimeReader = {
   readConfiguration: NonNullable<ServiceEffects["readConfiguration"]>
 }
 
-// The program a definition runs: the first ProgramArguments string of a
-// launchd plist, the first word of a systemd ExecStart, a task's Command.
-function definitionProgram(platform: string, definition: string): string | undefined {
+// The program a definition runs and the daemon entry it hands that program:
+// the first two ProgramArguments strings of a launchd plist, the first two
+// words of a systemd ExecStart, a task's Command and the first word of its
+// Arguments.
+function definitionPaths(platform: string, definition: string): { program: string; entry: string } | undefined {
   const unquote = (value: string) => /^"([^"]*)"$/u.exec(value)?.[1] ?? value
-  if (platform === "darwin") return /<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]*)<\/string>/u.exec(definition)?.[1]
-  if (platform === "linux") {
-    const line = /^ExecStart=(.*)$/mu.exec(definition)?.[1]?.trim()
-    return line === undefined ? undefined : unquote(/^("[^"]*"|\S+)/u.exec(line)?.[1] ?? "")
-  }
-  if (platform === "win32") {
+  const words = (line: string | undefined) => [...(line ?? "").matchAll(/"[^"]*"|\S+/gu)].map((match) => unquote(match[0]))
+  let paths: (string | undefined)[] = []
+  if (platform === "darwin") {
+    const listed = /<key>ProgramArguments<\/key>\s*<array>((?:\s*<string>[^<]*<\/string>)+)/u.exec(definition)?.[1] ?? ""
+    paths = [...listed.matchAll(/<string>([^<]*)<\/string>/gu)].map((match) => match[1])
+  } else if (platform === "linux") {
+    paths = words(/^ExecStart=(.*)$/mu.exec(definition)?.[1])
+  } else if (platform === "win32") {
     const command = /<Command>([^<]*)<\/Command>/u.exec(definition)?.[1]?.trim()
-    return command === undefined ? undefined : unquote(command)
+    paths = [command === undefined ? undefined : unquote(command), words(/<Arguments>([^<]*)<\/Arguments>/u.exec(definition)?.[1])[0]]
   }
-  return undefined
+  const [program, entry] = paths
+  return program === undefined || entry === undefined ? undefined : { program, entry }
 }
 
 // Security review round 4 of #577 (P3): the version is the one staged under
@@ -357,13 +362,16 @@ function definitionProgram(platform: string, definition: string): string | undef
 // definition runs. Round 7: each publish is a fresh directory,
 // <profile>/runtime/<version>/<id>/node/bin/node (node\node.exe on Windows),
 // with a 12-character hexadecimal id. Anything else, another profile's
-// runtime included, has none. Round 8 (P3): the version must pass the check
-// the desktop publishes under (isLoginServiceRuntimeVersion).
+// runtime included, has none. Round 8: the version must pass the check the
+// desktop publishes under (isLoginServiceRuntimeVersion, P3), and the daemon
+// entry the definition runs must be <same copy>/daemon/dist/index.js, so a
+// definition cannot pair one copy's Node with another entry (P2).
 const publishId = /^[0-9a-f]{12}$/u
 
 export function stagedRuntimeVersion(platform: string, definition: string, profileDirectory: string): string | undefined {
-  const program = definitionProgram(platform, definition)
-  if (program === undefined) return undefined
+  const found = definitionPaths(platform, definition)
+  if (found === undefined) return undefined
+  const { program, entry } = found
   const paths = platform === "win32" ? win32 : posix
   const same = (left: string, right: string) => platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right
   const runtimeRoot = paths.join(profileDirectory, "runtime")
@@ -375,7 +383,8 @@ export function stagedRuntimeVersion(platform: string, definition: string, profi
   const expected = platform === "win32"
     ? paths.join(runtimeRoot, version, id, "node", "node.exe")
     : paths.join(runtimeRoot, version, id, "node", "bin", "node")
-  return same(paths.normalize(program), expected) ? version : undefined
+  const expectedEntry = paths.join(runtimeRoot, version, id, "daemon", "dist", "index.js")
+  return same(paths.normalize(program), expected) && same(paths.normalize(entry), expectedEntry) ? version : undefined
 }
 
 export async function readDaemonServiceRuntimeVersion(
