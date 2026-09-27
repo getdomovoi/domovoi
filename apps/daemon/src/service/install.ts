@@ -681,7 +681,7 @@ async function installWithDeadline(
   // authorization. Assign the identity here, even if the caller supplied one.
   const plan = servicePlan({ ...target, configuration: { ...target.configuration, registrationId: randomUUID() } })
   deadline.throwIfExpired()
-  const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory)
+  const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory, target.platform)
   let previous: ProfileLocation | undefined
   try {
     previous = effects.registeredProfile?.(target.configuration.homeDirectory, target.platform)
@@ -699,7 +699,7 @@ async function installWithDeadline(
       const registered = await registeredServiceWithoutConfiguration(target, plan, effects, deadline)
       if (registered !== undefined) throw registeredWithoutConfiguration(registered)
     }
-    assertServiceProfile(previous, callerProfile)
+    assertServiceProfile(previous, callerProfile, target.platform)
   }
   // Security review round 3 (#574): schtasks /create /f replaces a task of
   // the same name, so a task Domovoi did not register refuses the install, by
@@ -714,7 +714,7 @@ async function installWithDeadline(
   try {
     // A profile an earlier registration named is not the in-app daemon's, so
     // it is claimed before the handoff.
-    if (previous && !sameProfileDirectory(previous, profile)) leases.push(effects.claimProfile(previous))
+    if (previous && !sameProfileDirectory(previous, profile, target.platform)) leases.push(effects.claimProfile(previous))
     // The handoff (ruled 2026-09-23, option B; placed by security review
     // rounds 1 and 2 on #574): the service-operation lease is held, the plan
     // is built, the saved registration is read, and the profile is free or
@@ -1161,7 +1161,7 @@ async function removeWithDeadline(
       if (before.effectiveProfileDirectory === undefined) {
         throw new ServiceProfileUnknownError("The saved service configuration names no profile. The profile the login service runs is not known.")
       }
-      assertServiceProfile({ profileDirectory: before.effectiveProfileDirectory }, callerProfile)
+      assertServiceProfile({ profileDirectory: before.effectiveProfileDirectory }, callerProfile, target.platform)
     }
   }
   let managerStopped = true
@@ -1439,7 +1439,7 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
       try { text = readLocalProfileFile(serviceConfigurationPath(home, platform), 64 * 1024) }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error }
       const saved = parseServiceConfiguration(text)
-      return profileLocation(saved.homeDirectory, saved.profileDirectory)
+      return profileLocation(saved.homeDirectory, saved.profileDirectory, platform)
     },
     removalSnapshot: readServiceRemovalSnapshot,
     writeRemovalReceipt: writeLocalOwnerRemovalReceipt,

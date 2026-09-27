@@ -6,8 +6,10 @@ import { posix, resolve, win32 } from "node:path"
 // callers must pass the object form; audit callers when adding profile paths.
 export type ProfileLocation = string | { profileDirectory: string }
 
-export function profileLocation(home: string, directory?: string): ProfileLocation {
-  return directory === undefined || directory === profileDirectory(home) ? home : { profileDirectory: directory }
+// platform: the platform whose path rules apply, when it is not this
+// process's (a service is checked by its own platform's rules).
+export function profileLocation(home: string, directory?: string, platform?: string): ProfileLocation {
+  return directory === undefined || directory === profileDirectory(home, platform) ? home : { profileDirectory: directory }
 }
 
 export function profileDirectory(location: ProfileLocation, platform?: string): string {
@@ -26,14 +28,25 @@ export function configuredProfileDirectory(value: string | undefined, home: stri
   return value
 }
 
-export function sameProfileDirectory(left: ProfileLocation, right: ProfileLocation): boolean {
+// platform: the platform whose path rules apply. A directory is resolved on
+// disk only when those rules are this process's; otherwise the paths are
+// compared by the platform's own rules. Windows paths compare without case.
+// No platform keeps this process's rules, as before.
+export function sameProfileDirectory(left: ProfileLocation, right: ProfileLocation, platform?: string): boolean {
+  const windows = platform === "win32"
+  const local = platform === undefined || windows === (process.platform === "win32")
   const canonical = (location: ProfileLocation) => {
-    const directory = profileDirectory(location)
-    try { return realpathSync.native(directory) }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return resolve(directory)
-      throw error
+    const directory = profileDirectory(location, platform)
+    let resolved: string
+    if (!local) resolved = (windows ? win32 : posix).resolve(directory)
+    else {
+      try { resolved = realpathSync.native(directory) }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+        resolved = resolve(directory)
+      }
     }
+    return windows ? resolved.toLowerCase() : resolved
   }
   return canonical(left) === canonical(right)
 }

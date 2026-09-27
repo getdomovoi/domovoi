@@ -113,7 +113,7 @@ export function serviceRegistrationBlocksProfile(home: string, profile: ProfileL
   if (!existsSync(path)) return false
   try {
     const config = parseServiceConfiguration(readLocalProfileFile(path, maximumConfigurationBytes))
-    return sameProfileDirectory(profileLocation(config.homeDirectory, config.profileDirectory), profile)
+    return sameProfileDirectory(profileLocation(config.homeDirectory, config.profileDirectory, process.platform), profile, process.platform)
   } catch {
     return true
   }
@@ -130,8 +130,13 @@ function webAppUrlSetting(value: unknown): string | undefined {
 // caller's own daemon, so a service change binds the service only when it
 // runs that daemon's profile. The caller's profile is its environment's
 // DOMOVOI_PROFILE_DIR, read as the daemon reads it.
-export function callerProfile(environment: DaemonEnvironment, homeDirectory: string): ProfileLocation {
-  return profileLocation(homeDirectory, configuredProfileDirectory(environment.DOMOVOI_PROFILE_DIR, homeDirectory))
+// platform: the service's platform, whose path rules name the profile.
+// No DOMOVOI_PROFILE_DIR is the default profile under the home, named by the
+// platform's rules when it is shown or compared.
+export function callerProfile(environment: DaemonEnvironment, homeDirectory: string, platform?: string): ProfileLocation {
+  const configured = environment.DOMOVOI_PROFILE_DIR
+  if (configured === undefined) return homeDirectory
+  return profileLocation(homeDirectory, configuredProfileDirectory(configured, homeDirectory), platform)
 }
 
 // Copy approved by fetzy on 2026-09-26.
@@ -160,8 +165,13 @@ export function registeredWithoutConfiguration(definitionPath: string): ServiceP
 // The saved service's profile against the caller's. None saved matches: an
 // install writes the caller's profile (the desktop passes it), an update finds
 // nothing to update, and a removal finds no Domovoi service to stop.
-export function assertServiceProfile(saved: ProfileLocation | undefined, caller: ProfileLocation): void {
-  if (saved !== undefined && !sameProfileDirectory(saved, caller)) throw new ServiceProfileMismatchError(profileDirectory(caller), profileDirectory(saved))
+// Both are named and compared by the rules of the service's platform, not
+// this process's (a Windows host checking a macOS service named the default
+// profile with backslashes, CI at 1b0d4d23).
+export function assertServiceProfile(saved: ProfileLocation | undefined, caller: ProfileLocation, platform?: string): void {
+  if (saved !== undefined && !sameProfileDirectory(saved, caller, platform)) {
+    throw new ServiceProfileMismatchError(profileDirectory(caller, platform), profileDirectory(saved, platform))
+  }
 }
 
 // Round 2 (P2): only a service.json that is not there counts as none saved.
@@ -175,7 +185,7 @@ function savedServiceProfile(home: string): ProfileLocation | undefined {
     throw error
   }
   const config = parseServiceConfiguration(text)
-  return profileLocation(config.homeDirectory, config.profileDirectory)
+  return profileLocation(config.homeDirectory, config.profileDirectory, process.platform)
 }
 
 // The desktop's early check, before its turn check and fence: both profile
@@ -183,7 +193,7 @@ function savedServiceProfile(home: string): ProfileLocation | undefined {
 // The service calls check again under the service-operation lease. Reads only.
 export function serviceProfileMismatch(input: { environment: NodeJS.ProcessEnv; homeDirectory: string }): { app: string; service: string } | undefined {
   try {
-    assertServiceProfile(savedServiceProfile(input.homeDirectory), callerProfile(input.environment, input.homeDirectory))
+    assertServiceProfile(savedServiceProfile(input.homeDirectory), callerProfile(input.environment, input.homeDirectory, process.platform), process.platform)
     return undefined
   } catch (error) {
     if (error instanceof ServiceProfileMismatchError) return { app: error.app, service: error.service }

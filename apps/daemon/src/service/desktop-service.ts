@@ -184,7 +184,7 @@ export async function installDaemonService(
   // lease, so a busy lease refuses with the in-app daemon still running.
   const plan = await installService(serviceTarget, dependencies, {
     ...(options.releaseInAppDaemon === undefined ? {} : { handoff: options.releaseInAppDaemon }),
-    ...(options.environment === undefined ? {} : { callerProfile: callerProfile(options.environment, dependencies.home) }),
+    ...(options.environment === undefined ? {} : { callerProfile: callerProfile(options.environment, dependencies.home, dependencies.platform) }),
     ...(options.staged === undefined ? {} : {
       beforeChanges: async () => {
         await options.staged!.publish()
@@ -243,7 +243,7 @@ export async function updateDaemonService(
     }
     if (!saved) throw new DaemonServiceUpdateError("not-installed")
     if (options.environment !== undefined) {
-      assertServiceProfile(profileLocation(saved.homeDirectory, saved.profileDirectory), callerProfile(options.environment, dependencies.home))
+      assertServiceProfile(profileLocation(saved.homeDirectory, saved.profileDirectory, dependencies.platform), callerProfile(options.environment, dependencies.home, dependencies.platform), dependencies.platform)
     }
     // Security review rounds 4 and 5 of #577: the staged runtime goes into
     // place only once every step that can refuse with nothing changed has
@@ -312,7 +312,7 @@ export async function removeDaemonService(
   options: { environment?: DaemonEnvironment } = {},
 ): Promise<DaemonServiceRemovalResult> {
   const removed = await removeService(target(dependencies), dependencies, {
-    ...(options.environment === undefined ? {} : { callerProfile: callerProfile(options.environment, dependencies.home) }),
+    ...(options.environment === undefined ? {} : { callerProfile: callerProfile(options.environment, dependencies.home, dependencies.platform) }),
   })
   const recovery = {
     profileRecovery: removed.profileRecovery,
