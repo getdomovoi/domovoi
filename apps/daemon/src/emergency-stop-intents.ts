@@ -370,10 +370,11 @@ export class SqliteEmergencyStopIntents {
   //   record, so a row read in a later round, or after a restart, still acts.
   //
   // The first two hold nothing the workspace does not: until a round's save
-  // lands, the journal still holds every row the round read, so a start that
-  // ends before then discards them (`beginRecovery`) and reads those rows
-  // again. The stop list is kept until the whole recovery is done, across
-  // restarts.
+  // lands, the journal still holds every row the round read a stop from, so
+  // a start that ends before then discards them (`beginRecovery`) and reads
+  // those rows again. A row no stop could be read from may already be in
+  // quarantine by then (`pending` moves it). The stop list is kept until the
+  // whole recovery is done, across restarts.
   beginRecovery(): void {
     this.#database.exec("DELETE FROM emergency_stop_recovery_rows")
     this.#database.exec("DELETE FROM emergency_stop_recovery_lines")

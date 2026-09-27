@@ -10703,7 +10703,12 @@ export class DomovoiDaemon {
   // name, against the thread as the round found it; the passes before it do
   // not add to either. The workspace is copied and saved once per round,
   // with the round's lines, and only then are the rows it finished cleared.
-  // A start that ends before that save leaves the journal as it was.
+  // A start that ends before that save leaves in the journal every row the
+  // round read a stop from; a row no stop could be read from may already be
+  // in quarantine (`pending` moves it there). A build without journal
+  // recovery, such as the desktop 0.0.1 release, does not read the journal
+  // at all: started on a store with a stop pending, it accepts connections
+  // without applying the stop. Nothing here prevents that downgrade.
   //
   // Rows that name the same stop act the same whether one round or two read
   // them, and whether or not a startup ended between the two (review round 1
