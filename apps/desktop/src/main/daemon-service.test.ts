@@ -795,6 +795,49 @@ describe("staging the shipped runtime under the profile", () => {
     })
   })
 
+  // Round 6 (P2): when the system temporary directory is on another volume,
+  // staging goes under the app's data directory, and only when that is on the
+  // runtime's volume, a real directory and outside any repository. Otherwise
+  // nothing is written. Copy pending owner approval.
+  describe("when the system temporary directory is on another volume", () => {
+    const otherVolume = (): Partial<RuntimeFileSystem> => {
+      const identity = nodeRuntimeFileSystem().identity
+      return { identity: async (path) => path === tmpdir() ? "other-volume:1" : identity(path) }
+    }
+
+    it("stages under the app's data directory", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const dataDirectory = join(root, "data")
+        await mkdir(dataDirectory)
+        const prepared = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, dataDirectory, fileSystem: nodeRuntimeFileSystem(otherVolume()) } as Parameters<typeof prepareDaemonRuntime>[0])
+        expect(prepared.staged.daemonEntryPath.startsWith(join(dataDirectory, "runtime-staging"))).toBe(true)
+        await prepared.publish()
+        await prepared.discard()
+        expect(await readFile(join(home, ".domovoi", "runtime", "0.9.4", "daemon", "dist", "index.js"), "utf8")).toBe("daemon")
+        expect(await readdir(join(dataDirectory, "runtime-staging"))).toEqual([])
+      })
+    })
+
+    it("refuses, writing nothing, when the data directory is inside a repository or on another volume too", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const inRepository = join(root, "repository", "data")
+        await mkdir(join(root, "repository", ".git"), { recursive: true })
+        await mkdir(inRepository)
+        const identity = nodeRuntimeFileSystem().identity
+        for (const [label, dataDirectory, fileSystem] of [
+          ["inside a repository", inRepository, nodeRuntimeFileSystem(otherVolume())],
+          ["on another volume", join(root, "far"), nodeRuntimeFileSystem({ identity: async (path) => path === tmpdir() || path.startsWith(join(root, "far")) ? "other-volume:1" : identity(path) })],
+        ] as const) {
+          await mkdir(join(root, "far"), { recursive: true })
+          await expect(prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, dataDirectory, fileSystem } as Parameters<typeof prepareDaemonRuntime>[0]), label)
+            .rejects.toThrow(`The profile directory ${join(home, ".domovoi")} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`)
+          expect(await readdir(join(home, ".domovoi", "runtime")), label).toEqual([])
+        }
+        expect(await readdir(inRepository)).toEqual([])
+      })
+    })
+  })
+
   it("removes a copy it published where there was none, on revert", async () => {
     await withScratch(async ({ resources, home }) => {
       const prepared = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, stagingParent: join(dirname(home), "staging"), fileSystem: nodeRuntimeFileSystem() })

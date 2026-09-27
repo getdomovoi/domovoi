@@ -325,6 +325,9 @@ type StageInput = {
   operation?: "install" | "update"
   // Where the private staging directory is made; tests pass their own.
   stagingParent?: string
+  // The app's own data directory, the staging place when the system
+  // temporary directory is on another volume.
+  dataDirectory?: string
 }
 
 export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedDaemonRuntime> {
@@ -352,16 +355,40 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
     rename: async (from, to) => { await unchanged(); await input.fileSystem.rename(from, to) },
     remove: async (path) => { await unchanged(); await input.fileSystem.remove(path) },
   }
-  // Round 5 (P2): the copy is made in a private directory outside every
-  // profile, so no path under the profile is written until the publish, and a
-  // swapped path cannot redirect the copy. It is the system temporary
+  // Rounds 5 and 6 (P2): the copy is made in a private directory outside
+  // every profile, so no path under the profile is written until the publish,
+  // and a swapped path cannot redirect the copy. It is the system temporary
   // directory when that is on the runtime directory's volume, so the publish
-  // is one rename; otherwise the directory that holds the profile directory.
+  // is one rename. Otherwise it is <app data>/runtime-staging, only when that
+  // is a real directory on the runtime's volume, outside the profile and
+  // outside any repository (a directory holding .git, as the repository
+  // finder reads it). Otherwise nothing is written. Copy pending owner
+  // approval.
   const device = (identity: string) => identity.slice(0, identity.indexOf(":"))
-  const temporary = input.stagingParent ?? tmpdir()
-  const parent = input.stagingParent !== undefined || device(await input.fileSystem.identity(temporary)) === device(pinned.identity)
-    ? temporary
-    : pathApi.dirname(input.profileDirectory)
+  const onRuntimeVolume = async (path: string) => device(await input.fileSystem.identity(path)) === device(pinned.identity)
+  const insideRepository = async (path: string) => {
+    for (let at = path; ; at = pathApi.dirname(at)) {
+      if (await input.fileSystem.entry(pathApi.join(at, ".git")) !== "missing") return true
+      if (pathApi.dirname(at) === at) return false
+    }
+  }
+  let parent = input.stagingParent
+  if (parent === undefined && await onRuntimeVolume(tmpdir())) parent = tmpdir()
+  if (parent === undefined && input.dataDirectory !== undefined && pathApi.isAbsolute(input.dataDirectory)) {
+    // Checked before anything is made there.
+    const candidate = pathApi.join(input.dataDirectory, "runtime-staging")
+    if (await input.fileSystem.entry(input.dataDirectory) === "directory" && await onRuntimeVolume(input.dataDirectory)) {
+      const real = await input.fileSystem.realpath(input.dataDirectory)
+      const profile = await input.fileSystem.realpath(input.profileDirectory)
+      if (!inside(pathApi, profile, real) && !await insideRepository(real)) {
+        if (await input.fileSystem.entry(candidate) === "missing") await input.fileSystem.makeDirectory(candidate)
+        if (await input.fileSystem.entry(candidate) === "directory" && await onRuntimeVolume(candidate)) parent = candidate
+      }
+    }
+  }
+  if (parent === undefined) {
+    throw new Error(`The profile directory ${input.profileDirectory} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`)
+  }
   const holder = await input.fileSystem.makePrivateDirectory(pathApi.join(parent, `.domovoi-runtime-${input.version}.staging-`))
   const staging = pathApi.join(holder, "copy")
   const layout = (at: string): DaemonServiceRuntime => ({

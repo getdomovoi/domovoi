@@ -169,7 +169,7 @@ const fleetOrigins = new FleetOriginAdmission(async (machineId, timeoutMs) => {
 let desktopDaemonService: Promise<DesktopDaemonService> | undefined
 const daemonService = (): Promise<DesktopDaemonService> => {
   desktopDaemonService ??= import("./daemon-service-assembly.js").then(
-    (assembly) => assembly.createDesktopDaemonService(desktopDaemon, { resourcesPath: process.resourcesPath, version: app.getVersion() }, daemonModule.module),
+    (assembly) => assembly.createDesktopDaemonService(desktopDaemon, { resourcesPath: process.resourcesPath, version: app.getVersion(), dataDirectory: app.getPath("userData") }, daemonModule.module),
     (error: unknown) => {
       desktopDaemonService = undefined
       throw error

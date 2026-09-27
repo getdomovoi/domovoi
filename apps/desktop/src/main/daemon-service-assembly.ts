@@ -19,7 +19,7 @@ import type { DesktopDaemon } from "./desktop-daemon.js"
 // environment default to this process's; tests pass their own.
 export function createDesktopDaemonService(
   desktopDaemon: DesktopDaemon,
-  app: { resourcesPath: string; version: string; home?: string; environment?: NodeJS.ProcessEnv },
+  app: { resourcesPath: string; version: string; home?: string; environment?: NodeJS.ProcessEnv; dataDirectory?: string },
   daemon: DaemonModule,
 ): DesktopDaemonService {
   const home = app.home ?? homedir()
@@ -32,6 +32,7 @@ export function createDesktopDaemonService(
       resourcesPath: app.resourcesPath,
       profileDirectory: profileDirectory ?? (process.platform === "win32" ? win32 : posix).join(home, ".domovoi"),
       version: app.version,
+      ...(app.dataDirectory === undefined ? {} : { dataDirectory: app.dataDirectory }),
       platform: process.platform,
       fileSystem: nodeRuntimeFileSystem(),
     }),
