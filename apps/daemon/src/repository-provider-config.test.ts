@@ -28,7 +28,7 @@ function provider(result: { providers: ToolInventoryProvider[] }, id: string): T
   return found
 }
 
-const secrets = ["s3cr3t-value", "hunter2", "prod-db-pass", "tok-abc", "q-secret", "env-secret"]
+const secrets = ["s3cr3t-value", "hunter2", "prod-db-pass", "tok-abc", "q-secret", "env-secret", "opaque-header-secret", "opaque-fragment-secret"]
 
 function expectNoSecret(value: unknown): void {
   const text = JSON.stringify(value)
@@ -48,6 +48,7 @@ describe("readRepositoryProviderConfig: Claude Code", () => {
       hooks: {
         SessionStart: [{ hooks: [{ type: "command", command: "NODE_ENV=production pnpm build" }] }],
         PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "PGPASSWORD=prod-db-pass psql -c 'select 1'" }] }],
+        PostToolUse: [{ hooks: [{ type: "command", command: "curl -H 'X-Custom: opaque-header-secret' https://hooks.example.com/cb#opaque-fragment-secret" }] }],
       },
       env: { DATABASE_URL: "postgres://u:hunter2@db/x", DEBUG: "1" },
       permissions: { allow: ["Bash(pnpm test:*)"], deny: ["Read(./.env)"], defaultMode: "acceptEdits" },
@@ -76,6 +77,10 @@ describe("readRepositoryProviderConfig: Claude Code", () => {
       },
       { kind: "hook", event: "SessionStart", command: "NODE_ENV=[REDACTED] pnpm build", file: ".claude/settings.json", startsAtSessionStart: true, heldBack: true },
       { kind: "hook", event: "PreToolUse", matcher: "Bash", command: "PGPASSWORD=[REDACTED] psql -c 'select 1'", file: ".claude/settings.json", startsAtSessionStart: false, heldBack: true },
+      {
+        kind: "hook", event: "PostToolUse", command: "curl -H 'X-Custom: [REDACTED]' https://hooks.example.com/cb#[REDACTED]",
+        file: ".claude/settings.json", startsAtSessionStart: false, heldBack: true,
+      },
       { kind: "env-key", key: "DATABASE_URL", file: ".claude/settings.json", startsAtSessionStart: true, heldBack: true },
       { kind: "env-key", key: "DEBUG", file: ".claude/settings.json", startsAtSessionStart: true, heldBack: true },
       { kind: "permission-rule", rule: "allow", detail: "Bash(pnpm test:*)", file: ".claude/settings.json", startsAtSessionStart: false, heldBack: true },
@@ -171,6 +176,52 @@ describe("readRepositoryProviderConfig: OpenCode and Kilo", () => {
       { kind: "permission-rule", rule: "customModes", detail: "reviewer read edit command", file: ".kilocodemodes", startsAtSessionStart: false, heldBack: true },
     ])
   })
+
+  // Kilo 7.8.1 loads config.json beside kilo.json at the root and in .kilo/
+  // and .kilocode/, and TUI plugins from tui.json(c) there; OpenCode 1.18.32
+  // loads tui.json(c) at the root and in .opencode/.
+  it("reads Kilo's config.json and the TUI plugin files", async () => {
+    const root = await scratch()
+    const server = (name: string) => JSON.stringify({ mcp: { [name]: { type: "local", command: [`${name}-mcp`] } } })
+    await put(root, "config.json", server("root"))
+    await put(root, ".kilo/config.json", server("kilo"))
+    await put(root, ".kilocode/config.json", server("kilocode"))
+    await put(root, "tui.json", JSON.stringify({ plugin: ["root-tui@1.0.0"] }))
+    // A TUI file loads plugins, not servers.
+    await put(root, ".kilo/tui.jsonc", `{ "plugin": ["kilo-tui@1.0.0"], "mcp": { "ignored": { "type": "local", "command": ["x"] } } }`)
+    await put(root, ".kilocode/tui.json", JSON.stringify({ plugin: [["kilocode-tui@1.0.0", {}]] }))
+    await put(root, ".opencode/tui.json", JSON.stringify({ plugin: ["opencode-tui@1.0.0"] }))
+
+    const result = await readRepositoryProviderConfig(root, { heldBack: true })
+    const kilo = provider(result, "kilo")
+    expect(toolInventoryProviderSchema.safeParse(kilo).success).toBe(true)
+    expect(kilo.files).toEqual([
+      { path: "config.json", source: "project-settings", state: "read" },
+      { path: "tui.json", source: "project-settings", state: "read" },
+      { path: ".kilocode/config.json", source: "project-settings", state: "read" },
+      { path: ".kilocode/tui.json", source: "project-settings", state: "read" },
+      { path: ".kilo/config.json", source: "project-settings", state: "read" },
+      { path: ".kilo/tui.jsonc", source: "project-settings", state: "read" },
+    ])
+    const tool = (name: string, file: string) => ({
+      kind: "tool-server", name, transport: "stdio", command: `${name}-mcp`, envKeys: [], file, startsAtSessionStart: true, heldBack: true,
+    })
+    const plugin = (name: string, file: string) => ({ kind: "plugin", name, file, startsAtSessionStart: true, heldBack: true })
+    expect(kilo.entries).toEqual([
+      tool("root", "config.json"),
+      plugin("root-tui@1.0.0", "tui.json"),
+      tool("kilocode", ".kilocode/config.json"),
+      plugin("kilocode-tui@1.0.0", ".kilocode/tui.json"),
+      tool("kilo", ".kilo/config.json"),
+      plugin("kilo-tui@1.0.0", ".kilo/tui.jsonc"),
+    ])
+    const opencode = provider(result, "opencode")
+    expect(opencode.files).toEqual([
+      { path: "tui.json", source: "project-settings", state: "read" },
+      { path: ".opencode/tui.json", source: "project-settings", state: "read" },
+    ])
+    expect(opencode.entries).toEqual([plugin("root-tui@1.0.0", "tui.json"), plugin("opencode-tui@1.0.0", ".opencode/tui.json")])
+  })
 })
 
 describe("readRepositoryProviderConfig: files it refuses", () => {
@@ -214,6 +265,30 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     await put(outside, "kilo/mcp.json", JSON.stringify({ mcpServers: { changed: { command: "other" } } }))
     await put(outside, "claude/settings.json", "{}")
     await put(outside, "plugins/outside.ts", "changed")
+    expect((await readRepositoryProviderConfig(root, { heldBack: true })).configDigest).toBe(result.configDigest)
+  })
+
+  it("refuses a repository root that is itself a link", async () => {
+    const parent = await scratch()
+    const outside = await scratch("domovoi-provider-outside-")
+    await put(outside, ".mcp.json", JSON.stringify({ mcpServers: { stolen: { command: "outside-server" } } }))
+    await put(outside, ".opencode/plugin/outside.ts", "outside")
+    await put(outside, "kilo.json", JSON.stringify({ plugin: ["outside-plugin"] }))
+    const root = join(parent, "repository")
+    await symlink(outside, root, process.platform === "win32" ? "junction" : "dir")
+
+    const result = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(JSON.stringify(result)).not.toMatch(/outside-server|stolen|outside\.ts|outside-plugin/u)
+    for (const entry of result.providers) {
+      expect(toolInventoryProviderSchema.safeParse(entry).success).toBe(true)
+      expect(entry.entries).toEqual([])
+      expect(entry.files.length).toBeGreaterThan(0)
+      expect(entry.files.every((file) => file.state === "unreadable" && file.reason === "symbolic-link")).toBe(true)
+    }
+
+    // The digest is taken from the link, not from what it points at.
+    await put(outside, ".mcp.json", JSON.stringify({ mcpServers: { changed: { command: "other" } } }))
+    await put(outside, ".opencode/plugin/outside.ts", "changed")
     expect((await readRepositoryProviderConfig(root, { heldBack: true })).configDigest).toBe(result.configDigest)
   })
 
@@ -318,6 +393,15 @@ describe("readRepositoryProviderConfig: config digest", () => {
       ["add .kilo/mcp.json", () => put(root, ".kilo/mcp.json", "{}")],
       ["add an agents skill", () => put(root, ".agents/skills/x/SKILL.md", "x")],
       ["add .opencode/package.json", () => put(root, ".opencode/package.json", "{}")],
+      ...["config.json", ".kilo/config.json", ".kilocode/config.json"].flatMap((path): Array<[string, () => Promise<void>]> => [
+        [`add ${path}`, () => put(root, path, "{}")],
+        [`add a server to ${path}`, () => put(root, path, JSON.stringify({ mcp: { s: { type: "local", command: ["s"] } } }))],
+      ]),
+      ...["tui.json", "tui.jsonc", ".opencode/tui.json", ".opencode/tui.jsonc", ".kilo/tui.json", ".kilo/tui.jsonc", ".kilocode/tui.json", ".kilocode/tui.jsonc"]
+        .flatMap((path): Array<[string, () => Promise<void>]> => [
+          [`add ${path}`, () => put(root, path, "{}")],
+          [`add a plugin to ${path}`, () => put(root, path, JSON.stringify({ plugin: ["p"] }))],
+        ]),
       ["delete .mcp.json", () => rm(join(root, ".mcp.json"))],
     ]
     for (const [label, change] of changes) {

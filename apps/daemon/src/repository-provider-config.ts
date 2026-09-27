@@ -19,12 +19,14 @@ import { redactInventoryArgv, redactInventoryText } from "./inventory-redaction.
 // imports or evaluates a repository file: files are read as bytes and parsed
 // as JSON, JSONC or YAML data. Only the fixed provider paths below, relative
 // to the repository root, are read, and no symbolic link is followed: every
-// path component is checked with lstat, the file itself is opened with
-// O_NOFOLLOW, and the open descriptor must be the file lstat found, in the
-// same directories before and after the open. Node cannot open relative to a
-// directory descriptor, so a directory swapped for a link and back between
-// those checks is narrowed, not ruled out. A file with a second hard link is
-// refused, since it can be another name for a file outside the repository.
+// path component, the repository root itself included, is checked with lstat,
+// and the root must stay the directory the reader first found. The file itself
+// is opened with O_NOFOLLOW, and the open descriptor must be the file lstat
+// found, in the same directories before and after the open. Node cannot open
+// relative to a directory descriptor, so a directory swapped for a link and
+// back between those checks is narrowed, not ruled out. A file with a second
+// hard link is refused, since it can be another name for a file outside the
+// repository.
 //
 // The digest covers each path in scope, present or absent: a file by its
 // content hash, a directory by every name and file under it, and a refused
@@ -42,7 +44,7 @@ const maximumProviderEntries = 512
 const maximumProviderFiles = 32
 const digestVersion = "domovoi-repository-config/1"
 
-type Parser = "claude-mcp" | "claude-settings" | "opencode-config" | "kilo-mcp" | "kilo-modes" | "none"
+type Parser = "claude-mcp" | "claude-settings" | "opencode-config" | "tui-config" | "kilo-mcp" | "kilo-modes" | "none"
 type ScopedFile = { path: string; source: ToolInventorySource; parser: Parser }
 // Directory members give plugin or skill entries, or count in the digest only.
 type ScopedDirectory = { path: string; members?: "plugin" | "skill" }
@@ -59,12 +61,18 @@ const configDirectoryMembers: readonly ScopedDirectory[] = [
 ]
 const sharedSkillDirectories: readonly ScopedDirectory[] = [{ path: ".claude/skills", members: "skill" }, { path: ".agents/skills", members: "skill" }]
 const openCodeConfigNames = ["opencode.json", "opencode.jsonc"]
-const kiloConfigNames = ["kilo.json", "kilo.jsonc", ...openCodeConfigNames]
+// Kilo 7.8.1 also reads config.json at the root and in .kilo/ and .kilocode/
+// (its v2 Config and config sources lists), and both load TUI plugins from
+// tui.json and tui.jsonc at the root and in each config directory
+// (TuiConfig: ConfigPaths.projectFiles("tui") and fileInDirectory(dir, "tui")).
+const kiloConfigNames = ["kilo.json", "kilo.jsonc", ...openCodeConfigNames, "config.json"]
 const kiloConfigDirectories = [".kilocode", ".kilo"]
+const tuiConfigNames = ["tui.json", "tui.jsonc"]
 
-const configFiles = (directory: string | undefined, names: readonly string[]): ScopedFile[] => names.map((name) => ({
-  path: directory ? `${directory}/${name}` : name, source: "project-settings", parser: "opencode-config",
+const configFiles = (directory: string | undefined, names: readonly string[], parser: Parser = "opencode-config"): ScopedFile[] => names.map((name) => ({
+  path: directory ? `${directory}/${name}` : name, source: "project-settings", parser,
 }))
+const tuiFiles = (directory: string | undefined) => configFiles(directory, tuiConfigNames, "tui-config")
 const memberDirectories = (directory: string): ScopedDirectory[] => configDirectoryMembers.map((member) => ({ ...member, path: `${directory}/${member.path}` }))
 
 export const repositoryProviderScopes: readonly ProviderScope[] = [
@@ -80,7 +88,9 @@ export const repositoryProviderScopes: readonly ProviderScope[] = [
     provider: "opencode",
     files: [
       ...configFiles(undefined, openCodeConfigNames),
+      ...tuiFiles(undefined),
       ...configFiles(".opencode", openCodeConfigNames),
+      ...tuiFiles(".opencode"),
       { path: ".opencode/package.json", source: "repository-file", parser: "none" },
     ],
     directories: [...memberDirectories(".opencode"), ...sharedSkillDirectories],
@@ -90,8 +100,10 @@ export const repositoryProviderScopes: readonly ProviderScope[] = [
     provider: "kilo",
     files: [
       ...configFiles(undefined, kiloConfigNames),
+      ...tuiFiles(undefined),
       ...kiloConfigDirectories.flatMap((directory): ScopedFile[] => [
         ...configFiles(directory, kiloConfigNames),
+        ...tuiFiles(directory),
         { path: `${directory}/mcp.json`, source: "repository-file", parser: "kilo-mcp" },
         { path: `${directory}/package.json`, source: "repository-file", parser: "none" },
       ]),
@@ -125,15 +137,34 @@ async function linkRefusal(path: string): Promise<Refused> {
   return { state: "unreadable", reason: "symbolic-link", digest: `link:${sha256(await readlink(path))}` }
 }
 
-// The directories from the root down through `segments`, each of which must
-// be a real directory. A missing one makes the path absent; a link refuses it.
-async function directoryChain(root: string, segments: readonly string[]): Promise<Identity[] | { state: "absent" } | Refused> {
+// The repository directory every read is anchored to: its path, and its
+// identity when it was a real directory as the reader started.
+type RepositoryRoot = { path: string; identity: Identity | undefined }
+
+async function anchorRoot(path: string): Promise<RepositoryRoot> {
+  try {
+    const info = await lstatOrAbsent(path)
+    return { path, identity: info?.isDirectory() ? { dev: info.dev, ino: info.ino } : undefined }
+  } catch {
+    // Each read meets the same error and records it.
+    return { path, identity: undefined }
+  }
+}
+
+// The directories from the root itself down through `segments`, each of which
+// must be a real directory. A missing one makes the path absent; a link
+// refuses it, the root included. The root must still be the directory the
+// reader anchored to, so a root swapped mid-read reads nothing from elsewhere.
+async function directoryChain(root: RepositoryRoot, segments: readonly string[]): Promise<Identity[] | { state: "absent" } | Refused> {
   const identities: Identity[] = []
-  for (let index = 1; index <= segments.length; index += 1) {
-    const path = join(root, ...segments.slice(0, index))
+  for (let index = 0; index <= segments.length; index += 1) {
+    const path = join(root.path, ...segments.slice(0, index))
     const info = await lstatOrAbsent(path)
     if (info?.isSymbolicLink()) return linkRefusal(path)
     if (!info?.isDirectory()) return { state: "absent" }
+    if (index === 0 && (info.dev !== root.identity?.dev || info.ino !== root.identity.ino)) {
+      return { state: "unreadable", reason: "changed-while-read", digest: "changed-while-read" }
+    }
     identities.push({ dev: info.dev, ino: info.ino })
   }
   return identities
@@ -143,13 +174,13 @@ const sameIdentities = (left: readonly Identity[], right: readonly Identity[]) =
   left.length === right.length && left.every((identity, index) => identity.dev === right[index]!.dev && identity.ino === right[index]!.ino)
 )
 
-async function readRepositoryFile(root: string, relative: string): Promise<FileRead> {
+async function readRepositoryFile(root: RepositoryRoot, relative: string): Promise<FileRead> {
   const segments = relative.split("/")
   let handle: FileHandle | undefined
   try {
     const before = await directoryChain(root, segments.slice(0, -1))
     if (!Array.isArray(before)) return before
-    const path = join(root, ...segments)
+    const path = join(root.path, ...segments)
     const info = await lstatOrAbsent(path)
     if (!info) return { state: "absent" }
     if (info.isSymbolicLink()) return await linkRefusal(path)
@@ -206,20 +237,20 @@ type DirectoryRead = { state: "absent" } | Refused | { state: "read" | "empty"; 
 // Every member of a scoped directory, depth first in name order, each file by
 // its content hash. A member that is a link or cannot be read refuses the
 // whole directory, so no entry is listed from part of one.
-async function readRepositoryDirectory(root: string, relative: string): Promise<DirectoryRead> {
+async function readRepositoryDirectory(root: RepositoryRoot, relative: string): Promise<DirectoryRead> {
   const segments = relative.split("/")
   try {
     const chain = await directoryChain(root, segments.slice(0, -1))
     if (!Array.isArray(chain)) return chain
-    const info = await lstatOrAbsent(join(root, ...segments))
+    const info = await lstatOrAbsent(join(root.path, ...segments))
     if (!info) return { state: "absent" }
-    if (info.isSymbolicLink()) return await linkRefusal(join(root, ...segments))
+    if (info.isSymbolicLink()) return await linkRefusal(join(root.path, ...segments))
     if (!info.isDirectory()) return { state: "unreadable", reason: "not-a-directory", digest: "not-a-directory" }
     const records: string[] = []
     const members: string[] = []
     let refused: RefusalReason | undefined
     const walk = async (directory: string, depth: number): Promise<void> => {
-      const names = await boundedNames(join(root, ...directory.split("/")), maximumDirectoryMembers - records.length)
+      const names = await boundedNames(join(root.path, ...directory.split("/")), maximumDirectoryMembers - records.length)
       if (!names) {
         refused = "too-many-members"
         return
@@ -227,7 +258,7 @@ async function readRepositoryDirectory(root: string, relative: string): Promise<
       for (const name of names) {
         if (refused === "too-many-members") return
         const member = `${directory}/${name}`
-        if ((await lstatOrAbsent(join(root, ...member.split("/"))))?.isDirectory()) {
+        if ((await lstatOrAbsent(join(root.path, ...member.split("/"))))?.isDirectory()) {
           records.push(`directory:${member}`)
           if (depth >= maximumDirectoryDepth) refused ??= "too-deep"
           else await walk(member, depth + 1)
@@ -427,6 +458,16 @@ function openCodePermissions(permission: unknown, prefix: string): Array<Candida
   ))
 }
 
+// A plugin list: a spec, or a spec and its options.
+function pluginSpecs(plugins: unknown): Array<Candidate | Omission> {
+  if (plugins === undefined) return []
+  if (!Array.isArray(plugins)) return [omission]
+  return (plugins as unknown[]).map((plugin) => {
+    const spec = typeof plugin === "string" ? plugin : Array.isArray(plugin) && typeof plugin[0] === "string" ? plugin[0] : undefined
+    return spec === undefined ? omission : { kind: "plugin", name: redactInventoryText(spec), startsAtSessionStart: true }
+  })
+}
+
 function openCodeConfig(config: Record<string, unknown>): Array<Candidate | Omission> {
   const candidates: Array<Candidate | Omission> = []
   for (const [name, server] of recordEntries(config.mcp)) {
@@ -445,11 +486,7 @@ function openCodeConfig(config: Record<string, unknown>): Array<Candidate | Omis
     } else if (server.type !== undefined) candidates.push(omission)
     // An entry with only `enabled` switches a server another file declares.
   }
-  if (config.plugin !== undefined && !Array.isArray(config.plugin)) candidates.push(omission)
-  for (const plugin of Array.isArray(config.plugin) ? config.plugin as unknown[] : []) {
-    const spec = typeof plugin === "string" ? plugin : Array.isArray(plugin) && typeof plugin[0] === "string" ? plugin[0] : undefined
-    candidates.push(spec === undefined ? omission : { kind: "plugin", name: redactInventoryText(spec), startsAtSessionStart: true })
-  }
+  candidates.push(...pluginSpecs(config.plugin))
   candidates.push(...openCodePermissions(config.permission, ""))
   for (const key of ["agent", "mode"]) {
     for (const [name, agent] of recordEntries(config[key])) {
@@ -505,6 +542,9 @@ function parseFile(parser: Parser, bytes: Buffer): Parsed {
       return { state: "read", candidates: claudeSettings(document) }
     case "opencode-config":
       return { state: "read", candidates: openCodeConfig(document) }
+    case "tui-config":
+      // A TUI file loads plugins; its theme and key bindings run nothing.
+      return { state: "read", candidates: pluginSpecs(document.plugin) }
     case "kilo-modes":
       return { state: "read", candidates: kiloModes(document) }
   }
@@ -530,7 +570,10 @@ export type RepositoryProviderConfig = {
 
 // heldBack marks every entry: whether the daemon keeps the repository's
 // configuration from the agent. It does not change the digest.
-export async function readRepositoryProviderConfig(root: string, options: { heldBack: boolean }): Promise<RepositoryProviderConfig> {
+export async function readRepositoryProviderConfig(rootPath: string, options: { heldBack: boolean }): Promise<RepositoryProviderConfig> {
+  // A root that is itself a link is refused like any other link: every path
+  // under it reads as refused, and the digest records the link's target text.
+  const root = await anchorRoot(rootPath)
   const digestRecords: string[] = [digestVersion]
   const providers: ToolInventoryProvider[] = []
   for (const scope of repositoryProviderScopes) {
