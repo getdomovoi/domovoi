@@ -353,6 +353,15 @@ describe("updating the service in place", () => {
     expect(calls.at(-1)).toBe("release")
   })
 
+  // Round 8 (P2), ruled 2026-09-26 (Q64 A): a runtime published and then
+  // failing its check is carried in the daemon's words too.
+  it("carries the daemon's words when the new runtime was copied but the service was left as it was", async () => {
+    const error = new DaemonServiceUpdateError("runtime-copied", new Error("The Node runtime this app ships was not found at /home/dana/.domovoi/runtime/0.9.4/0123456789ab/node/bin/node"), undefined, "/home/dana/.domovoi/runtime/0.9.4/0123456789ab")
+    const { service } = harness({ update: vi.fn(async () => { throw error }) })
+    await expect(service.update()).resolves.toEqual({ ok: false, reason: "update-failed", message: error.message })
+    expect(error.message).toBe("Domovoi could not update the service: The Node runtime this app ships was not found at /home/dana/.domovoi/runtime/0.9.4/0123456789ab/node/bin/node. The new runtime was copied to /home/dana/.domovoi/runtime/0.9.4/0123456789ab, but the service was left as it was and still runs the previous runtime.")
+  })
+
   it("reports a missing shipped runtime without changing the service", async () => {
     const { service, deps } = harness({ stageRuntime: vi.fn(async () => { throw new DaemonServiceRuntimeMissingError("daemon", "/Applications/Domovoi.app/Contents/Resources/daemon-runtime/daemon/dist/index.js", "missing") }) })
     await expect(service.update()).resolves.toMatchObject({ ok: false, reason: "runtime-missing", part: "daemon" })

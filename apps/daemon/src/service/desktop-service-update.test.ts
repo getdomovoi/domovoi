@@ -1626,3 +1626,75 @@ describe("updateDaemonService holds the lease until a publish settles", () => {
     expect(releasedAfterPublish).toEqual([true])
   })
 })
+
+// Security review round 8 of #577 (P2), ruled 2026-09-26 (Q64 A): a publish
+// can complete before the published runtime fails its check. Where nothing
+// about the service has changed yet (systemd, and a WSL guest, whose publish
+// comes first), the update says the copy was made and the service was left
+// as it was, rather than that nothing changed.
+describe("updateDaemonService after a completed publish whose runtime fails its check (round 8)", () => {
+  const staged = { nodePath: "/stage/node/bin/node", daemonEntryPath: "/stage/daemon/dist/index.js" }
+  const copy = "/home/dl/.domovoi/runtime/0.9.4/0123456789ab"
+  const published = { nodePath: `${copy}/node/bin/node`, daemonEntryPath: `${copy}/daemon/dist/index.js` }
+  const failingCheck = (effects: Fake) => {
+    const state = { published: false }
+    effects.runtimeFile = vi.fn(async (path: string) => path === published.nodePath && state.published ? "missing" as const : "file" as const)
+    const publish = vi.fn(async () => { effects.order.push("publish"); state.published = true })
+    return { runtime: staged, publish }
+  }
+  const copied = `Domovoi could not update the service: The Node runtime this app ships was not found at ${published.nodePath}. The service was not updated and no service files were changed. The new runtime was copied to ${copy}, but the service was left as it was and still runs the previous runtime.`
+
+  it("says the runtime was copied and the systemd service left as it was, writing and restarting nothing", async () => {
+    const effects = fake("linux", "/home/dl")
+    const stagedCopy = failingCheck(effects)
+    const failed = updateDaemonService({ runtime: published, staged: stagedCopy }, effects)
+    await expect(failed).rejects.toMatchObject({ name: "DaemonServiceUpdateError", outcome: "runtime-copied", message: copied })
+    expect(stagedCopy.publish).toHaveBeenCalledOnce()
+    expect(effects.order).toEqual(["publish"])
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+    expect(effects.files.get(unit)).toBe(oldUnit)
+  })
+
+  it("still says nothing changed on systemd when the publish itself fails", async () => {
+    const effects = fake("linux", "/home/dl")
+    const publish = vi.fn(async () => { throw new Error("rename failed") })
+    await expect(updateDaemonService({ runtime: published, staged: { runtime: staged, publish } }, effects)).rejects.toMatchObject({
+      outcome: "nothing-changed",
+      message: "Domovoi could not update the service: rename failed. Nothing was changed, and the service was left as it was.",
+    })
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  it("says the runtime was copied and the WSL guest service left as it was, before the old task is touched", async () => {
+    const wsl: ServiceConfiguration = {
+      ...saved("linux", "/home/dl"),
+      wsl: {
+        distribution: "Ubuntu", linuxUser: "dl", powershell: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        wsl: "C:\\Windows\\System32\\wsl.exe", executable: oldRuntime.nodePath, args: [oldRuntime.daemonEntryPath],
+      },
+    }
+    const effects = fake("linux", "/home/dl", {}, wsl)
+    const stagedCopy = failingCheck(effects)
+    await expect(updateDaemonService({ runtime: published, staged: stagedCopy }, effects)).rejects.toMatchObject({ outcome: "runtime-copied", message: copied })
+    expect(effects.order.slice(effects.order.indexOf("publish"))).toEqual(["publish"])
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.stopSupervisor).not.toHaveBeenCalled()
+  })
+
+  // launchd and the Windows task publish after the previous service was
+  // stopped, so it is not left as it was: the previous service is put back.
+  it("puts the previous launchd agent and Windows task back, as a failed swap", async () => {
+    const launchd = fake("darwin", "/Users/dl")
+    await expect(updateDaemonService({ runtime: published, staged: failingCheck(launchd) }, launchd)).rejects.toMatchObject({ outcome: "swap-failed-restored" })
+    const windows = fake("win32", "C:\\Users\\dl")
+    const windowsCopy = "C:\\Users\\dl\\.domovoi\\runtime\\0.9.4\\0123456789ab"
+    const windowsPublished = { nodePath: `${windowsCopy}\\node\\node.exe`, daemonEntryPath: `${windowsCopy}\\daemon\\dist\\index.js` }
+    const state = { published: false }
+    windows.runtimeFile = vi.fn(async (path: string) => path === windowsPublished.nodePath && state.published ? "missing" as const : "file" as const)
+    const publish = vi.fn(async () => { state.published = true })
+    await expect(updateDaemonService({ runtime: windowsPublished, staged: { runtime: { nodePath: "C:\\stage\\node\\node.exe", daemonEntryPath: "C:\\stage\\daemon\\dist\\index.js" }, publish } }, windows))
+      .rejects.toMatchObject({ outcome: "swap-failed-restored" })
+  })
+})

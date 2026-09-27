@@ -245,10 +245,23 @@ export async function updateDaemonService(
     // place only once every step that can refuse with nothing changed has
     // passed, right before the new definition is written (launchd, systemd),
     // or as the first step of the swap (WSL, whose refusals all come before).
+    //
+    // Round 8 (P2), ruled 2026-09-26 (Q64 A): on systemd and for a WSL guest
+    // the publish is the first change, so a published runtime that fails its
+    // check has changed nothing about the service. That is "runtime-copied",
+    // naming the copy, not "nothing-changed". launchd and the Windows task
+    // publish after the previous service was stopped; there a failure is a
+    // failed swap, and the previous service is put back.
+    const firstChange = dependencies.platform === "linux"
     const publish = async () => {
       if (options.staged === undefined) return
       await tracked.effects.publishStaged()
-      await checkRuntime(options.runtime, dependencies, "update")
+      try {
+        await checkRuntime(options.runtime, dependencies, "update")
+      } catch (cause) {
+        if (!firstChange) throw cause
+        throw new DaemonServiceUpdateError("runtime-copied", cause, undefined, posix.dirname(posix.dirname(posix.dirname(options.runtime.daemonEntryPath))))
+      }
     }
     if (dependencies.platform === "linux" && saved.wsl) {
       const steps = await prepareWslUpdate(saved, options.runtime, tracked.effects, waits, tracked.inFlight)(readDeadline)

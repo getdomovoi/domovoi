@@ -19,6 +19,11 @@ export type DaemonServiceUpdateOutcome =
   // "not-installed".
   | "changed-outside"
   | "nothing-changed"
+  // Ruled 2026-09-26 (#577, Q64 A): the new runtime was published, then failed
+  // its check before anything about the service changed (systemd, and a WSL
+  // guest, whose publish comes first). The copy stays; the service does not
+  // change.
+  | "runtime-copied"
   | "swap-failed-restored"
   | "swap-and-restore-failed"
   | "profile-taken-restored"
@@ -28,7 +33,7 @@ function detail(error: unknown): string {
   return text.trim().replace(/\.+$/u, "")
 }
 
-function updateMessage(outcome: DaemonServiceUpdateOutcome, cause: unknown, restoreCause: unknown): string {
+function updateMessage(outcome: DaemonServiceUpdateOutcome, cause: unknown, restoreCause: unknown, copy: string | undefined): string {
   switch (outcome) {
     case "not-installed":
       return "No Domovoi service is installed for this user, so there is nothing to update. Install the service first."
@@ -36,6 +41,8 @@ function updateMessage(outcome: DaemonServiceUpdateOutcome, cause: unknown, rest
       return "The installed service file was changed outside Domovoi, so Domovoi will not update it. Remove the service and install it again to replace it."
     case "nothing-changed":
       return `Domovoi could not update the service: ${detail(cause)}. Nothing was changed, and the service was left as it was.`
+    case "runtime-copied":
+      return `Domovoi could not update the service: ${detail(cause)}. The new runtime was copied to ${String(copy)}, but the service was left as it was and still runs the previous runtime.`
     case "swap-failed-restored":
       return `Domovoi could not start the service on the new runtime: ${detail(cause)}. The previous service was put back and is running.`
     case "swap-and-restore-failed":
@@ -46,8 +53,12 @@ function updateMessage(outcome: DaemonServiceUpdateOutcome, cause: unknown, rest
 }
 
 export class DaemonServiceUpdateError extends Error {
-  constructor(readonly outcome: DaemonServiceUpdateOutcome, cause?: unknown, readonly restoreCause?: unknown) {
-    super(updateMessage(outcome, cause, restoreCause), cause === undefined ? undefined : { cause })
+  // copy: the published runtime's directory, <profile>/runtime/<version>/<id>,
+  // which "runtime-copied" names and no other outcome takes.
+  constructor(outcome: "runtime-copied", cause: unknown, restoreCause: undefined, copy: string)
+  constructor(outcome: Exclude<DaemonServiceUpdateOutcome, "runtime-copied">, cause?: unknown, restoreCause?: unknown)
+  constructor(readonly outcome: DaemonServiceUpdateOutcome, cause?: unknown, readonly restoreCause?: unknown, readonly copy?: string) {
+    super(updateMessage(outcome, cause, restoreCause, copy), cause === undefined ? undefined : { cause })
     this.name = "DaemonServiceUpdateError"
   }
 }

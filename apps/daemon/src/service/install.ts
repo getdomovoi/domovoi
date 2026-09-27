@@ -956,8 +956,10 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
               try {
                 await withinServiceDeadline(deadline, beforeWrite)
               } catch (cause) {
-                // The unit is untouched, and a publish that fails puts the
-                // version path back as it was.
+                // The unit is untouched. A publish that fails writes only a
+                // fresh directory no service uses; one that completed says
+                // so itself (runtime-copied).
+                if (cause instanceof DaemonServiceUpdateError) throw cause
                 throw new DaemonServiceUpdateError("nothing-changed", cause)
               }
             }
