@@ -1,5 +1,6 @@
 ---
 "@getdomovoi/daemon": patch
+"@getdomovoi/protocol": minor
 ---
 
 The daemon can read a repository's own Claude Code, OpenCode and Kilo configuration without running
@@ -11,5 +12,13 @@ is refused like any other link. Every command, rule and name is redacted before 
 each `NAME=value`, each value after a sensitive key, flag or authorization scheme, each header value
 after a header flag, every URL path after the host, every URL query and fragment part and URL user
 info read `[REDACTED]`, and
-environment values are never read. Nothing calls the reader yet; the `tool.inventory` handler and the
+environment values are never read. A flag right after an authorization scheme word is hidden whole
+once its own value is redacted. Nothing calls the reader yet; the `tool.inventory` handler and the
 trust store come later.
+
+The protocol exports the cap on each tool inventory entry text field
+(`maximumToolInventoryCommandLength`, `maximumToolInventoryDetailLength`,
+`maximumToolInventoryMatcherLength`, `maximumToolInventoryNameLength`,
+`maximumToolInventoryHelperNameLength`, `maximumToolInventoryRuleLength` and
+`maximumToolInventoryEventLength`), and the inventory schema holds each field to them. The daemon's
+reader fits every redacted text to the same constants.

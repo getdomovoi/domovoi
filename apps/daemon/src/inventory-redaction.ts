@@ -47,12 +47,21 @@
 // Every output fits the protocol's cap on the field it fills: when it would
 // not, whole words are kept while they fit and the rest is redacted.
 
+import {
+  maximumToolInventoryCommandLength,
+  maximumToolInventoryDetailLength,
+  maximumToolInventoryEventLength,
+  maximumToolInventoryHelperNameLength,
+  maximumToolInventoryMatcherLength,
+  maximumToolInventoryNameLength,
+  maximumToolInventoryRuleLength,
+} from "@getdomovoi/protocol"
+
 const marker = "[REDACTED]"
 
 // The protocol's cap on each inventory text field, in UTF-16 code units, which
-// it refuses a longer text for. These are the text(...) caps in
-// toolInventoryEntrySchema (packages/protocol/src/tool-inventory.ts); the
-// protocol does not export them, and a test pins each one to that schema.
+// it refuses a longer text for: the caps the protocol exports and holds
+// toolInventoryEntrySchema's fields to, named by the field each one fills.
 // Redaction can write a longer text than it read (a backslash before a
 // pattern character, quotes around an argument, the marker after a short
 // value), so every output is fitted to its field's cap: whole words are kept
@@ -60,19 +69,19 @@ const marker = "[REDACTED]"
 // protocol would take before redaction is never dropped for it.
 export const inventoryFieldCaps = {
   // A hook's, helper's or local tool server's command.
-  command: 2_048,
+  command: maximumToolInventoryCommandLength,
   // A permission rule's detail.
-  detail: 1_024,
+  detail: maximumToolInventoryDetailLength,
   // A hook's matcher.
-  matcher: 256,
+  matcher: maximumToolInventoryMatcherLength,
   // A tool server's, plugin's or skill's name.
-  name: 256,
+  name: maximumToolInventoryNameLength,
   // A helper's name.
-  helperName: 128,
+  helperName: maximumToolInventoryHelperNameLength,
   // A permission rule's rule.
-  rule: 128,
+  rule: maximumToolInventoryRuleLength,
   // A hook's event.
-  event: 64,
+  event: maximumToolInventoryEventLength,
 } as const
 
 // What the protocol refuses in any text: control and format characters and
