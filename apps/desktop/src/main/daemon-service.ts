@@ -271,10 +271,14 @@ async function checkShippedRuntime(fs: RuntimeFileSystem, pathApi: typeof posix,
 // allows a missing one; publish makes the missing ones, private to the user
 // (the profile's parent must exist), and checks again. Whether the runtime
 // directory is there now is returned.
+//
+// Security review round 1 of #635 (P2): lstat of "linked/" or "linked/."
+// looks through the link, and path.join folds "linked/x/.." into it. The
+// profile is checked as the runtime directory is built from it, its parent;
+// the real path check below then ties that to the spelling given.
 async function runtimeRoot(fs: RuntimeFileSystem, pathApi: typeof posix, profileDirectory: string, make: boolean): Promise<boolean> {
-  let at = profileDirectory
-  for (const step of ["", "runtime"]) {
-    at = step === "" ? at : pathApi.join(at, step)
+  const root = pathApi.join(profileDirectory, "runtime")
+  for (const at of [pathApi.dirname(root), root]) {
     if (make && await fs.entry(at) === "missing") await fs.makeDirectory(at)
     const found = await fs.entry(at)
     if (found === "missing" && !make) return false
@@ -282,8 +286,8 @@ async function runtimeRoot(fs: RuntimeFileSystem, pathApi: typeof posix, profile
       throw new Error(`${at} is not a directory (it may be a link), so no runtime was copied under it.`)
     }
   }
-  if (await fs.realpath(at) !== pathApi.join(await fs.realpath(profileDirectory), "runtime")) {
-    throw new Error(`${at} does not resolve inside the profile directory, so no runtime was copied under it.`)
+  if (await fs.realpath(root) !== pathApi.join(await fs.realpath(profileDirectory), "runtime")) {
+    throw new Error(`${root} does not resolve inside the profile directory, so no runtime was copied under it.`)
   }
   return true
 }
@@ -377,7 +381,7 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
   const samePath = (left: string, right: string) => input.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right
   const unchanged = async () => {
     const intact = pinned !== undefined
-      && await fs.entry(input.profileDirectory) === "directory"
+      && await fs.entry(pathApi.dirname(root)) === "directory"
       && await fs.entry(root) === "directory"
       && await fs.identity(root) === pinned.identity
       && samePath(await fs.realpath(root), pinned.realpath)
