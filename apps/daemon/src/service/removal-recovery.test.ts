@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto"
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 import { afterEach, expect, it, vi } from "vitest"
 
 import { localOwnerRecordPath, type ReadyLocalOwner } from "../local-owner-record.js"
-import { createServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
+import { callerProfile, createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { removeService, runServiceCommand, type ServiceEffects } from "./install.js"
 import { readServiceRemovalSnapshot, serviceRemovalRecovery, type ServiceRemovalSnapshot } from "./removal-recovery.js"
 import { removeScratchDirectories } from "../test-scratch.js"
@@ -158,7 +158,28 @@ it("never writes a receipt for a timed-out removal, even if the last deletion su
   expect(vi.getTimerCount()).toBe(0)
 })
 
-const cannotDenyRead = process.platform === "win32" || process.getuid?.() === 0
+// Security review round 13 of #577 (P3): a legacy Linux service checked from
+// a Windows host names its default profile by Linux rules, so the removal
+// does not refuse the caller whose profile it is.
+it("matches a legacy Linux service's default profile from a Windows host", async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-removal-legacy-"))
+  homes.push(home)
+  const path = serviceConfigurationPath(home, "linux")
+  await mkdir(dirname(path), { recursive: true })
+  const configuration = createServiceConfiguration({}, { platform: "linux", homeDirectory: "/home/operator", workingDirectory: "/home/operator" })
+  // Legacy: written before service.json named its profile directory.
+  const { profileDirectory: _named, ...legacy } = JSON.parse(serializeServiceConfiguration(configuration)) as Record<string, unknown>
+  await writeFile(path, JSON.stringify(legacy), { mode: 0o600 })
+  const { target, effects } = manager("linux")
+  vi.mocked(effects.removalSnapshot).mockReset().mockImplementation(readServiceRemovalSnapshot)
+  const real = Object.getOwnPropertyDescriptor(process, "platform")!
+  Object.defineProperty(process, "platform", { ...real, value: "win32" })
+  try {
+    await expect(removeService({ ...target, home }, effects, { callerProfile: callerProfile({}, "/home/operator", "linux") })).resolves.toBeDefined()
+  } finally { Object.defineProperty(process, "platform", real) }
+})
+
+const cannotDenyRead =process.platform === "win32" || process.getuid?.() === 0
 it.each([
   ["truncated owner record", false, async (home: string) => {
     await writeFile(localOwnerRecordPath(home), '{"version":1,"state":"rea', { mode: 0o600 })

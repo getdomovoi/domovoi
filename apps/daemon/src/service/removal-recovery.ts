@@ -51,7 +51,9 @@ export function readServiceRemovalSnapshot(homeDirectory: string, platform: stri
     if (text !== undefined) {
       const parsed = parseServiceConfiguration(text)
       ;({ registrationId, profileDirectory } = parsed)
-      effectiveProfileDirectory = profileDirectoryOf(profileLocation(parsed.homeDirectory, parsed.profileDirectory))
+      // Round 13 (P3): named by the service's platform rules, as the removal
+      // compares it, so a legacy Linux service read from Windows keeps "/".
+      effectiveProfileDirectory = profileDirectoryOf(profileLocation(parsed.homeDirectory, parsed.profileDirectory, platform), platform)
     }
   } catch {
     // A malformed registration cannot authorize recovery.
