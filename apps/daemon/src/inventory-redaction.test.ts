@@ -200,6 +200,35 @@ describe("redactInventoryText", () => {
   })
 })
 
+// A flag after a scheme word is read for its own value, and then hidden
+// whole: the protocol backstop takes any word after a scheme as its
+// credential, a flag too, and would refuse the entry.
+describe("a scheme word before a sensitive flag", () => {
+  const texts: ReadonlyArray<[string, string]> = [
+    ["curl Bearer --token s3cr3t-value", "curl Bearer [REDACTED] [REDACTED]"],
+    ["curl Bearer --token=s3cr3t-value", "curl Bearer [REDACTED]"],
+    ["curl Token --api-key hunter2 x", "curl Token [REDACTED] [REDACTED] x"],
+    ["curl Bearer -H 'X-Foo: s3cr3t-value' x", "curl Bearer [REDACTED] 'X-Foo: [REDACTED]' x"],
+    ["curl Bearer --verbose x", "curl Bearer [REDACTED] x"],
+    ["curl Token Token s3cr3t-value", "curl Token Token [REDACTED]"],
+  ]
+
+  it.each(texts)("redacts the flag's value in %s", (input, expected) => {
+    for (const redact of [redactInventoryText, redactInventoryCommand]) {
+      const redacted = redact(input)
+      expect(redacted).toBe(expected)
+      expect(backstopAccepts(redacted)).toBe(true)
+      expect(redact(redacted)).toBe(redacted)
+    }
+  })
+
+  it("redacts the flag's value in an argument vector", () => {
+    const command = redactInventoryArgv(["curl", "Bearer", "--token", "s3cr3t-value", "Basic", "--password=hunter2"])
+    expect(command).toBe("curl Bearer [REDACTED] [REDACTED] Basic [REDACTED]")
+    expect(backstopAccepts(command)).toBe(true)
+  })
+})
+
 describe("redactInventoryArgv", () => {
   it("redacts sensitive flag values, assignments and user info per argument", () => {
     const command = redactInventoryArgv([

@@ -445,6 +445,24 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     ])
   })
 
+  it("lists a hook whose sensitive flag follows a scheme word, its value redacted", async () => {
+    const root = await scratch()
+    await put(root, ".claude/settings.json", JSON.stringify({
+      hooks: { Stop: [{ hooks: [
+        { type: "command", command: "curl Bearer --token s3cr3t-value https://example.com" },
+        { type: "command", command: "curl", args: ["Bearer", "--token", "hunter2"] },
+      ] }] },
+    }))
+    const claude = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "claude-code")
+    expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+    expectNoSecret(claude)
+    expect(claude.omittedEntries).toBe(0)
+    expect(claude.entries.map((entry) => (entry.kind === "hook" ? entry.command : undefined))).toEqual([
+      "curl Bearer [REDACTED] [REDACTED] https://example.com",
+      "curl Bearer [REDACTED] [REDACTED]",
+    ])
+  })
+
   it("drops and counts an entry the protocol backstop still refuses, and entries past the cap", async () => {
     const root = await scratch()
     const servers = Object.fromEntries(Array.from({ length: 600 }, (_, index) => [`s${index}`, { command: `server-${index}` }]))
