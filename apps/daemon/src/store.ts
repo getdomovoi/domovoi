@@ -38,6 +38,7 @@ import {
   SqliteTransferConflicts,
 } from "./transfer-conflicts.js"
 import { redactWorkspaceCopies } from "./workspace-redaction.js"
+import { SqliteEmergencyStopIntents } from "./emergency-stop-intents.js"
 import { SqliteSessionCreationIntents } from "./session-creation-intents.js"
 
 type StoredWorkspace = {
@@ -131,6 +132,7 @@ export interface WorkspaceStore {
   readonly transferConflicts?: SqliteTransferConflicts
   readonly skillReviews?: SkillReviews
   readonly sessionCreations?: SqliteSessionCreationIntents
+  readonly emergencyStops?: SqliteEmergencyStopIntents
   readonly recovery?: WorkspaceStoreRecovery | undefined
   load(): WorkspaceSnapshot
   loadProject?(projectId: string, machine?: WorkspaceSnapshot["machine"]): ProjectWorkspaceState | undefined
@@ -677,6 +679,7 @@ type OpenedState = {
   transferConflicts: SqliteTransferConflicts
   skillReviews: SqliteSkillReviews
   sessionCreations: SqliteSessionCreationIntents
+  emergencyStops: SqliteEmergencyStopIntents
   existing: StoredWorkspace | undefined
 }
 
@@ -712,6 +715,7 @@ function openState(path: string, integrityCheckMaximumBytes: number): OpenedStat
       transferConflicts: new SqliteTransferConflicts(database),
       skillReviews: new SqliteSkillReviews(database),
       sessionCreations: new SqliteSessionCreationIntents(database),
+      emergencyStops: new SqliteEmergencyStopIntents(database),
     }
     database.exec(`
       CREATE TABLE IF NOT EXISTS queued_session_sends (
@@ -916,6 +920,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly transferConflicts: SqliteTransferConflicts
   readonly skillReviews: SqliteSkillReviews
   readonly sessionCreations: SqliteSessionCreationIntents
+  readonly emergencyStops: SqliteEmergencyStopIntents
   readonly recovery: WorkspaceStoreRecovery | undefined
   #database: DatabaseSync
   #writer: WorkspaceWriter | undefined
@@ -968,6 +973,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.transferConflicts = opened.transferConflicts
     this.skillReviews = opened.skillReviews
     this.sessionCreations = opened.sessionCreations
+    this.emergencyStops = opened.emergencyStops
 
     const existing = opened.existing
     let migratedExisting: ReturnType<typeof migrateStoredWorkspace> | undefined

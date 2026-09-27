@@ -39,6 +39,9 @@ export class DesktopDaemon {
   // Acquisitions wait for it to end, so a renderer reconnect between the stop
   // and the attach cannot start an in-app daemon beside the service.
   #handoff: { ended: Promise<void>; end: () => void } | undefined
+  // The stop of the owned daemon a handoff began. Quitting waits for it: the
+  // daemon may still be saving an emergency stop's state.
+  #ownedStop: Promise<void> | undefined
 
   constructor(
     private readonly seam: DesktopDaemonSeam,
@@ -88,7 +91,9 @@ export class DesktopDaemon {
     this.#handle = undefined
     this.#failed = false
     this.#fresh = false
-    await handle.stop()
+    const stopping = handle.stop()
+    this.#ownedStop = stopping.catch(() => {})
+    await stopping
   }
 
   // After the service is installed: attach to it, and publish the endpoint so
@@ -167,6 +172,7 @@ export class DesktopDaemon {
 
   async #release(): Promise<void> {
     await this.#attempt?.catch(() => {})
+    await this.#ownedStop
     const handle = this.#handle
     if (handle?.kind === "owned") await handle.stop()
     else if (handle?.kind === "attached") this.#detach(handle)

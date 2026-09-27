@@ -333,6 +333,42 @@ describe("DesktopDaemon", () => {
       expect(seam).toHaveBeenCalledOnce()
     })
 
+    // Security review of #628: a quit that lands while a handoff is stopping
+    // the owned daemon must wait for that stop, which may still be saving an
+    // emergency stop's state, before the desktop exits.
+    it("waits for an owned daemon's stop that a handoff began, and does not stop it twice", async () => {
+      const handle = owned()
+      const stopping = deferred<void>()
+      handle.stop.mockImplementationOnce(() => stopping.promise)
+      const { seam } = scriptedSeam([handle])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+      await daemon.acquire()
+
+      const handoff = daemon.stopOwned()
+      await settled()
+      let released = false
+      const quitting = daemon.release().then(() => { released = true })
+      await settled()
+      expect(released).toBe(false)
+
+      stopping.resolve()
+      await Promise.all([handoff, quitting])
+      expect(released).toBe(true)
+      expect(handle.stop).toHaveBeenCalledOnce()
+    })
+
+    it("still quits when the owned daemon's handoff stop failed", async () => {
+      const handle = owned()
+      handle.stop.mockImplementationOnce(async () => { throw new Error("stop failed") })
+      const { seam } = scriptedSeam([handle])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+      await daemon.acquire()
+
+      await expect(daemon.stopOwned()).rejects.toThrow("stop failed")
+      await expect(daemon.release()).resolves.toBeUndefined()
+      expect(handle.stop).toHaveBeenCalledOnce()
+    })
+
     it("detaches from an attached owner and never stops it", async () => {
       const handle = attached("daemon")
       const { seam } = scriptedSeam([handle])
