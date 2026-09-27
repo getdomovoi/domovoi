@@ -496,6 +496,25 @@ describe("removeUnusedDaemonRuntimes with an executable path through a candidate
     await expectRuns(kept)
     expect(await exists(copyLayout(leftover).nodePath)).toBe(true)
   })
+
+  // Only a kept copy that is not there at all holds nothing. One that is
+  // there without a file the service runs, or with a component whose real
+  // location cannot be read, is not known.
+  it.each(roles)("removes nothing when the %s copy is there but its path cannot be walked", async (role) => {
+    const kept = await publishCopy(profile, "0.9.1", "aaaaaaaaaaaa")
+    const leftover = await publishCopy(profile, "0.9.0", "cccccccccccc")
+    const manager = fakeServiceManager(home)
+    const { current, previous } = await change(manager, profile, role, kept)
+    const denied = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" })
+    const refused = join(kept, "daemon")
+    const refusing = { ...dependencies(manager), fileSystem: { realpath: async (path: string) => { if (path === refused) throw denied; return realpath(path) } } }
+    await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous }, refusing))
+      .resolves.toEqual({ skipped: "runtime-directory" })
+    await rm(copyLayout(kept).daemonEntryPath)
+    await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous }, dependencies(manager)))
+      .resolves.toEqual({ skipped: "runtime-directory" })
+    expect(await exists(copyLayout(leftover).nodePath)).toBe(true)
+  })
 })
 
 // Security review round 3 of #635 (P2): a candidate moved to its private name
