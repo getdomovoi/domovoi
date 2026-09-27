@@ -14,7 +14,10 @@
 // after the host (in whole), every URL query and fragment part (a bare part
 // with no equals sign in whole), and all URL user info become [REDACTED]. A
 // header value that opens with an authorization scheme keeps the scheme word,
-// as a bare `Bearer x` does. The daemon's durable-text redaction leaves
+// as a bare `Bearer x` does. A scheme or flag word inside a value another
+// rule hides is still read as one, so its own value is hidden too: `--token
+// Bearer x` reads `--token [REDACTED] [REDACTED]`. Every rule reads the text
+// in work that grows linearly with it. The daemon's durable-text redaction leaves
 // `DATABASE_URL=x`, `https://tok@host` and `Bearer tok` alone, so this pass is
 // separate from it.
 //
@@ -105,10 +108,13 @@ const wordBoundary = /[\s(;&|`<"'{]/u
 const keyPair = /(-{1,2})?(["'`]?)([A-Za-z_][A-Za-z0-9_.-]*)\2(\s*[=:]\s*|\s+)/uy
 const urlStart = /[A-Za-z][A-Za-z0-9+.-]*:\/\//uy
 const scheme = /(?:Bearer|Basic|Token|Digest)\s+/iuy
-const privateKey = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/uy
-const knownShapes: readonly RegExp[] = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gu,
-  /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/gu,
+const schemeWord = /(?:Bearer|Basic|Token|Digest)/iuy
+// A private key's header, and the footer that ends it.
+const privateKeyHeader = /-----BEGIN [A-Z ]*PRIVATE KEY-----/uy
+const privateKeyFooter = /-----END [A-Z ]*PRIVATE KEY-----/gu
+const privateKeyShape = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gu
+// Shapes after a JSON Web Token, which withoutJsonWebTokens finds.
+const tokenShapes: readonly RegExp[] = [
   /\b(?:sk|ghp|gho|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}/gu,
   /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/gu,
 ]
@@ -120,10 +126,10 @@ const headerFlag = /(-H|--header|--proxy-header)(=|\s+)?/uy
 // double quote is not a token character, but an argument can hold a quoted
 // name (`"X-Foo":value`), so it is accepted too. Names are matched on a word's
 // value, after the shell has removed its quotes and escapes.
-const headerLine = /^([A-Za-z0-9!#$%&'"*+.^_`|~-]+)(\s*:\s*)([\s\S]+)$/u
-// A header argument that ends at its colon: `-H X-Foo: secret` leaves the
-// value in the next word.
-const headerWithoutValue = /^[A-Za-z0-9!#$%&'"*+.^_`|~-]+\s*:$/u
+// An argument reads as a header line (`Name: value`) when a name, blanks, a
+// colon, blanks and a value make all of it; one that ends at its colon
+// (`-H X-Foo: secret`) leaves the value in the next word.
+const headerNameCharacter = /[A-Za-z0-9!#$%&'"*+.^_`|~-]/u
 
 // Shells whose `-c` option takes a script, read as words in turn. A script
 // nested deeper than this is redacted whole.
@@ -135,7 +141,44 @@ function isMarker(value: string): boolean {
 }
 
 function redactKnownShapes(text: string): string {
-  return knownShapes.reduce((redacted, shape) => redacted.replace(shape, marker), text)
+  return tokenShapes.reduce((redacted, shape) => redacted.replace(shape, marker), withoutJsonWebTokens(text.replace(privateKeyShape, marker)))
+}
+
+// A JSON Web Token: `eyJ` at a word start, then three runs of base64url
+// characters, at least 5, 6 and 6 long, joined by dots. Each run is read to
+// its end once. A regular expression tried every `eyJ` in one long run again
+// to that run's end, which a run with no dot after it made quadratic; every
+// `eyJ` before a run's end ends its first part there too, and fails the same
+// way, so the search goes on from there.
+const base64urlCharacter = /[A-Za-z0-9_-]/u
+function base64urlRunEnd(text: string, start: number): number {
+  let end = start
+  while (end < text.length && base64urlCharacter.test(text[end]!)) end += 1
+  return end
+}
+function withoutJsonWebTokens(text: string): string {
+  const pieces: string[] = []
+  let copied = 0
+  let from = 0
+  for (let at = text.indexOf("eyJ", from); at !== -1; at = text.indexOf("eyJ", from)) {
+    if (at > 0 && /\w/u.test(text[at - 1]!)) {
+      from = at + 1
+      continue
+    }
+    const first = base64urlRunEnd(text, at + 3)
+    from = first
+    if (first - at - 3 < 5 || text[first] !== ".") continue
+    const second = base64urlRunEnd(text, first + 1)
+    if (second - first - 1 < 6 || text[second] !== ".") continue
+    const third = base64urlRunEnd(text, second + 1)
+    if (third - second - 1 < 6) continue
+    pieces.push(text.slice(copied, at), marker)
+    copied = third
+    from = third
+  }
+  if (pieces.length === 0) return text
+  pieces.push(text.slice(copied))
+  return pieces.join("")
 }
 
 // A query or fragment: each `name=value` part keeps its name, and a bare part
@@ -363,13 +406,29 @@ function expandingSources(text: string, word: Word): number[] {
     for (let offset = 0; offset < marker.length; offset += 1) exempt.add(at + offset)
   }
   const bare = (index: number) => characters[index]?.quoting === "" && text[characters[index]!.source] === value[index]
+  // Whether a `,` or `..` with a `}` after it comes at or after each index,
+  // read once from the end on the first `{`: searching the rest of the word
+  // for each `{` made a long run of them quadratic.
+  let expandsFrom: Uint8Array | undefined
+  const expandsAfter = (index: number) => {
+    if (expandsFrom === undefined) {
+      const closesFrom = new Uint8Array(value.length + 2)
+      expandsFrom = new Uint8Array(value.length + 1)
+      for (let at = value.length - 1; at >= 0; at -= 1) {
+        closesFrom[at] = value[at] === "}" ? 1 : closesFrom[at + 1]!
+        const separates = (value[at] === "," && closesFrom[at + 1] === 1) || (value[at] === "." && value[at + 1] === "." && closesFrom[at + 2] === 1)
+        expandsFrom[at] = separates ? 1 : expandsFrom[at + 1]!
+      }
+    }
+    return expandsFrom[index + 1] === 1
+  }
   const sources: number[] = []
   for (let index = 0; index < value.length; index += 1) {
     const character = value[index]!
     if (!"*?[{".includes(character) || exempt.has(index) || !bare(index)) continue
     if (index > 0 && value[index - 1] === "$" && bare(index - 1) && characters[index - 1]!.source === characters[index]!.source - 1) continue
     if (character === "[" && (value === "[" || value === "[[")) continue
-    if (character === "{" && !/(?:,|\.\.)[\s\S]*\}/u.test(value.slice(index + 1))) continue
+    if (character === "{" && !expandsAfter(index)) continue
     sources.push(characters[index]!.source)
   }
   return sources
@@ -423,28 +482,30 @@ function rewrittenWord(text: string, word: Word, value: string, anchor: number, 
 // The word a shell's `-c` option runs as a script, for each shell word in the
 // tokens: `sh -c script`, `bash -lc script`, `bash -o pipefail -c script`.
 function shellScripts(tokens: readonly Token[]): Set<number> {
+  // What the options read from each index come to: the index of the word
+  // after them and whether a -c is among them, or undefined when an operator
+  // comes first. Read once from the end, since what follows an option does
+  // not depend on the shell word before it: reading them again for each
+  // shell word made `sh -o sh -o ...` quadratic.
+  const scans: Array<{ next: number; command: boolean } | undefined> = []
+  const scanFrom = (index: number) => (index >= tokens.length ? { next: index, command: false } : scans[index])
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    const option = tokens[index]!
+    if (option.kind !== "word") scans[index] = undefined
+    else if (option.value === "--") scans[index] = { next: index + 1, command: false }
+    else if (/^--[A-Za-z-]+$/u.test(option.value)) scans[index] = scanFrom(index + 1)
+    else if (!/^[-+][A-Za-z]+$/u.test(option.value)) scans[index] = { next: index, command: false }
+    else {
+      // -o and -O take the next word as their argument.
+      const rest = scanFrom(index + (/[oO]/u.test(option.value) ? 2 : 1))
+      scans[index] = rest && { next: rest.next, command: rest.command || (option.value.startsWith("-") && option.value.includes("c")) }
+    }
+  }
   const scripts = new Set<number>()
   tokens.forEach((token, index) => {
     if (token.kind !== "word" || !shells.has(token.value.slice(token.value.lastIndexOf("/") + 1))) return
-    let command = false
-    let next = index + 1
-    while (next < tokens.length) {
-      const option = tokens[next]!
-      if (option.kind !== "word") return
-      if (option.value === "--") {
-        next += 1
-        break
-      }
-      if (/^--[A-Za-z-]+$/u.test(option.value)) {
-        next += 1
-        continue
-      }
-      if (!/^[-+][A-Za-z]+$/u.test(option.value)) break
-      if (option.value.startsWith("-") && option.value.includes("c")) command = true
-      // -o and -O take the next word as their argument.
-      next += /[oO]/u.test(option.value) ? 2 : 1
-    }
-    if (command && tokens[next]?.kind === "word") scripts.add(next)
+    const scan = scanFrom(index + 1)
+    if (scan?.command && tokens[scan.next]?.kind === "word") scripts.add(scan.next)
   })
   return scripts
 }
@@ -455,6 +516,22 @@ function shellScripts(tokens: readonly Token[]): Set<number> {
 interface Plan { values: string[]; anchors: number[]; dropped: boolean[]; scripts: Set<number>; stopAfter?: number }
 
 interface Change { start: number; end: number; text: string }
+
+// One token's changes in order, overlapping ones made one: a change that
+// holds another keeps its own text, and two that only overlap become the
+// marker over both. Rules read inside a value another rule hid, so a change
+// there (a flag's `=value` in the flag hidden after a scheme) is taken into
+// the one around it. Sorted once and merged in one pass.
+function mergedChanges(list: readonly Change[]): Change[] {
+  const sorted = [...list].sort((left, right) => left.start - right.start || right.end - left.end)
+  const merged: Change[] = []
+  for (const change of sorted) {
+    const last = merged.at(-1)
+    if (last === undefined || (change.start >= last.end && change.start !== last.start)) merged.push(change)
+    else if (change.end > last.end) merged[merged.length - 1] = { start: last.start, end: change.end, text: marker }
+  }
+  return merged
+}
 
 // The rules, run over the tokens' values joined by one space. `glued` says a
 // token is written with no blank before the next one; `leading` is the first
@@ -493,12 +570,43 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     return owner === undefined || owner === -1 || tokens[owner]!.kind !== "word" ? undefined : owner
   }
   const quotingAt = (token: number, index: number): Quoting => (tokens[token] as Word).characters[index - starts[token]!]?.quoting ?? ""
+  // Whether the joined text from `from` to `to` is the marker, compared only
+  // when the lengths agree.
+  const isMarkerAt = (from: number, to: number) => (to - from === marker.length || to - from === marker.length + 2) && isMarker(joined.slice(from, to))
 
-  // A private key that runs past its word takes the rest of the text.
+  // Facts about the joined text, read once from the end so a rule asks them
+  // in constant time wherever it starts: where the run of header-name
+  // characters, and of blanks, starting at each index ends, and where the
+  // next colon is. A header flag read them from the rest of its word, which
+  // many flags in one word made quadratic.
+  const nameRuns = new Int32Array(joined.length + 1)
+  const blankRuns = new Int32Array(joined.length + 1)
+  const colons = new Int32Array(joined.length + 1)
+  nameRuns[joined.length] = joined.length
+  blankRuns[joined.length] = joined.length
+  colons[joined.length] = joined.length
+  for (let at = joined.length - 1; at >= 0; at -= 1) {
+    const character = joined[at]!
+    nameRuns[at] = headerNameCharacter.test(character) ? nameRuns[at + 1]! : at
+    blankRuns[at] = /\s/u.test(character) ? blankRuns[at + 1]! : at
+    colons[at] = character === ":" ? at : colons[at + 1]!
+  }
+
+  // A private key that runs past its word takes the rest of the text. Its
+  // body runs to the first footer after its header, or to the end: that
+  // footer is found once and kept for every header before it, where each
+  // header searching on to it again made many headers quadratic.
+  let footer: { start: number; end: number } | undefined
   const privateKeyAt = (index: number, token: number): number | undefined => {
-    privateKey.lastIndex = index
-    const match = privateKey.exec(joined)
-    if (!match || index + match[0].length <= ends[token]!) return undefined
+    privateKeyHeader.lastIndex = index
+    if (!privateKeyHeader.test(joined)) return undefined
+    const body = privateKeyHeader.lastIndex
+    if (footer === undefined || footer.start < body) {
+      privateKeyFooter.lastIndex = body
+      const found = privateKeyFooter.exec(joined)
+      footer = found ? { start: found.index, end: found.index + found[0].length } : { start: Number.POSITIVE_INFINITY, end: joined.length }
+    }
+    if (footer.end <= ends[token]!) return undefined
     truncate(token, index)
     return joined.length
   }
@@ -537,31 +645,44 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     const argument = wordAtIndex(from)
     if (argument === undefined) return undefined
     const to = ends[argument]!
-    const text = joined.slice(from, to)
-    const line = headerLine.exec(text)
-    if (line) {
-      const [, name = "", gap = "", value = ""] = line
-      scheme.lastIndex = 0
-      const kept = scheme.exec(value)?.[0] ?? ""
-      const rest = value.slice(kept.length)
-      if (rest !== "" && !isMarker(rest)) change(argument, from + name.length + gap.length + kept.length, to, marker)
-      return to
+    // The argument from `from` to `to`: a name, then blanks and a colon.
+    const nameEnd = Math.min(nameRuns[from]!, to)
+    const colon = Math.min(blankRuns[nameEnd]!, to)
+    const named = nameEnd > from && colon < to && joined[colon] === ":"
+    const afterBlanks = named ? Math.min(blankRuns[colon + 1]!, to) : to
+    // Where the value of a header line starts: after the blanks after its
+    // colon, or on the last of them when nothing else follows.
+    const valueStart = !named ? undefined : afterBlanks < to ? afterBlanks : afterBlanks > colon + 1 ? to - 1 : undefined
+    if (valueStart !== undefined) {
+      // A value that opens with an authorization scheme keeps the scheme word.
+      let kept = valueStart
+      schemeWord.lastIndex = valueStart
+      if (schemeWord.test(joined) && schemeWord.lastIndex < to && /\s/u.test(joined[schemeWord.lastIndex]!)) kept = Math.min(blankRuns[schemeWord.lastIndex]!, to)
+      if (kept === to || isMarkerAt(kept, to)) return to
+      change(argument, kept, to, marker)
+      // Every rule reads the value it hid, so a scheme or flag word in it is
+      // still read as one.
+      return kept
     }
     // An argument with a colon that does not read as a header is redacted
     // whole rather than let through (`X Foo: v`); when it ends at an unquoted
     // colon (`X;Foo:`), the next word is taken as its value too. `@file` and
     // `Name;` are left to the other rules.
-    const unreadable = text.includes(":") && !headerWithoutValue.test(text)
-    if (unreadable && !isMarker(text)) change(argument, from, to, marker)
+    const unreadable = colons[from]! < to && !(named && colon + 1 === to)
+    let resume: number | undefined
+    if (unreadable && !isMarkerAt(from, to)) {
+      change(argument, from, to, marker)
+      resume = from
+    }
     // A quoted `"Name:"` is an empty header its author closed; only an
     // unquoted colon takes the next word as its value. A flag there is the
     // next argument, not a value.
-    if (!text.endsWith(":") || quotingAt(argument, to - 1) !== "") return unreadable ? to : undefined
+    if (to === from || joined[to - 1] !== ":" || quotingAt(argument, to - 1) !== "") return resume ?? (unreadable ? to : undefined)
     const value = argument + 1
     const next = tokens[value]
-    if (next?.kind !== "word" || next.value === "" || leading[value] === "-" || isMarker(next.value)) return to
+    if (next?.kind !== "word" || next.value === "" || leading[value] === "-" || isMarkerAt(starts[value]!, ends[value]!)) return resume ?? to
     change(value, starts[value]!, ends[value]!, marker)
-    return ends[value]!
+    return resume ?? starts[value]!
   }
 
   const pairAt = (index: number, token: number): number | undefined => {
@@ -588,23 +709,30 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     else redacts = /^[A-Z_][A-Z0-9_]+$/u.test(key) && (quotedKey || key.includes("_"))
     if (!redacts) return undefined
     // A value that is one quoted string in the text (a JSON value) ends at its
-    // closing quote and keeps its quotes.
+    // closing quote and keeps its quotes. Every rule reads a value it hid, so
+    // a scheme or flag word in it is still read as one.
     const opening = joined[start]
     if (opening === "\"" || opening === "'") {
       const { end, closed } = quotedEnd(joined, start, ends[value]!)
-      if (!isMarker(joined.slice(start, end))) change(value, start, end, closed ? `${opening}${marker}${opening}` : marker)
-      return end
+      if (!isMarkerAt(start, end)) change(value, start, end, closed ? `${opening}${marker}${opening}` : marker)
+      return start
     }
     if (nested) {
-      if (joined.slice(start) !== marker) truncate(value, start)
+      if (!(joined.length - start === marker.length && joined.startsWith(marker, start))) truncate(value, start)
       return joined.length
     }
-    if (!isMarker(joined.slice(start, ends[value]))) change(value, start, ends[value]!, marker)
-    return ends[value]!
+    if (!isMarkerAt(start, ends[value]!)) change(value, start, ends[value]!, marker)
+    return start
   }
 
-  // Flags found after a scheme word, hidden whole once every rule has read them.
-  const flagsAfterScheme: Array<{ token: number; from: number; to: number }> = []
+  // A word of prose kept after a scheme word, with the punctuation a sentence
+  // puts after it. The punctuation is read once from the end: an anchored
+  // pattern restarted at every character of a long run of it.
+  const isSchemeProse = (start: number, end: number) => {
+    let trimmed = end
+    while (trimmed > start && ".,;:!?".includes(joined[trimmed - 1]!)) trimmed -= 1
+    return schemeProse.has(joined.slice(start, trimmed).toLowerCase())
+  }
   const schemeAt = (index: number, token: number): number | undefined => {
     if (index > 0 && !/[\s"'`(=:,{[]/u.test(joined[index - 1]!)) return undefined
     scheme.lastIndex = index
@@ -617,20 +745,16 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     let end = start
     if (value !== token) end = ends[value]!
     else while (end < ends[value]! && !/[\s"'`,;)]/u.test(joined[end]!)) end += 1
-    const text = joined.slice(start, end)
-    // A flag after a scheme is read by every rule for its own value, then
-    // hidden whole: the protocol backstop takes any word after a scheme as
-    // its credential, a flag too. `Bearer --token x` reads `Bearer
-    // [REDACTED] [REDACTED]`.
-    if (text.startsWith("-")) {
-      flagsAfterScheme.push({ token: value, from: start, to: end })
-      return start
-    }
-    // A value kept (a word of prose) is still read from its start by every
-    // rule, so a scheme word kept as prose is read as a scheme too.
-    if (text === "" || text === marker || schemeProse.has(text.toLowerCase().replace(/[.,;:!?]+$/u, ""))) return start
-    change(value, start, end, marker)
-    return end
+    // A value kept (a word of prose, or the marker) or hidden is still read
+    // from its start by every rule, so a scheme or flag word in it is read as
+    // one: `Bearer Basic x` reads `Bearer [REDACTED] [REDACTED]`. A flag is
+    // hidden whole too, since the protocol backstop takes any word after a
+    // scheme as its credential: `Bearer --token x` reads `Bearer [REDACTED]
+    // [REDACTED]`. A change a rule then makes inside it (`--token=x`) is
+    // taken into its marker.
+    const kept = end === start || (end - start === marker.length && joined.startsWith(marker, start))
+    if (!kept && (joined[start] === "-" || !isSchemeProse(start, end))) change(value, start, end, marker)
+    return start
   }
 
   let index = 0
@@ -648,29 +772,24 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     index = (joined.startsWith("-----BEGIN ", index) ? privateKeyAt(index, token) : undefined)
       ?? urlAt(index, token) ?? headerAt(index) ?? pairAt(index, token) ?? schemeAt(index, token) ?? index + 1
   }
-  // A change a rule made inside such a flag (`--token=[REDACTED]`) is taken
-  // into the marker that hides it; one in another word (the flag's value)
-  // stands.
-  for (const { token, from, to } of flagsAfterScheme) {
-    const offset = starts[token]!
-    const inside = changes[token]!.filter(({ start, end }) => end > from - offset && start < to - offset)
-    changes[token] = changes[token]!.filter((item) => !inside.includes(item))
-    change(token, Math.min(from, ...inside.map(({ start }) => start + offset)), Math.max(to, ...inside.map(({ end }) => end + offset)), marker)
-  }
-
+  const merged = changes.map(mergedChanges)
   const values = tokens.map((token, index) => {
     if (token.kind !== "word" || dropped[index] || (stopAfter !== undefined && index > stopAfter)) return token.value
     // A script is fitted as part of the text around it.
     if (scripts.has(index) && !consumed.has(index)) return depth >= maximumDepth ? marker : redactShell(token.value, depth + 1, true, command, Number.POSITIVE_INFINITY)
-    let value = token.value
-    for (const { start, end, text } of [...changes[index]!].sort((left, right) => right.start - left.start)) {
-      value = `${value.slice(0, start)}${text}${value.slice(end)}`
+    // The value is built once from its changes in order, not again for each.
+    const pieces: string[] = []
+    let cursor = 0
+    for (const { start, end, text } of merged[index]!) {
+      pieces.push(token.value.slice(cursor, start), text)
+      cursor = end
     }
-    return redactKnownShapes(value)
+    pieces.push(token.value.slice(cursor))
+    return redactKnownShapes(pieces.join(""))
   })
   // A shell's script that changed is written again whole, so no escape from
   // its source stands between a key and its [REDACTED].
-  const anchors = changes.map((list, index) => (scripts.has(index) && !consumed.has(index) ? 0 : Math.min(Number.POSITIVE_INFINITY, ...list.map(({ start }) => start))))
+  const anchors = merged.map((list, index) => (scripts.has(index) && !consumed.has(index) ? 0 : list[0]?.start ?? Number.POSITIVE_INFINITY))
   return { values, anchors, dropped, scripts, ...(stopAfter === undefined ? {} : { stopAfter }) }
 }
 
