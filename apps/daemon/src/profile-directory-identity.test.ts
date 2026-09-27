@@ -1,3 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { posix } from "node:path"
+
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 // Directories the test places on a Windows volume: each path's identity and
@@ -68,5 +72,29 @@ describe("sameProfileDirectory by file identity", () => {
       expect(() => assertServiceProfile({ profileDirectory: "C:\\Missing\\Work" }, { profileDirectory: "C:\\Missing\\work" }, "win32"))
         .toThrow(ServiceProfileMismatchError)
     })
+  })
+})
+
+// Security review round 14 of #577: posix follows a link before its "..", so
+// profiles/link/../victim names victim beside the link's target, not beside
+// the link. Two missing paths have no identity to compare, so on this host
+// too a path with a ".." segment matches only the same text.
+describe("sameProfileDirectory with a posix dot-dot on this host", () => {
+  it("does not collapse a dot-dot when both paths are missing", () => {
+    const root = mkdtempSync(posix.join(tmpdir(), "domovoi-dot-dot-"))
+    try {
+      mkdirSync(posix.join(root, "elsewhere", "target"), { recursive: true })
+      mkdirSync(posix.join(root, "profiles"))
+      // A junction on Windows needs no privilege; posix ignores the type.
+      symlinkSync(posix.join(root, "elsewhere", "target"), posix.join(root, "profiles", "link"), "junction")
+      const throughLink = posix.join(root, "profiles", "link") + "/../victim"
+      onHost("linux", () => {
+        expect(() => assertServiceProfile({ profileDirectory: throughLink }, { profileDirectory: posix.join(root, "profiles", "victim") }, "linux"))
+          .toThrow(ServiceProfileMismatchError)
+        expect(() => assertServiceProfile({ profileDirectory: throughLink }, { profileDirectory: throughLink }, "linux")).not.toThrow()
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

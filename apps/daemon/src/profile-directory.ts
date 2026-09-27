@@ -40,10 +40,8 @@ export function sameProfileDirectory(left: ProfileLocation, right: ProfileLocati
   // cannot follow links on another machine, so there a posix path with a ".."
   // segment matches only the same text, never its lexical collapse.
   if (!local && !windows) {
-    const leftDirectory = profileDirectory(left, platform)
-    const rightDirectory = profileDirectory(right, platform)
-    const dotDot = (directory: string) => directory.split("/").includes("..")
-    if (dotDot(leftDirectory) || dotDot(rightDirectory)) return leftDirectory === rightDirectory
+    const sameText = dotDotText(left, right, platform)
+    if (sameText !== undefined) return sameText
   }
   // Round 13 (P2): a Windows directory can be case-sensitive, so lowercased
   // names can merge two profiles. On this host, paths that exist compare by
@@ -58,6 +56,12 @@ export function sameProfileDirectory(left: ProfileLocation, right: ProfileLocati
       return leftIdentity.dev === rightIdentity.dev && leftIdentity.ino === rightIdentity.ino
     }
     if (leftIdentity !== undefined || rightIdentity !== undefined) return false
+    // Round 14: two missing posix paths have no identity either, and the
+    // link before a ".." may exist, so the rule above applies here too.
+    if (process.platform !== "win32") {
+      const sameText = dotDotText(left, right, platform)
+      if (sameText !== undefined) return sameText
+    }
   }
   // Round 14 (P2): two missing paths on this host have no identity, and their
   // parent may be case-sensitive, so a Windows path keeps its case here. A
@@ -68,6 +72,15 @@ export function sameProfileDirectory(left: ProfileLocation, right: ProfileLocati
     return windows && !local ? resolved.toLowerCase() : resolved
   }
   return canonical(left) === canonical(right)
+}
+
+// Whether two posix profile paths are the same text, when either has a ".."
+// segment; undefined when neither has one.
+function dotDotText(left: ProfileLocation, right: ProfileLocation, platform?: string): boolean | undefined {
+  const leftDirectory = profileDirectory(left, platform)
+  const rightDirectory = profileDirectory(right, platform)
+  const dotDot = (directory: string) => directory.split("/").includes("..")
+  return dotDot(leftDirectory) || dotDot(rightDirectory) ? leftDirectory === rightDirectory : undefined
 }
 
 // The file identity and on-disk path of a directory on this host, or
