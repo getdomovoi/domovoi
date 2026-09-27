@@ -4,8 +4,11 @@
 // an entry it still refuses is dropped and counted by the reader.
 //
 // Every `NAME=value` at a word start, every value after a sensitive key, flag
-// or authorization scheme, every URL query and fragment value, and all URL user
-// info become [REDACTED]. The daemon's durable-text redaction leaves
+// or authorization scheme, every header value after a header flag whatever the
+// header is called, every URL query and fragment part (a bare part with no
+// equals sign in whole), and all URL user info become [REDACTED]. A header
+// value that opens with an authorization scheme keeps the scheme word, as a
+// bare `Bearer x` does. The daemon's durable-text redaction leaves
 // `DATABASE_URL=x`, `https://tok@host` and `Bearer tok` alone, so this pass is
 // separate from it. It errs toward redacting: inside a quoted string a value
 // runs to the closing quote, so `sh -c 'A=1 run'` reads `sh -c 'A=[REDACTED]'`.
@@ -102,7 +105,19 @@ function pairAt(text: string, index: number, quote: Quote): { start: number; end
   return end > start ? { start, end } : undefined
 }
 
-// A URL's user info, and every query and fragment value, redacted.
+// A query or fragment: each `name=value` part keeps its name, and a bare part
+// is a value in whole, since `?opaque` or `#opaque` can be the token itself.
+function redactUrlParts(payload: string): string {
+  return payload.split(/([&;])/u).map((part, index) => {
+    if (index % 2 === 1 || part === "" || isMarker(part)) return part
+    const equals = part.indexOf("=")
+    if (equals === -1) return marker
+    const value = part.slice(equals + 1)
+    return value === "" || isMarker(value) ? part : `${part.slice(0, equals + 1)}${marker}`
+  }).join("")
+}
+
+// A URL's user info, and every query and fragment part, redacted.
 function redactUrl(url: string): string {
   const authorityStart = url.indexOf("://") + 3
   const authorityEnd = url.slice(authorityStart).search(/[/?#]/u)
@@ -110,10 +125,73 @@ function redactUrl(url: string): string {
   const authority = url.slice(authorityStart, authorityStop)
   const at = authority.lastIndexOf("@")
   const host = at === -1 ? authority : `${marker}@${authority.slice(at + 1)}`
-  const rest = url.slice(authorityStop).replace(/([?#&;])([^=&;#]*)=([^&;#]*)/gu, (whole, separator: string, name: string, value: string) => (
-    value === "" ? whole : `${separator}${name}=${marker}`
-  ))
-  return `${url.slice(0, authorityStart)}${host}${rest}`
+  const rest = url.slice(authorityStop)
+  const hash = rest.indexOf("#")
+  const beforeHash = hash === -1 ? rest : rest.slice(0, hash)
+  const question = beforeHash.indexOf("?")
+  const path = question === -1 ? beforeHash : beforeHash.slice(0, question)
+  const query = question === -1 ? "" : `?${redactUrlParts(beforeHash.slice(question + 1))}`
+  const fragment = hash === -1 ? "" : `#${redactUrlParts(rest.slice(hash + 1))}`
+  return `${url.slice(0, authorityStart)}${host}${path}${query}${fragment}`
+}
+
+// Flags that take a whole `Name: value` header line: curl's -H, --header and
+// --proxy-header, and wget's --header. -H can hold its value in the same word.
+const headerFlag = /(-H|--header|--proxy-header)(=|\s+)?/uy
+const headerLine = /^([A-Za-z0-9!#$%&*+.^_|~-]+)(\s*:\s*)([\s\S]+)$/u
+
+// A header line with its value redacted, or undefined when the text is not a
+// `Name: value` line (curl's `@file` form, or `Name;` for an empty header).
+function redactHeaderLine(header: string): string | undefined {
+  const match = headerLine.exec(header)
+  if (!match) return undefined
+  const [, name = "", separator = "", value = ""] = match
+  scheme.lastIndex = 0
+  const kept = scheme.exec(value)?.[0] ?? ""
+  const rest = value.slice(kept.length)
+  return `${redactKnownShapes(name)}${separator}${kept}${rest === "" || isMarker(rest) ? rest : marker}`
+}
+
+function redactKnownShapes(text: string): string {
+  return knownShapes.reduce((redacted, shape) => redacted.replace(shape, marker), text)
+}
+
+// A header flag at `index` and the argument after it, with that argument's
+// value redacted: the whole replacement and where it ends.
+function headerAt(text: string, index: number, quote: Quote): { text: string; end: number } | undefined {
+  if (index > 0 && !wordBoundary.test(text[index - 1]!)) return undefined
+  headerFlag.lastIndex = index
+  const match = headerFlag.exec(text)
+  if (!match) return undefined
+  const [whole, flag = "", separator = ""] = match
+  // --headers is another flag; only -H takes its value in the same word.
+  if (separator === "" && flag !== "-H") return undefined
+  const start = index + whole.length
+  const argument = headerArgument(text, start, quote)
+  const header = redactHeaderLine(text.slice(start + argument.open.length, argument.end - argument.close.length))
+  if (header === undefined) return undefined
+  return { text: `${whole}${argument.open}${header}${argument.close}`, end: argument.end }
+}
+
+// The shell word a header flag takes, and the quotes around it.
+function headerArgument(text: string, start: number, quote: Quote): { open: string; close: string; end: number } {
+  const first = text[start]
+  if ((first === "\"" || first === "'") && first !== quote) {
+    const end = quotedEnd(text, start)
+    return { open: first, close: end - 1 > start && text[end - 1] === first ? first : "", end }
+  }
+  if (quote === "\"" && text.startsWith("\\\"", start)) {
+    // An escaped quote inside a double-quoted string: sh -c "curl -H \"X: v\"".
+    for (let index = start + 2; index < text.length && text[index] !== "\""; index += text[index] === "\\" ? 2 : 1) {
+      if (text.startsWith("\\\"", index)) return { open: "\\\"", close: "\\\"", end: index + 2 }
+    }
+    // Unclosed: the value runs to the end of the outer string.
+    return { open: "\\\"", close: "", end: valueEnd(text, start, quote) }
+  }
+  if (!quote) return { open: "", close: "", end: valueEnd(text, start, quote) }
+  let end = start
+  while (end < text.length && !/\s/u.test(text[end]!) && text[end] !== quote) end += text[end] === "\\" && quote === "\"" ? 2 : 1
+  return { open: "", close: "", end: Math.min(end, text.length) }
 }
 
 export function redactInventoryText(text: string): string {
@@ -128,6 +206,12 @@ export function redactInventoryText(text: string): string {
       while (end < text.length && !/[\s"'`<>]/u.test(text[end]!) && text[end] !== quote) end += 1
       output += redactUrl(text.slice(index, end))
       index = end
+      continue
+    }
+    const header = headerAt(text, index, quote)
+    if (header) {
+      output += header.text
+      index = header.end
       continue
     }
     const pair = pairAt(text, index, quote)
@@ -159,18 +243,29 @@ export function redactInventoryText(text: string): string {
     output += character
     index += 1
   }
-  return knownShapes.reduce((redacted, shape) => redacted.replace(shape, marker), output)
+  return redactKnownShapes(output)
 }
 
-// A command given as an argument vector. A sensitive flag's next argument and
-// the whole value of an assignment argument are redacted as units, since an
-// argument is one word however many spaces it holds.
+// A command given as an argument vector. A sensitive flag's next argument, a
+// header flag's header value and the whole value of an assignment argument are
+// redacted as units, since an argument is one word however many spaces it holds.
 export function redactInventoryArgv(argv: readonly string[]): string {
   const words: string[] = []
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!
     const flag = /^-{1,2}([A-Za-z_][A-Za-z0-9_.-]*)$/u.exec(argument)
     const next = argv[index + 1]
+    if (/^(?:-H|--header|--proxy-header)$/u.test(argument) && next !== undefined) {
+      words.push(argument, redactHeaderLine(next) ?? redactInventoryText(next))
+      index += 1
+      continue
+    }
+    const attached = /^(-H|--header=|--proxy-header=)([\s\S]+)$/u.exec(argument)
+    const attachedHeader = attached ? redactHeaderLine(attached[2]!) : undefined
+    if (attached && attachedHeader !== undefined) {
+      words.push(`${attached[1]!}${attachedHeader}`)
+      continue
+    }
     if (flag && isSensitiveKey(flag[1]!) && next !== undefined && !next.startsWith("-")) {
       words.push(argument, next === marker ? next : marker)
       index += 1
