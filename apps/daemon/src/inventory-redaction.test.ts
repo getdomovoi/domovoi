@@ -498,6 +498,7 @@ describe("shell text that runs, expands or escapes an operator", () => {
     ]
     const command = redactInventoryArgv(argv)
     expect(inventoryShellWords(command)).toEqual(argv)
-    expect(backstopAccepts(command)).toBe(true)
+    // The protocol refuses control characters in any text, a tab included.
+    expect(backstopAccepts(redactInventoryArgv(argv.filter((word) => !/[\t\n]/u.test(word))))).toBe(true)
   })
 })

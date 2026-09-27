@@ -21,15 +21,19 @@
 // A word no rule changes keeps its exact source text. A changed word keeps
 // its source up to the first character a rule changed and writes the rest in
 // the quoting that character was in, closed again, so the output always reads
-// back as the same words and a second pass changes nothing. The script given
+// back as the same words and a second pass changes nothing. Unquoted, the rest
+// is single-quoted from its first character the shell reads specially. The
+// output is read again, and text that does not read back as the words meant
+// is redacted whole. The script given
 // to `sh -c` (bash, zsh and the rest, `-lc` included) is read as words in turn,
 // to a bounded depth. It errs toward redacting: a value inside a quoted string
 // runs to the string's end, and inside a script given to a shell it runs to
 // the script's end, so `sh -c 'A=1 run'` reads `sh -c 'A=[REDACTED]'`.
 //
 // Text that does not read as shell words (an unclosed quote, `$(...)`,
-// backquotes, `$'...'`, a here-document) is redacted from the word where
-// reading stopped to the end of the text.
+// backquotes, `<(...)`, `>(...)`, `=(...)`, a `${...}` with an operator,
+// `$'...'`, a here-document) is redacted from the word where reading stopped
+// to the end of the text.
 
 const marker = "[REDACTED]"
 
@@ -148,6 +152,15 @@ function lexShell(text: string): Lexed {
     else if (text.startsWith("<<", index)) return { tokens, stoppedAt: index }
     else {
       const operator = operators.find((candidate) => text.startsWith(candidate, index))
+      // `<(...)` and `>(...)` run a command, and so does zsh's `=(...)`; an
+      // array (`A=(...)`) is not read as words either. Reading stops there, at
+      // the word the `=` ends.
+      if (operator !== undefined && /[<>]$/u.test(operator) && text[index + operator.length] === "(") return { tokens, stoppedAt: index }
+      const previous = tokens.at(-1)
+      if (operator === "(" && previous?.kind === "word" && previous.end === index && text[index - 1] === "=") {
+        tokens.pop()
+        return { tokens, stoppedAt: previous.start }
+      }
       if (operator !== undefined) {
         tokens.push({ kind: "operator", start: index, end: index + operator.length, value: operator })
         index += operator.length
@@ -162,21 +175,22 @@ function lexShell(text: string): Lexed {
   return { tokens }
 }
 
+// A `${...}` with no operator, and so no operand: a name, a positional
+// parameter or a special parameter.
+const bareParameter = /\$\{(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])\}/uy
+
 // The end of a `$` expansion at `index`, read as literal text, or undefined
 // when it runs a command (`$(`) or is not POSIX quoting (`$'...'`, `$"..."`).
-// A `${...}` is read to its closing brace and may not hold quotes or another
-// expansion, since those are read by rules this lexer does not model.
+// A `${...}` is read only when it is bare: an operator's operand (`-`, `+`,
+// `?`, `=`, `#`, `%`, `/`, `^`, `,`, `@` and the `:` forms) is shell text
+// that can hold a value, and this lexer does not model it.
 function expansionEnd(text: string, index: number, quoting: Quoting): number | undefined {
   const next = text[index + 1]
   if (next === "(") return undefined
   if (quoting === "" && (next === "'" || next === "\"")) return undefined
   if (next !== "{") return index + 1
-  for (let inner = index + 2; inner < text.length; inner += 1) {
-    const character = text[inner]!
-    if (character === "}") return inner + 1
-    if (/["'`$\\\n]/u.test(character)) return undefined
-  }
-  return undefined
+  bareParameter.lastIndex = index
+  return bareParameter.test(text) ? bareParameter.lastIndex : undefined
 }
 
 // The shell word at `start`, or undefined when it does not read as one.
@@ -265,17 +279,24 @@ function doubleQuotedEnd(text: string, open: number, add: (piece: string, quotin
 // Text written inside `quoting` and closed, reading back as `text`. A single
 // quote inside single quotes is written '"'"' rather than '\'', whose
 // backslash the protocol backstop reads as a value after a key. Unquoted,
-// text with any character the shell treats specially is single-quoted; a
-// rewritten URL keeps the operators it was written with (`&`, `;`, `|`), since
-// the URL rule reads through them again.
-const plainText = /^[A-Za-z0-9_@%+=:,./[\]?#~!^-]*$/u
-const plainUrl = /^[A-Za-z0-9_@%+=:,./[\]?#~!^&;|-]*$/u
+// text is single-quoted from its first character the shell treats specially,
+// operators a URL was read through (`&`, `;`, `|`) included, so it stays one
+// word; the plain text before that stays bare, so a quote never opens between
+// a URL's `://` and its user info.
+const plainCharacter = /[A-Za-z0-9_@%+=:,./[\]?#~!^-]/u
 const singleQuoted = (text: string) => text.replace(/'/gu, "'\"'\"'")
-function spelled(text: string, quoting: Quoting, wordStart: boolean, url: boolean): string {
+function spelled(text: string, quoting: Quoting, wordStart: boolean): string {
   if (quoting === "\"") return `${text.replace(/[\\"$`]/gu, "\\$&")}"`
   if (quoting === "'") return `${singleQuoted(text)}'`
-  if ((url ? plainUrl : plainText).test(text) && !(wordStart && /^[#~]/u.test(text))) return text
-  return `'${singleQuoted(text)}'`
+  let plain = 0
+  while (plain < text.length && plainCharacter.test(text[plain]!) && !(wordStart && plain === 0 && /[#~]/u.test(text[0]!))) plain += 1
+  return plain === text.length ? text : `${text.slice(0, plain)}'${singleQuoted(text.slice(plain))}'`
+}
+
+// An argument shown as one shell word that reads back as itself: bare when
+// every character is plain, otherwise single-quoted whole.
+function argumentWord(word: string): string {
+  return word !== "" && spelled(word, "", true) === word ? word : `'${singleQuoted(word)}'`
 }
 
 function commonPrefix(left: string, right: string): number {
@@ -291,7 +312,7 @@ function commonPrefix(left: string, right: string): number {
 // quote instead: the script is quoted again in the word around it, and an
 // escaped quote between a key and its [REDACTED] reads as a value to the
 // protocol backstop.
-function rewrittenWord(text: string, word: Word, value: string, anchor: number, url: boolean, nested: boolean): string {
+function rewrittenWord(text: string, word: Word, value: string, anchor: number, nested: boolean): string {
   if (value === word.value) return text.slice(word.start, word.end)
   const { characters } = word
   let at = Math.min(anchor, commonPrefix(word.value, value))
@@ -299,7 +320,7 @@ function rewrittenWord(text: string, word: Word, value: string, anchor: number, 
   const next = characters[at]
   const opens = nested ? next?.opens : undefined
   const prefix = text.slice(word.start, opens ?? next?.source ?? word.end)
-  return `${prefix}${spelled(value.slice(at), opens === undefined ? next?.quoting ?? "" : "", prefix === "", url)}`
+  return `${prefix}${spelled(value.slice(at), opens === undefined ? next?.quoting ?? "" : "", prefix === "")}`
 }
 
 // The word a shell's `-c` option runs as a script, for each shell word in the
@@ -332,9 +353,9 @@ function shellScripts(tokens: readonly Token[]): Set<number> {
 }
 
 // What the rules decided for each token: its new value, the first character a
-// rule rewrote, whether the URL rule rewrote it, whether it was merged into
-// the word before it, and the token after which everything is dropped.
-interface Plan { values: string[]; anchors: number[]; urls: boolean[]; dropped: boolean[]; stopAfter?: number }
+// rule rewrote, whether it was merged into the word before it, which tokens
+// are a shell's script, and the token after which everything is dropped.
+interface Plan { values: string[]; anchors: number[]; dropped: boolean[]; scripts: Set<number>; stopAfter?: number }
 
 interface Change { start: number; end: number; text: string }
 
@@ -358,7 +379,6 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
   const changes: Change[][] = tokens.map(() => [])
   const consumed = new Set<number>()
   const dropped = tokens.map(() => false)
-  const urls = tokens.map(() => false)
   const scripts = shellScripts(tokens)
   let stopAfter: number | undefined
 
@@ -401,7 +421,6 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     const redacted = redactUrl(url)
     if (redacted === url) return ends[token]!
     change(token, index, ends[token]!, redacted)
-    urls[token] = true
     for (let merged = token + 1; merged <= last; merged += 1) {
       dropped[merged] = true
       consumed.add(merged)
@@ -432,16 +451,15 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
       return to
     }
     // An argument with a colon that does not read as a header is redacted
-    // whole rather than let through (`X Foo: v`). `@file` and `Name;` are left
-    // to the other rules.
-    if (text.includes(":") && !headerWithoutValue.test(text)) {
-      if (!isMarker(text)) change(argument, from, to, marker)
-      return to
-    }
+    // whole rather than let through (`X Foo: v`); when it ends at an unquoted
+    // colon (`X;Foo:`), the next word is taken as its value too. `@file` and
+    // `Name;` are left to the other rules.
+    const unreadable = text.includes(":") && !headerWithoutValue.test(text)
+    if (unreadable && !isMarker(text)) change(argument, from, to, marker)
     // A quoted `"Name:"` is an empty header its author closed; only an
     // unquoted colon takes the next word as its value. A flag there is the
     // next argument, not a value.
-    if (!headerWithoutValue.test(text) || quotingAt(argument, to - 1) !== "") return undefined
+    if (!text.endsWith(":") || quotingAt(argument, to - 1) !== "") return unreadable ? to : undefined
     const value = argument + 1
     const next = tokens[value]
     if (next?.kind !== "word" || next.value === "" || leading[value] === "-" || isMarker(next.value)) return to
@@ -534,7 +552,7 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
   // A shell's script that changed is written again whole, so no escape from
   // its source stands between a key and its [REDACTED].
   const anchors = changes.map((list, index) => (scripts.has(index) && !consumed.has(index) ? 0 : Math.min(Number.POSITIVE_INFINITY, ...list.map(({ start }) => start))))
-  return { values, anchors, urls, dropped, ...(stopAfter === undefined ? {} : { stopAfter }) }
+  return { values, anchors, dropped, scripts, ...(stopAfter === undefined ? {} : { stopAfter }) }
 }
 
 // The end of a quoted string in a value that opens at `start`, past its
@@ -556,6 +574,8 @@ function redactShell(text: string, depth: number, nested: boolean): string {
   let output = ""
   let cursor = 0
   let endsInWord = false
+  // The tokens the output is meant to read back as.
+  const meant: Array<Pick<Token, "kind" | "value">> = []
   for (const [index, token] of tokens.entries()) {
     // A merged token was written with no blank before it; its text is in the
     // word before it now.
@@ -564,14 +584,25 @@ function redactShell(text: string, depth: number, nested: boolean): string {
       continue
     }
     output += text.slice(cursor, token.start)
-    output += token.kind === "word" ? rewrittenWord(text, token, plan.values[index]!, plan.anchors[index]!, plan.urls[index]!, nested) : token.value
+    output += token.kind === "word" ? rewrittenWord(text, token, plan.values[index]!, plan.anchors[index]!, nested) : token.value
+    meant.push({ kind: token.kind, value: token.kind === "word" ? plan.values[index]! : token.value })
     cursor = token.end
     endsInWord = token.kind === "word"
-    if (plan.stopAfter === index) return output
+    if (plan.stopAfter === index) return readsBack(output, meant)
   }
-  if (stoppedAt === undefined) return `${output}${text.slice(cursor)}`
+  if (stoppedAt === undefined) return readsBack(`${output}${text.slice(cursor)}`, meant)
   const gap = text.slice(cursor, stoppedAt)
-  return `${output}${gap === "" && endsInWord && cursor === stoppedAt ? " " : gap}${marker}`
+  meant.push({ kind: "word", value: marker })
+  return readsBack(`${output}${gap === "" && endsInWord && cursor === stoppedAt ? " " : gap}${marker}`, meant)
+}
+
+// The output when it reads back as exactly the tokens meant, so writing a
+// word again never splits, joins or runs one; otherwise the marker alone.
+function readsBack(output: string, meant: ReadonlyArray<Pick<Token, "kind" | "value">>): string {
+  const { tokens, stoppedAt } = lexShell(output)
+  const same = stoppedAt === undefined && tokens.length === meant.length
+    && tokens.every((token, index) => token.kind === meant[index]!.kind && token.value === meant[index]!.value)
+  return same ? output : marker
 }
 
 // The words shell text reads as, or undefined when it does not read as words.
@@ -585,19 +616,26 @@ export function redactInventoryText(text: string): string {
   return redactShell(text, 0, false)
 }
 
+// Shell text in an argument a hook would pass on to a shell: a command run by
+// `$(...)`, backquotes, `<(...)`, `>(...)` or zsh's `=(...)`, or a `${...}`
+// that is not bare.
+const runsOrExpands = /\$\(|`|[<>]\(|^=\(|\$\{(?!(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])\})/u
+
 // A command given as an argument vector. Each argument is one word whatever it
 // holds, so the same rules run on the arguments as given, and a shell's `-c`
-// script is read as shell text. An argument with a blank, quote or backslash
-// is shown quoted: in double quotes, or in single quotes when it holds a
-// double quote, so no backslash stands between a key and its [REDACTED].
+// script is read as shell text. An argument that holds shell text that runs or
+// expands is redacted from that argument on, as unreadable shell text is. An argument with any character the shell reads specially is shown
+// single-quoted, a single quote as '"'"', so no shown argument runs, expands or
+// splits, and no backslash stands between a key and its [REDACTED].
 export function redactInventoryArgv(argv: readonly string[]): string {
   const tokens: Word[] = argv.map((value, index) => ({
     kind: "word", start: index, end: index, value, characters: Array.from({ length: value.length }, () => ({ quoting: "", source: 0 })),
   }))
   const plan = planTokens(tokens, tokens.map(() => false), argv.map((value) => value[0] ?? ""), 0, false)
   const words = plan.stopAfter === undefined ? plan.values : plan.values.slice(0, plan.stopAfter + 1)
-  return words.map((word) => {
-    if (word !== "" && !/[\s"'\\]/u.test(word)) return word
-    return word.includes("\"") ? `'${singleQuoted(word)}'` : `"${word.replace(/\\/gu, "\\\\")}"`
-  }).join(" ")
+  // Any other argument is judged as given. A shell's script was read as shell
+  // text already, and must still read.
+  const unreadable = words.findIndex((word, index) => (plan.scripts.has(index) ? lexShell(word).stoppedAt !== undefined : runsOrExpands.test(argv[index]!)))
+  const shown = unreadable === -1 ? words : [...words.slice(0, unreadable), marker]
+  return shown.map(argumentWord).join(" ")
 }
