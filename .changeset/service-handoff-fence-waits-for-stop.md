@@ -33,3 +33,7 @@ A row that repeats a field is finished for every value it gives (each stop id, e
 session) and a copy of it is kept. Every entry of a row is read, however many before it do not
 read. A row with more readable entries than a stop keeps is finished as far as it goes, reported
 on each start, and left in the journal.
+
+Reading a damaged journal row now finishes in bounded time and memory: nothing is built past the
+kept number of entries, the work one row asks of a restart is capped (what fits is finished, and
+the row is kept and reported), and each session is named once.

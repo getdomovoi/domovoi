@@ -10547,12 +10547,21 @@ export class DomovoiDaemon {
     }
     if (entries.length === 0) return
     const candidate = structuredClone(this.#snapshot)
+    // One pass over the thread and the sessions, however many stop ids the
+    // journal names (round 6): the stops already recorded, by the detail a
+    // completed stop writes or the line id a restart writes.
+    const recorded = new Set<string>()
+    for (const item of candidate.thread) {
+      if (item.kind !== "system") continue
+      const stopId = /^(stop-[0-9a-f-]{36}):/.exec(item.detail ?? "")?.[1] ?? /^system-(stop-[0-9a-f-]{36})-/.exec(item.id)?.[1]
+      if (stopId !== undefined) recorded.add(stopId)
+    }
+    const sessions = new Map(candidate.sessions.map((session) => [session.id, session]))
     for (const { intent } of entries) {
-      const recorded = candidate.thread.some((item) => item.kind === "system"
-        && (item.detail?.startsWith(`${intent.stopId}:`) || item.id.startsWith(`system-${intent.stopId}-`)))
-      if (recorded) continue
+      if (recorded.has(intent.stopId)) continue
+      recorded.add(intent.stopId)
       for (const dispatch of intent.inFlight) {
-        const session = candidate.sessions.find(({ id }) => id === dispatch.sessionId)
+        const session = sessions.get(dispatch.sessionId)
         if (!session) continue
         session.updatedAt = intent.requestedAt
         session.state = "failed"
@@ -10565,7 +10574,7 @@ export class DomovoiDaemon {
       // read is finished without one.
       for (const client of intent.clients) {
         for (const sessionId of intent.sessionIds) {
-          const session = candidate.sessions.find(({ id }) => id === sessionId)
+          const session = sessions.get(sessionId)
           if (!session || sessionIsReadOnly(session)) continue
           candidate.thread.push({
             id: `system-${intent.stopId}-${client}-${sessionId}`,

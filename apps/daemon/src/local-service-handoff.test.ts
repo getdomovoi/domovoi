@@ -1069,15 +1069,16 @@ describe("the service handoff fence and an emergency stop", () => {
 
   // The reader behind the round 5 fix walks the row itself: brackets and
   // quotes inside strings, and unknown fields nested far deeper than the
-  // stop's own, must not hide the stop's fields.
-  it("reads a stop past deeply nested unknown fields and strings that look like JSON", async () => {
+  // stop's own, must not hide the stop's fields, including a repeated one
+  // (round 6: a later, empty session list does not replace the first).
+  it("reads a stop past deeply nested unknown fields and strings that look like JSON, keeping a repeated field's first value", async () => {
     const { workspace, sessionId } = await readySession()
     const statePath = await stateFile()
     await new SqliteWorkspaceStore(statePath, workspace).close()
     const stopId = `stop-${"8".repeat(8)}-8888-4888-8888-${"8".repeat(12)}`
     const depth = 100_000
     const record = `{"note":"}]\\",\\"stopId\\":\\"x","deep":${"[".repeat(depth)}{"sessionIds":["elsewhere"]}${"]".repeat(depth)},`
-      + `"version":1,"stopId":"${stopId}","client":"desktop","requestedAt":"2026-09-26T10:00:00.000Z","sessionIds":["${sessionId}"]}`
+      + `"version":1,"stopId":"${stopId}","client":"desktop","requestedAt":"2026-09-26T10:00:00.000Z","sessionIds":["${sessionId}"],"sessionIds":[]}`
     await journalRow(statePath, stopId, record)
 
     const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })

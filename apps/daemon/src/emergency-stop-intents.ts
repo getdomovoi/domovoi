@@ -47,6 +47,10 @@ const inFlightEntry = ({ sessionId, provider, providerThreadId }: { sessionId: s
 // The most sessions, and the most in-flight entries, one stop keeps, as the
 // stop itself writes them.
 const maximumEntries = 10_000
+// The most work one row asks of a restart: a line per client and session and
+// a reset per dispatch, for each stop id it names, and at least one unit per
+// stop id. A row in the stop's own format asks at most this much.
+const maximumWork = 2 * maximumEntries
 
 type Read =
   | { intents: RecoveredEmergencyStopIntent[]; partial?: string; overflow?: string }
@@ -158,31 +162,48 @@ function readIntent(key: SQLInputValue, record: SQLInputValue): Read {
   const strict = anyRepeated ? undefined : intentSchema.safeParse(plain)
   if (strict?.success) {
     const { client, requestedAt, sessionIds, inFlight, stopId } = strict.data
-    return { intents: [{ stopId, clients: [client], requestedAt, sessionIds, inFlight: (inFlight ?? []).map(inFlightEntry) }] }
+    return { intents: [{ stopId, clients: [client], requestedAt, sessionIds: [...new Set(sessionIds)], inFlight: (inFlight ?? []).map(inFlightEntry) }] }
   }
   const named = valid(stopIdSchema, all(read, "stopId"))
   const stopIds = named.length > 0 ? named : valid(stopIdSchema, [key])
   if (stopIds.length === 0) return { unreadable: "No stop id can be read from the record or its key" }
 
+  // Round 6: each value a row repeats multiplies what it names. Every list is
+  // counted as it is built and stops one past the kept number, so nothing is
+  // built past it, and the work the kept stop ids ask is bounded too.
   const sessionIds = valid(sessionIdSchema, all(read, "sessionIds").flatMap((list) => Array.isArray(list) ? list : []))
-  const inFlight = entries.flatMap((entry) => {
+  const inFlight: InFlight[] = []
+  fill: for (const entry of entries) {
     const providers = valid(inFlightFields.provider.unwrap(), all(entry, "provider"))
     const threads = valid(inFlightFields.providerThreadId.unwrap(), all(entry, "providerThreadId"))
-    return valid(sessionIdSchema, all(entry, "sessionId")).flatMap((sessionId) => providers.length === 0 || threads.length === 0
-      ? [{ sessionId }]
-      : providers.flatMap((provider) => threads.map((providerThreadId) => ({ sessionId, provider, providerThreadId }))))
-  })
-  const overflow = sessionIds.length > maximumEntries || inFlight.length > maximumEntries
-    ? `The record names ${sessionIds.length} sessions and ${inFlight.length} dispatches; ${maximumEntries} of each are kept`
-    : undefined
-  const recovered = {
-    clients: valid(clientKindSchema, all(read, "client")),
+    for (const sessionId of valid(sessionIdSchema, all(entry, "sessionId"))) {
+      if (providers.length === 0 || threads.length === 0) {
+        inFlight.push({ sessionId })
+        if (inFlight.length > maximumEntries) break fill
+        continue
+      }
+      for (const provider of providers) {
+        for (const providerThreadId of threads) {
+          inFlight.push({ sessionId, provider, providerThreadId })
+          if (inFlight.length > maximumEntries) break fill
+        }
+      }
+    }
+  }
+  const clients = valid(clientKindSchema, all(read, "client"))
+  const kept = {
+    clients,
     requestedAt: valid(dateTimeSchema, all(read, "requestedAt"))[0] ?? new Date().toISOString(),
     sessionIds: sessionIds.slice(0, maximumEntries),
     inFlight: inFlight.slice(0, maximumEntries),
   }
+  const work = Math.max(1, clients.length * kept.sessionIds.length + kept.inFlight.length)
+  const finished = stopIds.slice(0, Math.max(1, Math.floor(maximumWork / work)))
+  const overflow = sessionIds.length > maximumEntries || inFlight.length > maximumEntries || finished.length < stopIds.length
+    ? `The record asks for more than one restart finishes (${stopIds.length} stop ids, ${sessionIds.length} sessions); what fits is finished`
+    : undefined
   return {
-    intents: stopIds.map((stopId) => ({ stopId, ...recovered })),
+    intents: finished.map((stopId) => ({ stopId, ...kept })),
     partial: anyRepeated ? "The record repeats a field" : reason(strict?.error),
     ...(overflow === undefined ? {} : { overflow }),
   }
