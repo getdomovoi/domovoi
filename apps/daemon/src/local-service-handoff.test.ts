@@ -1625,7 +1625,11 @@ describe("the service handoff fence and an emergency stop", () => {
       snapshot.thread.filter((item) => item.kind === "system" && item.body === "Emergency stop requested by desktop.").map((item) => item.id)
 
     const cut = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
-    await expect(cut.daemon.start()).rejects.toThrow(/emergency stop journal/)
+    // Owner ruling Q94 B on #641: the text, exactly.
+    await expect(cut.daemon.start()).rejects.toThrow(new Error("Domovoi stopped finishing the emergency stop journal after 16 rounds, "
+      + "because new rows kept taking the place of the rows it cleared. The rounds it finished are saved, and the next start "
+      + "continues from there. If this happens again, something outside Domovoi is writing to the store, and it needs repair "
+      + "before Domovoi can start."))
     await cut.daemon.stop().catch(() => {})
     expect(journalTables(statePath).pending).toEqual([{ stop_id: `endless-${emergencyStopRecoveryRounds}` }])
     const stored = new SqliteWorkspaceStore(statePath, workspace)

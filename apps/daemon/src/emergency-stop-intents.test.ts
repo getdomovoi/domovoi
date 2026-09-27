@@ -219,4 +219,67 @@ describe("reading a damaged emergency stop journal of many rows", () => {
     expect(stored(database, "emergency_stop_intents")).toBe(1)
     expect(journal.pending().intents.map(({ intent }) => intent.stopId)).toEqual([stopAt(2)])
   })
+
+  // Security review round 3 of #641: finishRound takes the rows to clear a
+  // batch at a time. Rows kept for overflow and rows whose clear was refused
+  // stay listed, so each batch must not read past them again, or a round's
+  // clear grows with the square of the rows it read. Counted, not timed:
+  // `visited` is how many listed rows SQLite reads while the round clears.
+  it("clears a round's rows without reading the kept and refused ones again for each batch", () => {
+    const small = roundClearVisits(96)
+    const large = roundClearVisits(4 * 96)
+
+    expect(small.left).toEqual({ journal: 64, listed: 64 })
+    expect(large.left).toEqual({ journal: 256, listed: 256 })
+    // Four times the rows, about four times the reads: one batch of slack.
+    expect(large.visited).toBeLessThanOrEqual(4 * small.visited + 16)
+  })
+
+  it("plans the query for a round's rows to clear without reading every listed row", () => {
+    const database = new DatabaseSync(":memory:")
+    const statements: string[] = []
+    const journal = new SqliteEmergencyStopIntents(recording(database, statements))
+    insert(database, stopAt(0), readable(stopAt(0)))
+    journal.beginRecovery()
+    journal.stage({ read: journal.pending().read, acted: [], lines: [] })
+    statements.length = 0
+
+    journal.finishRound()
+
+    expect(statements.filter((sql) => database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all()
+      .some(({ detail }) => /^SCAN emergency_stop_recovery_rows$/.test(String(detail))))).toEqual([])
+  })
 })
+
+// Stages `count` journal rows as one round read them: a third kept for
+// overflow, a third whose clear a trigger refuses, a third to clear,
+// interleaved. Then counts the listed rows SQLite reads while the round
+// clears. A temporary view in front of the listed rows' table (SQLite looks
+// in `temp` first) calls `visit` for each row it reads, and triggers pass the
+// round's writes through to the table.
+function roundClearVisits(count: number): { visited: number; left: { journal: number; listed: number } } {
+  const database = new DatabaseSync(":memory:")
+  const journal = new SqliteEmergencyStopIntents(database)
+  for (let index = 0; index < count; index += 1) insert(database, stopAt(index), readable(stopAt(index)))
+  database.exec(`CREATE TRIGGER refused BEFORE DELETE ON emergency_stop_intents WHEN old.rowid % 3 = 2
+    BEGIN SELECT RAISE(IGNORE); END`)
+  journal.beginRecovery()
+  const read = passes(journal).flatMap((pass) => pass.read)
+  journal.stage({ read: read.map((row) => ({ ...row, keep: row.row % 3n === 1n })), acted: [], lines: [] })
+
+  let visited = 0
+  database.function("visit", { varargs: true }, () => { visited += 1; return 1 })
+  database.exec(`CREATE TEMP VIEW emergency_stop_recovery_rows AS
+    SELECT row, identity, keep, cleared FROM main.emergency_stop_recovery_rows WHERE visit(row)`)
+  database.exec(`CREATE TEMP TRIGGER held INSTEAD OF UPDATE ON emergency_stop_recovery_rows BEGIN
+    UPDATE main.emergency_stop_recovery_rows SET cleared = new.cleared WHERE row = old.row AND identity = old.identity;
+  END`)
+  database.exec(`CREATE TEMP TRIGGER forget INSTEAD OF DELETE ON emergency_stop_recovery_rows BEGIN
+    DELETE FROM main.emergency_stop_recovery_rows WHERE row = old.row AND identity = old.identity;
+  END`)
+
+  journal.finishRound()
+
+  database.exec("DROP VIEW temp.emergency_stop_recovery_rows")
+  return { visited, left: { journal: stored(database, "emergency_stop_intents"), listed: stored(database, "emergency_stop_recovery_rows") } }
+}
