@@ -43,8 +43,37 @@
 // backquotes, `<(...)`, `>(...)`, `=(...)`, a `${...}` with an operator,
 // `$'...'`, a here-document) is redacted from the word where reading stopped
 // to the end of the text.
+//
+// Every output fits the protocol's cap on the field it fills: when it would
+// not, whole words are kept while they fit and the rest is redacted.
 
 const marker = "[REDACTED]"
+
+// The protocol's cap on each inventory text field, in UTF-16 code units, which
+// it refuses a longer text for. These are the text(...) caps in
+// toolInventoryEntrySchema (packages/protocol/src/tool-inventory.ts); the
+// protocol does not export them, and a test pins each one to that schema.
+// Redaction can write a longer text than it read (a backslash before a
+// pattern character, quotes around an argument, the marker after a short
+// value), so every output is fitted to its field's cap: whole words are kept
+// while they fit and the rest is hidden behind the marker. An entry the
+// protocol would take before redaction is never dropped for it.
+export const inventoryFieldCaps = {
+  // A hook's, helper's or local tool server's command.
+  command: 2_048,
+  // A permission rule's detail.
+  detail: 1_024,
+  // A hook's matcher.
+  matcher: 256,
+  // A tool server's, plugin's or skill's name.
+  name: 256,
+  // A helper's name.
+  helperName: 128,
+  // A permission rule's rule.
+  rule: 128,
+  // A hook's event.
+  event: 64,
+} as const
 
 // What the protocol refuses in any text: control and format characters and
 // line and paragraph separators.
@@ -601,7 +630,8 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
 
   const values = tokens.map((token, index) => {
     if (token.kind !== "word" || dropped[index] || (stopAfter !== undefined && index > stopAfter)) return token.value
-    if (scripts.has(index) && !consumed.has(index)) return depth >= maximumDepth ? marker : redactShell(token.value, depth + 1, true, command)
+    // A script is fitted as part of the text around it.
+    if (scripts.has(index) && !consumed.has(index)) return depth >= maximumDepth ? marker : redactShell(token.value, depth + 1, true, command, Number.POSITIVE_INFINITY)
     let value = token.value
     for (const { start, end, text } of [...changes[index]!].sort((left, right) => right.start - left.start)) {
       value = `${value.slice(0, start)}${text}${value.slice(end)}`
@@ -626,18 +656,36 @@ function quotedEnd(text: string, start: number, limit: number): { end: number; c
 // Shell text with every value the rules find redacted. `depth` counts the
 // shells it is nested in; `nested` is true inside one. `command` is true for a
 // command line a shell runs, whose pattern characters are written so they do
-// not expand.
-function redactShell(text: string, depth: number, nested: boolean, command: boolean): string {
+// not expand. The output is at most `maximum` long: when it would be longer,
+// the tokens written are kept while they fit with the marker after them.
+function redactShell(text: string, depth: number, nested: boolean, command: boolean, maximum: number): string {
   const { tokens, stoppedAt } = lexShell(text)
   const glued = tokens.map((token, index) => tokens[index + 1]?.start === token.end)
   const leading = tokens.map((token) => text[token.start] ?? "")
   const plan = planTokens(tokens, glued, leading, depth, nested, command)
-  const readsBack = (output: string, meant: ReadonlyArray<Pick<Token, "kind" | "value">>) => readBack(output, meant, command)
   let output = ""
   let cursor = 0
   let endsInWord = false
   // The tokens the output is meant to read back as.
   const meant: Array<Pick<Token, "kind" | "value">> = []
+  // Where the output can be cut: its length, and the tokens meant, after each
+  // token written.
+  const cuts: Array<{ length: number; count: number }> = []
+  // The longest run of whole tokens written that fits with the marker after
+  // it and reads back, or the marker alone.
+  const fitted = () => {
+    for (const { length, count } of [...cuts].reverse()) {
+      const shortened = `${output.slice(0, length)} ${marker}`
+      if (shortened.length > maximum) continue
+      const read = readBack(shortened, [...meant.slice(0, count), { kind: "word", value: marker }], command)
+      if (read !== marker) return read
+    }
+    return marker
+  }
+  const readsBack = (whole: string, words: ReadonlyArray<Pick<Token, "kind" | "value">>) => {
+    const read = readBack(whole, words, command)
+    return read.length <= maximum ? read : fitted()
+  }
   // The rest of the text from `gap` on is redacted: a gap with a control
   // character in it is written as one blank.
   const redactRest = (gap: string) => {
@@ -659,6 +707,7 @@ function redactShell(text: string, depth: number, nested: boolean, command: bool
     meant.push({ kind: token.kind, value: token.kind === "word" ? plan.values[index]! : token.value })
     cursor = token.end
     endsInWord = token.kind === "word"
+    cuts.push({ length: output.length, count: meant.length })
     if (plan.stopAfter === index) return readsBack(output, meant)
   }
   if (stoppedAt === undefined) {
@@ -687,15 +736,17 @@ export function inventoryShellWords(text: string): string[] | undefined {
 }
 
 // Text a shell does not run: a rule, a matcher, a name, a prompt or a URL. It
-// keeps its source spelling, a `*` in `Bash(pnpm test:*)` included.
-export function redactInventoryText(text: string): string {
-  return redactShell(text, 0, false, false)
+// keeps its source spelling, a `*` in `Bash(pnpm test:*)` included, and fits
+// `maximum`, the cap of the field it fills; a hook's URL or prompt fills its
+// command.
+export function redactInventoryText(text: string, maximum: number = inventoryFieldCaps.command): string {
+  return redactShell(text, 0, false, false, maximum)
 }
 
 // A command line a shell runs: a hook's or a helper's command. Pattern and
 // brace characters are written so the shell reads the words shown.
 export function redactInventoryCommand(text: string): string {
-  return redactShell(text, 0, false, true)
+  return redactShell(text, 0, false, true, inventoryFieldCaps.command)
 }
 
 // Shell text in an argument a hook would pass on to a shell: a command run by
@@ -711,7 +762,9 @@ const runsOrExpands = /\$\(|`|[<>]\(|^=\(|\$\{(?!(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]
 // An argument with any character the shell reads specially, a pattern
 // character included, is shown single-quoted, a single quote as '"'"', so no
 // shown argument runs, expands or splits, and no backslash stands between a
-// key and its [REDACTED]. The output is read again, as shell text is.
+// key and its [REDACTED]. The output is read again, as shell text is, and fits
+// the command's cap: the arguments are kept while they fit with the marker
+// after them.
 export function redactInventoryArgv(argv: readonly string[]): string {
   const tokens: Word[] = argv.map((value, index) => ({
     kind: "word", start: index, end: index, value, characters: Array.from({ length: value.length }, () => ({ quoting: "", source: 0 })),
@@ -722,5 +775,13 @@ export function redactInventoryArgv(argv: readonly string[]): string {
   // text already, and must still read.
   const unreadable = words.findIndex((word, index) => (plan.scripts.has(index) ? lexShell(word).stoppedAt !== undefined : runsOrExpands.test(argv[index]!)))
   const shown = (unreadable === -1 ? words : [...words.slice(0, unreadable), marker]).map((word) => (controlCharacter.test(word) ? marker : word))
-  return readBack(shown.map(argumentWord).join(" "), shown.map((value) => ({ kind: "word", value })), true)
+  const spellings = shown.map(argumentWord)
+  let kept = shown.length
+  let line = spellings.join(" ")
+  while (line.length > inventoryFieldCaps.command && kept > 0) {
+    kept -= 1
+    line = [...spellings.slice(0, kept), marker].join(" ")
+  }
+  const meant = kept === shown.length ? shown : [...shown.slice(0, kept), marker]
+  return readBack(line, meant.map((value) => ({ kind: "word", value })), true)
 }

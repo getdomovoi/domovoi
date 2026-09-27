@@ -12,7 +12,7 @@ import {
 } from "@getdomovoi/protocol"
 import { parse as parseYaml } from "yaml"
 
-import { redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
+import { inventoryFieldCaps as caps, redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
 
 // What a repository's own Claude Code, OpenCode and Kilo configuration
 // declares, and the digest repository trust pins to. Nothing here executes,
@@ -365,12 +365,12 @@ function mcpJsonServer(name: string, server: unknown): Candidate | Omission {
     const args = server.args === undefined ? [] : stringArray(server.args)
     if (!args) return omission
     return {
-      kind: "tool-server", name: redactInventoryText(name), transport: "stdio",
+      kind: "tool-server", name: redactInventoryText(name, caps.name), transport: "stdio",
       command: redactInventoryArgv([server.command, ...args]), envKeys: keysOf(server.env), startsAtSessionStart,
     }
   }
   const transport = type === "http" || type === "streamable-http" ? "http" : type === "sse" ? "sse" : "other"
-  return { kind: "tool-server", name: redactInventoryText(name), transport, ...remoteHost(server.url), envKeys: [], startsAtSessionStart }
+  return { kind: "tool-server", name: redactInventoryText(name, caps.name), transport, ...remoteHost(server.url), envKeys: [], startsAtSessionStart }
 }
 
 // Kilo's legacy servers can name tools that run without asking.
@@ -378,7 +378,7 @@ function alwaysAllowed(name: string, server: unknown): Array<Candidate | Omissio
   if (!isRecord(server) || server.alwaysAllow === undefined) return []
   const tools = stringArray(server.alwaysAllow)
   if (!tools) return [omission]
-  return tools.map((tool) => ({ kind: "permission-rule", rule: "alwaysAllow", detail: redactInventoryText(`${name} ${tool}`), startsAtSessionStart: false }))
+  return tools.map((tool) => ({ kind: "permission-rule", rule: "alwaysAllow", detail: redactInventoryText(`${name} ${tool}`, caps.detail), startsAtSessionStart: false }))
 }
 
 // Claude Code settings that name a command, and whether it runs before the
@@ -397,21 +397,22 @@ function claudeHook(event: string, matcher: unknown, hook: unknown): Candidate |
   let command: string | undefined
   if (hook.type === "command" && typeof hook.command === "string" && args) {
     command = args.length > 0 ? redactInventoryArgv([hook.command, ...args]) : redactInventoryCommand(hook.command)
-  } else if (hook.type === "http" && typeof hook.url === "string") command = redactInventoryText(hook.url)
-  else if ((hook.type === "prompt" || hook.type === "agent") && typeof hook.prompt === "string") command = redactInventoryText(hook.prompt)
+  } else if (hook.type === "http" && typeof hook.url === "string") command = redactInventoryText(hook.url, caps.command)
+  else if ((hook.type === "prompt" || hook.type === "agent") && typeof hook.prompt === "string") command = redactInventoryText(hook.prompt, caps.command)
   else if (hook.type === "mcp_tool" && typeof hook.server === "string" && typeof hook.tool === "string") {
-    command = redactInventoryText(`${hook.server} ${hook.tool}`)
+    command = redactInventoryText(`${hook.server} ${hook.tool}`, caps.command)
   }
   if (command === undefined) return omission
   return {
-    kind: "hook", event: redactInventoryText(event), ...(typeof matcher === "string" && matcher !== "" ? { matcher: redactInventoryText(matcher) } : {}),
+    kind: "hook", event: redactInventoryText(event, caps.event),
+    ...(typeof matcher === "string" && matcher !== "" ? { matcher: redactInventoryText(matcher, caps.matcher) } : {}),
     command, startsAtSessionStart: event === "SessionStart",
   }
 }
 
 function claudeSettings(settings: Record<string, unknown>): Array<Candidate | Omission> {
   const candidates: Array<Candidate | Omission> = []
-  const rule = (name: string, detail: string): Candidate => ({ kind: "permission-rule", rule: name, detail: redactInventoryText(detail), startsAtSessionStart: false })
+  const rule = (name: string, detail: string): Candidate => ({ kind: "permission-rule", rule: name, detail: redactInventoryText(detail, caps.detail), startsAtSessionStart: false })
   for (const [event, groups] of recordEntries(settings.hooks)) {
     if (!Array.isArray(groups)) candidates.push(omission)
     else {
@@ -443,7 +444,7 @@ function claudeSettings(settings: Record<string, unknown>): Array<Candidate | Om
     }
   }
   for (const [plugin, enabled] of recordEntries(settings.enabledPlugins)) {
-    if (enabled !== false) candidates.push({ kind: "plugin", name: redactInventoryText(plugin), startsAtSessionStart: true })
+    if (enabled !== false) candidates.push({ kind: "plugin", name: redactInventoryText(plugin, caps.name), startsAtSessionStart: true })
   }
   return candidates
 }
@@ -453,7 +454,7 @@ function claudeSettings(settings: Record<string, unknown>): Array<Candidate | Om
 // allow Bash(pattern), and the detail names what it covers.
 function openCodePermissions(permission: unknown, prefix: string): Array<Candidate | Omission> {
   const rule = (action: unknown, detail: string): Candidate | Omission => (
-    typeof action === "string" ? { kind: "permission-rule", rule: redactInventoryText(action), detail: redactInventoryText(detail), startsAtSessionStart: false } : omission
+    typeof action === "string" ? { kind: "permission-rule", rule: redactInventoryText(action, caps.rule), detail: redactInventoryText(detail, caps.detail), startsAtSessionStart: false } : omission
   )
   if (permission === undefined) return []
   if (typeof permission === "string") return [rule(permission, `${prefix}*`)]
@@ -469,7 +470,7 @@ function pluginSpecs(plugins: unknown): Array<Candidate | Omission> {
   if (!Array.isArray(plugins)) return [omission]
   return (plugins as unknown[]).map((plugin) => {
     const spec = typeof plugin === "string" ? plugin : Array.isArray(plugin) && typeof plugin[0] === "string" ? plugin[0] : undefined
-    return spec === undefined ? omission : { kind: "plugin", name: redactInventoryText(spec), startsAtSessionStart: true }
+    return spec === undefined ? omission : { kind: "plugin", name: redactInventoryText(spec, caps.name), startsAtSessionStart: true }
   })
 }
 
@@ -484,10 +485,10 @@ function openCodeConfig(config: Record<string, unknown>): Array<Candidate | Omis
     const command = stringArray(server.command)
     if (server.type === "local") {
       candidates.push(command && command.length > 0
-        ? { kind: "tool-server", name: redactInventoryText(name), transport: "stdio", command: redactInventoryArgv(command), envKeys: keysOf(server.environment), startsAtSessionStart }
+        ? { kind: "tool-server", name: redactInventoryText(name, caps.name), transport: "stdio", command: redactInventoryArgv(command), envKeys: keysOf(server.environment), startsAtSessionStart }
         : omission)
     } else if (server.type === "remote") {
-      candidates.push({ kind: "tool-server", name: redactInventoryText(name), transport: "http", ...remoteHost(server.url), envKeys: [], startsAtSessionStart })
+      candidates.push({ kind: "tool-server", name: redactInventoryText(name, caps.name), transport: "http", ...remoteHost(server.url), envKeys: [], startsAtSessionStart })
     } else if (server.type !== undefined) candidates.push(omission)
     // An entry with only `enabled` switches a server another file declares.
   }
@@ -504,7 +505,7 @@ function openCodeConfig(config: Record<string, unknown>): Array<Candidate | Omis
       if (!isRecord(tool) || tool.command === undefined) continue
       const command = stringArray(tool.command)
       candidates.push(command && command.length > 0
-        ? { kind: "helper", name: redactInventoryText(`${key} ${name}`), command: redactInventoryArgv(command), startsAtSessionStart: false }
+        ? { kind: "helper", name: redactInventoryText(`${key} ${name}`, caps.helperName), command: redactInventoryArgv(command), startsAtSessionStart: false }
         : omission)
     }
   }
@@ -519,7 +520,7 @@ function kiloModes(document: Record<string, unknown>): Array<Candidate | Omissio
     if (!isRecord(mode) || typeof mode.slug !== "string" || !Array.isArray(mode.groups)) return omission
     const groups = (mode.groups as unknown[]).map((group) => (Array.isArray(group) ? group[0] as unknown : group))
     if (!groups.every((group) => typeof group === "string")) return omission
-    return { kind: "permission-rule", rule: "customModes", detail: redactInventoryText([mode.slug, ...groups].join(" ")), startsAtSessionStart: false }
+    return { kind: "permission-rule", rule: "customModes", detail: redactInventoryText([mode.slug, ...groups].join(" "), caps.detail), startsAtSessionStart: false }
   })
 }
 
@@ -558,11 +559,11 @@ function parseFile(parser: Parser, bytes: Buffer): Parsed {
 function directoryCandidates(directory: ScopedDirectory, members: readonly string[]): Candidate[] {
   if (directory.members === "plugin") {
     return members.filter((member) => /^[^/]+\.(?:ts|js)$/u.test(member))
-      .map((name) => ({ kind: "plugin", name: redactInventoryText(name), startsAtSessionStart: true }))
+      .map((name) => ({ kind: "plugin", name: redactInventoryText(name, caps.name), startsAtSessionStart: true }))
   }
   if (directory.members === "skill") {
     return members.filter((member) => member.endsWith("/SKILL.md"))
-      .map((member) => ({ kind: "skill", name: redactInventoryText(member.slice(0, -"/SKILL.md".length)), startsAtSessionStart: false }))
+      .map((member) => ({ kind: "skill", name: redactInventoryText(member.slice(0, -"/SKILL.md".length), caps.name), startsAtSessionStart: false }))
   }
   return []
 }
