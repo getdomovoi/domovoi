@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { holdsCredential } from "./credential-backstop.js"
+import { refineRepositoryTrustPin, repositoryTrustStateSchema } from "./repository-trust.js"
 import { skillContentDigestSchema, skillInventoryMachineSchema } from "./skills.js"
 import { utf16MaxLength, wireRule } from "./validation.js"
 
@@ -146,12 +147,16 @@ export const maximumToolInventoryBytes = 256 * 1_024 - toolInventoryEnvelopeRese
 export const toolInventorySchema = wireRule(z.object({
   machine: skillInventoryMachineSchema,
   // The open repository. configDigest covers its provider configuration files,
-  // present or absent, so a trust decision pins to what the client was shown.
+  // present or absent, so a trust decision pins to what the client was shown;
+  // trust is this machine's trust in it against that digest.
   repository: z.object({
     projectId: text(256),
     root: toolInventoryPathSchema,
     configDigest: skillContentDigestSchema,
-  }).strict().optional(),
+    trust: repositoryTrustStateSchema,
+  }).strict().superRefine((repository, context) => {
+    refineRepositoryTrustPin(repository.configDigest, repository.trust, context, ["trust"])
+  }).optional(),
   providers: z.array(toolInventoryProviderSchema).max(16),
 }).strict().superRefine((inventory, context) => {
   const seen = new Set<string>()

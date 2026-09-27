@@ -21,7 +21,7 @@ const home = "/Users/ada"
 // settings file unreadable and a provider that passes no tool servers.
 const sample = {
   machine: { id: "machine-studio", name: "studio", platform: "darwin", arch: "arm64", version: "0.9.4" },
-  repository: { projectId: "project-acme", root: "/Users/ada/src/acme-api", configDigest: digest },
+  repository: { projectId: "project-acme", root: "/Users/ada/src/acme-api", configDigest: digest, trust: { state: "untrusted", reason: "not-trusted" } },
   providers: [
     {
       provider: "claude-code",
