@@ -367,6 +367,28 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     expect((await readRepositoryProviderConfig(root, { heldBack: true })).configDigest).toBe(result.configDigest)
   })
 
+  it("lists a hook whose command holds a control character, redacted from there on", async () => {
+    const root = await scratch()
+    await put(root, ".claude/settings.json", JSON.stringify({
+      hooks: { Stop: [{ hooks: [
+        { type: "command", command: "npm test\nPGPASSWORD=prod-db-pass psql" },
+        { type: "command", command: "curl -H X-Foo: \\\ns3cr3t-value tail" },
+        { type: "command", command: "cmd", args: ["tab\there", "x"] },
+        { type: "prompt", prompt: "Don't touch main\nand keep going" },
+      ] }] },
+    }))
+    const claude = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "claude-code")
+    expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+    expectNoSecret(claude)
+    expect(claude.omittedEntries).toBe(0)
+    expect(claude.entries.map((entry) => (entry.kind === "hook" ? entry.command : undefined))).toEqual([
+      "npm test [REDACTED]",
+      "curl -H X-Foo: [REDACTED]",
+      "cmd [REDACTED] x",
+      "[REDACTED]",
+    ])
+  })
+
   it("drops and counts an entry the protocol backstop still refuses, and entries past the cap", async () => {
     const root = await scratch()
     const servers = Object.fromEntries(Array.from({ length: 600 }, (_, index) => [`s${index}`, { command: `server-${index}` }]))

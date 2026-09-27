@@ -1,5 +1,10 @@
+import { execFileSync } from "node:child_process"
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
 import { toolInventoryEntrySchema } from "@getdomovoi/protocol"
-import { describe, expect, it } from "vitest"
+import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import { inventoryShellWords, redactInventoryArgv, redactInventoryText } from "./inventory-redaction.js"
 
@@ -34,9 +39,10 @@ describe("redactInventoryText", () => {
     // The whole path after the host is a value: a webhook path is its token.
     ["curl -X POST https://hooks.example.com/services/T0/B0/XXXX", "curl -X POST https://hooks.example.com/[REDACTED]"],
     ["curl 'https://h.example.com:8443/a/b?key=abc#frag'", "curl 'https://h.example.com:8443/[REDACTED]?key=[REDACTED]#[REDACTED]'"],
-    ["curl https://example.com/?q=1", "curl https://example.com/?q=[REDACTED]"],
+    // A `?` is a pattern character, so it is quoted when written again.
+    ["curl https://example.com/?q=1", "curl https://example.com/'?q=[REDACTED]'"],
     ["https://example.com/path", "https://example.com/[REDACTED]"],
-    ["https://example.com/p?a=", "https://example.com/[REDACTED]?a="],
+    ["https://example.com/p?a=", "https://example.com/[REDACTED]'?a='"],
     // A URL is the whole shell word, quoted runs included, and its assembled
     // path goes whole; the quotes the word opens or closes stay balanced.
     ["curl https://hooks.example.com/'opaque-secret' x", "curl https://hooks.example.com/[REDACTED] x"],
@@ -167,8 +173,9 @@ describe("redactInventoryText", () => {
 
   it("is idempotent for a redacted URL path", () => {
     const once = redactInventoryText("curl https://u:p@h.example.com:8443/a/b?k=v&bare#f")
-    // The `&` read into the URL is quoted, so the word reads back as one word.
-    expect(once).toBe("curl https://[REDACTED]@h.example.com:8443/[REDACTED]?k=[REDACTED]'&[REDACTED]#[REDACTED]'")
+    // The `?` and the `&` read into the URL are quoted, so the word reads back
+    // as one word and expands to nothing else.
+    expect(once).toBe("curl https://[REDACTED]@h.example.com:8443/[REDACTED]'?k=[REDACTED]&[REDACTED]#[REDACTED]'")
     expect(redactInventoryText(once)).toBe(once)
     expect(backstopAccepts(once)).toBe(true)
   })
@@ -210,7 +217,7 @@ describe("redactInventoryArgv", () => {
       "https://example.com/cb?bare-query-secret#opaque-fragment-secret",
     ])
     expect(command).toBe(
-      "curl -H 'X-Custom: [REDACTED]' '--header=X-Other: [REDACTED]' '-HX-Third: [REDACTED]' --proxy-header 'X-Proxy: [REDACTED]' https://example.com/[REDACTED]?[REDACTED]#[REDACTED]",
+      "curl -H 'X-Custom: [REDACTED]' '--header=X-Other: [REDACTED]' '-HX-Third: [REDACTED]' --proxy-header 'X-Proxy: [REDACTED]' 'https://example.com/[REDACTED]?[REDACTED]#[REDACTED]'",
     )
     expect(backstopAccepts(command)).toBe(true)
   })
@@ -235,7 +242,7 @@ describe("redactInventoryArgv", () => {
     const command = redactInventoryArgv([
       "curl", "https://hooks.example.com/services/T0/B0/XXXX", "--url", "https://example.com/", "https://example.com", "https://h.example.com/a?key=v#f",
     ])
-    expect(command).toBe("curl https://hooks.example.com/[REDACTED] --url https://example.com/ https://example.com https://h.example.com/[REDACTED]?key=[REDACTED]#[REDACTED]")
+    expect(command).toBe("curl https://hooks.example.com/[REDACTED] --url https://example.com/ https://example.com 'https://h.example.com/[REDACTED]?key=[REDACTED]#[REDACTED]'")
     expect(backstopAccepts(command)).toBe(true)
   })
 
@@ -369,8 +376,8 @@ describe("shell text that runs, expands or escapes an operator", () => {
     ["echo \"${TOKEN:-opaque-secret}\" x", "echo [REDACTED]"],
     ["sh -c 'curl -H X-Foo: <(printf opaque-secret) x'", "sh -c 'curl -H X-Foo: [REDACTED]'"],
     ["sh -c 'echo ${TOKEN-opaque-secret} x'", "sh -c 'echo [REDACTED]'"],
-    ["curl https://h.example.com/p?a=one\\&b=two", "curl https://h.example.com/[REDACTED]?a=[REDACTED]'&b=[REDACTED]'"],
-    ["curl https://h.example.com/p?a=one\\;b=two x", "curl https://h.example.com/[REDACTED]?a=[REDACTED]';b=[REDACTED]' x"],
+    ["curl https://h.example.com/p?a=one\\&b=two", "curl https://h.example.com/[REDACTED]'?a=[REDACTED]&b=[REDACTED]'"],
+    ["curl https://h.example.com/p?a=one\\;b=two x", "curl https://h.example.com/[REDACTED]'?a=[REDACTED];b=[REDACTED]' x"],
   ])("redacts %j", (input, expected) => {
     const redacted = redactInventoryText(input)
     expect(redacted).toBe(expected)
@@ -497,8 +504,150 @@ describe("shell text that runs, expands or escapes an operator", () => {
       "echo", "a;b", "x|y", "p&q", "$HOME", "${HOME}", "a\\b", "say \"hi\"", "it's", "a b", "<in", ">out", "(x)", "#c", "~u", "{a,b}", "*", "", "tab\there", "line\nbreak",
     ]
     const command = redactInventoryArgv(argv)
-    expect(inventoryShellWords(command)).toEqual(argv)
-    // The protocol refuses control characters in any text, a tab included.
+    // The protocol refuses control characters in any text, a tab included, so
+    // an argument that holds one is shown as the marker.
+    expect(inventoryShellWords(command)).toEqual(argv.map((word) => (/[\t\n]/u.test(word) ? "[REDACTED]" : word)))
+    expect(backstopAccepts(command)).toBe(true)
     expect(backstopAccepts(redactInventoryArgv(argv.filter((word) => !/[\t\n]/u.test(word))))).toBe(true)
+  })
+})
+
+// `$'...'` and `$"..."` are not POSIX quoting: an argument that holds one is
+// shell text the reader does not read, redacted from that argument on.
+describe("redactInventoryArgv with ANSI C and localized quoting", () => {
+  it.each([
+    [["cmd", "$'opaque-secret'", "tail"], "cmd [REDACTED]"],
+    [["cmd", "$\"opaque-secret\"", "tail"], "cmd [REDACTED]"],
+    [["cmd", "x", "--opt=a$'\\x6fpaque-secret'", "y"], "cmd x [REDACTED]"],
+    [["cmd", "x", "a$\"opaque-secret\"b", "y"], "cmd x [REDACTED]"],
+  ])("redacts the argument vector %j", (argv, expected) => {
+    const redacted = redactInventoryArgv(argv)
+    expect(redacted).toBe(expected)
+    expect(redacted).not.toMatch(/opaque-secret/u)
+    expect(backstopAccepts(redacted)).toBe(true)
+    expect(inventoryShellWords(redacted)).toEqual(inventoryShellWords(expected))
+  })
+})
+
+// Pathname patterns (`*`, `?`, `[`) and brace expansion (`{a,b}`, `{1..3}`)
+// turn one word into several or none, and the reader does not model them. An
+// emitted word never holds one unquoted: text keeps its source with each such
+// character escaped, and an argument holding one is quoted.
+describe("pattern and brace characters in emitted words", () => {
+  const textCases: ReadonlyArray<[string, string]> = [
+    ["echo {a,b}", "echo \\{a,b}"],
+    ["echo {1..3} x", "echo \\{1..3} x"],
+    ["ls a?b", "ls a\\?b"],
+    ["ls a[bc]", "ls a\\[bc]"],
+    ["ls *.ts x", "ls \\*.ts x"],
+    ["ls \"$HOME\"/*.ts", "ls \"$HOME\"/\\*.ts"],
+    ["sh -c 'ls a?b'", "sh -c 'ls a\\?b'"],
+    ["bash -lc \"ls a?b *\"", "bash -lc \"ls a\\\\?b \\\\*\""],
+    ["curl -H X*Foo:opaque-secret x", "curl -H X\\*Foo:[REDACTED] x"],
+    ["curl -H X*Foo: opaque-secret a?b", "curl -H X\\*Foo: [REDACTED] a\\?b"],
+    ["tool --token opaque-secret a?b", "tool --token [REDACTED] a\\?b"],
+  ]
+
+  it.each(textCases)("writes %j so no pattern expands", (input, expected) => {
+    const redacted = redactInventoryText(input)
+    expect(redacted).toBe(expected)
+    expect(redacted).not.toMatch(/opaque-secret/u)
+    expect(redactInventoryText(redacted)).toBe(redacted)
+    expect(backstopAccepts(redacted)).toBe(true)
+    expect(inventoryShellWords(redacted)).toEqual(inventoryShellWords(input)!.map((word) => word.replace("opaque-secret", "[REDACTED]")))
+  })
+
+  // A `[` or `[[` word is the test command, `$?` and `$*` are parameters, and
+  // `{}` or `{a}` is not a brace expansion; quoted and escaped forms are
+  // already literal.
+  it.each([
+    "[ -f x ] && echo $? $*",
+    "[[ -n x ]]",
+    "find . -exec rm {} +",
+    "echo {a} '{a,b}' \"a?b\" a\\*b \\[x]",
+    "echo [REDACTED]",
+  ])("keeps %j", (input) => {
+    expect(redactInventoryText(input)).toBe(input)
+  })
+
+  const argvCases: ReadonlyArray<[string[], string]> = [
+    [["cmd", "a?b"], "cmd 'a?b'"],
+    [["cmd", "a[bc]"], "cmd 'a[bc]'"],
+    [["cmd", "x*", "{a,b}", "[", "a]"], "cmd 'x*' '{a,b}' '[' a]"],
+    [["cmd", "--token", "opaque-secret", "a?b"], "cmd --token [REDACTED] 'a?b'"],
+  ]
+
+  it.each(argvCases)("quotes the argument vector %j", (argv, expected) => {
+    const redacted = redactInventoryArgv(argv)
+    expect(redacted).toBe(expected)
+    expect(backstopAccepts(redacted)).toBe(true)
+    expect(inventoryShellWords(redacted)).toEqual(argv.map((word) => (word === "opaque-secret" ? "[REDACTED]" : word)))
+  })
+
+  // The same outputs read by real shells, in a directory where each pattern
+  // would match: they see the words the reader does.
+  describe.skipIf(process.platform === "win32")("read by a shell", () => {
+    let directory = ""
+    beforeAll(() => {
+      directory = mkdtempSync(join(tmpdir(), "domovoi-inventory-words-"))
+      for (const name of ["acb", "adb", "ab", "x.ts", "y.ts", "xa", "a"]) writeFileSync(join(directory, name), "")
+    })
+    afterAll(() => rmSync(directory, { recursive: true, force: true }))
+
+    const shells = ["/bin/sh", "/bin/bash"].filter((shell) => existsSync(shell))
+    const read = (shell: string, command: string) => execFileSync(shell, ["-c", `set -- ${command}; printf '%s\\0' "$@"`], {
+      cwd: directory, encoding: "utf8", env: { PATH: "/usr/bin:/bin" },
+    }).split("\0").slice(0, -1)
+    const outputs = [
+      ...textCases.filter(([input]) => !/\$|sh -c|-lc/u.test(input)).map(([input]) => redactInventoryText(input)),
+      ...argvCases.map(([argv]) => redactInventoryArgv(argv)),
+      redactInventoryText("curl https://example.com/?q=1"),
+      redactInventoryArgv(["curl", "https://h.example.com/a?key=v#f"]),
+    ]
+
+    it.each(shells.flatMap((shell) => outputs.map((output) => [shell, output])))("%s reads %j as the reader does", (shell, output) => {
+      expect(read(shell, output)).toEqual(inventoryShellWords(output))
+    })
+  })
+})
+
+// The protocol refuses control and format characters in any text. A word or
+// text that would carry one is redacted from there on, so the entry is still
+// listed rather than dropped.
+describe("control characters in emitted text", () => {
+  // A format character, which the protocol refuses as it does a control one.
+  const rightToLeftOverride = String.fromCodePoint(0x202e)
+
+  it.each([
+    ["curl -H X-Foo: \\\nopaque-secret tail", "curl -H X-Foo: [REDACTED]"],
+    ["npm test\nnpm run lint", "npm test [REDACTED]"],
+    ["npm test\n", "npm test [REDACTED]"],
+    ["\nnpm test", "[REDACTED]"],
+    ["line one\nline two", "line one [REDACTED]"],
+    ["echo 'a\tb' x", "echo [REDACTED]"],
+    ["echo a\tb", "echo a [REDACTED]"],
+    ["echo a\\\nb x", "echo [REDACTED]"],
+    [`echo "a${rightToLeftOverride}b" x`, "echo [REDACTED]"],
+    ["sh -c 'npm test\nnpm run lint'", "sh -c 'npm test [REDACTED]'"],
+    ["sh -c \"TOKEN=a\tb\"", "sh -c \"TOKEN=[REDACTED]\""],
+  ])("redacts %j", (input, expected) => {
+    const redacted = redactInventoryText(input)
+    expect(redacted).toBe(expected)
+    expect(redacted).not.toMatch(/opaque-secret/u)
+    expect(redactInventoryText(redacted)).toBe(redacted)
+    expect(backstopAccepts(redacted)).toBe(true)
+    expect(inventoryShellWords(redacted)).toBeDefined()
+  })
+
+  it.each([
+    [["cmd", "line\nbreak", "x"], "cmd [REDACTED] x"],
+    [["cmd", "tab\there", "x"], "cmd [REDACTED] x"],
+    [["cmd", `a${rightToLeftOverride}b`], "cmd [REDACTED]"],
+    [["sh", "-c", "npm test\nnpm run lint"], "sh -c 'npm test [REDACTED]'"],
+  ])("redacts the argument vector %j", (argv, expected) => {
+    const redacted = redactInventoryArgv(argv)
+    expect(redacted).toBe(expected)
+    expect(backstopAccepts(redacted)).toBe(true)
+    expect(inventoryShellWords(redacted)).toBeDefined()
   })
 })
