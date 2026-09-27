@@ -47,7 +47,9 @@ import { nodeServiceEffects } from "./install.js"
 //   candidate that holds one, or that one holds, is kept (round 1): a kept
 //   copy's path can lead through a link into another candidate. A kept copy
 //   that cannot be resolved, for any reason but not being there, removes
-//   nothing.
+//   nothing. A kept copy whose profile, runtime, version or id directory, as
+//   the definition spells it, is a link removes nothing either (round 2): a
+//   link inside a candidate can lead on to a copy outside it.
 // - A candidate is moved to a private name beside the copies, by one rename,
 //   and removed only if what moved is still the directory that was checked.
 //   Anything else is moved back.
@@ -55,6 +57,9 @@ import { nodeServiceEffects } from "./install.js"
 // Limits: Node has no calls relative to an open directory, so the removal of
 // the moved tree walks it by path; a process running as the same user can
 // swap a directory inside it during that walk (same-user races, P3 by Q63).
+// Links above a profile are not looked at, so a linked home directory still
+// cleans up; a profile spelled through a link that sits inside one of its own
+// candidates is not detected.
 // The service definition is read by name; WSL guest services have no
 // definition this host can read, so their copies are never removed here.
 export type RuntimeCleanupFileSystem = {
@@ -169,6 +174,15 @@ export async function removeUnusedDaemonRuntimes(
       || await fs.entry(profile) !== "directory" || await fs.entry(root) !== "directory") {
       return { skipped: "runtime-directory" }
     }
+    // Security review round 2 of #635 (P2): a kept copy's path can run through
+    // a link inside a candidate on to a directory outside it. The copy is then
+    // apart from the candidate, yet removing the candidate removes the link,
+    // and the path the definition names no longer leads to Node. Protecting
+    // only where the path ends cannot see that, so a kept copy named through
+    // a link removes nothing.
+    for (const copy of kept) {
+      if (!await namedThroughDirectories(fs, paths, copy)) return { skipped: "runtime-directory" }
+    }
     let keptTrees: Tree[]
     try {
       keptTrees = await Promise.all(kept.map((copy) => tree(fs, paths, copy)))
@@ -205,6 +219,26 @@ export async function removeUnusedDaemonRuntimes(
     return { removed }
   } finally {
     lease.release()
+  }
+}
+
+// True when the kept copy's profile, runtime, version and id directories, as
+// the definition spells them, are each a real directory, up to the first that
+// is not there: a copy that is not there holds nothing. A link, anything else
+// or a read that fails is false. What is above the profile, a linked home
+// directory for one, is not looked at (see Limits above).
+async function namedThroughDirectories(fs: RuntimeCleanupFileSystem, paths: typeof posix, copy: string): Promise<boolean> {
+  const version = paths.dirname(copy)
+  const runtime = paths.dirname(version)
+  try {
+    for (const path of [paths.dirname(runtime), runtime, version, copy]) {
+      const found = await fs.entry(path)
+      if (found === "missing") return true
+      if (found !== "directory") return false
+    }
+    return true
+  } catch {
+    return false
   }
 }
 

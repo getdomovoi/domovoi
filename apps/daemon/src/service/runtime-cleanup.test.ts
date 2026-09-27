@@ -238,6 +238,7 @@ describe("removeUnusedDaemonRuntimes with links laid out ahead of time", () => {
   // The previous copy's version directory is a link into another candidate,
   // an interrupted removal or an ordinary copy, that holds the whole version.
   // The definition still names the copy by its usual <version>/<id> path.
+  // Since round 2 a copy named through a link removes nothing at all.
   it.each([".removing-0123456789ab", join("0.8.0", "bbbbbbbbbbbb")])("keeps the previous copy reached through a linked version inside %s", async (container) => {
     const previousCopy = await publishCopy(profile, "0.9.1", "aaaaaaaaaaaa")
     const parked = join(profile, "runtime", container)
@@ -255,7 +256,7 @@ describe("removeUnusedDaemonRuntimes with links laid out ahead of time", () => {
     expect(previous).toEqual({ installed: true, copy: previousCopy })
 
     await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous }, dependencies(manager)))
-      .resolves.toEqual({ removed: [] })
+      .resolves.toEqual({ skipped: "runtime-directory" })
     expect(await exists(copyLayout(previousCopy).nodePath)).toBe(true)
     expect(await exists(copyLayout(previousCopy).daemonEntryPath)).toBe(true)
     expect(await exists(copyLayout(current).nodePath)).toBe(true)
