@@ -46,6 +46,17 @@ describe("redactInventoryText", () => {
     ["sh -c \"curl https://h.example.com/'s3cr3t-value' x\"", "sh -c \"curl https://h.example.com/[REDACTED] x\""],
     ["sh -c 'curl https://h.example.com/\"s3cr3t value\" x'", "sh -c 'curl https://h.example.com/[REDACTED] x'"],
     ["sh -c \"curl https://h.example.com/\\\"s3cr3t value\\\" x\"", "sh -c \"curl https://h.example.com/[REDACTED] x\""],
+    // A shell escape in a header name is read before the name is matched.
+    ["curl -H \"X\\`Foo: opaque-secret\" x", "curl -H \"X\\`Foo: [REDACTED]\" x"],
+    ["curl -H \"X\\$Foo: s3cr3t-value\" x", "curl -H \"X\\$Foo: [REDACTED]\" x"],
+    ["curl -H \"X\\\"Foo: s3cr3t-value\" x", "curl -H \"X\\\"Foo: [REDACTED]\" x"],
+    ["curl -H X\\`Foo:s3cr3t-value x", "curl -H X\\`Foo:[REDACTED] x"],
+    ["sh -c 'curl -H \"X\\`Foo: s3cr3t-value\" x'", "sh -c 'curl -H \"X\\`Foo: [REDACTED]\" x'"],
+    // A header argument with a colon that still does not read as a header is
+    // redacted whole.
+    ["curl -H \"X Foo: s3cr3t-value\" x", "curl -H \"[REDACTED]\" x"],
+    ["curl -H 'X(Foo): s3cr3t-value' x", "curl -H '[REDACTED]' x"],
+    ["curl -H X\\\\Foo:s3cr3t-value x", "curl -H [REDACTED] x"],
     ["curl -H 'Authorization: Bearer tok' x", "curl -H 'Authorization: Bearer [REDACTED]' x"],
     // A header's value is redacted whatever the header is called.
     ["curl -H 'X-Custom: opaque-header-secret' x", "curl -H 'X-Custom: [REDACTED]' x"],
@@ -149,6 +160,13 @@ describe("redactInventoryText", () => {
     expect(backstopAccepts(once)).toBe(true)
   })
 
+  it("is idempotent for escaped and unreadable header names", () => {
+    const once = redactInventoryText("curl -H \"X\\`Foo: v\" -H X\\`Bar:v -H \"X Baz: v\" -H 'X(Qux): v' x")
+    expect(once).toBe("curl -H \"X\\`Foo: [REDACTED]\" -H X\\`Bar:[REDACTED] -H \"[REDACTED]\" -H '[REDACTED]' x")
+    expect(redactInventoryText(once)).toBe(once)
+    expect(backstopAccepts(once)).toBe(true)
+  })
+
   it("is idempotent for a URL path with quoted runs", () => {
     const once = redactInventoryText("curl https://h/'a'\"b\"/c 'https://h/'s \"https://h/\"'s'?k=v sh -c \"curl https://h/'s' x\"")
     expect(once).toBe("curl https://h/[REDACTED] 'https://h/[REDACTED]' \"https://h/[REDACTED]?k=[REDACTED]\" sh -c \"curl https://h/[REDACTED] x\"")
@@ -213,6 +231,14 @@ describe("redactInventoryArgv", () => {
     const shell = redactInventoryArgv(["sh", "-c", "curl -H 'X-Foo':s3cr3t-value x"])
     expect(shell).toBe("sh -c \"curl -H 'X-Foo':[REDACTED] x\"")
     expect(backstopAccepts(shell)).toBe(true)
+  })
+
+  // An argument is not shell text, so a backtick in a name needs no escape;
+  // a header argument that still does not read as a header is redacted whole.
+  it("redacts a header argument that does not read as a header", () => {
+    const command = redactInventoryArgv(["curl", "-H", "X`Foo: opaque-secret", "-H", "X Foo: hunter2", "--header=X(Foo): tok-abc", "-H", "@headers.txt"])
+    expect(command).toBe("curl -H \"X`Foo: [REDACTED]\" -H [REDACTED] --header=[REDACTED] -H @headers.txt")
+    expect(backstopAccepts(command)).toBe(true)
   })
 
   it("redacts a URL path that holds quote marks", () => {

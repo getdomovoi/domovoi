@@ -6,7 +6,8 @@
 // Every `NAME=value` at a word start, every value after a sensitive key, flag
 // or authorization scheme, every header value after a header flag whatever the
 // header is called (the next word too, when an unquoted header ends at its
-// colon), every URL path after the host (in whole), every URL query and
+// colon, and the whole argument when one with a colon does not read as a
+// header), every URL path after the host (in whole), every URL query and
 // fragment part (a bare part with no equals sign in whole), and all URL user
 // info become [REDACTED]. A header value that opens with an authorization
 // scheme keeps the scheme word, as a bare `Bearer x` does. The daemon's durable-text redaction leaves
@@ -209,17 +210,26 @@ function urlWordAt(text: string, start: number, quote: Quote): { text: string; e
 const headerFlag = /(-H|--header|--proxy-header)(=|\s+)?/uy
 // A field name is an RFC 9110 token, apostrophe and backtick included. The
 // double quote is not a token character, but a shell word spells a quoted name
-// with it (`"X-Foo":value`), so it is accepted too.
-const headerLine = /^([A-Za-z0-9!#$%&'"*+.^_`|~-]+)(\s*:\s*)([\s\S]+)$/u
+// with it (`"X-Foo":value`), so it is accepted too, and so is a shell escape
+// that reads as one of those characters (`"X\`Foo: v"`, `X\"Foo`, `X\$Foo`).
+const headerLine = /^((?:[A-Za-z0-9!#$%&'"*+.^_`|~-]|\\[`$"])+)(\s*:\s*)([\s\S]+)$/u
 // A header argument that ends at its colon: `-H X-Foo: secret` unquoted
 // leaves the value in the next shell word.
-const headerWithoutValue = /^[A-Za-z0-9!#$%&'"*+.^_`|~-]+\s*:$/u
+const headerWithoutValue = /^(?:[A-Za-z0-9!#$%&'"*+.^_`|~-]|\\[`$"])+\s*:$/u
 
-// The quote a shell word leaves open after `text`, or "" when none is.
+// Whether a header flag's argument, not read as a header line, still has to be
+// redacted whole: it holds a colon, so part of it can be a value. `@file`,
+// `Name;` and an argument that ends at its colon are left to the other rules.
+const unreadableHeader = (argument: string) => argument.includes(":") && !headerWithoutValue.test(argument)
+
+// The quote a shell word leaves open after `text`, or "" when none is. A
+// backslash outside single quotes escapes the character after it.
 function openQuote(text: string): string {
   let open = ""
-  for (const character of text) {
-    if (open === "" && (character === "'" || character === "\"")) open = character
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]!
+    if (character === "\\" && open !== "'") index += 1
+    else if (open === "" && (character === "'" || character === "\"")) open = character
     else if (character === open) open = ""
   }
   return open
@@ -259,6 +269,10 @@ function headerAt(text: string, index: number, quote: Quote): { text: string; en
   const line = text.slice(start + argument.open.length, argument.end - argument.close.length)
   const header = redactHeaderLine(line, argument.open === "")
   if (header !== undefined) return { text: `${whole}${argument.open}${header}${argument.close}`, end: argument.end }
+  // An argument that does not read as a header is redacted whole rather than
+  // let through (`"X Foo: v"`). The word's own quotes are balanced, so the
+  // marker replaces it all.
+  if (unreadableHeader(line)) return { text: `${whole}${argument.open}${marker}${argument.close}`, end: argument.end }
   // A quoted `"Name:"` is an empty header its author closed; only an unquoted
   // one takes the next word as its value.
   if (argument.open !== "" || !headerWithoutValue.test(line)) return undefined
@@ -376,7 +390,7 @@ export function redactInventoryArgv(argv: readonly string[]): string {
     const flag = /^-{1,2}([A-Za-z_][A-Za-z0-9_.-]*)$/u.exec(argument)
     const next = argv[index + 1]
     if (/^(?:-H|--header|--proxy-header)$/u.test(argument) && next !== undefined) {
-      words.push(argument, redactHeaderLine(next, false) ?? redactInventoryText(next))
+      words.push(argument, redactHeaderLine(next, false) ?? (unreadableHeader(next) ? marker : redactInventoryText(next)))
       index += 1
       const value = argv[index + 1]
       if (takesSplitValue(next, value)) {
@@ -386,7 +400,7 @@ export function redactInventoryArgv(argv: readonly string[]): string {
       continue
     }
     const attached = /^(-H|--header=|--proxy-header=)([\s\S]+)$/u.exec(argument)
-    const attachedHeader = attached ? redactHeaderLine(attached[2]!, false) : undefined
+    const attachedHeader = attached ? redactHeaderLine(attached[2]!, false) ?? (unreadableHeader(attached[2]!) ? marker : undefined) : undefined
     if (attached && attachedHeader !== undefined) {
       words.push(`${attached[1]!}${attachedHeader}`)
       continue
