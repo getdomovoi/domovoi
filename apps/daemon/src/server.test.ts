@@ -7038,8 +7038,18 @@ describe("DomovoiDaemon", () => {
         machine: {
           providers: [
             { id: "claude-code", command: "claude", status: "ready", version: "2.1.247", sessionCapable: true },
-            { id: "cursor-agent", command: "agent", status: "ready", version: "2026.08.1", sessionCapable: true },
-            { id: "grok", command: "grok", status: "auth-required", version: "0.18.0", sessionCapable: true },
+            // Turned off until the trust gate ships (owner rulings Q40 A and
+            // Q54 A): whatever the probe reports, the row is the turned-off one.
+            {
+              id: "cursor-agent", command: "agent", status: "unknown", sessionCapable: false,
+              problem: "Cursor is turned off in Domovoi for now. Cursor loads MCP servers, hooks and permission rules from the "
+                + "repository it works in, and Domovoi does not load repository-brought configuration until a trust gate ships.",
+            },
+            {
+              id: "grok", command: "grok", status: "unknown", sessionCapable: false,
+              problem: "Grok is turned off in Domovoi for now. Grok loads MCP servers, hooks and permission rules from the "
+                + "repository it works in, and Domovoi does not load repository-brought configuration until a trust gate ships.",
+            },
             { id: "opencode", command: "opencode", status: "missing", sessionCapable: true },
           ],
         },
@@ -11264,6 +11274,84 @@ describe("DomovoiDaemon", () => {
     expect(agent.resumeThread).not.toHaveBeenCalled()
     expect(agent.startTurn).not.toHaveBeenCalled()
     socket.close()
+  })
+
+  describe("Cursor and Grok turned off", () => {
+    const loads = (name: string) =>
+      `${name} loads MCP servers, hooks and permission rules from the repository it works in, `
+      + "and Domovoi does not load repository-brought configuration until a trust gate ships."
+
+    async function rpc(daemon: DomovoiDaemon, method: string, params: Record<string, unknown>) {
+      const address = await daemon.start()
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }))
+      try {
+        return await response
+      } finally {
+        socket.close()
+      }
+    }
+
+    function storedDaemon(provider: string) {
+      const snapshot = structuredClone(demoWorkspace)
+      const session = snapshot.sessions[0]!
+      session.runtime = { provider, model: "stored-model", reasoning: "none", permissionMode: "build", auto: false }
+      session.state = "idle"
+      session.workspacePath = "/worktrees/stored"
+      session.providerThreadId = "thread-stored"
+      delete session.activeTurnId
+      const daemon = new DomovoiDaemon({ port: 0, store: { load: () => snapshot, save: vi.fn(), close: vi.fn() } })
+      running.push(daemon)
+      return { daemon, session }
+    }
+
+    it.each([
+      ["cursor-agent", "Cursor"],
+      ["grok", "Grok"],
+    ])("refuses to continue a stored %s session and says why", async (provider, name) => {
+      const { daemon, session } = storedDaemon(provider)
+
+      const response = await rpc(daemon, "session.send", { sessionId: session.id, prompt: "Continue", client: "desktop" })
+
+      expect(response).toMatchObject({
+        error: {
+          code: -32602,
+          message: `This session uses ${name}, which is turned off in Domovoi for now. ${loads(name)} The worktree and conversation are kept.`,
+        },
+      })
+    })
+
+    it.each([
+      ["cursor-agent", "Cursor"],
+      ["grok", "Grok"],
+    ])("refuses to move a session onto %s and says why", async (provider, name) => {
+      const { daemon, session } = storedDaemon("codex")
+
+      const response = await rpc(daemon, "session.setRuntime", {
+        sessionId: session.id,
+        client: "desktop",
+        runtime: { provider, model: "any", reasoning: "none", permissionMode: "plan", auto: false },
+      })
+
+      expect(response).toMatchObject({
+        error: { code: -32602, message: `${name} is turned off in Domovoi for now. ${loads(name)}` },
+      })
+    })
+
+    it.each(["cursor-agent", "grok"])("has no session adapter for %s", async (provider) => {
+      const { daemon } = storedDaemon("codex")
+
+      const response = await rpc(daemon, "runtime.discover", { provider, client: "desktop" })
+
+      expect(response).toMatchObject({ result: { provider, status: "unavailable", reason: "unsupported" } })
+    })
   })
 
   it.each([

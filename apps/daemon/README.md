@@ -541,6 +541,13 @@ code or settings the repository brings:
   worktree that contains any of those three files, and says which one. Kilo also reads
   `.kilocode/rules/`, `.kilocode/workflows/` and `.kilocodeignore` from the worktree; those give
   instructions, slash commands and deny rules, and they still load.
+- Cursor and Grok load MCP servers, hooks and permission rules from the repository they work in,
+  and neither has a switch that turns that off. Until the trust gate ships the daemon does not
+  run `agent`, `cursor-agent` or `grok` at all: provider discovery reports both as unable to start
+  without running them, they have no session adapter, so no model list, new session or switch
+  onto them is possible, and a stored Cursor or Grok session is refused when it is continued. Its
+  worktree and conversation are kept. The switch is `acpProvidersTurnedOff` in
+  `src/acp-providers.ts`.
 
 Instruction files still reach the agent, because the daemon reads them itself as text. For Claude
 Code it reads `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` at the worktree root and

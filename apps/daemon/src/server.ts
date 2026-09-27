@@ -175,6 +175,12 @@ import { OpenCodeSdkAdapter } from "./opencode.js"
 import { KiloSdkAdapter } from "./kilo.js"
 import { createCursorAgentAdapter, createGrokAgentAdapter } from "./acp-factory.js"
 import {
+  acpProviderNames,
+  acpProviderTurnedOffReason,
+  acpProviderTurnedOffResumeRefusal,
+  acpProvidersTurnedOff,
+} from "./acp-providers.js"
+import {
   AgentProviderUnavailableError,
   AgentRegistry,
   type AgentAdapter,
@@ -211,7 +217,7 @@ import {
   type TerminalProcess,
   type TerminalService,
 } from "./terminal.js"
-import type { ProviderDetection, ProviderProbe } from "./providers.js"
+import { turnedOffProviderDetection, type ProviderDetection, type ProviderProbe } from "./providers.js"
 import { SkillInstallError, SkillSourceError } from "./skill-install.js"
 import type { SkillReviews } from "./skill-reviews.js"
 import { skillTrustPath as defaultSkillTrustPath } from "./skill-signing.js"
@@ -362,6 +368,18 @@ const sessionResourceMethods = new Set([
   "session.transferResolveConflict",
   "transfer.fromRef",
 ])
+type ProviderReadiness = WorkspaceSnapshot["machine"]["providers"][number]
+
+// Cursor and Grok are turned off whatever a stored row or a provider probe
+// says about them, so every row for either enters the machine snapshot as the
+// turned-off detection and cannot start a session.
+function withTurnedOffProviders(providers: readonly ProviderReadiness[]): ProviderReadiness[] {
+  return providers.map((provider) => {
+    const turnedOff = turnedOffProviderDetection(provider.id)
+    return turnedOff ? { ...turnedOff, sessionCapable: false } : provider
+  })
+}
+
 function approvedRunKey(sessionId: string, turnId: string, itemId: string): string {
   return `${sessionId}\u0000${turnId}\u0000${itemId}`
 }
@@ -1761,6 +1779,10 @@ export class DomovoiDaemon {
       // version after a restart/upgrade. Keep provider readiness separately.
       this.#snapshot.machine = { ...initialSnapshot.machine, providers: this.#snapshot.machine.providers }
     }
+    // A row saved while Cursor or Grok could start sessions is not served,
+    // even until the first probe finishes or if it fails. The next write of
+    // the snapshot stores the turned-off row in its place.
+    this.#snapshot.machine.providers = withTurnedOffProviders(this.#snapshot.machine.providers)
     this.#localMachine = structuredClone(this.#snapshot.machine)
     this.#fleetEnrollment = new FleetEnrollmentService({
       selfId: this.#localMachine.id, registry: this.#store.fleet, credentials: this.#machineCredentials,
@@ -1783,11 +1805,19 @@ export class DomovoiDaemon {
       options.agents ?? {
         "claude-code": new ClaudeAgentSdkAdapter(),
         codex: options.agent ?? new CodexAppServerAdapter(),
-        "cursor-agent": createCursorAgentAdapter(),
-        grok: createGrokAgentAdapter(),
+        ...(acpProvidersTurnedOff ? {} : {
+          "cursor-agent": createCursorAgentAdapter(),
+          grok: createGrokAgentAdapter(),
+        }),
         kilo: new KiloSdkAdapter(),
         opencode: new OpenCodeSdkAdapter(),
       },
+      acpProvidersTurnedOff
+        ? Object.fromEntries(Object.entries(acpProviderNames).map(([provider, name]) => [provider, {
+          reason: acpProviderTurnedOffReason(name),
+          resumeRefusal: acpProviderTurnedOffResumeRefusal(name),
+        }]))
+        : {},
     )
     this.#workspaceService = options.workspaceService ?? new GitWorkspaceService(
       options.worktreeRoot ?? join(this.#profileDirectory, "worktrees"),
@@ -2795,10 +2825,12 @@ export class DomovoiDaemon {
 
   async #refreshProviderReadiness(): Promise<void> {
     const sessionProviders = new Set(this.#agents.providers())
-    const providers = (await this.#providerProbe!.inspect()).map((provider) => ({
+    // Normalised before the rows are saved, broadcast or returned: an
+    // injected probe need not know that Cursor and Grok are turned off.
+    const providers = withTurnedOffProviders((await this.#providerProbe!.inspect()).map((provider) => ({
       ...provider,
       sessionCapable: sessionProviders.has(provider.id),
-    }))
+    })))
     const toolPath = this.#providerProbe!.searchPath
     await this.#enqueueMutation(async () => {
       this.#snapshot.machine.providers = providers
@@ -8442,7 +8474,14 @@ export class DomovoiDaemon {
           }
           changed = true
         } else {
-        const registeredAgent = this.#agents.require(session.runtime.provider)
+        let registeredAgent: AgentAdapter
+        try {
+          registeredAgent = this.#agents.require(session.runtime.provider)
+        } catch (error) {
+          if (!(error instanceof AgentProviderUnavailableError)) throw error
+          this.#error(socket, request.id, invalidParams, error.resumeMessage)
+          return
+        }
         const violation = permissionViolation(session.runtime, registeredAgent)
         if (violation) {
           this.#error(socket, request.id, invalidParams, violation)
@@ -8999,7 +9038,7 @@ export class DomovoiDaemon {
         this.#error(socket, request.id, error.code, error.message)
         return
       }
-      if (error instanceof RepositoryConfigRefusedError) {
+      if (error instanceof RepositoryConfigRefusedError || error instanceof AgentProviderUnavailableError) {
         this.#error(socket, request.id, invalidParams, error.message)
         return
       }

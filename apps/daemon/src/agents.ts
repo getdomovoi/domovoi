@@ -95,16 +95,33 @@ export interface AgentAdapter {
   close(): Promise<void>
 }
 
-export class AgentProviderUnavailableError extends Error {}
+export class AgentProviderUnavailableError extends Error {
+  // What a stored session of this provider is told when it cannot continue.
+  readonly resumeMessage: string
+
+  constructor(message: string, resumeMessage: string = message) {
+    super(message)
+    this.resumeMessage = resumeMessage
+  }
+}
+
+export type UnavailableProvider = Readonly<{ reason: string; resumeRefusal: string }>
 
 export class AgentRegistry {
   readonly #adapters: ReadonlyMap<string, AgentAdapter>
+  readonly #unavailable: ReadonlyMap<string, UnavailableProvider>
 
-  constructor(adapters: Readonly<Record<string, AgentAdapter>>) {
+  // Providers in `unavailable` have no adapter and are refused with their own
+  // words instead of the generic one.
+  constructor(
+    adapters: Readonly<Record<string, AgentAdapter>>,
+    unavailable: Readonly<Record<string, UnavailableProvider>> = {},
+  ) {
     for (const provider of Object.keys(adapters)) {
       if (!provider.trim()) throw new Error("Provider id cannot be empty")
     }
     this.#adapters = new Map(Object.entries(adapters))
+    this.#unavailable = new Map(Object.entries(unavailable).filter(([provider]) => !this.#adapters.has(provider)))
   }
 
   providers(): string[] {
@@ -122,6 +139,8 @@ export class AgentRegistry {
   require(provider: string): AgentAdapter {
     const adapter = this.#adapters.get(provider)
     if (!adapter) {
+      const unavailable = this.#unavailable.get(provider)
+      if (unavailable) throw new AgentProviderUnavailableError(unavailable.reason, unavailable.resumeRefusal)
       throw new AgentProviderUnavailableError(`Agent provider ${provider} is unavailable`)
     }
     return adapter

@@ -1,5 +1,8 @@
 import { AcpAgentAdapter, type AcpPeer, type AcpPeerHandlers } from "./acp.js"
+import { AgentProviderUnavailableError } from "./agents.js"
 import {
+  acpProviderTurnedOffReason,
+  acpProvidersTurnedOff,
   CURSOR_ACP_PROVIDER,
   GROK_ACP_PROVIDER,
   parseAcpModelCatalog,
@@ -13,6 +16,8 @@ type PeerFactory = (handlers: AcpPeerHandlers) => AcpPeer
 type FactoryOptions = {
   run?: ProviderCommandRunner
   createPeer?: PeerFactory
+  // Defaults to acpProvidersTurnedOff; tests of the turned-on path pass false.
+  turnedOff?: boolean
 }
 
 export function createCursorAgentAdapter(options: FactoryOptions = {}): AcpAgentAdapter {
@@ -28,6 +33,14 @@ function createAdapter(
   displayName: string,
   options: FactoryOptions,
 ): AcpAgentAdapter {
+  if (options.turnedOff ?? acpProvidersTurnedOff) {
+    // Nothing here starts the provider: connecting and listing models are
+    // refused before a process or command is made.
+    const refuse = (): never => {
+      throw new AgentProviderUnavailableError(acpProviderTurnedOffReason(displayName))
+    }
+    return new AcpAgentAdapter({ definition, createPeer: refuse, listModels: async () => refuse() })
+  }
   const run = options.run ?? runProviderCommand
   const createPeer = options.createPeer ?? ((handlers) => new StdioAcpPeer({ definition, handlers }))
   return new AcpAgentAdapter({

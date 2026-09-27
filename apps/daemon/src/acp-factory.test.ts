@@ -24,7 +24,7 @@ describe("ACP provider factories", () => {
     })
     const createPeer = vi.fn((_handlers: AcpPeerHandlers) => peer)
 
-    const adapter = createCursorAgentAdapter({ run, createPeer })
+    const adapter = createCursorAgentAdapter({ run, createPeer, turnedOff: false })
 
     await expect(adapter.listModels()).resolves.toEqual([
       expect.objectContaining({ provider: "cursor-agent", id: "gpt-5.4", isDefault: true }),
@@ -41,7 +41,7 @@ describe("ACP provider factories", () => {
       }
     })
 
-    const adapter = createGrokAgentAdapter({ run, createPeer: () => peer })
+    const adapter = createGrokAgentAdapter({ run, createPeer: () => peer, turnedOff: false })
 
     await expect(adapter.listModels()).resolves.toEqual([
       expect.objectContaining({ provider: "grok", id: "grok-code-fast-1" }),
@@ -54,7 +54,7 @@ describe("ACP provider factories", () => {
       stdout: "token=super-secret",
       stderr: "account secret@example.com expired",
     }))
-    const adapter = createGrokAgentAdapter({ run, createPeer: () => peer })
+    const adapter = createGrokAgentAdapter({ run, createPeer: () => peer, turnedOff: false })
 
     await expect(adapter.listModels()).rejects.toThrow("Grok model catalog is unavailable")
     await expect(adapter.listModels()).rejects.not.toThrow(/super-secret|secret@example/)

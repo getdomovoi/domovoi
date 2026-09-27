@@ -133,7 +133,7 @@ describe("CliProviderProbe", () => {
       throw Object.assign(new Error("missing"), { code: "ENOENT" })
     }) satisfies ProviderCommandRunner
 
-    const providers = await new CliProviderProbe(run).inspect()
+    const providers = await new CliProviderProbe(run, { acpProvidersTurnedOff: false }).inspect()
 
     expect(providers.find((provider) => provider.id === "cursor-agent")).toEqual({
       id: "cursor-agent",
@@ -196,7 +196,7 @@ describe("CliProviderProbe", () => {
       throw Object.assign(new Error("missing"), { code: "ENOENT" })
     }) satisfies ProviderCommandRunner
 
-    const providers = await new CliProviderProbe(run).inspect()
+    const providers = await new CliProviderProbe(run, { acpProvidersTurnedOff: false }).inspect()
 
     expect(providers.find((provider) => provider.id === "cursor-agent")).toMatchObject({
       command: "cursor-agent",
