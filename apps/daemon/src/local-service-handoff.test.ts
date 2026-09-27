@@ -1344,6 +1344,30 @@ describe("the service handoff fence and an emergency stop", () => {
     expect(journalTables(statePath).pending).toEqual([])
   })
 
+  // Starting the passes again must end: a row a trigger in the store will not
+  // let go of is finished, stays pending, and startup still opens.
+  it("starts when a journal row cannot be cleared, and leaves it pending", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopId = `stop-${"4".repeat(8)}-bbbb-4bbb-8bbb-${"4".repeat(12)}`
+    await journalRow(statePath, stopId, JSON.stringify({ version: 1, stopId, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z", sessionIds: [sessionId] }))
+    const database = new DatabaseSync(statePath)
+    try {
+      database.exec(`CREATE TRIGGER keep_journal_rows BEFORE DELETE ON emergency_stop_intents
+        BEGIN SELECT RAISE(IGNORE); END`)
+    } finally {
+      database.close()
+    }
+
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.thread.filter((item) => item.kind === "system" && item.body === "Emergency stop requested by desktop.").map((item) => item.id))
+      .toEqual([`system-${stopId}-desktop-${sessionId}`])
+    await daemon.daemon.stop()
+    expect(journalTables(statePath).pending).toEqual([{ stop_id: stopId }])
+  })
+
   // Review round 1 of #641: one row can name two stops. It is cleared once,
   // so a row that took its rowid after the first clear (here, from a trigger
   // in the store) is not cleared with it, and is finished in turn.

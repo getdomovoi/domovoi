@@ -10702,23 +10702,38 @@ export class DomovoiDaemon {
   // two (review round 1 of #641): the journal lists the stops this recovery
   // has acted on until every pass is done, and a line of a listed stop does
   // not count as its record. Nothing is carried from pass to pass in memory
-  // but where the next pass starts.
+  // but where the next pass starts and how many rows were kept.
+  //
+  // Passes read forward by rowid, so a row written behind them while they run
+  // (by another writer on the store, or a trigger in it) would be left
+  // pending. Once the passes reach the end, the journal should hold only the
+  // rows they kept; if it holds more, they start again from the first row.
+  // They stop once a round leaves no fewer rows than the round before, so a
+  // row that cannot be cleared does not hold startup in a loop.
   #recoverEmergencyStops(): void {
     const journal = this.#store.emergencyStops
     if (!journal) return
-    let after: bigint | undefined
-    do {
-      const pass = journal.pending(after)
-      this.#recoverEmergencyStopPass(journal, pass)
-      after = pass.next
-    } while (after !== undefined)
+    let before = Number.POSITIVE_INFINITY
+    for (;;) {
+      let kept = 0
+      let after: bigint | undefined
+      do {
+        const pass = journal.pending(after)
+        kept += this.#recoverEmergencyStopPass(journal, pass)
+        after = pass.next
+      } while (after !== undefined)
+      const left = journal.remaining()
+      if (left <= kept || left >= before) break
+      before = left
+    }
     journal.finishRecovery()
   }
 
+  // Answers how many rows the pass kept.
   #recoverEmergencyStopPass(
     journal: SqliteEmergencyStopIntents,
     { intents: entries, partial, overflow, setAside }: ReturnType<SqliteEmergencyStopIntents["pending"]>,
-  ): void {
+  ): number {
     for (const { key, reason } of setAside) {
       this.#reportError("Domovoi set aside an unreadable emergency stop intent", new Error(`${key}: ${reason}`))
     }
@@ -10728,7 +10743,7 @@ export class DomovoiDaemon {
     for (const { key, reason } of overflow) {
       this.#reportError("Domovoi kept an emergency stop intent it could not finish whole", new Error(`${key}: ${reason}`))
     }
-    if (entries.length === 0) return
+    if (entries.length === 0) return 0
     const candidate = structuredClone(this.#snapshot)
     // One pass over the thread and the sessions, however many stop ids the
     // pass names (round 6): which of its stops have a line, by the detail a
@@ -10796,6 +10811,7 @@ export class DomovoiDaemon {
     // Rows are cleared by rowid: a key can name more than one row.
     const kept = new Set(entries.filter(({ keep }) => keep).map(({ row }) => row))
     for (const { row } of entries) if (!kept.has(row)) journal.clearRow(row)
+    return kept.size
   }
 
   // `storedApprovalIds` names cards read from storage when startup resumes an
