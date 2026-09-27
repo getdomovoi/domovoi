@@ -2,6 +2,11 @@ import { execFile } from "node:child_process"
 
 import type { ProviderRuntime } from "@getdomovoi/protocol"
 
+import {
+  acpProviderNames,
+  acpProviderTurnedOffReason,
+  acpProvidersTurnedOff,
+} from "./acp-providers.js"
 import { claudeInstallProblem } from "./claude-install.js"
 import { resolveCommandPath } from "./tool-path.js"
 
@@ -32,6 +37,14 @@ type ProviderDefinition = {
   commands: string[]
   authArgs?: string[]
   authStatus?: (result: CommandResult) => ProviderDetection["status"]
+  // Why the daemon does not run this provider while ACP providers are turned
+  // off; the detection then carries it as its problem and nothing is run.
+  turnedOff?: string
+}
+
+function turnedOff(provider: string): { turnedOff?: string } {
+  const name = acpProviderNames[provider]
+  return name !== undefined ? { turnedOff: acpProviderTurnedOffReason(name) } : {}
 }
 
 const definitions: ProviderDefinition[] = [
@@ -52,6 +65,7 @@ const definitions: ProviderDefinition[] = [
     commands: ["agent", "cursor-agent"],
     authArgs: ["status"],
     authStatus: textAuthStatus,
+    ...turnedOff("cursor-agent"),
   },
   {
     id: "opencode",
@@ -64,6 +78,7 @@ const definitions: ProviderDefinition[] = [
     commands: ["grok"],
     authArgs: ["models"],
     authStatus: modelProbeAuthStatus,
+    ...turnedOff("grok"),
   },
   {
     id: "kilo",
@@ -80,17 +95,21 @@ const definitions: ProviderDefinition[] = [
 export type CliProviderProbeOptions = {
   path?: string | undefined
   platform?: NodeJS.Platform | undefined
+  // Defaults to acpProvidersTurnedOff; tests of the turned-on path pass false.
+  acpProvidersTurnedOff?: boolean | undefined
 }
 
 export class CliProviderProbe implements ProviderProbe {
   readonly #run: ProviderCommandRunner
   readonly #path: string | undefined
   readonly #platform: NodeJS.Platform
+  readonly #acpProvidersTurnedOff: boolean
 
   constructor(run: ProviderCommandRunner = runProviderCommand, options: CliProviderProbeOptions = {}) {
     this.#run = run
     this.#path = options.path
     this.#platform = options.platform ?? process.platform
+    this.#acpProvidersTurnedOff = options.acpProvidersTurnedOff ?? acpProvidersTurnedOff
   }
 
   get searchPath(): string | undefined {
@@ -107,6 +126,9 @@ export class CliProviderProbe implements ProviderProbe {
   }
 
   async #inspect(definition: ProviderDefinition, signal?: AbortSignal): Promise<ProviderDetection> {
+    if (this.#acpProvidersTurnedOff && definition.turnedOff !== undefined) {
+      return { id: definition.id, command: definition.commands[0]!, status: "unknown", problem: definition.turnedOff }
+    }
     // The Claude Agent SDK starts only the native claude.exe on Windows, so
     // readiness looks for it before the npm shims.
     const commands = this.#platform === "win32" && definition.id === "claude-code"

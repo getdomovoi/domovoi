@@ -175,6 +175,12 @@ import { OpenCodeSdkAdapter } from "./opencode.js"
 import { KiloSdkAdapter } from "./kilo.js"
 import { createCursorAgentAdapter, createGrokAgentAdapter } from "./acp-factory.js"
 import {
+  acpProviderNames,
+  acpProviderTurnedOffReason,
+  acpProviderTurnedOffResumeRefusal,
+  acpProvidersTurnedOff,
+} from "./acp-providers.js"
+import {
   AgentProviderUnavailableError,
   AgentRegistry,
   type AgentAdapter,
@@ -1780,11 +1786,19 @@ export class DomovoiDaemon {
       options.agents ?? {
         "claude-code": new ClaudeAgentSdkAdapter(),
         codex: options.agent ?? new CodexAppServerAdapter(),
-        "cursor-agent": createCursorAgentAdapter(),
-        grok: createGrokAgentAdapter(),
+        ...(acpProvidersTurnedOff ? {} : {
+          "cursor-agent": createCursorAgentAdapter(),
+          grok: createGrokAgentAdapter(),
+        }),
         kilo: new KiloSdkAdapter(),
         opencode: new OpenCodeSdkAdapter(),
       },
+      acpProvidersTurnedOff
+        ? Object.fromEntries(Object.entries(acpProviderNames).map(([provider, name]) => [provider, {
+          reason: acpProviderTurnedOffReason(name),
+          resumeRefusal: acpProviderTurnedOffResumeRefusal(name),
+        }]))
+        : {},
     )
     this.#workspaceService = options.workspaceService ?? new GitWorkspaceService(
       options.worktreeRoot ?? join(this.#profileDirectory, "worktrees"),
@@ -8421,7 +8435,14 @@ export class DomovoiDaemon {
           }
           changed = true
         } else {
-        const registeredAgent = this.#agents.require(session.runtime.provider)
+        let registeredAgent: AgentAdapter
+        try {
+          registeredAgent = this.#agents.require(session.runtime.provider)
+        } catch (error) {
+          if (!(error instanceof AgentProviderUnavailableError)) throw error
+          this.#error(socket, request.id, invalidParams, error.resumeMessage)
+          return
+        }
         const violation = permissionViolation(session.runtime, registeredAgent)
         if (violation) {
           this.#error(socket, request.id, invalidParams, violation)
@@ -8978,7 +8999,7 @@ export class DomovoiDaemon {
         this.#error(socket, request.id, error.code, error.message)
         return
       }
-      if (error instanceof RepositoryConfigRefusedError) {
+      if (error instanceof RepositoryConfigRefusedError || error instanceof AgentProviderUnavailableError) {
         this.#error(socket, request.id, invalidParams, error.message)
         return
       }
