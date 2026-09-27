@@ -546,7 +546,8 @@ code or settings the repository brings:
   run `agent`, `cursor-agent` or `grok` at all: provider discovery reports both as unable to start
   without running them, they have no session adapter, so no model list, new session or switch
   onto them is possible, and a stored Cursor or Grok session is refused when it is continued. Its
-  worktree and conversation are kept. The switch is `acpProvidersTurnedOff` in
+  worktree and conversation are kept, and it can be switched to another provider, which starts a
+  new thread there; the daemon holds no Cursor or Grok thread to stop. The switch is `acpProvidersTurnedOff` in
   `src/acp-providers.ts`.
 
 Instruction files still reach the agent, because the daemon reads them itself as text. For Claude
