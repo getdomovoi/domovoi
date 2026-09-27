@@ -12,7 +12,7 @@ import { OperationDeadline } from "../operation-deadline.js"
 import { claimProfile, ProfileAlreadyOwnedError, type ProfileLease } from "../profile-lease.js"
 import { localOwnerRemovalReceiptPath, writeLocalOwnerRemovalReceipt } from "../local-owner-removal.js"
 import { readServiceRemovalSnapshot, serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
-import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration, type ServiceRuntimeRecord } from "./configuration.js"
+import { assertServiceProfile, createServiceConfiguration, registeredWithoutConfiguration, ServiceProfileUnknownError, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration, type ServiceRuntimeRecord } from "./configuration.js"
 import { readLocalProfileFile } from "../local-owner-record.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
@@ -254,6 +254,14 @@ export class WindowsTaskArgumentVariableError extends Error {
   }
 }
 
+// The program a launchd agent or systemd unit runs and its arguments, as an
+// install writes them: the runtime, the daemon entry, and the saved
+// configuration. The runtime version reader compares a definition with it.
+export function serviceProgram(execPath: string, runtime: string | undefined, configurationPath: string): { program: string; args: string[] } {
+  const serviceArgs = ["--service-config", configurationPath]
+  return runtime === undefined ? { program: execPath, args: serviceArgs } : { program: runtime, args: [execPath, ...serviceArgs] }
+}
+
 export function servicePlan({
   platform,
   execPath,
@@ -283,9 +291,7 @@ export function servicePlan({
     const task = installedWslTask(configuration.wsl, configuration.registrationId, configurationFile.path)
     return { kind: "task", configuration: configurationFile, commands: [task.register, task.start] }
   }
-  const serviceArgs = ["--service-config", configurationFile.path]
-  const program = runtime === undefined ? execPath : runtime
-  const args = runtime === undefined ? serviceArgs : [execPath, ...serviceArgs]
+  const { program, args } = serviceProgram(execPath, runtime, configurationFile.path)
   if (platform === "linux") {
     for (const path of [runtime, execPath, configurationFile.path]) {
       if (path !== undefined) refuseSystemdPath(path)
@@ -577,18 +583,124 @@ async function launchdCommandsBeforeInstall(target: ServiceTarget, plan: Service
   return [{ command: "launchctl", args: ["bootout", job] }]
 }
 
+// Security review round 4 of #577 (P1): where the service manager holds a
+// Domovoi registration, read from the manager rather than only the definition
+// file: the definition at Domovoi's path, a job or unit loaded under Domovoi's
+// name after its file was deleted, or one under another name in Domovoi's
+// namespace (sh.domovoi.* on launchd, domovoi* units on systemd). Undefined
+// when there is none. Limit: a job under an unrelated name that runs Domovoi
+// is not found. Used only where no saved configuration names the profile.
+async function registeredServiceWithoutConfiguration(
+  target: Pick<ServiceTarget, "platform" | "uid">,
+  plan: { kind: string; path?: string },
+  effects: Pick<ServiceEffects, "exists" | "capture">,
+  deadline: OperationDeadline,
+): Promise<string | undefined> {
+  if (plan.kind !== "file" || plan.path === undefined) return undefined
+  const path = plan.path
+  if (await withinServiceDeadline(deadline, () => effects.exists(path, deadline))) return path
+  if (target.platform === "darwin") {
+    const domain = `gui/${assertUid(target.uid)}`
+    const job = await withinServiceDeadline(deadline, () => effects.capture("launchctl", ["print", `${domain}/${agentLabel}`], deadline))
+    if (job.code === 0) return `${domain}/${agentLabel}`
+    if (job.code !== 113 || !isMissingServiceFailure("darwin", job)) throw captureFailure("launchctl", job)
+    const listed = await withinServiceDeadline(deadline, () => effects.capture("launchctl", ["print", domain], deadline))
+    if (listed.code !== 0) throw captureFailure("launchctl", listed)
+    // Rounds 5 and 6 (P1): the domain listing is read whole. It must open
+    // with this domain, close every block it opens, and hold one services
+    // block; in that block each row has a pid or "-" first and the label last,
+    // whatever columns launchd puts between. A row that names Domovoi anywhere
+    // but as its one, last field is ambiguous (a label may hold a space).
+    // Anything else refuses rather than pass as having no Domovoi job. Copy
+    // approved by fetzy on 2026-09-26.
+    const unreadable = () => new ServiceProfileUnknownError(`launchd listed the jobs in ${domain} in a form this app cannot read, so whether a login service is registered there is not known.`)
+    const lines = listed.stdout.replace(/\r?\n$/u, "").split(/\r?\n/u).map((line) => line.trimEnd())
+    if (lines[0] !== `${domain} = {`) throw unreadable()
+    let depth = 0
+    let services: string[] | undefined
+    let inServices = false
+    for (const [index, line] of lines.entries()) {
+      const trimmed = line.trim()
+      if (inServices && trimmed !== "}") {
+        services!.push(trimmed)
+        continue
+      }
+      if (trimmed.endsWith("{")) {
+        depth += 1
+        if (depth === 2 && trimmed === "services = {") {
+          if (services !== undefined) throw unreadable()
+          services = []
+          inServices = true
+        }
+      } else if (trimmed === "}") {
+        depth -= 1
+        inServices = false
+        if (depth < 0 || (depth === 0 && index !== lines.length - 1)) throw unreadable()
+      }
+    }
+    if (depth !== 0 || services === undefined) throw unreadable()
+    for (const row of services) {
+      if (row === "") continue
+      const fields = row.split(/\s+/u)
+      if (fields.length < 3 || !/^(?:\d+|-)$/u.test(fields[0]!)) throw unreadable()
+      const naming = fields.filter((field) => field.includes("domovoi"))
+      if (naming.length === 0) continue
+      const label = fields.at(-1)!
+      if (naming.length !== 1 || naming[0] !== label || !label.startsWith("sh.domovoi.")) throw unreadable()
+      return `${domain}/${label}`
+    }
+    return undefined
+  }
+  if (target.platform === "linux") {
+    const listed = await withinServiceDeadline(deadline, () => effects.capture("systemctl", ["--user", "list-units", "--all", "--plain", "--no-legend", "--full", "domovoi*"], deadline))
+    if (listed.code !== 0) throw captureFailure("systemctl", listed)
+    return /^(domovoi\S*)\s/mu.exec(listed.stdout)?.[1]
+  }
+  return undefined
+}
+
+// Round 4 (P3): a saved configuration that cannot be read or parsed names no
+// profile; a caller's install refuses on it with the specific refusal.
+function unknownSavedProfile(path: string, cause: unknown): ServiceProfileUnknownError {
+  const code = (cause as NodeJS.ErrnoException).code
+  const reason = code === undefined
+    ? `The saved service configuration at ${path} is not a Domovoi service configuration.`
+    : `The saved service configuration at ${path} could not be read: ${cause instanceof Error ? cause.message : String(cause)}.`
+  return new ServiceProfileUnknownError(`${reason} The profile the login service runs is not known.`)
+}
+
 async function installWithDeadline(
   target: ServiceTarget,
   effects: InstallEffects,
   deadline: OperationDeadline,
   handoff: (() => Promise<void>) | undefined,
+  callerProfile?: ProfileLocation,
+  beforeChanges?: () => Promise<void>,
 ): Promise<ServicePlan> {
   // Reinstalling is a new supervisor decision, not reuse of an old recovery
   // authorization. Assign the identity here, even if the caller supplied one.
   const plan = servicePlan({ ...target, configuration: { ...target.configuration, registrationId: randomUUID() } })
   deadline.throwIfExpired()
-  const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory)
-  const previous = effects.registeredProfile?.(target.configuration.homeDirectory, target.platform)
+  const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory, target.platform)
+  let previous: ProfileLocation | undefined
+  try {
+    previous = effects.registeredProfile?.(target.configuration.homeDirectory, target.platform)
+  } catch (cause) {
+    if (callerProfile === undefined) throw cause
+    throw unknownSavedProfile(serviceConfigurationPath(target.configuration.homeDirectory, target.platform), cause)
+  }
+  // Security review round 2 of #577: read under the service-operation lease,
+  // before the handoff, so a service saved for another profile meanwhile
+  // refuses the caller's install.
+  if (callerProfile !== undefined) {
+    // Round 3: a registered service with no saved configuration runs a
+    // profile nothing names; the caller's install does not replace it.
+    if (previous === undefined) {
+      const registered = await registeredServiceWithoutConfiguration(target, plan, effects, deadline)
+      if (registered !== undefined) throw registeredWithoutConfiguration(registered)
+    }
+    assertServiceProfile(previous, callerProfile, target.platform)
+  }
   // Security review round 3 (#574): schtasks /create /f replaces a task of
   // the same name, so a task Domovoi did not register refuses the install, by
   // the same check status and removal use, before anything changes.
@@ -602,7 +714,7 @@ async function installWithDeadline(
   try {
     // A profile an earlier registration named is not the in-app daemon's, so
     // it is claimed before the handoff.
-    if (previous && !sameProfileDirectory(previous, profile)) leases.push(effects.claimProfile(previous))
+    if (previous && !sameProfileDirectory(previous, profile, target.platform)) leases.push(effects.claimProfile(previous))
     // The handoff (ruled 2026-09-23, option B; placed by security review
     // rounds 1 and 2 on #574): the service-operation lease is held, the plan
     // is built, the saved registration is read, and the profile is free or
@@ -623,6 +735,12 @@ async function installWithDeadline(
       if (released && cause instanceof ProfileAlreadyOwnedError) throw new DaemonServiceHandoffError(cause)
       throw cause
     }
+    // Every check that can refuse has passed: the profile checks, the
+    // handoff's own check, the caller's fence inside the handoff, and this
+    // claim. The caller's staged runtime goes into place only now, under the
+    // lease, before the first file is written (security review rounds 4 and 5
+    // of #577).
+    if (beforeChanges !== undefined) await withinServiceDeadline(deadline, beforeChanges)
     await withinServiceDeadline(deadline, () => effects.remove(localOwnerRemovalReceiptPath(profile), deadline))
     try {
       await withinServiceDeadline(deadline, () => effects.write(plan.configuration.path, plan.configuration.contents, deadline))
@@ -664,9 +782,9 @@ async function installWithDeadline(
 export function installService(
   target: ServiceTarget,
   effects: InstallEffects & Pick<ServiceEffects, "claimServiceOperation">,
-  options: { handoff?: () => Promise<void> } = {},
+  options: { handoff?: () => Promise<void>; callerProfile?: ProfileLocation; beforeChanges?: () => Promise<void> } = {},
 ): Promise<ServicePlan> {
-  return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.handoff))
+  return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.handoff, options.callerProfile, options.beforeChanges))
 }
 
 // Security review rounds 1 and 2 (#574): any program can register a Windows
@@ -699,7 +817,7 @@ function plainWindowsPath(path: string | undefined): boolean {
 
 const legacyDaemonEntry = /\\(?:@getdomovoi|apps)\\daemon\\dist\\index\.js$/i
 
-function isDomovoiTaskAction(action: WindowsTaskAction, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): boolean {
+export function isDomovoiTaskAction(action: Pick<WindowsTaskAction, "path" | "arguments">, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): boolean {
   // Task Scheduler may report the program with the quotes schtasks was given.
   const program = /^"([^"]*)"$/.exec(action.path)?.[1] ?? action.path
   const quoted = /^"([^"]*)" --service-config "([^"]*)"$/.exec(action.arguments)
@@ -772,7 +890,12 @@ function refuseWindowsTaskPath(path: string): void {
 // daemon reports ready, after the swap and after a restore alike. The caller
 // runs this under the service-operation lease (runServiceUpdate), with effects
 // tracked by trackInFlight.
-export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits, inFlight: InFlight) {
+// beforeWrite: runs once every step that can refuse with nothing changed has
+// passed, right before the new definition is written (security review rounds
+// 4 and 5 of #577: the caller's staged runtime goes into place there). It is
+// given the swap's deadline. Round 10: on systemd it is not raced with that
+// deadline; it settles on its own and says what happened to the copy.
+export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits, inFlight: InFlight, beforeWrite?: (deadline: OperationDeadline) => Promise<void>) {
   return async (readDeadline: OperationDeadline): Promise<ServiceSwap<ServicePlan>> => {
     const plan = servicePlan(target)
     const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory)
@@ -837,14 +960,28 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
         const restart = { command: "systemctl", args: ["--user", "restart", unitFile] }
         return {
           swap: async (deadline) => {
+            if (beforeWrite !== undefined) {
+              try {
+                // Round 10 (P2): not raced with the deadline. The hook settles
+                // on its own and says what happened to the copy (publishFirst).
+                await beforeWrite(deadline)
+              } catch (cause) {
+                // The unit is untouched. A publish that fails writes only a
+                // fresh directory no service uses; one that completed says
+                // so itself (runtime-copied).
+                if (cause instanceof DaemonServiceUpdateError) throw cause
+                throw new DaemonServiceUpdateError("nothing-changed", cause)
+              }
+            }
             try {
               await writeIn(deadline)(plan.path, plan.contents)
             } catch (cause) {
               // The unit is replaced by rename, so a write that failed on its
               // own left the old one. A write the deadline cut short may still
               // rename the new unit into place: that is a failed swap, and the
-              // restore runs once the write has settled.
-              if (deadline.signal.aborted) throw cause
+              // restore runs once the write has settled. After a publish the
+              // runtime did change, so it is a failed swap too.
+              if (deadline.signal.aborted || beforeWrite !== undefined) throw cause
               throw new DaemonServiceUpdateError("nothing-changed", cause)
             }
             await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
@@ -907,6 +1044,7 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
         swap: async (deadline) => {
           await bootoutIn(deadline)()
           await whileHeldIn(deadline, stoppedInstance)(async () => {
+            if (beforeWrite !== undefined) await withinServiceDeadline(deadline, () => beforeWrite(deadline))
             wroteNew = true
             await writeIn(deadline)(plan.path, plan.contents)
             await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
@@ -957,6 +1095,9 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
           throw cause
         }
         await whileHeldIn(deadline, stoppedInstance)(async () => {
+          // Round 6 (P1): under the profile lease, before service.json names
+          // the new runtime and the task is registered to run it.
+          if (beforeWrite !== undefined) await withinServiceDeadline(deadline, () => beforeWrite(deadline))
           wroteNew = true
           await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
         })
@@ -993,6 +1134,7 @@ async function removeWithDeadline(
   effects: RemovalEffects,
   deadline: OperationDeadline,
   progress: RemovalProgress,
+  callerProfile?: ProfileLocation,
 ): Promise<ServiceRemovalResult> {
   const plan = serviceRemovalPlan(target)
   const home = assertHome(target.home)
@@ -1003,6 +1145,25 @@ async function removeWithDeadline(
     throw new WindowsTaskNotDomovoiError(displayName)
   }
   const before = effects.removalSnapshot(home, target.platform)
+  // Security review rounds 2 and 3 of #577: the caller's profile is checked
+  // against this snapshot, the one read of service.json the removal acts on,
+  // under the service-operation lease and before any manager action.
+  if (callerProfile !== undefined) {
+    if (before.configurationUnknown !== undefined) {
+      throw new ServiceProfileUnknownError(`${before.configurationUnknown} The profile the login service runs is not known.`)
+    }
+    if (before.configurationDigest === null) {
+      const registered = await registeredServiceWithoutConfiguration(target, plan, effects, deadline)
+      if (registered !== undefined) throw registeredWithoutConfiguration(registered)
+    } else {
+      // Round 4 (P1): the profile the saved configuration names under its
+      // own home, as the service runs it.
+      if (before.effectiveProfileDirectory === undefined) {
+        throw new ServiceProfileUnknownError("The saved service configuration names no profile. The profile the login service runs is not known.")
+      }
+      assertServiceProfile({ profileDirectory: before.effectiveProfileDirectory }, callerProfile, target.platform)
+    }
+  }
   let managerStopped = true
   if (plan.kind === "task") {
     progress.managerHoldsDeadline = true
@@ -1034,7 +1195,9 @@ async function removeWithDeadline(
     }
   }
   deadline.throwIfExpired()
-  const profile = profileLocation(home, before.profileDirectory)
+  // Round 5 of #577 (P2): lease, and write any recovery receipt into, the
+  // profile the saved configuration names under its own home.
+  const profile = profileLocation(home, before.effectiveProfileDirectory ?? before.profileDirectory)
   const lease = effects.claimProfile(profile)
   try {
     const recovery = serviceRemovalRecovery(before, effects.removalSnapshot(home, target.platform), managerStopped)
@@ -1064,9 +1227,10 @@ async function removeWithDeadline(
 export function removeService(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
   effects: RemovalEffects,
+  options: { callerProfile?: ProfileLocation } = {},
 ): Promise<ServiceRemovalResult> {
   const progress: RemovalProgress = { managerHoldsDeadline: false }
-  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline, progress)).catch((cause: unknown) => {
+  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline, progress, options.callerProfile)).catch((cause: unknown) => {
     // The outer deadline can expire before the manager adapter settles. It
     // needs the same actionable task-specific error, not a bare timer failure.
     if (progress.managerHoldsDeadline && !(cause instanceof WindowsTaskRemovalError)) {
@@ -1275,7 +1439,7 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
       try { text = readLocalProfileFile(serviceConfigurationPath(home, platform), 64 * 1024) }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error }
       const saved = parseServiceConfiguration(text)
-      return profileLocation(saved.homeDirectory, saved.profileDirectory)
+      return profileLocation(saved.homeDirectory, saved.profileDirectory, platform)
     },
     removalSnapshot: readServiceRemovalSnapshot,
     writeRemovalReceipt: writeLocalOwnerRemovalReceipt,

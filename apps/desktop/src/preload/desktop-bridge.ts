@@ -122,6 +122,9 @@ function serviceOutcome(value: unknown): DaemonServiceOutcome {
   if (result.ok === false && (result.reason === "busy" || result.reason === "refused" || result.reason === "check-failed") && serviceText(result.message)) {
     return { ok: false, reason: result.reason, message: result.message }
   }
+  if (result.ok === false && result.reason === "update-failed" && serviceText(result.message)) {
+    return { ok: false, reason: "update-failed", message: result.message }
+  }
   const readBack = serviceReadBack(result.service)
   if (result.ok === false && result.reason === "failed" && serviceText(result.message) && readBack !== undefined
     && (result.daemon === "untouched" || result.daemon === "restarted" || result.daemon === "attached" || result.daemon === "stopped")) {
@@ -254,6 +257,7 @@ export function createDesktopWindowBridge(
       status: async () => serviceStatusReport(await ipc.invoke("domovoi:daemon-service-status")),
       install: async () => serviceOutcome(await ipc.invoke("domovoi:daemon-service-install")),
       remove: async () => serviceOutcome(await ipc.invoke("domovoi:daemon-service-remove")),
+      update: async () => serviceOutcome(await ipc.invoke("domovoi:daemon-service-update")),
     },
     openReleasePage: async () => booleanResult(await ipc.invoke("domovoi:open-release-page"), "release page"),
     onDeepLink: (listener) => {

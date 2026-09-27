@@ -19,6 +19,12 @@ export type DaemonServiceUpdateOutcome =
   // "not-installed".
   | "changed-outside"
   | "nothing-changed"
+  // Ruled 2026-09-26 (#577, Q64 A): the new runtime was published, then failed
+  // its check before anything about the service changed (systemd, and a WSL
+  // guest, whose publish comes first). The copy stays; the service does not
+  // change. Ruled 2026-09-27 (Q73 B): the words say the service is set to run
+  // the previous runtime, not that it runs, since it may have been stopped.
+  | "runtime-copied"
   | "swap-failed-restored"
   | "swap-and-restore-failed"
   | "profile-taken-restored"
@@ -28,7 +34,7 @@ function detail(error: unknown): string {
   return text.trim().replace(/\.+$/u, "")
 }
 
-function updateMessage(outcome: DaemonServiceUpdateOutcome, cause: unknown, restoreCause: unknown): string {
+function updateMessage(outcome: DaemonServiceUpdateOutcome, cause: unknown, restoreCause: unknown, copy: string | undefined): string {
   switch (outcome) {
     case "not-installed":
       return "No Domovoi service is installed for this user, so there is nothing to update. Install the service first."
@@ -36,6 +42,8 @@ function updateMessage(outcome: DaemonServiceUpdateOutcome, cause: unknown, rest
       return "The installed service file was changed outside Domovoi, so Domovoi will not update it. Remove the service and install it again to replace it."
     case "nothing-changed":
       return `Domovoi could not update the service: ${detail(cause)}. Nothing was changed, and the service was left as it was.`
+    case "runtime-copied":
+      return `Domovoi could not update the service: ${detail(cause)}. The new runtime was copied to ${String(copy)}, but the service was left as it was, set to run the previous runtime.`
     case "swap-failed-restored":
       return `Domovoi could not start the service on the new runtime: ${detail(cause)}. The previous service was put back and is running.`
     case "swap-and-restore-failed":
@@ -46,10 +54,41 @@ function updateMessage(outcome: DaemonServiceUpdateOutcome, cause: unknown, rest
 }
 
 export class DaemonServiceUpdateError extends Error {
-  constructor(readonly outcome: DaemonServiceUpdateOutcome, cause?: unknown, readonly restoreCause?: unknown) {
-    super(updateMessage(outcome, cause, restoreCause), cause === undefined ? undefined : { cause })
+  // copy: the published runtime's directory, <profile>/runtime/<version>/<id>,
+  // which "runtime-copied" names and no other outcome takes.
+  constructor(outcome: "runtime-copied", cause: unknown, restoreCause: undefined, copy: string)
+  constructor(outcome: Exclude<DaemonServiceUpdateOutcome, "runtime-copied">, cause?: unknown, restoreCause?: unknown)
+  constructor(readonly outcome: DaemonServiceUpdateOutcome, cause?: unknown, readonly restoreCause?: unknown, readonly copy?: string) {
+    super(updateMessage(outcome, cause, restoreCause, copy), cause === undefined ? undefined : { cause })
     this.name = "DaemonServiceUpdateError"
   }
+}
+
+// Security review round 10 of #577 (P2): the publish where it is an update's
+// first change (systemd, a WSL guest). It is not cut short by the deadline:
+// the update waits for it, however long, so the answer follows what happened
+// to the copy and the service-operation lease is held until it settles. Not
+// started because the deadline had expired, or failed, it changed nothing
+// about the service. Published, the copy exists: a failed check or a deadline
+// that expired meanwhile is "runtime-copied", naming the copy.
+export async function publishFirst(deadline: OperationDeadline, publish: () => Promise<void>, check: () => Promise<void>, copy: string): Promise<void> {
+  deadline.remainingMs()
+  if (deadline.signal.aborted) throw new DaemonServiceUpdateError("nothing-changed", deadline.signal.reason)
+  try {
+    await publish()
+  } catch (cause) {
+    throw new DaemonServiceUpdateError("nothing-changed", cause)
+  }
+  try {
+    await check()
+  } catch (cause) {
+    // Round 11 (P3): a deadline that expired first is what stopped the
+    // update, so its reason is the detail.
+    deadline.remainingMs()
+    throw new DaemonServiceUpdateError("runtime-copied", deadline.signal.aborted ? deadline.signal.reason : cause, undefined, copy)
+  }
+  deadline.remainingMs()
+  if (deadline.signal.aborted) throw new DaemonServiceUpdateError("runtime-copied", deadline.signal.reason, undefined, copy)
 }
 
 // Ruled 2026-09-23: inside an update's texts, a profile another daemon holds

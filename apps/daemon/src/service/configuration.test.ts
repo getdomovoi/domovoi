@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { DaemonConfigurationError, parseDaemonEnvironment } from "../config.js"
-import { createServiceConfiguration, parseServiceConfiguration, readServiceConfiguration, serializeServiceConfiguration, serviceEnvironment } from "./configuration.js"
+import { assertServiceProfile, callerProfile, createServiceConfiguration, parseServiceConfiguration, readServiceConfiguration, serializeServiceConfiguration, serviceEnvironment, ServiceProfileMismatchError } from "./configuration.js"
 
 describe("service configuration", () => {
   it.each(["linux", "darwin", "win32"])("round trips every daemon setting on %s", (platform) => {
@@ -162,5 +162,72 @@ describe("service configuration", () => {
   it("bounds the saved configuration and refuses broken JSON", () => {
     expect(() => parseServiceConfiguration("{" )).toThrow(/Invalid service configuration/)
     expect(() => parseServiceConfiguration(`${JSON.stringify(defaults)}${" ".repeat(64 * 1_024)}`)).toThrow(/Invalid service configuration/)
+  })
+})
+
+// A service's profile is named and compared by the rules of the platform the
+// service is for, not the host's: a Windows host checking a macOS service
+// showed \Users\dl\.domovoi (CI at 1b0d4d23), and a posix host compared
+// Windows profiles case-sensitively. Each case runs on every host; the one
+// whose rules differ from the host's is the one that failed.
+describe("assertServiceProfile by the service platform's path rules", () => {
+  // Runs a check as if this process ran on the given host, so the case whose
+  // rules differ from the host's runs on every machine.
+  const onHost = (host: NodeJS.Platform, check: () => void) => {
+    const real = Object.getOwnPropertyDescriptor(process, "platform")!
+    Object.defineProperty(process, "platform", { ...real, value: host })
+    try { check() } finally { Object.defineProperty(process, "platform", real) }
+  }
+
+  it("names a macOS service's default profile with posix separators on a Windows host", () => {
+    onHost("win32", () => {
+      expect(() => assertServiceProfile({ profileDirectory: "/Users/dl/profiles/other" }, "/Users/dl", "darwin"))
+        .toThrow("This app's daemon uses the profile at /Users/dl/.domovoi, and the login service uses the profile at /Users/dl/profiles/other.")
+      expect(() => assertServiceProfile({ profileDirectory: "/Users/dl/.domovoi" }, "/Users/dl", "darwin")).not.toThrow()
+      // As the service calls build it, from the app's environment.
+      expect(() => assertServiceProfile({ profileDirectory: "/Users/dl/profiles/other" }, callerProfile({}, "/Users/dl", "darwin"), "darwin"))
+        .toThrow("This app's daemon uses the profile at /Users/dl/.domovoi, and the login service uses the profile at /Users/dl/profiles/other.")
+      expect(() => assertServiceProfile({ profileDirectory: "/Users/dl/profiles/work" }, callerProfile({ DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/work" }, "/Users/dl", "darwin"), "darwin")).not.toThrow()
+    })
+  })
+
+  it("compares Windows profiles as Windows does on a posix host", () => {
+    onHost("linux", () => {
+      expect(() => assertServiceProfile({ profileDirectory: "C:\\Users\\dl\\Profiles\\Work" }, { profileDirectory: "c:\\users\\dl\\profiles\\work" }, "win32")).not.toThrow()
+    })
+  })
+
+  // Security review round 13 of #577 (P2): on a Linux service's machine,
+  // link/../victim names victim beside the link's target. A Windows host
+  // cannot follow that link, so such a path matches only the same path.
+  it("does not collapse a posix dot-dot the host cannot resolve on the service's machine", () => {
+    onHost("win32", () => {
+      expect(() => assertServiceProfile({ profileDirectory: "/home/dl/link/../victim" }, { profileDirectory: "/home/dl/victim" }, "linux"))
+        .toThrow(ServiceProfileMismatchError)
+      expect(() => assertServiceProfile({ profileDirectory: "/home/dl/link/../victim" }, { profileDirectory: "/home/dl/link/../victim" }, "linux")).not.toThrow()
+    })
+  })
+
+  it("names a macOS service's default profile with posix separators", () => {
+    expect(() => assertServiceProfile({ profileDirectory: "/Users/dl/profiles/other" }, "/Users/dl", "darwin"))
+      .toThrow("This app's daemon uses the profile at /Users/dl/.domovoi, and the login service uses the profile at /Users/dl/profiles/other.")
+    expect(() => assertServiceProfile({ profileDirectory: "/Users/dl/.domovoi" }, "/Users/dl", "darwin")).not.toThrow()
+  })
+
+  it("names a Windows service's default profile with Windows separators", () => {
+    expect(() => assertServiceProfile({ profileDirectory: "C:\\Users\\dl\\profiles\\other" }, "C:\\Users\\dl", "win32"))
+      .toThrow("This app's daemon uses the profile at C:\\Users\\dl\\.domovoi, and the login service uses the profile at C:\\Users\\dl\\profiles\\other.")
+  })
+
+  it("compares Windows profiles as Windows does, ignoring case and separator form", () => {
+    // Security review round 14 of #577 (P2): on a Windows host two missing
+    // paths match only by exact text, so the case-free match is checked as
+    // a remote comparison (owner ruling: exact case applies to local checks).
+    onHost("linux", () => {
+      expect(() => assertServiceProfile({ profileDirectory: "C:\\Users\\dl\\Profiles\\Work" }, { profileDirectory: "c:\\users\\dl\\profiles\\work" }, "win32")).not.toThrow()
+      expect(() => assertServiceProfile({ profileDirectory: "C:\\Users\\dl\\.domovoi" }, "C:\\Users\\DL", "win32")).not.toThrow()
+    })
+    expect(() => assertServiceProfile({ profileDirectory: "C:\\Users\\dl\\profiles\\other" }, { profileDirectory: "C:\\Users\\dl\\profiles\\work" }, "win32"))
+      .toThrow(ServiceProfileMismatchError)
   })
 })

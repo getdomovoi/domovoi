@@ -8,7 +8,7 @@ import { DaemonConfigurationError, parseDaemonEnvironment, type DaemonEnvironmen
 import { OperationDeadline } from "../operation-deadline.js"
 import { configuredSshTunnelsSchema, tailnetHostSchema } from "../transport-config.js"
 import { withinServiceDeadline } from "./deadline.js"
-import { profileDirectory, profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
+import { configuredProfileDirectory, profileDirectory, profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
 import { readLocalProfileFile } from "../local-owner-record.js"
 import { installedWslTask, wslInstallationSchema, type WslInstallation } from "./wsl-registration.js"
 
@@ -113,7 +113,7 @@ export function serviceRegistrationBlocksProfile(home: string, profile: ProfileL
   if (!existsSync(path)) return false
   try {
     const config = parseServiceConfiguration(readLocalProfileFile(path, maximumConfigurationBytes))
-    return sameProfileDirectory(profileLocation(config.homeDirectory, config.profileDirectory), profile)
+    return sameProfileDirectory(profileLocation(config.homeDirectory, config.profileDirectory, process.platform), profile, process.platform)
   } catch {
     return true
   }
@@ -124,6 +124,81 @@ export function serviceRegistrationBlocksProfile(home: string, profile: ProfileL
 function webAppUrlSetting(value: unknown): string | undefined {
   if (value === undefined || typeof value === "string") return value
   throw new DaemonConfigurationError("DOMOVOI_WEB_APP_URL must be a string")
+}
+
+// Security review of #577 (P1): the turn check and the fence reach only the
+// caller's own daemon, so a service change binds the service only when it
+// runs that daemon's profile. The caller's profile is its environment's
+// DOMOVOI_PROFILE_DIR, read as the daemon reads it.
+// platform: the service's platform, whose path rules name the profile.
+// No DOMOVOI_PROFILE_DIR is the default profile under the home, named by the
+// platform's rules when it is shown or compared.
+export function callerProfile(environment: DaemonEnvironment, homeDirectory: string, platform?: string): ProfileLocation {
+  const configured = environment.DOMOVOI_PROFILE_DIR
+  if (configured === undefined) return homeDirectory
+  return profileLocation(homeDirectory, configuredProfileDirectory(configured, homeDirectory), platform)
+}
+
+// Copy approved by fetzy on 2026-09-26.
+export class ServiceProfileMismatchError extends Error {
+  constructor(readonly app: string, readonly service: string) {
+    super(`This app's daemon uses the profile at ${app}, and the login service uses the profile at ${service}.`)
+    this.name = "ServiceProfileMismatchError"
+  }
+}
+
+// Security review round 3 of #577 (P1, P2): a registered service whose saved
+// configuration is missing, unreadable or malformed runs a profile nothing
+// names. A service change for a caller's profile refuses it rather than take
+// it for the caller's. Copy approved by fetzy on 2026-09-26.
+export class ServiceProfileUnknownError extends Error {
+  constructor(reason: string) {
+    super(`${reason} Nothing was changed.`)
+    this.name = "ServiceProfileUnknownError"
+  }
+}
+
+export function registeredWithoutConfiguration(definitionPath: string): ServiceProfileUnknownError {
+  return new ServiceProfileUnknownError(`A login service is registered at ${definitionPath}, but its saved configuration is missing, so the profile it runs is not known.`)
+}
+
+// The saved service's profile against the caller's. None saved matches: an
+// install writes the caller's profile (the desktop passes it), an update finds
+// nothing to update, and a removal finds no Domovoi service to stop.
+// Both are named and compared by the rules of the service's platform, not
+// this process's (a Windows host checking a macOS service named the default
+// profile with backslashes, CI at 1b0d4d23).
+export function assertServiceProfile(saved: ProfileLocation | undefined, caller: ProfileLocation, platform?: string): void {
+  if (saved !== undefined && !sameProfileDirectory(saved, caller, platform)) {
+    throw new ServiceProfileMismatchError(profileDirectory(caller, platform), profileDirectory(saved, platform))
+  }
+}
+
+// Round 2 (P2): only a service.json that is not there counts as none saved.
+// One that cannot be reached or read throws, so it is never taken for none.
+function savedServiceProfile(home: string): ProfileLocation | undefined {
+  let text: string
+  try {
+    text = readLocalProfileFile(serviceConfigurationPath(home, process.platform), maximumConfigurationBytes)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+    throw error
+  }
+  const config = parseServiceConfiguration(text)
+  return profileLocation(config.homeDirectory, config.profileDirectory, process.platform)
+}
+
+// The desktop's early check, before its turn check and fence: both profile
+// directories when the saved service runs another profile than the caller's.
+// The service calls check again under the service-operation lease. Reads only.
+export function serviceProfileMismatch(input: { environment: NodeJS.ProcessEnv; homeDirectory: string }): { app: string; service: string } | undefined {
+  try {
+    assertServiceProfile(savedServiceProfile(input.homeDirectory), callerProfile(input.environment, input.homeDirectory, process.platform), process.platform)
+    return undefined
+  } catch (error) {
+    if (error instanceof ServiceProfileMismatchError) return { app: error.app, service: error.service }
+    throw error
+  }
 }
 
 export function parseServiceConfiguration(text: string): ServiceConfiguration {

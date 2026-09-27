@@ -10,7 +10,10 @@ export type { DaemonErrorEntry, DaemonErrorSink } from "./server.js"
 export { verifyLocalFleetClientRoute } from "./local-client-route.js"
 export { holdServiceHandoffFence, readLocalServiceHandoffRefusal, type ServiceHandoffFence } from "./local-service-handoff.js"
 // The desktop main process calls this before anything else runs.
-export { captureInheritedCredentials } from "./inherited-credentials.js"
+export { captureInheritedCredentials, type InheritedCredentialValues } from "./inherited-credentials.js"
+// The desktop recognises the profile refusals by name, so their classes stay
+// inside the daemon; it calls the check itself.
+export { serviceProfileMismatch } from "./service/configuration.js"
 export { adoptRelayProfileSuccessor, prepareRelayProfileSuccessor, verifyRelayProfileSuccessor } from "./relay-provisioning.js"
 export type { RelayProfileRecoveryOptions } from "./relay-provisioning.js"
 export {
@@ -26,15 +29,18 @@ export {
   DaemonServiceUpdateError,
   installDaemonService,
   LaunchdJobNotDomovoiError,
+  readDaemonServiceRuntimeVersion,
   readDaemonServiceStatus,
   removeDaemonService,
   SystemdPathCharacterError,
   updateDaemonService,
   type DaemonServiceDependencies,
+  type DaemonServiceRuntimeReport,
   type DaemonServiceInstallResult,
   type DaemonServiceOptions,
   type DaemonServiceRemovalResult,
   type DaemonServiceRuntime,
+  type DaemonServiceStagedRuntime,
   type DaemonServiceStatus,
   type DaemonServiceUpdateOptions,
   type DaemonServiceUpdateOutcome,

@@ -21,6 +21,12 @@ export function DesktopDaemonRefused({ reason, message, retrying, onRetry }: {
           <AlertTitle>{copy.title}</AlertTitle>
           <AlertDescription>{copy.detail}</AlertDescription>
         </Alert>
+        {/* Ruled 2026-09-24 (#577, C): an owner this app cannot talk to cannot
+            be checked for running work, so no update button; the command is
+            shown to copy instead. */}
+        {reason === "owner-incompatible" ? (
+          <code className="block select-all rounded-md bg-code px-3 py-2 font-machine text-[12px] text-strong">domovoid service install</code>
+        ) : null}
         <Button variant="outline" size="sm" disabled={retrying} onClick={onRetry}>
           {retrying ? "Trying again" : "Try again"}
         </Button>

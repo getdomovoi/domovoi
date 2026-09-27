@@ -21,7 +21,7 @@ import { createServiceConfiguration, parseServiceConfiguration, serializeService
 import { nodeServiceEffects, type CapturedRun, type ServiceEffects } from "./install.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { launchdPlist, systemdUnit } from "./units.js"
-import { runServiceUpdate, trackInFlight } from "./update-outcome.js"
+import { publishFirst, runServiceUpdate, trackInFlight } from "./update-outcome.js"
 import { installedWslTask } from "./wsl-registration.js"
 import { wslUpdateIntentPath } from "./wsl-install.js"
 
@@ -447,6 +447,19 @@ describe("updateDaemonService with a Windows logon task", () => {
     expect(created).toContain("/f")
     expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
       "read task", "stop task", "claim", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "schtasks /run",
+    ])
+  })
+
+  // Security review round 6 of #577 (P1): the staged runtime goes into place
+  // under the profile lease, after the stop, before service.json is written
+  // and the task registered, as on the other platforms.
+  it("publishes the staged runtime under the profile lease before writing the configuration or registering the task", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    const staged = { nodePath: "C:\\Users\\dl\\.domovoi\\runtime\\.staging\\node\\node.exe", daemonEntryPath: "C:\\Users\\dl\\.domovoi\\runtime\\.staging\\daemon\\dist\\index.js" }
+    const publish = vi.fn(async () => { effects.order.push("publish") })
+    await updateDaemonService({ runtime: windowsRuntime, staged: { runtime: staged, publish } }, effects)
+    expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
+      "read task", "stop task", "claim", "publish", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "schtasks /run",
     ])
   })
 
@@ -1466,5 +1479,355 @@ describe("security review round 6", () => {
     effects.files.set(unit, systemdUnit({ execPath: executable, args: [old.entry, "--service-config", "/home/dl/.domovoi/service.json"] }))
     await expect(updateDaemonService({ runtime }, effects)).rejects.toMatchObject({ outcome: "nothing-changed", cause: expect.any(SystemdPathCharacterError) })
     expect(effects.order).toEqual([])
+  })
+})
+
+// Security review round 2 of #577 (P1): the desktop checks the profiles before
+// its fence, and another service change can replace service.json after that.
+// Given the caller's environment, the update checks the saved service's
+// profile again under the service-operation lease, before any manager action.
+describe("updateDaemonService for the caller's profile", () => {
+  it("changes nothing when the saved service runs another profile than the caller's", async () => {
+    const effects = fake("darwin", "/Users/dl")
+    const refused = updateDaemonService({ runtime, environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/work" } }, effects)
+    await expect(refused).rejects.toMatchObject({ outcome: "nothing-changed", cause: { name: "ServiceProfileMismatchError" } })
+    await expect(refused).rejects.toThrow("This app's daemon uses the profile at /Users/dl/profiles/work, and the login service uses the profile at /Users/dl/.domovoi")
+    expect(effects.claimServiceOperation).toHaveBeenCalled()
+    expect(effects.order).toEqual([])
+  })
+
+  it("updates the saved service when it runs the caller's profile", async () => {
+    const effects = fake("darwin", "/Users/dl")
+    await expect(updateDaemonService({ runtime, environment: {} }, effects)).resolves.toMatchObject({ kind: "file" })
+  })
+
+  // Security review round 4 of #577 (P2): the staged copy is published only
+  // after the profile check under the lease, before any manager action.
+  it("publishes the staged runtime only after the profile check, before any manager action", async () => {
+    const staged = { nodePath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/node/bin/node", daemonEntryPath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/daemon/dist/index.js" }
+    const effects = fake("darwin", "/Users/dl")
+    const publish = vi.fn(async () => { effects.order.push("publish") })
+    await updateDaemonService({ runtime, staged: { runtime: staged, publish }, environment: {} }, effects)
+    // Round 5 (P1): published once every step that can refuse with nothing
+    // changed has passed (which plist is loaded, the bootout, the profile
+    // claim) and right before the new agent is written.
+    expect(effects.order.slice(0, 5)).toEqual(["launchctl print", "launchctl bootout gui/501/sh.domovoi.domovoid", "claim", "publish", `write ${agent}`])
+
+    // A job loaded from another plist refuses in the checks: nothing published.
+    const foreign = fake("darwin", "/Users/dl", { agentLoadedFrom: "/Users/dl/Library/LaunchAgents/other.plist" })
+    const neverPublished = vi.fn(async () => {})
+    await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish: neverPublished }, environment: {} }, foreign)).rejects.toMatchObject({ outcome: "nothing-changed" })
+    expect(neverPublished).not.toHaveBeenCalled()
+
+    // systemd: published right before the unit is written. A unit write that
+    // then fails no longer says nothing was changed; the previous unit is
+    // written back and started.
+    const unitWrite = fake("linux", "/home/dl")
+    unitWrite.write = vi.fn(async (path: string, contents: string) => {
+      unitWrite.order.push(`write ${path}`)
+      if (path === unit && contents !== oldUnit) throw new Error("write failed")
+      unitWrite.files.set(path, contents)
+    })
+    const linuxPublish = vi.fn(async () => { unitWrite.order.push("publish") })
+    const failed = updateDaemonService({ runtime, staged: { runtime: staged, publish: linuxPublish }, environment: {} }, unitWrite)
+    await expect(failed).rejects.toMatchObject({ outcome: "swap-failed-restored" })
+    expect(unitWrite.order.slice(0, 2)).toEqual(["publish", `write ${unit}`])
+
+    const refused = fake("darwin", "/Users/dl")
+    const notPublished = vi.fn(async () => {})
+    await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish: notPublished }, environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/work" } }, refused)).rejects.toMatchObject({ outcome: "nothing-changed" })
+    expect(notPublished).not.toHaveBeenCalled()
+    expect(refused.order).toEqual([])
+  })
+})
+
+// Security review round 6 of #577 (P1): the runtime publish is a transaction.
+// Once published, every later failure of the update puts the previous copy of
+// that version back (revert), on every platform. The fake staged copy models
+// the version in place; the test checks the old one is back.
+describe("updateDaemonService leaves every runtime copy alone on every failure after the publish (round 7)", () => {
+  const staged = { nodePath: "/stage/node/bin/node", daemonEntryPath: "/stage/daemon/dist/index.js" }
+  function versioned() {
+    const state = { version: "old" }
+    return {
+      state,
+      staged: {
+        runtime: staged,
+        publish: vi.fn(async () => { state.version = "new" }),
+        revert: vi.fn(async () => { state.version = "old" }),
+      },
+    }
+  }
+  const failingWrite = (effects: Fake, path: string) => {
+    const write = effects.write
+    effects.write = vi.fn(async (at: string, contents: string, deadline?: OperationDeadline) => {
+      if (at === path) throw new Error(`write ${at} failed`)
+      return write(at, contents, deadline as never)
+    }) as never
+  }
+  const wsl = (): ServiceConfiguration => ({
+    ...saved("linux", "/home/dl"),
+    wsl: {
+      distribution: "Ubuntu", linuxUser: "dl", powershell: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      wsl: "C:\\Windows\\System32\\wsl.exe", executable: oldRuntime.nodePath, args: [oldRuntime.daemonEntryPath],
+    },
+  })
+  const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime-2\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index.js" }
+  const windowsStaged = { nodePath: "C:\\Users\\dl\\stage\\node\\node.exe", daemonEntryPath: "C:\\Users\\dl\\stage\\daemon\\dist\\index.js" }
+
+  const cases: [string, () => Fake][] = [
+    ["launchd: the published runtime fails its check", () => fake("darwin", "/Users/dl")],
+    ["launchd: the new agent cannot be written", () => { const effects = fake("darwin", "/Users/dl"); failingWrite(effects, agent); return effects }],
+    ["launchd: the new agent never reports ready", () => fake("darwin", "/Users/dl", { crashingStarts: 1 })],
+    ["systemd: the new unit cannot be written", () => { const effects = fake("linux", "/home/dl"); failingWrite(effects, unit); return effects }],
+    ["systemd: the restarted unit never reports ready", () => fake("linux", "/home/dl", { crashingStarts: 1 })],
+    ["Windows: service.json cannot be written", () => { const effects = fake("win32", "C:\\Users\\dl"); failingWrite(effects, "C:\\Users\\dl\\.domovoi\\service.json"); return effects }],
+    ["Windows: the new task never reports ready", () => fake("win32", "C:\\Users\\dl", { crashingStarts: 1 })],
+    ["WSL: the new guest daemon never reports ready", () => fake("linux", "/home/dl", { crashingStarts: 1 }, wsl())],
+  ]
+  for (const [label, make] of cases) {
+    it(`reverts nothing when ${label}`, async () => {
+      const effects = make()
+      const { state, staged: copy } = versioned()
+      if (label.includes("fails its check")) {
+        effects.runtimeFile = vi.fn(async (path: string) => path === runtime.nodePath && state.version === "new" ? "missing" as const : "file" as const)
+      }
+      const windows = label.startsWith("Windows")
+      await expect(updateDaemonService({ runtime: windows ? windowsRuntime : runtime, staged: windows ? { ...copy, runtime: windowsStaged } : copy }, effects)).rejects.toThrow()
+      expect(copy.publish).toHaveBeenCalledOnce()
+      // Round 7: the publish wrote a fresh directory the previous service
+      // never used, so nothing is put back and no shared copy was replaced.
+      expect(copy.revert).not.toHaveBeenCalled()
+      expect(state.version).toBe("new")
+    })
+  }
+
+  it("keeps the new runtime when the update succeeds", async () => {
+    const { state, staged: copy } = versioned()
+    await updateDaemonService({ runtime, staged: copy }, fake("darwin", "/Users/dl"))
+    expect(copy.revert).not.toHaveBeenCalled()
+    expect(state.version).toBe("new")
+  })
+})
+
+// Security review round 7 of #577 (P1): a publish the update's deadline gave
+// up on may still be running. The service-operation lease is held until it
+// has settled, so no other service change starts while it writes.
+describe("updateDaemonService holds the lease until a publish settles", () => {
+  it("does not release the service-operation lease while a timed-out publish still runs", async () => {
+    const effects = fake("darwin", "/Users/dl", { updateBudgetMs: 40 })
+    let publishDone = false
+    const releasedAfterPublish: boolean[] = []
+    effects.serviceLease.release.mockImplementation(() => { releasedAfterPublish.push(publishDone) })
+    const publish = vi.fn(() => new Promise<void>((resolve) => setTimeout(() => { publishDone = true; resolve() }, 300)))
+    const staged = { nodePath: "/stage/node/bin/node", daemonEntryPath: "/stage/daemon/dist/index.js" }
+    await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish } }, effects)).rejects.toThrow()
+    await vi.waitFor(() => expect(releasedAfterPublish).toHaveLength(1), { timeout: 2_000 })
+    expect(releasedAfterPublish).toEqual([true])
+  })
+})
+
+// Security review round 8 of #577 (P2), ruled 2026-09-26 (Q64 A): a publish
+// can complete before the published runtime fails its check. Where nothing
+// about the service has changed yet (systemd, and a WSL guest, whose publish
+// comes first), the update says the copy was made and the service was left
+// as it was, rather than that nothing changed.
+describe("updateDaemonService after a completed publish whose runtime fails its check (round 8)", () => {
+  const staged = { nodePath: "/stage/node/bin/node", daemonEntryPath: "/stage/daemon/dist/index.js" }
+  const copy = "/home/dl/.domovoi/runtime/0.9.4/0123456789ab"
+  const published = { nodePath: `${copy}/node/bin/node`, daemonEntryPath: `${copy}/daemon/dist/index.js` }
+  const failingCheck = (effects: Fake) => {
+    const state = { published: false }
+    effects.runtimeFile = vi.fn(async (path: string) => path === published.nodePath && state.published ? "missing" as const : "file" as const)
+    const publish = vi.fn(async () => { effects.order.push("publish"); state.published = true })
+    return { runtime: staged, publish }
+  }
+  const copied = `Domovoi could not update the service: The Node runtime this app ships was not found at ${published.nodePath}. The service was not updated and no service files were changed. The new runtime was copied to ${copy}, but the service was left as it was, set to run the previous runtime.`
+
+  it("says the runtime was copied and the systemd service left as it was, writing and restarting nothing", async () => {
+    const effects = fake("linux", "/home/dl")
+    const stagedCopy = failingCheck(effects)
+    const failed = updateDaemonService({ runtime: published, staged: stagedCopy }, effects)
+    await expect(failed).rejects.toMatchObject({ name: "DaemonServiceUpdateError", outcome: "runtime-copied", message: copied })
+    expect(stagedCopy.publish).toHaveBeenCalledOnce()
+    expect(effects.order).toEqual(["publish"])
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+    expect(effects.files.get(unit)).toBe(oldUnit)
+  })
+
+  it("still says nothing changed on systemd when the publish itself fails", async () => {
+    const effects = fake("linux", "/home/dl")
+    const publish = vi.fn(async () => { throw new Error("rename failed") })
+    await expect(updateDaemonService({ runtime: published, staged: { runtime: staged, publish } }, effects)).rejects.toMatchObject({
+      outcome: "nothing-changed",
+      message: "Domovoi could not update the service: rename failed. Nothing was changed, and the service was left as it was.",
+    })
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  it("says the runtime was copied and the WSL guest service left as it was, before the old task is touched", async () => {
+    const wsl: ServiceConfiguration = {
+      ...saved("linux", "/home/dl"),
+      wsl: {
+        distribution: "Ubuntu", linuxUser: "dl", powershell: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        wsl: "C:\\Windows\\System32\\wsl.exe", executable: oldRuntime.nodePath, args: [oldRuntime.daemonEntryPath],
+      },
+    }
+    const effects = fake("linux", "/home/dl", {}, wsl)
+    const stagedCopy = failingCheck(effects)
+    await expect(updateDaemonService({ runtime: published, staged: stagedCopy }, effects)).rejects.toMatchObject({ outcome: "runtime-copied", message: copied })
+    expect(effects.order.slice(effects.order.indexOf("publish"))).toEqual(["publish"])
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.stopSupervisor).not.toHaveBeenCalled()
+  })
+
+  // launchd and the Windows task publish after the previous service was
+  // stopped, so it is not left as it was: the previous service is put back.
+  it("puts the previous launchd agent and Windows task back, as a failed swap", async () => {
+    const launchd = fake("darwin", "/Users/dl")
+    await expect(updateDaemonService({ runtime: published, staged: failingCheck(launchd) }, launchd)).rejects.toMatchObject({ outcome: "swap-failed-restored" })
+    const windows = fake("win32", "C:\\Users\\dl")
+    const windowsCopy = "C:\\Users\\dl\\.domovoi\\runtime\\0.9.4\\0123456789ab"
+    const windowsPublished = { nodePath: `${windowsCopy}\\node\\node.exe`, daemonEntryPath: `${windowsCopy}\\daemon\\dist\\index.js` }
+    const state = { published: false }
+    windows.runtimeFile = vi.fn(async (path: string) => path === windowsPublished.nodePath && state.published ? "missing" as const : "file" as const)
+    const publish = vi.fn(async () => { state.published = true })
+    await expect(updateDaemonService({ runtime: windowsPublished, staged: { runtime: { nodePath: "C:\\stage\\node\\node.exe", daemonEntryPath: "C:\\stage\\daemon\\dist\\index.js" }, publish } }, windows))
+      .rejects.toMatchObject({ outcome: "swap-failed-restored" })
+  })
+})
+
+// Security review round 10 of #577 (P2): where the publish is the update's
+// first change (systemd, a WSL guest), the outcome follows what happened to
+// the copy, not a deadline that expired while the publish or its check ran.
+// The update waits for the publish to settle before it answers, so the
+// service-operation lease is held until then.
+describe("updateDaemonService when the deadline expires around the publish (round 10)", () => {
+  const staged = { nodePath: "/stage/node/bin/node", daemonEntryPath: "/stage/daemon/dist/index.js" }
+  const copy = "/home/dl/.domovoi/runtime/0.9.4/0123456789ab"
+  const published = { nodePath: `${copy}/node/bin/node`, daemonEntryPath: `${copy}/daemon/dist/index.js` }
+  const timedOut = `Domovoi could not update the service: The operation exceeded its deadline. The new runtime was copied to ${copy}, but the service was left as it was, set to run the previous runtime.`
+  const wsl = (): ServiceConfiguration => ({
+    ...saved("linux", "/home/dl"),
+    wsl: {
+      distribution: "Ubuntu", linuxUser: "dl", powershell: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      wsl: "C:\\Windows\\System32\\wsl.exe", executable: oldRuntime.nodePath, args: [oldRuntime.daemonEntryPath],
+    },
+  })
+  const platforms: [string, () => Fake][] = [
+    ["systemd", () => fake("linux", "/home/dl", { updateBudgetMs: 40 })],
+    ["a WSL guest", () => fake("linux", "/home/dl", { updateBudgetMs: 40 }, wsl())],
+  ]
+  const untouched = (effects: Fake) => {
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+    expect(effects.stopSupervisor).not.toHaveBeenCalled()
+    expect(effects.files.get(unit)).toBe(oldUnit)
+  }
+
+  for (const [label, make] of platforms) {
+    it(`says the runtime was copied when the deadline expires during the check after the publish, on ${label}`, async () => {
+      const effects = make()
+      let publishedCopy = false
+      effects.runtimeFile = vi.fn(async (path: string) => {
+        if (path === published.nodePath && publishedCopy) await new Promise((resolve) => setTimeout(resolve, 150))
+        return "file" as const
+      })
+      const publish = vi.fn(async () => { publishedCopy = true })
+      await expect(updateDaemonService({ runtime: published, staged: { runtime: staged, publish } }, effects))
+        .rejects.toMatchObject({ outcome: "runtime-copied", message: timedOut })
+      untouched(effects)
+    })
+
+    it(`waits for a publish the deadline overtook, says the runtime was copied, and holds the lease until then, on ${label}`, async () => {
+      const effects = make()
+      let publishDone = false
+      const releasedAfterPublish: boolean[] = []
+      effects.serviceLease.release.mockImplementation(() => { releasedAfterPublish.push(publishDone) })
+      const publish = vi.fn(() => new Promise<void>((resolve) => setTimeout(() => { publishDone = true; resolve() }, 150)))
+      await expect(updateDaemonService({ runtime: published, staged: { runtime: staged, publish } }, effects))
+        .rejects.toMatchObject({ outcome: "runtime-copied", message: timedOut })
+      expect(publishDone).toBe(true)
+      expect(releasedAfterPublish).toEqual([true])
+      untouched(effects)
+    })
+
+    it(`says nothing changed when a publish the deadline overtook then fails, on ${label}`, async () => {
+      const effects = make()
+      const publish = vi.fn(() => new Promise<void>((_resolve, reject) => setTimeout(() => reject(new Error("rename failed")), 150)))
+      await expect(updateDaemonService({ runtime: published, staged: { runtime: staged, publish } }, effects)).rejects.toMatchObject({
+        outcome: "nothing-changed",
+        message: "Domovoi could not update the service: rename failed. Nothing was changed, and the service was left as it was.",
+      })
+      untouched(effects)
+    })
+  }
+
+  // Round 11 (P3): the deadline's reason, not the check's, once the deadline
+  // has expired by the time the check fails.
+  it("names the deadline when the check after the publish fails after the deadline expired", async () => {
+    const effects = fake("linux", "/home/dl", { updateBudgetMs: 40 })
+    let publishedCopy = false
+    effects.runtimeFile = vi.fn(async (path: string) => {
+      if (path !== published.nodePath || !publishedCopy) return "file" as const
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      return "missing" as const
+    })
+    const publish = vi.fn(async () => { publishedCopy = true })
+    await expect(updateDaemonService({ runtime: published, staged: { runtime: staged, publish } }, effects))
+      .rejects.toMatchObject({ outcome: "runtime-copied", message: timedOut })
+    untouched(effects)
+  })
+
+  // Round 11 (P2): a WSL guest update that resumes an interrupted one may
+  // have no task running, so its publish is not the first change. It runs
+  // under the deadline as launchd's does, and a failure is a failed swap:
+  // the previous task is registered and started again, and must report ready.
+  describe("resuming an interrupted WSL guest update", () => {
+    const configurationPath = "/home/dl/.domovoi/service.json"
+    const interrupted = (): Fake => {
+      const previous = wsl()
+      const half: ServiceConfiguration = { ...previous, wsl: { ...previous.wsl!, executable: "/opt/runtime-half/node", args: ["/opt/runtime-half/index.js"] } }
+      const effects = fake("linux", "/home/dl", { updateBudgetMs: 40 }, half)
+      effects.files.set(wslUpdateIntentPath(configurationPath), JSON.stringify({ version: 1, previous: serializeServiceConfiguration(previous), next: serializeServiceConfiguration(half) }))
+      return effects
+    }
+    const putBack = "Domovoi could not start the service on the new runtime: The operation exceeded its deadline. The previous service was put back and is running."
+
+    it("puts the previous task back when the publish outlasts the deadline, never saying the previous runtime still runs", async () => {
+      const effects = interrupted()
+      let publishDone = false
+      const publish = vi.fn(() => new Promise<void>((resolve) => setTimeout(() => { publishDone = true; effects.order.push("published"); resolve() }, 150)))
+      await expect(updateDaemonService({ runtime: published, staged: { runtime: staged, publish } }, effects))
+        .rejects.toMatchObject({ outcome: "swap-failed-restored", message: putBack })
+      expect(publishDone).toBe(true)
+      expect(effects.order.indexOf("published")).toBeLessThan(effects.order.lastIndexOf("register task"))
+      expect(effects.order.slice(-2)).toEqual(["start task", `remove ${wslUpdateIntentPath(configurationPath)}`])
+    })
+
+    it("puts the previous task back when the published runtime fails its check", async () => {
+      const effects = interrupted()
+      let publishedCopy = false
+      effects.runtimeFile = vi.fn(async (path: string) => path === published.nodePath && publishedCopy ? "missing" as const : "file" as const)
+      const publish = vi.fn(async () => { publishedCopy = true })
+      await expect(updateDaemonService({ runtime: published, staged: { runtime: staged, publish } }, effects))
+        .rejects.toMatchObject({ outcome: "swap-failed-restored" })
+      expect(effects.order).toContain("register task")
+    })
+  })
+
+  it("says nothing changed, without publishing, when the deadline expired before the publish", async () => {
+    const deadline = OperationDeadline.start(1)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    const publish = vi.fn(async () => {})
+    const check = vi.fn(async () => {})
+    await expect(publishFirst(deadline, publish, check, copy)).rejects.toMatchObject({
+      outcome: "nothing-changed",
+      message: "Domovoi could not update the service: The operation exceeded its deadline. Nothing was changed, and the service was left as it was.",
+    })
+    expect(publish).not.toHaveBeenCalled()
+    expect(check).not.toHaveBeenCalled()
   })
 })

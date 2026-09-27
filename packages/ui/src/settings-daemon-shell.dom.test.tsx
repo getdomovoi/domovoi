@@ -37,7 +37,7 @@ function bridge(install?: () => Promise<{ ok: true; kind: "file"; target: string
     minimize: () => {},
     maximize: () => {},
     close: () => {},
-    ...(install ? { daemonService: { status: async () => ({ installed: false, running: false, detail: "" }), install, remove: async () => ({ ok: true as const, kind: "file" as const, target: "/p", daemonRunning: true }) } } : {}),
+    ...(install ? { daemonService: { status: async () => ({ installed: false, running: false, detail: "" }), install, remove: async () => ({ ok: true as const, kind: "file" as const, target: "/p", daemonRunning: true }), update: async () => ({ ok: true as const, kind: "file" as const, target: "/p", daemonRunning: true }) } } : {}),
   }
 }
 
@@ -115,6 +115,77 @@ it("keeps a daemon outside the app unnamed when the service status cannot be rea
   expect(within(section).getByText("Not started here")).toBeTruthy()
   expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(true)
 })
+
+// Ruled 2026-09-23 (#577, B): the service answered with its own version in
+// the snapshot; the shell compares it with this app's build.
+it("names an older login service from the snapshot it answered with", async () => {
+  const { clientVersion } = await import("./client")
+  const older = workspaceSnapshot()
+  older.machine = { ...older.machine, version: "0.0.0" }
+  // The desktop reads the service back installed and running (#576, round 9).
+  const windowBridge = bridge(vi.fn())
+  windowBridge.daemonService = { ...windowBridge.daemonService!, status: async () => ({ installed: true, running: true, detail: "" }) }
+  render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true }} />)
+  await act(async () => { completeHandshake(harness.socket(0), older) })
+  await settle()
+  const user = userEvent.setup()
+  await skipFirstRun(user)
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  const section = await screen.findByRole("region", { name: "Daemon on this machine" })
+  expect(section.textContent).toContain(`The login service runs Domovoi 0.0.0. This app is ${clientVersion}.`)
+})
+
+// Ruled 2026-09-23 (#577, B): the button asks the desktop to update the
+// service in place, and a success tells the desktop to resolve its daemon again.
+it("updates an older login service through the desktop and reports the change", async () => {
+  const older = workspaceSnapshot({ approvals: [], sessions: demoWorkspace.sessions.map((session) => { const { activeTurnId: _turn, ...rest } = session; return { ...rest, state: "idle" as const } }) })
+  older.machine = { ...older.machine, version: "0.0.0" }
+  const onLocalDaemonChanged = vi.fn()
+  const windowBridge = bridge(vi.fn())
+  const update = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/p", daemonRunning: true }))
+  windowBridge.daemonService = { ...windowBridge.daemonService!, status: async () => ({ installed: true, running: true, detail: "" }), update }
+  render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true }} onLocalDaemonChanged={onLocalDaemonChanged} />)
+  await act(async () => { completeHandshake(harness.socket(0), older) })
+  await settle()
+  const user = userEvent.setup()
+  await skipFirstRun(user)
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  const section = await screen.findByRole("region", { name: "Daemon on this machine" })
+  await user.click(within(section).getByRole("button", { name: "Update the service" }))
+  await settle()
+  expect(update).toHaveBeenCalledOnce()
+  await vi.waitFor(() => expect(onLocalDaemonChanged).toHaveBeenCalledOnce())
+})
+
+// Security review of #577 (P3): an update whose answer this window cannot read
+// may still have finished, and one that finished without reaching the daemon
+// changed the service all the same. Both read the service back and ask the
+// desktop to resolve its daemon again, as install and remove do.
+for (const [label, update] of [
+  ["an unreadable answer", async () => { throw new Error("Desktop returned an invalid service outcome") }],
+  ["an update this window could not reach", async () => ({ ok: false as const, reason: "installed-not-attached" as const, kind: "file" as const, target: "/p", message: "The daemon did not answer" })],
+] as const) {
+  it(`reads the service back and resolves the daemon again after ${label}`, async () => {
+    const older = workspaceSnapshot({ approvals: [], sessions: demoWorkspace.sessions.map((session) => { const { activeTurnId: _turn, ...rest } = session; return { ...rest, state: "idle" as const } }) })
+    older.machine = { ...older.machine, version: "0.0.0" }
+    const onLocalDaemonChanged = vi.fn()
+    const windowBridge = bridge(vi.fn())
+    const status = vi.fn(async () => ({ installed: true, running: true, detail: "" }))
+    windowBridge.daemonService = { ...windowBridge.daemonService!, status, update: vi.fn(update) }
+    render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true }} onLocalDaemonChanged={onLocalDaemonChanged} />)
+    await act(async () => { completeHandshake(harness.socket(0), older) })
+    await settle()
+    const user = userEvent.setup()
+    await skipFirstRun(user)
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    const section = await screen.findByRole("region", { name: "Daemon on this machine" })
+    const readsBefore = status.mock.calls.length
+    await user.click(within(section).getByRole("button", { name: "Update the service" }))
+    await settle()
+    await vi.waitFor(() => expect(status.mock.calls.length).toBeGreaterThan(readsBefore))
+    await vi.waitFor(() => expect(onLocalDaemonChanged).toHaveBeenCalledOnce())
+  })
+}
 
 // Review round 3 of #576: an install the desktop answered in a shape this
 // window cannot read still ends with the service read back, both in the

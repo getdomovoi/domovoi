@@ -1,24 +1,33 @@
-import { DaemonServiceRuntimeMissingError, type AcquireLocalDaemonOptions, type DaemonServiceInstallResult, type LocalDaemonHandle } from "@getdomovoi/daemon"
+import { DaemonServiceRuntimeMissingError, DaemonServiceUpdateError, type AcquireLocalDaemonOptions, type DaemonServiceInstallResult, type LocalDaemonHandle } from "@getdomovoi/daemon"
 import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { basename, dirname, join, sep } from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
-import { DesktopDaemonService, daemonRuntimeLayout, nodeRuntimeFileSystem, profileRuntimeDirectory, stageDaemonRuntime, type RuntimeFileSystem } from "./daemon-service.js"
+import { DesktopDaemonService, daemonRuntimeLayout, nodeRuntimeFileSystem, prepareDaemonRuntime, profileRuntimeDirectory, stageDaemonRuntime, type RuntimeFileSystem } from "./daemon-service.js"
 import { DesktopDaemon } from "./desktop-daemon.js"
 
 const runtime = { nodePath: "/Users/dana/.domovoi/runtime/0.9.4/node/bin/node", daemonEntryPath: "/Users/dana/.domovoi/runtime/0.9.4/daemon/dist/index.js" }
+// Round 4 (P2): the service calls publish the staged runtime under their
+// lease; this side never does. Round 7: preparing writes nothing, so there
+// is nothing to discard. The spies are separate from the call order above.
+const stagedRuntime = { nodePath: "/Users/dana/.domovoi/runtime/.0.9.4.staging-1/node/bin/node", daemonEntryPath: "/Users/dana/.domovoi/runtime/.0.9.4.staging-1/daemon/dist/index.js" }
+function staged() {
+  return { runtime, staged: stagedRuntime, publish: vi.fn(async () => {}) }
+}
 const attachedToService = { kind: "attached" as const, owner: "daemon" as const, url: "ws://127.0.0.1:47831/rpc", token: "t" }
 
 function harness(overrides: Partial<ConstructorParameters<typeof DesktopDaemonService>[0]> = {}) {
   const calls: string[] = []
   const deps = {
-    stageRuntime: vi.fn(async () => { calls.push("stage"); return runtime }),
+    stageRuntime: vi.fn(async () => { calls.push("stage"); return staged() }),
     install: vi.fn(async (options: { releaseInAppDaemon?: () => Promise<void> }) => { calls.push("checks"); await options.releaseInAppDaemon?.(); calls.push("install"); return { kind: "file" as const, path: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/Users/dana/.domovoi/service.json" } }),
     status: vi.fn(async () => ({ installed: true, running: true, detail: "pid 48213" })),
+    profile: vi.fn(async (): Promise<{ app: string; service: string } | undefined> => undefined),
     refusal: vi.fn(async (): Promise<string | undefined> => undefined),
     fence: vi.fn(async (): Promise<{ refusal: string } | { release: () => void }> => { calls.push("fence"); return { release: () => { calls.push("unfence") } } }),
     remove: vi.fn(async () => ({ kind: "file" as const, path: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", profileRecovery: "not-needed" as const })),
+    update: vi.fn(async () => { calls.push("update"); return { kind: "file" as const, path: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/Users/dana/.domovoi/service.json" } }),
     daemon: {
       beginHandoff: vi.fn(() => { calls.push("hold") }),
       endHandoff: vi.fn(() => { calls.push("release") }),
@@ -30,6 +39,84 @@ function harness(overrides: Partial<ConstructorParameters<typeof DesktopDaemonSe
   }
   return { service: new DesktopDaemonService(deps), deps, calls }
 }
+
+// Security review round 4 of #577 (P2): the staged copy stays inert. The
+// service calls get it with a publish step they run under their lease, after
+// the profile check; this side never publishes, and discards what was not.
+describe("DesktopDaemonService hands over an inert staged runtime", () => {
+  it("passes the staged runtime and its publish step to install and update, and publishes nothing itself", async () => {
+    for (const action of ["install", "update"] as const) {
+      const copy = staged()
+      const { service, deps } = harness({ stageRuntime: vi.fn(async () => copy) })
+      await service[action]()
+      expect(deps[action], action).toHaveBeenCalledWith(expect.objectContaining({ runtime, staged: { runtime: stagedRuntime, publish: copy.publish } }))
+      expect(copy.publish, action).not.toHaveBeenCalled()
+    }
+  })
+
+  it("publishes nothing when the service call refuses", async () => {
+    const words = "This app's daemon uses the profile at /Users/dana/profiles/work, and the login service uses the profile at /Users/dana/.domovoi."
+    const copy = staged()
+    const { service } = harness({ stageRuntime: vi.fn(async () => copy), install: vi.fn(async () => { throw Object.assign(new Error(words), { name: "ServiceProfileMismatchError" }) }) })
+    await expect(service.install()).resolves.toEqual({ ok: false, reason: "refused", message: words })
+    expect(copy.publish).not.toHaveBeenCalled()
+  })
+})
+
+// Security review of #577 (P1): the turn check and the fence go through the
+// daemon this app reaches, while install, remove and update act on the login
+// service the saved configuration names. DOMOVOI_PROFILE_DIR can make those two
+// profiles; then the check says nothing about the service, so nothing runs.
+describe("DesktopDaemonService on another profile than the service's", () => {
+  const mismatch = { app: "/Users/dana/profiles/work", service: "/Users/dana/.domovoi" }
+  const words = "This app's daemon uses the profile at /Users/dana/profiles/work, and the login service uses the profile at /Users/dana/.domovoi."
+
+  it("refuses install, remove and update before any check, fence or change", async () => {
+    for (const action of ["install", "remove", "update"] as const) {
+      const { service, deps, calls } = harness({ profile: vi.fn(async () => mismatch) })
+      await expect(service[action](), action).resolves.toEqual({ ok: false, reason: "refused", message: words })
+      expect(deps.refusal, action).not.toHaveBeenCalled()
+      expect(deps.fence, action).not.toHaveBeenCalled()
+      expect(deps.stageRuntime, action).not.toHaveBeenCalled()
+      expect(deps[action], action).not.toHaveBeenCalled()
+      expect(calls, action).toEqual([])
+    }
+  })
+
+  it("waits when the profiles cannot be compared", async () => {
+    for (const action of ["install", "remove", "update"] as const) {
+      const { service, deps } = harness({ profile: vi.fn(async () => { throw new Error("service.json is not a Domovoi service configuration") }) })
+      await expect(service[action](), action).resolves.toEqual({ ok: false, reason: "check-failed", message: "service.json is not a Domovoi service configuration" })
+      expect(deps[action], action).not.toHaveBeenCalled()
+    }
+  })
+
+  // Round 2: the service calls check the profiles again under the
+  // service-operation lease, since service.json can change after the early
+  // check. Their refusal changes nothing and reads as the same refusal.
+  it("reports the service calls' refusal of a service whose profile is not known as a refusal", async () => {
+    const unknownWords = "A login service is registered at /Users/dana/Library/LaunchAgents/sh.domovoi.domovoid.plist, but its saved configuration is missing, so the profile it runs is not known. Nothing was changed."
+    const unknown = () => Object.assign(new Error(unknownWords), { name: "ServiceProfileUnknownError" })
+    const install = harness({ install: vi.fn(async () => { throw unknown() }) })
+    await expect(install.service.install()).resolves.toEqual({ ok: false, reason: "refused", message: unknownWords })
+    const remove = harness({ remove: vi.fn(async () => { throw unknown() }) })
+    await expect(remove.service.remove()).resolves.toEqual({ ok: false, reason: "refused", message: unknownWords })
+    expect(remove.deps.daemon.restart).not.toHaveBeenCalled()
+  })
+
+  it("reports the service calls' own profile refusal as that refusal, with nothing stopped or restarted", async () => {
+    const profileError = () => Object.assign(new Error(words), { name: "ServiceProfileMismatchError" })
+    const install = harness({ install: vi.fn(async () => { throw profileError() }) })
+    await expect(install.service.install()).resolves.toEqual({ ok: false, reason: "refused", message: words })
+    expect(install.deps.daemon.stopOwned).not.toHaveBeenCalled()
+    expect(install.deps.daemon.restart).not.toHaveBeenCalled()
+    const update = harness({ update: vi.fn(async () => { throw Object.assign(new Error(`Domovoi could not update the service: ${words}`), { cause: profileError() }) }) })
+    await expect(update.service.update()).resolves.toEqual({ ok: false, reason: "refused", message: words })
+    const remove = harness({ remove: vi.fn(async () => { throw profileError() }) })
+    await expect(remove.service.remove()).resolves.toEqual({ ok: false, reason: "refused", message: words })
+    expect(remove.deps.daemon.restart).not.toHaveBeenCalled()
+  })
+})
 
 describe("DesktopDaemonService", () => {
   it("stages the runtime, lets the installer stop the in-app daemon after its checks, then attaches to the service", async () => {
@@ -233,6 +320,111 @@ describe("DesktopDaemonService install, round 9", () => {
 // socket, and the renderer reconnects while the installer still holds the
 // profile. The real DesktopDaemon with a scripted seam shows what that
 // reconnect asks for.
+// Ruled 2026-09-23 (#577, B): "Update the service" moves the running service
+// to the runtime this app ships, in place, with the same refusal as install
+// and remove. Its failures carry the daemon's approved words.
+describe("updating the service in place", () => {
+  it("stages the runtime, updates the service while holding reconnects, then attaches to it", async () => {
+    const { service, deps, calls } = harness()
+    await expect(service.update()).resolves.toEqual({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/Users/dana/.domovoi/service.json", daemonRunning: true })
+    expect(deps.update).toHaveBeenCalledWith({ runtime, staged: { runtime: stagedRuntime, publish: expect.any(Function) } })
+    // Owner ruling 2026-09-26 (#577, A): the daemon's fence, taken right
+    // before the service restarts, as install and remove take it.
+    expect(calls).toEqual(["fence", "stage", "hold", "update", "attach", "unfence", "release"])
+    expect(deps.daemon.stopOwned).not.toHaveBeenCalled()
+    expect(deps.daemon.restart).not.toHaveBeenCalled()
+  })
+
+  it("refuses while a turn runs or a gate waits, and when that cannot be read, before touching anything", async () => {
+    const refused = harness({ refusal: vi.fn(async () => "1 gate is waiting (Fix login).") })
+    await expect(refused.service.update()).resolves.toEqual({ ok: false, reason: "refused", message: "1 gate is waiting (Fix login)." })
+    expect(refused.calls).toEqual([])
+    const unread = harness({ refusal: vi.fn(async () => { throw new Error("connect ECONNREFUSED 127.0.0.1:47831") }) })
+    await expect(unread.service.update()).resolves.toEqual({ ok: false, reason: "check-failed", message: "connect ECONNREFUSED 127.0.0.1:47831" })
+    expect(unread.calls).toEqual([])
+  })
+
+  it("carries the daemon's words when the update does not end with the new service running", async () => {
+    const error = new DaemonServiceUpdateError("swap-failed-restored", new Error("launchctl bootstrap exited 5"))
+    const { service, deps, calls } = harness({ update: vi.fn(async () => { throw error }) })
+    await expect(service.update()).resolves.toEqual({ ok: false, reason: "update-failed", message: error.message })
+    expect(error.message).toBe("Domovoi could not start the service on the new runtime: launchctl bootstrap exited 5. The previous service was put back and is running.")
+    expect(deps.daemon.restart).not.toHaveBeenCalled()
+    expect(calls.at(-1)).toBe("release")
+  })
+
+  // Round 8 (P2), ruled 2026-09-26 (Q64 A): a runtime published and then
+  // failing its check is carried in the daemon's words too.
+  it("carries the daemon's words when the new runtime was copied but the service was left as it was", async () => {
+    const error = new DaemonServiceUpdateError("runtime-copied", new Error("The Node runtime this app ships was not found at /home/dana/.domovoi/runtime/0.9.4/0123456789ab/node/bin/node"), undefined, "/home/dana/.domovoi/runtime/0.9.4/0123456789ab")
+    const { service } = harness({ update: vi.fn(async () => { throw error }) })
+    await expect(service.update()).resolves.toEqual({ ok: false, reason: "update-failed", message: error.message })
+    expect(error.message).toBe("Domovoi could not update the service: The Node runtime this app ships was not found at /home/dana/.domovoi/runtime/0.9.4/0123456789ab/node/bin/node. The new runtime was copied to /home/dana/.domovoi/runtime/0.9.4/0123456789ab, but the service was left as it was, set to run the previous runtime.")
+  })
+
+  it("reports a missing shipped runtime without changing the service", async () => {
+    const { service, deps } = harness({ stageRuntime: vi.fn(async () => { throw new DaemonServiceRuntimeMissingError("daemon", "/Applications/Domovoi.app/Contents/Resources/daemon-runtime/daemon/dist/index.js", "missing") }) })
+    await expect(service.update()).resolves.toMatchObject({ ok: false, reason: "runtime-missing", part: "daemon" })
+    expect(deps.update).not.toHaveBeenCalled()
+  })
+
+  it("reports an updated service this app could not attach to", async () => {
+    const { service, deps } = harness()
+    vi.mocked(deps.daemon.attachOnly).mockImplementationOnce(async () => ({ kind: "refused", reason: "owner-unreachable", message: "The daemon did not answer" }) as never)
+    await expect(service.update()).resolves.toEqual({ ok: false, reason: "installed-not-attached", kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", message: "The daemon did not answer" })
+  })
+
+  // Owner ruling 2026-09-26 (#577, A): a turn can start after the first read,
+  // so the update takes the daemon's fence right before the service restarts.
+  it("takes the daemon's fence before the update, and updates nothing when it refuses or cannot be taken", async () => {
+    const refused = harness()
+    vi.mocked(refused.deps.fence).mockImplementationOnce(async () => ({ refusal: "1 turn is running (Fix login)." }))
+    await expect(refused.service.update()).resolves.toEqual({ ok: false, reason: "refused", message: "1 turn is running (Fix login)." })
+    expect(refused.deps.update).not.toHaveBeenCalled()
+    expect(refused.calls).toEqual([])
+    expect(refused.deps.stageRuntime).not.toHaveBeenCalled()
+    const unfenced = harness()
+    vi.mocked(unfenced.deps.fence).mockImplementationOnce(async () => { throw new Error("The daemon closed the connection") })
+    await expect(unfenced.service.update()).resolves.toEqual({ ok: false, reason: "check-failed", message: "The daemon closed the connection" })
+    expect(unfenced.deps.update).not.toHaveBeenCalled()
+    expect(unfenced.calls).toEqual([])
+    expect(unfenced.deps.stageRuntime).not.toHaveBeenCalled()
+  })
+
+  it("releases the fence when the update fails", async () => {
+    const { service, calls } = harness({ update: vi.fn(async () => { throw new Error("launchctl bootstrap exited 5") }) })
+    await expect(service.update()).resolves.toMatchObject({ ok: false, reason: "update-failed" })
+    expect(calls).toEqual(["fence", "stage", "hold", "unfence", "release"])
+  })
+
+  // Owner ruling 2026-09-26 (#577, A), as security review round 9 of #576
+  // ruled for install: reaching a daemon after the update is not proof the
+  // updated service runs it.
+  it("reports success only when the attached daemon is the running service's", async () => {
+    for (const [label, attach, status] of [
+      ["another app's daemon", { kind: "attached", owner: "desktop", url: "ws://127.0.0.1:47831/rpc", token: "t" }, { installed: true, running: true, detail: "" }],
+      ["a daemon of this app", { kind: "owned", url: "ws://127.0.0.1:47831/rpc", token: "t" }, { installed: true, running: true, detail: "" }],
+      ["a stopped service", attachedToService, { installed: true, running: false, detail: "not loaded" }],
+      ["a service whose state is unknown", attachedToService, { installed: null, running: false, detail: "" }],
+    ] as const) {
+      const partial = harness({ status: vi.fn(async () => status) })
+      vi.mocked(partial.deps.daemon.attachOnly).mockImplementationOnce(async () => attach as never)
+      await expect(partial.service.update(), label).resolves.toEqual({ ok: false, reason: "installed-not-attached", kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", message: "The daemon this window reached is not the running service." })
+    }
+    const unreadable = harness({ status: vi.fn(async () => { throw new Error("launchctl could not be run") }) })
+    await expect(unreadable.service.update()).resolves.toMatchObject({ ok: false, reason: "installed-not-attached" })
+  })
+
+  it("refuses an update while another service change runs", async () => {
+    let release!: () => void
+    const { service } = harness({ install: vi.fn(() => new Promise<DaemonServiceInstallResult>((resolve) => { release = () => resolve({ kind: "file", path: "/p", configurationPath: "/c" }) })) })
+    const first = service.install()
+    await expect(service.update()).resolves.toMatchObject({ ok: false, reason: "busy" })
+    release()
+    await first
+  })
+})
+
 describe("a renderer reconnect during the handoff", () => {
   it("never starts an in-app daemon mid-install, and gets the service's endpoint once it is attached", async () => {
     const modes: AcquireLocalDaemonOptions["mode"][] = []
@@ -249,7 +441,8 @@ describe("a renderer reconnect during the handoff", () => {
     await daemon.acquire()
     let reconnect: Promise<unknown> | undefined
     const service = new DesktopDaemonService({
-      stageRuntime: async () => runtime,
+      stageRuntime: async () => staged(),
+      update: async () => { throw new Error("not in this test") },
       install: async (options) => {
         await options.releaseInAppDaemon?.()
         reconnect = daemon.reacquire()
@@ -258,6 +451,7 @@ describe("a renderer reconnect during the handoff", () => {
       },
       status: async () => ({ installed: true, running: true, detail: "" }),
       remove: async () => ({ kind: "file", path: "/p", profileRecovery: "not-needed" }),
+      profile: async () => undefined,
       refusal: async () => undefined,
       fence: async () => ({ release: () => {} }),
       daemon,
@@ -279,7 +473,7 @@ describe("daemon runtime layout", () => {
       nodePath: "C:\\Program Files\\Domovoi\\resources\\daemon-runtime\\node\\node.exe",
       daemonEntryPath: "C:\\Program Files\\Domovoi\\resources\\daemon-runtime\\daemon\\dist\\index.js",
     })
-    expect(profileRuntimeDirectory("/Users/dana", "0.9.4", "darwin")).toBe("/Users/dana/.domovoi/runtime/0.9.4")
+    expect(profileRuntimeDirectory("/Users/dana/.domovoi", "0.9.4", "darwin")).toBe("/Users/dana/.domovoi/runtime/0.9.4")
   })
 })
 
@@ -288,27 +482,17 @@ describe("staging the shipped runtime under the profile", () => {
     await withScratch(async ({ resources, home }) => {
       const renamed: [string, string][] = []
       const runtime = await stage({ resources, home, version: "0.9.4", rename: async (from, to) => { renamed.push([from, to]); await rename(from, to) } })
-      const destination = join(home, ".domovoi", "runtime", "0.9.4")
-      expect(renamed).toEqual([[expect.stringContaining(join(home, ".domovoi", "runtime", ".0.9.4.staging-")), destination]])
+      // Round 5 (P2): the copy comes from a private staging directory outside
+      // every profile, moved in by one rename. Round 7: into a fresh
+      // <version>/<id> directory.
+      expect(renamed).toEqual([[expect.stringMatching(/[\\/]\.domovoi-runtime-0\.9\.4\.staging-[^\\/]+[\\/]copy$/u), expect.any(String)]])
+      const destination = renamed[0]![1]
+      expect(dirname(destination)).toBe(join(home, ".domovoi", "runtime", "0.9.4"))
+      expect(basename(destination)).toMatch(/^[0-9a-f]{12}$/u)
+      expect(renamed[0]![0].startsWith(home)).toBe(false)
       expect(runtime).toEqual(daemonRuntimeLayoutUnder(destination))
       expect(await readFile(runtime.daemonEntryPath, "utf8")).toBe("daemon")
       expect(await readFile(runtime.nodePath, "utf8")).toBe("node")
-    })
-  })
-
-  it("replaces an earlier copy of the same version whole, so no stale file survives, and leaves no staging directory", async () => {
-    await withScratch(async ({ resources, home }) => {
-      const earlier = join(home, ".domovoi", "runtime", "0.9.4")
-      await mkdir(join(earlier, "daemon", "dist"), { recursive: true })
-      await writeFile(join(earlier, "daemon", "dist", "stale-chunk.js"), "old")
-      await stage({ resources, home, version: "0.9.4" })
-      expect((await readdir(join(earlier, "daemon", "dist"))).sort()).toEqual(["index.js"])
-      expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual(["0.9.4"])
-
-      await writeFile(join(earlier, "daemon", "dist", "stale-chunk.js"), "old")
-      await expect(stage({ resources, home, version: "0.9.4", copy: async () => { throw new Error("disk full") } })).rejects.toThrow("disk full")
-      expect((await readdir(join(earlier, "daemon", "dist"))).sort()).toEqual(["index.js", "stale-chunk.js"])
-      expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual(["0.9.4"])
     })
   })
 
@@ -372,10 +556,11 @@ describe("staging the shipped runtime under the profile", () => {
       // is kept as a link in the copy.
       await symlink("../daemon/dist/index.js", join(resources, "daemon-runtime", "node", "daemon-entry"), "file")
       const runtime = await stage({ resources, home, version: "0.9.4" })
-      expect(runtime).toEqual(daemonRuntimeLayoutUnder(join(home, ".domovoi", "runtime", "0.9.4")))
+      expect(dirname(copyOf(runtime))).toBe(join(home, ".domovoi", "runtime", "0.9.4"))
+      expect(runtime).toEqual(daemonRuntimeLayoutUnder(copyOf(runtime)))
       // The link text is kept as the platform wrote it: Windows stores the
       // relative target with its own separators.
-      expect(await readlink(join(home, ".domovoi", "runtime", "0.9.4", "node", "daemon-entry"))).toBe(join("..", "daemon", "dist", "index.js"))
+      expect(await readlink(join(copyOf(runtime), "node", "daemon-entry"))).toBe(join("..", "daemon", "dist", "index.js"))
     })
   })
 
@@ -393,109 +578,122 @@ describe("staging the shipped runtime under the profile", () => {
     })
   })
 
-  // Security review round 2 of #576. A durable rename renames, then flushes
-  // the directory, and the flush can throw after the move is done. The rule:
-  // a staging that reports failure leaves the version path as it was before,
-  // the earlier copy there or nothing there. What moved is read back from the
-  // disk, not inferred from which call threw.
-  const syncFailsAfter = (step: string) => async (from: string, to: string) => {
-    await rename(from, to)
-    if (from.includes(step) || to.includes(step)) throw new Error("simulated directory sync failure")
-  }
-
-  it("puts the earlier copy back when the flush after moving it aside fails", async () => {
-    await withScratch(async ({ resources, home }) => {
-      const earlier = join(home, ".domovoi", "runtime", "0.9.4")
-      await mkdir(join(earlier, "daemon", "dist"), { recursive: true })
-      await writeFile(join(earlier, "daemon", "dist", "index.js"), "earlier")
-      await expect(stage({ resources, home, version: "0.9.4", rename: syncFailsAfter(".previous-") })).rejects.toThrow("simulated directory sync failure")
-      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
-      expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual(["0.9.4"])
+  // Security review round 7 of #577: each publish writes a fresh directory,
+  // <profile>/runtime/<version>/<id>, that nothing else ever uses. A failure
+  // after it leaves every earlier copy as it was, so there is no shared state
+  // to put back, and a late or concurrent publish cannot replace another.
+  describe("a fresh directory per publish (round 7)", () => {
+    const input = (resources: string, home: string, extra: Partial<Parameters<typeof prepareDaemonRuntime>[0]> = {}) => ({
+      resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform,
+      stagingParent: join(dirname(home), "staging"), fileSystem: nodeRuntimeFileSystem(), ...extra,
     })
-  })
 
-  it("does not leave the new copy published when the flush after publishing it fails", async () => {
-    await withScratch(async ({ resources, home }) => {
-      const earlier = join(home, ".domovoi", "runtime", "0.9.4")
-      await mkdir(join(earlier, "daemon", "dist"), { recursive: true })
-      await writeFile(join(earlier, "daemon", "dist", "index.js"), "earlier")
-      await expect(stage({ resources, home, version: "0.9.4", rename: syncFailsAfter(".staging-") })).rejects.toThrow("simulated directory sync failure")
-      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
-      expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual(["0.9.4"])
+    it("publishes into a fresh directory each time, and never moves or replaces an earlier copy", async () => {
+      await withScratch(async ({ resources, home }) => {
+        const version = join(home, ".domovoi", "runtime", "0.9.4")
+        await mkdir(join(version, "daemon", "dist"), { recursive: true })
+        await writeFile(join(version, "daemon", "dist", "index.js"), "earlier")
+        const first = await prepareDaemonRuntime(input(resources, home))
+        const second = await prepareDaemonRuntime(input(resources, home))
+        await first.publish()
+        await second.publish()
+        expect(first.runtime.daemonEntryPath).not.toBe(second.runtime.daemonEntryPath)
+        for (const runtime of [first.runtime, second.runtime]) {
+          expect(dirname(dirname(dirname(runtime.daemonEntryPath))).startsWith(`${version}${sep}`)).toBe(true)
+          expect(await readFile(runtime.daemonEntryPath, "utf8")).toBe("daemon")
+        }
+        expect(await readFile(join(version, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
+        // Round 8: each publish leaves its staging directory, empty.
+        expect(await leftStaging(join(dirname(home), "staging"))).toEqual([[], []])
+      })
     })
-    await withScratch(async ({ resources, home }) => {
-      await expect(stage({ resources, home, version: "0.9.4", rename: syncFailsAfter(".staging-") })).rejects.toThrow("simulated directory sync failure")
-      expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual([])
+
+    // Round 8 (P2): not even the profile or its runtime directory is made
+    // before publish, which the service calls run under their lease.
+    it("writes nothing until publish, not even the profile or runtime directory, so a refused change leaves nothing behind", async () => {
+      await withScratch(async ({ resources, home }) => {
+        const prepared = await prepareDaemonRuntime(input(resources, home))
+        expect(await readdir(join(dirname(home), "staging"))).toEqual([])
+        expect(await entries(home)).toEqual([])
+        expect(prepared.staged).toEqual(daemonRuntimeLayout(resources, platform))
+        await prepared.publish()
+        expect(dirname(copyOf(prepared.runtime))).toBe(join(home, ".domovoi", "runtime", "0.9.4"))
+        expect(await readFile(prepared.runtime.daemonEntryPath, "utf8")).toBe("daemon")
+      })
     })
-  })
 
-  // Final review round 3 of #576. A recursive remove can fail part way, and a
-  // failed read of the disk must not replace the error that stopped the
-  // publish. The rule still holds: the earlier copy is at the version path, or
-  // nothing is.
-  const partialRemove = (runtimeRoot: string) => async (path: string) => {
-    if (path.includes(".staging-") || !path.startsWith(runtimeRoot)) return rm(path, { recursive: true, force: true })
-    await rm(join(path, "daemon", "dist", "index.js"), { force: true })
-    throw new Error("simulated partial remove")
-  }
-
-  it("puts the earlier copy back when removing the new copy fails part way", async () => {
-    await withScratch(async ({ resources, home }) => {
-      const runtimeRoot = join(home, ".domovoi", "runtime")
-      const earlier = join(runtimeRoot, "0.9.4")
-      await mkdir(join(earlier, "daemon", "dist"), { recursive: true })
-      await writeFile(join(earlier, "daemon", "dist", "index.js"), "earlier")
-      await expect(stage({ resources, home, version: "0.9.4", rename: syncFailsAfter(".staging-"), remove: partialRemove(runtimeRoot) }))
-        .rejects.toThrow("simulated directory sync failure")
-      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
-      expect((await readdir(runtimeRoot)).filter((name) => !name.startsWith(".0.9.4.failed-"))).toEqual(["0.9.4"])
+    it("refuses a staging directory inside the profile or inside a repository, writing nothing", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const words = `The profile directory ${join(home, ".domovoi")} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`
+        const inProfile = join(home, ".domovoi", "scratch")
+        await mkdir(inProfile, { recursive: true })
+        const inRepository = join(root, "repository", "scratch")
+        await mkdir(join(root, "repository", ".git"), { recursive: true })
+        await mkdir(inRepository)
+        for (const stagingParent of [inProfile, inRepository]) {
+          const refused = prepareDaemonRuntime(input(resources, home, { stagingParent })).then((prepared) => prepared.publish())
+          await expect(refused, stagingParent).rejects.toThrow(words)
+          expect(await readdir(stagingParent), stagingParent).toEqual([])
+        }
+      })
     })
-  })
 
-  it("leaves nothing at the version path when removing a new copy with no earlier one fails part way", async () => {
-    await withScratch(async ({ resources, home }) => {
-      const runtimeRoot = join(home, ".domovoi", "runtime")
-      await expect(stage({ resources, home, version: "0.9.4", rename: syncFailsAfter(".staging-"), remove: partialRemove(runtimeRoot) }))
-        .rejects.toThrow("simulated directory sync failure")
-      expect((await readdir(runtimeRoot)).filter((name) => !name.startsWith(".0.9.4.failed-"))).toEqual([])
+    // Round 8 (P2): not only the selected profile. A profile any daemon has
+    // claimed holds profile-lease.sqlite, which is never removed; a default
+    // profile is named .domovoi.
+    it("refuses a staging directory inside any other profile, writing nothing", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const words = `The profile directory ${join(home, ".domovoi")} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`
+        const claimed = join(root, "profiles", "other")
+        await mkdir(join(claimed, "scratch"), { recursive: true })
+        await writeFile(join(claimed, "profile-lease.sqlite"), "")
+        const defaultNamed = join(root, "another-home", ".domovoi", "scratch")
+        await mkdir(defaultNamed, { recursive: true })
+        for (const stagingParent of [join(claimed, "scratch"), defaultNamed]) {
+          const refused = prepareDaemonRuntime(input(resources, home, { stagingParent })).then((prepared) => prepared.publish())
+          await expect(refused, stagingParent).rejects.toThrow(words)
+          expect(await readdir(stagingParent), stagingParent).toEqual([])
+        }
+        expect(await entries(home)).toEqual([])
+      })
     })
-  })
 
-  it("keeps the error that stopped the publish when reading the disk back fails, and still puts the earlier copy back", async () => {
-    await withScratch(async ({ resources, home }) => {
-      const earlier = join(home, ".domovoi", "runtime", "0.9.4")
-      await mkdir(join(earlier, "daemon", "dist"), { recursive: true })
-      await writeFile(join(earlier, "daemon", "dist", "index.js"), "earlier")
-      const entry = nodeRuntimeFileSystem().entry
-      await expect(stage({ resources, home, version: "0.9.4", rename: syncFailsAfter(".staging-"), entry: async (path) => {
-        if (path.includes(".previous-")) throw Object.assign(new Error("simulated EACCES"), { code: "EACCES" })
-        return entry(path)
-      } })).rejects.toThrow("simulated directory sync failure")
-      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
-      expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual(["0.9.4"])
+    // Round 9 (P2): on a case-insensitive volume .DOMOVOI is the same
+    // directory as .domovoi, so the name is compared case-folded everywhere.
+    it("refuses a staging directory under a default-named profile whose name differs only in case", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const upper = join(root, "another-home", ".DOMOVOI", "scratch")
+        await mkdir(upper, { recursive: true })
+        const refused = prepareDaemonRuntime(input(resources, home, { stagingParent: upper })).then((prepared) => prepared.publish())
+        await expect(refused).rejects.toThrow(`The profile directory ${join(home, ".domovoi")} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`)
+        expect(await readdir(upper)).toEqual([])
+        expect(await entries(home)).toEqual([])
+      })
     })
-  })
 
-  // Final check on #576: removing the staging directory is cleanup. It must
-  // not replace the error that stopped a publish, nor turn a completed publish
-  // into a reported failure.
-  const stagingRemoveFails = async (path: string) => {
-    if (path.includes(".staging-")) throw new Error("simulated staging remove failure")
-    await rm(path, { recursive: true, force: true })
-  }
-
-  it("reports a completed publish as done when removing the staging directory fails", async () => {
-    await withScratch(async ({ resources, home }) => {
-      const runtime = await stage({ resources, home, version: "0.9.4", remove: stagingRemoveFails })
-      expect(runtime).toEqual(daemonRuntimeLayoutUnder(join(home, ".domovoi", "runtime", "0.9.4")))
-      expect(await readFile(runtime.daemonEntryPath, "utf8")).toBe("daemon")
-    })
-  })
-
-  it("keeps the error that stopped the publish when removing the staging directory fails", async () => {
-    await withScratch(async ({ resources, home }) => {
-      await expect(stage({ resources, home, version: "0.9.4", remove: stagingRemoveFails, copy: async () => { throw new Error("disk full") } }))
-        .rejects.toThrow("disk full")
+    // Round 8 (P2): checking that the staging directory is still the one made
+    // for the copy cannot be bound to removing it by path, so it is never
+    // removed. An empty directory swapped in right after such a check stays.
+    it("never removes the staging directory, so an empty directory swapped into its place is left", async () => {
+      await withScratch(async ({ resources, home }) => {
+        const real = nodeRuntimeFileSystem()
+        let holder: string | undefined
+        const fileSystem = nodeRuntimeFileSystem({
+          rename: async (from, to) => { await real.rename(from, to); if (from.includes(".domovoi-runtime-")) holder = dirname(from) },
+          identity: async (path) => {
+            const found = await real.identity(path)
+            // Where a swap would land: after the identity is read.
+            if (path === holder) {
+              await rename(path, `${path}-moved`)
+              await mkdir(path)
+            }
+            return found
+          },
+        })
+        const prepared = await prepareDaemonRuntime(input(resources, home, { fileSystem }))
+        await prepared.publish()
+        expect(await readdir(holder!)).toEqual([])
+      })
     })
   })
 
@@ -508,10 +706,152 @@ describe("staging the shipped runtime under the profile", () => {
       expect(copy).not.toHaveBeenCalled()
     })
   })
+
+  // Security review round 3 of #577 (P2): staging runs before the service
+  // calls bind the profile under the lease, so it copies only into the
+  // selected profile's own runtime directory. A refused change never replaces
+  // the copy another profile's service runs.
+  it("stages under the selected profile, and leaves another profile's copy of the same version alone", async () => {
+    await withScratch(async ({ root, resources, home }) => {
+      const other = join(home, ".domovoi", "runtime", "0.9.4")
+      await mkdir(join(other, "daemon", "dist"), { recursive: true })
+      await writeFile(join(other, "daemon", "dist", "index.js"), "the other profile's copy")
+      const profile = join(root, "profiles", "work")
+      await mkdir(profile, { recursive: true })
+      const runtime = await stageDaemonRuntime({ resourcesPath: resources, profileDirectory: profile, version: "0.9.4", platform, stagingParent: join(root, "staging"), fileSystem: nodeRuntimeFileSystem() })
+      expect(dirname(copyOf(runtime))).toBe(join(profile, "runtime", "0.9.4"))
+      expect(await readFile(runtime.daemonEntryPath, "utf8")).toBe("daemon")
+      expect(await readFile(join(other, "daemon", "dist", "index.js"), "utf8")).toBe("the other profile's copy")
+    })
+  })
+
+  it("refuses a relative profile directory before copying anything", async () => {
+    await withScratch(async ({ resources, home }) => {
+      await expect(stageDaemonRuntime({ resourcesPath: resources, home, profileDirectory: "profiles/work", version: "0.9.4", platform, fileSystem: nodeRuntimeFileSystem() } as Parameters<typeof stageDaemonRuntime>[0]))
+        .rejects.toThrow("The profile directory profiles/work is not an absolute path, so no runtime was copied.")
+      expect(await entries(home)).toEqual([])
+    })
+  })
+
+  // Round 6 (P2): the private staging directory is removed only while it is
+  // still the directory made for this copy. One put in its place is left.
+  it("leaves a directory put in the staging directory's place", async () => {
+    await withScratch(async ({ resources, home }) => {
+      const copy = async (_from: string, to: string) => {
+        const holder = dirname(to)
+        await rename(holder, `${holder}-moved`)
+        await mkdir(holder)
+        await writeFile(join(holder, "keep.txt"), "keep")
+        throw new Error("copy failed")
+      }
+      await expect(prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, stagingParent: join(dirname(home), "staging"), fileSystem: nodeRuntimeFileSystem({ copy }) }).then((prepared) => prepared.publish()))
+        .rejects.toThrow("copy failed")
+      const [holder] = (await readdir(join(dirname(home), "staging"))).filter((name) => !name.endsWith("-moved"))
+      expect(await readFile(join(dirname(home), "staging", holder!, "keep.txt"), "utf8")).toBe("keep")
+    })
+  })
+
+  // Round 6 (P2): when the system temporary directory is on another volume,
+  // staging goes under the app's data directory, and only when that is on the
+  // runtime's volume, a real directory and outside any repository. Otherwise
+  // nothing is written. Copy approved by fetzy on 2026-09-26.
+  describe("when the system temporary directory is on another volume", () => {
+    const otherVolume = (): Partial<RuntimeFileSystem> => {
+      const identity = nodeRuntimeFileSystem().identity
+      return { identity: async (path) => path === tmpdir() ? "other-volume:1" : identity(path) }
+    }
+
+    it("stages under the app's data directory", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const dataDirectory = join(root, "data")
+        await mkdir(dataDirectory)
+        const made: string[] = []
+        const real = nodeRuntimeFileSystem()
+        const fileSystem = nodeRuntimeFileSystem({ ...otherVolume(), makePrivateDirectory: async (prefix) => { made.push(prefix); return real.makePrivateDirectory(prefix) } })
+        const prepared = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, dataDirectory, fileSystem })
+        // Round 8 (P2): preparing makes neither the staging directory nor
+        // the profile's.
+        expect(await readdir(dataDirectory)).toEqual([])
+        expect(await entries(home)).toEqual([])
+        await prepared.publish()
+        expect(made).toHaveLength(1)
+        expect(made[0]!.startsWith(join(dataDirectory, "runtime-staging"))).toBe(true)
+        expect(await readFile(prepared.runtime.daemonEntryPath, "utf8")).toBe("daemon")
+        expect(await leftStaging(join(dataDirectory, "runtime-staging"))).toEqual([[]])
+      })
+    })
+
+    it("refuses, writing nothing, when the data directory is inside a repository or on another volume too", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const inRepository = join(root, "repository", "data")
+        await mkdir(join(root, "repository", ".git"), { recursive: true })
+        await mkdir(inRepository)
+        const identity = nodeRuntimeFileSystem().identity
+        for (const [label, dataDirectory, fileSystem] of [
+          ["inside a repository", inRepository, nodeRuntimeFileSystem(otherVolume())],
+          ["on another volume", join(root, "far"), nodeRuntimeFileSystem({ identity: async (path) => path === tmpdir() || path.startsWith(join(root, "far")) ? "other-volume:1" : identity(path) })],
+        ] as const) {
+          await mkdir(join(root, "far"), { recursive: true })
+          await expect(prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, dataDirectory, fileSystem } as Parameters<typeof prepareDaemonRuntime>[0]), label)
+            .rejects.toThrow(`The profile directory ${join(home, ".domovoi")} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`)
+          expect(await entries(home), label).toEqual([])
+        }
+        expect(await readdir(inRepository)).toEqual([])
+      })
+    })
+  })
+
+  // Round 5 (P2): the copy is made in a private directory outside every
+  // profile, so a swap cannot redirect it; nothing is written under the
+  // swapped-in path, not even a hidden staging directory.
+  it("refuses to publish when the runtime directory is swapped for a link during the copy", async () => {
+    await withScratch(async ({ root, resources, home }) => {
+      const profile = join(root, "profiles", "work")
+      const otherRuntime = join(root, "profiles", "other", "runtime")
+      await mkdir(profile, { recursive: true })
+      await mkdir(join(otherRuntime, "0.9.4", "daemon", "dist"), { recursive: true })
+      await writeFile(join(otherRuntime, "0.9.4", "daemon", "dist", "index.js"), "the other profile's copy")
+      const copy = async (from: string, to: string) => {
+        await rename(join(profile, "runtime"), join(profile, "runtime-moved"))
+        await symlink(otherRuntime, join(profile, "runtime"), directoryLink)
+        await nodeRuntimeFileSystem().copy(from, to)
+      }
+      await expect(stageDaemonRuntime({ resourcesPath: resources, profileDirectory: profile, version: "0.9.4", platform, stagingParent: join(root, "staging"), fileSystem: nodeRuntimeFileSystem({ copy }) }))
+        .rejects.toThrow(`${join(profile, "runtime")} changed while the runtime was copied, so it was not published.`)
+      expect(await readFile(join(otherRuntime, "0.9.4", "daemon", "dist", "index.js"), "utf8")).toBe("the other profile's copy")
+      expect(await readdir(otherRuntime)).toEqual(["0.9.4"])
+      expect(await readdir(join(otherRuntime, "0.9.4"))).toEqual(["daemon"])
+      // Round 7 (P2): the unpublished copy stays in its private staging
+      // directory, outside every profile: whether that path is still the
+      // directory made for it cannot be known when it is removed.
+      expect((await readdir(join(root, "staging"))).every((name) => name.startsWith(".domovoi-runtime-0.9.4.staging-"))).toBe(true)
+      expect(await entries(home)).toEqual([])
+    })
+  })
+
+  // The daemon's approved words for an update (update-outcome, 2026-09-23).
+  it("says the service was not updated when the shipped part is missing for an update", async () => {
+    const { stageDaemonRuntime } = await import("./daemon-service.js")
+    await expect(stageDaemonRuntime({
+      resourcesPath: "/r", profileDirectory: "/Users/dana/.domovoi", version: "0.9.4", platform: "darwin", operation: "update",
+      fileSystem: nodeRuntimeFileSystem({ entry: async () => "missing", copy: vi.fn(), rename: async () => {} }),
+    })).rejects.toThrow("The Node runtime this app ships was not found at /r/daemon-runtime/node/bin/node. The service was not updated and no service files were changed.")
+  })
+
+  it("stages for an update when the service is updated", async () => {
+    const { service, deps } = harness()
+    await service.update()
+    expect(deps.stageRuntime).toHaveBeenCalledWith("update")
+  })
 })
 
 const platform = process.platform === "win32" ? "win32" : "linux"
 const directoryLink = process.platform === "win32" ? "junction" : "dir"
+
+// Round 7: the fresh <version>/<id> directory a published runtime is in.
+function copyOf(runtime: { daemonEntryPath: string }): string {
+  return dirname(dirname(dirname(runtime.daemonEntryPath)))
+}
 
 function daemonRuntimeLayoutUnder(destination: string) {
   return platform === "win32"
@@ -532,6 +872,7 @@ async function withScratch(run: (paths: { root: string; resources: string; home:
     await writeFile(shipped.daemonEntryPath, "daemon")
     const home = join(root, "home")
     await mkdir(home)
+    await mkdir(join(root, "staging"))
     await run({ root, resources, home })
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -542,23 +883,30 @@ async function entries(path: string): Promise<string[]> {
   return (await readdir(path)).sort()
 }
 
+// What each staging directory a publish left under parent holds.
+async function leftStaging(parent: string): Promise<string[][]> {
+  const names = await readdir(parent)
+  expect(names.every((name) => name.startsWith(".domovoi-runtime-0.9.4.staging-"))).toBe(true)
+  return Promise.all(names.map((name) => readdir(join(parent, name))))
+}
+
 type StageInput = {
   resources: string
   home: string
   version: string
   copy?: (from: string, to: string) => Promise<void>
   rename?: (from: string, to: string) => Promise<void>
-  remove?: (path: string) => Promise<void>
   entry?: RuntimeFileSystem["entry"]
 }
 
 function stage(input: StageInput) {
   return stageDaemonRuntime({
-    resourcesPath: input.resources, home: input.home, version: input.version, platform,
+    resourcesPath: input.resources, profileDirectory: join(input.home, ".domovoi"), version: input.version, platform,
+    // The private staging directory stays inside the scratch root.
+    stagingParent: join(dirname(input.home), "staging"),
     fileSystem: nodeRuntimeFileSystem({
       ...(input.copy ? { copy: input.copy } : {}),
       ...(input.rename ? { rename: input.rename } : {}),
-      ...(input.remove ? { remove: input.remove } : {}),
       ...(input.entry ? { entry: input.entry } : {}),
     }),
   })

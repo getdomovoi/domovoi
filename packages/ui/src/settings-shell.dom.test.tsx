@@ -556,6 +556,22 @@ it("does not call a daemon this app did not start the installed service", () => 
   expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
 })
 
+// Ruled 2026-09-23 (#577, B): after an app update the service can still run
+// the runtime it was installed with. Settings names both versions.
+it("says the login service runs an older Domovoi than this app", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "darwin", serviceVersion: "0.9.2", appVersion: "0.10.0" }} />)
+  expect(screen.getByText("The login service runs Domovoi 0.9.2. This app is 0.10.0.")).toBeTruthy()
+})
+
+it("says nothing about versions when the service is current or newer", () => {
+  const { rerender } = render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "darwin", serviceVersion: "0.10.0", appVersion: "0.10.0" }} />)
+  expect(screen.queryByText(/The login service runs Domovoi/)).toBeNull()
+  rerender(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "darwin", serviceVersion: "0.11.0", appVersion: "0.10.0" }} />)
+  expect(screen.queryByText(/The login service runs Domovoi/)).toBeNull()
+  rerender(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", platform: "darwin", serviceVersion: "0.9.2", appVersion: "0.10.0" }} />)
+  expect(screen.queryByText(/The login service runs Domovoi/)).toBeNull()
+})
+
 // Ruled by fetzy 2026-09-23: when the recovery line and the not-running line
 // both show, the second does not repeat "Removed.".
 it("says Removed once when the profile owner is unresolved and the daemon did not start again", async () => {
@@ -566,6 +582,48 @@ it("says Removed once when the profile owner is unresolved and the daemon did no
   expect(await within(section).findByText("Removed. The profile owner remains unresolved. After confirming no custom or legacy supervisor will restart it, run this in a terminal.")).toBeTruthy()
   expect(within(section).getByText("The daemon did not start again inside this app, so no session is running. Quit and reopen Domovoi to start it.")).toBeTruthy()
   expect(section.textContent?.match(/Removed\./g)).toHaveLength(1)
+})
+
+// Ruled 2026-09-23 (#577, B): "Update the service" moves the service to this
+// app's runtime in place. Success adds no words; a failure shows only the
+// daemon's own; an update this window cannot reach says so in its own words.
+function olderService(update: () => Promise<unknown>, refusal?: string) {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "darwin", serviceVersion: "0.9.2", appVersion: "0.10.0", service: { install: vi.fn(), remove: vi.fn(), update: update as never, ...(refusal ? { refusal } : {}) } }} />)
+  return screen.getByRole("region", { name: "Daemon on this machine" })
+}
+
+it("updates an older login service and then says nothing more", async () => {
+  const user = userEvent.setup()
+  const update = vi.fn(async () => ({ ok: true, kind: "file", target: "/p", daemonRunning: true }))
+  const section = olderService(update)
+  await user.click(within(section).getByRole("button", { name: "Update the service" }))
+  expect(update).toHaveBeenCalledOnce()
+  await vi.waitFor(() => expect(within(section).queryByText("The login service runs Domovoi 0.9.2. This app is 0.10.0.")).toBeNull())
+  expect(within(section).queryByRole("button", { name: "Update the service" })).toBeNull()
+  expect(within(section).queryByRole("alert")).toBeNull()
+})
+
+it("shows only the daemon's words when the update fails", async () => {
+  const user = userEvent.setup()
+  const words = "Domovoi could not update the service: launchctl print exited 113. Nothing was changed, and the service was left as it was."
+  const section = olderService(vi.fn(async () => ({ ok: false, reason: "update-failed", message: words })))
+  await user.click(within(section).getByRole("button", { name: "Update the service" }))
+  const alert = await within(section).findByRole("alert")
+  expect(alert.textContent).toBe(words)
+})
+
+it("says an update this window cannot reach was still made", async () => {
+  const user = userEvent.setup()
+  const section = olderService(vi.fn(async () => ({ ok: false, reason: "installed-not-attached", kind: "file", target: "/p", message: "The daemon did not answer" })))
+  await user.click(within(section).getByRole("button", { name: "Update the service" }))
+  const alert = await within(section).findByRole("alert")
+  expect(alert.textContent).toBe("Updated, but this window could not reach the daemonThe daemon did not answer")
+  expect(section.textContent).not.toContain("Installed, but this window could not reach the daemon")
+})
+
+it("keeps Update locked while a turn runs or a gate waits", () => {
+  const section = olderService(vi.fn(), "1 gate is waiting (Fix login).")
+  expect(within(section).getByRole("button", { name: "Update the service" }).hasAttribute("disabled")).toBe(true)
 })
 
 // Security review round 1 of #576. The main process reads the service back

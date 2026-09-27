@@ -1,22 +1,30 @@
 import { constants } from "node:fs"
-import { access, stat } from "node:fs/promises"
+import { access, readFile, stat } from "node:fs/promises"
 import { homedir, userInfo } from "node:os"
 import { posix, win32 } from "node:path"
 
+import { isLoginServiceRuntimeVersion, loginServiceHomePaths, loginServiceTaskName } from "@getdomovoi/protocol"
+
 import type { DaemonEnvironment } from "../config.js"
-import { createServiceConfiguration } from "./configuration.js"
+import { profileDirectory, profileLocation } from "../profile-directory.js"
+import { OperationDeadline } from "../operation-deadline.js"
+import { assertServiceProfile, callerProfile, createServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import type { ServiceConfiguration } from "./configuration.js"
 import {
   installService,
+  isDomovoiTaskAction,
   nodeServiceEffects,
   prepareServiceUpdate,
   removeService,
   servicePlan,
+  serviceProgram,
   serviceStatus,
   type ServiceEffects,
   type ServiceStatus,
 } from "./install.js"
-import { DaemonServiceUpdateError, runServiceUpdate, trackInFlight } from "./update-outcome.js"
+import { launchdPlistProgram, systemdUnitProgram } from "./units.js"
+import { withinServiceDeadline } from "./deadline.js"
+import { DaemonServiceUpdateError, publishFirst, runServiceUpdate, trackInFlight } from "./update-outcome.js"
 import { prepareWslUpdate } from "./wsl-install.js"
 
 export { DaemonServiceUpdateError, type DaemonServiceUpdateOutcome } from "./update-outcome.js"
@@ -49,6 +57,9 @@ export type DaemonServiceOptions = {
   // The settings the service keeps (profile, host, port, TLS paths), read as
   // the daemon reads its environment. Absent means the default profile under
   // the user's home. DOMOVOI_AUTH_TOKEN is refused, as the CLI refuses it.
+  // Given, it also names the caller's profile: a service saved for another
+  // profile refuses the install under the service-operation lease, before the
+  // handoff (security review round 2 of #577).
   environment?: DaemonEnvironment
   // The handoff, ruled 2026-09-23: called once the runtime, the platform and
   // the configuration have been checked, the service-operation lease is held
@@ -59,6 +70,22 @@ export type DaemonServiceOptions = {
   // The desktop refuses the handoff before calling this while a turn runs or
   // a gate waits; the installer does not look.
   releaseInAppDaemon?: () => Promise<void>
+  // Security review round 4 of #577 (P2): the runtime staged but not yet in
+  // place. Its files are checked first; publish moves it to `runtime` only
+  // under the service-operation lease, after every profile check and before
+  // the handoff, so a refused install changes no file.
+  staged?: DaemonServiceStagedRuntime
+}
+
+// Security review round 7 of #577: publish puts the staged runtime into a
+// fresh directory that nothing else uses (the desktop writes
+// <profile>/runtime/<version>/<id>). It never moves or replaces an earlier
+// copy, so a failure after it leaves the runtime the previous service runs
+// as it was, and there is nothing to put back. A publish runs at most once,
+// under the service-operation lease.
+export type DaemonServiceStagedRuntime = {
+  runtime: DaemonServiceRuntime
+  publish: () => Promise<void>
 }
 
 export type DaemonServiceInstallResult =
@@ -137,7 +164,7 @@ export async function installDaemonService(
   options: DaemonServiceOptions,
   dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),
 ): Promise<DaemonServiceInstallResult> {
-  await checkRuntime(options.runtime, dependencies)
+  await checkRuntime(options.staged?.runtime ?? options.runtime, dependencies)
   const configuration = createServiceConfiguration(options.environment ?? {}, {
     platform: dependencies.platform,
     homeDirectory: dependencies.home,
@@ -157,6 +184,13 @@ export async function installDaemonService(
   // lease, so a busy lease refuses with the in-app daemon still running.
   const plan = await installService(serviceTarget, dependencies, {
     ...(options.releaseInAppDaemon === undefined ? {} : { handoff: options.releaseInAppDaemon }),
+    ...(options.environment === undefined ? {} : { callerProfile: callerProfile(options.environment, dependencies.home, dependencies.platform) }),
+    ...(options.staged === undefined ? {} : {
+      beforeChanges: async () => {
+        await options.staged!.publish()
+        await checkRuntime(options.runtime, dependencies)
+      },
+    }),
   })
   return plan.kind === "file"
     ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
@@ -165,6 +199,13 @@ export async function installDaemonService(
 
 export type DaemonServiceUpdateOptions = {
   runtime: DaemonServiceRuntime
+  // The caller's daemon environment. Given, the saved service must run the
+  // profile it names, checked under the service-operation lease before any
+  // manager action (security review round 2 of #577).
+  environment?: DaemonEnvironment
+  // Round 4 (P2): the staged runtime, published under the lease after the
+  // profile check and before any manager action.
+  staged?: DaemonServiceStagedRuntime
 }
 
 // Ruled 2026-09-23: "Update the service" moves the installed service to the
@@ -179,13 +220,16 @@ export async function updateDaemonService(
   options: DaemonServiceUpdateOptions,
   dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),
 ): Promise<DaemonServiceInstallResult> {
-  await checkRuntime(options.runtime, dependencies, "update")
+  await checkRuntime(options.staged?.runtime ?? options.runtime, dependencies, "update")
   const waits = {
     profileWaitMs: dependencies.profileReleaseWaitMs ?? 10_000,
     readinessWaitMs: dependencies.readinessWaitMs ?? 20_000,
     budgetMs: dependencies.updateBudgetMs ?? 60_000,
   }
-  const tracked = trackInFlight(dependencies)
+  // Round 7 (P1): the publish is tracked with the manager calls, so the
+  // service-operation lease is held until a publish the deadline gave up on
+  // has settled.
+  const tracked = trackInFlight({ ...dependencies, publishStaged: options.staged?.publish ?? (async () => {}) })
   return runServiceUpdate<DaemonServiceInstallResult>(dependencies.claimServiceOperation, waits.budgetMs, async (readDeadline) => {
     // Read under the service-operation lease: a removal that held it has
     // finished by now, and none can start before the update ends. A
@@ -198,16 +242,50 @@ export async function updateDaemonService(
       throw new DaemonServiceUpdateError("nothing-changed", cause)
     }
     if (!saved) throw new DaemonServiceUpdateError("not-installed")
+    if (options.environment !== undefined) {
+      assertServiceProfile(profileLocation(saved.homeDirectory, saved.profileDirectory, dependencies.platform), callerProfile(options.environment, dependencies.home, dependencies.platform), dependencies.platform)
+    }
+    // Security review rounds 4 and 5 of #577: the staged runtime goes into
+    // place only once every step that can refuse with nothing changed has
+    // passed, right before the new definition is written (launchd, systemd),
+    // or as the first step of the swap (WSL, whose refusals all come before).
+    //
+    // Round 8 (P2), ruled 2026-09-26 (Q64 A): on systemd and for a WSL guest
+    // the publish is the first change, so a published runtime that fails its
+    // check has changed nothing about the service. That is "runtime-copied",
+    // naming the copy, not "nothing-changed". Round 10 (P2): there the publish
+    // is not cut short by the deadline; publishFirst waits for it and answers
+    // by what happened to the copy. launchd and the Windows task publish after
+    // the previous service was stopped; there a failure is a failed swap, and
+    // the previous service is put back.
+    const firstChange = dependencies.platform === "linux"
+    const copy = posix.dirname(posix.dirname(posix.dirname(options.runtime.daemonEntryPath)))
+    const publish = async (deadline: OperationDeadline, first = firstChange) => {
+      if (options.staged === undefined) return
+      const check = () => checkRuntime(options.runtime, dependencies, "update")
+      if (first) return publishFirst(deadline, () => tracked.effects.publishStaged(), check, copy)
+      await tracked.effects.publishStaged()
+      await check()
+    }
     if (dependencies.platform === "linux" && saved.wsl) {
       const steps = await prepareWslUpdate(saved, options.runtime, tracked.effects, waits, tracked.inFlight)(readDeadline)
-      return { ...steps, swap: async (deadline) => ({ kind: "task" as const, ...await steps.swap(deadline) }) }
+      // Round 11 (P2): an update that resumes an interrupted one may find no
+      // task registered, so there the publish is not the first change and
+      // "runtime-copied" would say a service is set to run the previous
+      // runtime when none is. It runs under the
+      // deadline, as launchd's does, and a failure is a failed swap: the
+      // previous task is registered, started and must report ready.
+      const publishStep = (deadline: OperationDeadline) => steps.resuming
+        ? withinServiceDeadline(deadline, () => publish(deadline, false))
+        : publish(deadline)
+      return { ...steps, swap: async (deadline) => { await publishStep(deadline); return { kind: "task" as const, ...await steps.swap(deadline) } } }
     }
     const steps = await prepareServiceUpdate({
       ...target(dependencies),
       execPath: options.runtime.daemonEntryPath,
       runtime: options.runtime.nodePath,
       configuration: saved,
-    }, tracked.effects, waits, tracked.inFlight)(readDeadline)
+    }, tracked.effects, waits, tracked.inFlight, options.staged === undefined ? undefined : publish)(readDeadline)
     return {
       ...steps,
       swap: async (deadline): Promise<DaemonServiceInstallResult> => {
@@ -226,10 +304,16 @@ export function readDaemonServiceStatus(
   return serviceStatus(target(dependencies), dependencies)
 }
 
+// options.environment: the caller's daemon environment. Given, the saved
+// service must run the profile it names, checked under the service-operation
+// lease before any manager action (security review round 2 of #577).
 export async function removeDaemonService(
   dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),
+  options: { environment?: DaemonEnvironment } = {},
 ): Promise<DaemonServiceRemovalResult> {
-  const removed = await removeService(target(dependencies), dependencies)
+  const removed = await removeService(target(dependencies), dependencies, {
+    ...(options.environment === undefined ? {} : { callerProfile: callerProfile(options.environment, dependencies.home, dependencies.platform) }),
+  })
   const recovery = {
     profileRecovery: removed.profileRecovery,
     ...(removed.profileRecoveryDetail === undefined ? {} : { profileRecoveryDetail: removed.profileRecoveryDetail }),
@@ -258,5 +342,117 @@ export function nodeDaemonServiceDependencies(): DaemonServiceDependencies & Ser
         return "not-file"
       }
     },
+  }
+}
+
+// Ruled 2026-09-23 (#577, A): which runtime the login service runs, read from
+// the service's own definition. The desktop stages its runtime at
+// <profile>/runtime/<version>/ and the definition names that path, so the
+// version is the folder name. A service that runs any other runtime (the CLI's
+// own Node, a hand-edited unit) reads as installed with no version. Nothing is
+// written; on Windows the task is only queried.
+export type DaemonServiceRuntimeReport = { installed: false } | { installed: true; version?: string }
+
+export type DaemonServiceRuntimeReader = {
+  platform: string
+  home: string
+  readDefinition: (path: string) => Promise<string | undefined>
+  capture: ServiceEffects["capture"]
+  // The saved service configuration, whose profile the version is bound to.
+  readConfiguration: NonNullable<ServiceEffects["readConfiguration"]>
+}
+
+// Round 9 (P2): the one Exec action of a Windows task, as Task Scheduler
+// reports it (schtasks /query /xml): exactly one Actions element holding
+// exactly one Exec with a Command and Arguments, or undefined.
+function taskAction(definition: string): { path: string; arguments: string } | undefined {
+  if ((definition.match(/<Actions[\s>/]/gu) ?? []).length !== 1) return undefined
+  const actions = /<Actions(?:\s[^>]*)?>([\s\S]*?)<\/Actions>/u.exec(definition)?.[1]
+  const exec = actions === undefined ? undefined : /^\s*<Exec>\s*<Command>([^<]*)<\/Command>\s*<Arguments>([^<]*)<\/Arguments>\s*<\/Exec>\s*$/u.exec(actions)
+  if (exec === undefined || exec === null) return undefined
+  const decode = (text: string) => text.replace(/&(?:quot|apos|lt|gt|amp);/gu, (entity) => ({ "&quot;": "\"", "&apos;": "'", "&lt;": "<", "&gt;": ">", "&amp;": "&" })[entity] ?? entity)
+  return { path: decode(exec[1] ?? ""), arguments: decode(exec[2] ?? "") }
+}
+
+// Security review round 4 of #577 (P3): the version is the one staged under
+// the profile the saved configuration names. Round 7: each publish is a fresh
+// directory, <profile>/runtime/<version>/<id>/node/bin/node (node\node.exe on
+// Windows), with a 12-character hexadecimal id. Round 8: the version must pass
+// the check the desktop publishes under (isLoginServiceRuntimeVersion, P3).
+// Round 9 (P2): the definition must be exactly what an install writes for
+// that copy: the whole launchd plist or systemd unit as its renderer gives it
+// (launchdPlistProgram, systemdUnitProgram), so no Program key, later
+// ExecStart line or other change can run something else; for a Windows task,
+// one action whose Command and Arguments are the install's. Anything else,
+// another profile's runtime included, has none.
+const publishId = /^[0-9a-f]{12}$/u
+
+export function stagedRuntimeVersion(platform: string, definition: string, profileDirectory: string, configurationPath: string): string | undefined {
+  const paths = platform === "win32" ? win32 : posix
+  const action = platform === "win32" ? taskAction(definition) : undefined
+  const written = platform === "darwin" ? launchdPlistProgram(definition)
+    : platform === "linux" ? systemdUnitProgram(definition)
+      : action === undefined ? undefined : { execPath: /^"([^"]*)"$/u.exec(action.path)?.[1] ?? action.path, args: [] }
+  if (written === undefined) return undefined
+  const program = written.execPath
+  const nodeDirectory = platform === "win32" ? paths.dirname(program) : paths.dirname(paths.dirname(program))
+  const copy = paths.dirname(nodeDirectory)
+  const id = paths.basename(copy)
+  const version = paths.basename(paths.dirname(copy))
+  if (!isLoginServiceRuntimeVersion(version) || !publishId.test(id)) return undefined
+  const expectedCopy = paths.join(profileDirectory, "runtime", version, id)
+  const node = platform === "win32" ? paths.join(expectedCopy, "node", "node.exe") : paths.join(expectedCopy, "node", "bin", "node")
+  const entry = paths.join(expectedCopy, "daemon", "dist", "index.js")
+  if (action !== undefined) return isDomovoiTaskAction(action, configurationPath, { executable: node, entry }) ? version : undefined
+  const expected = serviceProgram(entry, node, configurationPath)
+  const same = written.execPath === expected.program && written.args.length === expected.args.length
+    && written.args.every((argument, index) => argument === expected.args[index])
+  return same ? version : undefined
+}
+
+export async function readDaemonServiceRuntimeVersion(
+  reader: DaemonServiceRuntimeReader = nodeDaemonServiceRuntimeReader(),
+): Promise<DaemonServiceRuntimeReport> {
+  let definition: string | undefined
+  if (reader.platform === "win32") {
+    const deadline = OperationDeadline.start(10_000)
+    try {
+      const queried = await reader.capture("schtasks", ["/query", "/tn", loginServiceTaskName, "/xml"], deadline)
+      definition = queried.code === 0 ? queried.stdout : undefined
+    } finally {
+      deadline.clear()
+    }
+  } else if (reader.platform === "darwin" || reader.platform === "linux") {
+    definition = await reader.readDefinition(posix.join(reader.home, loginServiceHomePaths[reader.platform]))
+  }
+  if (definition === undefined) return { installed: false }
+  let bound: { profile: string; configurationPath: string } | undefined
+  try {
+    const saved = reader.readConfiguration(reader.home, reader.platform)
+    bound = saved === undefined ? undefined : {
+      profile: profileDirectory(profileLocation(saved.homeDirectory, saved.profileDirectory), reader.platform),
+      configurationPath: serviceConfigurationPath(saved.homeDirectory, reader.platform),
+    }
+  } catch {
+    bound = undefined
+  }
+  const version = bound === undefined ? undefined : stagedRuntimeVersion(reader.platform, definition, bound.profile, bound.configurationPath)
+  return version === undefined ? { installed: true } : { installed: true, version }
+}
+
+export function nodeDaemonServiceRuntimeReader(): DaemonServiceRuntimeReader {
+  return {
+    platform: process.platform,
+    home: homedir(),
+    readDefinition: async (path) => {
+      try {
+        return await readFile(path, "utf8")
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+        throw error
+      }
+    },
+    capture: nodeServiceEffects().capture,
+    readConfiguration: nodeServiceEffects().readConfiguration!,
   }
 }

@@ -5,7 +5,7 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 
 import {
-  auditedPackages, collectAuditGraph, desktopPackages, evaluateDependencyLicenses, mergeLicenseGraphs,
+  auditedPackages, collectAuditGraph, desktopPackages, desktopRuntimeWorkspacePackages, evaluateDependencyLicenses, mergeLicenseGraphs,
 } from "./dependency-licenses.mjs"
 import { publishablePackages } from "./release-packages.mjs"
 import { collectWorkspacePackages } from "./version-lockstep.mjs"
@@ -38,8 +38,15 @@ test("names every workspace package the desktop app and the npm packages carry a
   // into out/, the UI into the renderer, so they ship as much as its
   // production ones. Past the app itself, only production dependencies count.
   const desktop = manifests.get("@getdomovoi/desktop")
-  const pending = Object.entries({ ...desktop.dependencies, ...desktop.devDependencies })
-    .filter(([, range]) => range.startsWith("workspace:")).map(([name]) => name)
+  // The daemon also ships as the runtime beside the archive, whatever the
+  // manifest calls it, so the walk starts there too.
+  const builder = await readFile(join(root, "apps/desktop/electron-builder.yml"), "utf8")
+  assert.match(builder, /^  - from: daemon-runtime\/\$\{platform\}-\$\{arch\}$/mu)
+  const pending = [
+    ...Object.entries({ ...desktop.dependencies, ...desktop.devDependencies })
+      .filter(([, range]) => range.startsWith("workspace:")).map(([name]) => name),
+    ...desktopRuntimeWorkspacePackages,
+  ]
   seen.add("@getdomovoi/desktop")
   while (pending.length) {
     const name = pending.pop()

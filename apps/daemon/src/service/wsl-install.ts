@@ -195,7 +195,9 @@ export function prepareWslUpdate(
   waits: { profileWaitMs: number; readinessWaitMs: number },
   inFlight: InFlight,
 ) {
-  return async (readDeadline: OperationDeadline): Promise<ServiceSwap<{ name: string; configurationPath: string }>> => {
+  // resuming: this update continues one that was interrupted after the old
+  // task was deleted, so no task may be running when it starts.
+  return async (readDeadline: OperationDeadline): Promise<ServiceSwap<{ name: string; configurationPath: string }> & { resuming: boolean }> => {
     const path = serviceConfigurationPath(saved.homeDirectory, "linux")
     const intentPath = wslUpdateIntentPath(path)
     const stopSupervisor = effects.stopSupervisor
@@ -280,6 +282,7 @@ export function prepareWslUpdate(
     }
 
     return {
+      resuming: interrupted !== undefined,
       swap: async (deadline) => {
         if (interrupted === undefined) {
           if (!/^domovoi-task:(missing|[1-4])$/.test(await confirmedIn(deadline)(old.disable))) throw new Error("WSL task disable was not confirmed")

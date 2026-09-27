@@ -40,3 +40,48 @@ describe("desktop main entry point", () => {
     expect(developmentEnvironment().DOMOVOI_AUTH_TOKEN).toBeUndefined()
   })
 })
+
+// Owner ruling 2026-09-26 (#577, A): the daemon loads at run time from the
+// runtime the app ships, so this first module takes the three values out with
+// its own code, holds them, and hands them to that daemon once it loads.
+describe("credentials held until the daemon loads", () => {
+  const credentialNames = ["DOMOVOI_AUTH_TOKEN", "DOMOVOI_CREDENTIAL_PATH", "DOMOVOI_RELAY_CREDENTIAL_FILE"] as const
+
+  const inherited = (name: string) => name.endsWith("TOKEN") ? "d".repeat(43) : `/tmp/${name.toLowerCase()}`
+
+  function inherit(): void {
+    for (const name of names) {
+      previous.set(name, process.env[name])
+      process.env[name] = inherited(name)
+    }
+  }
+
+  it("imports no value from the daemon", async () => {
+    const source = await readFile(join(import.meta.dirname, "inherited-environment.ts"), "utf8")
+    const daemonImports = source.split("\n").filter((line) => /from\s+"@getdomovoi\/daemon"/u.test(line))
+    expect(daemonImports.filter((line) => !line.startsWith("import type "))).toEqual([])
+  })
+
+  it("holds the three values and hands them over once", async () => {
+    inherit()
+    vi.resetModules()
+    const environment = await import("./inherited-environment.js")
+    for (const name of names) expect(process.env[name], name).toBeUndefined()
+    const held = environment.takeInheritedCredentials()
+    // Compared, never printed.
+    expect(credentialNames.map((name) => held[name] === inherited(name))).toEqual([true, true, true])
+    expect(Object.keys(held).sort()).toEqual([...credentialNames].sort())
+    expect(environment.takeInheritedCredentials()).toEqual({})
+  })
+
+  it("leaves nothing for a child started before the hand-over to inherit", async () => {
+    inherit()
+    vi.resetModules()
+    const environment = await import("./inherited-environment.js")
+    const { spawnSync } = await import("node:child_process")
+    // The child reports only whether any of the names reached it.
+    const child = spawnSync(process.execPath, ["-e", `process.exit(${JSON.stringify(names)}.some((name) => name in process.env) ? 3 : 0)`], { stdio: "ignore" })
+    expect(child.status).toBe(0)
+    expect(Object.keys(environment.takeInheritedCredentials()).sort()).toEqual([...credentialNames].sort())
+  })
+})

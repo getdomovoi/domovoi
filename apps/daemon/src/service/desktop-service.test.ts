@@ -4,14 +4,16 @@ import { ProfileAlreadyOwnedError } from "../profile-lease.js"
 import {
   DaemonServiceRuntimeMissingError,
   installDaemonService,
+  readDaemonServiceRuntimeVersion,
   readDaemonServiceStatus,
   removeDaemonService,
   WindowsTaskNotDomovoiError,
   WindowsTaskPercentSignError,
   type DaemonServiceDependencies,
 } from "../public.js"
-import { createServiceConfiguration, parseServiceConfiguration } from "./configuration.js"
-import type { ServiceEffects } from "./install.js"
+import { createServiceConfiguration, parseServiceConfiguration, ServiceProfileMismatchError, ServiceProfileUnknownError } from "./configuration.js"
+import { servicePlan, type ServiceEffects } from "./install.js"
+import { launchdPlist, systemdUnit } from "./units.js"
 import { ServiceOperationBusyError } from "./operation-lease.js"
 import { DaemonServiceHandoffError, LaunchdJobNotDomovoiError, SystemdPathCharacterError, WindowsTaskArgumentVariableError, WindowsTaskPathError } from "./desktop-service.js"
 
@@ -176,6 +178,183 @@ describe("readDaemonServiceStatus and removeDaemonService", () => {
       kind: "file", path: "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist", profileRecovery: "not-needed",
     })
     expect(effects.run).toHaveBeenCalledWith("launchctl", ["bootout", "gui/501/sh.domovoi.domovoid"], expect.anything())
+  })
+})
+
+// Ruled 2026-09-23 (#577, A): the version of the runtime a login service runs
+// is read from the service's own definition, where the desktop's staged copy
+// names it (<profile>/runtime/<version>/). Read-only: nothing is written or run
+// except the Windows query, which only reads the task.
+describe("readDaemonServiceRuntimeVersion", () => {
+  // Round 9: the definitions below are what an install writes (the
+  // renderers), since a version is read only from exactly that.
+  const plist = (program: string, entry: string) => launchdPlist({ execPath: program, args: [entry, "--service-config", "/Users/dana/.domovoi/service.json"] })
+  // Security review round 4 of #577 (P3): the version is reported only for
+  // the program the definition runs, and only when it is the runtime staged
+  // under the profile the saved configuration names.
+  const saved = (platform: string, home: string, profile?: string) => vi.fn(() => createServiceConfiguration(profile === undefined ? {} : { DOMOVOI_PROFILE_DIR: profile }, { platform, homeDirectory: home, workingDirectory: home }))
+
+  it("names the staged runtime version a launchd agent runs", async () => {
+    const readDefinition = vi.fn(async () => plist("/Users/dana/.domovoi/runtime/0.9.2/0123456789ab/node/bin/node", "/Users/dana/.domovoi/runtime/0.9.2/0123456789ab/daemon/dist/index.js"))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }))
+      .resolves.toEqual({ installed: true, version: "0.9.2" })
+    expect(readDefinition).toHaveBeenCalledWith("/Users/dana/Library/LaunchAgents/sh.domovoi.domovoid.plist")
+  })
+
+  it("names the staged runtime version a systemd user unit runs", async () => {
+    const unit = systemdUnit({ execPath: "/home/dana/.domovoi/runtime/0.10.0-rc.1/0123456789ab/node/bin/node", args: ["/home/dana/.domovoi/runtime/0.10.0-rc.1/0123456789ab/daemon/dist/index.js", "--service-config", "/home/dana/.domovoi/service.json"] })
+    await expect(readDaemonServiceRuntimeVersion({ platform: "linux", home: "/home/dana", readDefinition: async () => unit, capture: vi.fn(), readConfiguration: saved("linux", "/home/dana") }))
+      .resolves.toEqual({ installed: true, version: "0.10.0-rc.1" })
+  })
+
+  it("names the staged runtime version a Windows logon task runs", async () => {
+    const xml = "<Task><Actions><Exec><Command>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab\\node\\node.exe\"</Command><Arguments>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab\\daemon\\dist\\index.js\" --service-config \"C:\\Users\\dana\\.domovoi\\service.json\"</Arguments></Exec></Actions></Task>"
+    const capture = vi.fn(async () => ({ code: 0, stdout: xml }))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture, readConfiguration: saved("win32", "C:\\Users\\dana") }))
+      .resolves.toEqual({ installed: true, version: "0.9.2" })
+    expect(capture).toHaveBeenCalledWith("schtasks", ["/query", "/tn", "Domovoi daemon", "/xml"], expect.anything())
+  })
+
+  // Security review round 3 of #577: the desktop stages under the selected
+  // profile, so a service on another profile runs <profile>/runtime/<version>.
+  it("names the staged runtime version under a profile other than ~/.domovoi", async () => {
+    const readDefinition = vi.fn(async () => plist("/Users/dana/profiles/work/runtime/0.9.2/0123456789ab/node/bin/node", "/Users/dana/profiles/work/runtime/0.9.2/0123456789ab/daemon/dist/index.js"))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana", "/Users/dana/profiles/work") }))
+      .resolves.toEqual({ installed: true, version: "0.9.2" })
+    const other = vi.fn(async () => plist("/opt/runtime/1.2.3/bin/node", "/opt/tools/runtime/1.2.3/main.js"))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: other, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana", "/Users/dana/profiles/work") }))
+      .resolves.toEqual({ installed: true })
+  })
+
+  it("reports no version for another profile's runtime, a runtime named anywhere but the program, or no saved profile", async () => {
+    const foreign = vi.fn(async () => plist("/Users/dana/profiles/other/runtime/0.9.2/0123456789ab/node/bin/node", "/Users/dana/profiles/other/runtime/0.9.2/0123456789ab/daemon/dist/index.js"))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: foreign, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana", "/Users/dana/profiles/work") }))
+      .resolves.toEqual({ installed: true })
+    const later = vi.fn(async () => plist("/opt/homebrew/bin/node", "/Users/dana/.domovoi/runtime/0.9.2/0123456789ab/node/bin/node"))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: later, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }))
+      .resolves.toEqual({ installed: true })
+    const staged = vi.fn(async () => plist("/Users/dana/.domovoi/runtime/0.9.2/0123456789ab/node/bin/node", "/Users/dana/.domovoi/runtime/0.9.2/0123456789ab/daemon/dist/index.js"))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: staged, capture: vi.fn(), readConfiguration: vi.fn(() => undefined) }))
+      .resolves.toEqual({ installed: true })
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: staged, capture: vi.fn(), readConfiguration: vi.fn(() => { throw new Error("not a configuration") }) }))
+      .resolves.toEqual({ installed: true })
+  })
+
+  // Round 7: each publish is a fresh <version>/<id> directory; a runtime
+  // path without that id is not one the desktop staged.
+  it("reports no version for a runtime path without the publish id", async () => {
+    const unstaged = vi.fn(async () => plist("/Users/dana/.domovoi/runtime/0.9.2/node/bin/node", "/Users/dana/.domovoi/runtime/0.9.2/daemon/dist/index.js"))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: unstaged, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }))
+      .resolves.toEqual({ installed: true })
+  })
+
+  // Round 8 (P3): the reader takes a version only when the desktop would
+  // publish under it (isLoginServiceRuntimeVersion).
+  it("reports no version for a folder name the desktop would never publish under", async () => {
+    for (const version of ["0.9.2-..", "01.2.3", "0.9.2+", `0.9.2-${"a".repeat(64)}`]) {
+      const copy = `/Users/dana/.domovoi/runtime/${version}/0123456789ab`
+      const readDefinition = vi.fn(async () => plist(`${copy}/node/bin/node`, `${copy}/daemon/dist/index.js`))
+      await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }), version)
+        .resolves.toEqual({ installed: true })
+    }
+  })
+
+  // Round 8 (P2): the daemon entry the definition runs must be the one in the
+  // same published copy as its Node program, on every platform.
+  it("reports no version when the daemon entry is not in the same copy as the Node program", async () => {
+    const copy = "/Users/dana/.domovoi/runtime/0.9.2/0123456789ab"
+    for (const entry of [
+      "/Users/dana/profiles/other/runtime/0.9.2/0123456789ab/daemon/dist/index.js",
+      "/Users/dana/.domovoi/runtime/0.9.1/0123456789ab/daemon/dist/index.js",
+      "/Users/dana/.domovoi/runtime/0.9.2/ba9876543210/daemon/dist/index.js",
+      `${copy}/daemon/dist/other.js`,
+      `${copy}/daemon/dist/../../../ba9876543210/daemon/dist/index.js`,
+      "/tmp/entry.js",
+    ]) {
+      const readDefinition = vi.fn(async () => plist(`${copy}/node/bin/node`, entry))
+      await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }), entry)
+        .resolves.toEqual({ installed: true })
+    }
+    const programOnly = vi.fn(async () => `<?xml version="1.0"?><plist><dict><key>ProgramArguments</key><array><string>${copy}/node/bin/node</string></array></dict></plist>`)
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: programOnly, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }))
+      .resolves.toEqual({ installed: true })
+    const unit = systemdUnit({ execPath: "/home/dana/.domovoi/runtime/0.9.2/0123456789ab/node/bin/node", args: ["/home/dana/.domovoi/runtime/0.9.1/0123456789ab/daemon/dist/index.js", "--service-config", "/home/dana/.domovoi/service.json"] })
+    await expect(readDaemonServiceRuntimeVersion({ platform: "linux", home: "/home/dana", readDefinition: async () => unit, capture: vi.fn(), readConfiguration: saved("linux", "/home/dana") }))
+      .resolves.toEqual({ installed: true })
+    const xml = "<Task><Actions><Exec><Command>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab\\node\\node.exe\"</Command><Arguments>\"C:\\Users\\dana\\profiles\\other\\runtime\\0.9.2\\0123456789ab\\daemon\\dist\\index.js\" --service-config \"C:\\Users\\dana\\.domovoi\\service.json\"</Arguments></Exec></Actions></Task>"
+    await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture: vi.fn(async () => ({ code: 0, stdout: xml })), readConfiguration: saved("win32", "C:\\Users\\dana") }))
+      .resolves.toEqual({ installed: true })
+  })
+
+  // Round 9 (P2): a version is reported only for exactly the definition
+  // Domovoi writes for that copy. What each platform's installer writes
+  // (servicePlan) reads back with its version; a definition that runs
+  // something else while naming the copy does not.
+  describe("only for the definition Domovoi writes (round 9)", () => {
+    const written = (platform: string, home: string, copy: string) => {
+      const paths = platform === "win32" ? { node: `${copy}\\node\\node.exe`, entry: `${copy}\\daemon\\dist\\index.js` } : { node: `${copy}/node/bin/node`, entry: `${copy}/daemon/dist/index.js` }
+      return servicePlan({
+        platform, home, uid: 501, user: "dana", execPath: paths.entry, runtime: paths.node,
+        configuration: createServiceConfiguration({}, { platform, homeDirectory: home, workingDirectory: home }),
+      })
+    }
+    // What Task Scheduler reports for the task schtasks /create /tr registered:
+    // the first quoted word is the Command, the rest its Arguments.
+    const taskXml = (actions: string) => `<?xml version="1.0" encoding="UTF-16"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n  <Actions Context="Author">\n${actions}  </Actions>\n</Task>\n`
+    const exec = (command: string, args?: string) => `    <Exec>\n      <Command>${command}</Command>\n${args === undefined ? "" : `      <Arguments>${args}</Arguments>\n`}    </Exec>\n`
+    const windowsWritten = (copy: string) => {
+      const plan = written("win32", "C:\\Users\\dana", copy)
+      const create = plan.commands.find((command) => command.args[0] === "/create")!
+      const [, command = "", args = ""] = /^("[^"]*") (.*)$/u.exec(create.args[create.args.indexOf("/tr") + 1]!)!
+      return taskXml(exec(command, args))
+    }
+    const read = (platform: string, home: string, definition: string) => readDaemonServiceRuntimeVersion({
+      platform, home, readDefinition: async () => definition, capture: vi.fn(async () => ({ code: 0, stdout: definition })), readConfiguration: saved(platform, home),
+    })
+
+    it("reads the version back from what each installer writes", async () => {
+      const darwin = written("darwin", "/Users/dana", "/Users/dana/.domovoi/runtime/0.9.2/0123456789ab")
+      await expect(read("darwin", "/Users/dana", darwin.kind === "file" ? darwin.contents : "")).resolves.toEqual({ installed: true, version: "0.9.2" })
+      const linux = written("linux", "/home/dana", "/home/dana/.domovoi/runtime/0.10.0-rc.1/0123456789ab")
+      await expect(read("linux", "/home/dana", linux.kind === "file" ? linux.contents : "")).resolves.toEqual({ installed: true, version: "0.10.0-rc.1" })
+      await expect(read("win32", "C:\\Users\\dana", windowsWritten("C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab"))).resolves.toEqual({ installed: true, version: "0.9.2" })
+    })
+
+    it("reports no version for a launchd plist whose Program key runs something else", async () => {
+      const plan = written("darwin", "/Users/dana", "/Users/dana/.domovoi/runtime/0.9.2/0123456789ab")
+      const contents = plan.kind === "file" ? plan.contents : ""
+      const programmed = contents.replace("    <key>ProgramArguments</key>", "    <key>Program</key>\n    <string>/usr/bin/false</string>\n    <key>ProgramArguments</key>")
+      expect(programmed).not.toBe(contents)
+      await expect(read("darwin", "/Users/dana", programmed)).resolves.toEqual({ installed: true })
+    })
+
+    it("reports no version for a systemd unit whose later ExecStart lines replace the command", async () => {
+      const plan = written("linux", "/home/dana", "/home/dana/.domovoi/runtime/0.9.2/0123456789ab")
+      const contents = plan.kind === "file" ? plan.contents : ""
+      const reset = contents.replace("Restart=on-failure", "ExecStart=\nExecStart=/usr/bin/false\nRestart=on-failure")
+      expect(reset).not.toBe(contents)
+      await expect(read("linux", "/home/dana", reset)).resolves.toEqual({ installed: true })
+    })
+
+    it("reports no version for a Windows task whose actions split the Node program and the entry", async () => {
+      const copy = "C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab"
+      const split = taskXml(exec(`"${copy}\\node\\node.exe"`) + exec("C:\\Windows\\System32\\cmd.exe", `"${copy}\\daemon\\dist\\index.js" --service-config "C:\\Users\\dana\\.domovoi\\service.json"`))
+      await expect(read("win32", "C:\\Users\\dana", split)).resolves.toEqual({ installed: true })
+      const doubled = windowsWritten(copy).replace("  </Actions>", `${exec("C:\\Windows\\System32\\cmd.exe", "/c exit 1")}  </Actions>`)
+      await expect(read("win32", "C:\\Users\\dana", doubled)).resolves.toEqual({ installed: true })
+    })
+  })
+
+  it("says installed with no version when the service runs a runtime the desktop did not stage", async () => {
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: async () => plist("/opt/homebrew/bin/node", "/opt/homebrew/lib/node_modules/@getdomovoi/daemon/dist/index.js"), capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }))
+      .resolves.toEqual({ installed: true })
+  })
+
+  it("says not installed when there is no definition", async () => {
+    await expect(readDaemonServiceRuntimeVersion({ platform: "linux", home: "/home/dana", readDefinition: async () => undefined, capture: vi.fn(), readConfiguration: vi.fn() }))
+      .resolves.toEqual({ installed: false })
+    await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture: vi.fn(async () => ({ code: 1, stdout: "" })), readConfiguration: vi.fn() }))
+      .resolves.toEqual({ installed: false })
   })
 })
 
@@ -759,5 +938,348 @@ describe("security review round 6 (install)", () => {
     )
     expect(fake.job()).toEqual({ path: other, running: true })
     expect(fake.ran).toEqual(["launchctl bootout", "launchctl bootstrap"])
+  })
+})
+
+// Security review round 2 of #577 (P1): given the caller's environment, install
+// and removal check the saved service's profile again under the
+// service-operation lease, before the handoff and before any manager action.
+describe("installDaemonService and removeDaemonService for the caller's profile", () => {
+  const plistPath = "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist"
+  // The removal snapshot is the one read of service.json a removal acts on.
+  const savedFor = (profileDirectory: string) => vi.fn(() => ({ owner: undefined, configurationDigest: "digest", profileDirectory, effectiveProfileDirectory: profileDirectory }))
+  const noDefinition = vi.fn(async (path: string) => path !== plistPath)
+  // launchd with nothing of Domovoi's loaded: the label is not found and the
+  // domain lists no sh.domovoi job. Round 4 checks both.
+  const domain = (labels: string[] = []) => `gui/501 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n${labels.map((label) => `\t\t     812      0  \t${label}\n`).join("")}\t}\n}\n`
+  const launchd = (options: { loaded?: boolean; labels?: string[] } = {}) => vi.fn(async (_command: string, args: string[]) => {
+    if (args[1] === "gui/501/sh.domovoi.domovoid") {
+      return options.loaded
+        ? { code: 0, stdout: "\tstate = running\n" }
+        : { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
+    }
+    if (args[1] === "gui/501") return { code: 0, stdout: domain(options.labels) }
+    throw new Error(`unexpected capture ${args.join(" ")}`)
+  })
+
+  it("installs for the caller's profile and records it", async () => {
+    // No service saved and no launch agent registered: nothing to bind to.
+    const effects = dependencies({ exists: noDefinition, capture: launchd() })
+    await installDaemonService({ runtime, environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/work" } }, effects)
+    const written = vi.mocked(effects.write).mock.calls.find(([path]) => path === "/Users/dl/.domovoi/service.json")![1]
+    expect(parseServiceConfiguration(written).profileDirectory).toBe("/Users/dl/profiles/work")
+  })
+
+  it("refuses an install over a service saved for another profile, before the handoff", async () => {
+    const releaseInAppDaemon = vi.fn(async () => {})
+    const effects = dependencies({ registeredProfile: vi.fn(() => ({ profileDirectory: "/Users/dl/profiles/other" })) })
+    const refused = installDaemonService({ runtime, environment: {}, releaseInAppDaemon }, effects)
+    await expect(refused).rejects.toBeInstanceOf(ServiceProfileMismatchError)
+    await expect(refused).rejects.toThrow("This app's daemon uses the profile at /Users/dl/.domovoi, and the login service uses the profile at /Users/dl/profiles/other.")
+    expect(effects.claimServiceOperation).toHaveBeenCalled()
+    expect(releaseInAppDaemon).not.toHaveBeenCalled()
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  it("refuses a removal of a service saved for another profile, before any manager action", async () => {
+    const effects = dependencies({ removalSnapshot: savedFor("/Users/dl/profiles/other") })
+    await expect(removeDaemonService(effects, { environment: {} })).rejects.toBeInstanceOf(ServiceProfileMismatchError)
+    expect(effects.claimServiceOperation).toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+    expect(effects.remove).not.toHaveBeenCalled()
+  })
+
+  it("removes a service saved for the caller's profile", async () => {
+    const effects = dependencies({ removalSnapshot: savedFor("/Users/dl/profiles/other") })
+    await expect(removeDaemonService(effects, { environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/other" } })).resolves.toMatchObject({ kind: "file" })
+    expect(effects.run).toHaveBeenCalledWith("launchctl", ["bootout", "gui/501/sh.domovoi.domovoid"], expect.anything())
+  })
+
+  // Security review round 3 of #577 (P1): with service.json gone, a launch
+  // agent or user unit that is still registered runs a profile nothing names.
+  // Given the caller's profile, the install and the removal refuse rather
+  // than take it for the caller's. The definition names only service.json,
+  // so the profile cannot be read from it.
+  it("refuses an install over a registered service whose saved configuration is missing, before the handoff", async () => {
+    const releaseInAppDaemon = vi.fn(async () => {})
+    const effects = dependencies()
+    const refused = installDaemonService({ runtime, environment: {}, releaseInAppDaemon }, effects)
+    await expect(refused).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+    await expect(refused).rejects.toThrow(`A login service is registered at ${plistPath}, but its saved configuration is missing, so the profile it runs is not known. Nothing was changed.`)
+    expect(releaseInAppDaemon).not.toHaveBeenCalled()
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  it("still lets the command line install over such a service, as before", async () => {
+    await expect(installDaemonService({ runtime }, dependencies())).resolves.toMatchObject({ kind: "file" })
+  })
+
+  it("refuses a removal of a registered service whose saved configuration is missing or unreadable, before any manager action", async () => {
+    const missing = dependencies()
+    await expect(removeDaemonService(missing, { environment: {} })).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+    expect(missing.run).not.toHaveBeenCalled()
+    const unreadable = dependencies({ removalSnapshot: vi.fn(() => ({ owner: undefined, configurationDigest: "digest", configurationUnknown: "The saved service configuration at /Users/dl/.domovoi/service.json is not a Domovoi service configuration." })) })
+    const refused = removeDaemonService(unreadable, { environment: {} })
+    await expect(refused).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+    await expect(refused).rejects.toThrow("The saved service configuration at /Users/dl/.domovoi/service.json is not a Domovoi service configuration. The profile the login service runs is not known. Nothing was changed.")
+    expect(unreadable.run).not.toHaveBeenCalled()
+  })
+
+  // Security review round 3 of #577 (P2): the removal checks the same read of
+  // service.json it then acts on, not a separate earlier read.
+  it("checks the profile in the snapshot the removal acts on", async () => {
+    const other = createServiceConfiguration({ DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/other" }, { platform: "darwin", homeDirectory: "/Users/dl", workingDirectory: "/Users/dl" })
+    const effects = dependencies({
+      readConfiguration: vi.fn(() => other),
+      removalSnapshot: savedFor("/Users/dl/profiles/replaced"),
+    })
+    await expect(removeDaemonService(effects, { environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/other" } })).rejects.toBeInstanceOf(ServiceProfileMismatchError)
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  // Security review round 4 of #577 (P1): the guard reads what the manager
+  // has registered, not only the definition file. A job still loaded after
+  // its plist was deleted, or a Domovoi job under another label, runs a
+  // profile nothing names.
+  it("refuses an install while a Domovoi job is loaded with its plist gone, or under another label, before the handoff", async () => {
+    for (const [label, capture, where] of [
+      ["the job is loaded", launchd({ loaded: true }), "gui/501/sh.domovoi.domovoid"],
+      ["another label", launchd({ labels: ["sh.domovoi.domovoid-old"] }), "gui/501/sh.domovoi.domovoid-old"],
+    ] as const) {
+      const releaseInAppDaemon = vi.fn(async () => {})
+      const effects = dependencies({ exists: noDefinition, capture })
+      const refused = installDaemonService({ runtime, environment: {}, releaseInAppDaemon }, effects)
+      await expect(refused, label).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+      await expect(refused, label).rejects.toThrow(`A login service is registered at ${where}, but its saved configuration is missing, so the profile it runs is not known. Nothing was changed.`)
+      expect(releaseInAppDaemon, label).not.toHaveBeenCalled()
+      expect(effects.write, label).not.toHaveBeenCalled()
+      expect(effects.run, label).not.toHaveBeenCalled()
+    }
+  })
+
+  it("refuses an install while a Domovoi user unit is loaded with its unit file gone", async () => {
+    const unit = "/home/dl/.config/systemd/user/domovoid.service"
+    const effects = dependencies({
+      platform: "linux", home: "/home/dl",
+      exists: vi.fn(async (path: string) => path !== unit),
+      capture: vi.fn(async (_command: string, args: string[]) => args.includes("list-units")
+        ? { code: 0, stdout: "domovoid.service not-found active running domovoid.service\n" }
+        : { code: 0, stdout: "" }),
+    })
+    await expect(installDaemonService({ runtime, environment: {} }, effects)).rejects.toThrow(
+      "A login service is registered at domovoid.service, but its saved configuration is missing, so the profile it runs is not known. Nothing was changed.",
+    )
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  it("refuses a removal while a Domovoi job is loaded with its plist gone, before any manager action", async () => {
+    const effects = dependencies({ exists: noDefinition, capture: launchd({ loaded: true }) })
+    await expect(removeDaemonService(effects, { environment: {} })).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  // Round 4 (P1): a legacy configuration names its own home; its default
+  // profile is under that home, not the caller's.
+  it("compares the removal with the profile the saved configuration names under its own home", async () => {
+    const effects = dependencies({ removalSnapshot: vi.fn(() => ({ owner: undefined, configurationDigest: "digest", effectiveProfileDirectory: "/Users/other/.domovoi" })) })
+    await expect(removeDaemonService(effects, { environment: {} })).rejects.toBeInstanceOf(ServiceProfileMismatchError)
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  // Round 4 (P3): a saved configuration that cannot be read or parsed
+  // refuses the caller's install with the specific refusal.
+  it("refuses an install over a saved configuration it cannot read or parse, with nothing written", async () => {
+    for (const [label, failure, words] of [
+      ["a link", Object.assign(new Error("ELOOP: too many symbolic links"), { code: "ELOOP" }), "The saved service configuration at /Users/dl/.domovoi/service.json could not be read: ELOOP: too many symbolic links. The profile the login service runs is not known. Nothing was changed."],
+      ["malformed", new Error("Unexpected token"), "The saved service configuration at /Users/dl/.domovoi/service.json is not a Domovoi service configuration. The profile the login service runs is not known. Nothing was changed."],
+    ] as const) {
+      const releaseInAppDaemon = vi.fn(async () => {})
+      const effects = dependencies({ registeredProfile: vi.fn(() => { throw failure }) })
+      const refused = installDaemonService({ runtime, environment: {}, releaseInAppDaemon }, effects)
+      await expect(refused, label).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+      await expect(refused, label).rejects.toThrow(words)
+      expect(releaseInAppDaemon, label).not.toHaveBeenCalled()
+      expect(effects.write, label).not.toHaveBeenCalled()
+    }
+  })
+
+  // Security review round 4 of #577 (P2): the desktop hands over an inert
+  // staged copy and a publish step. The install checks the staged files,
+  // then publishes only under the service-operation lease, after every
+  // profile check and before the handoff.
+  it("publishes the staged runtime only after the profile checks, under the lease, before the handoff", async () => {
+    const order: string[] = []
+    const staged = { nodePath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/node/bin/node", daemonEntryPath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/daemon/dist/index.js" }
+    const publish = vi.fn(async () => { order.push("publish") })
+    const effects = dependencies({
+      exists: noDefinition, capture: launchd(),
+      claimServiceOperation: vi.fn(() => { order.push("lease"); return { release: vi.fn() } }),
+      runtimeFile: vi.fn(async (path: string) => { order.push(`check ${path === staged.nodePath || path === staged.daemonEntryPath ? "staged" : "published"}`); return "file" as const }),
+    })
+    await installDaemonService({ runtime, staged: { runtime: staged, publish }, environment: {}, releaseInAppDaemon: async () => { order.push("handoff") } }, effects)
+    // Round 5 (P1): the handoff and its checks refuse before anything is
+    // published; the profile is claimed for the service, then it goes in.
+    expect(order).toEqual(["check staged", "check staged", "lease", "handoff", "publish", "check published", "check published"])
+
+    const refused = dependencies({ registeredProfile: vi.fn(() => ({ profileDirectory: "/Users/dl/profiles/other" })) })
+    const notPublished = vi.fn(async () => {})
+    await expect(installDaemonService({ runtime, staged: { runtime: staged, publish: notPublished }, environment: {} }, refused)).rejects.toBeInstanceOf(ServiceProfileMismatchError)
+    expect(notPublished).not.toHaveBeenCalled()
+  })
+
+  // Security review round 5 of #577 (P1): the domain listing is read by its
+  // services block, label last, whatever columns come between. A listing
+  // this cannot read refuses rather than pass as having no Domovoi job.
+  it("finds a Domovoi label in a listing with an extra column, and refuses a listing it cannot read", async () => {
+    const listing = (stdout: string) => vi.fn(async (_command: string, args: string[]) => args[1] === "gui/501/sh.domovoi.domovoid"
+      ? { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
+      : { code: 0, stdout })
+    const extraColumn = "gui/501 = {\n\tservices = {\n\t\t       0      -      -  \tcom.apple.example\n\t\t     812      0      2  \tsh.domovoi.domovoid-old\n\t}\n}\n"
+    const found = dependencies({ exists: noDefinition, capture: listing(extraColumn) })
+    await expect(installDaemonService({ runtime, environment: {} }, found)).rejects.toThrow(
+      "A login service is registered at gui/501/sh.domovoi.domovoid-old, but its saved configuration is missing, so the profile it runs is not known. Nothing was changed.",
+    )
+    expect(found.write).not.toHaveBeenCalled()
+    for (const [label, stdout] of [
+      ["no services block", "gui/501 = {\n\tjobs: com.apple.example sh.domovoi.domovoid-old\n}\n"],
+      ["a line it cannot read", "gui/501 = {\n\tservices = {\n\t\tsh.domovoi.domovoid-old\n\t}\n}\n"],
+    ] as const) {
+      const unreadable = dependencies({ exists: noDefinition, capture: listing(stdout) })
+      const refused = installDaemonService({ runtime, environment: {} }, unreadable)
+      await expect(refused, label).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+      await expect(refused, label).rejects.toThrow("launchd listed the jobs in gui/501 in a form this app cannot read, so whether a login service is registered there is not known. Nothing was changed.")
+      expect(unreadable.write, label).not.toHaveBeenCalled()
+      const removal = dependencies({ exists: noDefinition, capture: listing(stdout) })
+      await expect(removeDaemonService(removal, { environment: {} }), label).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+      expect(removal.run, label).not.toHaveBeenCalled()
+    }
+  })
+
+  // Security review round 6 of #577 (P1): the whole domain must be there and
+  // well formed, and a row naming Domovoi anywhere but as its one label is
+  // ambiguous. Both refuse rather than pass as having no Domovoi job.
+  it("refuses a truncated domain listing and a row whose Domovoi label is ambiguous", async () => {
+    const listing = (stdout: string) => vi.fn(async (_command: string, args: string[]) => args[1] === "gui/501/sh.domovoi.domovoid"
+      ? { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
+      : { code: 0, stdout })
+    for (const [label, stdout] of [
+      ["the domain never closes", "gui/501 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n\t}\n"],
+      ["the services block never closes", "gui/501 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n"],
+      ["another domain", "gui/502 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n\t}\n}\n"],
+      ["a label with a space", "gui/501 = {\n\tservices = {\n\t\t     812      0  \tsh.domovoi.domovoid old\n\t}\n}\n"],
+      ["Domovoi before the last field", "gui/501 = {\n\tservices = {\n\t\t     812      0  \tsh.domovoi.domovoid\tcom.apple.example\n\t}\n}\n"],
+    ] as const) {
+      const effects = dependencies({ exists: noDefinition, capture: listing(stdout) })
+      const refused = installDaemonService({ runtime, environment: {} }, effects)
+      await expect(refused, label).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+      await expect(refused, label).rejects.toThrow("launchd listed the jobs in gui/501 in a form this app cannot read, so whether a login service is registered there is not known. Nothing was changed.")
+      expect(effects.write, label).not.toHaveBeenCalled()
+      expect(effects.run, label).not.toHaveBeenCalled()
+    }
+  })
+
+  // Security review round 5 of #577 (P1): every refusal comes before the
+  // publish: the handoff's own profile check, the caller's fence (thrown from
+  // the handoff), and the claim of the profile for the service.
+  it("publishes nothing when the handoff, its profile check or the profile claim refuses", async () => {
+    const staged = { nodePath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/node/bin/node", daemonEntryPath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/daemon/dist/index.js" }
+    const owned = new ProfileAlreadyOwnedError("/Users/dl/.domovoi/profile-lease.sqlite")
+    for (const [label, overrides, releaseInAppDaemon] of [
+      ["the fence refuses", {}, async () => { throw new Error("1 turn is running (Fix login).") }],
+      ["the handoff check refuses", { claimProfile: vi.fn(() => { throw owned }), readOwner: vi.fn(() => undefined) }, async () => {}],
+      ["the claim after the handoff fails", { claimProfile: vi.fn().mockReturnValueOnce({ release: vi.fn() }).mockImplementation(() => { throw owned }) }, async () => {}],
+    ] as const) {
+      const publish = vi.fn(async () => {})
+      const effects = dependencies({ exists: noDefinition, capture: launchd(), ...overrides })
+      await expect(installDaemonService({ runtime, staged: { runtime: staged, publish }, environment: {}, releaseInAppDaemon }, effects), label).rejects.toThrow()
+      expect(publish, label).not.toHaveBeenCalled()
+      expect(effects.write, label).not.toHaveBeenCalled()
+    }
+  })
+
+  // Security review round 5 of #577 (P2): the removal leases, and writes any
+  // recovery receipt into, the profile the saved configuration names under
+  // its own home, the one it checked, not the caller's home profile.
+  it("leases and records recovery in the effective profile it checked", async () => {
+    const claimProfile = vi.fn(() => ({ release: vi.fn() }))
+    const effects = dependencies({
+      claimProfile,
+      removalSnapshot: vi.fn(() => ({ owner: undefined, configurationDigest: "digest", effectiveProfileDirectory: "/Users/other/.domovoi" })),
+    })
+    await removeDaemonService(effects, { environment: { DOMOVOI_PROFILE_DIR: "/Users/other/.domovoi" } })
+    expect(claimProfile).toHaveBeenCalledWith({ profileDirectory: "/Users/other/.domovoi" })
+  })
+})
+
+// Security review round 6 of #577 (P1): once the staged runtime is published,
+// every later failure of the install puts the previous copy of that version
+// back. The fake staged copy models the version in place.
+describe("installDaemonService leaves every runtime copy alone on every failure after the publish (round 7)", () => {
+  const staged = { nodePath: "/stage/node/bin/node", daemonEntryPath: "/stage/daemon/dist/index.js" }
+  const plistPath = "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist"
+  const missingJob = vi.fn(async (_command: string, args: string[]) => args[1] === "gui/501/sh.domovoi.domovoid"
+    ? { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
+    : { code: 0, stdout: "gui/501 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n\t}\n}\n" })
+  function versioned() {
+    const state = { version: "old" }
+    return { state, staged: { runtime: staged, publish: vi.fn(async () => { state.version = "new" }), revert: vi.fn(async () => { state.version = "old" }) } }
+  }
+  const cases: [string, (state: { version: string }) => Partial<DaemonServiceDependencies & ServiceEffects>][] = [
+    ["the published runtime fails its check", (state) => ({ runtimeFile: vi.fn(async (path: string) => path === runtime.nodePath && state.version === "new" ? "missing" as const : "file" as const) })],
+    ["the old recovery receipt cannot be removed", () => ({ remove: vi.fn(async () => { throw new Error("remove failed") }) })],
+    ["service.json cannot be written", () => ({ write: vi.fn(async (path: string) => { if (path.endsWith("service.json")) throw new Error("write failed") }) })],
+    ["the launch agent cannot be written", () => ({ write: vi.fn(async (path: string) => { if (path === plistPath) throw new Error("write failed") }) })],
+    ["launchd refuses to load the agent", () => ({ run: vi.fn(async (_command: string, args: string[]) => { if (args[0] === "bootstrap") throw new Error("launchctl bootstrap exited 5") }) })],
+  ]
+  for (const [label, overrides] of cases) {
+    it(`reverts nothing when ${label}`, async () => {
+      const { state, staged: copy } = versioned()
+      const effects = dependencies({ exists: vi.fn(async (path: string) => path !== plistPath), capture: missingJob, ...overrides(state) })
+      await expect(installDaemonService({ runtime, staged: copy, environment: {} }, effects)).rejects.toThrow()
+      expect(copy.publish).toHaveBeenCalledOnce()
+      // Round 7: the publish wrote a fresh directory the previous service
+      // never used, so nothing is put back and no shared copy was replaced.
+      expect(copy.revert).not.toHaveBeenCalled()
+      expect(state.version).toBe("new")
+    })
+  }
+
+  it("keeps the new runtime when the install succeeds, and never reverts what it did not publish", async () => {
+    const done = versioned()
+    await installDaemonService({ runtime, staged: done.staged, environment: {} }, dependencies({ exists: vi.fn(async (path: string) => path !== plistPath), capture: missingJob }))
+    expect(done.staged.revert).not.toHaveBeenCalled()
+    expect(done.state.version).toBe("new")
+    const refused = versioned()
+    await expect(installDaemonService({ runtime, staged: refused.staged, environment: {}, releaseInAppDaemon: async () => { throw new Error("1 turn is running (Fix login).") } }, dependencies({ exists: vi.fn(async (path: string) => path !== plistPath), capture: missingJob }))).rejects.toThrow()
+    expect(refused.staged.publish).not.toHaveBeenCalled()
+    expect(refused.staged.revert).not.toHaveBeenCalled()
+  })
+})
+
+// Security review round 7 of #577 (P1): a service that fails to start after
+// its definition was registered keeps that definition, and the runtime it
+// names stays in place. Round 6 reverted the runtime there, leaving a
+// registered service whose runtime was gone.
+describe("installDaemonService keeps the runtime a registered definition names", () => {
+  const staged = { nodePath: "/stage/node/bin/node", daemonEntryPath: "/stage/daemon/dist/index.js" }
+  const unit = "/home/dl/.config/systemd/user/domovoid.service"
+  it("keeps the published runtime when systemd registers the unit and then fails to start it", async () => {
+    const state = { version: "old" }
+    const copy = { runtime: staged, publish: vi.fn(async () => { state.version = "new" }), revert: vi.fn(async () => { state.version = "old" }) }
+    const written = new Map<string, string>()
+    const effects = dependencies({
+      platform: "linux", home: "/home/dl",
+      exists: vi.fn(async (path: string) => path !== unit),
+      capture: vi.fn(async () => ({ code: 0, stdout: "" })),
+      write: vi.fn(async (path: string, contents: string) => { written.set(path, contents) }),
+      run: vi.fn(async (_command: string, args: string[]) => { if (args.includes("enable")) throw new Error("systemctl enable exited 1") }),
+    })
+    await expect(installDaemonService({ runtime, staged: copy, environment: {} }, effects)).rejects.toThrow("systemctl enable exited 1")
+    expect(written.get(unit)).toContain(runtime.nodePath)
+    expect(copy.revert).not.toHaveBeenCalled()
+    expect(state.version).toBe("new")
   })
 })

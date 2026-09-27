@@ -24,6 +24,14 @@ export default defineConfig({
     // Measure the full entry, with no startup code hidden in another chunk.
     // Operator diagnostics are explicit strings, not inferred function names.
     build: { minify: "esbuild" },
+    // The protocol package's source, as the renderer takes it, so the main
+    // process bundles only what it imports (the runtime version check), not
+    // the whole prebuilt schema bundle.
+    resolve: {
+      alias: {
+        "@getdomovoi/protocol": path.resolve(import.meta.dirname, "../../packages/protocol/src/index.ts"),
+      },
+    },
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

@@ -1,4 +1,4 @@
-import { profileLocation } from "../profile-directory.js"
+import { profileDirectory as profileDirectoryOf, profileLocation } from "../profile-directory.js"
 import { createHash } from "node:crypto"
 
 import { localOwnerRecordPath, readLocalOwnerRecord, readLocalProfileFile, type LocalOwnerRecord } from "../local-owner-record.js"
@@ -13,6 +13,14 @@ export type ServiceRemovalSnapshot = {
   // A record or configuration that exists but cannot be read is not proof of
   // anything. Removal still proceeds; no receipt can be derived from it.
   unreadable?: string
+  // A saved configuration that exists but cannot be read or parsed, so it
+  // names no profile. A removal for a caller's profile refuses on it
+  // (security review round 3 of #577).
+  configurationUnknown?: string
+  // The profile directory the saved configuration names, under the saved
+  // configuration's own home: the profile the service runs (security review
+  // round 4 of #577).
+  effectiveProfileDirectory?: string
 }
 
 function failureDetail(error: unknown): string {
@@ -24,29 +32,45 @@ export function readServiceRemovalSnapshot(homeDirectory: string, platform: stri
   let unreadable: string | undefined
   const configurationPath = serviceConfigurationPath(homeDirectory, platform)
   let text: string | undefined
+  let configurationUnknown: string | undefined
   try {
     text = readLocalProfileFile(configurationPath, 64 * 1_024)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      configurationUnknown = `The saved service configuration at ${configurationPath} could not be read: ${failureDetail(error)}.`
       unreadable ??= `The saved service configuration at ${configurationPath} could not be read: ${failureDetail(error)}`
     }
   }
   const configurationDigest = text === undefined ? null : createHash("sha256").update(text).digest("hex")
   let registrationId: string | undefined
   let profileDirectory: string | undefined
+  let effectiveProfileDirectory: string | undefined
   // A malformed or legacy config can still be removed, but cannot assert a
   // registration binding. Only the explicit operator path can recover it.
   try {
-    if (text !== undefined) ({ registrationId, profileDirectory } = parseServiceConfiguration(text))
-  } catch { /* A malformed registration cannot authorize recovery. */ }
-  const profile = profileLocation(homeDirectory, profileDirectory)
+    if (text !== undefined) {
+      const parsed = parseServiceConfiguration(text)
+      ;({ registrationId, profileDirectory } = parsed)
+      // Round 13 (P3): named by the service's platform rules, as the removal
+      // compares it, so a legacy Linux service read from Windows keeps "/".
+      effectiveProfileDirectory = profileDirectoryOf(profileLocation(parsed.homeDirectory, parsed.profileDirectory, platform), platform)
+    }
+  } catch {
+    // A malformed registration cannot authorize recovery.
+    configurationUnknown = `The saved service configuration at ${configurationPath} is not a Domovoi service configuration.`
+  }
+  // Round 5 of #577 (P2): the owner is read under the profile the saved
+  // configuration names under its own home, the one the service runs.
+  const profile = profileLocation(homeDirectory, effectiveProfileDirectory ?? profileDirectory)
   try { owner = readLocalOwnerRecord(profile) }
   catch (error) {
     unreadable ??= `The profile owner record could not be read at ${localOwnerRecordPath(profile)}: ${failureDetail(error)}`
   }
   return { owner, configurationDigest, ...(registrationId ? { registrationId } : {}),
     ...(profileDirectory === undefined ? {} : { profileDirectory }),
-    ...(unreadable === undefined ? {} : { unreadable }) }
+    ...(unreadable === undefined ? {} : { unreadable }),
+    ...(configurationUnknown === undefined ? {} : { configurationUnknown }),
+    ...(effectiveProfileDirectory === undefined ? {} : { effectiveProfileDirectory }) }
 }
 
 export type ServiceRemovalRecovery =
