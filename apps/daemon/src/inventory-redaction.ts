@@ -5,7 +5,8 @@
 //
 // Every `NAME=value` at a word start, every value after a sensitive key, flag
 // or authorization scheme, every header value after a header flag whatever the
-// header is called, every URL query and fragment part (a bare part with no
+// header is called (the next word too, when an unquoted header ends at its
+// colon), every URL query and fragment part (a bare part with no
 // equals sign in whole), and all URL user info become [REDACTED]. A header
 // value that opens with an authorization scheme keeps the scheme word, as a
 // bare `Bearer x` does. The daemon's durable-text redaction leaves
@@ -60,6 +61,12 @@ function valueEnd(text: string, start: number, quote: Quote): number {
     while (index < text.length && text[index] !== quote) index += quote === "\"" && text[index] === "\\" ? 2 : 1
     return Math.min(index, text.length)
   }
+  return wordEnd(text, index)
+}
+
+// The end of the unquoted shell word at `start`, quoted runs inside it included.
+function wordEnd(text: string, start: number): number {
+  let index = start
   while (index < text.length && !/[\s;&|()<>]/u.test(text[index]!)) {
     const character = text[index]!
     if (character === "\\") index += 2
@@ -140,6 +147,9 @@ function redactUrl(url: string): string {
 const headerFlag = /(-H|--header|--proxy-header)(=|\s+)?/uy
 // A field name is an RFC 9110 token, apostrophe and backtick included.
 const headerLine = /^([A-Za-z0-9!#$%&'*+.^_`|~-]+)(\s*:\s*)([\s\S]+)$/u
+// A header argument that ends at its colon: `-H X-Foo: secret` unquoted
+// leaves the value in the next shell word.
+const headerWithoutValue = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+\s*:$/u
 
 // A header line with its value redacted, or undefined when the text is not a
 // `Name: value` line (curl's `@file` form, or `Name;` for an empty header).
@@ -173,9 +183,32 @@ function headerAt(text: string, index: number, quote: Quote): { text: string; en
   if (separator === "" && flag !== "-H") return undefined
   const start = index + whole.length
   const argument = headerArgument(text, start, quote)
-  const header = redactHeaderLine(text.slice(start + argument.open.length, argument.end - argument.close.length), argument.open === "")
-  if (header === undefined) return undefined
-  return { text: `${whole}${argument.open}${header}${argument.close}`, end: argument.end }
+  const line = text.slice(start + argument.open.length, argument.end - argument.close.length)
+  const header = redactHeaderLine(line, argument.open === "")
+  if (header !== undefined) return { text: `${whole}${argument.open}${header}${argument.close}`, end: argument.end }
+  // A quoted `"Name:"` is an empty header its author closed; only an unquoted
+  // one takes the next word as its value.
+  if (argument.open !== "" || !headerWithoutValue.test(line)) return undefined
+  const value = splitHeaderValue(text, argument.end, quote)
+  return value && { text: `${text.slice(index, argument.end)}${value.text}`, end: value.end }
+}
+
+// The shell word after a header argument that ended at its colon, redacted,
+// with the blanks before it. A flag there is the next argument, not a value,
+// and a shell operator or the end of a quoted string ends the command.
+function splitHeaderValue(text: string, from: number, quote: Quote): { text: string; end: number } | undefined {
+  let start = from
+  while (text[start] === " " || text[start] === "\t") start += 1
+  if (start === from || start >= text.length || text[start] === quote || /[-;&|()<>\r\n]/u.test(text[start]!)) return undefined
+  const blanks = text.slice(from, start)
+  if (!quote) {
+    const end = wordEnd(text, start)
+    const word = text.slice(start, end)
+    return { text: `${blanks}${isMarker(word) ? word : redactedValue(word)}`, end }
+  }
+  const argument = headerArgument(text, start, quote)
+  const word = text.slice(start + argument.open.length, argument.end - argument.close.length)
+  return { text: `${blanks}${argument.open}${isMarker(word) ? word : marker}${argument.close}`, end: argument.end }
 }
 
 // The shell word a header flag takes, and the quotes around it.
@@ -254,8 +287,13 @@ export function redactInventoryText(text: string): string {
 // A command given as an argument vector. A sensitive flag's next argument, a
 // header flag's header value and the whole value of an assignment argument are
 // redacted as units, since an argument is one word however many spaces it holds.
+// A header that ends at its colon takes the next argument as its value, as the
+// text form does, unless that argument is a flag.
 export function redactInventoryArgv(argv: readonly string[]): string {
   const words: string[] = []
+  const takesSplitValue = (header: string, value: string | undefined): value is string => (
+    headerWithoutValue.test(header) && value !== undefined && value !== "" && !value.startsWith("-")
+  )
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!
     const flag = /^-{1,2}([A-Za-z_][A-Za-z0-9_.-]*)$/u.exec(argument)
@@ -263,12 +301,22 @@ export function redactInventoryArgv(argv: readonly string[]): string {
     if (/^(?:-H|--header|--proxy-header)$/u.test(argument) && next !== undefined) {
       words.push(argument, redactHeaderLine(next, false) ?? redactInventoryText(next))
       index += 1
+      const value = argv[index + 1]
+      if (takesSplitValue(next, value)) {
+        words.push(value === marker ? value : marker)
+        index += 1
+      }
       continue
     }
     const attached = /^(-H|--header=|--proxy-header=)([\s\S]+)$/u.exec(argument)
     const attachedHeader = attached ? redactHeaderLine(attached[2]!, false) : undefined
     if (attached && attachedHeader !== undefined) {
       words.push(`${attached[1]!}${attachedHeader}`)
+      continue
+    }
+    if (attached && takesSplitValue(attached[2]!, next)) {
+      words.push(redactInventoryText(argument), next === marker ? next : marker)
+      index += 1
       continue
     }
     if (flag && isSensitiveKey(flag[1]!) && next !== undefined && !next.startsWith("-")) {
