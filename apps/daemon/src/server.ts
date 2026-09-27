@@ -172,6 +172,7 @@ import {
   codexSandboxNotice,
 } from "./codex.js"
 import { committedCodexSecretPaths } from "./codex-git-secrets.js"
+import type { SqliteEmergencyStopIntents } from "./emergency-stop-intents.js"
 import { ClaudeAgentSdkAdapter } from "./claude.js"
 import { OpenCodeSdkAdapter } from "./opencode.js"
 import { KiloSdkAdapter } from "./kilo.js"
@@ -10692,10 +10693,33 @@ export class DomovoiDaemon {
   // (its own save, or a later one, landed) is not finished again. A failed
   // save here fails startup and keeps the intent for the next one. A journal
   // row that does not read back is set aside by the journal and reported.
+  //
+  // Issue #632: the journal is read a bounded number of rows at a time, and
+  // each pass is finished, saved and cleared before the next is read, so no
+  // length of journal holds more than one pass in memory. Every pass runs
+  // here, before the listener opens. Which stops count as already recorded is
+  // read from the thread once, before the first pass writes a line, and the
+  // lines written are remembered across passes: rows that name the same stop
+  // act the same whether one pass or two read them.
   #recoverEmergencyStops(): void {
     const journal = this.#store.emergencyStops
     if (!journal) return
-    const { intents: entries, partial, overflow, setAside } = journal.pending()
+    let recorded: Set<string> | undefined
+    const written = new Set<string>()
+    let after: bigint | undefined
+    do {
+      const pass = journal.pending(after)
+      recorded = this.#recoverEmergencyStopPass(journal, pass, recorded, written)
+      after = pass.next
+    } while (after !== undefined)
+  }
+
+  #recoverEmergencyStopPass(
+    journal: SqliteEmergencyStopIntents,
+    { intents: entries, partial, overflow, setAside }: ReturnType<SqliteEmergencyStopIntents["pending"]>,
+    known: Set<string> | undefined,
+    written: Set<string>,
+  ): Set<string> | undefined {
     for (const { key, reason } of setAside) {
       this.#reportError("Domovoi set aside an unreadable emergency stop intent", new Error(`${key}: ${reason}`))
     }
@@ -10705,22 +10729,23 @@ export class DomovoiDaemon {
     for (const { key, reason } of overflow) {
       this.#reportError("Domovoi kept an emergency stop intent it could not finish whole", new Error(`${key}: ${reason}`))
     }
-    if (entries.length === 0) return
+    if (entries.length === 0) return known
     const candidate = structuredClone(this.#snapshot)
     // One pass over the thread and the sessions, however many stop ids the
     // journal names (round 6): the stops already recorded, by the detail a
     // completed stop writes or the line id a restart writes.
-    const recorded = new Set<string>()
-    for (const item of candidate.thread) {
-      if (item.kind !== "system") continue
-      const stopId = /^(stop-[0-9a-f-]{36}):/.exec(item.detail ?? "")?.[1] ?? /^system-(stop-[0-9a-f-]{36})-/.exec(item.id)?.[1]
-      if (stopId !== undefined) recorded.add(stopId)
+    const recorded = known ?? new Set<string>()
+    if (known === undefined) {
+      for (const item of candidate.thread) {
+        if (item.kind !== "system") continue
+        const stopId = /^(stop-[0-9a-f-]{36}):/.exec(item.detail ?? "")?.[1] ?? /^system-(stop-[0-9a-f-]{36})-/.exec(item.id)?.[1]
+        if (stopId !== undefined) recorded.add(stopId)
+      }
     }
     const sessions = new Map(candidate.sessions.map((session) => [session.id, session]))
     // Only the thread says a stop is finished (round 7). Rows that name the
     // same stop each act on what they hold; a line already written in this
-    // pass is not written again.
-    const written = new Set<string>()
+    // startup is not written again.
     for (const { intent } of entries) {
       if (recorded.has(intent.stopId)) continue
       for (const dispatch of intent.inFlight) {
@@ -10757,8 +10782,10 @@ export class DomovoiDaemon {
     this.#store.save(candidate)
     this.#snapshot = candidate
     // A row kept for overflow stays in the journal, so it is reported again.
-    const kept = new Set(entries.filter(({ keep }) => keep).map(({ key }) => key))
-    for (const { key } of entries) if (!kept.has(key)) journal.clear(key)
+    // Rows are cleared by rowid: a key can name more than one row.
+    const kept = new Set(entries.filter(({ keep }) => keep).map(({ row }) => row))
+    for (const { row } of entries) if (!kept.has(row)) journal.clearRow(row)
+    return recorded
   }
 
   // `storedApprovalIds` names cards read from storage when startup resumes an

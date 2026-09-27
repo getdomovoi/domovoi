@@ -51,6 +51,10 @@ const maximumEntries = 10_000
 // a reset per dispatch, for each stop id it names, and at least one unit per
 // stop id. A row in the stop's own format asks at most this much.
 const maximumWork = 2 * maximumEntries
+// Issue #632: the most journal rows one pass reads. Each row is at most
+// `maximumEmergencyStopIntentBytes` and asks at most `maximumWork`, so a pass
+// holds a bounded number of rows and stops, however long the journal is.
+export const emergencyStopRowsPerPass = 16
 
 type Read =
   | { intents: RecoveredEmergencyStopIntent[]; partial?: string; overflow?: string }
@@ -219,12 +223,15 @@ function readIntent(key: SQLInputValue, record: SQLInputValue, built: () => void
 export class SqliteEmergencyStopIntents {
   readonly #database: DatabaseSync
   readonly #dispatchBuilt: (() => void) | undefined
+  readonly #rowsPerPass: number
 
   // `onDispatchBuilt` is a test seam: it is told of each in-flight entry the
   // restart's reader makes, so the cap on them can be counted, not timed.
-  constructor(database: DatabaseSync, options: { onDispatchBuilt?: () => void } = {}) {
+  // `rowsPerPass` is one too, so a test can span passes with a few rows.
+  constructor(database: DatabaseSync, options: { onDispatchBuilt?: () => void; rowsPerPass?: number } = {}) {
     this.#database = database
     this.#dispatchBuilt = options.onDispatchBuilt
+    this.#rowsPerPass = options.rowsPerPass ?? emergencyStopRowsPerPass
     database.exec(`CREATE TABLE IF NOT EXISTS emergency_stop_intents (
       stop_id TEXT PRIMARY KEY,
       record TEXT NOT NULL CHECK(length(CAST(record AS BLOB)) <= ${maximumEmergencyStopIntentBytes})
@@ -246,45 +253,69 @@ export class SqliteEmergencyStopIntents {
   // a stop, and is finished from its record. A row with more readable entries
   // than a stop keeps is finished as far as it goes, returned as overflow
   // each time, and marked `keep`: it is never cleared.
-  pending(): {
-    intents: Array<{ key: SQLInputValue; intent: RecoveredEmergencyStopIntent; keep: boolean }>
+  //
+  // Issue #632: one call is one pass over at most `rowsPerPass` rows, those
+  // after `after` in rowid order. The rows past it stay in the journal as
+  // they are, and `next` says where the pass that reads them starts; it is
+  // absent once no row is left. Each stop carries the rowid of its row, so
+  // the caller clears that row and no other: SQLite lets a text primary key
+  // hold many nulls, so a key does not always name one row.
+  pending(after?: bigint): {
+    intents: Array<{ key: SQLInputValue; row: bigint; intent: RecoveredEmergencyStopIntent; keep: boolean }>
     partial: Array<{ key: string; reason: string }>
     overflow: Array<{ key: string; reason: string }>
     setAside: Array<{ key: string; reason: string }>
+    next?: bigint
   } {
-    const rows = this.#database.prepare("SELECT stop_id, record FROM emergency_stop_intents ORDER BY rowid")
-      .all() as Array<{ stop_id: SQLInputValue; record: SQLInputValue }>
-    const intents: Array<{ key: SQLInputValue; intent: RecoveredEmergencyStopIntent; keep: boolean }> = []
+    const from = after === undefined ? "" : "WHERE rowid > ?"
+    const select = this.#database.prepare(`SELECT rowid AS row, stop_id, record FROM emergency_stop_intents ${from} ORDER BY rowid LIMIT ?`)
+    // Rowids are read whole: a crafted one can be past a number's exact range.
+    select.setReadBigInts(true)
+    const rows = (after === undefined ? select.all(this.#rowsPerPass) : select.all(after, this.#rowsPerPass)) as Array<{ row: bigint; stop_id: SQLInputValue; record: SQLInputValue }>
+    const intents: Array<{ key: SQLInputValue; row: bigint; intent: RecoveredEmergencyStopIntent; keep: boolean }> = []
     const partial: Array<{ key: string; reason: string }> = []
     const overflow: Array<{ key: string; reason: string }> = []
     const setAside: Array<{ key: string; reason: string }> = []
     for (const row of rows) {
       const read = readIntent(row.stop_id, row.record, this.#dispatchBuilt)
       if ("unreadable" in read) {
-        this.#quarantine(row.stop_id, row.record, read.unreadable, true)
+        this.#quarantine(row, read.unreadable, true)
         setAside.push({ key: String(row.stop_id), reason: read.unreadable })
         continue
       }
-      if (read.partial !== undefined && this.#quarantine(row.stop_id, row.record, read.partial, false)) {
+      if (read.partial !== undefined && this.#quarantine(row, read.partial, false)) {
         partial.push({ key: String(row.stop_id), reason: read.partial })
       }
       if (read.overflow !== undefined) overflow.push({ key: String(row.stop_id), reason: read.overflow })
-      for (const intent of read.intents) intents.push({ key: row.stop_id, intent, keep: read.overflow !== undefined })
+      for (const intent of read.intents) intents.push({ key: row.stop_id, row: row.row, intent, keep: read.overflow !== undefined })
     }
-    return { intents, partial, overflow, setAside }
+    const last = rows.at(-1)?.row
+    const more = last !== undefined && rows.length === this.#rowsPerPass
+      && this.#database.prepare("SELECT 1 FROM emergency_stop_intents WHERE rowid > ? LIMIT 1").get(last) !== undefined
+    return { intents, partial, overflow, setAside, ...(more ? { next: last } : {}) }
   }
 
   clear(key: SQLInputValue): void {
     this.#database.prepare("DELETE FROM emergency_stop_intents WHERE stop_id IS ?").run(key)
   }
 
+  // Clears the one row a stop was read from, by its rowid.
+  clearRow(row: bigint): void {
+    this.#database.prepare("DELETE FROM emergency_stop_intents WHERE rowid = ?").run(row)
+  }
+
   // Copies the row as stored to the quarantine table, and moves it there
   // when `move`. A copy already there is not made twice. Answers whether
-  // this call made it.
-  #quarantine(key: SQLInputValue, record: SQLInputValue, why: string, move: boolean): boolean {
+  // this call made it. Issue #632: the copy is found through an index on the
+  // identity it is matched by, not by reading the whole table, so a journal
+  // of many such rows costs a restart time in proportion to its length. The
+  // index is made if missing, over the rows a store already holds.
+  #quarantine({ row, stop_id: key, record }: { row: bigint; stop_id: SQLInputValue; record: SQLInputValue }, why: string, move: boolean): boolean {
     this.#database.exec(`CREATE TABLE IF NOT EXISTS emergency_stop_intent_quarantine (
       stop_id, record, reason TEXT NOT NULL, set_aside_at TEXT NOT NULL
     )`)
+    this.#database.exec(`CREATE INDEX IF NOT EXISTS emergency_stop_intent_quarantine_identity
+      ON emergency_stop_intent_quarantine (stop_id, record)`)
     this.#database.exec("BEGIN IMMEDIATE")
     try {
       const copied = this.#database.prepare("SELECT 1 FROM emergency_stop_intent_quarantine WHERE stop_id IS ? AND record IS ?")
@@ -293,7 +324,7 @@ export class SqliteEmergencyStopIntents {
         this.#database.prepare("INSERT INTO emergency_stop_intent_quarantine (stop_id, record, reason, set_aside_at) VALUES (?, ?, ?, ?)")
           .run(key, record, why, new Date().toISOString())
       }
-      if (move) this.#database.prepare("DELETE FROM emergency_stop_intents WHERE stop_id IS ?").run(key)
+      if (move) this.#database.prepare("DELETE FROM emergency_stop_intents WHERE rowid = ?").run(row)
       this.#database.exec("COMMIT")
       return !copied
     } catch (error) {
