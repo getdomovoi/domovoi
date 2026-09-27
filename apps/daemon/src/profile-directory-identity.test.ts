@@ -59,4 +59,14 @@ describe("sameProfileDirectory by file identity", () => {
         .toThrow(ServiceProfileMismatchError)
     })
   })
+
+  // Security review round 14 of #577 (P2): two missing paths have no identity
+  // to compare, and their parent may be case-sensitive, so only the same
+  // path text matches.
+  it("refuses to merge two missing names that differ only in case", () => {
+    onHost("win32", () => {
+      expect(() => assertServiceProfile({ profileDirectory: "C:\\Missing\\Work" }, { profileDirectory: "C:\\Missing\\work" }, "win32"))
+        .toThrow(ServiceProfileMismatchError)
+    })
+  })
 })
