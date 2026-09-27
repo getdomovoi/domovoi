@@ -252,6 +252,25 @@ describe("credential backstop", () => {
     expect(large / small).toBeLessThan(12)
   })
 
+  it("trims a scheme value's punctuation without a pattern that restarts at every character", () => {
+    // Backtracking inside one regular expression call cannot be counted from
+    // outside, so count what can lead to it: characters handed to a
+    // non-global replace, the suffix trim that restarts at each position of a
+    // long punctuation run.
+    let handed = 0
+    const replace = RegExp.prototype[Symbol.replace] as (this: RegExp, input: string, replacement: string) => string
+    const spy = vi.spyOn(RegExp.prototype as unknown as Record<symbol, typeof replace>, Symbol.replace).mockImplementation(function (this: RegExp, input: string, replacement: string) {
+      if (!this.global) handed += String(input).length
+      return replace.call(this, input, replacement)
+    })
+    try {
+      holdsCredential(`Bearer ${".".repeat(32_768)}x`)
+    } finally {
+      spy.mockRestore()
+    }
+    expect(handed).toBe(0)
+  })
+
   const hook = sample.providers[0].entries[2]
   const accepts = (command: string) => toolInventorySchema.safeParse(withEntry({ ...hook, command })).success
 
@@ -306,7 +325,7 @@ describe("credential backstop", () => {
     "https://mcp.linear.app/mcp", "git@github.com:acme/api.git", "git log --format=%H --port=5432",
     "npx mcp --token-file ~/.config/pg", "npx mcp --api-key-env API_KEY", "llm --max-tokens 100",
     "EACCES: permission denied, open '/Users/ada/.claude/settings.local.json'",
-    "Token limit exceeded", "Basic usage information", "Token limit exceeded.", "Basic usage information, see docs.", "Basic usage information.", "Bearer token.", "Basic authentication.", '{"reason":"Token limit exceeded."}', 'cat <<<"/tmp/config=dev/index.js"', '["node","/tmp/config=dev/index.js"]',
+    "Token limit exceeded", "Basic usage information", "Token limit exceeded.", "Basic usage information, see docs.", "Basic credentials.", "Bearer token.", "Bearer [REDACTED]", "Basic authentication.", '{"reason":"Token limit exceeded."}', 'cat <<<"/tmp/config=dev/index.js"', '["node","/tmp/config=dev/index.js"]',
     '["npx","mcp","--api-key","[REDACTED]"]',
     "node /tmp/config=dev/index.js", "Bearer token", "bearer auth header", "openssl dgst --digest sha256 ./build.tar",
     'API_KEY="[REDACTED]" ./start.sh', "env $'API_KEY=[REDACTED]' ./start.sh", "echo $'unclosed\\",

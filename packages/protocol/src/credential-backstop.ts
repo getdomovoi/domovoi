@@ -66,7 +66,15 @@ function pairHoldsValue(flag: string, quoteAfterKey: string, key: string, separa
 // one pass rather than by rescanning the text before it.
 const schemeValues = /(?:(authorization["'\x60]?\s*[=:]\s*["'\x60]?)|(?<![\p{L}\p{N}_-]))(?:Bearer|Basic|Token|Digest)\s+["'\x60]?([^\s"'\x60,;)]+)(?=(?:\s+([^\s"'\x60,;)]+))?)/giu
 // A word of prose, with the punctuation a sentence puts after it.
-const sentencePunctuation = /[.,;:!?"'\x60)\]}\u2019\u201d\u00bb]+$/u
+const sentenceEnd = new Set([".", ",", ";", ":", "!", "?", "\"", "'", "\x60", ")", "]", "}", "\u2019", "\u201d", "\u00bb"])
+// Drop the punctuation a sentence ends with, reading each character from the
+// end once. A pattern anchored only at the end would restart at every
+// position of a long punctuation run.
+function withoutSentenceEnd(value: string): string {
+  let end = value.length
+  while (end > 0 && sentenceEnd.has(value[end - 1]!)) end -= 1
+  return value.slice(0, end)
+}
 const proseWord = /^\p{L}+[.,;:!?"'\x60)\]}\u2019\u201d\u00bb]*$/u
 const schemeProse = new Set(["authentication", "authorization", "auth", "token", "tokens", "header", "headers", "scheme", "schemes", "credentials"])
 const schemeCredential = (value: string) => !redacted(value) && !schemeProse.has(value.toLowerCase())
@@ -161,8 +169,10 @@ export function holdsCredential(value: string): boolean {
       const [, authorizationKey, schemeValue = "", nextWord] = match
       const header = authorizationKey !== undefined
       const prose = !header && proseWord.test(schemeValue) && nextWord !== undefined && proseWord.test(nextWord)
+      // The marker alone is judged before anything is trimmed from it.
+      if (redacted(schemeValue)) continue
       // Outside a header, a known prose word may end a sentence: "Bearer token."
-      const word = header ? schemeValue : schemeValue.replace(sentencePunctuation, "")
+      const word = header ? schemeValue : withoutSentenceEnd(schemeValue)
       if (!prose && schemeCredential(word)) return true
     }
     for (const match of view.matchAll(keyPairs)) {
