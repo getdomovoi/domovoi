@@ -13,6 +13,7 @@ import type { ServiceConfiguration } from "./configuration.js"
 import {
   installService,
   isDomovoiTaskAction,
+  isMissingServiceFailure,
   nodeServiceEffects,
   prepareServiceUpdate,
   removeService,
@@ -388,6 +389,12 @@ function taskAction(definition: string): { path: string; arguments: string } | u
 const publishId = /^[0-9a-f]{12}$/u
 
 export function stagedRuntimeVersion(platform: string, definition: string, profileDirectory: string, configurationPath: string): string | undefined {
+  return stagedRuntimeCopy(platform, definition, profileDirectory, configurationPath)?.version
+}
+
+// The same reading, with the published copy's directory the definition runs:
+// <profile>/runtime/<version>/<id>, built from the saved profile.
+export function stagedRuntimeCopy(platform: string, definition: string, profileDirectory: string, configurationPath: string): { version: string; copy: string } | undefined {
   const paths = platform === "win32" ? win32 : posix
   const action = platform === "win32" ? taskAction(definition) : undefined
   const written = platform === "darwin" ? launchdPlistProgram(definition)
@@ -403,11 +410,11 @@ export function stagedRuntimeVersion(platform: string, definition: string, profi
   const expectedCopy = paths.join(profileDirectory, "runtime", version, id)
   const node = platform === "win32" ? paths.join(expectedCopy, "node", "node.exe") : paths.join(expectedCopy, "node", "bin", "node")
   const entry = paths.join(expectedCopy, "daemon", "dist", "index.js")
-  if (action !== undefined) return isDomovoiTaskAction(action, configurationPath, { executable: node, entry }) ? version : undefined
+  if (action !== undefined) return isDomovoiTaskAction(action, configurationPath, { executable: node, entry }) ? { version, copy: expectedCopy } : undefined
   const expected = serviceProgram(entry, node, configurationPath)
   const same = written.execPath === expected.program && written.args.length === expected.args.length
     && written.args.every((argument, index) => argument === expected.args[index])
-  return same ? version : undefined
+  return same ? { version, copy: expectedCopy } : undefined
 }
 
 export async function readDaemonServiceRuntimeVersion(
@@ -438,6 +445,41 @@ export async function readDaemonServiceRuntimeVersion(
   }
   const version = bound === undefined ? undefined : stagedRuntimeVersion(reader.platform, definition, bound.profile, bound.configurationPath)
   return version === undefined ? { installed: true } : { installed: true, version }
+}
+
+// #635: which published runtime copy the login service runs, for the removal
+// of unused copies. Read by the same rules as the version above, but it never
+// guesses: a definition, a Windows task query or a saved configuration that
+// cannot be read throws, rather than read as no service or no copy. Only a
+// definition that is not there, or a task Task Scheduler says does not exist,
+// is not installed. Installed with no copy: the definition names none this
+// app published, or none it can be sure of.
+export type DaemonServiceRuntimeCopy = { installed: false } | { installed: true; copy?: string }
+
+export async function readDaemonServiceRuntimeCopy(
+  reader: DaemonServiceRuntimeReader = nodeDaemonServiceRuntimeReader(),
+): Promise<DaemonServiceRuntimeCopy> {
+  let definition: string | undefined
+  if (reader.platform === "win32") {
+    const deadline = OperationDeadline.start(10_000)
+    try {
+      const queried = await reader.capture("schtasks", ["/query", "/tn", loginServiceTaskName, "/xml"], deadline)
+      if (queried.code === 0) definition = queried.stdout
+      else if (!isMissingServiceFailure("win32", queried)) throw new Error(`schtasks could not read the login service: ${queried.stderr?.trim() || `exit code ${queried.code}`}`)
+    } finally {
+      deadline.clear()
+    }
+  } else if (reader.platform === "darwin" || reader.platform === "linux") {
+    definition = await reader.readDefinition(posix.join(reader.home, loginServiceHomePaths[reader.platform]))
+  } else {
+    throw new Error(`${reader.platform} has no login service this can read`)
+  }
+  if (definition === undefined) return { installed: false }
+  const saved = reader.readConfiguration(reader.home, reader.platform)
+  if (saved === undefined) return { installed: true }
+  const profile = profileDirectory(profileLocation(saved.homeDirectory, saved.profileDirectory), reader.platform)
+  const staged = stagedRuntimeCopy(reader.platform, definition, profile, serviceConfigurationPath(saved.homeDirectory, reader.platform))
+  return staged === undefined ? { installed: true } : { installed: true, copy: staged.copy }
 }
 
 export function nodeDaemonServiceRuntimeReader(): DaemonServiceRuntimeReader {

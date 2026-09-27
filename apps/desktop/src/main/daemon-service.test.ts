@@ -16,6 +16,8 @@ function staged() {
   return { runtime, staged: stagedRuntime, publish: vi.fn(async () => {}) }
 }
 const attachedToService = { kind: "attached" as const, owner: "daemon" as const, url: "ws://127.0.0.1:47831/rpc", token: "t" }
+// #635: the copy the service ran before this change.
+const previousCopy = "/Users/dana/.domovoi/runtime/0.9.3/0123456789ab"
 
 function harness(overrides: Partial<ConstructorParameters<typeof DesktopDaemonService>[0]> = {}) {
   const calls: string[] = []
@@ -28,6 +30,8 @@ function harness(overrides: Partial<ConstructorParameters<typeof DesktopDaemonSe
     fence: vi.fn(async (): Promise<{ refusal: string } | { release: () => void }> => { calls.push("fence"); return { release: () => { calls.push("unfence") } } }),
     remove: vi.fn(async () => ({ kind: "file" as const, path: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", profileRecovery: "not-needed" as const })),
     update: vi.fn(async () => { calls.push("update"); return { kind: "file" as const, path: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/Users/dana/.domovoi/service.json" } }),
+    runtimeCopy: vi.fn(async (): Promise<{ installed: false } | { installed: true; copy?: string }> => { calls.push("read service copy"); return { installed: true, copy: previousCopy } }),
+    removeUnusedRuntimes: vi.fn(async () => { calls.push("remove unused copies") }),
     daemon: {
       beginHandoff: vi.fn(() => { calls.push("hold") }),
       endHandoff: vi.fn(() => { calls.push("release") }),
@@ -49,8 +53,14 @@ describe("DesktopDaemonService hands over an inert staged runtime", () => {
       const copy = staged()
       const { service, deps } = harness({ stageRuntime: vi.fn(async () => copy) })
       await service[action]()
-      expect(deps[action], action).toHaveBeenCalledWith(expect.objectContaining({ runtime, staged: { runtime: stagedRuntime, publish: copy.publish } }))
+      expect(deps[action], action).toHaveBeenCalledWith(expect.objectContaining({ runtime, staged: { runtime: stagedRuntime, publish: expect.any(Function) } }))
       expect(copy.publish, action).not.toHaveBeenCalled()
+      // #635: the step handed over is the staged publish, with the read of
+      // the copy the service runs before it.
+      const handed = (vi.mocked(deps[action]).mock.calls[0] as unknown as [{ staged: { publish: () => Promise<void> } }])[0].staged.publish
+      await handed()
+      expect(copy.publish, action).toHaveBeenCalledOnce()
+      expect(deps.runtimeCopy, action).toHaveBeenCalledOnce()
     }
   })
 
@@ -60,6 +70,96 @@ describe("DesktopDaemonService hands over an inert staged runtime", () => {
     const { service } = harness({ stageRuntime: vi.fn(async () => copy), install: vi.fn(async () => { throw Object.assign(new Error(words), { name: "ServiceProfileMismatchError" }) }) })
     await expect(service.install()).resolves.toEqual({ ok: false, reason: "refused", message: words })
     expect(copy.publish).not.toHaveBeenCalled()
+  })
+})
+
+// #635, ruled Q60 A: each install or update publishes a fresh runtime copy.
+// Once the new service is confirmed, the copies no service definition names
+// are removed. The copy the service ran before is read inside the publish,
+// which the service calls run under their service-operation lease.
+describe("DesktopDaemonService removes runtime copies no service names", () => {
+  const plist = { kind: "file" as const, path: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/Users/dana/.domovoi/service.json" }
+  type Publishing = { releaseInAppDaemon?: () => Promise<void>; staged?: { publish: () => Promise<void> } }
+
+  function publishing(overrides: Partial<ConstructorParameters<typeof DesktopDaemonService>[0]> = {}) {
+    const copy = staged()
+    const built = harness({
+      stageRuntime: vi.fn(async () => copy),
+      install: vi.fn(async (options: Publishing) => { await options.releaseInAppDaemon?.(); await options.staged?.publish(); built.calls.push("install"); return plist }),
+      update: vi.fn(async (options: Publishing) => { await options.staged?.publish(); built.calls.push("update"); return plist }),
+      ...overrides,
+    })
+    copy.publish.mockImplementation(async () => { built.calls.push("publish") })
+    return built
+  }
+
+  it("reads the copy the service ran inside the publish, and removes unused copies once the new service is confirmed", async () => {
+    for (const action of ["install", "update"] as const) {
+      const { service, deps, calls } = publishing()
+      await expect(service[action](), action).resolves.toMatchObject({ ok: true })
+      expect(calls.indexOf("read service copy"), action).toBe(calls.indexOf("publish") - 1)
+      expect(calls.indexOf("publish"), action).toBeLessThan(calls.indexOf(action))
+      expect(calls.indexOf("remove unused copies"), action).toBeGreaterThan(calls.indexOf("attach"))
+      expect(deps.removeUnusedRuntimes, action).toHaveBeenCalledExactlyOnceWith({ published: runtime, previous: { installed: true, copy: previousCopy } })
+      expect(vi.mocked(deps.status).mock.invocationCallOrder.at(-1)!, action).toBeLessThan(vi.mocked(deps.removeUnusedRuntimes).mock.invocationCallOrder[0]!)
+    }
+  })
+
+  it("passes on that no service ran before", async () => {
+    const { service, deps } = publishing({ runtimeCopy: vi.fn(async () => ({ installed: false as const })) })
+    await expect(service.install()).resolves.toMatchObject({ ok: true })
+    expect(deps.removeUnusedRuntimes).toHaveBeenCalledExactlyOnceWith({ published: runtime, previous: { installed: false } })
+  })
+
+  it("removes nothing when the new service is not confirmed", async () => {
+    const refused = { kind: "refused" as const, reason: "owner-incompatible" as const, message: "The daemon at this profile is older than this app." }
+    const owned = { kind: "owned" as const, url: "ws://127.0.0.1:47831/rpc", token: "t" }
+    const attachedToApp = { ...attachedToService, owner: "desktop" as const }
+    for (const action of ["install", "update"] as const) {
+      const cases = [
+        publishing({ daemon: { ...harness().deps.daemon, attachOnly: vi.fn(async () => refused) } }),
+        publishing({ daemon: { ...harness().deps.daemon, attachOnly: vi.fn(async () => { throw new Error("connection refused") }) } }),
+        publishing({ daemon: { ...harness().deps.daemon, attachOnly: vi.fn(async () => owned) } }),
+        publishing({ daemon: { ...harness().deps.daemon, attachOnly: vi.fn(async () => attachedToApp) } }),
+        publishing({ status: vi.fn(async () => ({ installed: true, running: false, detail: "" })) }),
+      ]
+      for (const [index, { service, deps, calls }] of cases.entries()) {
+        await expect(service[action](), `${action} ${index}`).resolves.toMatchObject({ ok: false })
+        expect(calls, `${action} ${index}`).toContain("publish")
+        expect(deps.removeUnusedRuntimes, `${action} ${index}`).not.toHaveBeenCalled()
+      }
+    }
+  })
+
+  it("removes nothing when the service call fails after the publish", async () => {
+    const failing = publishing({
+      install: vi.fn(async (options: Publishing) => { await options.releaseInAppDaemon?.(); await options.staged?.publish(); throw new Error("launchctl bootstrap failed") }),
+      update: vi.fn(async (options: Publishing) => { await options.staged?.publish(); throw new Error("Domovoi could not start the service on the new runtime") }),
+    })
+    await expect(failing.service.install()).resolves.toMatchObject({ ok: false, reason: "failed" })
+    await expect(failing.service.update()).resolves.toMatchObject({ ok: false, reason: "update-failed" })
+    expect(failing.calls.filter((call) => call === "publish")).toHaveLength(2)
+    expect(failing.deps.removeUnusedRuntimes).not.toHaveBeenCalled()
+  })
+
+  it("removes nothing when nothing was published or the copy the service ran could not be read", async () => {
+    const unpublished = harness()
+    await expect(unpublished.service.install()).resolves.toMatchObject({ ok: true })
+    await expect(unpublished.service.update()).resolves.toMatchObject({ ok: true })
+    expect(unpublished.deps.removeUnusedRuntimes).not.toHaveBeenCalled()
+    const unread = publishing({ runtimeCopy: vi.fn(async () => { throw new Error("EACCES: permission denied") }) })
+    await expect(unread.service.install()).resolves.toMatchObject({ ok: true })
+    // The publish still ran: only the cleanup depends on the read.
+    expect(unread.calls).toContain("publish")
+    expect(unread.deps.removeUnusedRuntimes).not.toHaveBeenCalled()
+  })
+
+  it("keeps the outcome when the cleanup fails", async () => {
+    for (const action of ["install", "update"] as const) {
+      const { service, deps } = publishing({ removeUnusedRuntimes: vi.fn(async () => { throw new Error("EBUSY: resource busy or locked") }) })
+      await expect(service[action](), action).resolves.toEqual({ ok: true, kind: "file", target: plist.path, configurationPath: plist.configurationPath, daemonRunning: true })
+      expect(deps.removeUnusedRuntimes, action).toHaveBeenCalledOnce()
+    }
   })
 })
 
@@ -454,6 +554,8 @@ describe("a renderer reconnect during the handoff", () => {
       profile: async () => undefined,
       refusal: async () => undefined,
       fence: async () => ({ release: () => {} }),
+      runtimeCopy: async () => ({ installed: false }),
+      removeUnusedRuntimes: async () => {},
       daemon,
     })
     const outcome = await service.install()
@@ -527,6 +629,27 @@ describe("staging the shipped runtime under the profile", () => {
       await symlink(elsewhere, join(home, ".domovoi"), directoryLink)
       await expect(stage({ resources, home, version: "0.9.4" })).rejects.toThrow()
       expect(await readdir(join(elsewhere, "runtime", "0.9.4"))).toEqual(["keep.txt"])
+    })
+  })
+
+  // Security review round 1 of #635 (P2): lstat of "linked/" or "linked/."
+  // looks through the link, so the profile spelled that way passed as a real
+  // directory. "linked/x/.." is the link too, once the runtime directory is
+  // built from it.
+  it.each(["", sep, `${sep}.`, `${sep}x${sep}..`])("refuses a linked profile spelled with %j after it, and publishes nothing where the link points", async (suffix) => {
+    await withScratch(async ({ resources, root }) => {
+      const actual = join(root, "actual")
+      await mkdir(join(actual, "runtime", "0.9.4"), { recursive: true })
+      await writeFile(join(actual, "runtime", "0.9.4", "keep.txt"), "keep")
+      await mkdir(join(actual, "x"))
+      const link = join(root, "linked")
+      await symlink(actual, link, directoryLink)
+      await expect(stageDaemonRuntime({
+        resourcesPath: resources, profileDirectory: link + suffix, version: "0.9.4", platform,
+        stagingParent: join(root, "staging"), fileSystem: nodeRuntimeFileSystem(),
+      })).rejects.toThrow(`${link} is not a directory (it may be a link), so no runtime was copied under it.`)
+      expect(await entries(join(actual, "runtime"))).toEqual(["0.9.4"])
+      expect(await entries(join(actual, "runtime", "0.9.4"))).toEqual(["keep.txt"])
     })
   })
 

@@ -98,6 +98,18 @@ describe("where the in-app daemon is loaded from", () => {
       .rejects.toThrow(/is missing updateDaemonService\./)
   })
 
+  // #635: the read of the copy the service runs and the removal of unused
+  // copies come from the same runtime.
+  it("exposes the runtime copy read and the unused copy removal from the runtime", async () => {
+    const module = Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()]))
+    const { readDaemonServiceRuntimeCopy: _read, ...withoutRead } = module
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, async () => withoutRead))
+      .rejects.toThrow(/is missing readDaemonServiceRuntimeCopy\./)
+    const { removeUnusedDaemonRuntimes: _remove, ...withoutRemoval } = module
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, async () => withoutRemoval))
+      .rejects.toThrow(/is missing removeUnusedDaemonRuntimes\./)
+  })
+
   // Owner ruling 2026-09-26 (#577, A): the values the first module held reach
   // the run-time daemon's own capture, and only a runtime that loads gets them.
   it("hands the held credentials to the run-time daemon's capture once it loads", async () => {

@@ -99,7 +99,7 @@ function failureText(error: unknown): string {
     .join("\n")
 }
 
-function isMissingServiceFailure(platform: string, error: unknown): boolean {
+export function isMissingServiceFailure(platform: string, error: unknown): boolean {
   const detail = failureText(error)
   if (platform === "linux") {
     return /^Unit not loaded$/i.test(detail)

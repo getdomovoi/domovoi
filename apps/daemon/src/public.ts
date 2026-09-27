@@ -29,12 +29,14 @@ export {
   DaemonServiceUpdateError,
   installDaemonService,
   LaunchdJobNotDomovoiError,
+  readDaemonServiceRuntimeCopy,
   readDaemonServiceRuntimeVersion,
   readDaemonServiceStatus,
   removeDaemonService,
   SystemdPathCharacterError,
   updateDaemonService,
   type DaemonServiceDependencies,
+  type DaemonServiceRuntimeCopy,
   type DaemonServiceRuntimeReport,
   type DaemonServiceInstallResult,
   type DaemonServiceOptions,
@@ -50,3 +52,8 @@ export {
   WindowsTaskPathError,
   WindowsTaskPercentSignError,
 } from "./service/desktop-service.js"
+export {
+  removeUnusedDaemonRuntimes,
+  type DaemonRuntimeCleanupOptions,
+  type DaemonRuntimeCleanupResult,
+} from "./service/runtime-cleanup.js"
