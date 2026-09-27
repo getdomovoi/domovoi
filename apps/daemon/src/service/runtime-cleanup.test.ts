@@ -19,8 +19,12 @@ let root: string
 let home: string
 let profile: string
 
+// The temporary directory's own spelling can run through a link, as macOS's
+// /var/folders and /tmp do (/var leads to /private/var). Any link on the
+// profile's or an executable's spelled path removes nothing (Q96 A), so
+// every fixture is built under the real path.
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), "domovoi-runtime-cleanup-"))
+  root = await mkdtemp(join(await realpath(tmpdir()), "domovoi-runtime-cleanup-"))
   home = join(root, "home")
   profile = join(home, ".domovoi")
   await mkdir(profile, { recursive: true })
@@ -350,9 +354,10 @@ describe("removeUnusedDaemonRuntimes with links laid out ahead of time", () => {
     })
   }
 
-  // The rule above looks only at the profile and below it. A link above the
-  // profile, as a linked home directory is, still lets the cleanup run.
-  it("still removes unused copies when a directory above the profile is a link", async () => {
+  // Ruled Q96 A (security review round 4 of #635): any link on the profile's
+  // spelled path removes nothing, a linked home directory above the profile
+  // included. Until round 4 this layout still cleaned up.
+  it("removes nothing when a directory above the profile is a link", async () => {
     const actualHome = join(root, "actual-home")
     await mkdir(actualHome)
     const linkedHome = join(root, "linked-home")
@@ -364,7 +369,8 @@ describe("removeUnusedDaemonRuntimes with links laid out ahead of time", () => {
     const manager = fakeServiceManager(home, linkedProfile)
     manager.register(current)
     await expect(removeUnusedDaemonRuntimes({ profileDirectory: linkedProfile, published: copyLayout(current), previous: { installed: true, copy: previousCopy } }, dependencies(manager)))
-      .resolves.toEqual({ removed: [leftover] })
+      .resolves.toEqual({ skipped: "runtime-directory" })
+    expect(await exists(copyLayout(leftover).nodePath)).toBe(true)
     expect(await exists(copyLayout(previousCopy).nodePath)).toBe(true)
     expect(await exists(copyLayout(current).nodePath)).toBe(true)
   })
@@ -514,6 +520,102 @@ describe("removeUnusedDaemonRuntimes with an executable path through a candidate
     await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous }, dependencies(manager)))
       .resolves.toEqual({ skipped: "runtime-directory" })
     expect(await exists(copyLayout(leftover).nodePath)).toBe(true)
+  })
+
+  // Security review round 4 of #635 (P2): a link outside the runtime
+  // directory, whose final target is outside it too, can reach that target
+  // through a second link inside a candidate. The definitions spell both
+  // copies through the outer link; the cleanup gets the same spelling, or the
+  // profile's real path. Ruled Q96 A: any link on those paths removes nothing,
+  // without following it to judge where it leads.
+  for (const role of roles) {
+    for (const container of containers) {
+      for (const cleanup of ["linked", "physical"] as const) {
+        it(`removes nothing when an outside link reaches the ${role} copy through a link inside ${container}, cleanup given the ${cleanup} profile`, async () => {
+          const parked = join(profile, "runtime", container)
+          await mkdir(parked, { recursive: true })
+          await linkDirectory(home, join(parked, "relay"))
+          const alias = join(root, "linked-home")
+          await linkDirectory(join(parked, "relay"), alias)
+          const spelling = join(alias, ".domovoi")
+          const kept = await publishCopy(spelling, "0.9.1", "aaaaaaaaaaaa")
+          const manager = fakeServiceManager(home, spelling)
+          const { current, previous } = await change(manager, spelling, role, kept)
+          await expectRuns(kept)
+          await expectRuns(current)
+
+          const result = await removeUnusedDaemonRuntimes({ profileDirectory: cleanup === "linked" ? spelling : profile, published: copyLayout(current), previous }, dependencies(manager))
+            .catch((error: unknown) => ({ error: String(error) }))
+          await expectRuns(kept, result)
+          await expectRuns(current, result)
+          expect(await exists(join(parked, "relay"))).toBe(true)
+          expect(result).toEqual({ skipped: "runtime-directory" })
+          expect((await readdir(join(profile, "runtime"))).sort()).toEqual(
+            [container.split(sep)[0]!, "0.9.1", ...(role === "previous" ? ["0.9.3"] : [])].sort(),
+          )
+        })
+      }
+    }
+  }
+
+  // The same rule with no candidate in the route at all: a link anywhere on
+  // the profile's spelled path, or on a kept copy's executable path, removes
+  // nothing, whether it is one link or a chain of them wholly outside the
+  // runtime directory.
+  async function outsideLinks(count: 1 | 2) {
+    let target = home
+    for (let index = 0; index < count; index++) {
+      const link = join(root, `outside-link-${index}`)
+      await linkDirectory(target, link)
+      target = link
+    }
+    return join(target, ".domovoi")
+  }
+
+  it.each([1, 2] as const)("removes nothing when only the profile is spelled through %i outside link(s)", async (count) => {
+    const spelling = await outsideLinks(count)
+    const leftover = await publishCopy(profile, "0.9.0", "cccccccccccc")
+    const current = await publishCopy(profile, "0.9.2", "dddddddddddd")
+    const manager = fakeServiceManager(home)
+    manager.register(current)
+    await expect(removeUnusedDaemonRuntimes({ profileDirectory: spelling, published: copyLayout(current), previous: { installed: false } }, dependencies(manager)))
+      .resolves.toEqual({ skipped: "runtime-directory" })
+    expect(await exists(copyLayout(leftover).nodePath)).toBe(true)
+    await expectRuns(current)
+  })
+
+  for (const role of roles) {
+    it.each([1, 2] as const)(`removes nothing when only the ${role} copy is named through %i outside link(s)`, async (count) => {
+      const spelling = await outsideLinks(count)
+      const leftover = await publishCopy(profile, "0.9.0", "cccccccccccc")
+      await publishCopy(profile, "0.9.1", "aaaaaaaaaaaa")
+      const kept = join(spelling, "runtime", "0.9.1", "aaaaaaaaaaaa")
+      // The definition names the current copy under the profile the service
+      // configuration spells; the previous one is what the change read.
+      const manager = fakeServiceManager(home, role === "current" ? spelling : undefined)
+      const previous: DaemonServiceRuntimeCopy = role === "previous" ? { installed: true, copy: kept } : { installed: false }
+      const current = role === "previous" ? await publishCopy(profile, "0.9.3", "dddddddddddd") : kept
+      manager.register(current)
+      await expect(readDaemonServiceRuntimeCopy(manager.reader)).resolves.toEqual({ installed: true, copy: current })
+      await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous }, dependencies(manager)))
+        .resolves.toEqual({ skipped: "runtime-directory" })
+      expect(await exists(copyLayout(leftover).nodePath)).toBe(true)
+      await expectRuns(kept)
+      await expectRuns(current)
+    })
+  }
+
+  // The control: the same copies spelled through real directories only are
+  // cleaned up.
+  it.each(roles)("still removes unused copies when the profile and the %s copy are spelled through real directories", async (role) => {
+    const leftover = await publishCopy(profile, "0.9.0", "cccccccccccc")
+    const kept = await publishCopy(profile, "0.9.1", "aaaaaaaaaaaa")
+    const manager = fakeServiceManager(home)
+    const { current, previous } = await change(manager, profile, role, kept)
+    await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous }, dependencies(manager)))
+      .resolves.toEqual({ removed: [leftover] })
+    await expectRuns(kept)
+    await expectRuns(current)
   })
 })
 

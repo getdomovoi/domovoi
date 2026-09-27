@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -1633,7 +1633,8 @@ describe("updateDaemonService holds the lease until a publish settles", () => {
   // No cleanup runs while the publish still holds the lease, and the next
   // confirmed change removes the copy.
   it("leaves the copy a timed-out publish wrote to the next confirmed change, never removing it while it is written", async () => {
-    const root = await mkdtemp(join(tmpdir(), "domovoi-late-publish-"))
+    // Under the real path: a link on the profile's path removes nothing (Q96 A).
+    const root = await mkdtemp(join(await realpath(tmpdir()), "domovoi-late-publish-"))
     try {
       const home = join(root, "home")
       const profile = join(home, ".domovoi")
