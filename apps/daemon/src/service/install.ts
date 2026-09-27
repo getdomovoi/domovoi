@@ -600,8 +600,21 @@ async function registeredServiceWithoutConfiguration(
     if (job.code !== 113 || !isMissingServiceFailure("darwin", job)) throw captureFailure("launchctl", job)
     const listed = await withinServiceDeadline(deadline, () => effects.capture("launchctl", ["print", domain], deadline))
     if (listed.code !== 0) throw captureFailure("launchctl", listed)
-    const other = /^\s*(?:\d+|-)\s+(?:-?\d+|-)\s+(sh\.domovoi\.\S+)\s*$/mu.exec(listed.stdout)?.[1]
-    return other === undefined ? undefined : `${domain}/${other}`
+    // Round 5 (P1): read the services block line by line, a pid or "-"
+    // first and the label last, whatever columns launchd puts between. A
+    // listing without that block, or with a line not in that shape, is not
+    // taken for one without a Domovoi job. Copy pending owner approval.
+    const unreadable = () => new ServiceProfileUnknownError(`launchd listed the jobs in ${domain} in a form this app cannot read, so whether a login service is registered there is not known.`)
+    const block = /^[ \t]*services = \{[ \t]*\r?$([\s\S]*?)^[ \t]*\}[ \t]*\r?$/mu.exec(listed.stdout)?.[1]
+    if (block === undefined) throw unreadable()
+    for (const line of block.split(/\r?\n/u)) {
+      const fields = line.trim().split(/\s+/u)
+      if (fields[0] === "") continue
+      if (fields.length < 3 || !/^(?:\d+|-)$/u.test(fields[0]!)) throw unreadable()
+      const label = fields.at(-1)!
+      if (label.startsWith("sh.domovoi.")) return `${domain}/${label}`
+    }
+    return undefined
   }
   if (target.platform === "linux") {
     const listed = await withinServiceDeadline(deadline, () => effects.capture("systemctl", ["--user", "list-units", "--all", "--plain", "--no-legend", "--full", "domovoi*"], deadline))

@@ -1022,6 +1022,34 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
     expect(notPublished).not.toHaveBeenCalled()
   })
 
+  // Security review round 5 of #577 (P1): the domain listing is read by its
+  // services block, label last, whatever columns come between. A listing
+  // this cannot read refuses rather than pass as having no Domovoi job.
+  it("finds a Domovoi label in a listing with an extra column, and refuses a listing it cannot read", async () => {
+    const listing = (stdout: string) => vi.fn(async (_command: string, args: string[]) => args[1] === "gui/501/sh.domovoi.domovoid"
+      ? { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
+      : { code: 0, stdout })
+    const extraColumn = "gui/501 = {\n\tservices = {\n\t\t       0      -      -  \tcom.apple.example\n\t\t     812      0      2  \tsh.domovoi.domovoid-old\n\t}\n}\n"
+    const found = dependencies({ exists: noDefinition, capture: listing(extraColumn) })
+    await expect(installDaemonService({ runtime, environment: {} }, found)).rejects.toThrow(
+      "A login service is registered at gui/501/sh.domovoi.domovoid-old, but its saved configuration is missing, so the profile it runs is not known. Nothing was changed.",
+    )
+    expect(found.write).not.toHaveBeenCalled()
+    for (const [label, stdout] of [
+      ["no services block", "gui/501 = {\n\tjobs: com.apple.example sh.domovoi.domovoid-old\n}\n"],
+      ["a line it cannot read", "gui/501 = {\n\tservices = {\n\t\tsh.domovoi.domovoid-old\n\t}\n}\n"],
+    ] as const) {
+      const unreadable = dependencies({ exists: noDefinition, capture: listing(stdout) })
+      const refused = installDaemonService({ runtime, environment: {} }, unreadable)
+      await expect(refused, label).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+      await expect(refused, label).rejects.toThrow("launchd listed the jobs in gui/501 in a form this app cannot read, so whether a login service is registered there is not known. Nothing was changed.")
+      expect(unreadable.write, label).not.toHaveBeenCalled()
+      const removal = dependencies({ exists: noDefinition, capture: listing(stdout) })
+      await expect(removeDaemonService(removal, { environment: {} }), label).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+      expect(removal.run, label).not.toHaveBeenCalled()
+    }
+  })
+
   // Security review round 5 of #577 (P1): every refusal comes before the
   // publish: the handoff's own profile check, the caller's fence (thrown from
   // the handoff), and the claim of the profile for the service.
