@@ -88,6 +88,23 @@ const definitions: ProviderDefinition[] = [
   },
 ]
 
+function turnedOffDetection(definition: ProviderDefinition, off: boolean): ProviderDetection | undefined {
+  if (!off || definition.turnedOff === undefined) return undefined
+  return { id: definition.id, command: definition.commands[0]!, status: "unknown", problem: definition.turnedOff }
+}
+
+// What a turned-off provider is detected as, without running anything, or
+// undefined for a provider that is not turned off. The daemon also puts it in
+// place of a stored readiness row at startup, so a row saved while the
+// provider was on is never served before the first probe finishes.
+export function turnedOffProviderDetection(
+  provider: string,
+  off: boolean = acpProvidersTurnedOff,
+): ProviderDetection | undefined {
+  const definition = definitions.find(({ id }) => id === provider)
+  return definition ? turnedOffDetection(definition, off) : undefined
+}
+
 // With a tool PATH the probe resolves each candidate to an absolute path
 // before running it, so the detection names where the harness was found and
 // does not depend on the PATH the process was launched with. Without one it
@@ -126,9 +143,8 @@ export class CliProviderProbe implements ProviderProbe {
   }
 
   async #inspect(definition: ProviderDefinition, signal?: AbortSignal): Promise<ProviderDetection> {
-    if (this.#acpProvidersTurnedOff && definition.turnedOff !== undefined) {
-      return { id: definition.id, command: definition.commands[0]!, status: "unknown", problem: definition.turnedOff }
-    }
+    const turnedOff = turnedOffDetection(definition, this.#acpProvidersTurnedOff)
+    if (turnedOff) return turnedOff
     // The Claude Agent SDK starts only the native claude.exe on Windows, so
     // readiness looks for it before the npm shims.
     const commands = this.#platform === "win32" && definition.id === "claude-code"
