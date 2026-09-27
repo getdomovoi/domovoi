@@ -50,6 +50,40 @@ function storedSnapshot(): WorkspaceSnapshot {
   return snapshot
 }
 
+type Frame = { id?: unknown; method?: string; result?: WorkspaceSnapshot; params?: WorkspaceSnapshot }
+
+// Sends hello, then one request, and returns its response together with every
+// workspace.changed notification the client saw before it.
+async function request(daemon: DomovoiDaemon, address: { host: string; port: number }, method: string, params: object) {
+  const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+    headers: { authorization: `Bearer ${daemon.authToken}` },
+  })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const changed: WorkspaceSnapshot[] = []
+    const response = new Promise<Frame>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as Frame
+        if (message.method === "workspace.changed" && message.params) changed.push(message.params)
+        if (message.id === 2) resolve(message)
+      })
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: { client: "desktop", clientId: "desktop-test-client", clientVersion: "0.0.1", protocolVersion },
+    }))
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method, params }))
+    return { response: await response, changed }
+  } finally {
+    socket.close()
+  }
+}
+
 async function firstWorkspace(daemon: DomovoiDaemon, address: { host: string; port: number }) {
   const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
     headers: { authorization: `Bearer ${daemon.authToken}` },
@@ -117,5 +151,51 @@ describe("stored Cursor and Grok readiness at startup", () => {
       expect((saved as WorkspaceSnapshot).machine.providers.filter(({ sessionCapable }) => sessionCapable))
         .toEqual([expect.objectContaining({ id: "claude-code" })])
     }
+  })
+})
+
+describe("Cursor and Grok readiness from a provider probe", () => {
+  it("is replaced with the turned-off rows before the refresh is saved, broadcast or returned", async () => {
+    const home = await mkdtemp(join(tmpdir(), "domovoi-acp-off-"))
+    scratchDirectories.push(home)
+    vi.stubEnv("HOME", home)
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.machine.providers = []
+    const store = {
+      load: vi.fn(() => snapshot),
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    // A probe other than CliProviderProbe, which does not know they are off.
+    const providerProbe = {
+      inspect: vi.fn<ProviderProbe["inspect"]>(async () => [
+        { id: "claude-code", command: "claude", status: "ready", version: "2.1.247" },
+        { id: "cursor-agent", command: "agent", status: "ready", version: "2026.08.1" },
+        { id: "grok", command: "grok", status: "ready", version: "0.18.0" },
+      ]),
+    }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      providerProbe,
+      profileDirectory: join(home, ".domovoi"),
+      errorSink: () => {},
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    await waitForDaemon(() => expect(store.save).toHaveBeenCalled())
+
+    const { response, changed } = await request(daemon, address, "provider.refresh", { client: "desktop" })
+
+    expect(providerProbe.inspect).toHaveBeenCalledTimes(2)
+    const expected = [
+      { id: "claude-code", command: "claude", status: "ready", version: "2.1.247", sessionCapable: true },
+      ...turnedOffRows,
+    ]
+    expect(response.result?.machine.providers).toEqual(expected)
+    expect(changed).not.toEqual([])
+    for (const broadcast of changed) expect(broadcast.machine.providers).toEqual(expected)
+    expect(store.save.mock.calls.length).toBeGreaterThanOrEqual(2)
+    for (const [saved] of store.save.mock.calls) expect((saved as WorkspaceSnapshot).machine.providers).toEqual(expected)
   })
 })

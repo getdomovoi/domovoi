@@ -7038,9 +7038,18 @@ describe("DomovoiDaemon", () => {
         machine: {
           providers: [
             { id: "claude-code", command: "claude", status: "ready", version: "2.1.247", sessionCapable: true },
-            // Turned off until the trust gate ships: no adapter, so no session.
-            { id: "cursor-agent", command: "agent", status: "ready", version: "2026.08.1", sessionCapable: false },
-            { id: "grok", command: "grok", status: "auth-required", version: "0.18.0", sessionCapable: false },
+            // Turned off until the trust gate ships (owner rulings Q40 A and
+            // Q54 A): whatever the probe reports, the row is the turned-off one.
+            {
+              id: "cursor-agent", command: "agent", status: "unknown", sessionCapable: false,
+              problem: "Cursor is turned off in Domovoi for now. Cursor loads MCP servers, hooks and permission rules from the "
+                + "repository it works in, and Domovoi does not load repository-brought configuration until a trust gate ships.",
+            },
+            {
+              id: "grok", command: "grok", status: "unknown", sessionCapable: false,
+              problem: "Grok is turned off in Domovoi for now. Grok loads MCP servers, hooks and permission rules from the "
+                + "repository it works in, and Domovoi does not load repository-brought configuration until a trust gate ships.",
+            },
             { id: "opencode", command: "opencode", status: "missing", sessionCapable: true },
           ],
         },

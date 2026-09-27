@@ -365,6 +365,18 @@ const sessionResourceMethods = new Set([
   "session.transferResolveConflict",
   "transfer.fromRef",
 ])
+type ProviderReadiness = WorkspaceSnapshot["machine"]["providers"][number]
+
+// Cursor and Grok are turned off whatever a stored row or a provider probe
+// says about them, so every row for either enters the machine snapshot as the
+// turned-off detection and cannot start a session.
+function withTurnedOffProviders(providers: readonly ProviderReadiness[]): ProviderReadiness[] {
+  return providers.map((provider) => {
+    const turnedOff = turnedOffProviderDetection(provider.id)
+    return turnedOff ? { ...turnedOff, sessionCapable: false } : provider
+  })
+}
+
 function approvedRunKey(sessionId: string, turnId: string, itemId: string): string {
   return `${sessionId}\u0000${turnId}\u0000${itemId}`
 }
@@ -1767,10 +1779,7 @@ export class DomovoiDaemon {
     // A row saved while Cursor or Grok could start sessions is not served,
     // even until the first probe finishes or if it fails. The next write of
     // the snapshot stores the turned-off row in its place.
-    this.#snapshot.machine.providers = this.#snapshot.machine.providers.map((provider) => {
-      const turnedOff = turnedOffProviderDetection(provider.id)
-      return turnedOff ? { ...turnedOff, sessionCapable: false } : provider
-    })
+    this.#snapshot.machine.providers = withTurnedOffProviders(this.#snapshot.machine.providers)
     this.#localMachine = structuredClone(this.#snapshot.machine)
     this.#fleetEnrollment = new FleetEnrollmentService({
       selfId: this.#localMachine.id, registry: this.#store.fleet, credentials: this.#machineCredentials,
@@ -2795,10 +2804,12 @@ export class DomovoiDaemon {
 
   async #refreshProviderReadiness(): Promise<void> {
     const sessionProviders = new Set(this.#agents.providers())
-    const providers = (await this.#providerProbe!.inspect()).map((provider) => ({
+    // Normalised before the rows are saved, broadcast or returned: an
+    // injected probe need not know that Cursor and Grok are turned off.
+    const providers = withTurnedOffProviders((await this.#providerProbe!.inspect()).map((provider) => ({
       ...provider,
       sessionCapable: sessionProviders.has(provider.id),
-    }))
+    })))
     const toolPath = this.#providerProbe!.searchPath
     await this.#enqueueMutation(async () => {
       this.#snapshot.machine.providers = providers
