@@ -11,10 +11,30 @@ import { DaemonRuntimeLoadError, daemonModuleExports, daemonModuleSpecifier, loa
 // daemon. A packaged app loads its in-app daemon from the runtime it ships in
 // resources, the same files the service runs; nothing of the daemon is in the
 // archive.
+//
+// The product builds the URL with the host's node:path and pathToFileURL, so a
+// POSIX path gains the current drive on Windows. Faking process.platform does
+// not change either, so each host gets the resources path a packaged app on it
+// would have, and the file URL it must import, written out here rather than
+// computed. On Windows both paths are the installed one, so every loader test
+// there also covers the drive letter, backslashes and the escaped space.
+const host = process.platform === "win32"
+  ? {
+      appResources: "C:\\Program Files\\Domovoi\\resources",
+      appUrl: "file:///C:/Program%20Files/Domovoi/resources/daemon-runtime/daemon/dist/public.js",
+      resourcesPath: "C:\\Program Files\\Domovoi\\resources",
+      url: "file:///C:/Program%20Files/Domovoi/resources/daemon-runtime/daemon/dist/public.js",
+    }
+  : {
+      appResources: "/Applications/Domovoi.app/Contents/Resources",
+      appUrl: "file:///Applications/Domovoi.app/Contents/Resources/daemon-runtime/daemon/dist/public.js",
+      resourcesPath: "/r",
+      url: "file:///r/daemon-runtime/daemon/dist/public.js",
+    }
+
 describe("where the in-app daemon is loaded from", () => {
   it("loads the shipped runtime in a packaged app", () => {
-    expect(daemonModuleSpecifier({ isPackaged: true, resourcesPath: "/Applications/Domovoi.app/Contents/Resources" }))
-      .toBe("file:///Applications/Domovoi.app/Contents/Resources/daemon-runtime/daemon/dist/public.js")
+    expect(daemonModuleSpecifier({ isPackaged: true, resourcesPath: host.appResources })).toBe(host.appUrl)
   })
 
   it("loads the workspace package when not packaged", () => {
@@ -24,25 +44,25 @@ describe("where the in-app daemon is loaded from", () => {
   it("returns the module and says where it came from", async () => {
     const module = Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()]))
     const importer = vi.fn(async () => module)
-    const loaded = await loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, importer)
-    expect(importer).toHaveBeenCalledWith("file:///r/daemon-runtime/daemon/dist/public.js")
-    expect(loaded.from).toBe("file:///r/daemon-runtime/daemon/dist/public.js")
+    const loaded = await loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, importer)
+    expect(importer).toHaveBeenCalledWith(host.url)
+    expect(loaded.from).toBe(host.url)
     expect(loaded.module.acquireLocalDaemon).toBe(module.acquireLocalDaemon)
   })
 
   it("refuses a module that lacks what the app uses, naming it", async () => {
     const importer = vi.fn(async () => ({ acquireLocalDaemon: vi.fn() }))
-    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, importer))
-      .rejects.toThrow(/file:\/\/\/r\/daemon-runtime\/daemon\/dist\/public\.js is missing verifyLocalFleetClientRoute/)
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, importer))
+      .rejects.toThrow(`${host.url} is missing verifyLocalFleetClientRoute`)
   })
 
   // #576 (2026-09-23): the handoff refusal check comes from the same runtime.
   it("exposes the service handoff check from the runtime", async () => {
     const module = Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()]))
-    const loaded = await loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => module)
+    const loaded = await loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, async () => module)
     expect(loaded.module.readLocalServiceHandoffRefusal).toBe(module.readLocalServiceHandoffRefusal)
     const { readLocalServiceHandoffRefusal: _omitted, ...without } = module
-    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => without))
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, async () => without))
       .rejects.toThrow(/is missing readLocalServiceHandoffRefusal\. The shipped daemon runtime does not match this app\./)
   })
 
@@ -50,7 +70,7 @@ describe("where the in-app daemon is loaded from", () => {
   it("exposes the service profile check from the runtime", async () => {
     const module = Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()]))
     const { serviceProfileMismatch: _omitted, ...without } = module
-    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => without))
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, async () => without))
       .rejects.toThrow(/is missing serviceProfileMismatch\./)
   })
 
@@ -58,7 +78,7 @@ describe("where the in-app daemon is loaded from", () => {
   it("exposes the service handoff fence from the runtime", async () => {
     const module = Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()]))
     const { holdServiceHandoffFence: _omitted, ...without } = module
-    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => without))
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, async () => without))
       .rejects.toThrow(/is missing holdServiceHandoffFence\./)
   })
 
@@ -66,7 +86,7 @@ describe("where the in-app daemon is loaded from", () => {
   it("exposes the service runtime version reader from the runtime", async () => {
     const module = Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()]))
     const { readDaemonServiceRuntimeVersion: _omitted, ...without } = module
-    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => without))
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, async () => without))
       .rejects.toThrow(/is missing readDaemonServiceRuntimeVersion\./)
   })
 
@@ -74,7 +94,7 @@ describe("where the in-app daemon is loaded from", () => {
   it("exposes the in-place service update from the runtime", async () => {
     const module = Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()]))
     const { updateDaemonService: _omitted, ...without } = module
-    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => without))
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, async () => without))
       .rejects.toThrow(/is missing updateDaemonService\./)
   })
 
@@ -85,25 +105,25 @@ describe("where the in-app daemon is loaded from", () => {
     const held = { DOMOVOI_AUTH_TOKEN: "placeholder-held-value" }
     const take = vi.fn(() => held)
     const homeDirectory = () => "/Users/dana"
-    await loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => module, { take, homeDirectory })
+    await loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, async () => module, { take, homeDirectory })
     expect(take).toHaveBeenCalledOnce()
     expect(module.captureInheritedCredentials).toHaveBeenCalledWith(homeDirectory, held)
 
     const refused = vi.fn(() => held)
     const { captureInheritedCredentials: _capture, ...without } = module
-    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => without, { take: refused, homeDirectory }))
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, async () => without, { take: refused, homeDirectory }))
       .rejects.toThrow(/is missing captureInheritedCredentials\./)
     expect(refused).not.toHaveBeenCalled()
   })
 
   it("names the path when the runtime cannot be imported, as a load error", async () => {
-    const failed = loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => { throw new Error("Cannot find module") })
+    const failed = loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, async () => { throw new Error("Cannot find module") })
     await expect(failed).rejects.toBeInstanceOf(DaemonRuntimeLoadError)
-    await expect(failed).rejects.toThrow("file:///r/daemon-runtime/daemon/dist/public.js could not be imported: Cannot find module")
+    await expect(failed).rejects.toThrow(`${host.url} could not be imported: Cannot find module`)
   })
 
   it("reports missing exports as a load error too", async () => {
-    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => ({}))).rejects.toBeInstanceOf(DaemonRuntimeLoadError)
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, async () => ({}))).rejects.toBeInstanceOf(DaemonRuntimeLoadError)
   })
 })
 
