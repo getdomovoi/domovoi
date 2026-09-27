@@ -43,6 +43,8 @@ describe("the login service assembled for this app's profile", () => {
       updateDaemonService: vi.fn(async () => installed),
       removeDaemonService: vi.fn(async () => ({ kind: "file" as const, path: "/p", profileRecovery: "not-needed" as const })),
       readDaemonServiceStatus: vi.fn(async () => ({ installed: true, running: true, detail: "" })),
+      readDaemonServiceRuntimeCopy: vi.fn(async () => ({ installed: false as const })),
+      removeUnusedDaemonRuntimes: vi.fn(async () => ({ removed: [] })),
     }
   }
 
@@ -77,6 +79,24 @@ describe("the login service assembled for this app's profile", () => {
     expect(daemon.updateDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: { DOMOVOI_PROFILE_DIR: profile } }))
     await expect(service.remove()).resolves.toMatchObject({ ok: true })
     expect(daemon.removeDaemonService).toHaveBeenCalledWith(undefined, { environment: { DOMOVOI_PROFILE_DIR: profile } })
+  })
+
+  // #635: the unused copies are looked for under the profile the copy was
+  // published to, once the service call published it and the service runs.
+  it("removes unused runtime copies under the profile this app's environment names", async () => {
+    const { resourcesPath, home, profile } = await scratch()
+    const daemon = daemonModule()
+    daemon.installDaemonService.mockImplementation(async (options: { releaseInAppDaemon?: () => Promise<void>; staged?: { publish: () => Promise<void> } }) => {
+      await options.releaseInAppDaemon?.()
+      await options.staged?.publish()
+      return { kind: "file" as const, path: "/p", configurationPath: "/c" }
+    })
+    const service = createDesktopDaemonService(desktopDaemon(), { resourcesPath, version: "0.9.4", home, environment: { DOMOVOI_PROFILE_DIR: profile } }, daemon as unknown as DaemonModule)
+    await expect(service.install()).resolves.toMatchObject({ ok: true })
+    const installed = (daemon.installDaemonService.mock.calls[0] as unknown as [{ runtime: { nodePath: string; daemonEntryPath: string } }])[0].runtime
+    expect(daemon.readDaemonServiceRuntimeCopy).toHaveBeenCalledOnce()
+    expect(daemon.removeUnusedDaemonRuntimes).toHaveBeenCalledExactlyOnceWith({ profileDirectory: profile, published: installed, previous: { installed: false } })
+    expect(await readdir(join(profile, "runtime", "0.9.4"))).toHaveLength(1)
   })
 
   it("names no profile for an app on the default one, so the service calls check the default", async () => {

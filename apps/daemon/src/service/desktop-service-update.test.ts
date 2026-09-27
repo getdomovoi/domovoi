@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -11,6 +11,7 @@ import {
   DaemonServiceRuntimeMissingError,
   DaemonServiceUpdateError,
   LaunchdJobNotDomovoiError,
+  removeUnusedDaemonRuntimes,
   SystemdPathCharacterError,
   updateDaemonService,
   WindowsTaskArgumentVariableError,
@@ -20,6 +21,8 @@ import {
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
 import { nodeServiceEffects, type CapturedRun, type ServiceEffects } from "./install.js"
 import { withinServiceDeadline } from "./deadline.js"
+import { claimServiceOperation } from "./operation-lease.js"
+import { copyLayout, fakeServiceManager, publishCopy } from "./runtime-copy.test-support.js"
 import { launchdPlist, systemdUnit } from "./units.js"
 import { publishFirst, runServiceUpdate, trackInFlight } from "./update-outcome.js"
 import { installedWslTask } from "./wsl-registration.js"
@@ -1624,6 +1627,47 @@ describe("updateDaemonService holds the lease until a publish settles", () => {
     await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish } }, effects)).rejects.toThrow()
     await vi.waitFor(() => expect(releasedAfterPublish).toHaveLength(1), { timeout: 2_000 })
     expect(releasedAfterPublish).toEqual([true])
+  })
+
+  // #635: the copy such a publish leaves is named by no service definition.
+  // No cleanup runs while the publish still holds the lease, and the next
+  // confirmed change removes the copy.
+  it("leaves the copy a timed-out publish wrote to the next confirmed change, never removing it while it is written", async () => {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-late-publish-"))
+    try {
+      const home = join(root, "home")
+      const profile = join(home, ".domovoi")
+      const running = await publishCopy(profile, "0.9.1", "aaaaaaaaaaaa")
+      const manager = fakeServiceManager(home)
+      manager.register(running)
+      const cleanupDependencies = { ...manager.reader, claimServiceOperation: () => claimServiceOperation(home) }
+      const effects = fake("darwin", "/Users/dl", { updateBudgetMs: 40, claimServiceOperation: () => claimServiceOperation(home) })
+      let late: string | undefined
+      const publish = vi.fn(() => new Promise<void>((resolve, reject) => {
+        setTimeout(() => { publishCopy(profile, "0.9.2", "bbbbbbbbbbbb").then((copy) => { late = copy; resolve() }, reject) }, 300)
+      }))
+      const staged = { nodePath: "/stage/node/bin/node", daemonEntryPath: "/stage/daemon/dist/index.js" }
+      const updating = updateDaemonService({ runtime, staged: { runtime: staged, publish } }, effects)
+      const failed = expect(updating).rejects.toThrow()
+      await vi.waitFor(() => expect(publish).toHaveBeenCalled(), { timeout: 2_000 })
+      await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(running), previous: { installed: false } }, cleanupDependencies))
+        .resolves.toEqual({ skipped: "busy" })
+      await failed
+      expect(late).toBeDefined()
+      // The lease goes once the publish has settled.
+      await vi.waitFor(() => claimServiceOperation(home).release(), { timeout: 2_000 })
+
+      // The next change publishes and confirms its own copy; the late one is
+      // named by no definition and goes, the one the service ran stays.
+      const next = await publishCopy(profile, "0.9.2", "cccccccccccc")
+      manager.register(next)
+      await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(next), previous: { installed: true, copy: running } }, cleanupDependencies))
+        .resolves.toEqual({ removed: [late] })
+      expect(await lstat(running).then(() => true, () => false)).toBe(true)
+      expect(await lstat(next).then(() => true, () => false)).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })
 
