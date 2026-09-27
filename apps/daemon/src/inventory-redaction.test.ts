@@ -37,6 +37,15 @@ describe("redactInventoryText", () => {
     ["curl https://example.com/?q=1", "curl https://example.com/?q=[REDACTED]"],
     ["https://example.com/path", "https://example.com/[REDACTED]"],
     ["https://example.com/p?a=", "https://example.com/[REDACTED]?a="],
+    // A URL is the whole shell word, quoted runs included, and its assembled
+    // path goes whole; the quotes the word opens or closes stay balanced.
+    ["curl https://hooks.example.com/'opaque-secret' x", "curl https://hooks.example.com/[REDACTED] x"],
+    ["curl https://h.example.com/'a'\"b\"/c x", "curl https://h.example.com/[REDACTED] x"],
+    ["curl 'https://h.example.com/'s3cr3t-value x", "curl 'https://h.example.com/[REDACTED]' x"],
+    ["curl \"https://h.example.com/\"'s3cr3t-value'?key=v x", "curl \"https://h.example.com/[REDACTED]?key=[REDACTED]\" x"],
+    ["sh -c \"curl https://h.example.com/'s3cr3t-value' x\"", "sh -c \"curl https://h.example.com/[REDACTED] x\""],
+    ["sh -c 'curl https://h.example.com/\"s3cr3t value\" x'", "sh -c 'curl https://h.example.com/[REDACTED] x'"],
+    ["sh -c \"curl https://h.example.com/\\\"s3cr3t value\\\" x\"", "sh -c \"curl https://h.example.com/[REDACTED] x\""],
     ["curl -H 'Authorization: Bearer tok' x", "curl -H 'Authorization: Bearer [REDACTED]' x"],
     // A header's value is redacted whatever the header is called.
     ["curl -H 'X-Custom: opaque-header-secret' x", "curl -H 'X-Custom: [REDACTED]' x"],
@@ -102,6 +111,9 @@ describe("redactInventoryText", () => {
     "https://example.com:8443/",
     "curl -H @headers.txt x",
     "grep -Hn pattern file",
+    // A quoted URL with no path, or only `/`, keeps its quotes.
+    "curl 'https://example.com' x",
+    "curl \"https://example.com/\"",
     // An empty header with nothing after it, or a quoted one the author closed.
     "curl -H X-Foo:",
     "curl -H X-Foo: ; ls",
@@ -133,6 +145,13 @@ describe("redactInventoryText", () => {
   it("is idempotent for a redacted URL path", () => {
     const once = redactInventoryText("curl https://u:p@h.example.com:8443/a/b?k=v&bare#f")
     expect(once).toBe("curl https://[REDACTED]@h.example.com:8443/[REDACTED]?k=[REDACTED]&[REDACTED]#[REDACTED]")
+    expect(redactInventoryText(once)).toBe(once)
+    expect(backstopAccepts(once)).toBe(true)
+  })
+
+  it("is idempotent for a URL path with quoted runs", () => {
+    const once = redactInventoryText("curl https://h/'a'\"b\"/c 'https://h/'s \"https://h/\"'s'?k=v sh -c \"curl https://h/'s' x\"")
+    expect(once).toBe("curl https://h/[REDACTED] 'https://h/[REDACTED]' \"https://h/[REDACTED]?k=[REDACTED]\" sh -c \"curl https://h/[REDACTED] x\"")
     expect(redactInventoryText(once)).toBe(once)
     expect(backstopAccepts(once)).toBe(true)
   })
@@ -194,6 +213,12 @@ describe("redactInventoryArgv", () => {
     const shell = redactInventoryArgv(["sh", "-c", "curl -H 'X-Foo':s3cr3t-value x"])
     expect(shell).toBe("sh -c \"curl -H 'X-Foo':[REDACTED] x\"")
     expect(backstopAccepts(shell)).toBe(true)
+  })
+
+  it("redacts a URL path that holds quote marks", () => {
+    const command = redactInventoryArgv(["curl", "https://hooks.example.com/'opaque-secret'", "https://h.example.com/a\"b\"c"])
+    expect(command).toBe("curl https://hooks.example.com/[REDACTED] https://h.example.com/[REDACTED]")
+    expect(backstopAccepts(command)).toBe(true)
   })
 
   it("quotes an argument that holds spaces", () => {

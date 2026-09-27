@@ -147,6 +147,63 @@ function redactUrl(url: string): string {
   return `${url.slice(0, authorityStart)}${host}${path}${query}${fragment}`
 }
 
+// A URL that starts at `start`, read as the whole shell word it is in: quoted
+// runs inside it are part of it (`https://h/'secret'`, `'https://h/'secret`),
+// and the URL is assembled without their quote marks. `quote` is the quoted
+// string the URL starts in. Inside one, a quote of the other kind (or `\"` in
+// a double-quoted one) is a nested shell's quote, as in sh -c "curl
+// https://h/'secret'". Returns the redacted URL with the quote marks that
+// leave the text in the state the word left it, where the word ends, and
+// that state.
+function urlWordAt(text: string, start: number, quote: Quote): { text: string; end: number; quote: Quote } {
+  let outer = quote
+  let inner: string | undefined
+  let url = ""
+  let index = start
+  while (index < text.length) {
+    const character = text[index]!
+    if (inner) {
+      if (text.startsWith(inner, index)) {
+        index += inner.length
+        inner = undefined
+      } else if (character === outer) break
+      else if (character === "\\" && inner === "\"") {
+        url += text[index + 1] ?? ""
+        index += 2
+      } else {
+        url += character
+        index += 1
+      }
+      continue
+    }
+    if (/[\s`<>]/u.test(character)) break
+    if (character === outer) {
+      outer = undefined
+      index += 1
+    } else if (outer === "\"" && text.startsWith("\\\"", index)) {
+      inner = "\\\""
+      index += 2
+    } else if (outer && (character === "\"" || character === "'")) {
+      inner = character
+      index += 1
+    } else if (character === "\"" || character === "'") {
+      outer = character as Quote
+      index += 1
+    } else if (character === "\\" && outer !== "'") {
+      url += text[index + 1] ?? ""
+      index += 2
+    } else {
+      url += character
+      index += 1
+    }
+  }
+  // The redacted URL is written in the state the word started in; close a
+  // nested quote left open, then move from the starting quote to the ending one.
+  let closing = inner ?? ""
+  if (quote !== outer) closing += `${quote ?? ""}${outer ?? ""}`
+  return { text: `${redactUrl(url)}${closing}`, end: Math.min(index, text.length), quote: outer }
+}
+
 // Flags that take a whole `Name: value` header line: curl's -H, --header and
 // --proxy-header, and wget's --header. -H can hold its value in the same word.
 const headerFlag = /(-H|--header|--proxy-header)(=|\s+)?/uy
@@ -260,10 +317,10 @@ export function redactInventoryText(text: string): string {
     const character = text[index]!
     urlStart.lastIndex = index
     if ((index === 0 || !/[A-Za-z0-9+.-]/u.test(text[index - 1]!)) && urlStart.test(text)) {
-      let end = index
-      while (end < text.length && !/[\s"'`<>]/u.test(text[end]!) && text[end] !== quote) end += 1
-      output += redactUrl(text.slice(index, end))
-      index = end
+      const url = urlWordAt(text, index, quote)
+      output += url.text
+      index = url.end
+      quote = url.quote
       continue
     }
     const header = headerAt(text, index, quote)
