@@ -1,6 +1,6 @@
 import { lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join, sep } from "node:path"
+import { dirname, join, relative, sep } from "node:path"
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
@@ -382,6 +382,191 @@ describe("removeUnusedDaemonRuntimes with links laid out ahead of time", () => {
       .resolves.toEqual({ removed: [] })
     expect(await exists(link)).toBe(true)
     expect(await exists(join(outside, "precious.txt"))).toBe(true)
+  })
+})
+
+// Security review round 3 of #635 (P2): the service runs <copy>/node/bin/node
+// (node\node.exe on Windows) and <copy>/daemon/dist/index.js, spelled from the
+// profile. Every component of those two paths, from the filesystem root to
+// the file, can run through a link that sits inside a candidate. Removing the
+// candidate then breaks the path, though every kept directory survives.
+describe("removeUnusedDaemonRuntimes with an executable path through a candidate", () => {
+  const roles = ["previous", "current"] as const
+  const containers = [".removing-0123456789ab", join("0.8.0", "bbbbbbbbbbbb")]
+  // node, node/bin, node/bin/node, daemon, daemon/dist, daemon/dist/index.js
+  // on this host's layout.
+  const components = [...new Set(Object.values(copyLayout("copy")).flatMap((file) => {
+    const parts = relative("copy", file).split(sep)
+    return parts.map((_, index) => join(...parts.slice(0, index + 1)))
+  }))]
+  // Windows makes a file link only with the privilege its test runners have.
+  const linkFile = (target: string, path: string) => symlink(target, path, "file")
+  const resolves = (path: string) => realpath(path).then(() => true, () => false)
+
+  // The service runs the kept copy: registered as it is now, or as it was
+  // before a change that read it under the lease, published a fresh copy and
+  // registered that.
+  async function change(manager: ReturnType<typeof fakeServiceManager>, at: string, role: typeof roles[number], kept: string) {
+    manager.register(kept)
+    if (role === "current") return { current: kept, previous: { installed: false } as DaemonServiceRuntimeCopy }
+    const lease = claimServiceOperation(home)
+    try {
+      const previous = await readDaemonServiceRuntimeCopy(manager.reader)
+      expect(previous).toEqual({ installed: true, copy: kept })
+      const current = await publishCopy(at, "0.9.3", "dddddddddddd")
+      manager.register(current)
+      return { current, previous }
+    } finally {
+      lease.release()
+    }
+  }
+
+  async function expectRuns(copy: string, result?: unknown) {
+    const { nodePath, daemonEntryPath } = copyLayout(copy)
+    expect(await resolves(nodePath), `${nodePath} ${JSON.stringify(result)}`).toBe(true)
+    expect(await resolves(daemonEntryPath), `${daemonEntryPath} ${JSON.stringify(result)}`).toBe(true)
+  }
+
+  // The profile is spelled through a link inside one of its own candidates.
+  // The profile and every copy are outside the candidate, yet renaming it
+  // breaks the spelling both definitions use.
+  for (const role of roles) {
+    it.each(containers)(`removes nothing when the profile is spelled through a link inside %s, keeping the ${role} copy`, async (container) => {
+      const parked = join(profile, "runtime", container)
+      await mkdir(parked, { recursive: true })
+      await linkDirectory(home, join(parked, "l"))
+      const spelling = join(parked, "l", ".domovoi")
+      const kept = await publishCopy(spelling, "0.9.1", "aaaaaaaaaaaa")
+      const manager = fakeServiceManager(home, spelling)
+      const { current, previous } = await change(manager, spelling, role, kept)
+      await expectRuns(kept)
+      await expectRuns(current)
+
+      const result = await removeUnusedDaemonRuntimes({ profileDirectory: spelling, published: copyLayout(current), previous }, dependencies(manager))
+      await expectRuns(kept, result)
+      await expectRuns(current, result)
+      expect(await exists(join(parked, "l"))).toBe(true)
+      expect(result).toEqual({ skipped: "runtime-directory" })
+    })
+  }
+
+  // One component of the kept copy's executable path is a link to a link
+  // inside a candidate, which leads on outside every candidate.
+  for (const role of roles) {
+    for (const container of containers) {
+      it.each(components)(`removes nothing when the ${role} copy's %s runs through a link inside ${container}`, async (component) => {
+        const kept = await publishCopy(profile, "0.9.1", "aaaaaaaaaaaa")
+        const parked = join(profile, "runtime", container)
+        await mkdir(parked, { recursive: true })
+        const spelled = join(kept, component)
+        const target = join(root, "retained-component")
+        const link = (await lstat(spelled)).isDirectory() ? linkDirectory : linkFile
+        await rename(spelled, target)
+        await link(target, join(parked, "relay"))
+        await link(join(parked, "relay"), spelled)
+        const leftover = await publishCopy(profile, "0.9.0", "cccccccccccc")
+        const manager = fakeServiceManager(home)
+        const { current, previous } = await change(manager, profile, role, kept)
+        await expectRuns(kept)
+
+        const result = await removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous }, dependencies(manager))
+        await expectRuns(kept, result)
+        await expectRuns(current, result)
+        expect(result).toEqual({ skipped: "runtime-directory" })
+        expect(await exists(join(parked, "relay"))).toBe(true)
+        expect(await exists(copyLayout(leftover).nodePath)).toBe(true)
+      })
+    }
+  }
+
+  // The rule is about links, not only candidates: any link on an executable
+  // path at or below the runtime directory removes nothing, even one that
+  // leads straight outside it.
+  it.each(roles)("removes nothing when the %s copy's executable path holds a link below the runtime directory", async (role) => {
+    const kept = await publishCopy(profile, "0.9.1", "aaaaaaaaaaaa")
+    const target = join(root, "outside-node")
+    await rename(join(kept, "node"), target)
+    await linkDirectory(target, join(kept, "node"))
+    const leftover = await publishCopy(profile, "0.9.0", "cccccccccccc")
+    const manager = fakeServiceManager(home)
+    const { current, previous } = await change(manager, profile, role, kept)
+
+    await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous }, dependencies(manager)))
+      .resolves.toEqual({ skipped: "runtime-directory" })
+    await expectRuns(kept)
+    expect(await exists(copyLayout(leftover).nodePath)).toBe(true)
+  })
+})
+
+// Security review round 3 of #635 (P2): a candidate moved to its private name
+// and then not removed must not stay there, where the next cleanup removes it
+// as an interrupted removal, while the result says nothing was removed. It is
+// put back, or the cleanup rejects.
+describe("removeUnusedDaemonRuntimes when a removal fails after its rename", () => {
+  const failure = () => Object.assign(new Error("EIO: i/o error"), { code: "EIO" })
+
+  async function layout() {
+    const current = await publishCopy(profile, "0.9.2", "dddddddddddd")
+    const leftover = await publishCopy(profile, "0.9.1", "bbbbbbbbbbbb")
+    const manager = fakeServiceManager(home)
+    manager.register(current)
+    return { current, leftover, manager }
+  }
+
+  it("puts the candidate back when the flush after its rename fails", async () => {
+    const { current, leftover, manager } = await layout()
+    const renames: string[] = []
+    const result = await removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous: { installed: false } }, {
+      ...dependencies(manager),
+      fileSystem: {
+        // The rename lands, then the flush of its directory fails.
+        rename: async (from: string, to: string) => {
+          await rename(from, to)
+          renames.push(from)
+          if (renames.length === 1) throw failure()
+        },
+      },
+    })
+    expect(renames[0]).toBe(leftover)
+    expect(result).toEqual({ removed: [] })
+    expect(await exists(copyLayout(leftover).nodePath)).toBe(true)
+    expect(await exists(copyLayout(leftover).daemonEntryPath)).toBe(true)
+    expect((await readdir(join(profile, "runtime"))).sort()).toEqual(["0.9.1", "0.9.2"])
+  })
+
+  it("puts the candidate back when removing the moved tree fails", async () => {
+    const { current, leftover, manager } = await layout()
+    const result = await removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous: { installed: false } }, {
+      ...dependencies(manager),
+      fileSystem: { removeTree: async () => { throw failure() } },
+    })
+    expect(result).toEqual({ removed: [] })
+    expect(await exists(copyLayout(leftover).nodePath)).toBe(true)
+    expect((await readdir(join(profile, "runtime"))).sort()).toEqual(["0.9.1", "0.9.2"])
+  })
+
+  it("rejects, rather than say nothing was removed, when the moved candidate cannot be put back", async () => {
+    const { current, leftover, manager } = await layout()
+    const moved: string[] = []
+    const cleanup = removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous: { installed: false } }, {
+      ...dependencies(manager),
+      fileSystem: {
+        // The first rename lands and its flush fails; moving it back fails.
+        rename: async (from: string, to: string) => {
+          if (moved.length > 0) throw failure()
+          await rename(from, to)
+          moved.push(to)
+          throw failure()
+        },
+      },
+    })
+    await expect(cleanup).rejects.toThrow()
+    expect(moved).toHaveLength(1)
+    expect(await exists(copyLayout(leftover).nodePath)).toBe(false)
+    // Nothing was removed: the copy is still whole under its private name.
+    for (const path of moved) expect(await exists(copyLayout(path).nodePath)).toBe(true)
+    // The lease was released.
+    claimServiceOperation(home).release()
   })
 })
 
