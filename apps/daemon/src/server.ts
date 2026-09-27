@@ -10702,14 +10702,17 @@ export class DomovoiDaemon {
   // two (review round 1 of #641): the journal lists the stops this recovery
   // has acted on until every pass is done, and a line of a listed stop does
   // not count as its record. Nothing is carried from pass to pass in memory
-  // but where the next pass starts and how many rows were kept.
+  // but where the next pass starts and how many rows were kept. The workspace
+  // snapshot is not bounded this way: it holds every line recovery writes,
+  // and each pass copies it for its save.
   //
   // Passes read forward by rowid, so a row written behind them while they run
   // (by another writer on the store, or a trigger in it) would be left
   // pending. Once the passes reach the end, the journal should hold only the
-  // rows they kept; if it holds more, they start again from the first row.
-  // They stop once a round leaves no fewer rows than the round before, so a
-  // row that cannot be cleared does not hold startup in a loop.
+  // rows they kept; if it holds more, they start again from the first row,
+  // and read the kept rows again. They stop once a round leaves no fewer rows
+  // than the round before, so a row that cannot be cleared does not hold
+  // startup in a loop.
   #recoverEmergencyStops(): void {
     const journal = this.#store.emergencyStops
     if (!journal) return
