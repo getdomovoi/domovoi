@@ -104,6 +104,12 @@ describe("redactInventoryText", () => {
     ["echo '{\"DATABASE_URL\": \"x\"}'", "echo '{\"DATABASE_URL\": \"[REDACTED]\"}'"],
     ["run sk-abcdefghijklmnop", "run [REDACTED]"],
     ["run ghp_abcdefghijklmnopqrstuvwxyz0123456789", "run [REDACTED]"],
+    // A quoted run with a blank in it stays in the URL's shell word.
+    ["curl https://h.example.com/'opaque secret' x", "curl https://h.example.com/[REDACTED] x"],
+    ["bash -lc 'curl https://h.example.com/\"a b\" x'", "bash -lc 'curl https://h.example.com/[REDACTED] x'"],
+    // Every shell escape in a header name is read before the name is matched.
+    ["curl -H X\\&Foo: opaque-secret x", "curl -H X\\&Foo: [REDACTED] x"],
+    ["curl -H X\\*Foo:opaque-secret x", "curl -H X\\*Foo:[REDACTED] x"],
   ])("redacts %j", (input, expected) => {
     const redacted = redactInventoryText(input)
     expect(redacted).toBe(expected)
@@ -249,5 +255,90 @@ describe("redactInventoryArgv", () => {
 
   it("quotes an argument that holds spaces", () => {
     expect(redactInventoryArgv(["sh", "-c", "echo hi"])).toBe("sh -c \"echo hi\"")
+  })
+
+  it("redacts a URL path with a blank and a header named with a shell metacharacter", () => {
+    const command = redactInventoryArgv(["curl", "https://h.example.com/opaque secret", "-H", "X&Foo:", "hunter2", "-H", "X*Bar: tok-abc"])
+    expect(command).toBe("curl https://h.example.com/[REDACTED] -H X&Foo: [REDACTED] -H \"X*Bar: [REDACTED]\"")
+    expect(backstopAccepts(command)).toBe(true)
+  })
+})
+
+// Text the shell cannot be read as words is redacted from the word where
+// reading stopped to the end.
+describe("redactInventoryText when the text does not read as shell words", () => {
+  it.each([
+    ["curl -H \"X-Foo: s3cr3t value", "curl -H [REDACTED]"],
+    ["curl -H 'X-Foo: s3cr3t value", "curl -H [REDACTED]"],
+    ["echo $(cat token) x", "echo [REDACTED]"],
+    ["echo `cat token` x", "echo [REDACTED]"],
+    ["cat <<EOF", "cat [REDACTED]"],
+    ["sh -c 'curl -H \"X-Foo: s3cr3t value'", "sh -c 'curl -H [REDACTED]'"],
+  ])("redacts %j", (input, expected) => {
+    const redacted = redactInventoryText(input)
+    expect(redacted).toBe(expected)
+    expect(redactInventoryText(redacted)).toBe(redacted)
+    expect(backstopAccepts(redacted)).toBe(true)
+  })
+})
+
+// One value, `alpha9 omega7`, spelled in the ways a shell joins into one word,
+// in the places a URL path, query, user info or header value can take it.
+describe("shell words around a URL path and a header value", () => {
+  const spellings = [
+    "'alpha9 omega7'", "\"alpha9 omega7\"", "alpha9\\ omega7", "alpha9' 'omega7", "\"alpha9\"' omega7'", "'alpha9'\\ \"omega7\"",
+    "alpha9'\\ 'omega7", "\"alpha9\\\" omega7\"", "alpha9\"\\$ \"omega7", "'alpha9'omega7", "alpha9\"omega7\"", "alpha9\\omega7",
+    "\"alpha9\\`omega7\"", "alpha9\\\"' omega7'",
+  ]
+  const tokenCharacters = [..."!#$%&'*+.^_`|~-"]
+  const commands = (word: string) => [
+    `curl https://h.example.com/${word} x`,
+    `curl 'https://h.example.com/'${word} x`,
+    `curl "https://h.example.com/a"${word} x`,
+    `curl "https://h.example.com/p?k="${word} x`,
+    `curl https://h.example.com/p?${word} x`,
+    `curl https://h.example.com/#${word} x`,
+    `curl https://${word}@h.example.com x`,
+    `curl -H X-Foo:${word} x`,
+    `curl -H X-Foo: ${word} x`,
+    `curl -H 'X-Foo: '${word} x`,
+    `curl -H "X-Foo":${word} x`,
+    `curl --header=X-Foo:${word} x`,
+    `curl -HX-Foo: ${word} x`,
+    `curl -H 'Authorization: Bearer '${word} x`,
+    `tool --token ${word} x`,
+    `API_KEY=${word} tool`,
+    ...tokenCharacters.map((character) => `curl -H X\\${character}Foo: ${word} x`),
+    ...tokenCharacters.map((character) => `curl -H X\\${character}Foo:${word} x`),
+  ]
+  const singleQuoted = (text: string) => `'${text.replace(/'/gu, "'\\''")}'`
+  const doubleQuoted = (text: string) => `"${text.replace(/[\\"$`]/gu, "\\$&")}"`
+  const cases = spellings.flatMap((word) => commands(word).flatMap((command) => [
+    command, `sh -c ${singleQuoted(command)}`, `bash -lc ${doubleQuoted(command)}`, `zsh -c ${singleQuoted(`sh -c ${doubleQuoted(command)}`)}`,
+  ]))
+
+  it.each(cases)("never emits the value of %j", (input) => {
+    const redacted = redactInventoryText(input)
+    expect(redacted).not.toMatch(/alpha9|omega7/u)
+    expect(redactInventoryText(redacted)).toBe(redacted)
+    expect(backstopAccepts(redacted)).toBe(true)
+  })
+
+  it.each(cases)("never emits the value of %j given as an argument vector", (input) => {
+    const redacted = redactInventoryArgv(["sh", "-c", input])
+    expect(redacted).not.toMatch(/alpha9|omega7/u)
+    expect(backstopAccepts(redacted)).toBe(true)
+  })
+
+  it.each([
+    ["curl", "https://h.example.com/alpha9 omega7"],
+    ["curl", "-H", "X&Foo:", "alpha9 omega7"],
+    ["curl", "-H", "X&Foo: alpha9 omega7"],
+    ["curl", "--header=X`Foo: alpha9 omega7"],
+    ["curl", "https://h.example.com/p?alpha9 omega7#alpha9 omega7"],
+  ])("never emits the value in the argument vector %j", (...argv) => {
+    const redacted = redactInventoryArgv(argv)
+    expect(redacted).not.toMatch(/alpha9|omega7/u)
+    expect(backstopAccepts(redacted)).toBe(true)
   })
 })
