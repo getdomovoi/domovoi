@@ -262,9 +262,33 @@ test("keeps the conpty files a Windows package needs", async () => {
   }
 })
 
+// The copy the app makes of the shipped tree (nodeRuntimeFileSystem in
+// src/main/daemon-service.ts) is fs.cp with verbatimSymlinks under Electron's
+// Node 24.21.0, which gives each link the type of what the source link names.
+// Node 22's fs.cp, which this suite also runs under, gives no type. Node on
+// Windows then picks one from the copy, where the directory a link names may
+// not be copied yet, and makes a file link, which Windows will not follow into
+// a directory. This copy keeps each link's text and takes its type from the
+// source, as the app's copy does, under either Node.
+async function copyAsTheAppDoes(from, to) {
+  const { cp, lstat, readlink, stat, symlink } = await import("node:fs/promises")
+  const links = []
+  await cp(from, to, {
+    recursive: true,
+    filter: async (source, destination) => {
+      if (!(await lstat(source)).isSymbolicLink()) return true
+      links.push({ source, destination })
+      return false
+    },
+  })
+  for (const { source, destination } of links) {
+    await symlink(await readlink(source), destination, (await stat(source)).isDirectory() ? "dir" : "file")
+  }
+}
+
 test("rewrites every link that stays inside the shipped tree so a verbatim copy resolves inside the copy", async () => {
   const { removeExternalLinks } = await import("./daemon-runtime.mjs")
-  const { cp, lstat, mkdir, readdir, realpath, symlink } = await import("node:fs/promises")
+  const { lstat, mkdir, readdir, realpath, symlink } = await import("node:fs/promises")
   const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-internal-links-"))
   const elsewhere = await mkdtemp(join(tmpdir(), "domovoi-runtime-copied-"))
   try {
@@ -284,7 +308,7 @@ test("rewrites every link that stays inside the shipped tree so a verbatim copy 
     const { assertShippedTreeContained } = await import("./daemon-runtime.mjs")
     assert.equal(await assertShippedTreeContained(shipped), 3)
     const copy = join(elsewhere, "runtime")
-    await cp(shipped, copy, { recursive: true, verbatimSymlinks: true })
+    await copyAsTheAppDoes(shipped, copy)
     await rm(root, { recursive: true, force: true })
 
     const inside = `${await realpath(copy)}${sep}`
