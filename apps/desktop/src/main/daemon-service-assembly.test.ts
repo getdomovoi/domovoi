@@ -66,7 +66,10 @@ describe("the login service assembled for this app's profile", () => {
     expect(daemon.serviceProfileMismatch).toHaveBeenCalledWith({ environment: { DOMOVOI_PROFILE_DIR: profile }, homeDirectory: home })
     expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: { DOMOVOI_PROFILE_DIR: profile } }))
     // Round 3 (P2): the runtime is copied under the app's profile, not the home's.
-    expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ runtime: daemonRuntimeLayoutUnder(join(profile, "runtime", "0.9.4")) }))
+    // Round 7: into a fresh <version>/<id> directory under the app's profile.
+    const installed = (daemon.installDaemonService.mock.calls[0] as unknown as [{ runtime: { nodePath: string; daemonEntryPath: string } }])[0].runtime
+    expect(installed).toEqual(daemonRuntimeLayoutUnder(dirname(dirname(dirname(installed.daemonEntryPath)))))
+    expect(dirname(dirname(dirname(dirname(installed.daemonEntryPath))))).toBe(join(profile, "runtime", "0.9.4"))
     // Round 4 (P2): the fake service call never published, so nothing is in
     // place and the inert copy was discarded.
     expect(await readdir(join(profile, "runtime"))).toEqual([])
@@ -81,7 +84,9 @@ describe("the login service assembled for this app's profile", () => {
     const daemon = daemonModule()
     const service = createDesktopDaemonService(desktopDaemon(), { resourcesPath, version: "0.9.4", home, environment: {} }, daemon as unknown as DaemonModule)
     await service.install()
-    expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: {}, runtime: daemonRuntimeLayoutUnder(join(home, ".domovoi", "runtime", "0.9.4")) }))
+    expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: {} }))
+    const installed = (daemon.installDaemonService.mock.calls[0] as unknown as [{ runtime: { daemonEntryPath: string } }])[0].runtime
+    expect(dirname(dirname(dirname(dirname(installed.daemonEntryPath))))).toBe(join(home, ".domovoi", "runtime", "0.9.4"))
   })
 })
 
