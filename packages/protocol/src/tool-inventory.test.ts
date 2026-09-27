@@ -6,6 +6,13 @@ import {
   approvalRequestSchema,
   executionResolutionSchema,
   maximumToolInventoryBytes,
+  maximumToolInventoryCommandLength,
+  maximumToolInventoryDetailLength,
+  maximumToolInventoryEventLength,
+  maximumToolInventoryHelperNameLength,
+  maximumToolInventoryMatcherLength,
+  maximumToolInventoryNameLength,
+  maximumToolInventoryRuleLength,
   phoneAndTabletRpcMethods,
   rpcMethodAuthorizations,
   rpcMethodMutations,
@@ -131,6 +138,36 @@ describe("tool inventory", () => {
     expect(toolInventorySchema.safeParse(claude((provider) => { (provider.files[2] as Record<string, unknown>).reason = "x".repeat(257) })).success).toBe(false)
     expect(toolInventorySchema.safeParse(withEntry({ ...server, name: "line\nbreak" })).success).toBe(false)
     expect(toolInventorySchema.safeParse({ ...sample, repository: { ...sample.repository, configDigest: "sha256:abc" } }).success).toBe(false)
+  })
+
+  // The daemon's reader fits each text to these exported caps, so each must be
+  // the cap the entry schema holds its fields to.
+  it("holds each entry text field to its exported cap", () => {
+    const base = { file: ".claude/settings.json", startsAtSessionStart: false, heldBack: true }
+    const fields: ReadonlyArray<[string, number, ReadonlyArray<(value: string) => unknown>]> = [
+      ["command", maximumToolInventoryCommandLength, [
+        (value) => ({ ...base, kind: "hook", event: "Stop", command: value }),
+        (value) => ({ ...base, kind: "helper", name: "apiKeyHelper", command: value }),
+        (value) => ({ ...base, kind: "tool-server", name: "s", transport: "stdio", command: value, envKeys: [] }),
+      ]],
+      ["detail", maximumToolInventoryDetailLength, [(value) => ({ ...base, kind: "permission-rule", rule: "allow", detail: value })]],
+      ["matcher", maximumToolInventoryMatcherLength, [(value) => ({ ...base, kind: "hook", event: "Stop", matcher: value, command: "x" })]],
+      ["name", maximumToolInventoryNameLength, [
+        (value) => ({ ...base, kind: "tool-server", name: value, transport: "stdio", command: "x", envKeys: [] }),
+        (value) => ({ ...base, kind: "plugin", name: value }),
+        (value) => ({ ...base, kind: "skill", name: value }),
+      ]],
+      ["helper name", maximumToolInventoryHelperNameLength, [(value) => ({ ...base, kind: "helper", name: value, command: "x" })]],
+      ["rule", maximumToolInventoryRuleLength, [(value) => ({ ...base, kind: "permission-rule", rule: value, detail: "x" })]],
+      ["event", maximumToolInventoryEventLength, [(value) => ({ ...base, kind: "hook", event: value, command: "x" })]],
+    ]
+    for (const [field, cap, builds] of fields) {
+      expect(cap, field).toBeGreaterThan(0)
+      for (const build of builds) {
+        expect(toolInventoryEntrySchema.safeParse(build("x".repeat(cap))).success, field).toBe(true)
+        expect(toolInventoryEntrySchema.safeParse(build("x".repeat(cap + 1))).success, field).toBe(false)
+      }
+    }
   })
 
   it("is an observe, read-only method the phone does not get", () => {
