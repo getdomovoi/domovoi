@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { constants } from "node:fs"
 import { type FileHandle, lstat, open, opendir, readlink } from "node:fs/promises"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 
 import {
   toolInventoryEntrySchema,
@@ -141,7 +141,12 @@ async function linkRefusal(path: string): Promise<Refused> {
 // identity when it was a real directory as the reader started.
 type RepositoryRoot = { path: string; identity: Identity | undefined }
 
-async function anchorRoot(path: string): Promise<RepositoryRoot> {
+async function anchorRoot(given: string): Promise<RepositoryRoot> {
+  // lstat follows a link named with a trailing separator (`repo/`), so the
+  // root is normalized first and a linked final component is refused.
+  // Normalizing resolves `.` and `..` lexically, as the daemon's other
+  // workspace paths do.
+  const path = resolve(given)
   try {
     const info = await lstatOrAbsent(path)
     return { path, identity: info?.isDirectory() ? { dev: info.dev, ino: info.ino } : undefined }

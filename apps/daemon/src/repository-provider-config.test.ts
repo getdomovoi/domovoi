@@ -1,6 +1,6 @@
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, sep } from "node:path"
 
 import { toolInventoryProviderSchema, toolInventorySchema, type ToolInventoryProvider } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it } from "vitest"
@@ -290,6 +290,35 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     await put(outside, ".mcp.json", JSON.stringify({ mcpServers: { changed: { command: "other" } } }))
     await put(outside, ".opencode/plugin/outside.ts", "changed")
     expect((await readRepositoryProviderConfig(root, { heldBack: true })).configDigest).toBe(result.configDigest)
+  })
+
+  // lstat follows a link named with a trailing separator, so the root is
+  // normalized before it is checked.
+  it("refuses a linked repository root given with a trailing separator", async () => {
+    const parent = await scratch()
+    const outside = await scratch("domovoi-provider-outside-")
+    await put(outside, ".mcp.json", JSON.stringify({ mcpServers: { stolen: { command: "outside-server" } } }))
+    await put(outside, "kilo.json", JSON.stringify({ plugin: ["outside-plugin"] }))
+    const root = join(parent, "repository")
+    await symlink(outside, root, process.platform === "win32" ? "junction" : "dir")
+
+    const result = await readRepositoryProviderConfig(`${root}${sep}`, { heldBack: true })
+    expect(JSON.stringify(result)).not.toMatch(/outside-server|stolen|outside-plugin/u)
+    for (const entry of result.providers) {
+      expect(toolInventoryProviderSchema.safeParse(entry).success).toBe(true)
+      expect(entry.entries).toEqual([])
+      expect(entry.files.length).toBeGreaterThan(0)
+      expect(entry.files.every((file) => file.state === "unreadable" && file.reason === "symbolic-link")).toBe(true)
+    }
+    expect(result.configDigest).toBe((await readRepositoryProviderConfig(root, { heldBack: true })).configDigest)
+  })
+
+  it("reads a real repository root given with a trailing separator", async () => {
+    const root = await scratch()
+    await put(root, ".mcp.json", JSON.stringify({ mcpServers: { local: { command: "local-server" } } }))
+    const result = await readRepositoryProviderConfig(`${root}${sep}`, { heldBack: true })
+    expect(provider(result, "claude-code").entries.map((entry) => entry.kind === "tool-server" && entry.name)).toEqual(["local"])
+    expect(result.configDigest).toBe((await readRepositoryProviderConfig(root, { heldBack: true })).configDigest)
   })
 
   it("refuses a hard link, an oversized file and malformed JSON, JSONC and YAML, and reads the rest", async () => {
