@@ -1083,6 +1083,9 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
           throw cause
         }
         await whileHeldIn(deadline, stoppedInstance)(async () => {
+          // Round 6 (P1): under the profile lease, before service.json names
+          // the new runtime and the task is registered to run it.
+          if (beforeWrite !== undefined) await withinServiceDeadline(deadline, beforeWrite)
           wroteNew = true
           await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
         })

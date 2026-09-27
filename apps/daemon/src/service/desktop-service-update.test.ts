@@ -450,6 +450,19 @@ describe("updateDaemonService with a Windows logon task", () => {
     ])
   })
 
+  // Security review round 6 of #577 (P1): the staged runtime goes into place
+  // under the profile lease, after the stop, before service.json is written
+  // and the task registered, as on the other platforms.
+  it("publishes the staged runtime under the profile lease before writing the configuration or registering the task", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    const staged = { nodePath: "C:\\Users\\dl\\.domovoi\\runtime\\.staging\\node\\node.exe", daemonEntryPath: "C:\\Users\\dl\\.domovoi\\runtime\\.staging\\daemon\\dist\\index.js" }
+    const publish = vi.fn(async () => { effects.order.push("publish") })
+    await updateDaemonService({ runtime: windowsRuntime, staged: { runtime: staged, publish } }, effects)
+    expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
+      "read task", "stop task", "claim", "publish", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "schtasks /run",
+    ])
+  })
+
   it("re-registers the previous command and runs it when the new task will not run", async () => {
     const effects = fake("win32", "C:\\Users\\dl")
     const run = effects.run
