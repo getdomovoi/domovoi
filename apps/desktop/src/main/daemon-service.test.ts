@@ -632,6 +632,27 @@ describe("staging the shipped runtime under the profile", () => {
     })
   })
 
+  // Security review round 1 of #635 (P2): lstat of "linked/" or "linked/."
+  // looks through the link, so the profile spelled that way passed as a real
+  // directory. "linked/x/.." is the link too, once the runtime directory is
+  // built from it.
+  it.each(["", sep, `${sep}.`, `${sep}x${sep}..`])("refuses a linked profile spelled with %j after it, and publishes nothing where the link points", async (suffix) => {
+    await withScratch(async ({ resources, root }) => {
+      const actual = join(root, "actual")
+      await mkdir(join(actual, "runtime", "0.9.4"), { recursive: true })
+      await writeFile(join(actual, "runtime", "0.9.4", "keep.txt"), "keep")
+      await mkdir(join(actual, "x"))
+      const link = join(root, "linked")
+      await symlink(actual, link, directoryLink)
+      await expect(stageDaemonRuntime({
+        resourcesPath: resources, profileDirectory: link + suffix, version: "0.9.4", platform,
+        stagingParent: join(root, "staging"), fileSystem: nodeRuntimeFileSystem(),
+      })).rejects.toThrow(`${link} is not a directory (it may be a link), so no runtime was copied under it.`)
+      expect(await entries(join(actual, "runtime"))).toEqual(["0.9.4"])
+      expect(await entries(join(actual, "runtime", "0.9.4"))).toEqual(["keep.txt"])
+    })
+  })
+
   it("requires each shipped part to be a regular file and refuses a link that leaves the shipped runtime, before copying", async () => {
     await withScratch(async ({ resources, home }) => {
       const nodePath = daemonRuntimeLayout(resources, platform).nodePath

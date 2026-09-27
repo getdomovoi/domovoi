@@ -231,6 +231,74 @@ describe("removeUnusedDaemonRuntimes with two installs racing", () => {
   })
 })
 
+// Security review round 1 of #635 (P2): every link and directory below is in
+// place before any operation starts, so none of it needs a process racing the
+// cleanup.
+describe("removeUnusedDaemonRuntimes with links laid out ahead of time", () => {
+  // The previous copy's version directory is a link into another candidate,
+  // an interrupted removal or an ordinary copy, that holds the whole version.
+  // The definition still names the copy by its usual <version>/<id> path.
+  it.each([".removing-0123456789ab", join("0.8.0", "bbbbbbbbbbbb")])("keeps the previous copy reached through a linked version inside %s", async (container) => {
+    const previousCopy = await publishCopy(profile, "0.9.1", "aaaaaaaaaaaa")
+    const parked = join(profile, "runtime", container)
+    await mkdir(dirname(parked), { recursive: true })
+    await rename(dirname(previousCopy), parked)
+    await linkDirectory(parked, dirname(previousCopy))
+    const manager = fakeServiceManager(home)
+    manager.register(previousCopy)
+
+    const lease = claimServiceOperation(home)
+    const previous = await readDaemonServiceRuntimeCopy(manager.reader)
+    const current = await publishCopy(profile, "0.9.2", "dddddddddddd")
+    manager.register(current)
+    lease.release()
+    expect(previous).toEqual({ installed: true, copy: previousCopy })
+
+    await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous }, dependencies(manager)))
+      .resolves.toEqual({ removed: [] })
+    expect(await exists(copyLayout(previousCopy).nodePath)).toBe(true)
+    expect(await exists(copyLayout(previousCopy).daemonEntryPath)).toBe(true)
+    expect(await exists(copyLayout(current).nodePath)).toBe(true)
+  })
+
+  // lstat of "linked/" or "linked/." looks through the link, so the profile
+  // spelled that way passed as a real directory. "linked/x/.." is the link
+  // too, once the runtime directory is built from it.
+  it.each(["", sep, `${sep}.`, `${sep}x${sep}..`])("removes nothing under a linked profile spelled with %j after it", async (suffix) => {
+    const actual = join(root, "actual")
+    const old = await publishCopy(actual, "0.9.1", "aaaaaaaaaaaa")
+    const copy = await publishCopy(actual, "0.9.2", "dddddddddddd")
+    await mkdir(join(actual, "x"))
+    const link = join(root, "linked")
+    await linkDirectory(actual, link)
+    const linked = link + suffix
+    const current = join(linked, "runtime", "0.9.2", "dddddddddddd")
+    const manager = fakeServiceManager(home, linked)
+    manager.register(current)
+    await expect(readDaemonServiceRuntimeCopy(manager.reader)).resolves.toEqual({ installed: true, copy: current })
+
+    await expect(removeUnusedDaemonRuntimes({ profileDirectory: linked, published: copyLayout(current), previous: { installed: false } }, dependencies(manager)))
+      .resolves.toEqual({ skipped: "runtime-directory" })
+    expect(await exists(copyLayout(old).nodePath)).toBe(true)
+    expect(await exists(copyLayout(copy).nodePath)).toBe(true)
+  })
+
+  it("keeps an interrupted removal's name that is a link, and what it leads to", async () => {
+    const current = await publishCopy(profile, "0.9.2", "dddddddddddd")
+    const outside = join(root, "outside")
+    await mkdir(outside)
+    await writeFile(join(outside, "precious.txt"), "keep")
+    const link = join(profile, "runtime", ".removing-0123456789ab")
+    await linkDirectory(outside, link)
+    const manager = fakeServiceManager(home)
+    manager.register(current)
+    await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous: { installed: false } }, dependencies(manager)))
+      .resolves.toEqual({ removed: [] })
+    expect(await exists(link)).toBe(true)
+    expect(await exists(join(outside, "precious.txt"))).toBe(true)
+  })
+})
+
 // A definition only names a copy when it is exactly what an install writes for
 // it (stagedRuntimeVersion). Anything else leaves the cleanup unsure, and it
 // removes nothing.
