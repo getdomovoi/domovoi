@@ -1012,12 +1012,33 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
       runtimeFile: vi.fn(async (path: string) => { order.push(`check ${path === staged.nodePath || path === staged.daemonEntryPath ? "staged" : "published"}`); return "file" as const }),
     })
     await installDaemonService({ runtime, staged: { runtime: staged, publish }, environment: {}, releaseInAppDaemon: async () => { order.push("handoff") } }, effects)
-    expect(order).toEqual(["check staged", "check staged", "lease", "publish", "check published", "check published", "handoff"])
+    // Round 5 (P1): the handoff and its checks refuse before anything is
+    // published; the profile is claimed for the service, then it goes in.
+    expect(order).toEqual(["check staged", "check staged", "lease", "handoff", "publish", "check published", "check published"])
 
     const refused = dependencies({ registeredProfile: vi.fn(() => ({ profileDirectory: "/Users/dl/profiles/other" })) })
     const notPublished = vi.fn(async () => {})
     await expect(installDaemonService({ runtime, staged: { runtime: staged, publish: notPublished }, environment: {} }, refused)).rejects.toBeInstanceOf(ServiceProfileMismatchError)
     expect(notPublished).not.toHaveBeenCalled()
+  })
+
+  // Security review round 5 of #577 (P1): every refusal comes before the
+  // publish: the handoff's own profile check, the caller's fence (thrown from
+  // the handoff), and the claim of the profile for the service.
+  it("publishes nothing when the handoff, its profile check or the profile claim refuses", async () => {
+    const staged = { nodePath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/node/bin/node", daemonEntryPath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/daemon/dist/index.js" }
+    const owned = new ProfileAlreadyOwnedError("/Users/dl/.domovoi/profile-lease.sqlite")
+    for (const [label, overrides, releaseInAppDaemon] of [
+      ["the fence refuses", {}, async () => { throw new Error("1 turn is running (Fix login).") }],
+      ["the handoff check refuses", { claimProfile: vi.fn(() => { throw owned }), readOwner: vi.fn(() => undefined) }, async () => {}],
+      ["the claim after the handoff fails", { claimProfile: vi.fn().mockReturnValueOnce({ release: vi.fn() }).mockImplementation(() => { throw owned }) }, async () => {}],
+    ] as const) {
+      const publish = vi.fn(async () => {})
+      const effects = dependencies({ exists: noDefinition, capture: launchd(), ...overrides })
+      await expect(installDaemonService({ runtime, staged: { runtime: staged, publish }, environment: {}, releaseInAppDaemon }, effects), label).rejects.toThrow()
+      expect(publish, label).not.toHaveBeenCalled()
+      expect(effects.write, label).not.toHaveBeenCalled()
+    }
   })
 
   // Security review round 5 of #577 (P2): the removal leases, and writes any

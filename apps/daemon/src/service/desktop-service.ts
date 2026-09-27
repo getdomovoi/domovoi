@@ -232,20 +232,25 @@ export async function updateDaemonService(
     if (options.environment !== undefined) {
       assertServiceProfile(profileLocation(saved.homeDirectory, saved.profileDirectory), callerProfile(options.environment, dependencies.home))
     }
-    if (options.staged !== undefined) {
+    // Security review rounds 4 and 5 of #577: the staged runtime goes into
+    // place only once every step that can refuse with nothing changed has
+    // passed, right before the new definition is written (launchd, systemd),
+    // or as the first step of the swap (WSL, whose refusals all come before).
+    const publish = async () => {
+      if (options.staged === undefined) return
       await options.staged.publish()
       await checkRuntime(options.runtime, dependencies, "update")
     }
     if (dependencies.platform === "linux" && saved.wsl) {
       const steps = await prepareWslUpdate(saved, options.runtime, tracked.effects, waits, tracked.inFlight)(readDeadline)
-      return { ...steps, swap: async (deadline) => ({ kind: "task" as const, ...await steps.swap(deadline) }) }
+      return { ...steps, swap: async (deadline) => { await publish(); return { kind: "task" as const, ...await steps.swap(deadline) } } }
     }
     const steps = await prepareServiceUpdate({
       ...target(dependencies),
       execPath: options.runtime.daemonEntryPath,
       runtime: options.runtime.nodePath,
       configuration: saved,
-    }, tracked.effects, waits, tracked.inFlight)(readDeadline)
+    }, tracked.effects, waits, tracked.inFlight, options.staged === undefined ? undefined : publish)(readDeadline)
     return {
       ...steps,
       swap: async (deadline): Promise<DaemonServiceInstallResult> => {

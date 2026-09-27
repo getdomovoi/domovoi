@@ -1495,7 +1495,30 @@ describe("updateDaemonService for the caller's profile", () => {
     const effects = fake("darwin", "/Users/dl")
     const publish = vi.fn(async () => { effects.order.push("publish") })
     await updateDaemonService({ runtime, staged: { runtime: staged, publish }, environment: {} }, effects)
-    expect(effects.order[0]).toBe("publish")
+    // Round 5 (P1): published once every step that can refuse with nothing
+    // changed has passed (which plist is loaded, the bootout, the profile
+    // claim) and right before the new agent is written.
+    expect(effects.order.slice(0, 5)).toEqual(["launchctl print", "launchctl bootout gui/501/sh.domovoi.domovoid", "claim", "publish", `write ${agent}`])
+
+    // A job loaded from another plist refuses in the checks: nothing published.
+    const foreign = fake("darwin", "/Users/dl", { agentLoadedFrom: "/Users/dl/Library/LaunchAgents/other.plist" })
+    const neverPublished = vi.fn(async () => {})
+    await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish: neverPublished }, environment: {} }, foreign)).rejects.toMatchObject({ outcome: "nothing-changed" })
+    expect(neverPublished).not.toHaveBeenCalled()
+
+    // systemd: published right before the unit is written. A unit write that
+    // then fails no longer says nothing was changed; the previous unit is
+    // written back and started.
+    const unitWrite = fake("linux", "/home/dl")
+    unitWrite.write = vi.fn(async (path: string, contents: string) => {
+      unitWrite.order.push(`write ${path}`)
+      if (path === unit && contents !== oldUnit) throw new Error("write failed")
+      unitWrite.files.set(path, contents)
+    })
+    const linuxPublish = vi.fn(async () => { unitWrite.order.push("publish") })
+    const failed = updateDaemonService({ runtime, staged: { runtime: staged, publish: linuxPublish }, environment: {} }, unitWrite)
+    await expect(failed).rejects.toMatchObject({ outcome: "swap-failed-restored" })
+    expect(unitWrite.order.slice(0, 2)).toEqual(["publish", `write ${unit}`])
 
     const refused = fake("darwin", "/Users/dl")
     const notPublished = vi.fn(async () => {})

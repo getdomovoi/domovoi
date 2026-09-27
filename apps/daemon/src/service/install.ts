@@ -661,10 +661,6 @@ async function installWithDeadline(
     throw new WindowsTaskNotDomovoiError(displayName)
   }
   const commands = [...await launchdCommandsBeforeInstall(target, plan, effects, deadline), ...plan.commands]
-  // Every check that can refuse has passed and nothing has changed yet. The
-  // caller's staged runtime goes into place here, under the lease (security
-  // review round 4 of #577).
-  if (beforeChanges !== undefined) await withinServiceDeadline(deadline, beforeChanges)
   const previousFiles = await readPreviousFiles(plan, effects, deadline)
   const leases: ProfileLease[] = []
   try {
@@ -691,6 +687,12 @@ async function installWithDeadline(
       if (released && cause instanceof ProfileAlreadyOwnedError) throw new DaemonServiceHandoffError(cause)
       throw cause
     }
+    // Every check that can refuse has passed: the profile checks, the
+    // handoff's own check, the caller's fence inside the handoff, and this
+    // claim. The caller's staged runtime goes into place only now, under the
+    // lease, before the first file is written (security review rounds 4 and 5
+    // of #577).
+    if (beforeChanges !== undefined) await withinServiceDeadline(deadline, beforeChanges)
     await withinServiceDeadline(deadline, () => effects.remove(localOwnerRemovalReceiptPath(profile), deadline))
     try {
       await withinServiceDeadline(deadline, () => effects.write(plan.configuration.path, plan.configuration.contents, deadline))
@@ -840,7 +842,10 @@ function refuseWindowsTaskPath(path: string): void {
 // daemon reports ready, after the swap and after a restore alike. The caller
 // runs this under the service-operation lease (runServiceUpdate), with effects
 // tracked by trackInFlight.
-export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits, inFlight: InFlight) {
+// beforeWrite: runs once every step that can refuse with nothing changed has
+// passed, right before the new definition is written (security review rounds
+// 4 and 5 of #577: the caller's staged runtime goes into place there).
+export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits, inFlight: InFlight, beforeWrite?: () => Promise<void>) {
   return async (readDeadline: OperationDeadline): Promise<ServiceSwap<ServicePlan>> => {
     const plan = servicePlan(target)
     const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory)
@@ -905,14 +910,24 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
         const restart = { command: "systemctl", args: ["--user", "restart", unitFile] }
         return {
           swap: async (deadline) => {
+            if (beforeWrite !== undefined) {
+              try {
+                await withinServiceDeadline(deadline, beforeWrite)
+              } catch (cause) {
+                // The unit is untouched, and a publish that fails puts the
+                // version path back as it was.
+                throw new DaemonServiceUpdateError("nothing-changed", cause)
+              }
+            }
             try {
               await writeIn(deadline)(plan.path, plan.contents)
             } catch (cause) {
               // The unit is replaced by rename, so a write that failed on its
               // own left the old one. A write the deadline cut short may still
               // rename the new unit into place: that is a failed swap, and the
-              // restore runs once the write has settled.
-              if (deadline.signal.aborted) throw cause
+              // restore runs once the write has settled. After a publish the
+              // runtime did change, so it is a failed swap too.
+              if (deadline.signal.aborted || beforeWrite !== undefined) throw cause
               throw new DaemonServiceUpdateError("nothing-changed", cause)
             }
             await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
@@ -975,6 +990,7 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
         swap: async (deadline) => {
           await bootoutIn(deadline)()
           await whileHeldIn(deadline, stoppedInstance)(async () => {
+            if (beforeWrite !== undefined) await withinServiceDeadline(deadline, beforeWrite)
             wroteNew = true
             await writeIn(deadline)(plan.path, plan.contents)
             await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
