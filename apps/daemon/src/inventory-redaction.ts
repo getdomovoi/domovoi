@@ -672,11 +672,14 @@ function redactShell(text: string, depth: number, nested: boolean, command: bool
   // token written.
   const cuts: Array<{ length: number; count: number }> = []
   // The longest run of whole tokens written that fits with the marker after
-  // it and reads back, or the marker alone.
+  // it and reads back, or the marker alone. A cut is measured before it is
+  // built, so one too long is never built: the work stays linear in the
+  // output and the cap, not the output times its tokens.
   const fitted = () => {
-    for (const { length, count } of [...cuts].reverse()) {
+    for (let index = cuts.length - 1; index >= 0; index -= 1) {
+      const { length, count } = cuts[index]!
+      if (length + 1 + marker.length > maximum) continue
       const shortened = `${output.slice(0, length)} ${marker}`
-      if (shortened.length > maximum) continue
       const read = readBack(shortened, [...meant.slice(0, count), { kind: "word", value: marker }], command)
       if (read !== marker) return read
     }
@@ -776,12 +779,21 @@ export function redactInventoryArgv(argv: readonly string[]): string {
   const unreadable = words.findIndex((word, index) => (plan.scripts.has(index) ? lexShell(word).stoppedAt !== undefined : runsOrExpands.test(argv[index]!)))
   const shown = (unreadable === -1 ? words : [...words.slice(0, unreadable), marker]).map((word) => (controlCharacter.test(word) ? marker : word))
   const spellings = shown.map(argumentWord)
+  // Every argument when the line fits; otherwise the most whole arguments
+  // that fit with a blank and the marker after them. The count comes from
+  // the arguments' lengths, so the line is built once however many are
+  // dropped.
+  const cap = inventoryFieldCaps.command
   let kept = shown.length
-  let line = spellings.join(" ")
-  while (line.length > inventoryFieldCaps.command && kept > 0) {
-    kept -= 1
-    line = [...spellings.slice(0, kept), marker].join(" ")
+  if (spellings.reduce((total, spelling) => total + spelling.length + 1, -1) > cap) {
+    kept = 0
+    let length = 0
+    while (kept < spellings.length && length + spellings[kept]!.length + 1 + marker.length <= cap) {
+      length += spellings[kept]!.length + 1
+      kept += 1
+    }
   }
+  const line = kept === shown.length ? spellings.join(" ") : [...spellings.slice(0, kept), marker].join(" ")
   const meant = kept === shown.length ? shown : [...shown.slice(0, kept), marker]
   return readBack(line, meant.map((value) => ({ kind: "word", value })), true)
 }
