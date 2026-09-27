@@ -9,6 +9,7 @@ import WebSocket from "ws"
 
 import type { AgentEvent } from "./agents.js"
 import type { AgentAdapter } from "./codex.js"
+import { emergencyStopRowsPerPass } from "./emergency-stop-intents.js"
 import { holdServiceHandoffFence, readLocalServiceHandoffRefusal } from "./local-service-handoff.js"
 import { DomovoiDaemon, serviceHandoffFencedMessage, serviceHandoffStopRefusal, type DaemonErrorSink } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
@@ -1157,6 +1158,64 @@ describe("the service handoff fence and an emergency stop", () => {
     expect(reports).toContain("Domovoi kept an emergency stop intent it could not finish whole")
     await daemon.daemon.stop()
     expect(journalTables(statePath).pending).toEqual([{ stop_id: many }])
+  })
+
+  // Issue #632: the journal is read a bounded number of rows at a time.
+  // Startup still finishes every stop before the listener opens, however
+  // many passes that takes, and a row is cleared alone even when another row
+  // shares its key (SQLite lets a text primary key hold many nulls).
+  it("finishes every stop in a journal longer than one pass, whatever key its rows are stored under", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopIds = Array.from({ length: emergencyStopRowsPerPass * 3 + 1 }, (_, index) =>
+      `stop-${index.toString(16).padStart(8, "0")}-cccc-4ccc-8ccc-${"c".repeat(12)}`)
+    const database = new DatabaseSync(statePath)
+    try {
+      stopIds.forEach((stopId, index) => {
+        database.prepare("INSERT INTO emergency_stop_intents (stop_id, record) VALUES (?, ?)").run(
+          index % 2 === 0 ? null : stopId,
+          JSON.stringify({ version: 1, stopId, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z", sessionIds: [sessionId] }),
+        )
+      })
+    } finally {
+      database.close()
+    }
+
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.thread.filter((item) => item.kind === "system" && item.body === "Emergency stop requested by desktop.").map((item) => item.id))
+      .toEqual(stopIds.map((stopId) => `system-${stopId}-desktop-${sessionId}`))
+    await daemon.daemon.stop()
+    expect(journalTables(statePath).pending).toEqual([])
+  })
+
+  // Round 7 across a pass: a stop whose line an earlier pass wrote is not
+  // thereby finished for a later row that names it. That row still resets
+  // the dispatch it holds, and the line is written once.
+  it("finishes a stop that rows in two passes name, and writes each of its lines once", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopId = `stop-${"d".repeat(8)}-dddd-4ddd-8ddd-${"d".repeat(12)}`
+    const row = (id: string, extra: Record<string, unknown> = {}) =>
+      JSON.stringify({ version: 1, stopId: id, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z", ...extra })
+    for (let index = 0; index < emergencyStopRowsPerPass - 1; index += 1) {
+      const filler = `stop-${index.toString(16).padStart(8, "0")}-eeee-4eee-8eee-${"e".repeat(12)}`
+      await journalRow(statePath, filler, row(filler, { sessionIds: [] }))
+    }
+    await journalRow(statePath, stopId, row(stopId, { sessionIds: [sessionId] }))
+    await journalRow(statePath, "stop-in-the-next-pass", row(stopId, {
+      sessionIds: [sessionId], inFlight: [{ sessionId, provider: "codex", providerThreadId: "thread-fence" }],
+    }))
+
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.thread.filter((item) => item.kind === "system" && item.body === "Emergency stop requested by desktop.").map((item) => item.sessionId)).toEqual([sessionId])
+    const session = after.sessions.find(({ id }) => id === sessionId)!
+    expect({ state: session.state, providerThreadId: session.providerThreadId }).toEqual({ state: "failed", providerThreadId: undefined })
+    await daemon.daemon.stop()
+    expect(journalTables(statePath).pending).toEqual([])
   })
 })
 
