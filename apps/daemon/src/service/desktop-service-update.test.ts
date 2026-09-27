@@ -457,7 +457,7 @@ describe("updateDaemonService with a Windows logon task", () => {
     const effects = fake("win32", "C:\\Users\\dl")
     const staged = { nodePath: "C:\\Users\\dl\\.domovoi\\runtime\\.staging\\node\\node.exe", daemonEntryPath: "C:\\Users\\dl\\.domovoi\\runtime\\.staging\\daemon\\dist\\index.js" }
     const publish = vi.fn(async () => { effects.order.push("publish") })
-    await updateDaemonService({ runtime: windowsRuntime, staged: { runtime: staged, publish } }, effects)
+    await updateDaemonService({ runtime: windowsRuntime, staged: { runtime: staged, publish, revert: vi.fn(async () => {}) } }, effects)
     expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
       "read task", "stop task", "claim", "publish", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "schtasks /run",
     ])
@@ -1507,7 +1507,7 @@ describe("updateDaemonService for the caller's profile", () => {
     const staged = { nodePath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/node/bin/node", daemonEntryPath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/daemon/dist/index.js" }
     const effects = fake("darwin", "/Users/dl")
     const publish = vi.fn(async () => { effects.order.push("publish") })
-    await updateDaemonService({ runtime, staged: { runtime: staged, publish }, environment: {} }, effects)
+    await updateDaemonService({ runtime, staged: { runtime: staged, publish, revert: vi.fn(async () => {}) }, environment: {} }, effects)
     // Round 5 (P1): published once every step that can refuse with nothing
     // changed has passed (which plist is loaded, the bootout, the profile
     // claim) and right before the new agent is written.
@@ -1516,7 +1516,7 @@ describe("updateDaemonService for the caller's profile", () => {
     // A job loaded from another plist refuses in the checks: nothing published.
     const foreign = fake("darwin", "/Users/dl", { agentLoadedFrom: "/Users/dl/Library/LaunchAgents/other.plist" })
     const neverPublished = vi.fn(async () => {})
-    await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish: neverPublished }, environment: {} }, foreign)).rejects.toMatchObject({ outcome: "nothing-changed" })
+    await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish: neverPublished, revert: vi.fn(async () => {}) }, environment: {} }, foreign)).rejects.toMatchObject({ outcome: "nothing-changed" })
     expect(neverPublished).not.toHaveBeenCalled()
 
     // systemd: published right before the unit is written. A unit write that
@@ -1529,14 +1529,81 @@ describe("updateDaemonService for the caller's profile", () => {
       unitWrite.files.set(path, contents)
     })
     const linuxPublish = vi.fn(async () => { unitWrite.order.push("publish") })
-    const failed = updateDaemonService({ runtime, staged: { runtime: staged, publish: linuxPublish }, environment: {} }, unitWrite)
+    const failed = updateDaemonService({ runtime, staged: { runtime: staged, publish: linuxPublish, revert: vi.fn(async () => {}) }, environment: {} }, unitWrite)
     await expect(failed).rejects.toMatchObject({ outcome: "swap-failed-restored" })
     expect(unitWrite.order.slice(0, 2)).toEqual(["publish", `write ${unit}`])
 
     const refused = fake("darwin", "/Users/dl")
     const notPublished = vi.fn(async () => {})
-    await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish: notPublished }, environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/work" } }, refused)).rejects.toMatchObject({ outcome: "nothing-changed" })
+    await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish: notPublished, revert: vi.fn(async () => {}) }, environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/work" } }, refused)).rejects.toMatchObject({ outcome: "nothing-changed" })
     expect(notPublished).not.toHaveBeenCalled()
     expect(refused.order).toEqual([])
+  })
+})
+
+// Security review round 6 of #577 (P1): the runtime publish is a transaction.
+// Once published, every later failure of the update puts the previous copy of
+// that version back (revert), on every platform. The fake staged copy models
+// the version in place; the test checks the old one is back.
+describe("updateDaemonService puts the previous runtime back on every failure after the publish", () => {
+  const staged = { nodePath: "/stage/node/bin/node", daemonEntryPath: "/stage/daemon/dist/index.js" }
+  function versioned() {
+    const state = { version: "old" }
+    return {
+      state,
+      staged: {
+        runtime: staged,
+        publish: vi.fn(async () => { state.version = "new" }),
+        revert: vi.fn(async () => { state.version = "old" }),
+      },
+    }
+  }
+  const failingWrite = (effects: Fake, path: string) => {
+    const write = effects.write
+    effects.write = vi.fn(async (at: string, contents: string, deadline?: OperationDeadline) => {
+      if (at === path) throw new Error(`write ${at} failed`)
+      return write(at, contents, deadline as never)
+    }) as never
+  }
+  const wsl = (): ServiceConfiguration => ({
+    ...saved("linux", "/home/dl"),
+    wsl: {
+      distribution: "Ubuntu", linuxUser: "dl", powershell: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      wsl: "C:\\Windows\\System32\\wsl.exe", executable: oldRuntime.nodePath, args: [oldRuntime.daemonEntryPath],
+    },
+  })
+  const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime-2\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index.js" }
+  const windowsStaged = { nodePath: "C:\\Users\\dl\\stage\\node\\node.exe", daemonEntryPath: "C:\\Users\\dl\\stage\\daemon\\dist\\index.js" }
+
+  const cases: [string, () => Fake][] = [
+    ["launchd: the published runtime fails its check", () => fake("darwin", "/Users/dl")],
+    ["launchd: the new agent cannot be written", () => { const effects = fake("darwin", "/Users/dl"); failingWrite(effects, agent); return effects }],
+    ["launchd: the new agent never reports ready", () => fake("darwin", "/Users/dl", { crashingStarts: 1 })],
+    ["systemd: the new unit cannot be written", () => { const effects = fake("linux", "/home/dl"); failingWrite(effects, unit); return effects }],
+    ["systemd: the restarted unit never reports ready", () => fake("linux", "/home/dl", { crashingStarts: 1 })],
+    ["Windows: service.json cannot be written", () => { const effects = fake("win32", "C:\\Users\\dl"); failingWrite(effects, "C:\\Users\\dl\\.domovoi\\service.json"); return effects }],
+    ["Windows: the new task never reports ready", () => fake("win32", "C:\\Users\\dl", { crashingStarts: 1 })],
+    ["WSL: the new guest daemon never reports ready", () => fake("linux", "/home/dl", { crashingStarts: 1 }, wsl())],
+  ]
+  for (const [label, make] of cases) {
+    it(`puts the previous runtime back when ${label}`, async () => {
+      const effects = make()
+      const { state, staged: copy } = versioned()
+      if (label.includes("fails its check")) {
+        effects.runtimeFile = vi.fn(async (path: string) => path === runtime.nodePath && state.version === "new" ? "missing" as const : "file" as const)
+      }
+      const windows = label.startsWith("Windows")
+      await expect(updateDaemonService({ runtime: windows ? windowsRuntime : runtime, staged: windows ? { ...copy, runtime: windowsStaged } : copy }, effects)).rejects.toThrow()
+      expect(copy.publish).toHaveBeenCalledOnce()
+      expect(copy.revert).toHaveBeenCalledOnce()
+      expect(state.version).toBe("old")
+    })
+  }
+
+  it("keeps the new runtime when the update succeeds", async () => {
+    const { state, staged: copy } = versioned()
+    await updateDaemonService({ runtime, staged: copy }, fake("darwin", "/Users/dl"))
+    expect(copy.revert).not.toHaveBeenCalled()
+    expect(state.version).toBe("new")
   })
 })

@@ -73,9 +73,31 @@ export type DaemonServiceOptions = {
   staged?: DaemonServiceStagedRuntime
 }
 
+// Security review round 6 of #577 (P1): publishing is a transaction. publish
+// keeps the previous copy of the version aside; revert puts it back. Once
+// published, every later failure of the install or update reverts, so a
+// refused or failed change leaves the runtime as it was. The caller commits
+// (drops the previous copy) only after the call succeeded. Limit: a revert
+// that itself fails is not reported beyond the error that stopped the change.
 export type DaemonServiceStagedRuntime = {
   runtime: DaemonServiceRuntime
   publish: () => Promise<void>
+  revert: () => Promise<void>
+}
+
+// Runs a service change that may publish the staged runtime, and reverts the
+// publish when the change then fails.
+async function revertingOnFailure<T>(staged: DaemonServiceStagedRuntime | undefined, change: (publish: () => Promise<void>) => Promise<T>): Promise<T> {
+  let published = false
+  try {
+    return await change(async () => {
+      await staged?.publish()
+      published = staged !== undefined
+    })
+  } catch (cause) {
+    if (published) await staged!.revert().catch(() => {})
+    throw cause
+  }
 }
 
 export type DaemonServiceInstallResult =
@@ -172,16 +194,16 @@ export async function installDaemonService(
   servicePlan(serviceTarget)
   // Security review round 1: the installer calls the handoff inside that
   // lease, so a busy lease refuses with the in-app daemon still running.
-  const plan = await installService(serviceTarget, dependencies, {
+  const plan = await revertingOnFailure(options.staged, (publish) => installService(serviceTarget, dependencies, {
     ...(options.releaseInAppDaemon === undefined ? {} : { handoff: options.releaseInAppDaemon }),
     ...(options.environment === undefined ? {} : { callerProfile: callerProfile(options.environment, dependencies.home) }),
     ...(options.staged === undefined ? {} : {
       beforeChanges: async () => {
-        await options.staged!.publish()
+        await publish()
         await checkRuntime(options.runtime, dependencies)
       },
     }),
-  })
+  }))
   return plan.kind === "file"
     ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
     : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
@@ -217,7 +239,7 @@ export async function updateDaemonService(
     budgetMs: dependencies.updateBudgetMs ?? 60_000,
   }
   const tracked = trackInFlight(dependencies)
-  return runServiceUpdate<DaemonServiceInstallResult>(dependencies.claimServiceOperation, waits.budgetMs, async (readDeadline) => {
+  return revertingOnFailure(options.staged, (publishStaged) => runServiceUpdate<DaemonServiceInstallResult>(dependencies.claimServiceOperation, waits.budgetMs, async (readDeadline) => {
     // Read under the service-operation lease: a removal that held it has
     // finished by now, and none can start before the update ends. A
     // configuration read before the claim could name a service that was
@@ -238,7 +260,7 @@ export async function updateDaemonService(
     // or as the first step of the swap (WSL, whose refusals all come before).
     const publish = async () => {
       if (options.staged === undefined) return
-      await options.staged.publish()
+      await publishStaged()
       await checkRuntime(options.runtime, dependencies, "update")
     }
     if (dependencies.platform === "linux" && saved.wsl) {
@@ -260,7 +282,7 @@ export async function updateDaemonService(
           : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
       },
     }
-  }, tracked.inFlight)
+  }, tracked.inFlight))
 }
 
 export function readDaemonServiceStatus(

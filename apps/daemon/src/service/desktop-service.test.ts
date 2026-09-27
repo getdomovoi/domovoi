@@ -1011,14 +1011,14 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
       claimServiceOperation: vi.fn(() => { order.push("lease"); return { release: vi.fn() } }),
       runtimeFile: vi.fn(async (path: string) => { order.push(`check ${path === staged.nodePath || path === staged.daemonEntryPath ? "staged" : "published"}`); return "file" as const }),
     })
-    await installDaemonService({ runtime, staged: { runtime: staged, publish }, environment: {}, releaseInAppDaemon: async () => { order.push("handoff") } }, effects)
+    await installDaemonService({ runtime, staged: { runtime: staged, publish, revert: vi.fn(async () => {}) }, environment: {}, releaseInAppDaemon: async () => { order.push("handoff") } }, effects)
     // Round 5 (P1): the handoff and its checks refuse before anything is
     // published; the profile is claimed for the service, then it goes in.
     expect(order).toEqual(["check staged", "check staged", "lease", "handoff", "publish", "check published", "check published"])
 
     const refused = dependencies({ registeredProfile: vi.fn(() => ({ profileDirectory: "/Users/dl/profiles/other" })) })
     const notPublished = vi.fn(async () => {})
-    await expect(installDaemonService({ runtime, staged: { runtime: staged, publish: notPublished }, environment: {} }, refused)).rejects.toBeInstanceOf(ServiceProfileMismatchError)
+    await expect(installDaemonService({ runtime, staged: { runtime: staged, publish: notPublished, revert: vi.fn(async () => {}) }, environment: {} }, refused)).rejects.toBeInstanceOf(ServiceProfileMismatchError)
     expect(notPublished).not.toHaveBeenCalled()
   })
 
@@ -1086,7 +1086,7 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
     ] as const) {
       const publish = vi.fn(async () => {})
       const effects = dependencies({ exists: noDefinition, capture: launchd(), ...overrides })
-      await expect(installDaemonService({ runtime, staged: { runtime: staged, publish }, environment: {}, releaseInAppDaemon }, effects), label).rejects.toThrow()
+      await expect(installDaemonService({ runtime, staged: { runtime: staged, publish, revert: vi.fn(async () => {}) }, environment: {}, releaseInAppDaemon }, effects), label).rejects.toThrow()
       expect(publish, label).not.toHaveBeenCalled()
       expect(effects.write, label).not.toHaveBeenCalled()
     }
@@ -1103,5 +1103,48 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
     })
     await removeDaemonService(effects, { environment: { DOMOVOI_PROFILE_DIR: "/Users/other/.domovoi" } })
     expect(claimProfile).toHaveBeenCalledWith({ profileDirectory: "/Users/other/.domovoi" })
+  })
+})
+
+// Security review round 6 of #577 (P1): once the staged runtime is published,
+// every later failure of the install puts the previous copy of that version
+// back. The fake staged copy models the version in place.
+describe("installDaemonService puts the previous runtime back on every failure after the publish", () => {
+  const staged = { nodePath: "/stage/node/bin/node", daemonEntryPath: "/stage/daemon/dist/index.js" }
+  const plistPath = "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist"
+  const missingJob = vi.fn(async (_command: string, args: string[]) => args[1] === "gui/501/sh.domovoi.domovoid"
+    ? { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
+    : { code: 0, stdout: "gui/501 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n\t}\n}\n" })
+  function versioned() {
+    const state = { version: "old" }
+    return { state, staged: { runtime: staged, publish: vi.fn(async () => { state.version = "new" }), revert: vi.fn(async () => { state.version = "old" }) } }
+  }
+  const cases: [string, (state: { version: string }) => Partial<DaemonServiceDependencies & ServiceEffects>][] = [
+    ["the published runtime fails its check", (state) => ({ runtimeFile: vi.fn(async (path: string) => path === runtime.nodePath && state.version === "new" ? "missing" as const : "file" as const) })],
+    ["the old recovery receipt cannot be removed", () => ({ remove: vi.fn(async () => { throw new Error("remove failed") }) })],
+    ["service.json cannot be written", () => ({ write: vi.fn(async (path: string) => { if (path.endsWith("service.json")) throw new Error("write failed") }) })],
+    ["the launch agent cannot be written", () => ({ write: vi.fn(async (path: string) => { if (path === plistPath) throw new Error("write failed") }) })],
+    ["launchd refuses to load the agent", () => ({ run: vi.fn(async (_command: string, args: string[]) => { if (args[0] === "bootstrap") throw new Error("launchctl bootstrap exited 5") }) })],
+  ]
+  for (const [label, overrides] of cases) {
+    it(`puts the previous runtime back when ${label}`, async () => {
+      const { state, staged: copy } = versioned()
+      const effects = dependencies({ exists: vi.fn(async (path: string) => path !== plistPath), capture: missingJob, ...overrides(state) })
+      await expect(installDaemonService({ runtime, staged: copy, environment: {} }, effects)).rejects.toThrow()
+      expect(copy.publish).toHaveBeenCalledOnce()
+      expect(copy.revert).toHaveBeenCalledOnce()
+      expect(state.version).toBe("old")
+    })
+  }
+
+  it("keeps the new runtime when the install succeeds, and never reverts what it did not publish", async () => {
+    const done = versioned()
+    await installDaemonService({ runtime, staged: done.staged, environment: {} }, dependencies({ exists: vi.fn(async (path: string) => path !== plistPath), capture: missingJob }))
+    expect(done.staged.revert).not.toHaveBeenCalled()
+    expect(done.state.version).toBe("new")
+    const refused = versioned()
+    await expect(installDaemonService({ runtime, staged: refused.staged, environment: {}, releaseInAppDaemon: async () => { throw new Error("1 turn is running (Fix login).") } }, dependencies({ exists: vi.fn(async (path: string) => path !== plistPath), capture: missingJob }))).rejects.toThrow()
+    expect(refused.staged.publish).not.toHaveBeenCalled()
+    expect(refused.staged.revert).not.toHaveBeenCalled()
   })
 })
