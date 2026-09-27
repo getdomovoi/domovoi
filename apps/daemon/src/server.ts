@@ -217,7 +217,7 @@ import {
   type TerminalProcess,
   type TerminalService,
 } from "./terminal.js"
-import type { ProviderDetection, ProviderProbe } from "./providers.js"
+import { turnedOffProviderDetection, type ProviderDetection, type ProviderProbe } from "./providers.js"
 import { SkillInstallError, SkillSourceError } from "./skill-install.js"
 import type { SkillReviews } from "./skill-reviews.js"
 import { skillTrustPath as defaultSkillTrustPath } from "./skill-signing.js"
@@ -1764,6 +1764,13 @@ export class DomovoiDaemon {
       // version after a restart/upgrade. Keep provider readiness separately.
       this.#snapshot.machine = { ...initialSnapshot.machine, providers: this.#snapshot.machine.providers }
     }
+    // A row saved while Cursor or Grok could start sessions is not served,
+    // even until the first probe finishes or if it fails. The next write of
+    // the snapshot stores the turned-off row in its place.
+    this.#snapshot.machine.providers = this.#snapshot.machine.providers.map((provider) => {
+      const turnedOff = turnedOffProviderDetection(provider.id)
+      return turnedOff ? { ...turnedOff, sessionCapable: false } : provider
+    })
     this.#localMachine = structuredClone(this.#snapshot.machine)
     this.#fleetEnrollment = new FleetEnrollmentService({
       selfId: this.#localMachine.id, registry: this.#store.fleet, credentials: this.#machineCredentials,
