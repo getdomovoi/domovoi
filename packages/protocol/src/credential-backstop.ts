@@ -169,10 +169,13 @@ export function holdsCredential(value: string): boolean {
       const [, authorizationKey, schemeValue = "", nextWord] = match
       const header = authorizationKey !== undefined
       const prose = !header && proseWord.test(schemeValue) && nextWord !== undefined && proseWord.test(nextWord)
-      // The marker alone is judged before anything is trimmed from it.
-      if (redacted(schemeValue)) continue
+      // The marker, alone or ending a sentence, is judged before anything is
+      // trimmed from it: trimming would take its closing bracket.
+      if (schemeValue.startsWith(marker) && withoutSentenceEnd(schemeValue.slice(marker.length)) === "") continue
       // Outside a header, a known prose word may end a sentence: "Bearer token."
+      // Punctuation alone ("Bearer ...") leaves no word, which is prose.
       const word = header ? schemeValue : withoutSentenceEnd(schemeValue)
+      if (word === "") continue
       if (!prose && schemeCredential(word)) return true
     }
     for (const match of view.matchAll(keyPairs)) {
