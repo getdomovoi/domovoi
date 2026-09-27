@@ -1,15 +1,16 @@
-// A backstop for text a provider's own file supplied. The guarantee lives in
-// the daemon's reader (a later slice), which must redact before it emits:
-// every `NAME=value` assignment, every value of a sensitive key, flag or
-// authorization scheme, and all URL user info read `[REDACTED]`. This check
-// does not redact. It refuses text that still carries such a value, so a
-// reader that missed one fails instead of leaking.
+// A best-effort backup for text a provider's own file supplied. It is not the
+// guarantee: the daemon's reader (a later slice) is, and it must redact before
+// it emits, so that every `NAME=value` assignment, every value of a sensitive
+// key, flag or authorization scheme, and all URL user info read `[REDACTED]`.
+// This check does not redact. It refuses text that still carries such a value
+// in a form it recognises, so a reader that missed one fails instead of
+// leaking. A value in a form it does not recognise passes.
 //
 // Each text is read as sent, after one layer of percent, backslash and \u
-// decoding, and as the shell assembles its words (quotes joined, $'...'
-// escapes decoded). Every key and its value is then judged the same way
-// whatever quoting or punctuation joins them: `K=v`, `"K=v"`, `"K": "v"`,
-// `K: v`, `--k=v`, `--k v`.
+// decoding, as the shell assembles its words (quotes joined, $'...' escapes
+// decoded), and as its double-quoted strings alone (a JSON argv). Every key and
+// its value is then judged the same way whatever quoting or punctuation joins
+// them: `K=v`, `"K=v"`, `"K": "v"`, `K: v`, `--k=v`, `--k v`.
 //
 // What it cannot catch: a bare opaque value with no key, scheme or known
 // prefix in front of it, and a value under more than one layer of encoding.
@@ -58,7 +59,12 @@ function pairHoldsValue(flag: string, quoteAfterKey: string, key: string, separa
 
 // An authorization scheme and the word after it, not a flag such as --digest.
 // Any value is a credential but the marker and a few words prose uses there.
-const schemeValues = /(?<![\p{L}\p{N}_-])(?:Bearer|Basic|Token|Digest)\s+["'\x60]?([^\s"'\x60,;)]+)/giu
+// The word after the value is looked at too: a scheme word that opens a line
+// of prose ("Token limit exceeded") is not a header, unless an Authorization
+// key comes right before it.
+const schemeValues = /(?<![\p{L}\p{N}_-])(?:Bearer|Basic|Token|Digest)\s+["'\x60]?([^\s"'\x60,;)]+)(?=(?:\s+([^\s"'\x60,;)]+))?)/giu
+const afterAuthorizationKey = /authorization["'\x60]?\s*[=:]\s*["'\x60]?$/iu
+const proseWord = /^\p{L}+$/u
 const schemeProse = new Set(["authentication", "authorization", "auth", "token", "tokens", "header", "headers", "scheme", "schemes", "credentials"])
 const schemeCredential = (value: string) => !redacted(value) && !schemeProse.has(value.toLowerCase())
 
@@ -140,16 +146,25 @@ function decoded(value: string): string[] {
   const unescape = (text: string) => text
     .replace(/\\u([0-9A-Fa-f]{4})/gu, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
     .replace(/\\(.)/gu, "$1")
-  return [...new Set([value, percent, unescape(value), unescape(percent), shellWords(value), shellWords(percent)])]
+  // A JSON argv's strings as separate words: ["--api-key","x"] is --api-key x.
+  const quotedStrings = (text: string) => [...text.matchAll(/"((?:[^"\\]|\\.)*)"/gu)].map(([, inner = ""]) => unescape(inner)).join(" ")
+  return [...new Set([value, percent, unescape(value), unescape(percent), shellWords(value), shellWords(percent), quotedStrings(value), quotedStrings(percent)])]
 }
 
 export function holdsCredential(value: string): boolean {
   return decoded(value).some((view) => {
     if (shapes.some((shape) => shape.test(view))) return true
-    for (const [, schemeValue = ""] of view.matchAll(schemeValues)) if (schemeCredential(schemeValue)) return true
+    for (const match of view.matchAll(schemeValues)) {
+      const [, schemeValue = "", nextWord] = match
+      const header = afterAuthorizationKey.test(view.slice(0, match.index))
+      const prose = !header && proseWord.test(schemeValue) && nextWord !== undefined && proseWord.test(nextWord)
+      if (!prose && schemeCredential(schemeValue)) return true
+    }
     for (const match of view.matchAll(keyPairs)) {
       const [, flag = "", , key = "", quoteAfterKey = "", separator = "", , pairValue = ""] = match
-      const assignmentStart = match.index === 0 || /[\s(;&|`]/u.test(view[match.index - 1]!)
+      // A word starts at the text's start, after a separator, or after a
+      // redirection such as a here-string (<<<NAME=value); not inside a path.
+      const assignmentStart = match.index === 0 || /[\s(;&|`<]/u.test(view[match.index - 1]!)
       if (pairHoldsValue(flag, quoteAfterKey, key, separator, pairValue, assignmentStart)) return true
     }
     return false
