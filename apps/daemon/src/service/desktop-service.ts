@@ -73,31 +73,15 @@ export type DaemonServiceOptions = {
   staged?: DaemonServiceStagedRuntime
 }
 
-// Security review round 6 of #577 (P1): publishing is a transaction. publish
-// keeps the previous copy of the version aside; revert puts it back. Once
-// published, every later failure of the install or update reverts, so a
-// refused or failed change leaves the runtime as it was. The caller commits
-// (drops the previous copy) only after the call succeeded. Limit: a revert
-// that itself fails is not reported beyond the error that stopped the change.
+// Security review round 7 of #577: publish puts the staged runtime into a
+// fresh directory that nothing else uses (the desktop writes
+// <profile>/runtime/<version>/<id>). It never moves or replaces an earlier
+// copy, so a failure after it leaves the runtime the previous service runs
+// as it was, and there is nothing to put back. A publish runs at most once,
+// under the service-operation lease.
 export type DaemonServiceStagedRuntime = {
   runtime: DaemonServiceRuntime
   publish: () => Promise<void>
-  revert: () => Promise<void>
-}
-
-// Runs a service change that may publish the staged runtime, and reverts the
-// publish when the change then fails.
-async function revertingOnFailure<T>(staged: DaemonServiceStagedRuntime | undefined, change: (publish: () => Promise<void>) => Promise<T>): Promise<T> {
-  let published = false
-  try {
-    return await change(async () => {
-      await staged?.publish()
-      published = staged !== undefined
-    })
-  } catch (cause) {
-    if (published) await staged!.revert().catch(() => {})
-    throw cause
-  }
 }
 
 export type DaemonServiceInstallResult =
@@ -194,16 +178,16 @@ export async function installDaemonService(
   servicePlan(serviceTarget)
   // Security review round 1: the installer calls the handoff inside that
   // lease, so a busy lease refuses with the in-app daemon still running.
-  const plan = await revertingOnFailure(options.staged, (publish) => installService(serviceTarget, dependencies, {
+  const plan = await installService(serviceTarget, dependencies, {
     ...(options.releaseInAppDaemon === undefined ? {} : { handoff: options.releaseInAppDaemon }),
     ...(options.environment === undefined ? {} : { callerProfile: callerProfile(options.environment, dependencies.home) }),
     ...(options.staged === undefined ? {} : {
       beforeChanges: async () => {
-        await publish()
+        await options.staged!.publish()
         await checkRuntime(options.runtime, dependencies)
       },
     }),
-  }))
+  })
   return plan.kind === "file"
     ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
     : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
@@ -238,8 +222,11 @@ export async function updateDaemonService(
     readinessWaitMs: dependencies.readinessWaitMs ?? 20_000,
     budgetMs: dependencies.updateBudgetMs ?? 60_000,
   }
-  const tracked = trackInFlight(dependencies)
-  return revertingOnFailure(options.staged, (publishStaged) => runServiceUpdate<DaemonServiceInstallResult>(dependencies.claimServiceOperation, waits.budgetMs, async (readDeadline) => {
+  // Round 7 (P1): the publish is tracked with the manager calls, so the
+  // service-operation lease is held until a publish the deadline gave up on
+  // has settled.
+  const tracked = trackInFlight({ ...dependencies, publishStaged: options.staged?.publish ?? (async () => {}) })
+  return runServiceUpdate<DaemonServiceInstallResult>(dependencies.claimServiceOperation, waits.budgetMs, async (readDeadline) => {
     // Read under the service-operation lease: a removal that held it has
     // finished by now, and none can start before the update ends. A
     // configuration read before the claim could name a service that was
@@ -260,7 +247,7 @@ export async function updateDaemonService(
     // or as the first step of the swap (WSL, whose refusals all come before).
     const publish = async () => {
       if (options.staged === undefined) return
-      await publishStaged()
+      await tracked.effects.publishStaged()
       await checkRuntime(options.runtime, dependencies, "update")
     }
     if (dependencies.platform === "linux" && saved.wsl) {
@@ -282,7 +269,7 @@ export async function updateDaemonService(
           : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
       },
     }
-  }, tracked.inFlight))
+  }, tracked.inFlight)
 }
 
 export function readDaemonServiceStatus(
@@ -367,9 +354,12 @@ function definitionProgram(platform: string, definition: string): string | undef
 
 // Security review round 4 of #577 (P3): the version is the one staged under
 // the profile the saved configuration names, read from the program the
-// definition runs: <profile>/runtime/<version>/node/bin/node (node\node.exe on
-// Windows). Anything else, another profile's runtime included, has none.
+// definition runs. Round 7: each publish is a fresh directory,
+// <profile>/runtime/<version>/<id>/node/bin/node (node\node.exe on Windows),
+// with a 12-character hexadecimal id. Anything else, another profile's
+// runtime included, has none.
 const stagedVersion = /^(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/u
+const publishId = /^[0-9a-f]{12}$/u
 
 export function stagedRuntimeVersion(platform: string, definition: string, profileDirectory: string): string | undefined {
   const program = definitionProgram(platform, definition)
@@ -378,11 +368,13 @@ export function stagedRuntimeVersion(platform: string, definition: string, profi
   const same = (left: string, right: string) => platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right
   const runtimeRoot = paths.join(profileDirectory, "runtime")
   const nodeDirectory = platform === "win32" ? paths.dirname(program) : paths.dirname(paths.dirname(program))
-  const version = paths.basename(paths.dirname(nodeDirectory))
-  if (!stagedVersion.test(version)) return undefined
+  const copy = paths.dirname(nodeDirectory)
+  const id = paths.basename(copy)
+  const version = paths.basename(paths.dirname(copy))
+  if (!stagedVersion.test(version) || !publishId.test(id)) return undefined
   const expected = platform === "win32"
-    ? paths.join(runtimeRoot, version, "node", "node.exe")
-    : paths.join(runtimeRoot, version, "node", "bin", "node")
+    ? paths.join(runtimeRoot, version, id, "node", "node.exe")
+    : paths.join(runtimeRoot, version, id, "node", "bin", "node")
   return same(paths.normalize(program), expected) ? version : undefined
 }
 

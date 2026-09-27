@@ -457,7 +457,7 @@ describe("updateDaemonService with a Windows logon task", () => {
     const effects = fake("win32", "C:\\Users\\dl")
     const staged = { nodePath: "C:\\Users\\dl\\.domovoi\\runtime\\.staging\\node\\node.exe", daemonEntryPath: "C:\\Users\\dl\\.domovoi\\runtime\\.staging\\daemon\\dist\\index.js" }
     const publish = vi.fn(async () => { effects.order.push("publish") })
-    await updateDaemonService({ runtime: windowsRuntime, staged: { runtime: staged, publish, revert: vi.fn(async () => {}) } }, effects)
+    await updateDaemonService({ runtime: windowsRuntime, staged: { runtime: staged, publish } }, effects)
     expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
       "read task", "stop task", "claim", "publish", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "schtasks /run",
     ])
@@ -1507,7 +1507,7 @@ describe("updateDaemonService for the caller's profile", () => {
     const staged = { nodePath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/node/bin/node", daemonEntryPath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/daemon/dist/index.js" }
     const effects = fake("darwin", "/Users/dl")
     const publish = vi.fn(async () => { effects.order.push("publish") })
-    await updateDaemonService({ runtime, staged: { runtime: staged, publish, revert: vi.fn(async () => {}) }, environment: {} }, effects)
+    await updateDaemonService({ runtime, staged: { runtime: staged, publish }, environment: {} }, effects)
     // Round 5 (P1): published once every step that can refuse with nothing
     // changed has passed (which plist is loaded, the bootout, the profile
     // claim) and right before the new agent is written.
@@ -1516,7 +1516,7 @@ describe("updateDaemonService for the caller's profile", () => {
     // A job loaded from another plist refuses in the checks: nothing published.
     const foreign = fake("darwin", "/Users/dl", { agentLoadedFrom: "/Users/dl/Library/LaunchAgents/other.plist" })
     const neverPublished = vi.fn(async () => {})
-    await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish: neverPublished, revert: vi.fn(async () => {}) }, environment: {} }, foreign)).rejects.toMatchObject({ outcome: "nothing-changed" })
+    await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish: neverPublished }, environment: {} }, foreign)).rejects.toMatchObject({ outcome: "nothing-changed" })
     expect(neverPublished).not.toHaveBeenCalled()
 
     // systemd: published right before the unit is written. A unit write that
@@ -1529,13 +1529,13 @@ describe("updateDaemonService for the caller's profile", () => {
       unitWrite.files.set(path, contents)
     })
     const linuxPublish = vi.fn(async () => { unitWrite.order.push("publish") })
-    const failed = updateDaemonService({ runtime, staged: { runtime: staged, publish: linuxPublish, revert: vi.fn(async () => {}) }, environment: {} }, unitWrite)
+    const failed = updateDaemonService({ runtime, staged: { runtime: staged, publish: linuxPublish }, environment: {} }, unitWrite)
     await expect(failed).rejects.toMatchObject({ outcome: "swap-failed-restored" })
     expect(unitWrite.order.slice(0, 2)).toEqual(["publish", `write ${unit}`])
 
     const refused = fake("darwin", "/Users/dl")
     const notPublished = vi.fn(async () => {})
-    await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish: notPublished, revert: vi.fn(async () => {}) }, environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/work" } }, refused)).rejects.toMatchObject({ outcome: "nothing-changed" })
+    await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish: notPublished }, environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/work" } }, refused)).rejects.toMatchObject({ outcome: "nothing-changed" })
     expect(notPublished).not.toHaveBeenCalled()
     expect(refused.order).toEqual([])
   })
@@ -1545,7 +1545,7 @@ describe("updateDaemonService for the caller's profile", () => {
 // Once published, every later failure of the update puts the previous copy of
 // that version back (revert), on every platform. The fake staged copy models
 // the version in place; the test checks the old one is back.
-describe("updateDaemonService puts the previous runtime back on every failure after the publish", () => {
+describe("updateDaemonService leaves every runtime copy alone on every failure after the publish (round 7)", () => {
   const staged = { nodePath: "/stage/node/bin/node", daemonEntryPath: "/stage/daemon/dist/index.js" }
   function versioned() {
     const state = { version: "old" }
@@ -1586,7 +1586,7 @@ describe("updateDaemonService puts the previous runtime back on every failure af
     ["WSL: the new guest daemon never reports ready", () => fake("linux", "/home/dl", { crashingStarts: 1 }, wsl())],
   ]
   for (const [label, make] of cases) {
-    it(`puts the previous runtime back when ${label}`, async () => {
+    it(`reverts nothing when ${label}`, async () => {
       const effects = make()
       const { state, staged: copy } = versioned()
       if (label.includes("fails its check")) {
@@ -1595,8 +1595,10 @@ describe("updateDaemonService puts the previous runtime back on every failure af
       const windows = label.startsWith("Windows")
       await expect(updateDaemonService({ runtime: windows ? windowsRuntime : runtime, staged: windows ? { ...copy, runtime: windowsStaged } : copy }, effects)).rejects.toThrow()
       expect(copy.publish).toHaveBeenCalledOnce()
-      expect(copy.revert).toHaveBeenCalledOnce()
-      expect(state.version).toBe("old")
+      // Round 7: the publish wrote a fresh directory the previous service
+      // never used, so nothing is put back and no shared copy was replaced.
+      expect(copy.revert).not.toHaveBeenCalled()
+      expect(state.version).toBe("new")
     })
   }
 
@@ -1605,5 +1607,22 @@ describe("updateDaemonService puts the previous runtime back on every failure af
     await updateDaemonService({ runtime, staged: copy }, fake("darwin", "/Users/dl"))
     expect(copy.revert).not.toHaveBeenCalled()
     expect(state.version).toBe("new")
+  })
+})
+
+// Security review round 7 of #577 (P1): a publish the update's deadline gave
+// up on may still be running. The service-operation lease is held until it
+// has settled, so no other service change starts while it writes.
+describe("updateDaemonService holds the lease until a publish settles", () => {
+  it("does not release the service-operation lease while a timed-out publish still runs", async () => {
+    const effects = fake("darwin", "/Users/dl", { updateBudgetMs: 40 })
+    let publishDone = false
+    const releasedAfterPublish: boolean[] = []
+    effects.serviceLease.release.mockImplementation(() => { releasedAfterPublish.push(publishDone) })
+    const publish = vi.fn(() => new Promise<void>((resolve) => setTimeout(() => { publishDone = true; resolve() }, 300)))
+    const staged = { nodePath: "/stage/node/bin/node", daemonEntryPath: "/stage/daemon/dist/index.js" }
+    await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish } }, effects)).rejects.toThrow()
+    await vi.waitFor(() => expect(releasedAfterPublish).toHaveLength(1), { timeout: 2_000 })
+    expect(releasedAfterPublish).toEqual([true])
   })
 })
