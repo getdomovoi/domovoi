@@ -600,19 +600,48 @@ async function registeredServiceWithoutConfiguration(
     if (job.code !== 113 || !isMissingServiceFailure("darwin", job)) throw captureFailure("launchctl", job)
     const listed = await withinServiceDeadline(deadline, () => effects.capture("launchctl", ["print", domain], deadline))
     if (listed.code !== 0) throw captureFailure("launchctl", listed)
-    // Round 5 (P1): read the services block line by line, a pid or "-"
-    // first and the label last, whatever columns launchd puts between. A
-    // listing without that block, or with a line not in that shape, is not
-    // taken for one without a Domovoi job. Copy approved by fetzy on 2026-09-26.
+    // Rounds 5 and 6 (P1): the domain listing is read whole. It must open
+    // with this domain, close every block it opens, and hold one services
+    // block; in that block each row has a pid or "-" first and the label last,
+    // whatever columns launchd puts between. A row that names Domovoi anywhere
+    // but as its one, last field is ambiguous (a label may hold a space).
+    // Anything else refuses rather than pass as having no Domovoi job. Copy
+    // approved by fetzy on 2026-09-26.
     const unreadable = () => new ServiceProfileUnknownError(`launchd listed the jobs in ${domain} in a form this app cannot read, so whether a login service is registered there is not known.`)
-    const block = /^[ \t]*services = \{[ \t]*\r?$([\s\S]*?)^[ \t]*\}[ \t]*\r?$/mu.exec(listed.stdout)?.[1]
-    if (block === undefined) throw unreadable()
-    for (const line of block.split(/\r?\n/u)) {
-      const fields = line.trim().split(/\s+/u)
-      if (fields[0] === "") continue
+    const lines = listed.stdout.replace(/\r?\n$/u, "").split(/\r?\n/u).map((line) => line.trimEnd())
+    if (lines[0] !== `${domain} = {`) throw unreadable()
+    let depth = 0
+    let services: string[] | undefined
+    let inServices = false
+    for (const [index, line] of lines.entries()) {
+      const trimmed = line.trim()
+      if (inServices && trimmed !== "}") {
+        services!.push(trimmed)
+        continue
+      }
+      if (trimmed.endsWith("{")) {
+        depth += 1
+        if (depth === 2 && trimmed === "services = {") {
+          if (services !== undefined) throw unreadable()
+          services = []
+          inServices = true
+        }
+      } else if (trimmed === "}") {
+        depth -= 1
+        inServices = false
+        if (depth < 0 || (depth === 0 && index !== lines.length - 1)) throw unreadable()
+      }
+    }
+    if (depth !== 0 || services === undefined) throw unreadable()
+    for (const row of services) {
+      if (row === "") continue
+      const fields = row.split(/\s+/u)
       if (fields.length < 3 || !/^(?:\d+|-)$/u.test(fields[0]!)) throw unreadable()
+      const naming = fields.filter((field) => field.includes("domovoi"))
+      if (naming.length === 0) continue
       const label = fields.at(-1)!
-      if (label.startsWith("sh.domovoi.")) return `${domain}/${label}`
+      if (naming.length !== 1 || naming[0] !== label || !label.startsWith("sh.domovoi.")) throw unreadable()
+      return `${domain}/${label}`
     }
     return undefined
   }

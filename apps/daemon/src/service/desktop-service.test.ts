@@ -1050,6 +1050,29 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
     }
   })
 
+  // Security review round 6 of #577 (P1): the whole domain must be there and
+  // well formed, and a row naming Domovoi anywhere but as its one label is
+  // ambiguous. Both refuse rather than pass as having no Domovoi job.
+  it("refuses a truncated domain listing and a row whose Domovoi label is ambiguous", async () => {
+    const listing = (stdout: string) => vi.fn(async (_command: string, args: string[]) => args[1] === "gui/501/sh.domovoi.domovoid"
+      ? { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
+      : { code: 0, stdout })
+    for (const [label, stdout] of [
+      ["the domain never closes", "gui/501 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n\t}\n"],
+      ["the services block never closes", "gui/501 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n"],
+      ["another domain", "gui/502 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n\t}\n}\n"],
+      ["a label with a space", "gui/501 = {\n\tservices = {\n\t\t     812      0  \tsh.domovoi.domovoid old\n\t}\n}\n"],
+      ["Domovoi before the last field", "gui/501 = {\n\tservices = {\n\t\t     812      0  \tsh.domovoi.domovoid\tcom.apple.example\n\t}\n}\n"],
+    ] as const) {
+      const effects = dependencies({ exists: noDefinition, capture: listing(stdout) })
+      const refused = installDaemonService({ runtime, environment: {} }, effects)
+      await expect(refused, label).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+      await expect(refused, label).rejects.toThrow("launchd listed the jobs in gui/501 in a form this app cannot read, so whether a login service is registered there is not known. Nothing was changed.")
+      expect(effects.write, label).not.toHaveBeenCalled()
+      expect(effects.run, label).not.toHaveBeenCalled()
+    }
+  })
+
   // Security review round 5 of #577 (P1): every refusal comes before the
   // publish: the handoff's own profile check, the caller's fence (thrown from
   // the handoff), and the claim of the profile for the service.
