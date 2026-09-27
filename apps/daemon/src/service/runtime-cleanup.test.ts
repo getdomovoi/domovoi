@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, readdir, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, sep } from "node:path"
 
@@ -281,6 +281,28 @@ describe("removeUnusedDaemonRuntimes with links laid out ahead of time", () => {
       .resolves.toEqual({ skipped: "runtime-directory" })
     expect(await exists(copyLayout(old).nodePath)).toBe(true)
     expect(await exists(copyLayout(copy).nodePath)).toBe(true)
+  })
+
+  it("removes nothing when a kept copy cannot be resolved, and keeps a candidate that cannot be", async () => {
+    const leftover = await publishCopy(profile, "0.9.0", "aaaaaaaaaaaa")
+    const previousCopy = await publishCopy(profile, "0.9.1", "bbbbbbbbbbbb")
+    const current = await publishCopy(profile, "0.9.2", "dddddddddddd")
+    const manager = fakeServiceManager(home)
+    manager.register(current)
+    const denied = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" })
+    const refusing = (refused: string) => ({
+      ...dependencies(manager),
+      fileSystem: { realpath: async (path: string) => { if (path === refused) throw denied; return realpath(path) } },
+    })
+    await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous: { installed: true, copy: previousCopy } }, refusing(previousCopy)))
+      .resolves.toEqual({ skipped: "runtime-directory" })
+    await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous: { installed: true, copy: previousCopy } }, refusing(leftover)))
+      .resolves.toEqual({ removed: [] })
+    expect(await exists(copyLayout(leftover).nodePath)).toBe(true)
+    // A kept copy that is not there holds nothing, so the rest goes.
+    await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous: { installed: true, copy: join(profile, "runtime", "0.9.1", "cccccccccccc") } }, dependencies(manager)))
+      .resolves.toEqual({ removed: expect.arrayContaining([leftover, previousCopy]) as unknown })
+    expect(await exists(copyLayout(current).nodePath)).toBe(true)
   })
 
   it("keeps an interrupted removal's name that is a link, and what it leads to", async () => {
