@@ -651,6 +651,26 @@ describe("staging the shipped runtime under the profile", () => {
       })
     })
 
+    // Round 8 (P2): not only the selected profile. A profile any daemon has
+    // claimed holds profile-lease.sqlite, which is never removed; a default
+    // profile is named .domovoi.
+    it("refuses a staging directory inside any other profile, writing nothing", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const words = `The profile directory ${join(home, ".domovoi")} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`
+        const claimed = join(root, "profiles", "other")
+        await mkdir(join(claimed, "scratch"), { recursive: true })
+        await writeFile(join(claimed, "profile-lease.sqlite"), "")
+        const defaultNamed = join(root, "another-home", ".domovoi", "scratch")
+        await mkdir(defaultNamed, { recursive: true })
+        for (const stagingParent of [join(claimed, "scratch"), defaultNamed]) {
+          const refused = prepareDaemonRuntime(input(resources, home, { stagingParent })).then((prepared) => prepared.publish())
+          await expect(refused, stagingParent).rejects.toThrow(words)
+          expect(await readdir(stagingParent), stagingParent).toEqual([])
+        }
+        expect(await entries(home)).toEqual([])
+      })
+    })
+
     it("leaves a directory swapped into the staging directory's place right before its removal", async () => {
       await withScratch(async ({ resources, home }) => {
         const real = nodeRuntimeFileSystem()

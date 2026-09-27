@@ -308,8 +308,10 @@ async function resolvedAhead(fs: RuntimeFileSystem, pathApi: typeof posix, path:
 // profile and moved in by one rename, so a swapped path cannot redirect the
 // copy. Every staging place is checked the same way before anything is made
 // there: a real directory on the runtime directory's volume, outside the
-// profile and outside any repository (a directory holding .git, as the
-// repository finder reads it). The system temporary directory is tried first,
+// selected profile, outside any other profile (round 8: a directory named
+// .domovoi or holding profile-lease.sqlite) and outside any repository (a
+// directory holding .git, as the repository finder reads it). The system
+// temporary directory is tried first,
 // then <app data>/runtime-staging; otherwise nothing is written. Copy approved
 // by fetzy on 2026-09-26.
 //
@@ -368,9 +370,16 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
     if (!intact) throw new Error(`${root} changed while the runtime was copied, so it was not published.`)
   }
   const device = (identity: string) => identity.slice(0, identity.indexOf(":"))
-  const insideRepository = async (path: string) => {
+  // Round 8 (P2): outside every profile, not only the selected one. A
+  // profile any daemon has claimed holds profile-lease.sqlite, which is never
+  // removed (file-lease.ts), and a default profile is named .domovoi; a
+  // repository holds .git.
+  const insideRepositoryOrProfile = async (path: string) => {
     for (let at = path; ; at = pathApi.dirname(at)) {
-      if (await fs.entry(pathApi.join(at, ".git")) !== "missing") return true
+      if (samePath(pathApi.basename(at), ".domovoi")) return true
+      for (const marker of [".git", "profile-lease.sqlite"]) {
+        if (await fs.entry(pathApi.join(at, marker)) !== "missing") return true
+      }
       if (pathApi.dirname(at) === at) return false
     }
   }
@@ -381,7 +390,7 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
     if (!pathApi.isAbsolute(path) || await fs.entry(path) !== "directory") return false
     if (device(await fs.identity(path)) !== runtimeDevice) return false
     const real = await fs.realpath(path)
-    return !inside(pathApi, profile, real) && !await insideRepository(real)
+    return !inside(pathApi, profile, real) && !await insideRepositoryOrProfile(real)
   }
   const refusal = () => new Error(`The profile directory ${input.profileDirectory} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`)
   let parent: string | undefined
