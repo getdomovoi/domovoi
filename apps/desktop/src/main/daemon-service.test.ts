@@ -1,5 +1,5 @@
 import { DaemonServiceRuntimeMissingError, DaemonServiceUpdateError, type AcquireLocalDaemonOptions, type DaemonServiceInstallResult, type LocalDaemonHandle } from "@getdomovoi/daemon"
-import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, sep } from "node:path"
 import { describe, expect, it, vi } from "vitest"
@@ -569,29 +569,6 @@ describe("staging the shipped runtime under the profile", () => {
     })
   })
 
-  // Final check on #576: removing the staging directory is cleanup. It must
-  // not replace the error that stopped a publish, nor turn a completed publish
-  // into a reported failure.
-  const stagingRemoveFails = async (path: string) => {
-    if (path.includes(".staging-")) throw new Error("simulated staging remove failure")
-    await rmdir(path)
-  }
-
-  it("reports a completed publish as done when removing the staging directory fails", async () => {
-    await withScratch(async ({ resources, home }) => {
-      const runtime = await stage({ resources, home, version: "0.9.4", removeEmptyDirectory: stagingRemoveFails })
-      expect(dirname(copyOf(runtime))).toBe(join(home, ".domovoi", "runtime", "0.9.4"))
-      expect(await readFile(runtime.daemonEntryPath, "utf8")).toBe("daemon")
-    })
-  })
-
-  it("keeps the error that stopped the publish when removing the staging directory fails", async () => {
-    await withScratch(async ({ resources, home }) => {
-      await expect(stage({ resources, home, version: "0.9.4", removeEmptyDirectory: stagingRemoveFails, copy: async () => { throw new Error("disk full") } }))
-        .rejects.toThrow("disk full")
-    })
-  })
-
   // Security review round 7 of #577: each publish writes a fresh directory,
   // <profile>/runtime/<version>/<id>, that nothing else ever uses. A failure
   // after it leaves every earlier copy as it was, so there is no shared state
@@ -617,7 +594,8 @@ describe("staging the shipped runtime under the profile", () => {
           expect(await readFile(runtime.daemonEntryPath, "utf8")).toBe("daemon")
         }
         expect(await readFile(join(version, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
-        expect(await readdir(join(dirname(home), "staging"))).toEqual([])
+        // Round 8: each publish leaves its staging directory, empty.
+        expect(await leftStaging(join(dirname(home), "staging"))).toEqual([[], []])
       })
     })
 
@@ -671,28 +649,28 @@ describe("staging the shipped runtime under the profile", () => {
       })
     })
 
-    it("leaves a directory swapped into the staging directory's place right before its removal", async () => {
+    // Round 8 (P2): checking that the staging directory is still the one made
+    // for the copy cannot be bound to removing it by path, so it is never
+    // removed. An empty directory swapped in right after such a check stays.
+    it("never removes the staging directory, so an empty directory swapped into its place is left", async () => {
       await withScratch(async ({ resources, home }) => {
         const real = nodeRuntimeFileSystem()
         let holder: string | undefined
-        let swapped = false
         const fileSystem = nodeRuntimeFileSystem({
           rename: async (from, to) => { await real.rename(from, to); if (from.includes(".domovoi-runtime-")) holder = dirname(from) },
           identity: async (path) => {
             const found = await real.identity(path)
-            if (path === holder && !swapped) {
-              swapped = true
+            // Where a swap would land: after the identity is read.
+            if (path === holder) {
               await rename(path, `${path}-moved`)
               await mkdir(path)
-              await writeFile(join(path, "keep.txt"), "keep")
             }
             return found
           },
         })
         const prepared = await prepareDaemonRuntime(input(resources, home, { fileSystem }))
         await prepared.publish()
-        expect(swapped).toBe(true)
-        expect(await readFile(join(holder!, "keep.txt"), "utf8")).toBe("keep")
+        expect(await readdir(holder!)).toEqual([])
       })
     })
   })
@@ -777,7 +755,7 @@ describe("staging the shipped runtime under the profile", () => {
         expect(made).toHaveLength(1)
         expect(made[0]!.startsWith(join(dataDirectory, "runtime-staging"))).toBe(true)
         expect(await readFile(prepared.runtime.daemonEntryPath, "utf8")).toBe("daemon")
-        expect(await readdir(join(dataDirectory, "runtime-staging"))).toEqual([])
+        expect(await leftStaging(join(dataDirectory, "runtime-staging"))).toEqual([[]])
       })
     })
 
@@ -834,7 +812,7 @@ describe("staging the shipped runtime under the profile", () => {
     const { stageDaemonRuntime } = await import("./daemon-service.js")
     await expect(stageDaemonRuntime({
       resourcesPath: "/r", profileDirectory: "/Users/dana/.domovoi", version: "0.9.4", platform: "darwin", operation: "update",
-      fileSystem: nodeRuntimeFileSystem({ entry: async () => "missing", copy: vi.fn(), removeEmptyDirectory: async () => {}, rename: async () => {} }),
+      fileSystem: nodeRuntimeFileSystem({ entry: async () => "missing", copy: vi.fn(), rename: async () => {} }),
     })).rejects.toThrow("The Node runtime this app ships was not found at /r/daemon-runtime/node/bin/node. The service was not updated and no service files were changed.")
   })
 
@@ -883,13 +861,19 @@ async function entries(path: string): Promise<string[]> {
   return (await readdir(path)).sort()
 }
 
+// What each staging directory a publish left under parent holds.
+async function leftStaging(parent: string): Promise<string[][]> {
+  const names = await readdir(parent)
+  expect(names.every((name) => name.startsWith(".domovoi-runtime-0.9.4.staging-"))).toBe(true)
+  return Promise.all(names.map((name) => readdir(join(parent, name))))
+}
+
 type StageInput = {
   resources: string
   home: string
   version: string
   copy?: (from: string, to: string) => Promise<void>
   rename?: (from: string, to: string) => Promise<void>
-  removeEmptyDirectory?: (path: string) => Promise<void>
   entry?: RuntimeFileSystem["entry"]
 }
 
@@ -901,7 +885,6 @@ function stage(input: StageInput) {
     fileSystem: nodeRuntimeFileSystem({
       ...(input.copy ? { copy: input.copy } : {}),
       ...(input.rename ? { rename: input.rename } : {}),
-      ...(input.removeEmptyDirectory ? { removeEmptyDirectory: input.removeEmptyDirectory } : {}),
       ...(input.entry ? { entry: input.entry } : {}),
     }),
   })

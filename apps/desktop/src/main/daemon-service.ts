@@ -1,7 +1,7 @@
 import type { DaemonServiceInstallResult, DaemonServiceOptions, DaemonServiceRemovalResult, DaemonServiceRuntime, DaemonServiceStagedRuntime, DaemonServiceStatus } from "@getdomovoi/daemon"
 import { publishFileDurably } from "@getdomovoi/credential-store"
 import { randomUUID } from "node:crypto"
-import { cp, lstat, mkdir, mkdtemp, readdir, readlink, realpath, rmdir } from "node:fs/promises"
+import { cp, lstat, mkdir, mkdtemp, readdir, readlink, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { posix, win32 } from "node:path"
 
@@ -170,8 +170,6 @@ export type RuntimeFileSystem = {
   makeDirectory(path: string): Promise<void>
   // Copies a tree, keeping each link as the link it is.
   copy(from: string, to: string): Promise<void>
-  // One empty directory; fails on anything else.
-  removeEmptyDirectory(path: string): Promise<void>
   rename(from: string, to: string): Promise<void>
   // Device and inode of the entry itself, never through a link.
   identity(path: string): Promise<string>
@@ -202,7 +200,6 @@ export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}
       }
     },
     copy: (from, to) => cp(from, to, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true }),
-    removeEmptyDirectory: (path) => rmdir(path),
     // Each rename is followed by a flush of the directory that holds it.
     rename: (from, to) => publishFileDurably(from, to),
     identity: async (path) => {
@@ -320,8 +317,9 @@ async function resolvedAhead(fs: RuntimeFileSystem, pathApi: typeof posix, path:
 // Limits: Node has no calls relative to an open directory, so a swap in the
 // instant between that check and the rename is not caught. Each successful
 // install or update leaves the copies earlier services used; removing them is
-// not built. A copy that fails part way leaves its staging directory, which is
-// only disk space.
+// not built. Every publish leaves its private staging directory outside every
+// profile: empty after a publish, holding the partial copy after a failure
+// (round 8). It is only disk space.
 export type PreparedDaemonRuntime = {
   // Where the published copy will be, and the shipped runtime it copies.
   runtime: DaemonServiceRuntime
@@ -432,19 +430,14 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
       }
     }
     const holder = await fs.makePrivateDirectory(pathApi.join(stagingParent, `.domovoi-runtime-${input.version}.staging-`))
-    const holderIdentity = await fs.identity(holder)
     const staging = pathApi.join(holder, "copy")
     await fs.copy(shippedRoot, staging)
     await unchanged()
     await fs.rename(staging, destination)
-    // Round 7 (P2): the staging directory is empty now. It is removed only
-    // while it is still the directory made for this copy, and only as an
-    // empty directory, so one swapped in with anything inside is left.
-    try {
-      if (await fs.entry(holder) === "directory" && await fs.identity(holder) === holderIdentity) await fs.removeEmptyDirectory(holder)
-    } catch {
-      // Cleanup only: a staging directory left behind is disk space.
-    }
+    // Round 8 (P2): the staging directory, empty now, is left where it is.
+    // Node cannot remove a directory relative to one it holds open, so a
+    // check that the path is still this directory cannot be bound to its
+    // removal: a directory swapped in between would be removed instead.
   }
   return { runtime: layout(destination), staged: layout(shippedRoot), publish }
 }
