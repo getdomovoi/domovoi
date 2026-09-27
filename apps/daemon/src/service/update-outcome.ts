@@ -81,7 +81,10 @@ export async function publishFirst(deadline: OperationDeadline, publish: () => P
   try {
     await check()
   } catch (cause) {
-    throw new DaemonServiceUpdateError("runtime-copied", cause, undefined, copy)
+    // Round 11 (P3): a deadline that expired first is what stopped the
+    // update, so its reason is the detail.
+    deadline.remainingMs()
+    throw new DaemonServiceUpdateError("runtime-copied", deadline.signal.aborted ? deadline.signal.reason : cause, undefined, copy)
   }
   deadline.remainingMs()
   if (deadline.signal.aborted) throw new DaemonServiceUpdateError("runtime-copied", deadline.signal.reason, undefined, copy)

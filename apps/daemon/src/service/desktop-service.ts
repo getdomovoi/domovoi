@@ -23,6 +23,7 @@ import {
   type ServiceStatus,
 } from "./install.js"
 import { launchdPlistProgram, systemdUnitProgram } from "./units.js"
+import { withinServiceDeadline } from "./deadline.js"
 import { DaemonServiceUpdateError, publishFirst, runServiceUpdate, trackInFlight } from "./update-outcome.js"
 import { prepareWslUpdate } from "./wsl-install.js"
 
@@ -259,16 +260,24 @@ export async function updateDaemonService(
     // the previous service is put back.
     const firstChange = dependencies.platform === "linux"
     const copy = posix.dirname(posix.dirname(posix.dirname(options.runtime.daemonEntryPath)))
-    const publish = async (deadline: OperationDeadline) => {
+    const publish = async (deadline: OperationDeadline, first = firstChange) => {
       if (options.staged === undefined) return
       const check = () => checkRuntime(options.runtime, dependencies, "update")
-      if (firstChange) return publishFirst(deadline, () => tracked.effects.publishStaged(), check, copy)
+      if (first) return publishFirst(deadline, () => tracked.effects.publishStaged(), check, copy)
       await tracked.effects.publishStaged()
       await check()
     }
     if (dependencies.platform === "linux" && saved.wsl) {
       const steps = await prepareWslUpdate(saved, options.runtime, tracked.effects, waits, tracked.inFlight)(readDeadline)
-      return { ...steps, swap: async (deadline) => { await publish(deadline); return { kind: "task" as const, ...await steps.swap(deadline) } } }
+      // Round 11 (P2): an update that resumes an interrupted one may find no
+      // task running, so there the publish is not the first change and
+      // "runtime-copied" would claim a running service. It runs under the
+      // deadline, as launchd's does, and a failure is a failed swap: the
+      // previous task is registered, started and must report ready.
+      const publishStep = (deadline: OperationDeadline) => steps.resuming
+        ? withinServiceDeadline(deadline, () => publish(deadline, false))
+        : publish(deadline)
+      return { ...steps, swap: async (deadline) => { await publishStep(deadline); return { kind: "task" as const, ...await steps.swap(deadline) } } }
     }
     const steps = await prepareServiceUpdate({
       ...target(dependencies),

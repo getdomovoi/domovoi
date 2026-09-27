@@ -1765,6 +1765,59 @@ describe("updateDaemonService when the deadline expires around the publish (roun
     })
   }
 
+  // Round 11 (P3): the deadline's reason, not the check's, once the deadline
+  // has expired by the time the check fails.
+  it("names the deadline when the check after the publish fails after the deadline expired", async () => {
+    const effects = fake("linux", "/home/dl", { updateBudgetMs: 40 })
+    let publishedCopy = false
+    effects.runtimeFile = vi.fn(async (path: string) => {
+      if (path !== published.nodePath || !publishedCopy) return "file" as const
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      return "missing" as const
+    })
+    const publish = vi.fn(async () => { publishedCopy = true })
+    await expect(updateDaemonService({ runtime: published, staged: { runtime: staged, publish } }, effects))
+      .rejects.toMatchObject({ outcome: "runtime-copied", message: timedOut })
+    untouched(effects)
+  })
+
+  // Round 11 (P2): a WSL guest update that resumes an interrupted one may
+  // have no task running, so its publish is not the first change. It runs
+  // under the deadline as launchd's does, and a failure is a failed swap:
+  // the previous task is registered and started again, and must report ready.
+  describe("resuming an interrupted WSL guest update", () => {
+    const configurationPath = "/home/dl/.domovoi/service.json"
+    const interrupted = (): Fake => {
+      const previous = wsl()
+      const half: ServiceConfiguration = { ...previous, wsl: { ...previous.wsl!, executable: "/opt/runtime-half/node", args: ["/opt/runtime-half/index.js"] } }
+      const effects = fake("linux", "/home/dl", { updateBudgetMs: 40 }, half)
+      effects.files.set(wslUpdateIntentPath(configurationPath), JSON.stringify({ version: 1, previous: serializeServiceConfiguration(previous), next: serializeServiceConfiguration(half) }))
+      return effects
+    }
+    const putBack = "Domovoi could not start the service on the new runtime: The operation exceeded its deadline. The previous service was put back and is running."
+
+    it("puts the previous task back when the publish outlasts the deadline, never saying the previous runtime still runs", async () => {
+      const effects = interrupted()
+      let publishDone = false
+      const publish = vi.fn(() => new Promise<void>((resolve) => setTimeout(() => { publishDone = true; effects.order.push("published"); resolve() }, 150)))
+      await expect(updateDaemonService({ runtime: published, staged: { runtime: staged, publish } }, effects))
+        .rejects.toMatchObject({ outcome: "swap-failed-restored", message: putBack })
+      expect(publishDone).toBe(true)
+      expect(effects.order.indexOf("published")).toBeLessThan(effects.order.lastIndexOf("register task"))
+      expect(effects.order.slice(-2)).toEqual(["start task", `remove ${wslUpdateIntentPath(configurationPath)}`])
+    })
+
+    it("puts the previous task back when the published runtime fails its check", async () => {
+      const effects = interrupted()
+      let publishedCopy = false
+      effects.runtimeFile = vi.fn(async (path: string) => path === published.nodePath && publishedCopy ? "missing" as const : "file" as const)
+      const publish = vi.fn(async () => { publishedCopy = true })
+      await expect(updateDaemonService({ runtime: published, staged: { runtime: staged, publish } }, effects))
+        .rejects.toMatchObject({ outcome: "swap-failed-restored" })
+      expect(effects.order).toContain("register task")
+    })
+  })
+
   it("says nothing changed, without publishing, when the deadline expired before the publish", async () => {
     const deadline = OperationDeadline.start(1)
     await new Promise((resolve) => setTimeout(resolve, 10))
