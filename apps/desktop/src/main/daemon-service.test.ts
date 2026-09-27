@@ -475,7 +475,10 @@ describe("staging the shipped runtime under the profile", () => {
       const renamed: [string, string][] = []
       const runtime = await stage({ resources, home, version: "0.9.4", rename: async (from, to) => { renamed.push([from, to]); await rename(from, to) } })
       const destination = join(home, ".domovoi", "runtime", "0.9.4")
-      expect(renamed).toEqual([[expect.stringContaining(join(home, ".domovoi", "runtime", ".0.9.4.staging-")), destination]])
+      // Round 5 (P2): the copy comes from a private staging directory outside
+      // every profile, moved in by one rename.
+      expect(renamed).toEqual([[expect.stringMatching(/[\\/]\.domovoi-runtime-0\.9\.4\.staging-[^\\/]+[\\/]copy$/u), destination]])
+      expect(renamed[0]![0].startsWith(home)).toBe(false)
       expect(runtime).toEqual(daemonRuntimeLayoutUnder(destination))
       expect(await readFile(runtime.daemonEntryPath, "utf8")).toBe("daemon")
       expect(await readFile(runtime.nodePath, "utf8")).toBe("node")
@@ -706,7 +709,7 @@ describe("staging the shipped runtime under the profile", () => {
       await writeFile(join(other, "daemon", "dist", "index.js"), "the other profile's copy")
       const profile = join(root, "profiles", "work")
       await mkdir(profile, { recursive: true })
-      const runtime = await stageDaemonRuntime({ resourcesPath: resources, home, profileDirectory: profile, version: "0.9.4", platform, fileSystem: nodeRuntimeFileSystem() } as Parameters<typeof stageDaemonRuntime>[0])
+      const runtime = await stageDaemonRuntime({ resourcesPath: resources, profileDirectory: profile, version: "0.9.4", platform, stagingParent: join(root, "staging"), fileSystem: nodeRuntimeFileSystem() })
       expect(runtime).toEqual(daemonRuntimeLayoutUnder(join(profile, "runtime", "0.9.4")))
       expect(await readFile(runtime.daemonEntryPath, "utf8")).toBe("daemon")
       expect(await readFile(join(other, "daemon", "dist", "index.js"), "utf8")).toBe("the other profile's copy")
@@ -728,7 +731,7 @@ describe("staging the shipped runtime under the profile", () => {
       const earlier = join(home, ".domovoi", "runtime", "0.9.4")
       await mkdir(join(earlier, "daemon", "dist"), { recursive: true })
       await writeFile(join(earlier, "daemon", "dist", "index.js"), "earlier")
-      const prepared = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, fileSystem: nodeRuntimeFileSystem() })
+      const prepared = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, stagingParent: join(dirname(home), "staging"), fileSystem: nodeRuntimeFileSystem() })
       expect(prepared.runtime).toEqual(daemonRuntimeLayoutUnder(earlier))
       expect(await readFile(prepared.staged.daemonEntryPath, "utf8")).toBe("daemon")
       expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
@@ -736,7 +739,7 @@ describe("staging the shipped runtime under the profile", () => {
       expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual(["0.9.4"])
       expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
 
-      const published = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, fileSystem: nodeRuntimeFileSystem() })
+      const published = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, stagingParent: join(dirname(home), "staging"), fileSystem: nodeRuntimeFileSystem() })
       await published.publish()
       await published.discard()
       expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("daemon")
@@ -747,6 +750,9 @@ describe("staging the shipped runtime under the profile", () => {
   // Round 4 (P2): the runtime directory swapped for a link to another
   // profile's while the copy runs. Nothing is published there, and that
   // profile's copy of the same version is left as it was.
+  // Round 5 (P2): the copy is made in a private directory outside every
+  // profile, so a swap cannot redirect it; nothing is written under the
+  // swapped-in path, not even a hidden staging directory.
   it("refuses to publish when the runtime directory is swapped for a link during the copy", async () => {
     await withScratch(async ({ root, resources, home }) => {
       const profile = join(root, "profiles", "work")
@@ -759,9 +765,11 @@ describe("staging the shipped runtime under the profile", () => {
         await symlink(otherRuntime, join(profile, "runtime"), directoryLink)
         await nodeRuntimeFileSystem().copy(from, to)
       }
-      await expect(stageDaemonRuntime({ resourcesPath: resources, profileDirectory: profile, version: "0.9.4", platform, fileSystem: nodeRuntimeFileSystem({ copy }) }))
+      await expect(stageDaemonRuntime({ resourcesPath: resources, profileDirectory: profile, version: "0.9.4", platform, stagingParent: join(root, "staging"), fileSystem: nodeRuntimeFileSystem({ copy }) }))
         .rejects.toThrow(`${join(profile, "runtime")} changed while the runtime was copied, so it was not published.`)
       expect(await readFile(join(otherRuntime, "0.9.4", "daemon", "dist", "index.js"), "utf8")).toBe("the other profile's copy")
+      expect(await readdir(otherRuntime)).toEqual(["0.9.4"])
+      expect(await readdir(join(root, "staging"))).toEqual([])
       expect(await entries(home)).toEqual([])
     })
   })
@@ -804,6 +812,7 @@ async function withScratch(run: (paths: { root: string; resources: string; home:
     await writeFile(shipped.daemonEntryPath, "daemon")
     const home = join(root, "home")
     await mkdir(home)
+    await mkdir(join(root, "staging"))
     await run({ root, resources, home })
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -827,6 +836,8 @@ type StageInput = {
 function stage(input: StageInput) {
   return stageDaemonRuntime({
     resourcesPath: input.resources, profileDirectory: join(input.home, ".domovoi"), version: input.version, platform,
+    // The private staging directory stays inside the scratch root.
+    stagingParent: join(dirname(input.home), "staging"),
     fileSystem: nodeRuntimeFileSystem({
       ...(input.copy ? { copy: input.copy } : {}),
       ...(input.rename ? { rename: input.rename } : {}),

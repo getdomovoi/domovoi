@@ -1,7 +1,8 @@
 import type { DaemonServiceInstallResult, DaemonServiceOptions, DaemonServiceRemovalResult, DaemonServiceRuntime, DaemonServiceStagedRuntime, DaemonServiceStatus } from "@getdomovoi/daemon"
 import { publishFileDurably } from "@getdomovoi/credential-store"
 import { randomUUID } from "node:crypto"
-import { cp, lstat, mkdir, readdir, readlink, realpath, rm } from "node:fs/promises"
+import { cp, lstat, mkdir, mkdtemp, readdir, readlink, realpath, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { posix, win32 } from "node:path"
 
 import type { DesktopDaemonAcquisition } from "../shared/daemon-acquisition.js"
@@ -173,6 +174,9 @@ export type RuntimeFileSystem = {
   rename(from: string, to: string): Promise<void>
   // Device and inode of the entry itself, never through a link.
   identity(path: string): Promise<string>
+  // A new directory only this user can use, named by the prefix plus a random
+  // suffix.
+  makePrivateDirectory(prefix: string): Promise<string>
 }
 
 export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}): RuntimeFileSystem {
@@ -204,6 +208,7 @@ export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}
       const found = await lstat(path, { bigint: true })
       return `${found.dev}:${found.ino}`
     },
+    makePrivateDirectory: (prefix) => mkdtemp(prefix),
     ...overrides,
   }
 }
@@ -312,6 +317,8 @@ type StageInput = {
   fileSystem: RuntimeFileSystem
   // The words for a missing part follow what was asked (approved 2026-09-23).
   operation?: "install" | "update"
+  // Where the private staging directory is made; tests pass their own.
+  stagingParent?: string
 }
 
 export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedDaemonRuntime> {
@@ -339,7 +346,18 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
     rename: async (from, to) => { await unchanged(); await input.fileSystem.rename(from, to) },
     remove: async (path) => { await unchanged(); await input.fileSystem.remove(path) },
   }
-  const staging = pathApi.join(root, `.${input.version}.staging-${randomUUID()}`)
+  // Round 5 (P2): the copy is made in a private directory outside every
+  // profile, so no path under the profile is written until the publish, and a
+  // swapped path cannot redirect the copy. It is the system temporary
+  // directory when that is on the runtime directory's volume, so the publish
+  // is one rename; otherwise the directory that holds the profile directory.
+  const device = (identity: string) => identity.slice(0, identity.indexOf(":"))
+  const temporary = input.stagingParent ?? tmpdir()
+  const parent = input.stagingParent !== undefined || device(await input.fileSystem.identity(temporary)) === device(pinned.identity)
+    ? temporary
+    : pathApi.dirname(input.profileDirectory)
+  const holder = await input.fileSystem.makePrivateDirectory(pathApi.join(parent, `.domovoi-runtime-${input.version}.staging-`))
+  const staging = pathApi.join(holder, "copy")
   const layout = (at: string): DaemonServiceRuntime => ({
     nodePath: input.platform === "win32" ? pathApi.join(at, "node", "node.exe") : pathApi.join(at, "node", "bin", "node"),
     daemonEntryPath: pathApi.join(at, "daemon", "dist", "index.js"),
@@ -348,7 +366,7 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
   // Cleanup only: a staging directory left behind is disk space. Its failure
   // must not replace the publish's own error, nor turn a completed publish
   // into a reported failure.
-  const discard = async () => { settled = true; await fs.remove(staging).catch(() => {}) }
+  const discard = async () => { settled = true; await input.fileSystem.remove(holder).catch(() => {}) }
   try {
     await unchanged()
     await input.fileSystem.copy(shippedRoot, staging)
@@ -378,7 +396,7 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
       await restoreVersionPath(fs, { destination, aside, failed, hadEarlier: earlier === "directory", asideMoved })
       throw cause
     } finally {
-      await fs.remove(staging).catch(() => {})
+      await input.fileSystem.remove(holder).catch(() => {})
     }
     // The new copy is in place. An earlier copy left behind here is only
     // disk space, never something the service runs.
