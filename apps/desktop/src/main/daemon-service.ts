@@ -372,10 +372,13 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
   // Round 8 (P2): outside every profile, not only the selected one. A
   // profile any daemon has claimed holds profile-lease.sqlite, which is never
   // removed (file-lease.ts), and a default profile is named .domovoi; a
-  // repository holds .git.
+  // repository holds .git. Round 9 (P2): the name is compared case-folded on
+  // every platform, since a case-insensitive volume (the macOS and Windows
+  // default, and some Linux mounts) makes .DOMOVOI the same directory. The
+  // marker files are looked up by lstat, so the volume's own case rules apply.
   const insideRepositoryOrProfile = async (path: string) => {
     for (let at = path; ; at = pathApi.dirname(at)) {
-      if (samePath(pathApi.basename(at), ".domovoi")) return true
+      if (pathApi.basename(at).toLowerCase() === ".domovoi") return true
       for (const marker of [".git", "profile-lease.sqlite"]) {
         if (await fs.entry(pathApi.join(at, marker)) !== "missing") return true
       }

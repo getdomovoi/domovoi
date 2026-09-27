@@ -658,6 +658,19 @@ describe("staging the shipped runtime under the profile", () => {
       })
     })
 
+    // Round 9 (P2): on a case-insensitive volume .DOMOVOI is the same
+    // directory as .domovoi, so the name is compared case-folded everywhere.
+    it("refuses a staging directory under a default-named profile whose name differs only in case", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const upper = join(root, "another-home", ".DOMOVOI", "scratch")
+        await mkdir(upper, { recursive: true })
+        const refused = prepareDaemonRuntime(input(resources, home, { stagingParent: upper })).then((prepared) => prepared.publish())
+        await expect(refused).rejects.toThrow(`The profile directory ${join(home, ".domovoi")} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`)
+        expect(await readdir(upper)).toEqual([])
+        expect(await entries(home)).toEqual([])
+      })
+    })
+
     // Round 8 (P2): checking that the staging directory is still the one made
     // for the copy cannot be bound to removing it by path, so it is never
     // removed. An empty directory swapped in right after such a check stays.
