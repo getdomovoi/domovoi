@@ -168,6 +168,24 @@ describe("desktop credential pairing", () => {
     })
   })
 
+  it.each(["web", "phone", "tablet"])("refuses a desktop pairing code to a bearer declared as %s", async (client) => {
+    const { daemon } = await fixture()
+    const call = await hello(daemon, client, daemon.authToken)
+    expect(await call("device.issueCode", { targetClient: "desktop" })).toMatchObject({ error: { code: -32001, message: desktopPairingRefusal } })
+  })
+
+  it.each(["desktop", "cli"])("issues a desktop pairing code to a bearer declared as %s", async (client) => {
+    const { daemon } = await fixture()
+    const call = await hello(daemon, client, daemon.authToken)
+    expect(await call("device.issueCode", { targetClient: "desktop" })).toHaveProperty("result.code")
+  })
+
+  it.each(["phone", "tablet", "web"])("still issues a %s pairing code to a bearer declared as web", async (targetClient) => {
+    const { daemon } = await fixture()
+    const call = await hello(daemon, "web", daemon.authToken)
+    expect(await call("device.issueCode", { targetClient })).toHaveProperty("result.code")
+  })
+
   it("still pairs a web credential from a bearer declared as web", async () => {
     const { daemon } = await fixture()
     const call = await hello(daemon, "web", daemon.authToken)

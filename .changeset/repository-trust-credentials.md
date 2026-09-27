@@ -12,5 +12,6 @@ declared another client or none) with "Repository trust requires the daemon cred
 desktop or web credential with full access". The methods have no handler yet.
 
 `device.pair` now refuses to mint a desktop credential for a connection that declared web, phone or
-tablet, with "A web, phone or tablet connection cannot pair a desktop credential", so a browser that
-holds a pasted bearer cannot pair itself as a desktop.
+tablet, and `device.issueCode` refuses such a connection a desktop pairing code, both with "A web,
+phone or tablet connection cannot pair a desktop credential", so a browser that holds a pasted
+bearer cannot pair itself as a desktop. Phone, tablet and web codes are issued as before.

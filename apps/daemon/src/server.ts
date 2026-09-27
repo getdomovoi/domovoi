@@ -1966,6 +1966,13 @@ export class DomovoiDaemon {
       && actor.credential === "device"
   }
 
+  // The connection declared web, phone or tablet. Such a connection may hold a
+  // pasted bearer, so it must not mint a desktop credential (rulings Q68 A, Q72 A).
+  #declaredWebOrHandheld(socket: RpcOutboundSocket): boolean {
+    const actor = this.#authenticatedActors.get(socket)
+    return actor?.kind === "client" && (actor.client === "web" || actor.client === "phone" || actor.client === "tablet")
+  }
+
   // Revocation has to reach a device that is only listening, so its socket is
   // closed as soon as its credential stops being active.
   #disconnectInactiveDevices(): void {
@@ -6601,6 +6608,12 @@ export class DomovoiDaemon {
           return
         }
         const params = paramsResult.data as RpcParams<"device.issueCode">
+        // A desktop code redeems to a desktop credential, so it takes the same
+        // refusal as device.pair (ruling Q72 A).
+        if (params.targetClient === "desktop" && this.#declaredWebOrHandheld(socket)) {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, desktopPairingRefusal)
+          return
+        }
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -6649,12 +6662,10 @@ export class DomovoiDaemon {
         }
         // A browser, phone or tablet holding a pasted bearer must not mint
         // itself a desktop credential (ruling Q68 A).
-        const pairActor = this.#authenticatedActors.get(socket)
         if (
           method === "device.pair"
           && ((params as RpcParams<"device.pair">).targetClient ?? (params as RpcParams<"device.pair">).client) === "desktop"
-          && pairActor?.kind === "client"
-          && (pairActor.client === "web" || pairActor.client === "phone" || pairActor.client === "tablet")
+          && this.#declaredWebOrHandheld(socket)
         ) {
           this.#error(socket, request.id, daemonAuthenticationErrorCode, desktopPairingRefusal)
           return
