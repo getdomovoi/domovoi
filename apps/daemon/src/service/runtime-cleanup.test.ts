@@ -4,7 +4,7 @@ import { dirname, join, sep } from "node:path"
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
-import { readDaemonServiceRuntimeCopy, removeUnusedDaemonRuntimes } from "../public.js"
+import { readDaemonServiceRuntimeCopy, removeUnusedDaemonRuntimes, type DaemonServiceRuntimeCopy } from "../public.js"
 import { claimServiceOperation } from "./operation-lease.js"
 import { copyLayout, fakeServiceManager, publishCopy, serviceDefinition } from "./runtime-copy.test-support.js"
 
@@ -302,6 +302,69 @@ describe("removeUnusedDaemonRuntimes with links laid out ahead of time", () => {
     // A kept copy that is not there holds nothing, so the rest goes.
     await expect(removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous: { installed: true, copy: join(profile, "runtime", "0.9.1", "cccccccccccc") } }, dependencies(manager)))
       .resolves.toEqual({ removed: expect.arrayContaining([leftover, previousCopy]) as unknown })
+    expect(await exists(copyLayout(current).nodePath)).toBe(true)
+  })
+
+  // Security review round 2 of #635 (P2): the kept copy's version directory
+  // is a link into a candidate, and in there its id is a second link, to a
+  // directory outside every candidate. The copy's own directory is apart from
+  // the candidate, yet removing the candidate removes the link the path the
+  // definition names runs through, so Node and the daemon entry stop resolving.
+  for (const role of ["previous", "current"] as const) {
+    it.each([".removing-0123456789ab", join("0.8.0", "bbbbbbbbbbbb")])(`removes nothing when the ${role} copy's path runs through a link inside %s`, async (container) => {
+      const kept = await publishCopy(profile, "0.9.1", "aaaaaaaaaaaa")
+      const target = join(root, "retained-target")
+      await rename(kept, target)
+      const parked = join(profile, "runtime", container)
+      await mkdir(dirname(parked), { recursive: true })
+      await rename(dirname(kept), parked)
+      await linkDirectory(target, join(parked, "aaaaaaaaaaaa"))
+      await linkDirectory(parked, dirname(kept))
+      const leftover = await publishCopy(profile, "0.9.0", "cccccccccccc")
+      const manager = fakeServiceManager(home)
+      manager.register(kept)
+
+      const lease = claimServiceOperation(home)
+      let previous: DaemonServiceRuntimeCopy = { installed: false }
+      let current = kept
+      try {
+        if (role === "previous") {
+          previous = await readDaemonServiceRuntimeCopy(manager.reader)
+          current = await publishCopy(profile, "0.9.2", "dddddddddddd")
+          manager.register(current)
+        }
+      } finally {
+        lease.release()
+      }
+      if (role === "previous") expect(previous).toEqual({ installed: true, copy: kept })
+      expect(await exists(copyLayout(kept).nodePath)).toBe(true)
+
+      const result = await removeUnusedDaemonRuntimes({ profileDirectory: profile, published: copyLayout(current), previous }, dependencies(manager))
+      expect(await exists(copyLayout(kept).nodePath), JSON.stringify(result)).toBe(true)
+      expect(await exists(copyLayout(kept).daemonEntryPath)).toBe(true)
+      expect(await exists(copyLayout(target).nodePath)).toBe(true)
+      expect(result).toEqual({ skipped: "runtime-directory" })
+      expect(await exists(copyLayout(leftover).nodePath)).toBe(true)
+      expect(await exists(copyLayout(current).nodePath)).toBe(true)
+    })
+  }
+
+  // The rule above looks only at the profile and below it. A link above the
+  // profile, as a linked home directory is, still lets the cleanup run.
+  it("still removes unused copies when a directory above the profile is a link", async () => {
+    const actualHome = join(root, "actual-home")
+    await mkdir(actualHome)
+    const linkedHome = join(root, "linked-home")
+    await linkDirectory(actualHome, linkedHome)
+    const linkedProfile = join(linkedHome, ".domovoi")
+    const leftover = await publishCopy(linkedProfile, "0.9.0", "aaaaaaaaaaaa")
+    const previousCopy = await publishCopy(linkedProfile, "0.9.1", "bbbbbbbbbbbb")
+    const current = await publishCopy(linkedProfile, "0.9.2", "dddddddddddd")
+    const manager = fakeServiceManager(home, linkedProfile)
+    manager.register(current)
+    await expect(removeUnusedDaemonRuntimes({ profileDirectory: linkedProfile, published: copyLayout(current), previous: { installed: true, copy: previousCopy } }, dependencies(manager)))
+      .resolves.toEqual({ removed: [leftover] })
+    expect(await exists(copyLayout(previousCopy).nodePath)).toBe(true)
     expect(await exists(copyLayout(current).nodePath)).toBe(true)
   })
 
