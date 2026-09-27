@@ -1041,6 +1041,26 @@ describe("the service handoff fence and an emergency stop", () => {
     }
   })
 
+  // Round 7: only the thread says a stop is already finished. An earlier row
+  // that names the same stop id (under another key, with no sessions) does
+  // not, so the later row is still finished, and each line is written once.
+  it("finishes a stop that an earlier row also names, and writes each of its lines once", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopId = `stop-${"a".repeat(8)}-aaaa-4aaa-8aaa-${"a".repeat(12)}`
+    const row = (sessionIds: string[]) => JSON.stringify({ version: 1, stopId, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z", sessionIds })
+    await journalRow(statePath, "stop-under-another-key", row([]))
+    await journalRow(statePath, stopId, row([sessionId]))
+    await journalRow(statePath, "stop-a-third-copy", row([sessionId]))
+
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.thread.filter((item) => item.kind === "system" && item.body === "Emergency stop requested by desktop.").map((item) => item.sessionId)).toEqual([sessionId])
+    await daemon.daemon.stop()
+    expect(journalTables(statePath).pending).toEqual([])
+  })
+
   // Round 5: a row can repeat a field, and JSON.parse keeps only the last
   // value. The restart acts on every value the row gives, keeps a copy of the
   // row, and so neither misnames nor skips the stop.

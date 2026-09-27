@@ -10557,9 +10557,12 @@ export class DomovoiDaemon {
       if (stopId !== undefined) recorded.add(stopId)
     }
     const sessions = new Map(candidate.sessions.map((session) => [session.id, session]))
+    // Only the thread says a stop is finished (round 7). Rows that name the
+    // same stop each act on what they hold; a line already written in this
+    // pass is not written again.
+    const written = new Set<string>()
     for (const { intent } of entries) {
       if (recorded.has(intent.stopId)) continue
-      recorded.add(intent.stopId)
       for (const dispatch of intent.inFlight) {
         const session = sessions.get(dispatch.sessionId)
         if (!session) continue
@@ -10575,9 +10578,11 @@ export class DomovoiDaemon {
       for (const client of intent.clients) {
         for (const sessionId of intent.sessionIds) {
           const session = sessions.get(sessionId)
-          if (!session || sessionIsReadOnly(session)) continue
+          const id = `system-${intent.stopId}-${client}-${sessionId}`
+          if (!session || sessionIsReadOnly(session) || written.has(id)) continue
+          written.add(id)
           candidate.thread.push({
-            id: `system-${intent.stopId}-${client}-${sessionId}`,
+            id,
             sessionId,
             kind: "system",
             body: `Emergency stop requested by ${client}.`,
