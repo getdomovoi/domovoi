@@ -15,9 +15,11 @@
 // with no equals sign in whole), and all URL user info become [REDACTED]. A
 // header value that opens with an authorization scheme keeps the scheme word,
 // as a bare `Bearer x` does. A scheme or flag word inside a value another
-// rule hides is still read as one, so its own value is hidden too: `--token
-// Bearer x` reads `--token [REDACTED] [REDACTED]`. Every rule reads the text
-// in work that grows linearly with it. The daemon's durable-text redaction leaves
+// rule hides or reads past (a URL, a header's value, a shell's script) is
+// still read as one, so its own value is hidden too: `--token Bearer x` reads
+// `--token [REDACTED] [REDACTED]`, and `--token 'https://h/ Token' x` reads
+// `--token '[REDACTED]' [REDACTED]`. Every rule reads the text in work that
+// grows linearly with it. The daemon's durable-text redaction leaves
 // `DATABASE_URL=x`, `https://tok@host` and `Bearer tok` alone, so this pass is
 // separate from it.
 //
@@ -556,14 +558,25 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
   const scripts = shellScripts(tokens)
   let stopAfter: number | undefined
 
-  const change = (token: number, from: number, to: number, text: string) => {
-    changes[token]!.push({ start: from - starts[token]!, end: to - starts[token]!, text })
+  // Whether the rules run in the second pass below, and the token whose
+  // character it reads there.
+  let passing = false
+  let passToken = -1
+  // A change is recorded and true returned. The second pass records only a
+  // value in a later word than the one it reads: a value in the same word is
+  // that word's rule's to hide (a URL's, a header's) or, in a shell's script,
+  // the script's own when it is read on its own. A value that is a later
+  // shell's script hides that script whole.
+  const change = (token: number, from: number, to: number, text: string): boolean => {
+    if (passing && token === passToken) return false
+    if (passing && scripts.has(token)) changes[token]!.push({ start: 0, end: ends[token]! - starts[token]!, text: marker })
+    else changes[token]!.push({ start: from - starts[token]!, end: to - starts[token]!, text })
     consumed.add(token)
+    return true
   }
   // Everything from `from` to the end of the text is redacted.
   const truncate = (token: number, from: number) => {
-    change(token, from, ends[token]!, marker)
-    stopAfter = token
+    if (change(token, from, ends[token]!, marker)) stopAfter = stopAfter === undefined ? token : Math.min(stopAfter, token)
   }
   const wordAtIndex = (index: number): number | undefined => {
     const owner = owners[index]
@@ -591,6 +604,10 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     blankRuns[at] = /\s/u.test(character) ? blankRuns[at + 1]! : at
     colons[at] = character === ":" ? at : colons[at + 1]!
   }
+  // The first word at or after each token, or -1.
+  const nextWords = new Int32Array(tokens.length + 1)
+  nextWords[tokens.length] = -1
+  for (let at = tokens.length - 1; at >= 0; at -= 1) nextWords[at] = tokens[at]!.kind === "word" ? at : nextWords[at + 1]!
 
   // A private key that runs past its word takes the rest of the text. Its
   // body runs to the first footer after its header, or to the end: that
@@ -607,7 +624,13 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
       footer = found ? { start: found.index, end: found.index + found[0].length } : { start: Number.POSITIVE_INFINITY, end: joined.length }
     }
     if (footer.end <= ends[token]!) return undefined
-    truncate(token, index)
+    // In the second pass the header's own word was read already (hidden by
+    // the URL it is in, read on its own as a shell's script, or cut here by
+    // the first pass), so the body is the rest of the text from the next word.
+    if (passing) {
+      const next = nextWords[token + 1]
+      if (next !== undefined && next !== -1) truncate(next, starts[next]!)
+    } else truncate(token, index)
     return joined.length
   }
 
@@ -771,6 +794,29 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     }
     index = (joined.startsWith("-----BEGIN ", index) ? privateKeyAt(index, token) : undefined)
       ?? urlAt(index, token) ?? headerAt(index) ?? pairAt(index, token) ?? schemeAt(index, token) ?? index + 1
+  }
+  // The second pass, independent of the first. The pass above moves past a
+  // word a rule took (a URL to its end, a header's name and the scheme word
+  // that opens its value, a shell's script), so a word in there that makes
+  // the next word a value was not read: `--token 'https://h/ Token' x` hid
+  // the URL and showed `x` with nothing left to name it. Here every rule
+  // whose value can be the next word (a scheme word, a sensitive key or flag,
+  // a header's name, a private key's header) is tried at every character of
+  // the original words, whatever the pass above took, and each value it
+  // finds in a later word is hidden. What it finds joins the changes above
+  // and is merged with them once, so no rule decides what another reads.
+  // Each rule reads in constant work apart from what it matches, so the pass
+  // is linear too.
+  passing = true
+  footer = undefined
+  for (let at = 0; at < joined.length && (stopAfter === undefined || at < ends[stopAfter]!); at += 1) {
+    const token = owners[at]!
+    if (token === -1 || tokens[token]!.kind === "operator") continue
+    passToken = token
+    if (joined.startsWith("-----BEGIN ", at)) privateKeyAt(at, token)
+    headerAt(at)
+    pairAt(at, token)
+    schemeAt(at, token)
   }
   const merged = changes.map(mergedChanges)
   const values = tokens.map((token, index) => {

@@ -280,7 +280,7 @@ describe("a scheme word or sensitive flag inside a value another rule took", () 
   it.each([
     ["curl --token 'https://host/ Token' s3cr3t-value", "curl --token '[REDACTED]' [REDACTED]", ["curl", "--token", "https://host/ Token", "s3cr3t-value"], "curl --token [REDACTED] [REDACTED]"],
     ["curl --token 'x -H X-Foo: Bearer ' s3cr3t-value", "curl --token '[REDACTED]' [REDACTED]", ["curl", "--token", "x -H X-Foo: Bearer ", "s3cr3t-value"], "curl --token [REDACTED] [REDACTED]"],
-    ["curl 'https://host/ --token' s3cr3t-value", "curl 'https://host/[REDACTED]' [REDACTED]", ["curl", "https://host/ --token", "s3cr3t-value"], "curl 'https://host/[REDACTED]' [REDACTED]"],
+    ["curl 'https://host/ --token' s3cr3t-value", "curl 'https://host/[REDACTED]' [REDACTED]", ["curl", "https://host/ --token", "s3cr3t-value"], "curl https://host/[REDACTED] [REDACTED]"],
     ["sh -c 'curl Bearer' s3cr3t-value", "sh -c 'curl Bearer' [REDACTED]", ["sh", "-c", "curl Bearer", "s3cr3t-value"], "sh -c 'curl Bearer' [REDACTED]"],
   ] as const)("redacts %s", (input, expected, argv, expectedArgv) => {
     for (const redact of [redactInventoryText, redactInventoryCommand]) {
