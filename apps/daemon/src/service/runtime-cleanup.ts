@@ -50,16 +50,24 @@ import { nodeServiceEffects } from "./install.js"
 //   nothing. A kept copy whose profile, runtime, version or id directory, as
 //   the definition spells it, is a link removes nothing either (round 2): a
 //   link inside a candidate can lead on to a copy outside it.
+// - Every component of the two paths the service runs for each kept copy,
+//   its Node and its daemon entry, is walked as the definition spells it,
+//   from the filesystem root to the file (round 3). Nothing is removed when
+//   one is a link at or below the runtime directory, or a link that sits or
+//   leads there; when one lies in the runtime directory apart from that
+//   copy's own directory and those above it; when a read fails; or when the
+//   copy is there but a file the service runs is not. Only a copy that is
+//   not there at all ends its walk early. A link above the runtime directory that stays out
+//   of it, a linked home directory for one, still cleans up.
 // - A candidate is moved to a private name beside the copies, by one rename,
 //   and removed only if what moved is still the directory that was checked.
-//   Anything else is moved back.
+//   Anything else is moved back. When anything after the rename fails, what
+//   was moved goes back too (round 3); if it cannot, the cleanup throws
+//   rather than say nothing was removed.
 //
 // Limits: Node has no calls relative to an open directory, so the removal of
 // the moved tree walks it by path; a process running as the same user can
 // swap a directory inside it during that walk (same-user races, P3 by Q63).
-// Links above a profile are not looked at, so a linked home directory still
-// cleans up; a profile spelled through a link that sits inside one of its own
-// candidates is not detected.
 // The service definition is read by name; WSL guest services have no
 // definition this host can read, so their copies are never removed here.
 export type RuntimeCleanupFileSystem = {
@@ -183,6 +191,19 @@ export async function removeUnusedDaemonRuntimes(
     for (const copy of kept) {
       if (!await namedThroughDirectories(fs, paths, copy)) return { skipped: "runtime-directory" }
     }
+    // Security review round 3 of #635 (P2): the profile's spelling can run
+    // through a link inside a candidate, and so can Node, the daemon entry or
+    // a directory between them and the copy. Every component of both paths
+    // is checked, not only the copy's own directories.
+    let runtime: string
+    try {
+      runtime = await fs.realpath(root)
+    } catch {
+      return { skipped: "runtime-directory" }
+    }
+    for (const copy of kept) {
+      if (!await executablesStayClear(fs, paths, platform, runtime, copy)) return { skipped: "runtime-directory" }
+    }
     let keptTrees: Tree[]
     try {
       keptTrees = await Promise.all(kept.map((copy) => tree(fs, paths, copy)))
@@ -225,8 +246,8 @@ export async function removeUnusedDaemonRuntimes(
 // True when the kept copy's profile, runtime, version and id directories, as
 // the definition spells them, are each a real directory, up to the first that
 // is not there: a copy that is not there holds nothing. A link, anything else
-// or a read that fails is false. What is above the profile, a linked home
-// directory for one, is not looked at (see Limits above).
+// or a read that fails is false. What is above the profile, and what is below
+// the copy, is left to executablesStayClear.
 async function namedThroughDirectories(fs: RuntimeCleanupFileSystem, paths: typeof posix, copy: string): Promise<boolean> {
   const version = paths.dirname(copy)
   const runtime = paths.dirname(version)
@@ -235,6 +256,76 @@ async function namedThroughDirectories(fs: RuntimeCleanupFileSystem, paths: type
       const found = await fs.entry(path)
       if (found === "missing") return true
       if (found !== "directory") return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Security review round 3 of #635 (P2): true only when no removal under the
+// runtime directory can take away a component of the paths the service runs
+// for this kept copy: <copy>/node/bin/node (node\node.exe on Windows) and
+// <copy>/daemon/dist/index.js, as the definition spells them. Each path is
+// walked from the filesystem root one component at a time. For each
+// component the walk reads where the entry itself really is and, for a link,
+// where it really leads. It is false when
+// - a component at or below the copy's runtime directory, by its spelling, is
+//   a link;
+// - a link really sits, or really leads, at or inside the real runtime
+//   directory (runtime);
+// - anything really at or inside the runtime directory is neither the copy's
+//   own real directory, a directory above it, nor inside it: that is where a
+//   candidate is, whatever the spelling;
+// - a component is missing below the copy's own directory, or a read fails.
+// A copy that is not there at all holds nothing, so its walk ends at the
+// first component that is not there. Candidates are compared without case,
+// so a volume's case rules can only keep more.
+async function executablesStayClear(fs: RuntimeCleanupFileSystem, paths: typeof posix, platform: string, runtime: string, copy: string): Promise<boolean> {
+  const split = (path: string) => {
+    const top = paths.parse(path).root
+    return { top, parts: path.slice(top.length).split(paths.sep).filter((part) => part !== "") }
+  }
+  const fold = (path: string) => path.toLowerCase()
+  const within = (outer: string, inner: string) => inner === outer || inner.startsWith(outer.endsWith(paths.sep) ? outer : outer + paths.sep)
+  const inRuntime = (path: string) => within(fold(runtime), fold(path))
+  // <profile>/runtime/<version>/<id>: the runtime directory is two above.
+  const copyDepth = split(copy).parts.length
+  const runtimeIndex = copyDepth - 3
+  if (runtimeIndex < 0) return false
+  const executables = [
+    platform === "win32" ? paths.join(copy, "node", "node.exe") : paths.join(copy, "node", "bin", "node"),
+    paths.join(copy, "daemon", "dist", "index.js"),
+  ]
+  try {
+    for (const executable of executables) {
+      const { top, parts } = split(executable)
+      if (parts.some((part) => part === "." || part === "..")) return false
+      let spelled = top
+      let real = await fs.realpath(top)
+      let copyReal: string | undefined
+      const locations: string[] = []
+      for (const [index, part] of parts.entries()) {
+        spelled = paths.join(spelled, part)
+        const found = await fs.entry(spelled)
+        if (found === "missing") {
+          // The copy is there, but not what the service runs: not known.
+          if (index >= copyDepth) return false
+          copyReal = paths.join(real, ...parts.slice(index, copyDepth))
+          break
+        }
+        const own = paths.join(real, part)
+        real = await fs.realpath(spelled)
+        if (found === "link") {
+          if (index >= runtimeIndex || inRuntime(own) || inRuntime(real)) return false
+          locations.push(own)
+        }
+        locations.push(real)
+        if (index === copyDepth - 1) copyReal = real
+      }
+      if (copyReal === undefined) return false
+      const kept = copyReal
+      if (!locations.every((location) => !inRuntime(location) || within(location, kept) || within(kept, location))) return false
     }
     return true
   } catch {
@@ -292,23 +383,51 @@ async function apart(fs: RuntimeCleanupFileSystem, paths: typeof posix, candidat
 }
 
 // Moves the candidate to a private name under the runtime directory, then
-// removes it only if what moved is the directory that was checked.
+// removes it only if what moved is the directory that was checked. Anything
+// else, or anything after the rename that fails, puts back what moved.
 async function removeCopy(fs: RuntimeCleanupFileSystem, paths: typeof posix, root: string, candidate: string): Promise<boolean> {
+  let checked: string
+  let moved: string
   try {
-    const checked = await fs.identity(candidate)
+    checked = await fs.identity(candidate)
     if (await fs.entry(candidate) !== "directory") return false
-    const moved = paths.join(root, `.removing-${randomBytes(6).toString("hex")}`)
+    moved = paths.join(root, `.removing-${randomBytes(6).toString("hex")}`)
     if (await fs.entry(moved) !== "missing") return false
-    // A rename moves the entry itself and never goes through a link.
-    await fs.rename(candidate, moved)
-    if (await fs.entry(moved) !== "directory" || await fs.identity(moved) !== checked) {
-      if (await fs.entry(candidate) === "missing") await fs.rename(moved, candidate)
-      return false
-    }
-    await fs.removeTree(moved)
-    return true
   } catch {
     return false
+  }
+  try {
+    // A rename moves the entry itself and never goes through a link.
+    await fs.rename(candidate, moved)
+    if (await fs.entry(moved) === "directory" && await fs.identity(moved) === checked) {
+      await fs.removeTree(moved)
+      return true
+    }
+  } catch {
+    // The rename can land and the flush after it fail, or the removal can
+    // stop partway: either way, what moved goes back below.
+  }
+  await putBack(fs, candidate, moved)
+  return false
+}
+
+// Security review round 3 of #635 (P2): a copy left under a private name is
+// removed by the next cleanup as an interrupted removal, so a cleanup that
+// stops after its rename must not report that nothing was removed. What
+// moved goes back to the candidate's name. Settled only when nothing is left
+// under the private name and the candidate's name holds something again;
+// otherwise, or when a read fails, this throws.
+async function putBack(fs: RuntimeCleanupFileSystem, candidate: string, moved: string): Promise<void> {
+  if (await fs.entry(candidate) === "missing" && await fs.entry(moved) !== "missing") {
+    try {
+      await fs.rename(moved, candidate)
+    } catch {
+      // The flush after the rename can fail once it has landed; the reads
+      // below decide.
+    }
+  }
+  if (await fs.entry(moved) !== "missing" || await fs.entry(candidate) === "missing") {
+    throw new Error(`${candidate} was moved to ${moved} for removal and could not be put back`)
   }
 }
 
