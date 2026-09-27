@@ -107,4 +107,17 @@ describe("readServiceRemovalSnapshot", () => {
     failingReads.set(path, "ENOENT")
     expect(readServiceRemovalSnapshot(root, process.platform).configurationUnknown).toBeUndefined()
   })
+
+  // Round 4 (P1): the effective profile comes from the saved configuration's
+  // own home, not the home the removal was asked from.
+  it("names the effective profile under the saved configuration's own home", async () => {
+    const root = await home()
+    const otherHome = join(root, "other-home")
+    await mkdir(otherHome)
+    const path = serviceConfigurationPath(root, process.platform)
+    await mkdir(dirname(path), { recursive: true })
+    const configuration = createServiceConfiguration({}, { homeDirectory: otherHome, workingDirectory: otherHome, platform: process.platform })
+    await writeFile(path, serializeServiceConfiguration(configuration), { mode: 0o600 })
+    expect(readServiceRemovalSnapshot(root, process.platform).effectiveProfileDirectory).toBe(join(otherHome, ".domovoi"))
+  })
 })

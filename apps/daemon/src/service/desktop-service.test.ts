@@ -821,12 +821,24 @@ describe("security review round 6 (install)", () => {
 describe("installDaemonService and removeDaemonService for the caller's profile", () => {
   const plistPath = "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist"
   // The removal snapshot is the one read of service.json a removal acts on.
-  const savedFor = (profileDirectory: string) => vi.fn(() => ({ owner: undefined, configurationDigest: "digest", profileDirectory }))
+  const savedFor = (profileDirectory: string) => vi.fn(() => ({ owner: undefined, configurationDigest: "digest", profileDirectory, effectiveProfileDirectory: profileDirectory }))
   const noDefinition = vi.fn(async (path: string) => path !== plistPath)
+  // launchd with nothing of Domovoi's loaded: the label is not found and the
+  // domain lists no sh.domovoi job. Round 4 checks both.
+  const domain = (labels: string[] = []) => `gui/501 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n${labels.map((label) => `\t\t     812      0  \t${label}\n`).join("")}\t}\n}\n`
+  const launchd = (options: { loaded?: boolean; labels?: string[] } = {}) => vi.fn(async (_command: string, args: string[]) => {
+    if (args[1] === "gui/501/sh.domovoi.domovoid") {
+      return options.loaded
+        ? { code: 0, stdout: "\tstate = running\n" }
+        : { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
+    }
+    if (args[1] === "gui/501") return { code: 0, stdout: domain(options.labels) }
+    throw new Error(`unexpected capture ${args.join(" ")}`)
+  })
 
   it("installs for the caller's profile and records it", async () => {
     // No service saved and no launch agent registered: nothing to bind to.
-    const effects = dependencies({ exists: noDefinition })
+    const effects = dependencies({ exists: noDefinition, capture: launchd() })
     await installDaemonService({ runtime, environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/work" } }, effects)
     const written = vi.mocked(effects.write).mock.calls.find(([path]) => path === "/Users/dl/.domovoi/service.json")![1]
     expect(parseServiceConfiguration(written).profileDirectory).toBe("/Users/dl/profiles/work")
@@ -899,5 +911,72 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
     })
     await expect(removeDaemonService(effects, { environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/other" } })).rejects.toBeInstanceOf(ServiceProfileMismatchError)
     expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  // Security review round 4 of #577 (P1): the guard reads what the manager
+  // has registered, not only the definition file. A job still loaded after
+  // its plist was deleted, or a Domovoi job under another label, runs a
+  // profile nothing names.
+  it("refuses an install while a Domovoi job is loaded with its plist gone, or under another label, before the handoff", async () => {
+    for (const [label, capture, where] of [
+      ["the job is loaded", launchd({ loaded: true }), "gui/501/sh.domovoi.domovoid"],
+      ["another label", launchd({ labels: ["sh.domovoi.domovoid-old"] }), "gui/501/sh.domovoi.domovoid-old"],
+    ] as const) {
+      const releaseInAppDaemon = vi.fn(async () => {})
+      const effects = dependencies({ exists: noDefinition, capture })
+      const refused = installDaemonService({ runtime, environment: {}, releaseInAppDaemon }, effects)
+      await expect(refused, label).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+      await expect(refused, label).rejects.toThrow(`A login service is registered at ${where}, but its saved configuration is missing, so the profile it runs is not known. Nothing was changed.`)
+      expect(releaseInAppDaemon, label).not.toHaveBeenCalled()
+      expect(effects.write, label).not.toHaveBeenCalled()
+      expect(effects.run, label).not.toHaveBeenCalled()
+    }
+  })
+
+  it("refuses an install while a Domovoi user unit is loaded with its unit file gone", async () => {
+    const unit = "/home/dl/.config/systemd/user/domovoid.service"
+    const effects = dependencies({
+      platform: "linux", home: "/home/dl",
+      exists: vi.fn(async (path: string) => path !== unit),
+      capture: vi.fn(async (_command: string, args: string[]) => args.includes("list-units")
+        ? { code: 0, stdout: "domovoid.service not-found active running domovoid.service\n" }
+        : { code: 0, stdout: "" }),
+    })
+    await expect(installDaemonService({ runtime, environment: {} }, effects)).rejects.toThrow(
+      "A login service is registered at domovoid.service, but its saved configuration is missing, so the profile it runs is not known. Nothing was changed.",
+    )
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  it("refuses a removal while a Domovoi job is loaded with its plist gone, before any manager action", async () => {
+    const effects = dependencies({ exists: noDefinition, capture: launchd({ loaded: true }) })
+    await expect(removeDaemonService(effects, { environment: {} })).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  // Round 4 (P1): a legacy configuration names its own home; its default
+  // profile is under that home, not the caller's.
+  it("compares the removal with the profile the saved configuration names under its own home", async () => {
+    const effects = dependencies({ removalSnapshot: vi.fn(() => ({ owner: undefined, configurationDigest: "digest", effectiveProfileDirectory: "/Users/other/.domovoi" })) })
+    await expect(removeDaemonService(effects, { environment: {} })).rejects.toBeInstanceOf(ServiceProfileMismatchError)
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+
+  // Round 4 (P3): a saved configuration that cannot be read or parsed
+  // refuses the caller's install with the specific refusal.
+  it("refuses an install over a saved configuration it cannot read or parse, with nothing written", async () => {
+    for (const [label, failure, words] of [
+      ["a link", Object.assign(new Error("ELOOP: too many symbolic links"), { code: "ELOOP" }), "The saved service configuration at /Users/dl/.domovoi/service.json could not be read: ELOOP: too many symbolic links. The profile the login service runs is not known. Nothing was changed."],
+      ["malformed", new Error("Unexpected token"), "The saved service configuration at /Users/dl/.domovoi/service.json is not a Domovoi service configuration. The profile the login service runs is not known. Nothing was changed."],
+    ] as const) {
+      const releaseInAppDaemon = vi.fn(async () => {})
+      const effects = dependencies({ registeredProfile: vi.fn(() => { throw failure }) })
+      const refused = installDaemonService({ runtime, environment: {}, releaseInAppDaemon }, effects)
+      await expect(refused, label).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+      await expect(refused, label).rejects.toThrow(words)
+      expect(releaseInAppDaemon, label).not.toHaveBeenCalled()
+      expect(effects.write, label).not.toHaveBeenCalled()
+    }
   })
 })

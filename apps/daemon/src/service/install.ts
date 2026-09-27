@@ -577,6 +577,50 @@ async function launchdCommandsBeforeInstall(target: ServiceTarget, plan: Service
   return [{ command: "launchctl", args: ["bootout", job] }]
 }
 
+// Security review round 4 of #577 (P1): where the service manager holds a
+// Domovoi registration, read from the manager rather than only the definition
+// file: the definition at Domovoi's path, a job or unit loaded under Domovoi's
+// name after its file was deleted, or one under another name in Domovoi's
+// namespace (sh.domovoi.* on launchd, domovoi* units on systemd). Undefined
+// when there is none. Limit: a job under an unrelated name that runs Domovoi
+// is not found. Used only where no saved configuration names the profile.
+async function registeredServiceWithoutConfiguration(
+  target: Pick<ServiceTarget, "platform" | "uid">,
+  plan: { kind: string; path?: string },
+  effects: Pick<ServiceEffects, "exists" | "capture">,
+  deadline: OperationDeadline,
+): Promise<string | undefined> {
+  if (plan.kind !== "file" || plan.path === undefined) return undefined
+  const path = plan.path
+  if (await withinServiceDeadline(deadline, () => effects.exists(path, deadline))) return path
+  if (target.platform === "darwin") {
+    const domain = `gui/${assertUid(target.uid)}`
+    const job = await withinServiceDeadline(deadline, () => effects.capture("launchctl", ["print", `${domain}/${agentLabel}`], deadline))
+    if (job.code === 0) return `${domain}/${agentLabel}`
+    if (job.code !== 113 || !isMissingServiceFailure("darwin", job)) throw captureFailure("launchctl", job)
+    const listed = await withinServiceDeadline(deadline, () => effects.capture("launchctl", ["print", domain], deadline))
+    if (listed.code !== 0) throw captureFailure("launchctl", listed)
+    const other = /^\s*(?:\d+|-)\s+(?:-?\d+|-)\s+(sh\.domovoi\.\S+)\s*$/mu.exec(listed.stdout)?.[1]
+    return other === undefined ? undefined : `${domain}/${other}`
+  }
+  if (target.platform === "linux") {
+    const listed = await withinServiceDeadline(deadline, () => effects.capture("systemctl", ["--user", "list-units", "--all", "--plain", "--no-legend", "--full", "domovoi*"], deadline))
+    if (listed.code !== 0) throw captureFailure("systemctl", listed)
+    return /^(domovoi\S*)\s/mu.exec(listed.stdout)?.[1]
+  }
+  return undefined
+}
+
+// Round 4 (P3): a saved configuration that cannot be read or parsed names no
+// profile; a caller's install refuses on it with the specific refusal.
+function unknownSavedProfile(path: string, cause: unknown): ServiceProfileUnknownError {
+  const code = (cause as NodeJS.ErrnoException).code
+  const reason = code === undefined
+    ? `The saved service configuration at ${path} is not a Domovoi service configuration.`
+    : `The saved service configuration at ${path} could not be read: ${cause instanceof Error ? cause.message : String(cause)}.`
+  return new ServiceProfileUnknownError(`${reason} The profile the login service runs is not known.`)
+}
+
 async function installWithDeadline(
   target: ServiceTarget,
   effects: InstallEffects,
@@ -589,16 +633,22 @@ async function installWithDeadline(
   const plan = servicePlan({ ...target, configuration: { ...target.configuration, registrationId: randomUUID() } })
   deadline.throwIfExpired()
   const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory)
-  const previous = effects.registeredProfile?.(target.configuration.homeDirectory, target.platform)
+  let previous: ProfileLocation | undefined
+  try {
+    previous = effects.registeredProfile?.(target.configuration.homeDirectory, target.platform)
+  } catch (cause) {
+    if (callerProfile === undefined) throw cause
+    throw unknownSavedProfile(serviceConfigurationPath(target.configuration.homeDirectory, target.platform), cause)
+  }
   // Security review round 2 of #577: read under the service-operation lease,
   // before the handoff, so a service saved for another profile meanwhile
   // refuses the caller's install.
   if (callerProfile !== undefined) {
     // Round 3: a registered service with no saved configuration runs a
     // profile nothing names; the caller's install does not replace it.
-    if (previous === undefined && plan.kind === "file"
-      && await withinServiceDeadline(deadline, () => effects.exists(plan.path, deadline))) {
-      throw registeredWithoutConfiguration(plan.path)
+    if (previous === undefined) {
+      const registered = await registeredServiceWithoutConfiguration(target, plan, effects, deadline)
+      if (registered !== undefined) throw registeredWithoutConfiguration(registered)
     }
     assertServiceProfile(previous, callerProfile)
   }
@@ -1025,9 +1075,15 @@ async function removeWithDeadline(
       throw new ServiceProfileUnknownError(`${before.configurationUnknown} The profile the login service runs is not known.`)
     }
     if (before.configurationDigest === null) {
-      if (plan.kind === "file" && await withinServiceDeadline(deadline, () => effects.exists(plan.path, deadline))) throw registeredWithoutConfiguration(plan.path)
+      const registered = await registeredServiceWithoutConfiguration(target, plan, effects, deadline)
+      if (registered !== undefined) throw registeredWithoutConfiguration(registered)
     } else {
-      assertServiceProfile(profileLocation(home, before.profileDirectory), callerProfile)
+      // Round 4 (P1): the profile the saved configuration names under its
+      // own home, as the service runs it.
+      if (before.effectiveProfileDirectory === undefined) {
+        throw new ServiceProfileUnknownError("The saved service configuration names no profile. The profile the login service runs is not known.")
+      }
+      assertServiceProfile({ profileDirectory: before.effectiveProfileDirectory }, callerProfile)
     }
   }
   let managerStopped = true
