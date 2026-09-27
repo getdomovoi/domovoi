@@ -6,7 +6,7 @@ import { posix, win32 } from "node:path"
 import { loginServiceHomePaths, loginServiceTaskName } from "@getdomovoi/protocol"
 
 import type { DaemonEnvironment } from "../config.js"
-import { profileLocation } from "../profile-directory.js"
+import { profileDirectory, profileLocation } from "../profile-directory.js"
 import { OperationDeadline } from "../operation-deadline.js"
 import { assertServiceProfile, callerProfile, createServiceConfiguration } from "./configuration.js"
 import type { ServiceConfiguration } from "./configuration.js"
@@ -295,15 +295,45 @@ export type DaemonServiceRuntimeReader = {
   home: string
   readDefinition: (path: string) => Promise<string | undefined>
   capture: ServiceEffects["capture"]
+  // The saved service configuration, whose profile the version is bound to.
+  readConfiguration: NonNullable<ServiceEffects["readConfiguration"]>
 }
 
-// The desktop stages the runtime under the selected profile,
-// <profile>/runtime/<version>/ (security review round 3 of #577), so the
-// version is read from that layout: the shipped Node program under it.
-const stagedRuntime = /[\\/]runtime[\\/](\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)[\\/]node[\\/](?:bin[\\/]node|node\.exe)\b/u
+// The program a definition runs: the first ProgramArguments string of a
+// launchd plist, the first word of a systemd ExecStart, a task's Command.
+function definitionProgram(platform: string, definition: string): string | undefined {
+  const unquote = (value: string) => /^"([^"]*)"$/u.exec(value)?.[1] ?? value
+  if (platform === "darwin") return /<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]*)<\/string>/u.exec(definition)?.[1]
+  if (platform === "linux") {
+    const line = /^ExecStart=(.*)$/mu.exec(definition)?.[1]?.trim()
+    return line === undefined ? undefined : unquote(/^("[^"]*"|\S+)/u.exec(line)?.[1] ?? "")
+  }
+  if (platform === "win32") {
+    const command = /<Command>([^<]*)<\/Command>/u.exec(definition)?.[1]?.trim()
+    return command === undefined ? undefined : unquote(command)
+  }
+  return undefined
+}
 
-export function stagedRuntimeVersion(definition: string): string | undefined {
-  return stagedRuntime.exec(definition)?.[1]
+// Security review round 4 of #577 (P3): the version is the one staged under
+// the profile the saved configuration names, read from the program the
+// definition runs: <profile>/runtime/<version>/node/bin/node (node\node.exe on
+// Windows). Anything else, another profile's runtime included, has none.
+const stagedVersion = /^(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/u
+
+export function stagedRuntimeVersion(platform: string, definition: string, profileDirectory: string): string | undefined {
+  const program = definitionProgram(platform, definition)
+  if (program === undefined) return undefined
+  const paths = platform === "win32" ? win32 : posix
+  const same = (left: string, right: string) => platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right
+  const runtimeRoot = paths.join(profileDirectory, "runtime")
+  const nodeDirectory = platform === "win32" ? paths.dirname(program) : paths.dirname(paths.dirname(program))
+  const version = paths.basename(paths.dirname(nodeDirectory))
+  if (!stagedVersion.test(version)) return undefined
+  const expected = platform === "win32"
+    ? paths.join(runtimeRoot, version, "node", "node.exe")
+    : paths.join(runtimeRoot, version, "node", "bin", "node")
+  return same(paths.normalize(program), expected) ? version : undefined
 }
 
 export async function readDaemonServiceRuntimeVersion(
@@ -322,7 +352,14 @@ export async function readDaemonServiceRuntimeVersion(
     definition = await reader.readDefinition(posix.join(reader.home, loginServiceHomePaths[reader.platform]))
   }
   if (definition === undefined) return { installed: false }
-  const version = stagedRuntimeVersion(definition)
+  let profile: string | undefined
+  try {
+    const saved = reader.readConfiguration(reader.home, reader.platform)
+    profile = saved === undefined ? undefined : profileDirectory(profileLocation(saved.homeDirectory, saved.profileDirectory), reader.platform)
+  } catch {
+    profile = undefined
+  }
+  const version = profile === undefined ? undefined : stagedRuntimeVersion(reader.platform, definition, profile)
   return version === undefined ? { installed: true } : { installed: true, version }
 }
 
@@ -339,5 +376,6 @@ export function nodeDaemonServiceRuntimeReader(): DaemonServiceRuntimeReader {
       }
     },
     capture: nodeServiceEffects().capture,
+    readConfiguration: nodeServiceEffects().readConfiguration!,
   }
 }

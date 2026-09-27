@@ -186,24 +186,28 @@ describe("readDaemonServiceStatus and removeDaemonService", () => {
 // except the Windows query, which only reads the task.
 describe("readDaemonServiceRuntimeVersion", () => {
   const plist = (program: string, entry: string) => `<?xml version="1.0"?><plist><dict><key>ProgramArguments</key><array><string>${program}</string><string>${entry}</string></array></dict></plist>`
+  // Security review round 4 of #577 (P3): the version is reported only for
+  // the program the definition runs, and only when it is the runtime staged
+  // under the profile the saved configuration names.
+  const saved = (platform: string, home: string, profile?: string) => vi.fn(() => createServiceConfiguration(profile === undefined ? {} : { DOMOVOI_PROFILE_DIR: profile }, { platform, homeDirectory: home, workingDirectory: home }))
 
   it("names the staged runtime version a launchd agent runs", async () => {
     const readDefinition = vi.fn(async () => plist("/Users/dana/.domovoi/runtime/0.9.2/node/bin/node", "/Users/dana/.domovoi/runtime/0.9.2/daemon/dist/index.js"))
-    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition, capture: vi.fn() }))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }))
       .resolves.toEqual({ installed: true, version: "0.9.2" })
     expect(readDefinition).toHaveBeenCalledWith("/Users/dana/Library/LaunchAgents/sh.domovoi.domovoid.plist")
   })
 
   it("names the staged runtime version a systemd user unit runs", async () => {
     const unit = "[Service]\nExecStart=\"/home/dana/.domovoi/runtime/0.10.0-rc.1/node/bin/node\" \"/home/dana/.domovoi/runtime/0.10.0-rc.1/daemon/dist/index.js\" --service-config x\n"
-    await expect(readDaemonServiceRuntimeVersion({ platform: "linux", home: "/home/dana", readDefinition: async () => unit, capture: vi.fn() }))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "linux", home: "/home/dana", readDefinition: async () => unit, capture: vi.fn(), readConfiguration: saved("linux", "/home/dana") }))
       .resolves.toEqual({ installed: true, version: "0.10.0-rc.1" })
   })
 
   it("names the staged runtime version a Windows logon task runs", async () => {
     const xml = "<Task><Actions><Exec><Command>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\node\\node.exe\"</Command><Arguments>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\daemon\\dist\\index.js\"</Arguments></Exec></Actions></Task>"
     const capture = vi.fn(async () => ({ code: 0, stdout: xml }))
-    await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture }))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture, readConfiguration: saved("win32", "C:\\Users\\dana") }))
       .resolves.toEqual({ installed: true, version: "0.9.2" })
     expect(capture).toHaveBeenCalledWith("schtasks", ["/query", "/tn", "Domovoi daemon", "/xml"], expect.anything())
   })
@@ -212,22 +216,36 @@ describe("readDaemonServiceRuntimeVersion", () => {
   // profile, so a service on another profile runs <profile>/runtime/<version>.
   it("names the staged runtime version under a profile other than ~/.domovoi", async () => {
     const readDefinition = vi.fn(async () => plist("/Users/dana/profiles/work/runtime/0.9.2/node/bin/node", "/Users/dana/profiles/work/runtime/0.9.2/daemon/dist/index.js"))
-    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition, capture: vi.fn() }))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana", "/Users/dana/profiles/work") }))
       .resolves.toEqual({ installed: true, version: "0.9.2" })
     const other = vi.fn(async () => plist("/opt/runtime/1.2.3/bin/node", "/opt/tools/runtime/1.2.3/main.js"))
-    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: other, capture: vi.fn() }))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: other, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana", "/Users/dana/profiles/work") }))
+      .resolves.toEqual({ installed: true })
+  })
+
+  it("reports no version for another profile's runtime, a runtime named anywhere but the program, or no saved profile", async () => {
+    const foreign = vi.fn(async () => plist("/Users/dana/profiles/other/runtime/0.9.2/node/bin/node", "/Users/dana/profiles/other/runtime/0.9.2/daemon/dist/index.js"))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: foreign, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana", "/Users/dana/profiles/work") }))
+      .resolves.toEqual({ installed: true })
+    const later = vi.fn(async () => plist("/opt/homebrew/bin/node", "/Users/dana/.domovoi/runtime/0.9.2/node/bin/node"))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: later, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }))
+      .resolves.toEqual({ installed: true })
+    const staged = vi.fn(async () => plist("/Users/dana/.domovoi/runtime/0.9.2/node/bin/node", "/Users/dana/.domovoi/runtime/0.9.2/daemon/dist/index.js"))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: staged, capture: vi.fn(), readConfiguration: vi.fn(() => undefined) }))
+      .resolves.toEqual({ installed: true })
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: staged, capture: vi.fn(), readConfiguration: vi.fn(() => { throw new Error("not a configuration") }) }))
       .resolves.toEqual({ installed: true })
   })
 
   it("says installed with no version when the service runs a runtime the desktop did not stage", async () => {
-    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: async () => plist("/opt/homebrew/bin/node", "/opt/homebrew/lib/node_modules/@getdomovoi/daemon/dist/index.js"), capture: vi.fn() }))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: async () => plist("/opt/homebrew/bin/node", "/opt/homebrew/lib/node_modules/@getdomovoi/daemon/dist/index.js"), capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }))
       .resolves.toEqual({ installed: true })
   })
 
   it("says not installed when there is no definition", async () => {
-    await expect(readDaemonServiceRuntimeVersion({ platform: "linux", home: "/home/dana", readDefinition: async () => undefined, capture: vi.fn() }))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "linux", home: "/home/dana", readDefinition: async () => undefined, capture: vi.fn(), readConfiguration: vi.fn() }))
       .resolves.toEqual({ installed: false })
-    await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture: vi.fn(async () => ({ code: 1, stdout: "" })) }))
+    await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture: vi.fn(async () => ({ code: 1, stdout: "" })), readConfiguration: vi.fn() }))
       .resolves.toEqual({ installed: false })
   })
 })
