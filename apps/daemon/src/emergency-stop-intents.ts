@@ -442,10 +442,44 @@ export class SqliteEmergencyStopIntents {
     }
   }
 
-  // The recovery is done: from here on its lines record their stops.
-  finishRecovery(): void {
-    this.#database.exec("DELETE FROM emergency_stop_recovery")
-    this.beginRecovery()
+  // The recovery is done: from here on its lines record their stops. The
+  // stop list is emptied only if, with that done, the journal holds no row
+  // the recovery has not read, so no write here (a trigger in the store can
+  // add a row on any of them) leaves an unread row behind an empty list.
+  // Answers whether it finished; if not, nothing changed and a round is due.
+  // The list of rows read stays until the next start empties it.
+  finishRecovery(): boolean {
+    this.#database.exec("BEGIN IMMEDIATE")
+    try {
+      this.#database.exec("DELETE FROM emergency_stop_recovery_lines")
+      this.#database.exec("DELETE FROM emergency_stop_recovery")
+      if (this.#unread()) {
+        this.#database.exec("ROLLBACK")
+        return false
+      }
+      this.#database.exec("COMMIT")
+      return true
+    } catch (error) {
+      this.#database.exec("ROLLBACK")
+      throw error
+    }
+  }
+
+  // Whether the journal holds a row the recovery has not read, a pass of
+  // rows at a time.
+  #unread(): boolean {
+    const first = this.#database.prepare("SELECT rowid AS row, stop_id, record FROM emergency_stop_intents ORDER BY rowid LIMIT ?")
+    const later = this.#database.prepare("SELECT rowid AS row, stop_id, record FROM emergency_stop_intents WHERE rowid > ? ORDER BY rowid LIMIT ?")
+    first.setReadBigInts(true)
+    later.setReadBigInts(true)
+    const listed = this.#database.prepare("SELECT 1 FROM emergency_stop_recovery_rows WHERE row = ? AND identity = ?")
+    let after: bigint | undefined
+    for (;;) {
+      const rows = (after === undefined ? first.all(this.#rowsPerPass) : later.all(after, this.#rowsPerPass)) as JournalRow[]
+      if (rows.some(({ row, stop_id: key, record }) => listed.get(row, rowIdentity(key, record)) === undefined)) return true
+      if (rows.length < this.#rowsPerPass) return false
+      after = rows.at(-1)!.row
+    }
   }
 
   // Copies the row as stored to the quarantine table, and moves it there

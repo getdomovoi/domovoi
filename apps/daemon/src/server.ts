@@ -10715,20 +10715,21 @@ export class DomovoiDaemon {
   // the store, or a trigger in it). So once a round is saved, another reads
   // every row no round has read yet, known by rowid and content, not by how
   // many rows are left (security review round 2 of #641). The recovery is
-  // done, and the listener may open, only once a round finds no such row.
-  // Past `emergencyStopRecoveryRounds` rounds, startup fails instead. The
-  // rounds so far stay saved and the stop list stays, so the next start
-  // continues the same recovery.
+  // done, and the listener may open, only once a round finds no such row
+  // and the journal empties its stop list with still none there. Past
+  // `emergencyStopRecoveryRounds` rounds, startup fails instead. The rounds
+  // so far stay saved and the stop list stays, so the next start continues
+  // the same recovery.
   #recoverEmergencyStops(): void {
     const journal = this.#store.emergencyStops
     if (!journal) return
     journal.beginRecovery()
-    for (let round = 1; this.#recoverEmergencyStopRound(journal); round += 1) {
+    for (let round = 1; ; round += 1) {
+      if (!this.#recoverEmergencyStopRound(journal) && journal.finishRecovery()) return
       if (round === emergencyStopRecoveryRounds) {
         throw new Error(`Domovoi stopped finishing the emergency stop journal after ${round} rounds, because new rows kept taking the place of the rows it cleared. The rounds it finished are saved, and the next start continues from there.`)
       }
     }
-    journal.finishRecovery()
   }
 
   // One round: every pass over the rows no round has read, then one save.

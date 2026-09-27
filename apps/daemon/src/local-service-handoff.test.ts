@@ -1433,7 +1433,11 @@ describe("the service handoff fence and an emergency stop", () => {
         const save = store.save.bind(store)
         let recovering = false
         journal.pending = (after) => { recovering = true; return pending(after) }
-        journal.finishRecovery = () => { recovering = false; finish() }
+        journal.finishRecovery = () => {
+          const finished = finish()
+          if (finished) recovering = false
+          return finished
+        }
         store.save = (snapshot) => { if (recovering) saved.push(lines(snapshot)); save(snapshot) }
         return store
       },
@@ -1492,6 +1496,97 @@ describe("the service handoff fence and an emergency stop", () => {
     expect(stopped(again)).toEqual({ state: "failed", providerThreadId: undefined })
     expect(stopLines(again)).toEqual([`system-${stopId}-desktop-${sessionId}`])
     await second.daemon.stop()
+    expect(journalTables(statePath).pending).toEqual([])
+  })
+
+  // Owner ruling Q93 B: a round saves once, then clears the rows it finished.
+  // A start that fails at the save, or at the clear after it, loses no
+  // stop's effects and writes no line twice when the next start reruns it.
+  it.each(["save", "clear"] as const)("finishes every stop once when a start fails at the round's %s", async (failing) => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopId = `stop-${"8".repeat(8)}-8888-4888-8888-${"8".repeat(12)}`
+    const row = (id: string, extra: Record<string, unknown> = {}) =>
+      JSON.stringify({ version: 1, stopId: id, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z", ...extra })
+    for (let index = 0; index < emergencyStopRowsPerPass - 1; index += 1) {
+      const filler = `stop-${index.toString(16).padStart(8, "0")}-eeee-4eee-8eee-${"e".repeat(12)}`
+      await journalRow(statePath, filler, row(filler, { sessionIds: [] }))
+    }
+    await journalRow(statePath, stopId, row(stopId, { sessionIds: [sessionId] }))
+    await journalRow(statePath, "stop-in-the-next-pass", row(stopId, {
+      sessionIds: [sessionId], inFlight: [{ sessionId, provider: "codex", providerThreadId: "thread-fence" }],
+    }))
+
+    const cut = await daemonOnFile(statePath, workspace, {
+      wrap: (store) => {
+        const journal = store.emergencyStops
+        const pending = journal.pending.bind(journal)
+        const save = store.save.bind(store)
+        let recovering = false
+        journal.pending = (after) => { recovering = true; return pending(after) }
+        if (failing === "save") {
+          store.save = (snapshot) => {
+            if (recovering) throw new Error("The round's save failed")
+            save(snapshot)
+          }
+        } else {
+          journal.finishRound = () => { throw new Error("The round's clear failed") }
+        }
+        return store
+      },
+      errorSink: () => {},
+    })
+    await expect(cut.daemon.start()).rejects.toThrow(/The round's (save|clear) failed/)
+    await cut.daemon.stop().catch(() => {})
+    expect(journalTables(statePath).pending).toHaveLength(emergencyStopRowsPerPass + 1)
+
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.thread.filter((item) => item.kind === "system" && item.body === "Emergency stop requested by desktop.").map((item) => item.id))
+      .toEqual([`system-${stopId}-desktop-${sessionId}`])
+    const session = after.sessions.find(({ id }) => id === sessionId)!
+    expect({ state: session.state, providerThreadId: session.providerThreadId }).toEqual({ state: "failed", providerThreadId: undefined })
+    await daemon.daemon.stop()
+    expect(journalTables(statePath).pending).toEqual([])
+  })
+
+  // Emptying the stop list is a write too, and a trigger in the store can add
+  // a journal row on it. The list is not emptied while such a row is there,
+  // so startup fails after the bounded rounds rather than open with it.
+  it("does not finish a recovery while emptying its stop list adds a row it has not read", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopId = `stop-${"7".repeat(8)}-aaaa-4aaa-8aaa-${"7".repeat(12)}`
+    const record = JSON.stringify({ version: 1, stopId, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z", sessionIds: [sessionId] })
+    await journalRow(statePath, stopId, record)
+    const database = new DatabaseSync(statePath)
+    try {
+      database.exec(`CREATE TRIGGER late_row AFTER DELETE ON emergency_stop_recovery
+        BEGIN
+          INSERT INTO emergency_stop_intents (stop_id, record) VALUES ('late-row', '${record}');
+        END`)
+    } finally {
+      database.close()
+    }
+
+    const cut = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    await expect(cut.daemon.start()).rejects.toThrow(/emergency stop journal/)
+    await cut.daemon.stop().catch(() => {})
+    const stop = new DatabaseSync(statePath)
+    try {
+      expect(stop.prepare("SELECT stop_id FROM emergency_stop_recovery").all().map((row) => ({ ...row }))).toEqual([{ stop_id: stopId }])
+      stop.exec("DROP TRIGGER late_row")
+    } finally {
+      stop.close()
+    }
+
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.thread.filter((item) => item.kind === "system" && item.body === "Emergency stop requested by desktop.").map((item) => item.id))
+      .toEqual([`system-${stopId}-desktop-${sessionId}`])
+    await daemon.daemon.stop()
     expect(journalTables(statePath).pending).toEqual([])
   })
 

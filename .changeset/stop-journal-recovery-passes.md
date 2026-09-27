@@ -18,7 +18,8 @@ the recovery is done, and a line such a recovery wrote does not count as the sto
 A row can reach the journal behind the groups, or take the place of a row recovery cleared (from
 another writer on the store, or a trigger in it). After each save, another round reads every row no
 round has read, known by its rowid and content rather than by how many rows are left, and recovery
-ends only when a round finds none. Past 16 rounds, startup fails instead of accepting connections;
+ends only when a round finds none and emptying the stop list adds none. Past 16 rounds, startup fails
+instead of accepting connections;
 the rounds so far stay saved, and the next start continues. A row is cleared only while it is still
 the row that was read, and each row once.
 
