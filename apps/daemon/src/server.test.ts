@@ -11397,11 +11397,10 @@ describe("DomovoiDaemon", () => {
       })
     })
 
-    // Closing a project stops every provider thread. One that does not stop
-    // keeps its id and fails the session, so no second agent starts in files
-    // it may still be writing. Nothing stops a turned-off provider's thread,
-    // so switching the session is refused instead of starting another one.
-    it.each(["cursor-agent", "grok"])("refuses to switch a %s session whose stop failed", async (provider) => {
+    // Domovoi runs no process for a turned-off provider, so a stored thread id
+    // names nothing to stop or resume. Closing the project or archiving the
+    // session leaves that provider alone instead of failing on it.
+    async function turnedOffSession(provider: string) {
       const projectPath = "/code/stored"
       const projectId = `project-${createHash("sha256").update(projectPath).digest("hex").slice(0, 12)}`
       const snapshot = structuredClone(demoWorkspace)
@@ -11426,20 +11425,24 @@ describe("DomovoiDaemon", () => {
         onEvent: vi.fn(() => () => {}),
         close: vi.fn(async () => {}),
       } satisfies AgentAdapter
+      const errorSink = vi.fn()
+      const workspaceService = {
+        ...checkpointingWorkspace(),
+        inspect: vi.fn(async (path: string, _signal?: AbortSignal) => ({
+          root: path,
+          name: path === projectPath ? "stored" : "elsewhere",
+          branch: "main",
+          head: "a".repeat(40),
+        })),
+        checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
+        archiveSessionWorkspace: vi.fn(async () => {}),
+      }
       const daemon = new DomovoiDaemon({
         port: 0,
         store: new SqliteWorkspaceStore(":memory:", snapshot),
         agents: { codex },
-        workspaceService: {
-          ...checkpointingWorkspace(),
-          inspect: vi.fn(async (path: string, _signal?: AbortSignal) => ({
-            root: path,
-            name: path === projectPath ? "stored" : "elsewhere",
-            branch: "main",
-            head: "a".repeat(40),
-          })),
-          checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
-        },
+        workspaceService,
+        errorSink,
       })
       running.push(daemon)
       const address = await daemon.start()
@@ -11465,6 +11468,12 @@ describe("DomovoiDaemon", () => {
         socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
         return response
       }
+      return { projectPath, session, codex, errorSink, workspaceService, call }
+    }
+
+    it.each(["cursor-agent", "grok"])("keeps a %s session as it was when its project closes", async (provider) => {
+      const { projectPath, session, codex, errorSink, call } = await turnedOffSession(provider)
+
       const refusedOpen = await call("project.open", { path: "/code/elsewhere", client: "desktop" })
       expect(refusedOpen).toMatchObject({ error: { code: -32010 } })
       await call("project.open", {
@@ -11473,27 +11482,41 @@ describe("DomovoiDaemon", () => {
         confirmation: projectSwitchConfirmationSchema.parse((refusedOpen.error as { data?: unknown }).data),
       })
       const back = await call("project.open", { path: projectPath, client: "desktop" })
-      expect((back.result as { sessions: unknown[] }).sessions).toContainEqual(expect.objectContaining({
+
+      const result = back.result as { sessions: unknown[]; thread: Array<{ sessionId: string; body?: string }> }
+      expect(result.sessions).toContainEqual(expect.objectContaining({
         id: session.id,
-        state: "failed",
+        state: "idle",
+        runtime: expect.objectContaining({ provider }),
         providerThreadId: "thread-stored",
       }))
-
-      const response = await call("session.setRuntime", {
+      expect(result.thread.filter((item) => item.sessionId === session.id).map(({ body }) => body))
+        .not.toContain("The provider thread did not stop when this project was closed.")
+      expect(errorSink).not.toHaveBeenCalledWith(expect.objectContaining({
+        context: "Domovoi could not stop a provider thread before switching projects",
+      }))
+      // Nothing holds the session back, so it moves to another provider.
+      const switched = await call("session.setRuntime", {
         sessionId: session.id,
         client: "desktop",
         runtime: { provider: "codex", model: "gpt-5.6-sol", reasoning: "xhigh", permissionMode: "build", auto: false },
       })
+      expect(switched).not.toHaveProperty("error")
+      expect(codex.startThread).toHaveBeenCalledOnce()
+    })
 
-      expect(response).toMatchObject({ error: { code: -32602, message: "Session already has a live provider thread" } })
-      expect(codex.startThread).not.toHaveBeenCalled()
-      const current = await call("workspace.get", {})
-      expect((current.result as { sessions: unknown[] }).sessions).toContainEqual(expect.objectContaining({
-        id: session.id,
-        state: "failed",
-        runtime: expect.objectContaining({ provider }),
-        providerThreadId: "thread-stored",
-      }))
+    it.each(["cursor-agent", "grok"])("archives a stored %s session", async (provider) => {
+      const { session, errorSink, workspaceService, call } = await turnedOffSession(provider)
+
+      const archived = await call("session.archive", { sessionId: session.id, client: "desktop" })
+
+      expect(archived).not.toHaveProperty("error")
+      const archivedSession = (archived.result as { sessions: Array<Record<string, unknown>> }).sessions
+        .find(({ id }) => id === session.id)
+      expect(archivedSession).toMatchObject({ state: "archived", archiveCheckpoint: "d".repeat(40) })
+      expect(archivedSession).not.toHaveProperty("providerThreadId")
+      expect(workspaceService.archiveSessionWorkspace).toHaveBeenCalledWith("/worktrees/stored", expect.any(AbortSignal))
+      expect(errorSink).not.toHaveBeenCalledWith(expect.objectContaining({ context: expect.stringMatching(/archive|provider/i) }))
     })
 
     it.each(["cursor-agent", "grok"])("has no session adapter for %s", async (provider) => {

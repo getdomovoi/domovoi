@@ -10596,12 +10596,15 @@ export class DomovoiDaemon {
 
     if (session.providerThreadId) {
       const threadId = session.providerThreadId
-      await this.#loadProviderThreadForArchive(session)
-      await withTimeout(
-        this.#agents.require(session.runtime.provider).stopThread(threadId),
-        this.#agentTimeoutMs,
-        "Archive provider cleanup timed out",
-      )
+      // A turned-off provider is never run, so it has no thread to stop.
+      if (!this.#agents.isUnavailable(session.runtime.provider)) {
+        await this.#loadProviderThreadForArchive(session)
+        await withTimeout(
+          this.#agents.require(session.runtime.provider).stopThread(threadId),
+          this.#agentTimeoutMs,
+          "Archive provider cleanup timed out",
+        )
+      }
       this.#loadedAgentThreads.delete(providerThreadKey(session.runtime.provider, threadId))
       delete session.providerThreadId
       delete session.activeTurnId
@@ -11147,9 +11150,11 @@ export class DomovoiDaemon {
     for (const session of this.#snapshot.sessions) {
       const threadId = session.providerThreadId
       const turnId = session.activeTurnId
+      // A turned-off provider is never run, so it has no thread to stop.
+      const runsProvider = !this.#agents.isUnavailable(session.runtime.provider)
       if (turnId) {
         interruptedSessionIds.add(session.id)
-        if (threadId) {
+        if (threadId && runsProvider) {
           try {
             await withTimeout(
               this.#agents.require(session.runtime.provider).interruptTurn(threadId, turnId),
@@ -11175,7 +11180,7 @@ export class DomovoiDaemon {
           createdAt: suspendedAt,
         })
       }
-      if (!threadId) continue
+      if (!threadId || !runsProvider) continue
       try {
         await withTimeout(
           this.#agents.require(session.runtime.provider).stopThread(threadId),
