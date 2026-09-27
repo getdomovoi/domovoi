@@ -445,6 +445,29 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     ])
   })
 
+  // An entry whose text was over its field's cap before redaction is listed
+  // cut down to the cap, ending in the marker, not dropped and counted.
+  it("lists an over-cap command and rule cut down to the cap", async () => {
+    const root = await scratch()
+    const command = `echo ${"a ".repeat(1_100)}a`
+    const rule = `${"x ".repeat(600)}x`
+    expect(command.length).toBeGreaterThan(2_048)
+    expect(rule.length).toBeGreaterThan(1_024)
+    await put(root, ".claude/settings.json", JSON.stringify({
+      hooks: { Stop: [{ hooks: [{ type: "command", command }, { type: "command", command: "echo", args: Array.from({ length: 1_100 }, () => "a") }] }] },
+      permissions: { allow: [rule] },
+    }))
+    const claude = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "claude-code")
+    expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+    expect(claude.omittedEntries).toBe(0)
+    const hooks = claude.entries.flatMap((entry) => (entry.kind === "hook" ? [entry.command] : []))
+    const details = claude.entries.flatMap((entry) => (entry.kind === "permission-rule" ? [entry.detail] : []))
+    expect(hooks).toEqual([`echo${" a".repeat(1_016)} [REDACTED]`, `echo${" a".repeat(1_016)} [REDACTED]`])
+    expect(details).toEqual([`x${" x".repeat(506)} [REDACTED]`])
+    for (const text of hooks) expect(text.length).toBeLessThanOrEqual(2_048)
+    for (const text of details) expect(text.length).toBeLessThanOrEqual(1_024)
+  })
+
   it("lists a hook whose sensitive flag follows a scheme word, its value redacted", async () => {
     const root = await scratch()
     await put(root, ".claude/settings.json", JSON.stringify({
