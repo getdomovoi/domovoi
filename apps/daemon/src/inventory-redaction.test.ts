@@ -7,7 +7,9 @@ import { toolInventoryEntrySchema } from "@getdomovoi/protocol"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { inventoryFieldCaps, inventoryShellWords, redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
-import { hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords } from "./test-hidden-triggers.js"
+import {
+  hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, sameWordCases, sameWordCredentials, sameWordPlacements, sameWordWrappers,
+} from "./test-hidden-triggers.js"
 import { adversarialCommands, nearLinearGrowth, quadraticTimeGrowth, regexAdversaries, timeGrowth, workGrowth } from "./test-work.js"
 
 // The protocol backstop judges each emitted text; a hook entry is the smallest
@@ -331,6 +333,66 @@ describe("a scheme word or sensitive flag inside a value another rule took", () 
       const command = redactInventoryArgv(argv)
       expect(command).not.toContain(hiddenTriggerCredential)
       expect(backstopAccepts(command)).toBe(true)
+    },
+  )
+})
+
+// A word that makes the rest of its own shell word a value, inside a word a
+// rule took whole without hiding that value (a URL's host or query name, a
+// header's name before a kept scheme word): the word is hidden from there to
+// its end, so its credential is never shown and the protocol does not refuse
+// the text.
+describe("a scheme word or sensitive flag and its value in one word another rule took", () => {
+  it("hides the value in a URL's authority as text", () => {
+    expect(redactInventoryText("curl 'https://host Token swordfish tail'")).toBe("curl 'https://host [REDACTED]'")
+  })
+
+  it("hides the value in a URL's authority as a command", () => {
+    expect(redactInventoryCommand("curl 'https://host Token swordfish tail'")).toBe("curl 'https://host [REDACTED]'")
+  })
+
+  it("hides the value in a URL's authority as an argument vector", () => {
+    expect(redactInventoryArgv(["curl", "https://host Token swordfish tail"])).toBe("curl 'https://host [REDACTED]'")
+  })
+
+  it.each([
+    ["curl 'https://host Token x'", "curl 'https://host [REDACTED]'"],
+    ["curl 'https://host --token swordfish'", "curl 'https://host [REDACTED]'"],
+    ["curl 'https://user@host Token swordfish'", "curl 'https://[REDACTED]@host [REDACTED]'"],
+    ["curl 'https://host/?Token swordfish=1'", "curl 'https://host/?[REDACTED]'"],
+    ["curl 'https://host/p?a=1&--token swordfish=2#f'", "curl 'https://host/[REDACTED]?a=[REDACTED]&[REDACTED]'"],
+    ["curl -H 'X-Api-Token: Bearer swordfish'", "curl -H '[REDACTED]'"],
+    ["sh -c \"curl 'https://host Token swordfish tail'\"", "sh -c \"curl 'https://host [REDACTED]'\""],
+    ["bash -lc \"curl 'https://host Token swordfish tail'\"", "bash -lc \"curl 'https://host [REDACTED]'\""],
+    ["env MODE=x sh -c \"curl 'https://host Token swordfish tail'\"", "env MODE=[REDACTED] sh -c \"curl 'https://host [REDACTED]'\""],
+  ])("redacts %s", (input, expected) => {
+    for (const redact of [redactInventoryText, redactInventoryCommand]) {
+      const redacted = redact(input)
+      expect(redacted).toBe(expected)
+      expect(backstopAccepts(redacted)).toBe(true)
+      expect(redact(redacted)).toBe(redacted)
+    }
+  })
+
+  // Every trigger inside every place one word can hold it, its credential in
+  // the same word, through text, command and argument vector, as written and
+  // wrapped in shells and env.
+  const redoneArgv = (command: string) => redactInventoryArgv(inventoryShellWords(command)!)
+  it.each(sameWordPlacements.flatMap(([kind, place]) => sameWordWrappers.map(([wrapping, wrap]) => [kind, wrapping, sameWordCases(place, wrap)] as const)))(
+    "hides the credential in %s %s",
+    (_kind, _wrapping, cases) => {
+      for (const { text, argv } of cases) {
+        for (const redact of [redactInventoryText, redactInventoryCommand]) {
+          const redacted = redact(text)
+          for (const secret of sameWordCredentials) expect(redacted, text).not.toContain(secret)
+          expect(backstopAccepts(redacted), `${text} -> ${redacted}`).toBe(true)
+          expect(redact(redacted), text).toBe(redacted)
+        }
+        const command = redactInventoryArgv(argv)
+        for (const secret of sameWordCredentials) expect(command, JSON.stringify(argv)).not.toContain(secret)
+        expect(backstopAccepts(command), `${JSON.stringify(argv)} -> ${command}`).toBe(true)
+        expect(redoneArgv(command), JSON.stringify(argv)).toBe(command)
+      }
     },
   )
 })

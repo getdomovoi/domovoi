@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it } from "vitest"
 
 import { inventoryShellWords } from "./inventory-redaction.js"
 import { maximumRepositoryConfigFileBytes, readRepositoryProviderConfig } from "./repository-provider-config.js"
-import { hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords } from "./test-hidden-triggers.js"
+import {
+  hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, sameWordCases, sameWordCredentials, sameWordPlacements, sameWordWrappers,
+} from "./test-hidden-triggers.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { adversarialCommands, nearLinearGrowth, workGrowth } from "./test-work.js"
 
@@ -548,6 +550,63 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     expect(claude.omittedEntries).toBe(0)
     expect(claude.entries.filter((entry) => entry.kind === "hook")).toHaveLength(hooks.length)
   })
+
+  // A scheme word or sensitive flag with its credential in the same URL word,
+  // which the URL rule took whole: the credential is hidden, and every hook is
+  // listed, the one the protocol would take for prose and the one it would
+  // refuse.
+  it("lists the hooks of a credential in a URL's authority, the credential redacted", async () => {
+    const root = await scratch()
+    await put(root, ".claude/settings.json", JSON.stringify({
+      hooks: { Stop: [{ hooks: [
+        { type: "command", command: "curl 'https://host Token swordfish tail'" },
+        { type: "command", command: "curl", args: ["https://host Token swordfish tail"] },
+        { type: "prompt", prompt: "curl 'https://host Token swordfish tail'" },
+      ] }] },
+    }))
+    const claude = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "claude-code")
+    expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+    expect(JSON.stringify(claude)).not.toContain("swordfish")
+    expect(claude.omittedEntries).toBe(0)
+    expect(claude.entries.map((entry) => (entry.kind === "hook" ? entry.command : undefined))).toEqual([
+      "curl 'https://host [REDACTED]'",
+      "curl 'https://host [REDACTED]'",
+      "curl 'https://host [REDACTED]'",
+    ])
+  })
+
+  it("keeps the hooks of a refused credential in a URL's authority listed", async () => {
+    const root = await scratch()
+    const hooks = ["curl 'https://host Token x'", "curl 'https://host --token swordfish'"].flatMap((command) => {
+      const argv = inventoryShellWords(command)!
+      return [{ type: "command", command }, { type: "command", command: argv[0], args: argv.slice(1) }, { type: "prompt", prompt: command }]
+    })
+    await put(root, ".claude/settings.json", JSON.stringify({ hooks: { Stop: [{ hooks }] } }))
+    const claude = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "claude-code")
+    expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+    expect(JSON.stringify(claude)).not.toContain("swordfish")
+    expect(claude.omittedEntries).toBe(0)
+    expect(claude.entries.map((entry) => (entry.kind === "hook" ? entry.command : undefined))).toEqual(Array.from({ length: 6 }, () => "curl 'https://host [REDACTED]'"))
+  })
+
+  // Every trigger inside every place one word can hold it, its credential in
+  // the same word, as a command, a command and its arguments, and a prompt,
+  // as written and wrapped in shells and env: every hook is listed.
+  it.each(sameWordPlacements.flatMap(([kind, place]) => sameWordWrappers.map(([wrapping, wrap]) => [kind, wrapping, sameWordCases(place, wrap)] as const)))(
+    "lists every hook with a credential in the same word as its trigger in %s %s",
+    async (_kind, _wrapping, cases) => {
+      const root = await scratch()
+      const hooks = cases.flatMap(({ text, argv }) => [
+        { type: "command", command: text }, { type: "command", command: argv[0], args: argv.slice(1) }, { type: "prompt", prompt: text },
+      ])
+      await put(root, ".claude/settings.json", JSON.stringify({ hooks: { Stop: [{ hooks }] } }))
+      const claude = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "claude-code")
+      expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+      for (const secret of sameWordCredentials) expect(JSON.stringify(claude)).not.toContain(secret)
+      expect(claude.omittedEntries).toBe(0)
+      expect(claude.entries.filter((entry) => entry.kind === "hook")).toHaveLength(hooks.length)
+    },
+  )
 
   // A hook whose command is adversarial input near the file limit is read in
   // work that grows about linearly with it: counted, not timed.
