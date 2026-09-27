@@ -1061,6 +1061,34 @@ describe("the service handoff fence and an emergency stop", () => {
     expect(journalTables(statePath).pending).toEqual([])
   })
 
+  // Round 8: an archived session is read-only, and a failed state would break
+  // its archive record. A row that names one does not change it, and the
+  // daemon still starts.
+  it("starts when a journal row names an archived session, and leaves that session archived", async () => {
+    const { workspace } = await readySession()
+    const archived = workspace.sessions[1]!
+    archived.state = "archived"
+    archived.archiveRequestedAt = "2026-09-26T08:59:00.000Z"
+    archived.archiveCheckpoint = "d".repeat(40)
+    archived.archivedAt = "2026-09-26T09:00:00.000Z"
+    delete archived.workspacePath
+    delete archived.providerThreadId
+    delete archived.activeTurnId
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopId = `stop-${"b".repeat(8)}-bbbb-4bbb-8bbb-${"b".repeat(12)}`
+    await journalRow(statePath, stopId, JSON.stringify({
+      version: 1, stopId, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z",
+      sessionIds: [archived.id], inFlight: [{ sessionId: archived.id }],
+    }))
+
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.sessions.find(({ id }) => id === archived.id)).toMatchObject({ state: "archived", archivedAt: "2026-09-26T09:00:00.000Z" })
+    await daemon.daemon.stop()
+    expect(journalTables(statePath).pending).toEqual([])
+  })
+
   // Round 5: a row can repeat a field, and JSON.parse keeps only the last
   // value. The restart acts on every value the row gives, keeps a copy of the
   // row, and so neither misnames nor skips the stop.

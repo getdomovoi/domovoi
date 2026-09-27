@@ -10564,8 +10564,10 @@ export class DomovoiDaemon {
     for (const { intent } of entries) {
       if (recorded.has(intent.stopId)) continue
       for (const dispatch of intent.inFlight) {
+        // An archived or other read-only session holds no dispatch, and its
+        // state is its record (round 8): it is left as it is.
         const session = sessions.get(dispatch.sessionId)
-        if (!session) continue
+        if (!session || sessionIsReadOnly(session)) continue
         session.updatedAt = intent.requestedAt
         session.state = "failed"
         if (dispatch.providerThreadId !== undefined
