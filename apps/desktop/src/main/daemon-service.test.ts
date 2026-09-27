@@ -798,7 +798,7 @@ describe("staging the shipped runtime under the profile", () => {
   // Round 6 (P2): when the system temporary directory is on another volume,
   // staging goes under the app's data directory, and only when that is on the
   // runtime's volume, a real directory and outside any repository. Otherwise
-  // nothing is written. Copy pending owner approval.
+  // nothing is written. Copy approved by fetzy on 2026-09-26.
   describe("when the system temporary directory is on another volume", () => {
     const otherVolume = (): Partial<RuntimeFileSystem> => {
       const identity = nodeRuntimeFileSystem().identity

@@ -362,8 +362,8 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
   // is one rename. Otherwise it is <app data>/runtime-staging, only when that
   // is a real directory on the runtime's volume, outside the profile and
   // outside any repository (a directory holding .git, as the repository
-  // finder reads it). Otherwise nothing is written. Copy pending owner
-  // approval.
+  // finder reads it). Otherwise nothing is written. Copy approved by fetzy
+  // on 2026-09-26.
   const device = (identity: string) => identity.slice(0, identity.indexOf(":"))
   const onRuntimeVolume = async (path: string) => device(await input.fileSystem.identity(path)) === device(pinned.identity)
   const insideRepository = async (path: string) => {
