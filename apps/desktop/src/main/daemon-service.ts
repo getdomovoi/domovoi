@@ -305,6 +305,12 @@ export type PreparedDaemonRuntime = {
   runtime: DaemonServiceRuntime
   staged: DaemonServiceRuntime
   publish: () => Promise<void>
+  // Round 6 of #577 (P1): puts the previous copy of the version back (or
+  // removes the published one when there was none). The service calls run it
+  // on every failure after the publish.
+  revert: () => Promise<void>
+  // Before a publish, removes the staging copy; after one that was not
+  // reverted, drops the previous copy kept aside.
   discard: () => Promise<void>
 }
 
@@ -366,7 +372,17 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
   // Cleanup only: a staging directory left behind is disk space. Its failure
   // must not replace the publish's own error, nor turn a completed publish
   // into a reported failure.
-  const discard = async () => { settled = true; await input.fileSystem.remove(holder).catch(() => {}) }
+  // Round 6 (P2): the staging directory is pinned when it is made and removed
+  // only while it is still that directory; one put in its place is left.
+  const holderIdentity = await input.fileSystem.identity(holder)
+  const discardHolder = async () => {
+    try {
+      if (await input.fileSystem.entry(holder) === "directory" && await input.fileSystem.identity(holder) === holderIdentity) await input.fileSystem.remove(holder)
+    } catch {
+      // Cleanup only: a staging directory left behind is disk space.
+    }
+  }
+  const discard = async () => { settled = true; await discardHolder() }
   try {
     await unchanged()
     await input.fileSystem.copy(shippedRoot, staging)
@@ -375,6 +391,9 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
     await discard()
     throw cause
   }
+  // What a publish did, for revert and discard.
+  let published: { aside: string; failed: string; hadEarlier: boolean } | undefined
+  let reverted = false
   const publish = async () => {
     if (settled) throw new Error("This staged runtime was already published or discarded.")
     settled = true
@@ -396,13 +415,33 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
       await restoreVersionPath(fs, { destination, aside, failed, hadEarlier: earlier === "directory", asideMoved })
       throw cause
     } finally {
-      await input.fileSystem.remove(holder).catch(() => {})
+      await discardHolder()
     }
-    // The new copy is in place. An earlier copy left behind here is only
-    // disk space, never something the service runs.
-    if (earlier === "directory") await fs.remove(aside).catch(() => {})
+    // Round 6 (P1): the previous copy stays aside until the service call is
+    // done, so a failure after this point can put it back.
+    published = { aside, failed, hadEarlier: earlier === "directory" }
   }
-  return { runtime: layout(destination), staged: layout(staging), publish, discard: async () => { if (!settled) await discard() } }
+  const revert = async () => {
+    if (published === undefined || reverted) return
+    reverted = true
+    await restoreVersionPath(fs, { destination, ...published, asideMoved: true })
+  }
+  return {
+    runtime: layout(destination),
+    staged: layout(staging),
+    publish,
+    revert,
+    discard: async () => {
+      if (!settled) return discard()
+      // The new copy is in place for good. An earlier copy left behind here
+      // is only disk space, never something the service runs.
+      if (published !== undefined && !reverted && published.hadEarlier) {
+        const aside = published.aside
+        published = undefined
+        await fs.remove(aside).catch(() => {})
+      }
+    },
+  }
 }
 
 // Prepare and publish at once, for callers with no lease to publish under.
@@ -492,7 +531,7 @@ export class DesktopDaemonService {
         prepared = await this.deps.stageRuntime("install")
         installed = await this.deps.install({
           runtime: prepared.runtime,
-          staged: { runtime: prepared.staged, publish: prepared.publish },
+          staged: { runtime: prepared.staged, publish: prepared.publish, revert: prepared.revert },
           releaseInAppDaemon: async () => {
             const held = await this.#fence()
             if (!("release" in held)) throw new HandoffNotFenced(held)
@@ -606,7 +645,7 @@ export class DesktopDaemonService {
         prepared = await this.deps.stageRuntime("update")
         held = true
         this.deps.daemon.beginHandoff()
-        updated = await this.deps.update({ runtime: prepared.runtime, staged: { runtime: prepared.staged, publish: prepared.publish } })
+        updated = await this.deps.update({ runtime: prepared.runtime, staged: { runtime: prepared.staged, publish: prepared.publish, revert: prepared.revert } })
       } catch (cause) {
         const missing = runtimeMissing(cause)
         if (missing) return { ok: false, reason: "runtime-missing", ...missing }

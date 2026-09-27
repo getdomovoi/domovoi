@@ -12,7 +12,7 @@ const runtime = { nodePath: "/Users/dana/.domovoi/runtime/0.9.4/node/bin/node", 
 // under their lease. The spies are separate from the call order above.
 const stagedRuntime = { nodePath: "/Users/dana/.domovoi/runtime/.0.9.4.staging-1/node/bin/node", daemonEntryPath: "/Users/dana/.domovoi/runtime/.0.9.4.staging-1/daemon/dist/index.js" }
 function staged() {
-  return { runtime, staged: stagedRuntime, publish: vi.fn(async () => {}), discard: vi.fn(async () => {}) }
+  return { runtime, staged: stagedRuntime, publish: vi.fn(async () => {}), revert: vi.fn(async () => {}), discard: vi.fn(async () => {}) }
 }
 const attachedToService = { kind: "attached" as const, owner: "daemon" as const, url: "ws://127.0.0.1:47831/rpc", token: "t" }
 
@@ -48,7 +48,7 @@ describe("DesktopDaemonService hands over an inert staged runtime", () => {
       const copy = staged()
       const { service, deps } = harness({ stageRuntime: vi.fn(async () => copy) })
       await service[action]()
-      expect(deps[action], action).toHaveBeenCalledWith(expect.objectContaining({ runtime, staged: { runtime: stagedRuntime, publish: copy.publish } }))
+      expect(deps[action], action).toHaveBeenCalledWith(expect.objectContaining({ runtime, staged: { runtime: stagedRuntime, publish: copy.publish, revert: copy.revert } }))
       expect(copy.publish, action).not.toHaveBeenCalled()
       expect(copy.discard, action).toHaveBeenCalledOnce()
     }
@@ -328,7 +328,7 @@ describe("updating the service in place", () => {
   it("stages the runtime, updates the service while holding reconnects, then attaches to it", async () => {
     const { service, deps, calls } = harness()
     await expect(service.update()).resolves.toEqual({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/Users/dana/.domovoi/service.json", daemonRunning: true })
-    expect(deps.update).toHaveBeenCalledWith({ runtime, staged: { runtime: stagedRuntime, publish: expect.any(Function) } })
+    expect(deps.update).toHaveBeenCalledWith({ runtime, staged: { runtime: stagedRuntime, publish: expect.any(Function), revert: expect.any(Function) } })
     // Owner ruling 2026-09-26 (#577, A): the daemon's fence, taken right
     // before the service restarts, as install and remove take it.
     expect(calls).toEqual(["fence", "stage", "hold", "update", "attach", "unfence", "release"])
@@ -750,6 +750,61 @@ describe("staging the shipped runtime under the profile", () => {
   // Round 4 (P2): the runtime directory swapped for a link to another
   // profile's while the copy runs. Nothing is published there, and that
   // profile's copy of the same version is left as it was.
+  // Round 6 (P1): publishing keeps the previous copy aside until the service
+  // call is done: revert puts it back, discard after success drops it.
+  it("puts the previous copy back on revert, and drops it on discard after a publish", async () => {
+    await withScratch(async ({ resources, home }) => {
+      const runtimeRoot = join(home, ".domovoi", "runtime")
+      const earlier = join(runtimeRoot, "0.9.4")
+      await mkdir(join(earlier, "daemon", "dist"), { recursive: true })
+      await writeFile(join(earlier, "daemon", "dist", "index.js"), "earlier")
+      const input = { resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, stagingParent: join(dirname(home), "staging"), fileSystem: nodeRuntimeFileSystem() }
+      const reverted = await prepareDaemonRuntime(input)
+      await reverted.publish()
+      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("daemon")
+      await reverted.revert()
+      await reverted.discard()
+      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
+      expect(await readdir(runtimeRoot)).toEqual(["0.9.4"])
+
+      const kept = await prepareDaemonRuntime(input)
+      await kept.publish()
+      await kept.discard()
+      await kept.revert()
+      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("daemon")
+      expect(await readdir(runtimeRoot)).toEqual(["0.9.4"])
+      expect(await readdir(join(dirname(home), "staging"))).toEqual([])
+    })
+  })
+
+  // Round 6 (P2): the private staging directory is removed only while it is
+  // still the directory made for this copy. One put in its place is left.
+  it("leaves a directory put in the staging directory's place", async () => {
+    await withScratch(async ({ resources, home }) => {
+      const copy = async (_from: string, to: string) => {
+        const holder = dirname(to)
+        await rename(holder, `${holder}-moved`)
+        await mkdir(holder)
+        await writeFile(join(holder, "keep.txt"), "keep")
+        throw new Error("copy failed")
+      }
+      await expect(prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, stagingParent: join(dirname(home), "staging"), fileSystem: nodeRuntimeFileSystem({ copy }) }))
+        .rejects.toThrow("copy failed")
+      const [holder] = (await readdir(join(dirname(home), "staging"))).filter((name) => !name.endsWith("-moved"))
+      expect(await readFile(join(dirname(home), "staging", holder!, "keep.txt"), "utf8")).toBe("keep")
+    })
+  })
+
+  it("removes a copy it published where there was none, on revert", async () => {
+    await withScratch(async ({ resources, home }) => {
+      const prepared = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, stagingParent: join(dirname(home), "staging"), fileSystem: nodeRuntimeFileSystem() })
+      await prepared.publish()
+      await prepared.revert()
+      await prepared.discard()
+      expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual([])
+    })
+  })
+
   // Round 5 (P2): the copy is made in a private directory outside every
   // profile, so a swap cannot redirect it; nothing is written under the
   // swapped-in path, not even a hidden staging directory.
