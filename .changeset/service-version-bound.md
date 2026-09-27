@@ -2,4 +2,4 @@
 "@getdomovoi/daemon": patch
 ---
 
-`readDaemonServiceRuntimeVersion` reports a version only when the service definition runs `<profile>/runtime/<version>/<id>/node/bin/node` (`node\node.exe` on Windows) with `<profile>/runtime/<version>/<id>/daemon/dist/index.js` from the same copy, under the profile the saved configuration names, and `<version>` passes the check the desktop publishes under. Another profile's runtime, an entry from another copy, a runtime named anywhere else in the definition, or no readable saved configuration reports installed with no version.
+`readDaemonServiceRuntimeVersion` reports a version only when the service definition is exactly what an install writes for a published copy, `<profile>/runtime/<version>/<id>`, under the profile the saved configuration names: the whole launchd plist or systemd unit as Domovoi renders it, or a Windows task with one action whose command and arguments are the install's. `<version>` must pass the check the desktop publishes under. Anything else, a `Program` key, a later `ExecStart` line, a second task action, another profile's runtime or an entry from another copy included, reports installed with no version.

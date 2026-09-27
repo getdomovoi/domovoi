@@ -8,18 +8,21 @@ import { isLoginServiceRuntimeVersion, loginServiceHomePaths, loginServiceTaskNa
 import type { DaemonEnvironment } from "../config.js"
 import { profileDirectory, profileLocation } from "../profile-directory.js"
 import { OperationDeadline } from "../operation-deadline.js"
-import { assertServiceProfile, callerProfile, createServiceConfiguration } from "./configuration.js"
+import { assertServiceProfile, callerProfile, createServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import type { ServiceConfiguration } from "./configuration.js"
 import {
   installService,
+  isDomovoiTaskAction,
   nodeServiceEffects,
   prepareServiceUpdate,
   removeService,
   servicePlan,
+  serviceProgram,
   serviceStatus,
   type ServiceEffects,
   type ServiceStatus,
 } from "./install.js"
+import { launchdPlistProgram, systemdUnitProgram } from "./units.js"
 import { DaemonServiceUpdateError, runServiceUpdate, trackInFlight } from "./update-outcome.js"
 import { prepareWslUpdate } from "./wsl-install.js"
 
@@ -349,55 +352,52 @@ export type DaemonServiceRuntimeReader = {
   readConfiguration: NonNullable<ServiceEffects["readConfiguration"]>
 }
 
-// The program a definition runs and the daemon entry it hands that program:
-// the first two ProgramArguments strings of a launchd plist, the first two
-// words of a systemd ExecStart, a task's Command and the first word of its
-// Arguments.
-function definitionPaths(platform: string, definition: string): { program: string; entry: string } | undefined {
-  const unquote = (value: string) => /^"([^"]*)"$/u.exec(value)?.[1] ?? value
-  const words = (line: string | undefined) => [...(line ?? "").matchAll(/"[^"]*"|\S+/gu)].map((match) => unquote(match[0]))
-  let paths: (string | undefined)[] = []
-  if (platform === "darwin") {
-    const listed = /<key>ProgramArguments<\/key>\s*<array>((?:\s*<string>[^<]*<\/string>)+)/u.exec(definition)?.[1] ?? ""
-    paths = [...listed.matchAll(/<string>([^<]*)<\/string>/gu)].map((match) => match[1])
-  } else if (platform === "linux") {
-    paths = words(/^ExecStart=(.*)$/mu.exec(definition)?.[1])
-  } else if (platform === "win32") {
-    const command = /<Command>([^<]*)<\/Command>/u.exec(definition)?.[1]?.trim()
-    paths = [command === undefined ? undefined : unquote(command), words(/<Arguments>([^<]*)<\/Arguments>/u.exec(definition)?.[1])[0]]
-  }
-  const [program, entry] = paths
-  return program === undefined || entry === undefined ? undefined : { program, entry }
+// Round 9 (P2): the one Exec action of a Windows task, as Task Scheduler
+// reports it (schtasks /query /xml): exactly one Actions element holding
+// exactly one Exec with a Command and Arguments, or undefined.
+function taskAction(definition: string): { path: string; arguments: string } | undefined {
+  if ((definition.match(/<Actions[\s>/]/gu) ?? []).length !== 1) return undefined
+  const actions = /<Actions(?:\s[^>]*)?>([\s\S]*?)<\/Actions>/u.exec(definition)?.[1]
+  const exec = actions === undefined ? undefined : /^\s*<Exec>\s*<Command>([^<]*)<\/Command>\s*<Arguments>([^<]*)<\/Arguments>\s*<\/Exec>\s*$/u.exec(actions)
+  if (exec === undefined || exec === null) return undefined
+  const decode = (text: string) => text.replace(/&(?:quot|apos|lt|gt|amp);/gu, (entity) => ({ "&quot;": "\"", "&apos;": "'", "&lt;": "<", "&gt;": ">", "&amp;": "&" })[entity] ?? entity)
+  return { path: decode(exec[1] ?? ""), arguments: decode(exec[2] ?? "") }
 }
 
 // Security review round 4 of #577 (P3): the version is the one staged under
-// the profile the saved configuration names, read from the program the
-// definition runs. Round 7: each publish is a fresh directory,
-// <profile>/runtime/<version>/<id>/node/bin/node (node\node.exe on Windows),
-// with a 12-character hexadecimal id. Anything else, another profile's
-// runtime included, has none. Round 8: the version must pass the check the
-// desktop publishes under (isLoginServiceRuntimeVersion, P3), and the daemon
-// entry the definition runs must be <same copy>/daemon/dist/index.js, so a
-// definition cannot pair one copy's Node with another entry (P2).
+// the profile the saved configuration names. Round 7: each publish is a fresh
+// directory, <profile>/runtime/<version>/<id>/node/bin/node (node\node.exe on
+// Windows), with a 12-character hexadecimal id. Round 8: the version must pass
+// the check the desktop publishes under (isLoginServiceRuntimeVersion, P3).
+// Round 9 (P2): the definition must be exactly what an install writes for
+// that copy: the whole launchd plist or systemd unit as its renderer gives it
+// (launchdPlistProgram, systemdUnitProgram), so no Program key, later
+// ExecStart line or other change can run something else; for a Windows task,
+// one action whose Command and Arguments are the install's. Anything else,
+// another profile's runtime included, has none.
 const publishId = /^[0-9a-f]{12}$/u
 
-export function stagedRuntimeVersion(platform: string, definition: string, profileDirectory: string): string | undefined {
-  const found = definitionPaths(platform, definition)
-  if (found === undefined) return undefined
-  const { program, entry } = found
+export function stagedRuntimeVersion(platform: string, definition: string, profileDirectory: string, configurationPath: string): string | undefined {
   const paths = platform === "win32" ? win32 : posix
-  const same = (left: string, right: string) => platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right
-  const runtimeRoot = paths.join(profileDirectory, "runtime")
+  const action = platform === "win32" ? taskAction(definition) : undefined
+  const written = platform === "darwin" ? launchdPlistProgram(definition)
+    : platform === "linux" ? systemdUnitProgram(definition)
+      : action === undefined ? undefined : { execPath: /^"([^"]*)"$/u.exec(action.path)?.[1] ?? action.path, args: [] }
+  if (written === undefined) return undefined
+  const program = written.execPath
   const nodeDirectory = platform === "win32" ? paths.dirname(program) : paths.dirname(paths.dirname(program))
   const copy = paths.dirname(nodeDirectory)
   const id = paths.basename(copy)
   const version = paths.basename(paths.dirname(copy))
   if (!isLoginServiceRuntimeVersion(version) || !publishId.test(id)) return undefined
-  const expected = platform === "win32"
-    ? paths.join(runtimeRoot, version, id, "node", "node.exe")
-    : paths.join(runtimeRoot, version, id, "node", "bin", "node")
-  const expectedEntry = paths.join(runtimeRoot, version, id, "daemon", "dist", "index.js")
-  return same(paths.normalize(program), expected) && same(paths.normalize(entry), expectedEntry) ? version : undefined
+  const expectedCopy = paths.join(profileDirectory, "runtime", version, id)
+  const node = platform === "win32" ? paths.join(expectedCopy, "node", "node.exe") : paths.join(expectedCopy, "node", "bin", "node")
+  const entry = paths.join(expectedCopy, "daemon", "dist", "index.js")
+  if (action !== undefined) return isDomovoiTaskAction(action, configurationPath, { executable: node, entry }) ? version : undefined
+  const expected = serviceProgram(entry, node, configurationPath)
+  const same = written.execPath === expected.program && written.args.length === expected.args.length
+    && written.args.every((argument, index) => argument === expected.args[index])
+  return same ? version : undefined
 }
 
 export async function readDaemonServiceRuntimeVersion(
@@ -416,14 +416,17 @@ export async function readDaemonServiceRuntimeVersion(
     definition = await reader.readDefinition(posix.join(reader.home, loginServiceHomePaths[reader.platform]))
   }
   if (definition === undefined) return { installed: false }
-  let profile: string | undefined
+  let bound: { profile: string; configurationPath: string } | undefined
   try {
     const saved = reader.readConfiguration(reader.home, reader.platform)
-    profile = saved === undefined ? undefined : profileDirectory(profileLocation(saved.homeDirectory, saved.profileDirectory), reader.platform)
+    bound = saved === undefined ? undefined : {
+      profile: profileDirectory(profileLocation(saved.homeDirectory, saved.profileDirectory), reader.platform),
+      configurationPath: serviceConfigurationPath(saved.homeDirectory, reader.platform),
+    }
   } catch {
-    profile = undefined
+    bound = undefined
   }
-  const version = profile === undefined ? undefined : stagedRuntimeVersion(reader.platform, definition, profile)
+  const version = bound === undefined ? undefined : stagedRuntimeVersion(reader.platform, definition, bound.profile, bound.configurationPath)
   return version === undefined ? { installed: true } : { installed: true, version }
 }
 

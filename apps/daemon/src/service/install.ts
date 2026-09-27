@@ -254,6 +254,14 @@ export class WindowsTaskArgumentVariableError extends Error {
   }
 }
 
+// The program a launchd agent or systemd unit runs and its arguments, as an
+// install writes them: the runtime, the daemon entry, and the saved
+// configuration. The runtime version reader compares a definition with it.
+export function serviceProgram(execPath: string, runtime: string | undefined, configurationPath: string): { program: string; args: string[] } {
+  const serviceArgs = ["--service-config", configurationPath]
+  return runtime === undefined ? { program: execPath, args: serviceArgs } : { program: runtime, args: [execPath, ...serviceArgs] }
+}
+
 export function servicePlan({
   platform,
   execPath,
@@ -283,9 +291,7 @@ export function servicePlan({
     const task = installedWslTask(configuration.wsl, configuration.registrationId, configurationFile.path)
     return { kind: "task", configuration: configurationFile, commands: [task.register, task.start] }
   }
-  const serviceArgs = ["--service-config", configurationFile.path]
-  const program = runtime === undefined ? execPath : runtime
-  const args = runtime === undefined ? serviceArgs : [execPath, ...serviceArgs]
+  const { program, args } = serviceProgram(execPath, runtime, configurationFile.path)
   if (platform === "linux") {
     for (const path of [runtime, execPath, configurationFile.path]) {
       if (path !== undefined) refuseSystemdPath(path)
@@ -811,7 +817,7 @@ function plainWindowsPath(path: string | undefined): boolean {
 
 const legacyDaemonEntry = /\\(?:@getdomovoi|apps)\\daemon\\dist\\index\.js$/i
 
-function isDomovoiTaskAction(action: WindowsTaskAction, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): boolean {
+export function isDomovoiTaskAction(action: Pick<WindowsTaskAction, "path" | "arguments">, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): boolean {
   // Task Scheduler may report the program with the quotes schtasks was given.
   const program = /^"([^"]*)"$/.exec(action.path)?.[1] ?? action.path
   const quoted = /^"([^"]*)" --service-config "([^"]*)"$/.exec(action.arguments)

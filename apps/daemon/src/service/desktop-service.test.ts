@@ -12,7 +12,8 @@ import {
   type DaemonServiceDependencies,
 } from "../public.js"
 import { createServiceConfiguration, parseServiceConfiguration, ServiceProfileMismatchError, ServiceProfileUnknownError } from "./configuration.js"
-import type { ServiceEffects } from "./install.js"
+import { servicePlan, type ServiceEffects } from "./install.js"
+import { launchdPlist, systemdUnit } from "./units.js"
 import { ServiceOperationBusyError } from "./operation-lease.js"
 import { DaemonServiceHandoffError, LaunchdJobNotDomovoiError, SystemdPathCharacterError, WindowsTaskArgumentVariableError, WindowsTaskPathError } from "./desktop-service.js"
 
@@ -185,7 +186,9 @@ describe("readDaemonServiceStatus and removeDaemonService", () => {
 // names it (<profile>/runtime/<version>/). Read-only: nothing is written or run
 // except the Windows query, which only reads the task.
 describe("readDaemonServiceRuntimeVersion", () => {
-  const plist = (program: string, entry: string) => `<?xml version="1.0"?><plist><dict><key>ProgramArguments</key><array><string>${program}</string><string>${entry}</string></array></dict></plist>`
+  // Round 9: the definitions below are what an install writes (the
+  // renderers), since a version is read only from exactly that.
+  const plist = (program: string, entry: string) => launchdPlist({ execPath: program, args: [entry, "--service-config", "/Users/dana/.domovoi/service.json"] })
   // Security review round 4 of #577 (P3): the version is reported only for
   // the program the definition runs, and only when it is the runtime staged
   // under the profile the saved configuration names.
@@ -199,13 +202,13 @@ describe("readDaemonServiceRuntimeVersion", () => {
   })
 
   it("names the staged runtime version a systemd user unit runs", async () => {
-    const unit = "[Service]\nExecStart=\"/home/dana/.domovoi/runtime/0.10.0-rc.1/0123456789ab/node/bin/node\" \"/home/dana/.domovoi/runtime/0.10.0-rc.1/0123456789ab/daemon/dist/index.js\" --service-config x\n"
+    const unit = systemdUnit({ execPath: "/home/dana/.domovoi/runtime/0.10.0-rc.1/0123456789ab/node/bin/node", args: ["/home/dana/.domovoi/runtime/0.10.0-rc.1/0123456789ab/daemon/dist/index.js", "--service-config", "/home/dana/.domovoi/service.json"] })
     await expect(readDaemonServiceRuntimeVersion({ platform: "linux", home: "/home/dana", readDefinition: async () => unit, capture: vi.fn(), readConfiguration: saved("linux", "/home/dana") }))
       .resolves.toEqual({ installed: true, version: "0.10.0-rc.1" })
   })
 
   it("names the staged runtime version a Windows logon task runs", async () => {
-    const xml = "<Task><Actions><Exec><Command>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab\\node\\node.exe\"</Command><Arguments>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab\\daemon\\dist\\index.js\"</Arguments></Exec></Actions></Task>"
+    const xml = "<Task><Actions><Exec><Command>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab\\node\\node.exe\"</Command><Arguments>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab\\daemon\\dist\\index.js\" --service-config \"C:\\Users\\dana\\.domovoi\\service.json\"</Arguments></Exec></Actions></Task>"
     const capture = vi.fn(async () => ({ code: 0, stdout: xml }))
     await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture, readConfiguration: saved("win32", "C:\\Users\\dana") }))
       .resolves.toEqual({ installed: true, version: "0.9.2" })
@@ -275,12 +278,71 @@ describe("readDaemonServiceRuntimeVersion", () => {
     const programOnly = vi.fn(async () => `<?xml version="1.0"?><plist><dict><key>ProgramArguments</key><array><string>${copy}/node/bin/node</string></array></dict></plist>`)
     await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: programOnly, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }))
       .resolves.toEqual({ installed: true })
-    const unit = "[Service]\nExecStart=\"/home/dana/.domovoi/runtime/0.9.2/0123456789ab/node/bin/node\" \"/home/dana/.domovoi/runtime/0.9.1/0123456789ab/daemon/dist/index.js\" --service-config x\n"
+    const unit = systemdUnit({ execPath: "/home/dana/.domovoi/runtime/0.9.2/0123456789ab/node/bin/node", args: ["/home/dana/.domovoi/runtime/0.9.1/0123456789ab/daemon/dist/index.js", "--service-config", "/home/dana/.domovoi/service.json"] })
     await expect(readDaemonServiceRuntimeVersion({ platform: "linux", home: "/home/dana", readDefinition: async () => unit, capture: vi.fn(), readConfiguration: saved("linux", "/home/dana") }))
       .resolves.toEqual({ installed: true })
     const xml = "<Task><Actions><Exec><Command>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab\\node\\node.exe\"</Command><Arguments>\"C:\\Users\\dana\\profiles\\other\\runtime\\0.9.2\\0123456789ab\\daemon\\dist\\index.js\" --service-config \"C:\\Users\\dana\\.domovoi\\service.json\"</Arguments></Exec></Actions></Task>"
     await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture: vi.fn(async () => ({ code: 0, stdout: xml })), readConfiguration: saved("win32", "C:\\Users\\dana") }))
       .resolves.toEqual({ installed: true })
+  })
+
+  // Round 9 (P2): a version is reported only for exactly the definition
+  // Domovoi writes for that copy. What each platform's installer writes
+  // (servicePlan) reads back with its version; a definition that runs
+  // something else while naming the copy does not.
+  describe("only for the definition Domovoi writes (round 9)", () => {
+    const written = (platform: string, home: string, copy: string) => {
+      const paths = platform === "win32" ? { node: `${copy}\\node\\node.exe`, entry: `${copy}\\daemon\\dist\\index.js` } : { node: `${copy}/node/bin/node`, entry: `${copy}/daemon/dist/index.js` }
+      return servicePlan({
+        platform, home, uid: 501, user: "dana", execPath: paths.entry, runtime: paths.node,
+        configuration: createServiceConfiguration({}, { platform, homeDirectory: home, workingDirectory: home }),
+      })
+    }
+    // What Task Scheduler reports for the task schtasks /create /tr registered:
+    // the first quoted word is the Command, the rest its Arguments.
+    const taskXml = (actions: string) => `<?xml version="1.0" encoding="UTF-16"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n  <Actions Context="Author">\n${actions}  </Actions>\n</Task>\n`
+    const exec = (command: string, args?: string) => `    <Exec>\n      <Command>${command}</Command>\n${args === undefined ? "" : `      <Arguments>${args}</Arguments>\n`}    </Exec>\n`
+    const windowsWritten = (copy: string) => {
+      const plan = written("win32", "C:\\Users\\dana", copy)
+      const create = plan.commands.find((command) => command.args[0] === "/create")!
+      const [, command = "", args = ""] = /^("[^"]*") (.*)$/u.exec(create.args[create.args.indexOf("/tr") + 1]!)!
+      return taskXml(exec(command, args))
+    }
+    const read = (platform: string, home: string, definition: string) => readDaemonServiceRuntimeVersion({
+      platform, home, readDefinition: async () => definition, capture: vi.fn(async () => ({ code: 0, stdout: definition })), readConfiguration: saved(platform, home),
+    })
+
+    it("reads the version back from what each installer writes", async () => {
+      const darwin = written("darwin", "/Users/dana", "/Users/dana/.domovoi/runtime/0.9.2/0123456789ab")
+      await expect(read("darwin", "/Users/dana", darwin.kind === "file" ? darwin.contents : "")).resolves.toEqual({ installed: true, version: "0.9.2" })
+      const linux = written("linux", "/home/dana", "/home/dana/.domovoi/runtime/0.10.0-rc.1/0123456789ab")
+      await expect(read("linux", "/home/dana", linux.kind === "file" ? linux.contents : "")).resolves.toEqual({ installed: true, version: "0.10.0-rc.1" })
+      await expect(read("win32", "C:\\Users\\dana", windowsWritten("C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab"))).resolves.toEqual({ installed: true, version: "0.9.2" })
+    })
+
+    it("reports no version for a launchd plist whose Program key runs something else", async () => {
+      const plan = written("darwin", "/Users/dana", "/Users/dana/.domovoi/runtime/0.9.2/0123456789ab")
+      const contents = plan.kind === "file" ? plan.contents : ""
+      const programmed = contents.replace("    <key>ProgramArguments</key>", "    <key>Program</key>\n    <string>/usr/bin/false</string>\n    <key>ProgramArguments</key>")
+      expect(programmed).not.toBe(contents)
+      await expect(read("darwin", "/Users/dana", programmed)).resolves.toEqual({ installed: true })
+    })
+
+    it("reports no version for a systemd unit whose later ExecStart lines replace the command", async () => {
+      const plan = written("linux", "/home/dana", "/home/dana/.domovoi/runtime/0.9.2/0123456789ab")
+      const contents = plan.kind === "file" ? plan.contents : ""
+      const reset = contents.replace("Restart=on-failure", "ExecStart=\nExecStart=/usr/bin/false\nRestart=on-failure")
+      expect(reset).not.toBe(contents)
+      await expect(read("linux", "/home/dana", reset)).resolves.toEqual({ installed: true })
+    })
+
+    it("reports no version for a Windows task whose actions split the Node program and the entry", async () => {
+      const copy = "C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab"
+      const split = taskXml(exec(`"${copy}\\node\\node.exe"`) + exec("C:\\Windows\\System32\\cmd.exe", `"${copy}\\daemon\\dist\\index.js" --service-config "C:\\Users\\dana\\.domovoi\\service.json"`))
+      await expect(read("win32", "C:\\Users\\dana", split)).resolves.toEqual({ installed: true })
+      const doubled = windowsWritten(copy).replace("  </Actions>", `${exec("C:\\Windows\\System32\\cmd.exe", "/c exit 1")}  </Actions>`)
+      await expect(read("win32", "C:\\Users\\dana", doubled)).resolves.toEqual({ installed: true })
+    })
   })
 
   it("says installed with no version when the service runs a runtime the desktop did not stage", async () => {
