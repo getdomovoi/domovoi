@@ -22,9 +22,18 @@
 // its source up to the first character a rule changed and writes the rest in
 // the quoting that character was in, closed again, so the output always reads
 // back as the same words and a second pass changes nothing. Unquoted, the rest
-// is single-quoted from its first character the shell reads specially. The
-// output is read again, and text that does not read back as the words meant
-// is redacted whole. The script given
+// is single-quoted from its first character the shell reads specially. This
+// reader does not model pathname patterns (`*`, `?`, `[`) or brace expansion
+// (`{a,b}`), which turn one word into several or none. In a command line a
+// shell runs (a hook's or helper's command, any argument vector), each
+// unquoted one is escaped with a backslash where source text is kept, and a
+// rewritten rest is single-quoted from it. A rule, matcher, name, prompt or
+// URL is not run by a shell and keeps its `*` as written. The output is read
+// again, and text that does not read back as the words meant, or a command
+// that still holds such a character unquoted, is redacted whole. The protocol refuses a
+// control or format character anywhere in a text (a newline, a tab, a
+// backslash and newline), and drops the entry with it, so the text is redacted
+// from the word or gap that would carry one to the end. The script given
 // to `sh -c` (bash, zsh and the rest, `-lc` included) is read as words in turn,
 // to a bounded depth. It errs toward redacting: a value inside a quoted string
 // runs to the string's end, and inside a script given to a shell it runs to
@@ -36,6 +45,10 @@
 // to the end of the text.
 
 const marker = "[REDACTED]"
+
+// What the protocol refuses in any text: control and format characters and
+// line and paragraph separators.
+const controlCharacter = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u
 
 // The same sensitive-name test as the protocol backstop, so a key it would
 // refuse is a key redacted here. A key that names where a secret lives or
@@ -282,21 +295,67 @@ function doubleQuotedEnd(text: string, open: number, add: (piece: string, quotin
 // text is single-quoted from its first character the shell treats specially,
 // operators a URL was read through (`&`, `;`, `|`) included, so it stays one
 // word; the plain text before that stays bare, so a quote never opens between
-// a URL's `://` and its user info.
+// a URL's `://` and its user info. In a command, a pattern character (`?`,
+// `[`) is not plain either; the marker is, as it is this pass's own text.
 const plainCharacter = /[A-Za-z0-9_@%+=:,./[\]?#~!^-]/u
+const plainCommandCharacter = /[A-Za-z0-9_@%+=:,./\]#~!^-]/u
 const singleQuoted = (text: string) => text.replace(/'/gu, "'\"'\"'")
-function spelled(text: string, quoting: Quoting, wordStart: boolean): string {
+function spelled(text: string, quoting: Quoting, wordStart: boolean, command: boolean): string {
   if (quoting === "\"") return `${text.replace(/[\\"$`]/gu, "\\$&")}"`
   if (quoting === "'") return `${singleQuoted(text)}'`
+  const plainAt = (index: number) => (command ? plainCommandCharacter : plainCharacter).test(text[index]!)
   let plain = 0
-  while (plain < text.length && plainCharacter.test(text[plain]!) && !(wordStart && plain === 0 && /[#~]/u.test(text[0]!))) plain += 1
+  while (plain < text.length) {
+    if (text.startsWith(marker, plain)) plain += marker.length
+    else if (plainAt(plain) && !(wordStart && plain === 0 && /[#~]/u.test(text[0]!))) plain += 1
+    else break
+  }
   return plain === text.length ? text : `${text.slice(0, plain)}'${singleQuoted(text.slice(plain))}'`
+}
+
+// The source index of each character of a word the shell would expand as a
+// pathname pattern or a brace expansion: written bare (not quoted, escaped or
+// part of a `$` expansion) and not inside the marker. `$?`, `$*` and `$[`
+// belong to their `$`; a `[` or `[[` word is the test command; a `{` expands
+// only with a `,` or `..` and a `}` after it.
+function expandingSources(text: string, word: Word): number[] {
+  const { value, characters } = word
+  const exempt = new Set<number>()
+  for (let at = value.indexOf(marker); at !== -1; at = value.indexOf(marker, at + marker.length)) {
+    for (let offset = 0; offset < marker.length; offset += 1) exempt.add(at + offset)
+  }
+  const bare = (index: number) => characters[index]?.quoting === "" && text[characters[index]!.source] === value[index]
+  const sources: number[] = []
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!
+    if (!"*?[{".includes(character) || exempt.has(index) || !bare(index)) continue
+    if (index > 0 && value[index - 1] === "$" && bare(index - 1) && characters[index - 1]!.source === characters[index]!.source - 1) continue
+    if (character === "[" && (value === "[" || value === "[[")) continue
+    if (character === "{" && !/(?:,|\.\.)[\s\S]*\}/u.test(value.slice(index + 1))) continue
+    sources.push(characters[index]!.source)
+  }
+  return sources
+}
+
+// A word's source from its start to `end`. In a command, a backslash goes
+// before each character the shell would expand, so it reads as the same word;
+// other text (a rule, a matcher, a name) keeps its exact source.
+function sourceSpelling(text: string, word: Word, end: number, command: boolean): string {
+  if (!command) return text.slice(word.start, end)
+  let spelling = ""
+  let cursor = word.start
+  for (const source of expandingSources(text, word)) {
+    if (source >= end) break
+    spelling += `${text.slice(cursor, source)}\\`
+    cursor = source
+  }
+  return `${spelling}${text.slice(cursor, end)}`
 }
 
 // An argument shown as one shell word that reads back as itself: bare when
 // every character is plain, otherwise single-quoted whole.
 function argumentWord(word: string): string {
-  return word !== "" && spelled(word, "", true) === word ? word : `'${singleQuoted(word)}'`
+  return word !== "" && spelled(word, "", true, true) === word ? word : `'${singleQuoted(word)}'`
 }
 
 function commonPrefix(left: string, right: string): number {
@@ -312,15 +371,15 @@ function commonPrefix(left: string, right: string): number {
 // quote instead: the script is quoted again in the word around it, and an
 // escaped quote between a key and its [REDACTED] reads as a value to the
 // protocol backstop.
-function rewrittenWord(text: string, word: Word, value: string, anchor: number, nested: boolean): string {
-  if (value === word.value) return text.slice(word.start, word.end)
+function rewrittenWord(text: string, word: Word, value: string, anchor: number, nested: boolean, command: boolean): string {
+  if (value === word.value) return sourceSpelling(text, word, word.end, command)
   const { characters } = word
   let at = Math.min(anchor, commonPrefix(word.value, value))
   while (at > 0 && at < characters.length && characters[at - 1]!.source === characters[at]!.source) at -= 1
   const next = characters[at]
   const opens = nested ? next?.opens : undefined
-  const prefix = text.slice(word.start, opens ?? next?.source ?? word.end)
-  return `${prefix}${spelled(value.slice(at), opens === undefined ? next?.quoting ?? "" : "", prefix === "")}`
+  const prefix = sourceSpelling(text, word, opens ?? next?.source ?? word.end, command)
+  return `${prefix}${spelled(value.slice(at), opens === undefined ? next?.quoting ?? "" : "", prefix === "", command)}`
 }
 
 // The word a shell's `-c` option runs as a script, for each shell word in the
@@ -362,7 +421,7 @@ interface Change { start: number; end: number; text: string }
 // The rules, run over the tokens' values joined by one space. `glued` says a
 // token is written with no blank before the next one; `leading` is the first
 // source character of each word, so a flag test sees `"-x"` as a quote.
-function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading: readonly string[], depth: number, nested: boolean): Plan {
+function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading: readonly string[], depth: number, nested: boolean, command: boolean): Plan {
   let joined = ""
   const starts: number[] = []
   const owners: number[] = []
@@ -542,7 +601,7 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
 
   const values = tokens.map((token, index) => {
     if (token.kind !== "word" || dropped[index] || (stopAfter !== undefined && index > stopAfter)) return token.value
-    if (scripts.has(index) && !consumed.has(index)) return depth >= maximumDepth ? marker : redactShell(token.value, depth + 1, true)
+    if (scripts.has(index) && !consumed.has(index)) return depth >= maximumDepth ? marker : redactShell(token.value, depth + 1, true, command)
     let value = token.value
     for (const { start, end, text } of [...changes[index]!].sort((left, right) => right.start - left.start)) {
       value = `${value.slice(0, start)}${text}${value.slice(end)}`
@@ -565,17 +624,27 @@ function quotedEnd(text: string, start: number, limit: number): { end: number; c
 }
 
 // Shell text with every value the rules find redacted. `depth` counts the
-// shells it is nested in; `nested` is true inside one.
-function redactShell(text: string, depth: number, nested: boolean): string {
+// shells it is nested in; `nested` is true inside one. `command` is true for a
+// command line a shell runs, whose pattern characters are written so they do
+// not expand.
+function redactShell(text: string, depth: number, nested: boolean, command: boolean): string {
   const { tokens, stoppedAt } = lexShell(text)
   const glued = tokens.map((token, index) => tokens[index + 1]?.start === token.end)
   const leading = tokens.map((token) => text[token.start] ?? "")
-  const plan = planTokens(tokens, glued, leading, depth, nested)
+  const plan = planTokens(tokens, glued, leading, depth, nested, command)
+  const readsBack = (output: string, meant: ReadonlyArray<Pick<Token, "kind" | "value">>) => readBack(output, meant, command)
   let output = ""
   let cursor = 0
   let endsInWord = false
   // The tokens the output is meant to read back as.
   const meant: Array<Pick<Token, "kind" | "value">> = []
+  // The rest of the text from `gap` on is redacted: a gap with a control
+  // character in it is written as one blank.
+  const redactRest = (gap: string) => {
+    meant.push({ kind: "word", value: marker })
+    const blank = output === "" ? "" : " "
+    return readsBack(`${output}${controlCharacter.test(gap) ? blank : gap === "" && endsInWord ? " " : gap}${marker}`, meant)
+  }
   for (const [index, token] of tokens.entries()) {
     // A merged token was written with no blank before it; its text is in the
     // word before it now.
@@ -583,25 +652,30 @@ function redactShell(text: string, depth: number, nested: boolean): string {
       cursor = token.end
       continue
     }
-    output += text.slice(cursor, token.start)
-    output += token.kind === "word" ? rewrittenWord(text, token, plan.values[index]!, plan.anchors[index]!, nested) : token.value
+    const gap = text.slice(cursor, token.start)
+    const spelling = token.kind === "word" ? rewrittenWord(text, token, plan.values[index]!, plan.anchors[index]!, nested, command) : token.value
+    if (controlCharacter.test(gap) || controlCharacter.test(spelling)) return redactRest(gap)
+    output += `${gap}${spelling}`
     meant.push({ kind: token.kind, value: token.kind === "word" ? plan.values[index]! : token.value })
     cursor = token.end
     endsInWord = token.kind === "word"
     if (plan.stopAfter === index) return readsBack(output, meant)
   }
-  if (stoppedAt === undefined) return readsBack(`${output}${text.slice(cursor)}`, meant)
-  const gap = text.slice(cursor, stoppedAt)
-  meant.push({ kind: "word", value: marker })
-  return readsBack(`${output}${gap === "" && endsInWord && cursor === stoppedAt ? " " : gap}${marker}`, meant)
+  if (stoppedAt === undefined) {
+    const rest = text.slice(cursor)
+    return controlCharacter.test(rest) ? redactRest(rest) : readsBack(`${output}${rest}`, meant)
+  }
+  return redactRest(text.slice(cursor, stoppedAt))
 }
 
-// The output when it reads back as exactly the tokens meant, so writing a
-// word again never splits, joins or runs one; otherwise the marker alone.
-function readsBack(output: string, meant: ReadonlyArray<Pick<Token, "kind" | "value">>): string {
+// The output when it reads back as exactly the tokens meant, and in a command
+// with no word holding a character the shell would expand, so writing a word
+// again never splits, joins, runs or expands one; otherwise the marker alone.
+function readBack(output: string, meant: ReadonlyArray<Pick<Token, "kind" | "value">>, command: boolean): string {
   const { tokens, stoppedAt } = lexShell(output)
   const same = stoppedAt === undefined && tokens.length === meant.length
-    && tokens.every((token, index) => token.kind === meant[index]!.kind && token.value === meant[index]!.value)
+    && tokens.every((token, index) => token.kind === meant[index]!.kind && token.value === meant[index]!.value
+      && (!command || token.kind === "operator" || expandingSources(output, token).length === 0))
   return same ? output : marker
 }
 
@@ -612,30 +686,41 @@ export function inventoryShellWords(text: string): string[] | undefined {
   return stoppedAt === undefined ? tokens.flatMap((token) => (token.kind === "word" ? [token.value] : [])) : undefined
 }
 
+// Text a shell does not run: a rule, a matcher, a name, a prompt or a URL. It
+// keeps its source spelling, a `*` in `Bash(pnpm test:*)` included.
 export function redactInventoryText(text: string): string {
-  return redactShell(text, 0, false)
+  return redactShell(text, 0, false, false)
+}
+
+// A command line a shell runs: a hook's or a helper's command. Pattern and
+// brace characters are written so the shell reads the words shown.
+export function redactInventoryCommand(text: string): string {
+  return redactShell(text, 0, false, true)
 }
 
 // Shell text in an argument a hook would pass on to a shell: a command run by
-// `$(...)`, backquotes, `<(...)`, `>(...)` or zsh's `=(...)`, or a `${...}`
-// that is not bare.
-const runsOrExpands = /\$\(|`|[<>]\(|^=\(|\$\{(?!(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])\})/u
+// `$(...)`, backquotes, `<(...)`, `>(...)` or zsh's `=(...)`, a `${...}` that
+// is not bare, or `$'...'` and `$"..."`, which are not POSIX quoting.
+const runsOrExpands = /\$\(|`|[<>]\(|^=\(|\$\{(?!(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])\})|\$['"]/u
 
 // A command given as an argument vector. Each argument is one word whatever it
 // holds, so the same rules run on the arguments as given, and a shell's `-c`
 // script is read as shell text. An argument that holds shell text that runs or
-// expands is redacted from that argument on, as unreadable shell text is. An argument with any character the shell reads specially is shown
-// single-quoted, a single quote as '"'"', so no shown argument runs, expands or
-// splits, and no backslash stands between a key and its [REDACTED].
+// expands is redacted from that argument on, as unreadable shell text is. An
+// argument that holds a control or format character is shown as the marker.
+// An argument with any character the shell reads specially, a pattern
+// character included, is shown single-quoted, a single quote as '"'"', so no
+// shown argument runs, expands or splits, and no backslash stands between a
+// key and its [REDACTED]. The output is read again, as shell text is.
 export function redactInventoryArgv(argv: readonly string[]): string {
   const tokens: Word[] = argv.map((value, index) => ({
     kind: "word", start: index, end: index, value, characters: Array.from({ length: value.length }, () => ({ quoting: "", source: 0 })),
   }))
-  const plan = planTokens(tokens, tokens.map(() => false), argv.map((value) => value[0] ?? ""), 0, false)
+  const plan = planTokens(tokens, tokens.map(() => false), argv.map((value) => value[0] ?? ""), 0, false, true)
   const words = plan.stopAfter === undefined ? plan.values : plan.values.slice(0, plan.stopAfter + 1)
   // Any other argument is judged as given. A shell's script was read as shell
   // text already, and must still read.
   const unreadable = words.findIndex((word, index) => (plan.scripts.has(index) ? lexShell(word).stoppedAt !== undefined : runsOrExpands.test(argv[index]!)))
-  const shown = unreadable === -1 ? words : [...words.slice(0, unreadable), marker]
-  return shown.map(argumentWord).join(" ")
+  const shown = (unreadable === -1 ? words : [...words.slice(0, unreadable), marker]).map((word) => (controlCharacter.test(word) ? marker : word))
+  return readBack(shown.map(argumentWord).join(" "), shown.map((value) => ({ kind: "word", value })), true)
 }

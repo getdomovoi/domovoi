@@ -12,7 +12,7 @@ import {
 } from "@getdomovoi/protocol"
 import { parse as parseYaml } from "yaml"
 
-import { redactInventoryArgv, redactInventoryText } from "./inventory-redaction.js"
+import { redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
 
 // What a repository's own Claude Code, OpenCode and Kilo configuration
 // declares, and the digest repository trust pins to. Nothing here executes,
@@ -396,7 +396,7 @@ function claudeHook(event: string, matcher: unknown, hook: unknown): Candidate |
   const args = hook.args === undefined ? [] : stringArray(hook.args)
   let command: string | undefined
   if (hook.type === "command" && typeof hook.command === "string" && args) {
-    command = args.length > 0 ? redactInventoryArgv([hook.command, ...args]) : redactInventoryText(hook.command)
+    command = args.length > 0 ? redactInventoryArgv([hook.command, ...args]) : redactInventoryCommand(hook.command)
   } else if (hook.type === "http" && typeof hook.url === "string") command = redactInventoryText(hook.url)
   else if ((hook.type === "prompt" || hook.type === "agent") && typeof hook.prompt === "string") command = redactInventoryText(hook.prompt)
   else if (hook.type === "mcp_tool" && typeof hook.server === "string" && typeof hook.tool === "string") {
@@ -434,12 +434,12 @@ function claudeSettings(settings: Record<string, unknown>): Array<Candidate | Om
   for (const server of stringArray(settings.enabledMcpjsonServers) ?? []) candidates.push(rule("enabledMcpjsonServers", server))
   for (const [name, startsAtSessionStart] of claudeHelpers) {
     const command = settings[name]
-    if (typeof command === "string") candidates.push({ kind: "helper", name, command: redactInventoryText(command), startsAtSessionStart })
+    if (typeof command === "string") candidates.push({ kind: "helper", name, command: redactInventoryCommand(command), startsAtSessionStart })
   }
   for (const [name, startsAtSessionStart] of claudeCommandSettings) {
     const setting = settings[name]
     if (isRecord(setting) && typeof setting.command === "string") {
-      candidates.push({ kind: "helper", name, command: redactInventoryText(setting.command), startsAtSessionStart })
+      candidates.push({ kind: "helper", name, command: redactInventoryCommand(setting.command), startsAtSessionStart })
     }
   }
   for (const [plugin, enabled] of recordEntries(settings.enabledPlugins)) {
