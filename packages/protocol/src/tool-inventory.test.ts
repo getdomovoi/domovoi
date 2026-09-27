@@ -10,6 +10,7 @@ import {
   rpcMethodAuthorizations,
   rpcMethodMutations,
   rpcMethods,
+  toolInventoryEntrySchema,
   toolInventorySchema,
 } from "./index.js"
 
@@ -227,6 +228,7 @@ describe("tool inventory text", () => {
 })
 
 describe("credential backstop", () => {
+  const hookEntry = sample.providers[0].entries[2]
   it("reads each text once, not once per scheme word", () => {
     // Count every character a regular expression test reads on a near-miss
     // text: many scheme words, none a credential, no header.
@@ -250,6 +252,39 @@ describe("credential backstop", () => {
     // Eight times the text reads about eight times as much; a rescan of the
     // text before each scheme word reads about sixty-four times as much.
     expect(large / small).toBeLessThan(12)
+  })
+
+  // Characters handed to String.prototype.matchAll, split by whether the
+  // pattern opens on a quote (one that restarts at every quote of an unclosed
+  // string) and by input length.
+  const matchAllCalls = (run: () => void) => {
+    const calls: { quoteOpened: boolean, length: number }[] = []
+    const matchAll = RegExp.prototype[Symbol.matchAll] as (this: RegExp, input: string) => IterableIterator<RegExpMatchArray>
+    const spy = vi.spyOn(RegExp.prototype as unknown as Record<symbol, typeof matchAll>, Symbol.matchAll).mockImplementation(function (this: RegExp, input: string) {
+      calls.push({ quoteOpened: this.source.startsWith("\""), length: String(input).length })
+      return matchAll.call(this, input)
+    })
+    try {
+      run()
+    } finally {
+      spy.mockRestore()
+    }
+    return calls
+  }
+
+  it("reads quoted strings without a pattern that restarts at every quote", () => {
+    // Backtracking inside one call cannot be counted from outside; a pattern
+    // that opens on a quote retries from each of 16,384 escaped quotes.
+    const calls = matchAllCalls(() => holdsCredential('\\"'.repeat(16_384)))
+    expect(calls.filter(({ quoteOpened }) => quoteOpened).reduce((total, { length }) => total + length, 0)).toBe(0)
+  })
+
+  it("refuses an overlength text before the backstop reads it", () => {
+    const command = '\\"'.repeat(16_384)
+    let accepted = true
+    const calls = matchAllCalls(() => { accepted = toolInventoryEntrySchema.safeParse({ ...hookEntry, command }).success })
+    expect(accepted).toBe(false)
+    expect(calls.filter(({ length }) => length > 2_048)).toEqual([])
   })
 
   it("trims a scheme value's punctuation without a pattern that restarts at every character", () => {

@@ -158,7 +158,20 @@ function decoded(value: string): string[] {
     .replace(/\\u([0-9A-Fa-f]{4})/gu, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
     .replace(/\\(.)/gu, "$1")
   // A JSON argv's strings as separate words: ["--api-key","x"] is --api-key x.
-  const quotedStrings = (text: string) => [...text.matchAll(/"((?:[^"\\]|\\.)*)"/gu)].map(([, inner = ""]) => unescape(inner)).join(" ")
+  // One forward pass: a backslash escapes the next character, and a string
+  // left unclosed ends the reading, since every later quote is unclosed too.
+  const quotedStrings = (text: string) => {
+    const strings: string[] = []
+    let open = text.indexOf("\"")
+    while (open !== -1) {
+      let end = open + 1
+      while (end < text.length && text[end] !== "\"") end += text[end] === "\\" ? 2 : 1
+      if (end >= text.length) break
+      strings.push(unescape(text.slice(open + 1, end)))
+      open = text.indexOf("\"", end + 1)
+    }
+    return strings.join(" ")
+  }
   return [...new Set([value, percent, unescape(value), unescape(percent), shellWords(value), shellWords(percent), quotedStrings(value), quotedStrings(percent)])]
 }
 

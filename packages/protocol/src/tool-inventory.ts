@@ -21,7 +21,8 @@ import { utf16MaxLength, wireRule } from "./validation.js"
 // split or reordered on a card, and no padding.
 const text = (maximum: number) => z.string().min(1).check(utf16MaxLength(maximum))
   .regex(/^(?!\s)[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]*(?<!\s)$/u)
-  .refine((value) => !holdsCredential(value), "Text must not carry a credential; the reader redacts it first")
+  // An overlength text is already refused by its cap; the backstop does not read it.
+  .refine((value) => value.length > maximum || !holdsCredential(value), "Text must not carry a credential; the reader redacts it first")
 
 export const toolInventoryPathSchema = text(1_024)
 // An environment variable identifier, never `NAME=value`.
