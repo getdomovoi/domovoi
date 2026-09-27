@@ -52,8 +52,12 @@ function storedSnapshot(): WorkspaceSnapshot {
 
 type Frame = { id?: unknown; method?: string; result?: WorkspaceSnapshot; params?: WorkspaceSnapshot }
 
-// Sends hello, then one request, and returns its response together with every
-// workspace.changed notification the client saw before it.
+// Sends hello, waits for its answer, then sends one request, and returns that
+// response together with every workspace.changed notification the client saw
+// before it. The wait is load-bearing: hello runs on the daemon's mutation
+// queue while methods such as provider.refresh bypass it, so a request sent
+// behind an unanswered hello can overtake it and be refused with "Connection
+// identity is required" whenever the queue is busy.
 async function request(daemon: DomovoiDaemon, address: { host: string; port: number }, method: string, params: object) {
   const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
     headers: { authorization: `Bearer ${daemon.authToken}` },
@@ -64,10 +68,13 @@ async function request(daemon: DomovoiDaemon, address: { host: string; port: num
       socket.once("error", reject)
     })
     const changed: WorkspaceSnapshot[] = []
+    let answerHello: (message: Frame) => void = () => {}
+    const hello = new Promise<Frame>((resolve) => { answerHello = resolve })
     const response = new Promise<Frame>((resolve) => {
       socket.on("message", (data) => {
         const message = JSON.parse(data.toString()) as Frame
         if (message.method === "workspace.changed" && message.params) changed.push(message.params)
+        if (message.id === 1) answerHello(message)
         if (message.id === 2) resolve(message)
       })
     })
@@ -77,6 +84,7 @@ async function request(daemon: DomovoiDaemon, address: { host: string; port: num
       method: "system.hello",
       params: { client: "desktop", clientId: "desktop-test-client", clientVersion: "0.0.1", protocolVersion },
     }))
+    expect((await hello).result).toBeDefined()
     socket.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method, params }))
     return { response: await response, changed }
   } finally {
@@ -183,7 +191,14 @@ describe("Cursor and Grok readiness from a provider probe", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    await waitForDaemon(() => expect(store.save).toHaveBeenCalled())
+    // Startup recovery saves before start() returns, so a save alone does not
+    // show the startup probe has run. Wait for a save that follows its inspect:
+    // the refresh below is then the second, separate probe.
+    await waitForDaemon(() => {
+      expect(providerProbe.inspect).toHaveBeenCalledOnce()
+      const inspected = providerProbe.inspect.mock.invocationCallOrder[0]!
+      expect(store.save.mock.invocationCallOrder.some((order) => order > inspected)).toBe(true)
+    })
 
     const { response, changed } = await request(daemon, address, "provider.refresh", { client: "desktop" })
 
