@@ -55,6 +55,11 @@ const maximumWork = 2 * maximumEntries
 // `maximumEmergencyStopIntentBytes` and asks at most `maximumWork`, so a pass
 // holds a bounded number of rows and stops, however long the journal is.
 export const emergencyStopRowsPerPass = 16
+// Security review round 2 of #641: the most rounds over the journal one start
+// makes. A round reads the rows no round has read yet, and a trigger in the
+// store can put a new row in place of each one a round clears, without end.
+// Past this many rounds startup fails, and the next start continues.
+export const emergencyStopRecoveryRounds = 16
 
 type Read =
   | { intents: RecoveredEmergencyStopIntent[]; partial?: string; overflow?: string }
