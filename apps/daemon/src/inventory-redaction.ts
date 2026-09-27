@@ -65,9 +65,10 @@ function valueEnd(text: string, start: number, quote: Quote): number {
 }
 
 // The end of the unquoted shell word at `start`, quoted runs inside it included.
-function wordEnd(text: string, start: number): number {
+// Inside a quoted string, `quote`, the word also ends at that string's close.
+function wordEnd(text: string, start: number, quote?: Quote): number {
   let index = start
-  while (index < text.length && !/[\s;&|()<>]/u.test(text[index]!)) {
+  while (index < text.length && !/[\s;&|()<>]/u.test(text[index]!) && text[index] !== quote) {
     const character = text[index]!
     if (character === "\\") index += 2
     else if (character === "\"" || character === "'") index = quotedEnd(text, index)
@@ -145,16 +146,28 @@ function redactUrl(url: string): string {
 // Flags that take a whole `Name: value` header line: curl's -H, --header and
 // --proxy-header, and wget's --header. -H can hold its value in the same word.
 const headerFlag = /(-H|--header|--proxy-header)(=|\s+)?/uy
-// A field name is an RFC 9110 token, apostrophe and backtick included.
-const headerLine = /^([A-Za-z0-9!#$%&'*+.^_`|~-]+)(\s*:\s*)([\s\S]+)$/u
+// A field name is an RFC 9110 token, apostrophe and backtick included. The
+// double quote is not a token character, but a shell word spells a quoted name
+// with it (`"X-Foo":value`), so it is accepted too.
+const headerLine = /^([A-Za-z0-9!#$%&'"*+.^_`|~-]+)(\s*:\s*)([\s\S]+)$/u
 // A header argument that ends at its colon: `-H X-Foo: secret` unquoted
 // leaves the value in the next shell word.
-const headerWithoutValue = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+\s*:$/u
+const headerWithoutValue = /^[A-Za-z0-9!#$%&'"*+.^_`|~-]+\s*:$/u
+
+// The quote a shell word leaves open after `text`, or "" when none is.
+function openQuote(text: string): string {
+  let open = ""
+  for (const character of text) {
+    if (open === "" && (character === "'" || character === "\"")) open = character
+    else if (character === open) open = ""
+  }
+  return open
+}
 
 // A header line with its value redacted, or undefined when the text is not a
 // `Name: value` line (curl's `@file` form, or `Name;` for an empty header).
-// In an unquoted shell word an apostrophe in the name opens a quoted run that
-// the value closes (`X'Foo: v w'`), so the redacted value closes it again.
+// In a shell word a quote in the name can open a quoted run that the value
+// closes (`X'Foo: v w'`, `'X-Foo: a':b`), so the redacted value closes it again.
 function redactHeaderLine(header: string, shellWord: boolean): string | undefined {
   const match = headerLine.exec(header)
   if (!match) return undefined
@@ -162,8 +175,7 @@ function redactHeaderLine(header: string, shellWord: boolean): string | undefine
   scheme.lastIndex = 0
   const kept = scheme.exec(value)?.[0] ?? ""
   const rest = value.slice(kept.length)
-  const closing = shellWord && (name.split("'").length - 1) % 2 === 1 ? "'" : ""
-  const redacted = `${marker}${closing}`
+  const redacted = `${marker}${shellWord ? openQuote(name) : ""}`
   return `${redactKnownShapes(name)}${separator}${kept}${rest === "" || isMarker(rest) || rest === redacted ? rest : redacted}`
 }
 
@@ -211,11 +223,15 @@ function splitHeaderValue(text: string, from: number, quote: Quote): { text: str
   return { text: `${blanks}${argument.open}${isMarker(word) ? word : marker}${argument.close}`, end: argument.end }
 }
 
-// The shell word a header flag takes, and the quotes around it.
+// The shell word a header flag takes, and the quotes around it when the word
+// is one quoted string. A quoted part with text glued after it
+// (`'X-Foo':value`) is one word with no quotes around it.
 function headerArgument(text: string, start: number, quote: Quote): { open: string; close: string; end: number } {
   const first = text[start]
   if ((first === "\"" || first === "'") && first !== quote) {
     const end = quotedEnd(text, start)
+    const word = wordEnd(text, start, quote)
+    if (word > end) return { open: "", close: "", end: word }
     return { open: first, close: end - 1 > start && text[end - 1] === first ? first : "", end }
   }
   if (quote === "\"" && text.startsWith("\\\"", start)) {
@@ -227,9 +243,9 @@ function headerArgument(text: string, start: number, quote: Quote): { open: stri
     return { open: "\\\"", close: "", end: valueEnd(text, start, quote) }
   }
   if (!quote) return { open: "", close: "", end: valueEnd(text, start, quote) }
-  let end = start
-  while (end < text.length && !/\s/u.test(text[end]!) && text[end] !== quote) end += text[end] === "\\" && quote === "\"" ? 2 : 1
-  return { open: "", close: "", end: Math.min(end, text.length) }
+  // Inside a quoted string the word ends at a blank, an operator or that
+  // string's close, and a quoted run of the other kind stays in it.
+  return { open: "", close: "", end: wordEnd(text, start, quote) }
 }
 
 export function redactInventoryText(text: string): string {

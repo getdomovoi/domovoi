@@ -50,6 +50,15 @@ describe("redactInventoryText", () => {
     // An unquoted name's quote opens a quoted run the value closes; the
     // redacted value closes it again.
     ["curl -H X'Foo: s3cr3t-value' x", "curl -H X'Foo: [REDACTED]' x"],
+    // A quoted part with text glued after it is one shell word, name and value.
+    ["curl -H 'X-Foo':s3cr3t-value x", "curl -H 'X-Foo':[REDACTED] x"],
+    ["curl -H \"X-Foo\":s3cr3t-value x", "curl -H \"X-Foo\":[REDACTED] x"],
+    ["curl -H 'X-Foo: a':s3cr3t-value x", "curl -H 'X-Foo: [REDACTED]' x"],
+    ["sh -c \"curl -H 'X-Foo':s3cr3t-value x\"", "sh -c \"curl -H 'X-Foo':[REDACTED] x\""],
+    ["sh -c 'curl -H \"X-Foo\":s3cr3t-value x'", "sh -c 'curl -H \"X-Foo\":[REDACTED] x'"],
+    ["sh -c 'curl -H X\"Foo: a s3cr3t-value\" x'", "sh -c 'curl -H X\"Foo: [REDACTED]\" x'"],
+    ["curl -H 'X-Foo': s3cr3t-value x", "curl -H 'X-Foo': [REDACTED] x"],
+    ["curl -H \"X-Foo\": s3cr3t-value x", "curl -H \"X-Foo\": [REDACTED] x"],
     // A header argument that ends at its colon leaves the value in the next word.
     ["curl -H X-Foo: s3cr3t-value https://example.com", "curl -H X-Foo: [REDACTED] https://example.com"],
     ["curl -HX-Foo: s3cr3t-value x", "curl -HX-Foo: [REDACTED] x"],
@@ -112,6 +121,13 @@ describe("redactInventoryText", () => {
     expect(redactInventoryText(once)).toBe(once)
     expect(backstopAccepts(once)).toBe(true)
   })
+
+  it("is idempotent for a quoted header name with its value glued on", () => {
+    const once = redactInventoryText("curl -H 'X-Foo':v -H \"X-Bar\":v -H 'X-Baz: a':v x")
+    expect(once).toBe("curl -H 'X-Foo':[REDACTED] -H \"X-Bar\":[REDACTED] -H 'X-Baz: [REDACTED]' x")
+    expect(redactInventoryText(once)).toBe(once)
+    expect(backstopAccepts(once)).toBe(true)
+  })
 })
 
 describe("redactInventoryArgv", () => {
@@ -146,6 +162,15 @@ describe("redactInventoryArgv", () => {
     ])
     expect(command).toBe("curl -H X-Foo: [REDACTED] -HX-Bar: [REDACTED] --header=X-Baz: [REDACTED] -H X-Empty: -H \"X-Real: [REDACTED]\" x")
     expect(backstopAccepts(command)).toBe(true)
+  })
+
+  it("redacts a quoted header name with its value glued on", () => {
+    const command = redactInventoryArgv(["curl", "-H", "'X-Foo':s3cr3t-value", "-H", "\"X-Bar\":hunter2", "--header='X-Baz':tok-abc"])
+    expect(command).toBe("curl -H \"'X-Foo':[REDACTED]\" -H \"\\\"X-Bar\\\":[REDACTED]\" \"--header='X-Baz':[REDACTED]\"")
+    expect(backstopAccepts(command)).toBe(true)
+    const shell = redactInventoryArgv(["sh", "-c", "curl -H 'X-Foo':s3cr3t-value x"])
+    expect(shell).toBe("sh -c \"curl -H 'X-Foo':[REDACTED] x\"")
+    expect(backstopAccepts(shell)).toBe(true)
   })
 
   it("quotes an argument that holds spaces", () => {
