@@ -200,4 +200,23 @@ describe("reading a damaged emergency stop journal of many rows", () => {
 
     expect(journal.pending().intents.map(({ intent }) => intent.stopId)).toEqual([stopAt(1)])
   })
+
+  // Security review round 2 of #641: a round clears a row it finished only
+  // while that row is still the one it read, by key and record. A row that
+  // took its place under the same rowid is left for the next round to read,
+  // and a row the round read and left in place is passed over.
+  it("clears a finished row only while it is the row the round read", () => {
+    const database = new DatabaseSync(":memory:")
+    const journal = new SqliteEmergencyStopIntents(database)
+    insert(database, stopAt(0), readable(stopAt(0)))
+    insert(database, stopAt(1), readable(stopAt(1)))
+    journal.beginRecovery()
+    journal.stage({ read: journal.pending().read, acted: [], lines: [] })
+    database.prepare("UPDATE emergency_stop_intents SET record = ? WHERE stop_id = ?").run(readable(stopAt(2)), stopAt(1))
+
+    journal.finishRound()
+
+    expect(stored(database, "emergency_stop_intents")).toBe(1)
+    expect(journal.pending().intents.map(({ intent }) => intent.stopId)).toEqual([stopAt(2)])
+  })
 })

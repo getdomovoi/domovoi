@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import type { DatabaseSync, SQLInputValue } from "node:sqlite"
 import { clientKindSchema, dateTimeSchema } from "@getdomovoi/protocol"
 import { z } from "zod"
@@ -66,6 +67,22 @@ type Read =
   | { unreadable: string }
 
 const reason = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 1_024)
+
+// Security review round 2 of #641: a row is known by its key and record as
+// stored, not by its rowid alone, since a new row can take the rowid of one
+// recovery cleared. A digest stands in for them, so recovery keeps a fixed
+// size per row it has read, not a second copy of the row.
+function rowIdentity(key: SQLInputValue, record: SQLInputValue): string {
+  const digest = createHash("sha256")
+  for (const value of [key, record]) {
+    const kind = value === null ? "null" : value instanceof Uint8Array ? "blob" : typeof value
+    const bytes = value instanceof Uint8Array ? value : Buffer.from(value === null ? "" : String(value), "utf8")
+    digest.update(`${kind}:${bytes.length}:`).update(bytes)
+  }
+  return digest.digest("hex")
+}
+
+type JournalRow = { row: bigint; stop_id: SQLInputValue; record: SQLInputValue }
 
 // A JSON object with every value of a repeated key kept, in order.
 type Fields = { readonly fields: Map<string, unknown[]> }
@@ -242,6 +259,15 @@ export class SqliteEmergencyStopIntents {
       record TEXT NOT NULL CHECK(length(CAST(record AS BLOB)) <= ${maximumEmergencyStopIntentBytes})
     )`)
     database.exec("CREATE TABLE IF NOT EXISTS emergency_stop_recovery (stop_id TEXT PRIMARY KEY)")
+    // Owner ruling Q93 B on #641: what one recovery has read and the lines it
+    // will write, kept in the store rather than in memory. See `stage`.
+    database.exec(`CREATE TABLE IF NOT EXISTS emergency_stop_recovery_rows (
+      row INTEGER NOT NULL, identity TEXT NOT NULL, keep INTEGER NOT NULL, cleared INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (row, identity)
+    )`)
+    database.exec(`CREATE TABLE IF NOT EXISTS emergency_stop_recovery_lines (
+      seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL, client TEXT NOT NULL, created_at TEXT NOT NULL
+    )`)
   }
 
   begin(intent: EmergencyStopIntent): void {
@@ -266,39 +292,52 @@ export class SqliteEmergencyStopIntents {
   // absent once no row is left. Each stop carries the rowid of its row, so
   // the caller clears that row and no other: SQLite lets a text primary key
   // hold many nulls, so a key does not always name one row.
+  //
+  // Security review round 2 of #641: a row this recovery has already read,
+  // as `stage` lists it, is passed over: a row kept for overflow, or one a
+  // clear or a move could not remove. `read` lists each row the pass read
+  // that stays in the journal for now, for `stage` to list: the rows to
+  // finish (`keep` false, cleared once the round is saved), those kept for
+  // overflow, and any unreadable row that could not be moved aside.
   pending(after?: bigint): {
     intents: Array<{ key: SQLInputValue; row: bigint; intent: RecoveredEmergencyStopIntent; keep: boolean }>
     partial: Array<{ key: string; reason: string }>
     overflow: Array<{ key: string; reason: string }>
     setAside: Array<{ key: string; reason: string }>
+    read: Array<{ row: bigint; identity: string; keep: boolean }>
     next?: bigint
   } {
     const from = after === undefined ? "" : "WHERE rowid > ?"
     const select = this.#database.prepare(`SELECT rowid AS row, stop_id, record FROM emergency_stop_intents ${from} ORDER BY rowid LIMIT ?`)
     // Rowids are read whole: a crafted one can be past a number's exact range.
     select.setReadBigInts(true)
-    const rows = (after === undefined ? select.all(this.#rowsPerPass) : select.all(after, this.#rowsPerPass)) as Array<{ row: bigint; stop_id: SQLInputValue; record: SQLInputValue }>
+    const rows = (after === undefined ? select.all(this.#rowsPerPass) : select.all(after, this.#rowsPerPass)) as JournalRow[]
+    const listed = this.#database.prepare("SELECT 1 FROM emergency_stop_recovery_rows WHERE row = ? AND identity = ?")
     const intents: Array<{ key: SQLInputValue; row: bigint; intent: RecoveredEmergencyStopIntent; keep: boolean }> = []
     const partial: Array<{ key: string; reason: string }> = []
     const overflow: Array<{ key: string; reason: string }> = []
     const setAside: Array<{ key: string; reason: string }> = []
+    const readRows: Array<{ row: bigint; identity: string; keep: boolean }> = []
     for (const row of rows) {
+      const identity = rowIdentity(row.stop_id, row.record)
+      if (listed.get(row.row, identity) !== undefined) continue
       const read = readIntent(row.stop_id, row.record, this.#dispatchBuilt)
       if ("unreadable" in read) {
-        this.#quarantine(row, read.unreadable, true)
+        if (!this.#quarantine(row, read.unreadable, true).moved) readRows.push({ row: row.row, identity, keep: true })
         setAside.push({ key: String(row.stop_id), reason: read.unreadable })
         continue
       }
-      if (read.partial !== undefined && this.#quarantine(row, read.partial, false)) {
+      if (read.partial !== undefined && this.#quarantine(row, read.partial, false).copied) {
         partial.push({ key: String(row.stop_id), reason: read.partial })
       }
       if (read.overflow !== undefined) overflow.push({ key: String(row.stop_id), reason: read.overflow })
+      readRows.push({ row: row.row, identity, keep: read.overflow !== undefined })
       for (const intent of read.intents) intents.push({ key: row.stop_id, row: row.row, intent, keep: read.overflow !== undefined })
     }
     const last = rows.at(-1)?.row
     const more = last !== undefined && rows.length === this.#rowsPerPass
       && this.#database.prepare("SELECT 1 FROM emergency_stop_intents WHERE rowid > ? LIMIT 1").get(last) !== undefined
-    return { intents, partial, overflow, setAside, ...(more ? { next: last } : {}) }
+    return { intents, partial, overflow, setAside, read: readRows, ...(more ? { next: last } : {}) }
   }
 
   clear(key: SQLInputValue): void {
@@ -310,23 +349,43 @@ export class SqliteEmergencyStopIntents {
     this.#database.prepare("DELETE FROM emergency_stop_intents WHERE rowid = ?").run(row)
   }
 
-  // How many rows the journal holds.
-  remaining(): number {
-    return Number((this.#database.prepare("SELECT count(*) AS rows FROM emergency_stop_intents").get() as { rows: number | bigint }).rows)
+  // Owner ruling Q93 B on #641: recovery reads the journal in rounds, each a
+  // sequence of passes followed by one save of the workspace. A pass writes
+  // what it did here, not into a copy of the workspace, so what a pass holds
+  // does not grow with the passes before it:
+  //
+  // - `emergency_stop_recovery_rows` lists each row the recovery has read, by
+  //   rowid and identity, and whether it is kept. `pending` passes over a
+  //   listed row, and `finishRound` clears the rows to finish.
+  // - `emergency_stop_recovery_lines` holds the lines the round will write,
+  //   each once, in the order the passes wrote them.
+  // - `emergency_stop_recovery` (review round 1) lists the stops the
+  //   recovery has acted on. A line of a listed stop does not count as its
+  //   record, so a row read in a later round, or after a restart, still acts.
+  //
+  // The first two hold nothing the workspace does not: until a round's save
+  // lands, the journal still holds every row the round read, so a start that
+  // ends before then discards them (`beginRecovery`) and reads those rows
+  // again. The stop list is kept until the whole recovery is done, across
+  // restarts.
+  beginRecovery(): void {
+    this.#database.exec("DELETE FROM emergency_stop_recovery_rows")
+    this.#database.exec("DELETE FROM emergency_stop_recovery_lines")
   }
 
-  // Review round 1 of #641: a restart finishes the journal over several
-  // passes, each saved before the next, and can end between two of them. A
-  // line an earlier pass saved must then not read as the stop's own record,
-  // or a later row naming that stop is cleared without acting. So the stops
-  // a recovery acts on are written here before its save, and stay until the
-  // whole recovery is done, across restarts. `recovering` answers which of
-  // the given stops are listed.
-  markRecovering(stopIds: Iterable<string>): void {
+  stage({ read, acted, lines }: {
+    read: ReadonlyArray<{ row: bigint; identity: string; keep: boolean }>
+    acted: Iterable<string>
+    lines: ReadonlyArray<{ id: string; sessionId: string; client: string; createdAt: string }>
+  }): void {
     this.#database.exec("BEGIN IMMEDIATE")
     try {
-      const insert = this.#database.prepare("INSERT OR IGNORE INTO emergency_stop_recovery (stop_id) VALUES (?)")
-      for (const stopId of stopIds) insert.run(stopId)
+      const row = this.#database.prepare("INSERT OR IGNORE INTO emergency_stop_recovery_rows (row, identity, keep) VALUES (?, ?, ?)")
+      for (const { row: rowid, identity, keep } of read) row.run(rowid, identity, keep ? 1 : 0)
+      const stop = this.#database.prepare("INSERT OR IGNORE INTO emergency_stop_recovery (stop_id) VALUES (?)")
+      for (const stopId of acted) stop.run(stopId)
+      const line = this.#database.prepare("INSERT OR IGNORE INTO emergency_stop_recovery_lines (id, session_id, client, created_at) VALUES (?, ?, ?, ?)")
+      for (const { id, sessionId, client, createdAt } of lines) line.run(id, sessionId, client, createdAt)
       this.#database.exec("COMMIT")
     } catch (error) {
       this.#database.exec("ROLLBACK")
@@ -339,18 +398,65 @@ export class SqliteEmergencyStopIntents {
     return new Set([...stopIds].filter((stopId) => listed.get(stopId) !== undefined))
   }
 
+  // The round's lines, in the order the passes wrote them, one at a time.
+  stagedLines(): Iterable<{ id: string; sessionId: string; client: string; createdAt: string }> {
+    const lines = this.#database.prepare("SELECT id, session_id, client, created_at FROM emergency_stop_recovery_lines ORDER BY seq").iterate()
+    return (function* () {
+      for (const line of lines as Iterable<{ id: string; session_id: string; client: string; created_at: string }>) {
+        yield { id: line.id, sessionId: line.session_id, client: line.client, createdAt: line.created_at }
+      }
+    })()
+  }
+
+  // Once the round's save has landed: clears each row it finished, once,
+  // and only while that row is still the one the round read, by identity.
+  // A row cleared is no longer listed, so a row that takes its rowid is read
+  // by the next round. A row whose clear did not remove it (a trigger in the
+  // store can refuse it) stays listed, so it is not read again. The round's
+  // lines are dropped: the workspace holds them now.
+  finishRound(): void {
+    this.#database.exec("BEGIN IMMEDIATE")
+    try {
+      const next = this.#database.prepare("SELECT row, identity FROM emergency_stop_recovery_rows WHERE keep = 0 AND cleared = 0 LIMIT ?")
+      next.setReadBigInts(true)
+      const current = this.#database.prepare("SELECT stop_id, record FROM emergency_stop_intents WHERE rowid = ?")
+      current.setReadBigInts(true)
+      const clear = this.#database.prepare("DELETE FROM emergency_stop_intents WHERE rowid = ?")
+      const forget = this.#database.prepare("DELETE FROM emergency_stop_recovery_rows WHERE row = ? AND identity = ?")
+      const held = this.#database.prepare("UPDATE emergency_stop_recovery_rows SET cleared = 1 WHERE row = ? AND identity = ?")
+      for (;;) {
+        const listed = next.all(this.#rowsPerPass) as Array<{ row: bigint; identity: string }>
+        if (listed.length === 0) break
+        for (const { row, identity } of listed) {
+          const stored = current.get(row) as { stop_id: SQLInputValue; record: SQLInputValue } | undefined
+          const same = stored !== undefined && rowIdentity(stored.stop_id, stored.record) === identity
+          if (same && Number(clear.run(row).changes) === 0) held.run(row, identity)
+          else forget.run(row, identity)
+        }
+      }
+      this.#database.exec("DELETE FROM emergency_stop_recovery_lines")
+      this.#database.exec("COMMIT")
+    } catch (error) {
+      this.#database.exec("ROLLBACK")
+      throw error
+    }
+  }
+
   // The recovery is done: from here on its lines record their stops.
   finishRecovery(): void {
     this.#database.exec("DELETE FROM emergency_stop_recovery")
+    this.beginRecovery()
   }
 
   // Copies the row as stored to the quarantine table, and moves it there
   // when `move`. A copy already there is not made twice. Answers whether
-  // this call made it. Issue #632: the copy is found through an index on the
-  // identity it is matched by, not by reading the whole table, so a journal
-  // of many such rows costs a restart time in proportion to its length. The
-  // index is made if missing, over the rows a store already holds.
-  #quarantine({ row, stop_id: key, record }: { row: bigint; stop_id: SQLInputValue; record: SQLInputValue }, why: string, move: boolean): boolean {
+  // this call made the copy, and whether it moved the row: the move removes
+  // the row only while it is the one read. Issue #632: the copy is found
+  // through an index on the identity it is matched by, not by reading the
+  // whole table, so a journal of many such rows costs a restart time in
+  // proportion to its length. The index is made if missing, over the rows a
+  // store already holds.
+  #quarantine({ row, stop_id: key, record }: JournalRow, why: string, move: boolean): { copied: boolean; moved: boolean } {
     this.#database.exec(`CREATE TABLE IF NOT EXISTS emergency_stop_intent_quarantine (
       stop_id, record, reason TEXT NOT NULL, set_aside_at TEXT NOT NULL
     )`)
@@ -364,9 +470,10 @@ export class SqliteEmergencyStopIntents {
         this.#database.prepare("INSERT INTO emergency_stop_intent_quarantine (stop_id, record, reason, set_aside_at) VALUES (?, ?, ?, ?)")
           .run(key, record, why, new Date().toISOString())
       }
-      if (move) this.#database.prepare("DELETE FROM emergency_stop_intents WHERE rowid = ?").run(row)
+      const moved = move && Number(this.#database.prepare("DELETE FROM emergency_stop_intents WHERE rowid = ? AND stop_id IS ? AND record IS ?")
+        .run(row, key, record).changes) > 0
       this.#database.exec("COMMIT")
-      return !copied
+      return { copied: !copied, moved }
     } catch (error) {
       this.#database.exec("ROLLBACK")
       throw error

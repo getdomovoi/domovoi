@@ -1219,10 +1219,10 @@ describe("the service handoff fence and an emergency stop", () => {
   })
 
   // Review round 1 of #641: the same two passes, with the startup cut off
-  // between them. The first pass saved the stop's line and cleared its row.
-  // That line came from a recovery that did not finish, not from the stop or
-  // a finished restart, so the next startup still acts on the later row, and
-  // still writes the line once.
+  // between them. Owner ruling Q93 B: a round saves once, after its last
+  // pass, and clears its rows only then, so the cut leaves every row in the
+  // journal and no line saved. The next startup still acts on the later row,
+  // and still writes the line once.
   it("finishes a stop that rows in two passes name when a startup ended between the passes", async () => {
     const { workspace, sessionId } = await readySession()
     const statePath = await stateFile()
@@ -1254,7 +1254,11 @@ describe("the service handoff fence and an emergency stop", () => {
     })
     await expect(cut.daemon.start()).rejects.toThrow("The startup ended between passes")
     await cut.daemon.stop().catch(() => {})
-    expect(journalTables(statePath).pending).toEqual([{ stop_id: "stop-in-the-next-pass" }])
+    expect(journalTables(statePath).pending).toEqual([
+      ...Array.from({ length: emergencyStopRowsPerPass - 1 }, (_, index) => ({ stop_id: `stop-${index.toString(16).padStart(8, "0")}-eeee-4eee-8eee-${"e".repeat(12)}` })),
+      { stop_id: stopId },
+      { stop_id: "stop-in-the-next-pass" },
+    ])
 
     const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
     const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
