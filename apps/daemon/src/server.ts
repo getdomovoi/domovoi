@@ -3380,7 +3380,8 @@ export class DomovoiDaemon {
       startedAt: lifecycle.startedAt,
       completedAt,
     })
-    if (providerThread) {
+    // A turned-off provider is never run, so it has no thread to stop.
+    if (providerThread && !this.#agents.isUnavailable(provider)) {
       this.#loadedAgentThreads.delete(providerThreadKey(provider, providerThread))
       void this.#agents.require(provider).stopThread(providerThread).catch((error) => {
         this.#reportError("Domovoi could not stop a transferred provider thread", error)
@@ -3523,7 +3524,8 @@ export class DomovoiDaemon {
       target: lifecycle.targetMachineId,
       detail: `Source stopped because target reported ${refusal.reason} at generation ${refusal.existingGeneration} for transfer ${lifecycle.transferId}`,
     })
-    if (providerThread) {
+    // A turned-off provider is never run, so it has no thread to stop.
+    if (providerThread && !this.#agents.isUnavailable(provider)) {
       this.#loadedAgentThreads.delete(providerThreadKey(provider, providerThread))
       void withTimeout(
         this.#agents.require(provider).stopThread(providerThread),
@@ -3955,7 +3957,8 @@ export class DomovoiDaemon {
       target: recovery.targetMachineId,
       detail: `Recovered source stopped because transfer ${recovery.transferId} is committed at generation ${remote.ownershipGeneration}`,
     })
-    if (providerThread) {
+    // A turned-off provider is never run, so it has no thread to stop.
+    if (providerThread && !this.#agents.isUnavailable(provider)) {
       this.#loadedAgentThreads.delete(providerThreadKey(provider, providerThread))
       void withTimeout(
         this.#agents.require(provider).stopThread(providerThread),
