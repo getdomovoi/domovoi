@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto"
-import { lstat, readdir, rm, rmdir } from "node:fs/promises"
+import { lstat, readdir, realpath, rm, rmdir } from "node:fs/promises"
 import { posix, win32 } from "node:path"
 
 import { publishFileDurably } from "@getdomovoi/credential-store"
@@ -37,11 +37,17 @@ import { nodeServiceEffects } from "./install.js"
 // - Only <profile>/runtime/<version>/<id> directories are candidates, with
 //   the version and id a publish uses, reached through real directories. A
 //   link is never followed and never removed; the profile or its runtime
-//   directory being a link removes nothing.
+//   directory being a link removes nothing. The profile is checked as the
+//   runtime directory is built from it, so a trailing separator or a "." or
+//   ".." cannot hide a link, and the spelling given must name the same
+//   directory.
 // - Paths are compared as profile directories are (sameProfileDirectory):
 //   by file identity where both exist. A comparison that fails keeps the
-//   candidate. It looks through links only on the side of the kept copies, so
-//   it can keep more, never remove more.
+//   candidate. Each kept copy is also resolved through every link, and a
+//   candidate that holds one, or that one holds, is kept (round 1): a kept
+//   copy's path can lead through a link into another candidate. A kept copy
+//   that cannot be resolved, for any reason but not being there, removes
+//   nothing.
 // - A candidate is moved to a private name beside the copies, by one rename,
 //   and removed only if what moved is still the directory that was checked.
 //   Anything else is moved back.
@@ -56,6 +62,8 @@ export type RuntimeCleanupFileSystem = {
   entry(path: string): Promise<"directory" | "link" | "other" | "missing">
   // Device and inode of the entry itself, never through a link.
   identity(path: string): Promise<string>
+  // The path with every link in it resolved.
+  realpath(path: string): Promise<string>
   children(path: string): Promise<string[]>
   rename(from: string, to: string): Promise<void>
   // A whole tree; links inside are removed, not followed.
@@ -79,6 +87,7 @@ export function nodeRuntimeCleanupFileSystem(overrides: Partial<RuntimeCleanupFi
       const found = await lstat(path, { bigint: true })
       return `${found.dev}:${found.ino}`
     },
+    realpath: (path) => realpath(path),
     children: (path) => readdir(path),
     // Followed by a flush of the directory that holds it, so a name that
     // survives a power loss is either the copy's or the private one.
@@ -150,8 +159,20 @@ export async function removeUnusedDaemonRuntimes(
     kept.push(current.copy)
     const fs = nodeRuntimeCleanupFileSystem(dependencies.fileSystem)
     const root = paths.join(options.profileDirectory, "runtime")
+    // Security review round 1 of #635 (P2): lstat of "linked/" or "linked/."
+    // looks through the link, and path.join folds "linked/x/.." into the
+    // link. The profile is checked as the runtime directory is built from it,
+    // its parent, and the spelling given must name that same directory.
+    const profile = paths.dirname(root)
     if (!paths.isAbsolute(options.profileDirectory) || same(paths.dirname(paths.dirname(published)), root) !== true
-      || await fs.entry(options.profileDirectory) !== "directory" || await fs.entry(root) !== "directory") {
+      || same(options.profileDirectory, profile) !== true
+      || await fs.entry(profile) !== "directory" || await fs.entry(root) !== "directory") {
+      return { skipped: "runtime-directory" }
+    }
+    let keptTrees: Tree[]
+    try {
+      keptTrees = await Promise.all(kept.map((copy) => tree(fs, paths, copy)))
+    } catch {
       return { skipped: "runtime-directory" }
     }
 
@@ -173,6 +194,7 @@ export async function removeUnusedDaemonRuntimes(
     const removed: string[] = []
     for (const candidate of candidates) {
       if (kept.some((copy) => same(candidate, copy) !== false)) continue
+      if (!await apart(fs, paths, candidate, keptTrees)) continue
       if (await removeCopy(fs, paths, root, candidate)) removed.push(candidate)
     }
     // A version directory left empty goes too. One that is not empty, or no
@@ -183,6 +205,55 @@ export async function removeUnusedDaemonRuntimes(
     return { removed }
   } finally {
     lease.release()
+  }
+}
+
+// A directory resolved through every link: its real path, and the identity of
+// it and of each directory above it. undefined when it is not there, since a
+// copy that is not there cannot be inside anything.
+type Tree = { real: string; identity: string; lineage: string[] } | undefined
+
+async function tree(fs: RuntimeCleanupFileSystem, paths: typeof posix, path: string): Promise<Tree> {
+  let real: string
+  try {
+    real = await fs.realpath(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+    throw error
+  }
+  const known = async (at: string) => {
+    const identity = await fs.identity(at)
+    // A volume that reports no inode (ino 0) cannot be compared.
+    if (identity.endsWith(":0")) throw new Error(`${at} reports no file identity`)
+    return identity
+  }
+  const identity = await known(real)
+  const lineage = [identity]
+  for (let at = real; paths.dirname(at) !== at;) {
+    at = paths.dirname(at)
+    lineage.push(await known(at))
+  }
+  return { real, identity, lineage }
+}
+
+// Security review round 1 of #635 (P2): a kept copy's path can lead through a
+// link into a candidate, an ordinary copy or an interrupted removal, that
+// holds it. True only when the candidate and every kept copy are apart:
+// neither is the other or inside it, by the identity of each directory
+// above them and by their real paths compared without case, so a volume's
+// case or spelling rules can only keep more. Anything that fails keeps it.
+async function apart(fs: RuntimeCleanupFileSystem, paths: typeof posix, candidate: string, kept: Tree[]): Promise<boolean> {
+  try {
+    const own = await tree(fs, paths, candidate)
+    if (own === undefined) return false
+    const fold = (path: string) => path.toLowerCase()
+    const holds = (outer: string, inner: string) => inner === outer || inner.startsWith(outer.endsWith(paths.sep) ? outer : outer + paths.sep)
+    return kept.every((copy) => copy === undefined || (
+      !copy.lineage.includes(own.identity) && !own.lineage.includes(copy.identity)
+      && !holds(fold(own.real), fold(copy.real)) && !holds(fold(copy.real), fold(own.real))
+    ))
+  } catch {
+    return false
   }
 }
 
