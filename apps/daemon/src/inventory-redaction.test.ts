@@ -1,7 +1,7 @@
 import { toolInventoryEntrySchema } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import { redactInventoryArgv, redactInventoryText } from "./inventory-redaction.js"
+import { inventoryShellWords, redactInventoryArgv, redactInventoryText } from "./inventory-redaction.js"
 
 // The protocol backstop judges each emitted text; a hook entry is the smallest
 // shape that carries a free-text command.
@@ -167,7 +167,8 @@ describe("redactInventoryText", () => {
 
   it("is idempotent for a redacted URL path", () => {
     const once = redactInventoryText("curl https://u:p@h.example.com:8443/a/b?k=v&bare#f")
-    expect(once).toBe("curl https://[REDACTED]@h.example.com:8443/[REDACTED]?k=[REDACTED]&[REDACTED]#[REDACTED]")
+    // The `&` read into the URL is quoted, so the word reads back as one word.
+    expect(once).toBe("curl https://[REDACTED]@h.example.com:8443/[REDACTED]?k=[REDACTED]'&[REDACTED]#[REDACTED]'")
     expect(redactInventoryText(once)).toBe(once)
     expect(backstopAccepts(once)).toBe(true)
   })
@@ -209,14 +210,16 @@ describe("redactInventoryArgv", () => {
       "https://example.com/cb?bare-query-secret#opaque-fragment-secret",
     ])
     expect(command).toBe(
-      "curl -H \"X-Custom: [REDACTED]\" \"--header=X-Other: [REDACTED]\" \"-HX-Third: [REDACTED]\" --proxy-header \"X-Proxy: [REDACTED]\" https://example.com/[REDACTED]?[REDACTED]#[REDACTED]",
+      "curl -H 'X-Custom: [REDACTED]' '--header=X-Other: [REDACTED]' '-HX-Third: [REDACTED]' --proxy-header 'X-Proxy: [REDACTED]' https://example.com/[REDACTED]?[REDACTED]#[REDACTED]",
     )
     expect(backstopAccepts(command)).toBe(true)
   })
 
+  // A backquote is shell text a hook would pass on, so it is redacted from
+  // its argument on.
   it("redacts header values whose names hold quote marks", () => {
     const command = redactInventoryArgv(["curl", "-H", "X'Foo: s3cr3t-value", "--header=X`Bar: hunter2", "-HX'Baz: tok-abc"])
-    expect(command).toBe("curl -H \"X'Foo: [REDACTED]\" \"--header=X`Bar: [REDACTED]\" \"-HX'Baz: [REDACTED]\"")
+    expect(command).toBe("curl -H 'X'\"'\"'Foo: [REDACTED]' [REDACTED]")
     expect(backstopAccepts(command)).toBe(true)
   })
 
@@ -224,7 +227,7 @@ describe("redactInventoryArgv", () => {
     const command = redactInventoryArgv([
       "curl", "-H", "X-Foo:", "s3cr3t-value", "-HX-Bar:", "hunter2", "--header=X-Baz:", "tok abc", "-H", "X-Empty:", "-H", "X-Real: q-secret", "x",
     ])
-    expect(command).toBe("curl -H X-Foo: [REDACTED] -HX-Bar: [REDACTED] --header=X-Baz: [REDACTED] -H X-Empty: -H \"X-Real: [REDACTED]\" x")
+    expect(command).toBe("curl -H X-Foo: [REDACTED] -HX-Bar: [REDACTED] --header=X-Baz: [REDACTED] -H X-Empty: -H 'X-Real: [REDACTED]' x")
     expect(backstopAccepts(command)).toBe(true)
   })
 
@@ -238,18 +241,18 @@ describe("redactInventoryArgv", () => {
 
   it("redacts a quoted header name with its value glued on", () => {
     const command = redactInventoryArgv(["curl", "-H", "'X-Foo':s3cr3t-value", "-H", "\"X-Bar\":hunter2", "--header='X-Baz':tok-abc"])
-    expect(command).toBe("curl -H \"'X-Foo':[REDACTED]\" -H '\"X-Bar\":[REDACTED]' \"--header='X-Baz':[REDACTED]\"")
+    expect(command).toBe("curl -H ''\"'\"'X-Foo'\"'\"':[REDACTED]' -H '\"X-Bar\":[REDACTED]' '--header='\"'\"'X-Baz'\"'\"':[REDACTED]'")
     expect(backstopAccepts(command)).toBe(true)
     const shell = redactInventoryArgv(["sh", "-c", "curl -H 'X-Foo':s3cr3t-value x"])
-    expect(shell).toBe("sh -c \"curl -H 'X-Foo':[REDACTED] x\"")
+    expect(shell).toBe("sh -c 'curl -H '\"'\"'X-Foo'\"'\"':[REDACTED] x'")
     expect(backstopAccepts(shell)).toBe(true)
   })
 
-  // An argument is not shell text, so a backtick in a name needs no escape;
-  // a header argument that still does not read as a header is redacted whole.
+  // A header argument that does not read as a header is redacted whole; a
+  // backquote is shell text a hook would pass on, redacted from its argument on.
   it("redacts a header argument that does not read as a header", () => {
-    const command = redactInventoryArgv(["curl", "-H", "X`Foo: opaque-secret", "-H", "X Foo: hunter2", "--header=X(Foo): tok-abc", "-H", "@headers.txt"])
-    expect(command).toBe("curl -H \"X`Foo: [REDACTED]\" -H [REDACTED] --header=[REDACTED] -H @headers.txt")
+    const command = redactInventoryArgv(["curl", "-H", "X Foo: hunter2", "--header=X(Foo): tok-abc", "-H", "@headers.txt", "-H", "X`Foo: opaque-secret", "x"])
+    expect(command).toBe("curl -H [REDACTED] --header=[REDACTED] -H @headers.txt -H [REDACTED]")
     expect(backstopAccepts(command)).toBe(true)
   })
 
@@ -260,12 +263,12 @@ describe("redactInventoryArgv", () => {
   })
 
   it("quotes an argument that holds spaces", () => {
-    expect(redactInventoryArgv(["sh", "-c", "echo hi"])).toBe("sh -c \"echo hi\"")
+    expect(redactInventoryArgv(["sh", "-c", "echo hi"])).toBe("sh -c 'echo hi'")
   })
 
   it("redacts a URL path with a blank and a header named with a shell metacharacter", () => {
     const command = redactInventoryArgv(["curl", "https://h.example.com/opaque secret", "-H", "X&Foo:", "hunter2", "-H", "X*Bar: tok-abc"])
-    expect(command).toBe("curl https://h.example.com/[REDACTED] -H X&Foo: [REDACTED] -H \"X*Bar: [REDACTED]\"")
+    expect(command).toBe("curl https://h.example.com/[REDACTED] -H 'X&Foo:' [REDACTED] -H 'X*Bar: [REDACTED]'")
     expect(backstopAccepts(command)).toBe(true)
   })
 })
@@ -346,5 +349,155 @@ describe("shell words around a URL path and a header value", () => {
     const redacted = redactInventoryArgv(argv)
     expect(redacted).not.toMatch(/alpha9|omega7/u)
     expect(backstopAccepts(redacted)).toBe(true)
+  })
+})
+
+// Shell text that runs a command or expands a parameter with an operand is
+// not read as words, so it is redacted from its word on; an operator escaped
+// or quoted inside a URL or header word stays inside that word when the word
+// is written again.
+describe("shell text that runs, expands or escapes an operator", () => {
+  it.each([
+    ["curl -H X-Foo: <(printf opaque-secret) x", "curl -H X-Foo: [REDACTED]"],
+    ["curl -H X-Foo: >(printf opaque-secret) x", "curl -H X-Foo: [REDACTED]"],
+    ["cat x<(printf opaque-secret) y", "cat x [REDACTED]"],
+    ["diff =(printf opaque-secret) x", "diff [REDACTED]"],
+    ["run API_KEY=(opaque-secret) x", "run [REDACTED]"],
+    ["echo ${TOKEN-opaque-secret} x", "echo [REDACTED]"],
+    ["echo ${TOKEN+opaque-secret} x", "echo [REDACTED]"],
+    ["echo ${TOKEN?opaque-secret} x", "echo [REDACTED]"],
+    ["echo \"${TOKEN:-opaque-secret}\" x", "echo [REDACTED]"],
+    ["sh -c 'curl -H X-Foo: <(printf opaque-secret) x'", "sh -c 'curl -H X-Foo: [REDACTED]'"],
+    ["sh -c 'echo ${TOKEN-opaque-secret} x'", "sh -c 'echo [REDACTED]'"],
+    ["curl https://h.example.com/p?a=one\\&b=two", "curl https://h.example.com/[REDACTED]?a=[REDACTED]'&b=[REDACTED]'"],
+    ["curl https://h.example.com/p?a=one\\;b=two x", "curl https://h.example.com/[REDACTED]?a=[REDACTED]';b=[REDACTED]' x"],
+  ])("redacts %j", (input, expected) => {
+    const redacted = redactInventoryText(input)
+    expect(redacted).toBe(expected)
+    expect(redactInventoryText(redacted)).toBe(redacted)
+    expect(backstopAccepts(redacted)).toBe(true)
+  })
+
+  it.each([
+    "echo ${HOME} x",
+    "echo \"${HOME}/bin\" ${1} ${@}",
+  ])("keeps %j", (input) => {
+    expect(redactInventoryText(input)).toBe(input)
+  })
+
+  const parameterForms = [
+    "${TOKEN-opaque-secret}", "${TOKEN:-opaque-secret}", "${TOKEN+opaque-secret}", "${TOKEN:+opaque-secret}",
+    "${TOKEN?opaque-secret}", "${TOKEN:?opaque-secret}", "${TOKEN=opaque-secret}", "${TOKEN:=opaque-secret}",
+    "${TOKEN#opaque-secret}", "${TOKEN##opaque-secret}", "${TOKEN%opaque-secret}", "${TOKEN%%opaque-secret}",
+    "${TOKEN/x/opaque-secret}", "${TOKEN//x/opaque-secret}", "${TOKEN^opaque-secret}", "${TOKEN^^opaque-secret}",
+    "${TOKEN,opaque-secret}", "${TOKEN,,opaque-secret}", "${TOKEN:1:opaque-secret}", "${TOKEN@opaque-secret}",
+    "${#opaque-secret}", "${!opaque-secret}",
+  ]
+  // Shapes the shell does not read as words: redacted from their word on.
+  const unreadable = [
+    "curl -H X-Foo: <(printf opaque-secret) x",
+    "curl -H X-Foo: >(printf opaque-secret) x",
+    "cat x<(printf opaque-secret) y",
+    "cat x>(printf opaque-secret) y",
+    "diff =(printf opaque-secret) x",
+    "run API_KEY=(opaque-secret) x",
+    "echo $(printf opaque-secret) x",
+    "echo `printf opaque-secret` x",
+    ...parameterForms.map((form) => `echo ${form} x`),
+    ...parameterForms.map((form) => `echo "${form}" x`),
+    ...parameterForms.map((form) => `echo a${form}b x`),
+    // Operators written unquoted after a URL are read into it.
+    "curl https://h.example.com/p?a=1&b=opaque-secret",
+    "curl https://h.example.com/p?a=1;opaque-secret|x",
+  ]
+  // One word with an escaped or quoted operator in it: it stays one word.
+  const escaped = [
+    "curl https://h.example.com/p?a=one\\&b=opaque-secret x",
+    "curl https://h.example.com/p?a=opaque-secret\\;b=two x",
+    "curl https://h.example.com/p?a=opaque-secret\\|b=two x",
+    "curl https://h.example.com/p\\&opaque-secret x",
+    "curl https://h.example.com/p\\;opaque-secret\\|x y",
+    "curl https://h.example.com/#a\\&opaque-secret x",
+    "curl https://h.example.com/p?k=opaque-secret\\>x\\<y x",
+    "curl https://h.example.com/a\\ b?k=opaque-secret x",
+    "curl https://h.example.com/p?a='1&b'=opaque-secret x",
+    "curl https://h.example.com/p?a=\"1;b|c\"=opaque-secret x",
+    "curl 'https://h.example.com/p?a=1&b=opaque-secret;c|d' x",
+    "curl \"https://h.example.com/p?a=1&b=opaque-secret\" x",
+    "curl -H X-Foo:opaque-secret\\&b x",
+    "curl -H X-Foo:opaque-secret\\;b x",
+    "curl -H X-Foo:opaque-secret\\|b x",
+    "curl -H X\\&Foo: opaque-secret\\;x y",
+    "curl -H X\\|Foo:opaque-secret\\&x y",
+    "curl -H X\\&Foo\\;: opaque-secret y",
+    "curl -H 'X-Foo: opaque-secret; b|c&d' x",
+    "curl -H X-Foo: opaque-secret\\&\\;\\| y",
+  ]
+  const singleQuoted = (text: string) => `'${text.replace(/'/gu, "'\\''")}'`
+  const doubleQuoted = (text: string) => `"${text.replace(/[\\"$`]/gu, "\\$&")}"`
+  const wrapped = (command: string) => [command, `sh -c ${singleQuoted(command)}`, `bash -lc ${doubleQuoted(command)}`]
+
+  it.each(unreadable.flatMap(wrapped))("never emits the value of %j", (input) => {
+    const redacted = redactInventoryText(input)
+    expect(redacted).not.toMatch(/opaque-secret/u)
+    expect(redactInventoryText(redacted)).toBe(redacted)
+    expect(backstopAccepts(redacted)).toBe(true)
+    expect(inventoryShellWords(redacted)).toBeDefined()
+  })
+
+  it.each(escaped.flatMap(wrapped))("never emits the value of %j and keeps its words", (input) => {
+    const redacted = redactInventoryText(input)
+    expect(redacted).not.toMatch(/opaque-secret/u)
+    expect(redactInventoryText(redacted)).toBe(redacted)
+    expect(backstopAccepts(redacted)).toBe(true)
+    expect(inventoryShellWords(redacted)).toHaveLength(inventoryShellWords(input)!.length)
+  })
+
+  it.each(escaped)("keeps the words of the script in %j", (input) => {
+    const script = inventoryShellWords(redactInventoryText(`sh -c ${singleQuoted(input)}`))![2]!
+    expect(inventoryShellWords(script)).toHaveLength(inventoryShellWords(input)!.length)
+  })
+
+  it.each([
+    [["curl", "$(printf opaque-secret)"], "curl [REDACTED]"],
+    [["cmd", "x", "`printf opaque-secret`", "y"], "cmd x [REDACTED]"],
+    [["cmd", "<(printf opaque-secret)", "y"], "cmd [REDACTED]"],
+    [["cmd", "a>(printf opaque-secret)"], "cmd [REDACTED]"],
+    [["cmd", "=(printf opaque-secret)"], "cmd [REDACTED]"],
+    [["cmd", "--opt=${TOKEN:-opaque-secret}", "y"], "cmd [REDACTED]"],
+    [["sh", "-c", "curl -H X-Foo: <(printf opaque-secret) x"], "sh -c 'curl -H X-Foo: [REDACTED]'"],
+    [["curl", "https://h.example.com/p?a=one&b=two"], "curl 'https://h.example.com/[REDACTED]?a=[REDACTED]&b=[REDACTED]'"],
+  ])("redacts the argument vector %j", (argv, expected) => {
+    const redacted = redactInventoryArgv(argv)
+    expect(redacted).toBe(expected)
+    expect(backstopAccepts(redacted)).toBe(true)
+  })
+
+  it.each([
+    ...unreadable.map((command) => ["sh", "-c", command]),
+    ...escaped.map((command) => ["sh", "-c", command]),
+    ...parameterForms.map((form) => ["cmd", form, "x"]),
+    ["cmd", "$(printf opaque-secret)", "x"],
+    ["cmd", "x`printf opaque-secret`", "x"],
+    ["cmd", "<(printf opaque-secret)", "x"],
+    ["cmd", ">(printf opaque-secret)", "x"],
+    ["curl", "-H", "X-Foo;Bar: opaque-secret"],
+    ["curl", "https://h.example.com/p?a=1&b=opaque-secret|c;d"],
+  ])("never emits the value in the argument vector %j", (...argv) => {
+    const redacted = redactInventoryArgv(argv)
+    expect(redacted).not.toMatch(/opaque-secret/u)
+    expect(backstopAccepts(redacted)).toBe(true)
+    expect(inventoryShellWords(redacted)).toBeDefined()
+  })
+
+  // An argument the rules leave alone reads back as itself, so no shown
+  // argument runs, expands or splits.
+  it("quotes every argument the shell reads specially", () => {
+    const argv = [
+      "echo", "a;b", "x|y", "p&q", "$HOME", "${HOME}", "a\\b", "say \"hi\"", "it's", "a b", "<in", ">out", "(x)", "#c", "~u", "{a,b}", "*", "", "tab\there", "line\nbreak",
+    ]
+    const command = redactInventoryArgv(argv)
+    expect(inventoryShellWords(command)).toEqual(argv)
+    expect(backstopAccepts(command)).toBe(true)
   })
 })

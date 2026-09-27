@@ -574,6 +574,13 @@ function redactShell(text: string, depth: number, nested: boolean): string {
   return `${output}${gap === "" && endsInWord && cursor === stoppedAt ? " " : gap}${marker}`
 }
 
+// The words shell text reads as, or undefined when it does not read as words.
+// Tests use it to check that emitted text reads back as the words meant.
+export function inventoryShellWords(text: string): string[] | undefined {
+  const { tokens, stoppedAt } = lexShell(text)
+  return stoppedAt === undefined ? tokens.flatMap((token) => (token.kind === "word" ? [token.value] : [])) : undefined
+}
+
 export function redactInventoryText(text: string): string {
   return redactShell(text, 0, false)
 }
