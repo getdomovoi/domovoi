@@ -265,6 +265,12 @@ export class SqliteEmergencyStopIntents {
       row INTEGER NOT NULL, identity TEXT NOT NULL, keep INTEGER NOT NULL, cleared INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (row, identity)
     )`)
+    // Security review round 3 of #641: `finishRound` finds the rows left to
+    // clear through this index, which holds those rows alone, so the rows it
+    // keeps listed are not read again for each batch. Made if missing, over
+    // the rows a store already lists.
+    database.exec(`CREATE INDEX IF NOT EXISTS emergency_stop_recovery_rows_due
+      ON emergency_stop_recovery_rows (row, identity) WHERE keep = 0 AND cleared = 0`)
     database.exec(`CREATE TABLE IF NOT EXISTS emergency_stop_recovery_lines (
       seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL, client TEXT NOT NULL, created_at TEXT NOT NULL
     )`)
