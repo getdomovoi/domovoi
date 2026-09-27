@@ -3,7 +3,7 @@ import { access, readFile, stat } from "node:fs/promises"
 import { homedir, userInfo } from "node:os"
 import { posix, win32 } from "node:path"
 
-import { loginServiceHomePaths, loginServiceTaskName } from "@getdomovoi/protocol"
+import { isLoginServiceRuntimeVersion, loginServiceHomePaths, loginServiceTaskName } from "@getdomovoi/protocol"
 
 import type { DaemonEnvironment } from "../config.js"
 import { profileDirectory, profileLocation } from "../profile-directory.js"
@@ -357,8 +357,8 @@ function definitionProgram(platform: string, definition: string): string | undef
 // definition runs. Round 7: each publish is a fresh directory,
 // <profile>/runtime/<version>/<id>/node/bin/node (node\node.exe on Windows),
 // with a 12-character hexadecimal id. Anything else, another profile's
-// runtime included, has none.
-const stagedVersion = /^(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/u
+// runtime included, has none. Round 8 (P3): the version must pass the check
+// the desktop publishes under (isLoginServiceRuntimeVersion).
 const publishId = /^[0-9a-f]{12}$/u
 
 export function stagedRuntimeVersion(platform: string, definition: string, profileDirectory: string): string | undefined {
@@ -371,7 +371,7 @@ export function stagedRuntimeVersion(platform: string, definition: string, profi
   const copy = paths.dirname(nodeDirectory)
   const id = paths.basename(copy)
   const version = paths.basename(paths.dirname(copy))
-  if (!stagedVersion.test(version) || !publishId.test(id)) return undefined
+  if (!isLoginServiceRuntimeVersion(version) || !publishId.test(id)) return undefined
   const expected = platform === "win32"
     ? paths.join(runtimeRoot, version, id, "node", "node.exe")
     : paths.join(runtimeRoot, version, id, "node", "bin", "node")

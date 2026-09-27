@@ -245,6 +245,17 @@ describe("readDaemonServiceRuntimeVersion", () => {
       .resolves.toEqual({ installed: true })
   })
 
+  // Round 8 (P3): the reader takes a version only when the desktop would
+  // publish under it (isLoginServiceRuntimeVersion).
+  it("reports no version for a folder name the desktop would never publish under", async () => {
+    for (const version of ["0.9.2-..", "01.2.3", "0.9.2+", `0.9.2-${"a".repeat(64)}`]) {
+      const copy = `/Users/dana/.domovoi/runtime/${version}/0123456789ab`
+      const readDefinition = vi.fn(async () => plist(`${copy}/node/bin/node`, `${copy}/daemon/dist/index.js`))
+      await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition, capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }), version)
+        .resolves.toEqual({ installed: true })
+    }
+  })
+
   it("says installed with no version when the service runs a runtime the desktop did not stage", async () => {
     await expect(readDaemonServiceRuntimeVersion({ platform: "darwin", home: "/Users/dana", readDefinition: async () => plist("/opt/homebrew/bin/node", "/opt/homebrew/lib/node_modules/@getdomovoi/daemon/dist/index.js"), capture: vi.fn(), readConfiguration: saved("darwin", "/Users/dana") }))
       .resolves.toEqual({ installed: true })

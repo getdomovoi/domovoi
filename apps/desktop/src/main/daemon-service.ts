@@ -1,5 +1,6 @@
 import type { DaemonServiceInstallResult, DaemonServiceOptions, DaemonServiceRemovalResult, DaemonServiceRuntime, DaemonServiceStagedRuntime, DaemonServiceStatus } from "@getdomovoi/daemon"
 import { publishFileDurably } from "@getdomovoi/credential-store"
+import { isLoginServiceRuntimeVersion } from "@getdomovoi/protocol"
 import { randomUUID } from "node:crypto"
 import { cp, lstat, mkdir, mkdtemp, readdir, readlink, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -129,9 +130,9 @@ export function daemonRuntimeLayout(resourcesPath: string, platform: string): Da
 }
 
 // The app's version names the copy's directory, so it must be exactly one
-// directory name: a release version (semver, as package.json holds it), with
-// no separator, no "." or ".." and nothing a platform reserves.
-const runtimeVersionPattern = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
+// directory name: isLoginServiceRuntimeVersion, the same check the daemon
+// reads a service's version back with (round 8). The refusal shows at most
+// that many characters of it.
 const maximumRuntimeVersionLength = 64
 
 // Cause strings below are shown as the detail under "Could not install the
@@ -145,7 +146,7 @@ const maximumRuntimeVersionLength = 64
 // the one another profile's service runs.
 export function profileRuntimeDirectory(profileDirectory: string, version: string, platform: string): string {
   const path = platform === "win32" ? win32 : posix
-  if (version.length > maximumRuntimeVersionLength || !runtimeVersionPattern.test(version)) {
+  if (!isLoginServiceRuntimeVersion(version)) {
     throw new Error(`The app version "${version.slice(0, maximumRuntimeVersionLength)}" is not a release version, so no runtime was copied.`)
   }
   const root = path.join(profileDirectory, "runtime")
