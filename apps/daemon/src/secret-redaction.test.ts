@@ -1210,6 +1210,11 @@ describe("security review round 7: never less than main", () => {
     started = performance.now()
     const redactor = new TerminalOutputRedactor()
     expect(`${redactor.push(chain(65_536))}${redactor.flush()}`).not.toContain("a_token=a_token")
-    expect(performance.now() - started).toBeLessThan(200)
+    // The terminal's limit is 400 ms, ruled 2026-09-26 (#617, Q57 A); the
+    // durable half keeps 200 ms. With #617's second stage, ubuntu measured
+    // 259.97 ms at fa5508f4 and 218.7 ms at 3db4ebe0. Main alone already uses
+    // 94% of the terminal differential's limit on ubuntu, and ubuntu runner
+    // speed varies by about 1.7x between runs (Q53).
+    expect(performance.now() - started).toBeLessThan(400)
   })
 })

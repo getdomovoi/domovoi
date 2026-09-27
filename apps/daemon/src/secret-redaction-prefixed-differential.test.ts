@@ -752,7 +752,12 @@ if (!Number.isSafeInteger(cases) || cases < 1 || !Number.isSafeInteger(seed)) {
 
 // The run's time budget is the one each redaction had when a case was read
 // only once, as eight redactions in 3 ms: 0.375 ms a redaction, for as many
-// redactions as the cases will now make.
+// redactions as the cases will now make. Doubled to 0.75 ms a redaction
+// (about 310 s at the default 1,000 cases), ruled 2026-09-26 (#617, Q53 A):
+// main alone (5c8d544b, run 36271762650) ran this file in 115.9 s on ubuntu,
+// ubuntu runners vary by about 1.7x between runs, and with #617's second
+// stage ubuntu ran it in 122.7 s once and timed this test out at 159 s the
+// next run (36283529219), while macos took 98.4 s and windows 129.4 s.
 function plannedRedactions(): number {
   let total = 0
   for (let index = 0; index < cases; index += 1) {
@@ -760,7 +765,7 @@ function plannedRedactions(): number {
   }
   return total
 }
-const millisecondsPerRedaction = 0.375
+const millisecondsPerRedaction = 0.75
 
 function show(step: Step): string {
   return step !== "idle" && step.length > 60 ? `${step.slice(0, 40)}…(${step.length})` : step
