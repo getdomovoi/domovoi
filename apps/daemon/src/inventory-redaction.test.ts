@@ -7,6 +7,7 @@ import { toolInventoryEntrySchema } from "@getdomovoi/protocol"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { inventoryFieldCaps, inventoryShellWords, redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
+import { adversarialCommands, nearLinearGrowth, workGrowth } from "./test-work.js"
 
 // The protocol backstop judges each emitted text; a hook entry is the smallest
 // shape that carries a free-text command.
@@ -211,6 +212,13 @@ describe("a scheme word before a sensitive flag", () => {
     ["curl Bearer -H 'X-Foo: s3cr3t-value' x", "curl Bearer [REDACTED] 'X-Foo: [REDACTED]' x"],
     ["curl Bearer --verbose x", "curl Bearer [REDACTED] x"],
     ["curl Token Token s3cr3t-value", "curl Token Token [REDACTED]"],
+    // A scheme word taken as another rule's value is still read as a scheme.
+    ["curl Bearer --token Token s3cr3t-value", "curl Bearer [REDACTED] [REDACTED] [REDACTED]"],
+    ["curl Bearer Basic s3cr3t-value", "curl Bearer [REDACTED] [REDACTED]"],
+    ["curl --token Bearer s3cr3t-value", "curl --token [REDACTED] [REDACTED]"],
+    ["curl Token --api-key Digest s3cr3t-value x", "curl Token [REDACTED] [REDACTED] [REDACTED] x"],
+    ["curl -H 'X-Foo: Bearer' s3cr3t-value", "curl -H 'X-Foo: [REDACTED]' [REDACTED]"],
+    ["tool --password Token s3cr3t-value", "tool --password [REDACTED] [REDACTED]"],
   ]
 
   it.each(texts)("redacts the flag's value in %s", (input, expected) => {
@@ -227,6 +235,62 @@ describe("a scheme word before a sensitive flag", () => {
     expect(command).toBe("curl Bearer [REDACTED] [REDACTED] Basic [REDACTED]")
     expect(backstopAccepts(command)).toBe(true)
   })
+
+  it.each([
+    [["curl", "Bearer", "--token", "Token", "s3cr3t-value"], "curl Bearer [REDACTED] [REDACTED] [REDACTED]"],
+    [["curl", "Bearer", "Basic", "s3cr3t-value"], "curl Bearer [REDACTED] [REDACTED]"],
+    [["curl", "--token", "Bearer", "s3cr3t-value"], "curl --token [REDACTED] [REDACTED]"],
+    [["curl", "-H", "X-Foo: Bearer", "s3cr3t-value"], "curl -H 'X-Foo: [REDACTED]' [REDACTED]"],
+  ])("redacts a scheme word taken as a value in the argument vector %j", (argv, expected) => {
+    const command = redactInventoryArgv(argv)
+    expect(command).toBe(expected)
+    expect(backstopAccepts(command)).toBe(true)
+  })
+
+  // Every chain of up to three scheme and flag words before a value: the
+  // value of a last scheme word or sensitive flag is never shown, and every
+  // output is accepted and reads the same when redacted again.
+  const vocabulary = ["Bearer", "Basic", "Token", "Digest", "--token", "--api-key", "--verbose", "-H"]
+  const chains: string[][] = [[]]
+  for (let length = 1; length <= 3; length += 1) {
+    for (const chain of chains.filter((item) => item.length === length - 1)) chains.push(...vocabulary.map((word) => [...chain, word]))
+  }
+  const hidesValue = (chain: readonly string[]) => ["Bearer", "Basic", "Token", "Digest", "--token", "--api-key"].includes(chain.at(-1) ?? "")
+
+  it.each(chains.filter((chain) => chain.length > 0).map((chain) => [chain.join(" ")]))("redacts the chain %s before a value", (chain) => {
+    const words = chain.split(" ")
+    const input = `curl ${chain} s3cr3t-value x`
+    for (const redact of [redactInventoryText, redactInventoryCommand]) {
+      const redacted = redact(input)
+      if (hidesValue(words)) expect(redacted).not.toContain("s3cr3t-value")
+      expect(backstopAccepts(redacted)).toBe(true)
+      expect(redact(redacted)).toBe(redacted)
+    }
+    const command = redactInventoryArgv(["curl", ...words, "s3cr3t-value", "x"])
+    if (hidesValue(words)) expect(command).not.toContain("s3cr3t-value")
+    expect(backstopAccepts(command)).toBe(true)
+  })
+})
+
+// Adversarial input, up to the reader's file limit, takes work that grows
+// about linearly with its length through each entry point: counted, not timed.
+describe("work on adversarial input", () => {
+  const redactors: ReadonlyArray<readonly [string, (text: string) => string]> = [
+    ["text", (text) => redactInventoryText(text)],
+    ["command", (text) => redactInventoryCommand(text)],
+    ["a script in an argument vector", (text) => redactInventoryArgv(["sh", "-c", text])],
+    ["an argument vector of its words", (text) => redactInventoryArgv(text.split(" "))],
+  ]
+  it.each(adversarialCommands.flatMap(([name, size, generate]) => redactors.map(([kind, redact]) => [name, kind, size, generate, redact] as const)))(
+    "redacts %s as %s in near-linear work",
+    async (_name, _kind, size, generate, redact) => {
+      const small = generate(size)
+      const large = generate(size * 4)
+      const { growth, results } = await workGrowth(() => redact(small), () => redact(large))
+      for (const result of results) expect(backstopAccepts(result)).toBe(true)
+      expect(growth).toBeLessThan(nearLinearGrowth)
+    },
+  )
 })
 
 describe("redactInventoryArgv", () => {

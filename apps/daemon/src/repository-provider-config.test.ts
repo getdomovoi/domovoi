@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest"
 
 import { maximumRepositoryConfigFileBytes, readRepositoryProviderConfig } from "./repository-provider-config.js"
 import { removeScratchDirectories } from "./test-scratch.js"
+import { adversarialCommands, nearLinearGrowth, workGrowth } from "./test-work.js"
 
 const scratchDirectories: string[] = []
 afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
@@ -484,6 +485,48 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
       "curl Bearer [REDACTED] [REDACTED] https://example.com",
       "curl Bearer [REDACTED] [REDACTED]",
     ])
+  })
+
+  it("lists hooks whose scheme and flag words chain, every value redacted", async () => {
+    const root = await scratch()
+    await put(root, ".claude/settings.json", JSON.stringify({
+      hooks: { Stop: [{ hooks: [
+        { type: "command", command: "curl Bearer --token Token s3cr3t-value" },
+        { type: "command", command: "curl Bearer Basic hunter2" },
+        { type: "command", command: "curl", args: ["Bearer", "--token", "Token", "tok-abc"] },
+        { type: "command", command: "curl", args: ["--token", "Bearer", "q-secret"] },
+      ] }] },
+    }))
+    const claude = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "claude-code")
+    expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+    expectNoSecret(claude)
+    expect(claude.omittedEntries).toBe(0)
+    expect(claude.entries.map((entry) => (entry.kind === "hook" ? entry.command : undefined))).toEqual([
+      "curl Bearer [REDACTED] [REDACTED] [REDACTED]",
+      "curl Bearer [REDACTED] [REDACTED]",
+      "curl Bearer [REDACTED] [REDACTED] [REDACTED]",
+      "curl --token [REDACTED] [REDACTED]",
+    ])
+  })
+
+  // A hook whose command is adversarial input near the file limit is read in
+  // work that grows about linearly with it: counted, not timed.
+  it.each(adversarialCommands)("reads a hook with %s in near-linear work", async (_name, size, generate) => {
+    const roots = await Promise.all([size, size * 4].map(async (count) => {
+      const root = await scratch()
+      await put(root, ".claude/settings.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: generate(count) }] }] } }))
+      return root
+    }))
+    const { growth, results } = await workGrowth(
+      () => readRepositoryProviderConfig(roots[0]!, { heldBack: true }),
+      () => readRepositoryProviderConfig(roots[1]!, { heldBack: true }),
+    )
+    for (const result of results) {
+      const claude = provider(result, "claude-code")
+      expect(claude.omittedEntries).toBe(0)
+      expect(claude.entries).toHaveLength(1)
+    }
+    expect(growth).toBeLessThan(nearLinearGrowth)
   })
 
   it("drops and counts an entry the protocol backstop still refuses, and entries past the cap", async () => {
