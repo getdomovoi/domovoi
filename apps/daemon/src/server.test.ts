@@ -11323,7 +11323,8 @@ describe("DomovoiDaemon", () => {
       expect(response).toMatchObject({
         error: {
           code: -32602,
-          message: `This session uses ${name}, which is turned off in Domovoi for now. ${loads(name)} The worktree and conversation are kept.`,
+          message: `This session uses ${name}, which is turned off in Domovoi for now. ${loads(name)} The worktree and conversation are kept. `
+            + "Switch this session to another provider to continue.",
         },
       })
     })
@@ -11343,6 +11344,403 @@ describe("DomovoiDaemon", () => {
       expect(response).toMatchObject({
         error: { code: -32602, message: `${name} is turned off in Domovoi for now. ${loads(name)}` },
       })
+    })
+
+    // Domovoi runs no process for a turned-off provider, so there is no thread
+    // of its to stop when the session moves on.
+    it.each(["cursor-agent", "grok"])("moves a stored %s session to another provider", async (provider) => {
+      const snapshot = structuredClone(demoWorkspace)
+      const session = snapshot.sessions[0]!
+      session.runtime = { provider, model: "stored-model", reasoning: "none", permissionMode: "build", auto: false }
+      session.state = "idle"
+      session.workspacePath = "/worktrees/stored"
+      session.providerThreadId = "thread-stored"
+      delete session.activeTurnId
+      const codex = {
+        connect: vi.fn(async () => {}),
+        listModels: vi.fn(async () => codexModels()),
+        startThread: vi.fn(async () => "codex-thread"),
+        resumeThread: vi.fn(async () => {}),
+        stopThread: vi.fn(async () => {}),
+        startTurn: vi.fn(async () => "turn"),
+        steerTurn: vi.fn(async () => {}),
+        interruptTurn: vi.fn(async () => {}),
+        resolveApproval: vi.fn(),
+        onEvent: vi.fn(() => () => {}),
+        close: vi.fn(async () => {}),
+      } satisfies AgentAdapter
+      const daemon = new DomovoiDaemon({
+        port: 0,
+        store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
+        agents: { codex },
+        workspaceService: {
+          ...checkpointingWorkspace(),
+          checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
+        },
+      })
+      running.push(daemon)
+
+      const response = await rpc(daemon, "session.setRuntime", {
+        sessionId: session.id,
+        client: "desktop",
+        runtime: { provider: "codex", model: "gpt-5.6-sol", reasoning: "xhigh", permissionMode: "build", auto: false },
+      })
+
+      expect(response).not.toHaveProperty("error")
+      expect(codex.startThread).toHaveBeenCalledWith({ cwd: "/worktrees/stored", runtime: expect.objectContaining({ provider: "codex" }) })
+      expect(response).toMatchObject({
+        result: { sessions: expect.arrayContaining([expect.objectContaining({
+          id: session.id,
+          runtime: expect.objectContaining({ provider: "codex" }),
+          providerThreadId: "codex-thread",
+        })]) },
+      })
+    })
+
+    // Domovoi runs no process for a turned-off provider, so a stored thread id
+    // names nothing to stop or resume. Closing the project or archiving the
+    // session leaves that provider alone instead of failing on it.
+    async function turnedOffSession(provider: string) {
+      const projectPath = "/code/stored"
+      const projectId = `project-${createHash("sha256").update(projectPath).digest("hex").slice(0, 12)}`
+      const snapshot = structuredClone(demoWorkspace)
+      snapshot.project = { ...snapshot.project!, id: projectId, path: projectPath }
+      for (const candidate of snapshot.sessions) candidate.projectId = projectId
+      const session = snapshot.sessions[0]!
+      session.runtime = { provider, model: "stored-model", reasoning: "none", permissionMode: "build", auto: false }
+      session.state = "idle"
+      session.workspacePath = "/worktrees/stored"
+      session.providerThreadId = "thread-stored"
+      delete session.activeTurnId
+      const codex = {
+        connect: vi.fn(async () => {}),
+        listModels: vi.fn(async () => codexModels()),
+        startThread: vi.fn(async () => "codex-thread"),
+        resumeThread: vi.fn(async () => {}),
+        stopThread: vi.fn(async () => {}),
+        startTurn: vi.fn(async () => "turn"),
+        steerTurn: vi.fn(async () => {}),
+        interruptTurn: vi.fn(async () => {}),
+        resolveApproval: vi.fn(),
+        onEvent: vi.fn(() => () => {}),
+        close: vi.fn(async () => {}),
+      } satisfies AgentAdapter
+      const errorSink = vi.fn()
+      const workspaceService = {
+        ...checkpointingWorkspace(),
+        inspect: vi.fn(async (path: string, _signal?: AbortSignal) => ({
+          root: path,
+          name: path === projectPath ? "stored" : "elsewhere",
+          branch: "main",
+          head: "a".repeat(40),
+        })),
+        checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
+        archiveSessionWorkspace: vi.fn(async () => {}),
+      }
+      const daemon = new DomovoiDaemon({
+        port: 0,
+        store: new SqliteWorkspaceStore(":memory:", snapshot),
+        agents: { codex },
+        workspaceService,
+        errorSink,
+      })
+      running.push(daemon)
+      const address = await daemon.start()
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+      onTestFinished(() => { socket.close() })
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      await identifyClient(socket)
+      let requestId = 0
+      const call = (method: string, params: Record<string, unknown>) => {
+        const id = ++requestId
+        const response = new Promise<Record<string, unknown>>((resolve) => {
+          const receive = (data: WebSocket.RawData) => {
+            const message = JSON.parse(data.toString()) as { id?: number }
+            if (message.id !== id) return
+            socket.off("message", receive)
+            resolve(message as Record<string, unknown>)
+          }
+          socket.on("message", receive)
+        })
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+        return response
+      }
+      return { projectPath, session, codex, errorSink, workspaceService, call }
+    }
+
+    it.each(["cursor-agent", "grok"])("keeps a %s session as it was when its project closes", async (provider) => {
+      const { projectPath, session, codex, errorSink, call } = await turnedOffSession(provider)
+
+      const refusedOpen = await call("project.open", { path: "/code/elsewhere", client: "desktop" })
+      expect(refusedOpen).toMatchObject({ error: { code: -32010 } })
+      await call("project.open", {
+        path: "/code/elsewhere",
+        client: "desktop",
+        confirmation: projectSwitchConfirmationSchema.parse((refusedOpen.error as { data?: unknown }).data),
+      })
+      const back = await call("project.open", { path: projectPath, client: "desktop" })
+
+      const result = back.result as { sessions: unknown[]; thread: Array<{ sessionId: string; body?: string }> }
+      expect(result.sessions).toContainEqual(expect.objectContaining({
+        id: session.id,
+        state: "idle",
+        runtime: expect.objectContaining({ provider }),
+        providerThreadId: "thread-stored",
+      }))
+      expect(result.thread.filter((item) => item.sessionId === session.id).map(({ body }) => body))
+        .not.toContain("The provider thread did not stop when this project was closed.")
+      expect(errorSink).not.toHaveBeenCalledWith(expect.objectContaining({
+        context: "Domovoi could not stop a provider thread before switching projects",
+      }))
+      // Nothing holds the session back, so it moves to another provider.
+      const switched = await call("session.setRuntime", {
+        sessionId: session.id,
+        client: "desktop",
+        runtime: { provider: "codex", model: "gpt-5.6-sol", reasoning: "xhigh", permissionMode: "build", auto: false },
+      })
+      expect(switched).not.toHaveProperty("error")
+      expect(codex.startThread).toHaveBeenCalledOnce()
+    })
+
+    it.each(["cursor-agent", "grok"])("archives a stored %s session", async (provider) => {
+      const { session, errorSink, workspaceService, call } = await turnedOffSession(provider)
+
+      const archived = await call("session.archive", { sessionId: session.id, client: "desktop" })
+
+      expect(archived).not.toHaveProperty("error")
+      const archivedSession = (archived.result as { sessions: Array<Record<string, unknown>> }).sessions
+        .find(({ id }) => id === session.id)
+      expect(archivedSession).toMatchObject({ state: "archived", archiveCheckpoint: "d".repeat(40) })
+      expect(archivedSession).not.toHaveProperty("providerThreadId")
+      expect(workspaceService.archiveSessionWorkspace).toHaveBeenCalledWith("/worktrees/stored", expect.any(AbortSignal))
+      expect(errorSink).not.toHaveBeenCalledWith(expect.objectContaining({ context: expect.stringMatching(/archive|provider/i) }))
+    })
+
+    // An older build could save a project whose session was mid-turn. This
+    // build never runs that provider, so opening the project ends the turn the
+    // way startup ends every stored turn.
+    it.each(["cursor-agent", "grok"])("ends a stored %s turn when its project opens", async (provider) => {
+      const projectPath = "/code/stored"
+      const projectId = `project-${createHash("sha256").update(projectPath).digest("hex").slice(0, 12)}`
+      const stored = structuredClone(demoWorkspace)
+      stored.project = { ...stored.project!, id: projectId, path: projectPath }
+      for (const candidate of stored.sessions) candidate.projectId = projectId
+      const session = stored.sessions[0]!
+      session.runtime = { provider, model: "stored-model", reasoning: "none", permissionMode: "build", auto: false }
+      session.state = "active"
+      session.workspacePath = "/worktrees/stored"
+      session.providerThreadId = "thread-stored"
+      session.activeTurnId = "turn-stored"
+      expect(stored.approvals).toEqual([expect.objectContaining({ sessionId: session.id })])
+      const current = structuredClone(demoWorkspace)
+      current.project = { ...current.project!, id: "project-elsewhere", path: "/code/elsewhere" }
+      current.sessions = []
+      current.activeSessionId = null
+      current.approvals = []
+      current.thread = []
+      current.artifacts = []
+      current.workingPlans = []
+      current.annotations = []
+      const store = new SqliteWorkspaceStore(":memory:", current)
+      store.save(stored)
+      store.save(current)
+      const codex = {
+        connect: vi.fn(async () => {}),
+        listModels: vi.fn(async () => codexModels()),
+        startThread: vi.fn(async () => "codex-thread"),
+        resumeThread: vi.fn(async () => {}),
+        stopThread: vi.fn(async () => {}),
+        startTurn: vi.fn(async () => "turn"),
+        steerTurn: vi.fn(async () => {}),
+        interruptTurn: vi.fn(async () => {}),
+        resolveApproval: vi.fn(),
+        onEvent: vi.fn(() => () => {}),
+        close: vi.fn(async () => {}),
+      } satisfies AgentAdapter
+      const daemon = new DomovoiDaemon({
+        port: 0,
+        store,
+        agents: { codex },
+        workspaceService: {
+          ...checkpointingWorkspace(),
+          inspect: vi.fn(async (path: string, _signal?: AbortSignal) => ({
+            root: path,
+            name: path === projectPath ? "stored" : "elsewhere",
+            branch: "main",
+            head: "a".repeat(40),
+          })),
+          checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
+        },
+      })
+      running.push(daemon)
+      const address = await daemon.start()
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+      onTestFinished(() => { socket.close() })
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      await identifyClient(socket)
+      let requestId = 0
+      const call = (method: string, params: Record<string, unknown>) => {
+        const id = ++requestId
+        const response = new Promise<Record<string, unknown>>((resolve) => {
+          const receive = (data: WebSocket.RawData) => {
+            const message = JSON.parse(data.toString()) as { id?: number }
+            if (message.id !== id) return
+            socket.off("message", receive)
+            resolve(message as Record<string, unknown>)
+          }
+          socket.on("message", receive)
+        })
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+        return response
+      }
+
+      const opened = await call("project.open", { path: projectPath, client: "desktop" })
+
+      const result = opened.result as WorkspaceSnapshot
+      const restored = result.sessions.find(({ id }) => id === session.id)
+      expect(restored).toMatchObject({ state: "idle", providerThreadId: "thread-stored" })
+      expect(restored).not.toHaveProperty("activeTurnId")
+      expect(result.approvals).toEqual([])
+      const lines = result.thread.filter((item) => item.sessionId === session.id && item.kind === "system")
+      expect(lines).toContainEqual(expect.objectContaining({
+        body: "Daemon restart interrupted the active turn.",
+        detail: "Pending approval requests were expired. The worktree and session history were preserved. "
+          + "Send another message to continue with a new provider turn.",
+      }))
+      expect(lines).not.toContainEqual(expect.objectContaining({
+        body: "This approval request expired when the project closed. Send a message to continue.",
+      }))
+      expect(store.auditLog.query({ action: "session.turn-interrupted" }).entries).toEqual([
+        expect.objectContaining({ sessionId: session.id, target: "turn-stored", outcome: "cancelled" }),
+      ])
+
+      await expect(call("session.pause", { sessionId: session.id, client: "desktop" }))
+        .resolves.not.toHaveProperty("error")
+      const switched = await call("session.setRuntime", {
+        sessionId: session.id,
+        client: "desktop",
+        runtime: { provider: "codex", model: "gpt-5.6-sol", reasoning: "xhigh", permissionMode: "build", auto: false },
+      })
+      expect(switched).not.toHaveProperty("error")
+      expect(codex.startThread).toHaveBeenCalledOnce()
+    })
+
+    // Nothing runs a turned-off provider's turn, so an emergency stop has
+    // nothing of it to interrupt. It ends that turn and still stops every
+    // provider it does run.
+    it.each(["cursor-agent", "grok"])("stops runnable turns past a %s turn", async (provider) => {
+      const snapshot = structuredClone(demoWorkspace)
+      const [turnedOff, runnable] = snapshot.sessions as [typeof snapshot.sessions[0], typeof snapshot.sessions[0]]
+      turnedOff.runtime = { provider, model: "stored-model", reasoning: "none", permissionMode: "build", auto: false }
+      turnedOff.state = "active"
+      turnedOff.providerThreadId = "thread-stored"
+      turnedOff.activeTurnId = "turn-stored"
+      runnable.runtime = { provider: "codex", model: "gpt-5.6-sol", reasoning: "xhigh", permissionMode: "build", auto: false }
+      runnable.state = "active"
+      runnable.providerThreadId = "thread-codex"
+      runnable.activeTurnId = "turn-codex"
+      snapshot.approvals = []
+      const activateTurns = deferLiveTurns(snapshot)
+      const codex = {
+        connect: vi.fn(async () => {}),
+        listModels: vi.fn(async () => codexModels()),
+        startThread: vi.fn(async () => "codex-thread"),
+        resumeThread: vi.fn(async () => {}),
+        stopThread: vi.fn(async () => {}),
+        startTurn: vi.fn(async () => "turn"),
+        steerTurn: vi.fn(async () => {}),
+        interruptTurn: vi.fn(async () => {}),
+        resolveApproval: vi.fn(),
+        onEvent: vi.fn(() => () => {}),
+        close: vi.fn(async () => {}),
+      } satisfies AgentAdapter
+      const errorSink = vi.fn()
+      const daemon = new DomovoiDaemon({
+        port: 0,
+        store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
+        agents: { codex },
+        errorSink,
+      })
+      running.push(daemon)
+      const address = await daemon.start()
+      activateTurns()
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+      onTestFinished(() => { socket.close() })
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      await identifyClient(socket)
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== 1) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "system.emergencyStop", params: { client: "desktop" } }))
+
+      const stopped = await response
+
+      expect(stopped).not.toHaveProperty("error")
+      expect(codex.interruptTurn).toHaveBeenCalledWith("thread-codex", "turn-codex")
+      expect(errorSink).not.toHaveBeenCalledWith(expect.objectContaining({ context: expect.stringMatching(/emergency/i) }))
+      const result = stopped.result as RpcResult<"system.emergencyStop">
+      expect(result.outcomes).toMatchObject({ turnsStopped: 1, providersReset: 0 })
+      expect(result.failures).toEqual([])
+      expect(result.snapshot.sessions.find(({ id }) => id === runnable.id)).toMatchObject({ state: "idle" })
+      const ended = result.snapshot.sessions.find(({ id }) => id === turnedOff.id)
+      expect(ended).toMatchObject({ state: "idle", providerThreadId: "thread-stored" })
+      expect(ended).not.toHaveProperty("activeTurnId")
+    })
+
+    // An older build could save a session mid-turn while its archive ran.
+    // Startup resumes that archive; there is no turn of a turned-off provider
+    // to interrupt, so the archive finishes instead of stopping there.
+    it.each(["cursor-agent", "grok"])("finishes the archive of a %s session saved mid-turn", async (provider) => {
+      const snapshot = structuredClone(demoWorkspace)
+      const session = snapshot.sessions[0]!
+      session.runtime = { provider, model: "stored-model", reasoning: "none", permissionMode: "build", auto: false }
+      session.state = "archiving"
+      session.archiveRequestedAt = "2026-09-20T10:00:00.000Z"
+      session.workspacePath = "/worktrees/stored"
+      session.providerThreadId = "thread-stored"
+      session.activeTurnId = "turn-stored"
+      const store = {
+        snapshot,
+        load() { return this.snapshot },
+        save(next: typeof snapshot) { this.snapshot = structuredClone(next) },
+        close: vi.fn(),
+      } satisfies WorkspaceStore & { snapshot: typeof snapshot }
+      const errorSink = vi.fn()
+      const workspaceService = {
+        ...checkpointingWorkspace(),
+        checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
+        archiveSessionWorkspace: vi.fn(async () => {}),
+      }
+      const daemon = new DomovoiDaemon({ port: 0, store, workspaceService, errorSink })
+      running.push(daemon)
+
+      await daemon.start()
+
+      const archived = store.snapshot.sessions.find(({ id }) => id === session.id)
+      expect(archived).toMatchObject({ state: "archived", archiveCheckpoint: "d".repeat(40) })
+      expect(archived).not.toHaveProperty("providerThreadId")
+      expect(archived).not.toHaveProperty("activeTurnId")
+      expect(archived).not.toHaveProperty("workspacePath")
+      expect(workspaceService.archiveSessionWorkspace).toHaveBeenCalledWith("/worktrees/stored", expect.any(AbortSignal))
+      expect(errorSink).not.toHaveBeenCalledWith(expect.objectContaining({
+        context: `Domovoi could not resume archive cleanup for ${session.id}`,
+      }))
+      expect(errorSink).not.toHaveBeenCalledWith(expect.objectContaining({ context: expect.stringMatching(/archive|provider/i) }))
     })
 
     it.each(["cursor-agent", "grok"])("has no session adapter for %s", async (provider) => {
