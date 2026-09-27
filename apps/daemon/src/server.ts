@@ -10808,9 +10808,12 @@ export class DomovoiDaemon {
     this.#store.save(candidate)
     this.#snapshot = candidate
     // A row kept for overflow stays in the journal, so it is reported again.
-    // Rows are cleared by rowid: a key can name more than one row.
+    // Rows are cleared by rowid: a key can name more than one row. Each row
+    // is cleared once, however many stops it names, so a row that took its
+    // rowid after the first clear is not cleared unread (review round 1 of
+    // #641).
     const kept = new Set(entries.filter(({ keep }) => keep).map(({ row }) => row))
-    for (const { row } of entries) if (!kept.has(row)) journal.clearRow(row)
+    for (const row of new Set(entries.map(({ row }) => row))) if (!kept.has(row)) journal.clearRow(row)
     return kept.size
   }
 
