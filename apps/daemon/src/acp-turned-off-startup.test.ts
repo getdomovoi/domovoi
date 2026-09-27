@@ -50,10 +50,42 @@ function storedSnapshot(): WorkspaceSnapshot {
   return snapshot
 }
 
+// A store that keeps a deep copy of every snapshot at the moment it is saved.
+// The daemon saves its live snapshot object and keeps mutating it, so the
+// mock's own call arguments show the latest state, not what was stored.
+function copyingStore(load: () => WorkspaceSnapshot) {
+  const saves: WorkspaceSnapshot[] = []
+  const store = {
+    load: vi.fn(load),
+    save: vi.fn((snapshot: WorkspaceSnapshot) => { saves.push(structuredClone(snapshot)) }),
+    close: vi.fn(),
+  } satisfies WorkspaceStore
+  return { store, saves }
+}
+
+const turnedOffIds = new Set(turnedOffRows.map(({ id }) => id))
+
+// No stored snapshot may say Cursor or Grok can run, and any stored row for
+// them must be exactly its turned-off row.
+function expectNoRunnableTurnedOffRows(saves: WorkspaceSnapshot[]) {
+  for (const saved of saves) {
+    const rows = saved.machine.providers.filter(({ id }) => turnedOffIds.has(id))
+    for (const row of rows) {
+      expect(row.status).not.toBe("ready")
+      expect(row.sessionCapable).not.toBe(true)
+    }
+    if (rows.length > 0) expect(rows).toEqual(turnedOffRows)
+  }
+}
+
 type Frame = { id?: unknown; method?: string; result?: WorkspaceSnapshot; params?: WorkspaceSnapshot }
 
-// Sends hello, then one request, and returns its response together with every
-// workspace.changed notification the client saw before it.
+// Sends hello, waits for its answer, then sends one request, and returns that
+// response together with every workspace.changed notification the client saw
+// before it. The wait is load-bearing: hello runs on the daemon's mutation
+// queue while methods such as provider.refresh bypass it, so a request sent
+// behind an unanswered hello can overtake it and be refused with "Connection
+// identity is required" whenever the queue is busy.
 async function request(daemon: DomovoiDaemon, address: { host: string; port: number }, method: string, params: object) {
   const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
     headers: { authorization: `Bearer ${daemon.authToken}` },
@@ -64,10 +96,13 @@ async function request(daemon: DomovoiDaemon, address: { host: string; port: num
       socket.once("error", reject)
     })
     const changed: WorkspaceSnapshot[] = []
+    let answerHello: (message: Frame) => void = () => {}
+    const hello = new Promise<Frame>((resolve) => { answerHello = resolve })
     const response = new Promise<Frame>((resolve) => {
       socket.on("message", (data) => {
         const message = JSON.parse(data.toString()) as Frame
         if (message.method === "workspace.changed" && message.params) changed.push(message.params)
+        if (message.id === 1) answerHello(message)
         if (message.id === 2) resolve(message)
       })
     })
@@ -77,6 +112,7 @@ async function request(daemon: DomovoiDaemon, address: { host: string; port: num
       method: "system.hello",
       params: { client: "desktop", clientId: "desktop-test-client", clientVersion: "0.0.1", protocolVersion },
     }))
+    expect((await hello).result).toBeDefined()
     socket.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method, params }))
     return { response: await response, changed }
   } finally {
@@ -122,11 +158,7 @@ describe("stored Cursor and Grok readiness at startup", () => {
     const home = await mkdtemp(join(tmpdir(), "domovoi-acp-off-"))
     scratchDirectories.push(home)
     vi.stubEnv("HOME", home)
-    const store = {
-      load: vi.fn(storedSnapshot),
-      save: vi.fn(),
-      close: vi.fn(),
-    } satisfies WorkspaceStore
+    const { store, saves } = copyingStore(storedSnapshot)
     const providerProbe = { inspect: vi.fn<ProviderProbe["inspect"]>(inspect) }
     const daemon = new DomovoiDaemon({
       port: 0,
@@ -146,11 +178,13 @@ describe("stored Cursor and Grok readiness at startup", () => {
       ...turnedOffRows,
     ])
     expect(store.save).toHaveBeenCalled()
-    for (const [saved] of store.save.mock.calls) {
-      expect((saved as WorkspaceSnapshot).machine.providers).toEqual(expect.arrayContaining(turnedOffRows))
-      expect((saved as WorkspaceSnapshot).machine.providers.filter(({ sessionCapable }) => sessionCapable))
+    expect(saves).toHaveLength(store.save.mock.calls.length)
+    for (const saved of saves) {
+      expect(saved.machine.providers).toEqual(expect.arrayContaining(turnedOffRows))
+      expect(saved.machine.providers.filter(({ sessionCapable }) => sessionCapable))
         .toEqual([expect.objectContaining({ id: "claude-code" })])
     }
+    expectNoRunnableTurnedOffRows(saves)
   })
 })
 
@@ -161,11 +195,7 @@ describe("Cursor and Grok readiness from a provider probe", () => {
     vi.stubEnv("HOME", home)
     const snapshot = structuredClone(demoWorkspace)
     snapshot.machine.providers = []
-    const store = {
-      load: vi.fn(() => snapshot),
-      save: vi.fn(),
-      close: vi.fn(),
-    } satisfies WorkspaceStore
+    const { store, saves } = copyingStore(() => snapshot)
     // A probe other than CliProviderProbe, which does not know they are off.
     const providerProbe = {
       inspect: vi.fn<ProviderProbe["inspect"]>(async () => [
@@ -183,7 +213,14 @@ describe("Cursor and Grok readiness from a provider probe", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    await waitForDaemon(() => expect(store.save).toHaveBeenCalled())
+    // Startup recovery saves before start() returns, so a save alone does not
+    // show the startup probe has run. Wait for a save that follows its inspect:
+    // the refresh below is then the second, separate probe.
+    await waitForDaemon(() => {
+      expect(providerProbe.inspect).toHaveBeenCalledOnce()
+      const inspected = providerProbe.inspect.mock.invocationCallOrder[0]!
+      expect(store.save.mock.invocationCallOrder.some((order) => order > inspected)).toBe(true)
+    })
 
     const { response, changed } = await request(daemon, address, "provider.refresh", { client: "desktop" })
 
@@ -196,6 +233,15 @@ describe("Cursor and Grok readiness from a provider probe", () => {
     expect(changed).not.toEqual([])
     for (const broadcast of changed) expect(broadcast.machine.providers).toEqual(expected)
     expect(store.save.mock.calls.length).toBeGreaterThanOrEqual(2)
-    for (const [saved] of store.save.mock.calls) expect((saved as WorkspaceSnapshot).machine.providers).toEqual(expected)
+    expect(saves).toHaveLength(store.save.mock.calls.length)
+    expectNoRunnableTurnedOffRows(saves)
+    // Startup recovery saves the loaded snapshot, which has no provider rows,
+    // before any probe runs. Every save after the first inspect holds probe
+    // rows, and each of those must already be the turned-off rows.
+    const inspected = providerProbe.inspect.mock.invocationCallOrder[0]!
+    const probed = saves.filter((_, index) => store.save.mock.invocationCallOrder[index]! > inspected)
+    expect(probed.length).toBeGreaterThanOrEqual(2)
+    for (const saved of probed) expect(saved.machine.providers).toEqual(expected)
+    expect(saves.at(-1)?.machine.providers).toEqual(expected)
   })
 })
