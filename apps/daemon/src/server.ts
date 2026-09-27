@@ -412,6 +412,35 @@ function noteExpiredApprovals(
   }
 }
 
+// Ends each stored turn in `sessionIds`: the process that ran it is gone, so
+// the session goes idle and says so. Returns the ended turns for the audit.
+function endStoredTurns(
+  snapshot: WorkspaceSnapshot,
+  sessionIds: ReadonlySet<string>,
+  expiredApprovals: WorkspaceSnapshot["approvals"],
+  endedAt: string,
+): Array<{ sessionId: string; turnId: string }> {
+  const ended: Array<{ sessionId: string; turnId: string }> = []
+  for (const session of snapshot.sessions) {
+    if (!sessionIds.has(session.id) || !session.activeTurnId) continue
+    ended.push({ sessionId: session.id, turnId: session.activeTurnId })
+    session.state = "idle"
+    session.updatedAt = endedAt
+    delete session.activeTurnId
+    snapshot.thread.push({
+      id: `system-${randomUUID()}`,
+      sessionId: session.id,
+      kind: "system",
+      body: "Daemon restart interrupted the active turn.",
+      detail: `${expiredApprovals.some((approval) => approval.sessionId === session.id)
+        ? "Pending approval requests were expired. "
+        : ""}The worktree and session history were preserved. Send another message to continue with a new provider turn.`,
+      createdAt: endedAt,
+    })
+  }
+  return ended
+}
+
 function withoutApprovals(
   snapshot: WorkspaceSnapshot,
   predicate: (approval: WorkspaceSnapshot["approvals"][number]) => boolean,
@@ -8040,15 +8069,34 @@ export class DomovoiDaemon {
           // possibly by another daemon process, so its saved cards expire.
           const expiredAt = new Date().toISOString()
           const expiredApprovals = this.#expireStoredApprovals(this.#snapshot, expiredAt, restored?.approvals ?? [])
+          // A turned-off provider is never run by this build, so a turn saved
+          // for it ended when the older build that ran it stopped. It ends
+          // here as startup ends every stored turn.
+          const endedTurnSessionIds = new Set(this.#snapshot.sessions.flatMap((session) => (
+            session.activeTurnId
+              && session.state !== "archiving"
+              && session.state !== "archived"
+              && this.#agents.isUnavailable(session.runtime.provider)
+              ? [session.id]
+              : []
+          )))
           noteExpiredApprovals(
             this.#snapshot,
-            expiredApprovals,
+            expiredApprovals.filter((approval) => !endedTurnSessionIds.has(approval.sessionId)),
             "This approval request expired when the project closed. Send a message to continue.",
             expiredAt,
           )
           this.#auditExpiredApprovals(expiredApprovals, "project-open", projectId)
           this.#snapshot.queuedSends = []
           this.#loadQueuedSessionSends(false)
+          for (const sessionId of endedTurnSessionIds) {
+            this.#holdQueuedSessionSend(sessionId, "Daemon restart interrupted the turn before the queued boundary.")
+          }
+          this.#auditEndedStoredTurns(
+            endStoredTurns(this.#snapshot, endedTurnSessionIds, expiredApprovals, expiredAt),
+            "project-open",
+            projectId,
+          )
           this.#activeAssistantItems.clear()
           await this.#recoverSessionCreations()
           changed = true
@@ -10086,7 +10134,19 @@ export class DomovoiDaemon {
 
     let turnsStopped = 0
     let providersReset = 0
-    const turnResults = await Promise.allSettled(active.map((session) =>
+    // A turned-off provider is never run, so its turn has nothing to
+    // interrupt. It ends without a provider call, and every turn of a
+    // provider that runs is still interrupted.
+    const runnable = active.filter((session) => !this.#agents.isUnavailable(session.runtime.provider))
+    for (const original of active) {
+      if (runnable.includes(original)) continue
+      const session = this.#snapshot.sessions.find(({ id }) => id === original.id)
+      if (!session) continue
+      session.updatedAt = requestedAt
+      session.state = "idle"
+      delete session.activeTurnId
+    }
+    const turnResults = await Promise.allSettled(runnable.map((session) =>
       withTimeout(
         this.#agents.require(session.runtime.provider).interruptTurn(
           session.providerThreadId!,
@@ -10097,7 +10157,7 @@ export class DomovoiDaemon {
       ),
     ))
     for (const [index, result] of turnResults.entries()) {
-      const original = active[index]!
+      const original = runnable[index]!
       const session = this.#snapshot.sessions.find(({ id }) => id === original.id)
       if (!session) continue
       const activeTurnId = session.activeTurnId
@@ -10139,7 +10199,9 @@ export class DomovoiDaemon {
     }
 
     const inFlight = [...this.#inFlightProviderThreads.entries()]
-      .filter(([threadKey]) => !activeThreadKeys.has(threadKey))
+      .filter(([threadKey, sessionId]) => !activeThreadKeys.has(threadKey) && !this.#agents.isUnavailable(
+        this.#snapshot.sessions.find(({ id }) => id === sessionId)?.runtime.provider ?? "",
+      ))
     const inFlightResults = await Promise.allSettled(inFlight.map(([threadKey, sessionId]) => {
       const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
       if (!session?.providerThreadId) return Promise.resolve()
@@ -10525,27 +10587,10 @@ export class DomovoiDaemon {
     }
     const recoveredAt = new Date().toISOString()
     const candidate = structuredClone(this.#snapshot)
-    const recoveredTurns: Array<{ sessionId: string; turnId: string }> = []
     const expiredApprovals = this.#expireStoredApprovals(candidate, recoveredAt)
     const interruptedSessionIds = new Set(interrupted.map((session) => session.id))
 
-    for (const session of candidate.sessions) {
-      if (!interruptedSessionIds.has(session.id) || !session.activeTurnId) continue
-      recoveredTurns.push({ sessionId: session.id, turnId: session.activeTurnId })
-      session.state = "idle"
-      session.updatedAt = recoveredAt
-      delete session.activeTurnId
-      candidate.thread.push({
-        id: `system-${randomUUID()}`,
-        sessionId: session.id,
-        kind: "system",
-        body: "Daemon restart interrupted the active turn.",
-        detail: `${expiredApprovals.some((approval) => approval.sessionId === session.id)
-          ? "Pending approval requests were expired. "
-          : ""}The worktree and session history were preserved. Send another message to continue with a new provider turn.`,
-        createdAt: recoveredAt,
-      })
-    }
+    const recoveredTurns = endStoredTurns(candidate, interruptedSessionIds, expiredApprovals, recoveredAt)
     // A session whose turn was interrupted already has a line that says its
     // cards expired, so the restart line goes only to sessions without one.
     // Ruled 2026-09-24.
@@ -10560,17 +10605,25 @@ export class DomovoiDaemon {
     this.#store.save(candidate)
     this.#snapshot = candidate
     this.#activeAssistantItems.clear()
-    for (const recovered of recoveredTurns) {
+    this.#auditEndedStoredTurns(recoveredTurns, "startup-recovery", candidate.project?.id)
+    this.#auditExpiredApprovals(expiredApprovals, "startup-recovery", candidate.project?.id)
+  }
+
+  #auditEndedStoredTurns(
+    turns: ReadonlyArray<{ sessionId: string; turnId: string }>,
+    component: "startup-recovery" | "project-open",
+    projectId: string | undefined,
+  ): void {
+    for (const turn of turns) {
       this.#appendAudit({
-        actor: { kind: "daemon", component: "startup-recovery" },
+        actor: { kind: "daemon", component },
         action: "session.turn-interrupted",
         outcome: "cancelled",
-        sessionId: recovered.sessionId,
-        ...(candidate.project ? { projectId: candidate.project.id } : {}),
-        target: recovered.turnId,
+        sessionId: turn.sessionId,
+        ...(projectId ? { projectId } : {}),
+        target: turn.turnId,
       })
     }
-    this.#auditExpiredApprovals(expiredApprovals, "startup-recovery", candidate.project?.id)
   }
 
   // Security review round 2 of #628: a stop whose intent outlived its process
