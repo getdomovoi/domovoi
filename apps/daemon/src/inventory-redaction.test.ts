@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { toolInventoryEntrySchema } from "@getdomovoi/protocol"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
-import { inventoryShellWords, redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
+import { inventoryFieldCaps, inventoryShellWords, redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
 
 // The protocol backstop judges each emitted text; a hook entry is the smallest
 // shape that carries a free-text command.
@@ -671,5 +671,145 @@ describe("control characters in emitted text", () => {
     expect(redacted).toBe(expected)
     expect(backstopAccepts(redacted)).toBe(true)
     expect(inventoryShellWords(redacted)).toBeDefined()
+  })
+})
+
+// The protocol caps the length of each inventory text, and refuses a longer
+// one, so the reader drops the entry. Redaction can write a text longer than
+// it was given: a backslash before each pattern character, quotes around an
+// argument, the marker after a short value or in place of a control
+// character. Its output still fits the cap, whole words kept and the rest
+// hidden behind the marker, so an entry the protocol would take before
+// redaction is never dropped for it.
+describe("output within the protocol's caps", () => {
+  // The cap on a hook's or helper's command in the protocol's inventory schema.
+  const commandCap = 2_048
+  const rightToLeftOverride = String.fromCodePoint(0x202e)
+
+  it("uses the protocol schema's cap for each field", () => {
+    const base = { file: ".claude/settings.json", startsAtSessionStart: false, heldBack: true }
+    const entries: Record<keyof typeof inventoryFieldCaps, ReadonlyArray<(value: string) => unknown>> = {
+      command: [
+        (value) => ({ ...base, kind: "hook", event: "Stop", command: value }),
+        (value) => ({ ...base, kind: "helper", name: "apiKeyHelper", command: value }),
+        (value) => ({ ...base, kind: "tool-server", name: "s", transport: "stdio", command: value, envKeys: [] }),
+      ],
+      event: [(value) => ({ ...base, kind: "hook", event: value, command: "x" })],
+      matcher: [(value) => ({ ...base, kind: "hook", event: "Stop", matcher: value, command: "x" })],
+      name: [
+        (value) => ({ ...base, kind: "tool-server", name: value, transport: "stdio", command: "x", envKeys: [] }),
+        (value) => ({ ...base, kind: "plugin", name: value }),
+        (value) => ({ ...base, kind: "skill", name: value }),
+      ],
+      helperName: [(value) => ({ ...base, kind: "helper", name: value, command: "x" })],
+      rule: [(value) => ({ ...base, kind: "permission-rule", rule: value, detail: "x" })],
+      detail: [(value) => ({ ...base, kind: "permission-rule", rule: "allow", detail: value })],
+    }
+    expect(Object.keys(inventoryFieldCaps).sort()).toEqual(Object.keys(entries).sort())
+    for (const [field, builds] of Object.entries(entries) as Array<[keyof typeof inventoryFieldCaps, ReadonlyArray<(value: string) => unknown>]>) {
+      const cap = inventoryFieldCaps[field]
+      for (const build of builds) {
+        expect(toolInventoryEntrySchema.safeParse(build("x".repeat(cap))).success, field).toBe(true)
+        expect(toolInventoryEntrySchema.safeParse(build("x".repeat(cap + 1))).success, field).toBe(false)
+      }
+    }
+    expect(inventoryFieldCaps.command).toBe(commandCap)
+  })
+
+  const commandCases: ReadonlyArray<[string, string]> = [
+    // Escaping each pattern character doubles its length.
+    [`echo ${"*".repeat(1_022)}`, "echo [REDACTED]"],
+    [`echo ${"*".repeat(1_021)}`, `echo ${"\\*".repeat(1_021)}`],
+    [`echo x${"*".repeat(1_021)}`, `echo x${"\\*".repeat(1_021)}`],
+    [`echo xx${"*".repeat(1_021)}`, "echo [REDACTED]"],
+  ]
+
+  it.each(commandCases)("fits the command %#", (input, expected) => {
+    expect(input.length).toBeLessThanOrEqual(commandCap)
+    const redacted = redactInventoryCommand(input)
+    expect(redacted).toBe(expected)
+    expect(redacted.length).toBeLessThanOrEqual(commandCap)
+    expect(backstopAccepts(redacted)).toBe(true)
+    expect(redactInventoryCommand(redacted)).toBe(redacted)
+    expect(inventoryShellWords(redacted)).toEqual(expected === "echo [REDACTED]" ? ["echo", "[REDACTED]"] : ["echo", input.slice(5)])
+  })
+
+  // The marker in place of a control or format character is longer than it.
+  const controlCases: ReadonlyArray<[string, string]> = [
+    [`echo ${"a ".repeat(1_017)}${rightToLeftOverride}`, `echo${" a".repeat(1_016)} [REDACTED]`],
+    [`echo ${"a ".repeat(1_016)}${rightToLeftOverride}`, `echo${" a".repeat(1_016)} [REDACTED]`],
+    [`echo ab ${"a ".repeat(1_015)}${rightToLeftOverride}`, `echo ab${" a".repeat(1_015)} [REDACTED]`],
+    [`echo abc ${"a ".repeat(1_015)}${rightToLeftOverride}`, `echo abc${" a".repeat(1_014)} [REDACTED]`],
+  ]
+
+  it.each(controlCases)("fits the text and command %#", (input, expected) => {
+    expect(input.length).toBeLessThanOrEqual(commandCap)
+    for (const redact of [redactInventoryText, redactInventoryCommand]) {
+      const redacted = redact(input)
+      expect(redacted).toBe(expected)
+      expect(redacted.length).toBeLessThanOrEqual(commandCap)
+      expect(backstopAccepts(redacted)).toBe(true)
+      expect(redact(redacted)).toBe(redacted)
+      expect(inventoryShellWords(redacted)?.at(-1)).toBe("[REDACTED]")
+    }
+  })
+
+  // A text is fitted to the cap of the field it fills.
+  const textCases: ReadonlyArray<[string, number, string]> = [
+    [`${"x".repeat(1_008)} FOO=1`, 1_024, `${"x".repeat(1_008)} FOO=[REDACTED]`],
+    [`${"x".repeat(1_009)} FOO=1`, 1_024, `${"x".repeat(1_009)} FOO=[REDACTED]`],
+    [`${"x".repeat(1_010)} FOO=1`, 1_024, `${"x".repeat(1_010)} [REDACTED]`],
+    [`${"x".repeat(243)} FOO=1`, 256, `${"x".repeat(243)} [REDACTED]`],
+    // A rule keeps its pattern characters when it is fitted too.
+    [`Bash(pnpm test:*) ${"x".repeat(100)}`, 64, "Bash(pnpm test:*) [REDACTED]"],
+    ["x".repeat(65), 64, "[REDACTED]"],
+  ]
+
+  it.each(textCases)("fits the text %# to its cap", (input, cap, expected) => {
+    const redacted = redactInventoryText(input, cap)
+    expect(redacted).toBe(expected)
+    expect(redacted.length).toBeLessThanOrEqual(cap)
+    expect(backstopAccepts(redacted)).toBe(true)
+    expect(redactInventoryText(redacted, cap)).toBe(redacted)
+    expect(inventoryShellWords(redacted)).toBeDefined()
+  })
+
+  const argvCases: ReadonlyArray<[string[], string]> = [
+    // Quotes around an argument add two characters.
+    [["echo", "*".repeat(2_040)], `echo '${"*".repeat(2_040)}'`],
+    [["echo", "*".repeat(2_041)], `echo '${"*".repeat(2_041)}'`],
+    [["echo", "*".repeat(2_042)], "echo [REDACTED]"],
+    // A single quote is written in five characters.
+    [["echo", "'".repeat(500)], "echo [REDACTED]"],
+    [["echo", ...Array.from({ length: 1_017 }, () => "a"), rightToLeftOverride], `echo${" a".repeat(1_016)} [REDACTED]`],
+  ]
+
+  it.each(argvCases)("fits the argument vector %#", (argv, expected) => {
+    expect(argv.join(" ").length).toBeLessThanOrEqual(commandCap)
+    const redacted = redactInventoryArgv(argv)
+    expect(redacted).toBe(expected)
+    expect(redacted.length).toBeLessThanOrEqual(commandCap)
+    expect(backstopAccepts(redacted)).toBe(true)
+    expect(inventoryShellWords(redacted)).toEqual(inventoryShellWords(expected))
+  })
+
+  // The outputs at the cap, read by real shells in a directory where each
+  // pattern would match.
+  describe.skipIf(process.platform === "win32")("read by a shell", () => {
+    let directory = ""
+    beforeAll(() => {
+      directory = mkdtempSync(join(tmpdir(), "domovoi-inventory-cap-"))
+      for (const name of ["x", "xa", "a"]) writeFileSync(join(directory, name), "")
+    })
+    afterAll(() => rmSync(directory, { recursive: true, force: true }))
+
+    const shells = ["/bin/sh", "/bin/bash"].filter((shell) => existsSync(shell))
+    const outputs = [redactInventoryCommand(`echo x${"*".repeat(1_021)}`), redactInventoryArgv(["echo", "*".repeat(2_041)])]
+    it.each(shells.flatMap((shell) => outputs.map((output, index) => [shell, index, output] as const)))("%s reads output %i as the reader does", (shell, _index, output) => {
+      const words = execFileSync(shell, ["-c", `set -- ${output}; printf '%s\\0' "$@"`], {
+        cwd: directory, encoding: "utf8", env: { PATH: "/usr/bin:/bin" },
+      }).split("\0").slice(0, -1)
+      expect(words).toEqual(inventoryShellWords(output))
+    })
   })
 })

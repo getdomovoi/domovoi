@@ -409,6 +409,42 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     ]))
   })
 
+  // Redaction can write a longer text than it read; it still fits the
+  // protocol's cap, so a hook the protocol would take unredacted is listed.
+  it("lists a near-cap hook, rule and matcher whose redacted text grew", async () => {
+    const root = await scratch()
+    const rightToLeftOverride = String.fromCodePoint(0x202e)
+    const hooks = [
+      { type: "command", command: `echo ${"*".repeat(1_022)}` },
+      { type: "command", command: `echo ${"a ".repeat(1_017)}${rightToLeftOverride}` },
+      { type: "command", command: `echo x${"*".repeat(1_021)}` },
+      { type: "command", command: "echo", args: ["*".repeat(2_042)] },
+      { type: "command", command: "echo", args: ["*".repeat(2_041)] },
+      { type: "prompt", prompt: `${"b ".repeat(1_020)}${rightToLeftOverride}` },
+    ]
+    for (const hook of hooks) expect([hook.command, ...(hook.args ?? []), hook.prompt ?? ""].join(" ").length).toBeLessThanOrEqual(2_048)
+    await put(root, ".claude/settings.json", JSON.stringify({
+      hooks: { Stop: [{ matcher: `${"x".repeat(243)} FOO=1`, hooks }] },
+      permissions: { allow: [`${"x".repeat(1_010)} FOO=1`] },
+    }))
+    const claude = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "claude-code")
+    expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+    expect(claude.omittedEntries).toBe(0)
+    const listed = claude.entries.flatMap((entry) => (entry.kind === "hook" ? [entry] : []))
+    expect(listed.map((entry) => entry.command)).toEqual([
+      "echo [REDACTED]",
+      `echo${" a".repeat(1_016)} [REDACTED]`,
+      `echo x${"\\*".repeat(1_021)}`,
+      "echo [REDACTED]",
+      `echo '${"*".repeat(2_041)}'`,
+      `b${" b".repeat(1_018)} [REDACTED]`,
+    ])
+    expect(listed.every((entry) => entry.matcher === `${"x".repeat(243)} [REDACTED]`)).toBe(true)
+    expect(claude.entries.filter((entry) => entry.kind === "permission-rule")).toEqual([
+      { kind: "permission-rule", rule: "allow", detail: `${"x".repeat(1_010)} [REDACTED]`, file: ".claude/settings.json", startsAtSessionStart: false, heldBack: true },
+    ])
+  })
+
   it("drops and counts an entry the protocol backstop still refuses, and entries past the cap", async () => {
     const root = await scratch()
     const servers = Object.fromEntries(Array.from({ length: 600 }, (_, index) => [`s${index}`, { command: `server-${index}` }]))
