@@ -10727,7 +10727,7 @@ export class DomovoiDaemon {
     for (let round = 1; ; round += 1) {
       if (!this.#recoverEmergencyStopRound(journal) && journal.finishRecovery()) return
       if (round === emergencyStopRecoveryRounds) {
-        throw new Error(`Domovoi stopped finishing the emergency stop journal after ${round} rounds, because new rows kept taking the place of the rows it cleared. The rounds it finished are saved, and the next start continues from there.`)
+        throw new Error(`Domovoi stopped finishing the emergency stop journal after ${round} rounds, because new rows kept taking the place of the rows it cleared. The rounds it finished are saved, and the next start continues from there. If this happens again, something outside Domovoi is writing to the store, and it needs repair before Domovoi can start.`)
       }
     }
   }
