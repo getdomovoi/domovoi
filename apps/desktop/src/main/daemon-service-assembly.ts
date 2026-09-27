@@ -2,7 +2,7 @@ import { homedir } from "node:os"
 import { posix, win32 } from "node:path"
 
 import type { DaemonModule } from "./daemon-module.js"
-import { DesktopDaemonService, nodeRuntimeFileSystem, stageDaemonRuntime } from "./daemon-service.js"
+import { DesktopDaemonService, nodeRuntimeFileSystem, prepareDaemonRuntime } from "./daemon-service.js"
 import type { DesktopDaemon } from "./desktop-daemon.js"
 
 // J24: the login service, assembled on first use. index.ts loads this module
@@ -27,7 +27,7 @@ export function createDesktopDaemonService(
   const profileDirectory = environment.DOMOVOI_PROFILE_DIR
   const profile = profileDirectory === undefined ? {} : { DOMOVOI_PROFILE_DIR: profileDirectory }
   return new DesktopDaemonService({
-    stageRuntime: (operation) => stageDaemonRuntime({
+    stageRuntime: (operation) => prepareDaemonRuntime({
       operation,
       resourcesPath: app.resourcesPath,
       profileDirectory: profileDirectory ?? (process.platform === "win32" ? win32 : posix).join(home, ".domovoi"),

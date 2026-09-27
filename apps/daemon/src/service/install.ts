@@ -627,6 +627,7 @@ async function installWithDeadline(
   deadline: OperationDeadline,
   handoff: (() => Promise<void>) | undefined,
   callerProfile?: ProfileLocation,
+  beforeChanges?: () => Promise<void>,
 ): Promise<ServicePlan> {
   // Reinstalling is a new supervisor decision, not reuse of an old recovery
   // authorization. Assign the identity here, even if the caller supplied one.
@@ -660,6 +661,10 @@ async function installWithDeadline(
     throw new WindowsTaskNotDomovoiError(displayName)
   }
   const commands = [...await launchdCommandsBeforeInstall(target, plan, effects, deadline), ...plan.commands]
+  // Every check that can refuse has passed and nothing has changed yet. The
+  // caller's staged runtime goes into place here, under the lease (security
+  // review round 4 of #577).
+  if (beforeChanges !== undefined) await withinServiceDeadline(deadline, beforeChanges)
   const previousFiles = await readPreviousFiles(plan, effects, deadline)
   const leases: ProfileLease[] = []
   try {
@@ -727,9 +732,9 @@ async function installWithDeadline(
 export function installService(
   target: ServiceTarget,
   effects: InstallEffects & Pick<ServiceEffects, "claimServiceOperation">,
-  options: { handoff?: () => Promise<void>; callerProfile?: ProfileLocation } = {},
+  options: { handoff?: () => Promise<void>; callerProfile?: ProfileLocation; beforeChanges?: () => Promise<void> } = {},
 ): Promise<ServicePlan> {
-  return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.handoff, options.callerProfile))
+  return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.handoff, options.callerProfile, options.beforeChanges))
 }
 
 // Security review rounds 1 and 2 (#574): any program can register a Windows

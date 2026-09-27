@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -67,6 +67,9 @@ describe("the login service assembled for this app's profile", () => {
     expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: { DOMOVOI_PROFILE_DIR: profile } }))
     // Round 3 (P2): the runtime is copied under the app's profile, not the home's.
     expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ runtime: daemonRuntimeLayoutUnder(join(profile, "runtime", "0.9.4")) }))
+    // Round 4 (P2): the fake service call never published, so nothing is in
+    // place and the inert copy was discarded.
+    expect(await readdir(join(profile, "runtime"))).toEqual([])
     await expect(service.update()).resolves.toMatchObject({ ok: true })
     expect(daemon.updateDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: { DOMOVOI_PROFILE_DIR: profile } }))
     await expect(service.remove()).resolves.toMatchObject({ ok: true })

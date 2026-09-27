@@ -66,6 +66,16 @@ export type DaemonServiceOptions = {
   // The desktop refuses the handoff before calling this while a turn runs or
   // a gate waits; the installer does not look.
   releaseInAppDaemon?: () => Promise<void>
+  // Security review round 4 of #577 (P2): the runtime staged but not yet in
+  // place. Its files are checked first; publish moves it to `runtime` only
+  // under the service-operation lease, after every profile check and before
+  // the handoff, so a refused install changes no file.
+  staged?: DaemonServiceStagedRuntime
+}
+
+export type DaemonServiceStagedRuntime = {
+  runtime: DaemonServiceRuntime
+  publish: () => Promise<void>
 }
 
 export type DaemonServiceInstallResult =
@@ -144,7 +154,7 @@ export async function installDaemonService(
   options: DaemonServiceOptions,
   dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),
 ): Promise<DaemonServiceInstallResult> {
-  await checkRuntime(options.runtime, dependencies)
+  await checkRuntime(options.staged?.runtime ?? options.runtime, dependencies)
   const configuration = createServiceConfiguration(options.environment ?? {}, {
     platform: dependencies.platform,
     homeDirectory: dependencies.home,
@@ -165,6 +175,12 @@ export async function installDaemonService(
   const plan = await installService(serviceTarget, dependencies, {
     ...(options.releaseInAppDaemon === undefined ? {} : { handoff: options.releaseInAppDaemon }),
     ...(options.environment === undefined ? {} : { callerProfile: callerProfile(options.environment, dependencies.home) }),
+    ...(options.staged === undefined ? {} : {
+      beforeChanges: async () => {
+        await options.staged!.publish()
+        await checkRuntime(options.runtime, dependencies)
+      },
+    }),
   })
   return plan.kind === "file"
     ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
@@ -177,6 +193,9 @@ export type DaemonServiceUpdateOptions = {
   // profile it names, checked under the service-operation lease before any
   // manager action (security review round 2 of #577).
   environment?: DaemonEnvironment
+  // Round 4 (P2): the staged runtime, published under the lease after the
+  // profile check and before any manager action.
+  staged?: DaemonServiceStagedRuntime
 }
 
 // Ruled 2026-09-23: "Update the service" moves the installed service to the
@@ -191,7 +210,7 @@ export async function updateDaemonService(
   options: DaemonServiceUpdateOptions,
   dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),
 ): Promise<DaemonServiceInstallResult> {
-  await checkRuntime(options.runtime, dependencies, "update")
+  await checkRuntime(options.staged?.runtime ?? options.runtime, dependencies, "update")
   const waits = {
     profileWaitMs: dependencies.profileReleaseWaitMs ?? 10_000,
     readinessWaitMs: dependencies.readinessWaitMs ?? 20_000,
@@ -212,6 +231,10 @@ export async function updateDaemonService(
     if (!saved) throw new DaemonServiceUpdateError("not-installed")
     if (options.environment !== undefined) {
       assertServiceProfile(profileLocation(saved.homeDirectory, saved.profileDirectory), callerProfile(options.environment, dependencies.home))
+    }
+    if (options.staged !== undefined) {
+      await options.staged.publish()
+      await checkRuntime(options.runtime, dependencies, "update")
     }
     if (dependencies.platform === "linux" && saved.wsl) {
       const steps = await prepareWslUpdate(saved, options.runtime, tracked.effects, waits, tracked.inFlight)(readDeadline)

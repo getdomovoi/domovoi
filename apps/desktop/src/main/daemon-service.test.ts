@@ -4,16 +4,22 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
-import { DesktopDaemonService, daemonRuntimeLayout, nodeRuntimeFileSystem, profileRuntimeDirectory, stageDaemonRuntime, type RuntimeFileSystem } from "./daemon-service.js"
+import { DesktopDaemonService, daemonRuntimeLayout, nodeRuntimeFileSystem, prepareDaemonRuntime, profileRuntimeDirectory, stageDaemonRuntime, type RuntimeFileSystem } from "./daemon-service.js"
 import { DesktopDaemon } from "./desktop-daemon.js"
 
 const runtime = { nodePath: "/Users/dana/.domovoi/runtime/0.9.4/node/bin/node", daemonEntryPath: "/Users/dana/.domovoi/runtime/0.9.4/daemon/dist/index.js" }
+// Round 4 (P2): staging leaves an inert copy; the service calls publish it
+// under their lease. The spies are separate from the call order above.
+const stagedRuntime = { nodePath: "/Users/dana/.domovoi/runtime/.0.9.4.staging-1/node/bin/node", daemonEntryPath: "/Users/dana/.domovoi/runtime/.0.9.4.staging-1/daemon/dist/index.js" }
+function staged() {
+  return { runtime, staged: stagedRuntime, publish: vi.fn(async () => {}), discard: vi.fn(async () => {}) }
+}
 const attachedToService = { kind: "attached" as const, owner: "daemon" as const, url: "ws://127.0.0.1:47831/rpc", token: "t" }
 
 function harness(overrides: Partial<ConstructorParameters<typeof DesktopDaemonService>[0]> = {}) {
   const calls: string[] = []
   const deps = {
-    stageRuntime: vi.fn(async () => { calls.push("stage"); return runtime }),
+    stageRuntime: vi.fn(async () => { calls.push("stage"); return staged() }),
     install: vi.fn(async (options: { releaseInAppDaemon?: () => Promise<void> }) => { calls.push("checks"); await options.releaseInAppDaemon?.(); calls.push("install"); return { kind: "file" as const, path: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/Users/dana/.domovoi/service.json" } }),
     status: vi.fn(async () => ({ installed: true, running: true, detail: "pid 48213" })),
     profile: vi.fn(async (): Promise<{ app: string; service: string } | undefined> => undefined),
@@ -32,6 +38,31 @@ function harness(overrides: Partial<ConstructorParameters<typeof DesktopDaemonSe
   }
   return { service: new DesktopDaemonService(deps), deps, calls }
 }
+
+// Security review round 4 of #577 (P2): the staged copy stays inert. The
+// service calls get it with a publish step they run under their lease, after
+// the profile check; this side never publishes, and discards what was not.
+describe("DesktopDaemonService hands over an inert staged runtime", () => {
+  it("passes the staged copy and its publish step to install and update, and discards it after", async () => {
+    for (const action of ["install", "update"] as const) {
+      const copy = staged()
+      const { service, deps } = harness({ stageRuntime: vi.fn(async () => copy) })
+      await service[action]()
+      expect(deps[action], action).toHaveBeenCalledWith(expect.objectContaining({ runtime, staged: { runtime: stagedRuntime, publish: copy.publish } }))
+      expect(copy.publish, action).not.toHaveBeenCalled()
+      expect(copy.discard, action).toHaveBeenCalledOnce()
+    }
+  })
+
+  it("discards the staged copy when the service call refuses, with nothing published", async () => {
+    const words = "This app's daemon uses the profile at /Users/dana/profiles/work, and the login service uses the profile at /Users/dana/.domovoi."
+    const copy = staged()
+    const { service } = harness({ stageRuntime: vi.fn(async () => copy), install: vi.fn(async () => { throw Object.assign(new Error(words), { name: "ServiceProfileMismatchError" }) }) })
+    await expect(service.install()).resolves.toEqual({ ok: false, reason: "refused", message: words })
+    expect(copy.publish).not.toHaveBeenCalled()
+    expect(copy.discard).toHaveBeenCalledOnce()
+  })
+})
 
 // Security review of #577 (P1): the turn check and the fence go through the
 // daemon this app reaches, while install, remove and update act on the login
@@ -297,7 +328,7 @@ describe("updating the service in place", () => {
   it("stages the runtime, updates the service while holding reconnects, then attaches to it", async () => {
     const { service, deps, calls } = harness()
     await expect(service.update()).resolves.toEqual({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/Users/dana/.domovoi/service.json", daemonRunning: true })
-    expect(deps.update).toHaveBeenCalledWith({ runtime })
+    expect(deps.update).toHaveBeenCalledWith({ runtime, staged: { runtime: stagedRuntime, publish: expect.any(Function) } })
     // Owner ruling 2026-09-26 (#577, A): the daemon's fence, taken right
     // before the service restarts, as install and remove take it.
     expect(calls).toEqual(["fence", "stage", "hold", "update", "attach", "unfence", "release"])
@@ -402,7 +433,7 @@ describe("a renderer reconnect during the handoff", () => {
     await daemon.acquire()
     let reconnect: Promise<unknown> | undefined
     const service = new DesktopDaemonService({
-      stageRuntime: async () => runtime,
+      stageRuntime: async () => staged(),
       update: async () => { throw new Error("not in this test") },
       install: async (options) => {
         await options.releaseInAppDaemon?.()
@@ -686,6 +717,51 @@ describe("staging the shipped runtime under the profile", () => {
     await withScratch(async ({ resources, home }) => {
       await expect(stageDaemonRuntime({ resourcesPath: resources, home, profileDirectory: "profiles/work", version: "0.9.4", platform, fileSystem: nodeRuntimeFileSystem() } as Parameters<typeof stageDaemonRuntime>[0]))
         .rejects.toThrow("The profile directory profiles/work is not an absolute path, so no runtime was copied.")
+      expect(await entries(home)).toEqual([])
+    })
+  })
+
+  // Round 4 (P2): preparing copies into a hidden staging directory only. The
+  // version path changes on publish, and a discard leaves it as it was.
+  it("leaves the version path as it was until publish, and removes the staging copy on discard", async () => {
+    await withScratch(async ({ resources, home }) => {
+      const earlier = join(home, ".domovoi", "runtime", "0.9.4")
+      await mkdir(join(earlier, "daemon", "dist"), { recursive: true })
+      await writeFile(join(earlier, "daemon", "dist", "index.js"), "earlier")
+      const prepared = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, fileSystem: nodeRuntimeFileSystem() })
+      expect(prepared.runtime).toEqual(daemonRuntimeLayoutUnder(earlier))
+      expect(await readFile(prepared.staged.daemonEntryPath, "utf8")).toBe("daemon")
+      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
+      await prepared.discard()
+      expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual(["0.9.4"])
+      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("earlier")
+
+      const published = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, fileSystem: nodeRuntimeFileSystem() })
+      await published.publish()
+      await published.discard()
+      expect(await readFile(join(earlier, "daemon", "dist", "index.js"), "utf8")).toBe("daemon")
+      expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual(["0.9.4"])
+    })
+  })
+
+  // Round 4 (P2): the runtime directory swapped for a link to another
+  // profile's while the copy runs. Nothing is published there, and that
+  // profile's copy of the same version is left as it was.
+  it("refuses to publish when the runtime directory is swapped for a link during the copy", async () => {
+    await withScratch(async ({ root, resources, home }) => {
+      const profile = join(root, "profiles", "work")
+      const otherRuntime = join(root, "profiles", "other", "runtime")
+      await mkdir(profile, { recursive: true })
+      await mkdir(join(otherRuntime, "0.9.4", "daemon", "dist"), { recursive: true })
+      await writeFile(join(otherRuntime, "0.9.4", "daemon", "dist", "index.js"), "the other profile's copy")
+      const copy = async (from: string, to: string) => {
+        await rename(join(profile, "runtime"), join(profile, "runtime-moved"))
+        await symlink(otherRuntime, join(profile, "runtime"), directoryLink)
+        await nodeRuntimeFileSystem().copy(from, to)
+      }
+      await expect(stageDaemonRuntime({ resourcesPath: resources, profileDirectory: profile, version: "0.9.4", platform, fileSystem: nodeRuntimeFileSystem({ copy }) }))
+        .rejects.toThrow(`${join(profile, "runtime")} changed while the runtime was copied, so it was not published.`)
+      expect(await readFile(join(otherRuntime, "0.9.4", "daemon", "dist", "index.js"), "utf8")).toBe("the other profile's copy")
       expect(await entries(home)).toEqual([])
     })
   })

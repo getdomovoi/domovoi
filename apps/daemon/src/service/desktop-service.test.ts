@@ -997,4 +997,26 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
       expect(effects.write, label).not.toHaveBeenCalled()
     }
   })
+
+  // Security review round 4 of #577 (P2): the desktop hands over an inert
+  // staged copy and a publish step. The install checks the staged files,
+  // then publishes only under the service-operation lease, after every
+  // profile check and before the handoff.
+  it("publishes the staged runtime only after the profile checks, under the lease, before the handoff", async () => {
+    const order: string[] = []
+    const staged = { nodePath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/node/bin/node", daemonEntryPath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/daemon/dist/index.js" }
+    const publish = vi.fn(async () => { order.push("publish") })
+    const effects = dependencies({
+      exists: noDefinition, capture: launchd(),
+      claimServiceOperation: vi.fn(() => { order.push("lease"); return { release: vi.fn() } }),
+      runtimeFile: vi.fn(async (path: string) => { order.push(`check ${path === staged.nodePath || path === staged.daemonEntryPath ? "staged" : "published"}`); return "file" as const }),
+    })
+    await installDaemonService({ runtime, staged: { runtime: staged, publish }, environment: {}, releaseInAppDaemon: async () => { order.push("handoff") } }, effects)
+    expect(order).toEqual(["check staged", "check staged", "lease", "publish", "check published", "check published", "handoff"])
+
+    const refused = dependencies({ registeredProfile: vi.fn(() => ({ profileDirectory: "/Users/dl/profiles/other" })) })
+    const notPublished = vi.fn(async () => {})
+    await expect(installDaemonService({ runtime, staged: { runtime: staged, publish: notPublished }, environment: {} }, refused)).rejects.toBeInstanceOf(ServiceProfileMismatchError)
+    expect(notPublished).not.toHaveBeenCalled()
+  })
 })

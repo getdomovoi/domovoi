@@ -38,6 +38,7 @@ export {
   type DaemonServiceOptions,
   type DaemonServiceRemovalResult,
   type DaemonServiceRuntime,
+  type DaemonServiceStagedRuntime,
   type DaemonServiceStatus,
   type DaemonServiceUpdateOptions,
   type DaemonServiceUpdateOutcome,

@@ -1487,4 +1487,20 @@ describe("updateDaemonService for the caller's profile", () => {
     const effects = fake("darwin", "/Users/dl")
     await expect(updateDaemonService({ runtime, environment: {} }, effects)).resolves.toMatchObject({ kind: "file" })
   })
+
+  // Security review round 4 of #577 (P2): the staged copy is published only
+  // after the profile check under the lease, before any manager action.
+  it("publishes the staged runtime only after the profile check, before any manager action", async () => {
+    const staged = { nodePath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/node/bin/node", daemonEntryPath: "/Users/dl/.domovoi/runtime/.0.9.4.staging-1/daemon/dist/index.js" }
+    const effects = fake("darwin", "/Users/dl")
+    const publish = vi.fn(async () => { effects.order.push("publish") })
+    await updateDaemonService({ runtime, staged: { runtime: staged, publish }, environment: {} }, effects)
+    expect(effects.order[0]).toBe("publish")
+
+    const refused = fake("darwin", "/Users/dl")
+    const notPublished = vi.fn(async () => {})
+    await expect(updateDaemonService({ runtime, staged: { runtime: staged, publish: notPublished }, environment: { DOMOVOI_PROFILE_DIR: "/Users/dl/profiles/work" } }, refused)).rejects.toMatchObject({ outcome: "nothing-changed" })
+    expect(notPublished).not.toHaveBeenCalled()
+    expect(refused.order).toEqual([])
+  })
 })

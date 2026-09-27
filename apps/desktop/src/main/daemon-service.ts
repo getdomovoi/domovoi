@@ -1,4 +1,4 @@
-import type { DaemonServiceInstallResult, DaemonServiceOptions, DaemonServiceRemovalResult, DaemonServiceRuntime, DaemonServiceStatus } from "@getdomovoi/daemon"
+import type { DaemonServiceInstallResult, DaemonServiceOptions, DaemonServiceRemovalResult, DaemonServiceRuntime, DaemonServiceStagedRuntime, DaemonServiceStatus } from "@getdomovoi/daemon"
 import { publishFileDurably } from "@getdomovoi/credential-store"
 import { randomUUID } from "node:crypto"
 import { cp, lstat, mkdir, readdir, readlink, realpath, rm } from "node:fs/promises"
@@ -83,13 +83,13 @@ export type ServiceHandoffFence = { refusal: string } | { release: () => void }
 export type DesktopDaemonServiceDependencies = {
   // Copies the shipped runtime under the profile and names the copy, or
   // throws DaemonServiceRuntimeMissingError naming the part that is not there.
-  stageRuntime: (operation: "install" | "update") => Promise<DaemonServiceRuntime>
+  stageRuntime: (operation: "install" | "update") => Promise<PreparedDaemonRuntime>
   install: (options: DaemonServiceOptions) => Promise<DaemonServiceInstallResult>
   status: () => Promise<DaemonServiceStatus>
   remove: () => Promise<DaemonServiceRemovalResult>
   // Moves the installed service to the staged runtime in place (ruled
   // 2026-09-23, B). Throws the daemon's DaemonServiceUpdateError on failure.
-  update: (options: { runtime: DaemonServiceRuntime }) => Promise<DaemonServiceInstallResult>
+  update: (options: { runtime: DaemonServiceRuntime; staged: DaemonServiceStagedRuntime }) => Promise<DaemonServiceInstallResult>
   // Security review of #577 (P1): the profile this app's daemon runs against
   // the one the login service runs, both directories when they differ. The
   // turn check and the fence below reach only this app's daemon, so they bind
@@ -171,6 +171,8 @@ export type RuntimeFileSystem = {
   copy(from: string, to: string): Promise<void>
   remove(path: string): Promise<void>
   rename(from: string, to: string): Promise<void>
+  // Device and inode of the entry itself, never through a link.
+  identity(path: string): Promise<string>
 }
 
 export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}): RuntimeFileSystem {
@@ -198,6 +200,10 @@ export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}
     remove: (path) => rm(path, { recursive: true, force: true }),
     // Each rename is followed by a flush of the directory that holds it.
     rename: (from, to) => publishFileDurably(from, to),
+    identity: async (path) => {
+      const found = await lstat(path, { bigint: true })
+      return `${found.dev}:${found.ino}`
+    },
     ...overrides,
   }
 }
@@ -267,17 +273,37 @@ async function runtimeRoot(fs: RuntimeFileSystem, pathApi: typeof posix, profile
 // The copy under the profile outlives app updates and moves; the service
 // points at it, never into the app bundle. The shipped runtime and the
 // profile's runtime directory are checked before any byte is copied, so a
-// half-shipped app or a redirected profile installs nothing. The copy is made
-// in a fresh directory beside the destination. An earlier copy of the same
-// version is moved aside, the new one renamed into place, and only then the
-// earlier one deleted.
+// half-shipped app or a redirected profile installs nothing.
+//
+// Security review round 4 of #577 (P2): preparing copies into a fresh hidden
+// directory beside the destination and changes nothing else. The service
+// calls publish it only under their lease, after the profile check; a copy
+// never published is discarded. Publishing moves an earlier copy of the same
+// version aside, renames the new one into place, and only then deletes the
+// earlier one.
 //
 // Security review round 2: a durable rename moves, then flushes the directory,
-// and the flush can throw after the move is done. The rule: a staging that
+// and the flush can throw after the move is done. The rule: a publish that
 // reports failure leaves the version path as it was before, with the earlier
 // copy there or nothing there. What moved is read back from the disk, never
 // inferred from which call threw.
-export async function stageDaemonRuntime(input: {
+//
+// Round 4 (P2): the runtime directory is pinned by its device, inode and real
+// path when it is checked. Right after the copy and before every rename or
+// removal, it must still be that directory and the profile directory still a
+// directory; otherwise nothing more is written. Limit: Node has no calls
+// relative to an open directory, so a swap between that check and the call
+// right after it is not caught, and a swap during the copy can leave the
+// hidden staging directory under the swapped-in path.
+export type PreparedDaemonRuntime = {
+  // Where the published copy will be, and where the inert copy is now.
+  runtime: DaemonServiceRuntime
+  staged: DaemonServiceRuntime
+  publish: () => Promise<void>
+  discard: () => Promise<void>
+}
+
+type StageInput = {
   resourcesPath: string
   // The profile the selected service runs: DOMOVOI_PROFILE_DIR, or ~/.domovoi.
   profileDirectory: string
@@ -286,55 +312,89 @@ export async function stageDaemonRuntime(input: {
   fileSystem: RuntimeFileSystem
   // The words for a missing part follow what was asked (approved 2026-09-23).
   operation?: "install" | "update"
-}): Promise<DaemonServiceRuntime> {
-  const fs = input.fileSystem
+}
+
+export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedDaemonRuntime> {
   const pathApi = input.platform === "win32" ? win32 : posix
   if (!pathApi.isAbsolute(input.profileDirectory)) {
     throw new Error(`The profile directory ${input.profileDirectory} is not an absolute path, so no runtime was copied.`)
   }
   const destination = profileRuntimeDirectory(input.profileDirectory, input.version, input.platform)
   const shippedRoot = pathApi.join(input.resourcesPath, runtimeDirectory)
-  await checkShippedRuntime(fs, pathApi, shippedRoot, input.platform, input.operation ?? "install")
-  // Stated limit, ruled by fetzy on 2026-09-25: the checks above hold against
-  // a profile that is already redirected, not against a process running as
-  // the same user that swaps ~/.domovoi or its runtime directory for a link
-  // between these checks and the copy. Such a process already acts as the
-  // person, so it is outside the threat model (as with the build-machine
-  // ruling on #577).
-  const root = await runtimeRoot(fs, pathApi, input.profileDirectory)
-  const earlier = await fs.entry(destination)
-  if (earlier !== "missing" && earlier !== "directory") {
-    throw new Error(`${destination} is not a directory (it may be a link), so no runtime was copied there.`)
+  await checkShippedRuntime(input.fileSystem, pathApi, shippedRoot, input.platform, input.operation ?? "install")
+  const root = await runtimeRoot(input.fileSystem, pathApi, input.profileDirectory)
+  const pinned = { identity: await input.fileSystem.identity(root), realpath: await input.fileSystem.realpath(root) }
+  const samePath = (left: string, right: string) => input.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right
+  const unchanged = async () => {
+    const intact = await input.fileSystem.entry(input.profileDirectory) === "directory"
+      && await input.fileSystem.entry(root) === "directory"
+      && await input.fileSystem.identity(root) === pinned.identity
+      && samePath(await input.fileSystem.realpath(root), pinned.realpath)
+    if (!intact) throw new Error(`${root} changed while the runtime was copied, so it was not published.`)
+  }
+  // Every write after the check goes through this: renames and removals only
+  // while the runtime directory is still the one checked.
+  const fs: RuntimeFileSystem = {
+    ...input.fileSystem,
+    rename: async (from, to) => { await unchanged(); await input.fileSystem.rename(from, to) },
+    remove: async (path) => { await unchanged(); await input.fileSystem.remove(path) },
   }
   const staging = pathApi.join(root, `.${input.version}.staging-${randomUUID()}`)
-  const aside = pathApi.join(root, `.${input.version}.previous-${randomUUID()}`)
-  const failed = pathApi.join(root, `.${input.version}.failed-${randomUUID()}`)
-  // Whether the move aside is known to have happened: its call returned.
-  let asideMoved = false
+  const layout = (at: string): DaemonServiceRuntime => ({
+    nodePath: input.platform === "win32" ? pathApi.join(at, "node", "node.exe") : pathApi.join(at, "node", "bin", "node"),
+    daemonEntryPath: pathApi.join(at, "daemon", "dist", "index.js"),
+  })
+  let settled = false
+  // Cleanup only: a staging directory left behind is disk space. Its failure
+  // must not replace the publish's own error, nor turn a completed publish
+  // into a reported failure.
+  const discard = async () => { settled = true; await fs.remove(staging).catch(() => {}) }
   try {
-    await fs.copy(shippedRoot, staging)
-    if (earlier === "directory") {
-      await fs.rename(destination, aside)
-      asideMoved = true
-    }
-    await fs.rename(staging, destination)
+    await unchanged()
+    await input.fileSystem.copy(shippedRoot, staging)
+    await unchanged()
   } catch (cause) {
-    await restoreVersionPath(fs, { destination, aside, failed, hadEarlier: earlier === "directory", asideMoved })
+    await discard()
     throw cause
-  } finally {
-    // Cleanup only: a staging directory left behind is disk space. Its
-    // failure must not replace the publish's own error, nor turn a completed
-    // publish into a reported failure.
-    await fs.remove(staging).catch(() => {})
   }
-  if (earlier === "directory") {
+  const publish = async () => {
+    if (settled) throw new Error("This staged runtime was already published or discarded.")
+    settled = true
+    const earlier = await fs.entry(destination)
+    if (earlier !== "missing" && earlier !== "directory") {
+      throw new Error(`${destination} is not a directory (it may be a link), so no runtime was copied there.`)
+    }
+    const aside = pathApi.join(root, `.${input.version}.previous-${randomUUID()}`)
+    const failed = pathApi.join(root, `.${input.version}.failed-${randomUUID()}`)
+    // Whether the move aside is known to have happened: its call returned.
+    let asideMoved = false
+    try {
+      if (earlier === "directory") {
+        await fs.rename(destination, aside)
+        asideMoved = true
+      }
+      await fs.rename(staging, destination)
+    } catch (cause) {
+      await restoreVersionPath(fs, { destination, aside, failed, hadEarlier: earlier === "directory", asideMoved })
+      throw cause
+    } finally {
+      await fs.remove(staging).catch(() => {})
+    }
     // The new copy is in place. An earlier copy left behind here is only
     // disk space, never something the service runs.
-    await fs.remove(aside).catch(() => {})
+    if (earlier === "directory") await fs.remove(aside).catch(() => {})
   }
-  return {
-    nodePath: input.platform === "win32" ? pathApi.join(destination, "node", "node.exe") : pathApi.join(destination, "node", "bin", "node"),
-    daemonEntryPath: pathApi.join(destination, "daemon", "dist", "index.js"),
+  return { runtime: layout(destination), staged: layout(staging), publish, discard: async () => { if (!settled) await discard() } }
+}
+
+// Prepare and publish at once, for callers with no lease to publish under.
+export async function stageDaemonRuntime(input: StageInput): Promise<DaemonServiceRuntime> {
+  const prepared = await prepareDaemonRuntime(input)
+  try {
+    await prepared.publish()
+    return prepared.runtime
+  } finally {
+    await prepared.discard()
   }
 }
 
@@ -405,14 +465,16 @@ export class DesktopDaemonService {
     this.#busy = true
     let released = false
     let fence: { release: () => void } | undefined
+    let prepared: PreparedDaemonRuntime | undefined
     try {
       const refused = (await this.#profileRefusal()) ?? (await this.#refusal())
       if (refused) return refused
       let installed: DaemonServiceInstallResult
       try {
-        const runtime = await this.deps.stageRuntime("install")
+        prepared = await this.deps.stageRuntime("install")
         installed = await this.deps.install({
-          runtime,
+          runtime: prepared.runtime,
+          staged: { runtime: prepared.staged, publish: prepared.publish },
           releaseInAppDaemon: async () => {
             const held = await this.#fence()
             if (!("release" in held)) throw new HandoffNotFenced(held)
@@ -456,6 +518,8 @@ export class DesktopDaemonService {
       }
       return { ok: true, kind: installed.kind, target, configurationPath: installed.configurationPath, daemonRunning: true }
     } finally {
+      // A staged copy the service call did not publish changes nothing.
+      await prepared?.discard()
       fence?.release()
       if (released) this.deps.daemon.endHandoff()
       this.#busy = false
@@ -507,6 +571,7 @@ export class DesktopDaemonService {
     this.#busy = true
     let held = false
     let fence: { release: () => void } | undefined
+    let prepared: PreparedDaemonRuntime | undefined
     try {
       const refused = (await this.#profileRefusal()) ?? (await this.#refusal())
       if (refused) return refused
@@ -520,10 +585,10 @@ export class DesktopDaemonService {
       fence = fenced
       let updated: DaemonServiceInstallResult
       try {
-        const runtime = await this.deps.stageRuntime("update")
+        prepared = await this.deps.stageRuntime("update")
         held = true
         this.deps.daemon.beginHandoff()
-        updated = await this.deps.update({ runtime })
+        updated = await this.deps.update({ runtime: prepared.runtime, staged: { runtime: prepared.staged, publish: prepared.publish } })
       } catch (cause) {
         const missing = runtimeMissing(cause)
         if (missing) return { ok: false, reason: "runtime-missing", ...missing }
@@ -548,6 +613,7 @@ export class DesktopDaemonService {
       }
       return { ok: true, kind: updated.kind, target, configurationPath: updated.configurationPath, daemonRunning: true }
     } finally {
+      await prepared?.discard()
       fence?.release()
       if (held) this.deps.daemon.endHandoff()
       this.#busy = false
