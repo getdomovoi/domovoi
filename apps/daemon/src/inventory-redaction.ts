@@ -594,6 +594,8 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     return ends[value]!
   }
 
+  // Flags found after a scheme word, hidden whole once every rule has read them.
+  const flagsAfterScheme: Array<{ token: number; from: number; to: number }> = []
   const schemeAt = (index: number, token: number): number | undefined => {
     if (index > 0 && !/[\s"'`(=:,{[]/u.test(joined[index - 1]!)) return undefined
     scheme.lastIndex = index
@@ -607,8 +609,18 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     if (value !== token) end = ends[value]!
     else while (end < ends[value]! && !/[\s"'`,;)]/u.test(joined[end]!)) end += 1
     const text = joined.slice(start, end)
-    const keep = text === "" || text === marker || text.startsWith("-") || schemeProse.has(text.toLowerCase().replace(/[.,;:!?]+$/u, ""))
-    if (!keep) change(value, start, end, marker)
+    // A flag after a scheme is read by every rule for its own value, then
+    // hidden whole: the protocol backstop takes any word after a scheme as
+    // its credential, a flag too. `Bearer --token x` reads `Bearer
+    // [REDACTED] [REDACTED]`.
+    if (text.startsWith("-")) {
+      flagsAfterScheme.push({ token: value, from: start, to: end })
+      return start
+    }
+    // A value kept (a word of prose) is still read from its start by every
+    // rule, so a scheme word kept as prose is read as a scheme too.
+    if (text === "" || text === marker || schemeProse.has(text.toLowerCase().replace(/[.,;:!?]+$/u, ""))) return start
+    change(value, start, end, marker)
     return end
   }
 
@@ -626,6 +638,15 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     }
     index = (joined.startsWith("-----BEGIN ", index) ? privateKeyAt(index, token) : undefined)
       ?? urlAt(index, token) ?? headerAt(index) ?? pairAt(index, token) ?? schemeAt(index, token) ?? index + 1
+  }
+  // A change a rule made inside such a flag (`--token=[REDACTED]`) is taken
+  // into the marker that hides it; one in another word (the flag's value)
+  // stands.
+  for (const { token, from, to } of flagsAfterScheme) {
+    const offset = starts[token]!
+    const inside = changes[token]!.filter(({ start, end }) => end > from - offset && start < to - offset)
+    changes[token] = changes[token]!.filter((item) => !inside.includes(item))
+    change(token, Math.min(from, ...inside.map(({ start }) => start + offset)), Math.max(to, ...inside.map(({ end }) => end + offset)), marker)
   }
 
   const values = tokens.map((token, index) => {
