@@ -359,7 +359,7 @@ describe("updating the service in place", () => {
     const error = new DaemonServiceUpdateError("runtime-copied", new Error("The Node runtime this app ships was not found at /home/dana/.domovoi/runtime/0.9.4/0123456789ab/node/bin/node"), undefined, "/home/dana/.domovoi/runtime/0.9.4/0123456789ab")
     const { service } = harness({ update: vi.fn(async () => { throw error }) })
     await expect(service.update()).resolves.toEqual({ ok: false, reason: "update-failed", message: error.message })
-    expect(error.message).toBe("Domovoi could not update the service: The Node runtime this app ships was not found at /home/dana/.domovoi/runtime/0.9.4/0123456789ab/node/bin/node. The new runtime was copied to /home/dana/.domovoi/runtime/0.9.4/0123456789ab, but the service was left as it was and still runs the previous runtime.")
+    expect(error.message).toBe("Domovoi could not update the service: The Node runtime this app ships was not found at /home/dana/.domovoi/runtime/0.9.4/0123456789ab/node/bin/node. The new runtime was copied to /home/dana/.domovoi/runtime/0.9.4/0123456789ab, but the service was left as it was, set to run the previous runtime.")
   })
 
   it("reports a missing shipped runtime without changing the service", async () => {

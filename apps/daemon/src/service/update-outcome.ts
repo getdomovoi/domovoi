@@ -22,7 +22,8 @@ export type DaemonServiceUpdateOutcome =
   // Ruled 2026-09-26 (#577, Q64 A): the new runtime was published, then failed
   // its check before anything about the service changed (systemd, and a WSL
   // guest, whose publish comes first). The copy stays; the service does not
-  // change.
+  // change. Ruled 2026-09-27 (Q73 B): the words say the service is set to run
+  // the previous runtime, not that it runs, since it may have been stopped.
   | "runtime-copied"
   | "swap-failed-restored"
   | "swap-and-restore-failed"
@@ -42,7 +43,7 @@ function updateMessage(outcome: DaemonServiceUpdateOutcome, cause: unknown, rest
     case "nothing-changed":
       return `Domovoi could not update the service: ${detail(cause)}. Nothing was changed, and the service was left as it was.`
     case "runtime-copied":
-      return `Domovoi could not update the service: ${detail(cause)}. The new runtime was copied to ${String(copy)}, but the service was left as it was and still runs the previous runtime.`
+      return `Domovoi could not update the service: ${detail(cause)}. The new runtime was copied to ${String(copy)}, but the service was left as it was, set to run the previous runtime.`
     case "swap-failed-restored":
       return `Domovoi could not start the service on the new runtime: ${detail(cause)}. The previous service was put back and is running.`
     case "swap-and-restore-failed":

@@ -1642,7 +1642,7 @@ describe("updateDaemonService after a completed publish whose runtime fails its 
     const publish = vi.fn(async () => { effects.order.push("publish"); state.published = true })
     return { runtime: staged, publish }
   }
-  const copied = `Domovoi could not update the service: The Node runtime this app ships was not found at ${published.nodePath}. The service was not updated and no service files were changed. The new runtime was copied to ${copy}, but the service was left as it was and still runs the previous runtime.`
+  const copied = `Domovoi could not update the service: The Node runtime this app ships was not found at ${published.nodePath}. The service was not updated and no service files were changed. The new runtime was copied to ${copy}, but the service was left as it was, set to run the previous runtime.`
 
   it("says the runtime was copied and the systemd service left as it was, writing and restarting nothing", async () => {
     const effects = fake("linux", "/home/dl")
@@ -1708,7 +1708,7 @@ describe("updateDaemonService when the deadline expires around the publish (roun
   const staged = { nodePath: "/stage/node/bin/node", daemonEntryPath: "/stage/daemon/dist/index.js" }
   const copy = "/home/dl/.domovoi/runtime/0.9.4/0123456789ab"
   const published = { nodePath: `${copy}/node/bin/node`, daemonEntryPath: `${copy}/daemon/dist/index.js` }
-  const timedOut = `Domovoi could not update the service: The operation exceeded its deadline. The new runtime was copied to ${copy}, but the service was left as it was and still runs the previous runtime.`
+  const timedOut = `Domovoi could not update the service: The operation exceeded its deadline. The new runtime was copied to ${copy}, but the service was left as it was, set to run the previous runtime.`
   const wsl = (): ServiceConfiguration => ({
     ...saved("linux", "/home/dl"),
     wsl: {

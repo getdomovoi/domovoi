@@ -270,8 +270,9 @@ export async function updateDaemonService(
     if (dependencies.platform === "linux" && saved.wsl) {
       const steps = await prepareWslUpdate(saved, options.runtime, tracked.effects, waits, tracked.inFlight)(readDeadline)
       // Round 11 (P2): an update that resumes an interrupted one may find no
-      // task running, so there the publish is not the first change and
-      // "runtime-copied" would claim a running service. It runs under the
+      // task registered, so there the publish is not the first change and
+      // "runtime-copied" would say a service is set to run the previous
+      // runtime when none is. It runs under the
       // deadline, as launchd's does, and a failure is a failed swap: the
       // previous task is registered, started and must report ready.
       const publishStep = (deadline: OperationDeadline) => steps.resuming
