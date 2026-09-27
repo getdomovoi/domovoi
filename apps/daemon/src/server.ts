@@ -10696,30 +10696,29 @@ export class DomovoiDaemon {
   //
   // Issue #632: the journal is read a bounded number of rows at a time, and
   // each pass is finished, saved and cleared before the next is read, so no
-  // length of journal holds more than one pass in memory. Every pass runs
-  // here, before the listener opens. Which stops count as already recorded is
-  // read from the thread once, before the first pass writes a line, and the
-  // lines written are remembered across passes: rows that name the same stop
-  // act the same whether one pass or two read them.
+  // pass holds more than its own rows. Every pass runs here, before the
+  // listener opens. Rows that name the same stop act the same whether one
+  // pass or two read them, and whether or not a startup ended between the
+  // two (review round 1 of #641): the journal lists the stops this recovery
+  // has acted on until every pass is done, and a line of a listed stop does
+  // not count as its record. Nothing is carried from pass to pass in memory
+  // but where the next pass starts.
   #recoverEmergencyStops(): void {
     const journal = this.#store.emergencyStops
     if (!journal) return
-    let recorded: Set<string> | undefined
-    const written = new Set<string>()
     let after: bigint | undefined
     do {
       const pass = journal.pending(after)
-      recorded = this.#recoverEmergencyStopPass(journal, pass, recorded, written)
+      this.#recoverEmergencyStopPass(journal, pass)
       after = pass.next
     } while (after !== undefined)
+    journal.finishRecovery()
   }
 
   #recoverEmergencyStopPass(
     journal: SqliteEmergencyStopIntents,
     { intents: entries, partial, overflow, setAside }: ReturnType<SqliteEmergencyStopIntents["pending"]>,
-    known: Set<string> | undefined,
-    written: Set<string>,
-  ): Set<string> | undefined {
+  ): void {
     for (const { key, reason } of setAside) {
       this.#reportError("Domovoi set aside an unreadable emergency stop intent", new Error(`${key}: ${reason}`))
     }
@@ -10729,25 +10728,34 @@ export class DomovoiDaemon {
     for (const { key, reason } of overflow) {
       this.#reportError("Domovoi kept an emergency stop intent it could not finish whole", new Error(`${key}: ${reason}`))
     }
-    if (entries.length === 0) return known
+    if (entries.length === 0) return
     const candidate = structuredClone(this.#snapshot)
     // One pass over the thread and the sessions, however many stop ids the
-    // journal names (round 6): the stops already recorded, by the detail a
-    // completed stop writes or the line id a restart writes.
-    const recorded = known ?? new Set<string>()
-    if (known === undefined) {
-      for (const item of candidate.thread) {
-        if (item.kind !== "system") continue
-        const stopId = /^(stop-[0-9a-f-]{36}):/.exec(item.detail ?? "")?.[1] ?? /^system-(stop-[0-9a-f-]{36})-/.exec(item.id)?.[1]
-        if (stopId !== undefined) recorded.add(stopId)
-      }
+    // pass names (round 6): which of its stops have a line, by the detail a
+    // completed stop writes or the line id a restart writes, and the restart
+    // lines already there. Only the stops of this pass are kept.
+    const named = new Set(entries.map(({ intent }) => intent.stopId))
+    const onThread = new Set<string>()
+    const lines = new Set<string>()
+    for (const item of candidate.thread) {
+      if (item.kind !== "system") continue
+      const restartLine = /^system-(stop-[0-9a-f-]{36})-/.exec(item.id)?.[1]
+      const stopId = /^(stop-[0-9a-f-]{36}):/.exec(item.detail ?? "")?.[1] ?? restartLine
+      if (stopId !== undefined && named.has(stopId)) onThread.add(stopId)
+      if (restartLine !== undefined && named.has(restartLine)) lines.add(item.id)
     }
+    // A line counts as the stop's record unless this recovery, in this
+    // startup or one that ended before it finished, wrote it.
+    const ours = journal.recovering(onThread)
+    const recorded = new Set([...onThread].filter((stopId) => !ours.has(stopId)))
+    const acted = new Set<string>()
     const sessions = new Map(candidate.sessions.map((session) => [session.id, session]))
     // Only the thread says a stop is finished (round 7). Rows that name the
-    // same stop each act on what they hold; a line already written in this
-    // startup is not written again.
+    // same stop each act on what they hold; a line already on the thread is
+    // not written again.
     for (const { intent } of entries) {
       if (recorded.has(intent.stopId)) continue
+      acted.add(intent.stopId)
       for (const dispatch of intent.inFlight) {
         // An archived or other read-only session holds no dispatch, and its
         // state is its record (round 8): it is left as it is.
@@ -10766,8 +10774,8 @@ export class DomovoiDaemon {
         for (const sessionId of intent.sessionIds) {
           const session = sessions.get(sessionId)
           const id = `system-${intent.stopId}-${client}-${sessionId}`
-          if (!session || sessionIsReadOnly(session) || written.has(id)) continue
-          written.add(id)
+          if (!session || sessionIsReadOnly(session) || lines.has(id)) continue
+          lines.add(id)
           candidate.thread.push({
             id,
             sessionId,
@@ -10779,13 +10787,15 @@ export class DomovoiDaemon {
       }
     }
     workspaceSnapshotSchema.parse(candidate)
+    // Listed before the save, so no saved line of a stop acted on here is
+    // ever read as its record while this recovery is unfinished.
+    journal.markRecovering(acted)
     this.#store.save(candidate)
     this.#snapshot = candidate
     // A row kept for overflow stays in the journal, so it is reported again.
     // Rows are cleared by rowid: a key can name more than one row.
     const kept = new Set(entries.filter(({ keep }) => keep).map(({ row }) => row))
     for (const { row } of entries) if (!kept.has(row)) journal.clearRow(row)
-    return recorded
   }
 
   // `storedApprovalIds` names cards read from storage when startup resumes an

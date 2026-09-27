@@ -236,6 +236,7 @@ export class SqliteEmergencyStopIntents {
       stop_id TEXT PRIMARY KEY,
       record TEXT NOT NULL CHECK(length(CAST(record AS BLOB)) <= ${maximumEmergencyStopIntentBytes})
     )`)
+    database.exec("CREATE TABLE IF NOT EXISTS emergency_stop_recovery (stop_id TEXT PRIMARY KEY)")
   }
 
   begin(intent: EmergencyStopIntent): void {
@@ -302,6 +303,40 @@ export class SqliteEmergencyStopIntents {
   // Clears the one row a stop was read from, by its rowid.
   clearRow(row: bigint): void {
     this.#database.prepare("DELETE FROM emergency_stop_intents WHERE rowid = ?").run(row)
+  }
+
+  // How many rows the journal holds.
+  remaining(): number {
+    return Number((this.#database.prepare("SELECT count(*) AS rows FROM emergency_stop_intents").get() as { rows: number | bigint }).rows)
+  }
+
+  // Review round 1 of #641: a restart finishes the journal over several
+  // passes, each saved before the next, and can end between two of them. A
+  // line an earlier pass saved must then not read as the stop's own record,
+  // or a later row naming that stop is cleared without acting. So the stops
+  // a recovery acts on are written here before its save, and stay until the
+  // whole recovery is done, across restarts. `recovering` answers which of
+  // the given stops are listed.
+  markRecovering(stopIds: Iterable<string>): void {
+    this.#database.exec("BEGIN IMMEDIATE")
+    try {
+      const insert = this.#database.prepare("INSERT OR IGNORE INTO emergency_stop_recovery (stop_id) VALUES (?)")
+      for (const stopId of stopIds) insert.run(stopId)
+      this.#database.exec("COMMIT")
+    } catch (error) {
+      this.#database.exec("ROLLBACK")
+      throw error
+    }
+  }
+
+  recovering(stopIds: Iterable<string>): Set<string> {
+    const listed = this.#database.prepare("SELECT 1 FROM emergency_stop_recovery WHERE stop_id = ?")
+    return new Set([...stopIds].filter((stopId) => listed.get(stopId) !== undefined))
+  }
+
+  // The recovery is done: from here on its lines record their stops.
+  finishRecovery(): void {
+    this.#database.exec("DELETE FROM emergency_stop_recovery")
   }
 
   // Copies the row as stored to the quarantine table, and moves it there
