@@ -21,6 +21,7 @@ import {
   transferIdSchema,
 } from "./identifiers.js"
 import { skillEnablementReviewsSchema } from "./skills.js"
+import { approvalToolServerSchema } from "./tool-inventory.js"
 import { sessionTurnIdSchema } from "./usage-accounting.js"
 import { compatibleProtocolVersionSchema } from "./protocol-version.js"
 
@@ -533,7 +534,15 @@ export const approvalRequestSchema = z.object({
       "Inactive rule IDs must be unique",
     ),
   }).strict().optional(),
-})
+  // Set when the gated call is a tool from a tool server: the card names the
+  // server and the file that declared it.
+  toolServer: approvalToolServerSchema.optional(),
+}).strict().refine(
+  // Such a call gets Allow once and Deny, never Always (ruled 2026-09-26): a
+  // tool's arguments fit no execution record, so none may resolve to one.
+  (request) => request.toolServer === undefined || request.execution.state === "unresolved",
+  { path: ["toolServer"], message: "A tool server call cannot carry a resolved execution record" },
+)
 
 const approvalRuleCommonFields = {
   id: z.string().min(1),

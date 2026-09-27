@@ -64,6 +64,39 @@ describe("installShutdownHandlers", () => {
     expect(harnessInstance.exit).toHaveBeenCalledTimes(1)
   })
 
+  // Security review of #628: the daemon's stop finishes a running emergency
+  // stop's save, so a failed endpoint removal must not skip it.
+  it("still stops the daemon when the endpoint file cannot be removed, and reports each failure", async () => {
+    const harnessInstance = harness()
+    const removal = new Error("endpoint file is locked")
+    harnessInstance.removeEndpointFile.mockImplementationOnce(async () => { throw removal })
+
+    harnessInstance.events.emit("SIGTERM")
+    await settle()
+
+    expect(harnessInstance.stopDaemon).toHaveBeenCalledOnce()
+    expect(harnessInstance.writeStderr).toHaveBeenCalledWith(`domovoid shutdown failed: ${String(removal)}\n`)
+    expect(harnessInstance.exit).toHaveBeenCalledTimes(1)
+    expect(harnessInstance.exit).toHaveBeenCalledWith(1)
+  })
+
+  it("reports both failures when the endpoint removal and the daemon stop both fail", async () => {
+    const stopFailure = new Error("store will not close")
+    const harnessInstance = harness(vi.fn(async () => { throw stopFailure }))
+    const removal = new Error("endpoint file is locked")
+    harnessInstance.removeEndpointFile.mockImplementationOnce(async () => { throw removal })
+
+    harnessInstance.events.emit("SIGINT")
+    await settle()
+
+    expect(harnessInstance.writeStderr.mock.calls).toEqual([
+      [`domovoid shutdown failed: ${String(removal)}\n`],
+      [`domovoid shutdown failed: ${String(stopFailure)}\n`],
+    ])
+    expect(harnessInstance.exit).toHaveBeenCalledTimes(1)
+    expect(harnessInstance.exit).toHaveBeenCalledWith(1)
+  })
+
   it("logs unhandled rejections instead of crashing", async () => {
     const harnessInstance = harness()
 

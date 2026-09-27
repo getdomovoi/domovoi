@@ -1,0 +1,39 @@
+---
+"@getdomovoi/daemon": patch
+---
+
+The service handoff fence now refuses while an emergency stop runs, with `An emergency stop is
+still running.`, until the stop has finished, its state save included. The stop clears turns and
+gates before that save, so the fence used to find nothing in flight and could let a service
+handoff stop the daemon in the middle of the stop. A stop whose save fails still finishes and
+reports the persistence failure; the fence is granted after it. A fence taken before a stop began
+stays held through it, as before.
+
+Daemon shutdown now waits for an emergency stop that is still running, its state save included,
+before it closes the store. A handoff that stops the daemon under a fence taken before the stop
+no longer loses the stop's record.
+
+An emergency stop now writes a durable intent to the daemon's store before it acts, and clears it
+once its state is saved. If the process ends before that save (a crash, a kill, a quit deadline),
+the next start on the same store records `Emergency stop requested by <client>.` on each session
+the stop touched before it accepts any connection. Startup recovery already ends the interrupted
+turns and expires the waiting gates. A start whose save of that record fails does not open.
+
+A stop finished at restart now leaves each session as a completed stop leaves it: a dispatch the
+stop caught in flight has its provider thread reset and its session marked failed. A journal row
+that does not read back no longer keeps the daemon from starting: it is moved whole to a separate
+table, reported once, and the readable stops are still finished.
+
+A journal row goes to that table only when no stop can be read from it. A row that holds a stop
+beside fields it does not know is finished from the fields it can read, and a copy of it is kept.
+A dispatch's provider thread id is kept whole in the intent, so a thread id with any character in
+it is reset at restart as a completed stop resets it.
+
+A row that repeats a field is finished for every value it gives (each stop id, every listed
+session) and a copy of it is kept. Every entry of a row is read, however many before it do not
+read. A row with more readable entries than a stop keeps is finished as far as it goes, reported
+on each start, and left in the journal.
+
+Reading a damaged journal row now finishes in bounded time and memory: nothing is built past the
+kept number of entries, the work one row asks of a restart is capped (what fits is finished, and
+the row is kept and reported), and each session is named once.

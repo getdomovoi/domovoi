@@ -1,16 +1,18 @@
 import { demoWorkspace, protocolVersion, serviceHandoffRefusal, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { execFileSync } from "node:child_process"
+import { DatabaseSync } from "node:sqlite"
 import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import WebSocket from "ws"
 
 import type { AgentEvent } from "./agents.js"
 import type { AgentAdapter } from "./codex.js"
 import { holdServiceHandoffFence, readLocalServiceHandoffRefusal } from "./local-service-handoff.js"
-import { DomovoiDaemon } from "./server.js"
+import { DomovoiDaemon, serviceHandoffFencedMessage, serviceHandoffStopRefusal, type DaemonErrorSink } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
+import type { TerminalProcess } from "./terminal.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
@@ -591,6 +593,596 @@ describe("the service handoff fence", () => {
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(70, "allow-once")
   })
 })
+
+// Holds the first save whose snapshot passes `when`, so a test can keep an
+// emergency stop running at its save of the agent state. The daemon passes
+// its live snapshot, so `when` reads it as it is at the save.
+function heldSaves() {
+  let held: undefined | { when: (snapshot: WorkspaceSnapshot) => boolean; entered: () => void; release: Promise<"succeeds" | "fails"> }
+  const wrap = (store: SqliteWorkspaceStore) => {
+    const saveAsync = store.saveAsync.bind(store)
+    store.saveAsync = async (snapshot) => {
+      const gate = held
+      if (gate?.when(snapshot)) {
+        held = undefined
+        gate.entered()
+        if (await gate.release === "fails") throw new Error("The held save failed")
+      }
+      return saveAsync(snapshot)
+    }
+    return store
+  }
+  const hold = (when: (snapshot: WorkspaceSnapshot) => boolean = () => true) => {
+    let entered!: () => void
+    const reached = new Promise<void>((resolve) => { entered = resolve })
+    let release!: (outcome: "succeeds" | "fails") => void
+    held = { when, entered, release: new Promise((resolve) => { release = resolve }) }
+    return { reached, release }
+  }
+  return { wrap, hold }
+}
+
+const stopRecorded = (snapshot: WorkspaceSnapshot) => snapshot.thread.some((item) => item.kind === "system" && item.body.startsWith("Emergency stop requested"))
+
+const endpointOf = (address: { host: string; port: number }, daemon: DomovoiDaemon) => ({ url: `ws://${address.host}:${address.port}/rpc`, token: daemon.authToken })
+
+async function stateFile(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "domovoi-fence-state-"))
+  scratchDirectories.push(directory)
+  return join(directory, "workspace.sqlite")
+}
+
+// A daemon on a store file, so a later daemon can start on what it left, as a
+// restart does. It is not started here.
+async function daemonOnFile(statePath: string, workspace: WorkspaceSnapshot, options: {
+  wrap?: (store: SqliteWorkspaceStore) => SqliteWorkspaceStore
+  heldTurns?: boolean
+  errorSink?: DaemonErrorSink
+} = {}) {
+  const profileDirectory = await mkdtemp(join(tmpdir(), "domovoi-fence-"))
+  scratchDirectories.push(profileDirectory)
+  const { agent, emit } = agentWithHeldTurns(options.heldTurns ?? false)
+  const store = new SqliteWorkspaceStore(statePath, workspace)
+  const daemon = new DomovoiDaemon({
+    port: 0, store: options.wrap ? options.wrap(store) : store, profileDirectory, agent,
+    skillCatalog: { list: async () => [], read: async () => { throw new Error("No skills here") } },
+    ...(options.errorSink ? { errorSink: options.errorSink } : {}),
+  })
+  daemons.push(daemon)
+  return { daemon, agent, emit }
+}
+
+// Security review of #577: an emergency stop denies gates and interrupts
+// turns before it saves its state. A fence asked for in that gap found nothing
+// in flight and was granted, so a handoff could stop the daemon mid-stop.
+describe("the service handoff fence and an emergency stop", () => {
+  it("refuses a fence while a stop saves its state, after its gates cleared, and grants it once the stop finishes", async () => {
+    const { workspace, sessionId } = await readySession()
+    const session = workspace.sessions.find(({ id }) => id === sessionId)!
+    session.runtime.permissionMode = "ask"
+    session.runtime.auto = false
+    const { agent, emit } = agentWithHeldTurns(false)
+    const saves = heldSaves()
+    const endpoint = await daemonWith(workspace, agent, saves.wrap)
+    const reader = await desktopConnection(endpoint)
+    const fencer = await desktopConnection(endpoint)
+    emit({ type: "approval-requested", requestId: 7, threadId: "thread-fence", command: "rm -rf build", cwd: session.workspacePath!, reason: "Remove the build output" })
+    await waitForDaemon(async () => {
+      const read = (await reader("workspace.get", {})).result as WorkspaceSnapshot
+      expect(read.approvals).toMatchObject([{ sessionId, providerRequestId: 7 }])
+    })
+    // Only the stop's own save is held: it is the one that records the stop.
+    const save = saves.hold((snapshot) => snapshot.thread.some((item) => item.kind === "system" && item.body.startsWith("Emergency stop requested")))
+    const stopping = reader("system.emergencyStop", { client: "desktop" })
+    try {
+      await save.reached
+      expect(agent.resolveApproval).toHaveBeenCalledWith(7, "deny")
+      await expect(fencer("system.serviceHandoffFence", {})).resolves.toMatchObject({
+        result: { outcome: "refused", refusal: serviceHandoffStopRefusal },
+      })
+    } finally {
+      save.release("succeeds")
+    }
+    await expect(stopping).resolves.toMatchObject({ result: { failures: [] } })
+    await expect(fencer("system.serviceHandoffFence", {})).resolves.toMatchObject({ result: { outcome: "fenced" } })
+  })
+
+  // The stop's own failure rule: a save that fails is recorded as a
+  // persistence failure and the stop still finishes. The fence waits for it
+  // to finish, and not longer.
+  it("refuses a fence while a stop's save is failing, and grants it once the stop finishes with that failure", async () => {
+    const saves = heldSaves()
+    const endpoint = await daemonWith(quiet(), undefined, saves.wrap)
+    const reader = await desktopConnection(endpoint)
+    const fencer = await desktopConnection(endpoint)
+    const save = saves.hold()
+    const stopping = reader("system.emergencyStop", { client: "desktop" })
+    try {
+      await save.reached
+      await expect(fencer("system.serviceHandoffFence", {})).resolves.toMatchObject({
+        result: { outcome: "refused", refusal: serviceHandoffStopRefusal },
+      })
+    } finally {
+      save.release("fails")
+    }
+    await expect(stopping).resolves.toMatchObject({ result: { failures: [expect.objectContaining({ target: "persistence" })] } })
+    await expect(fencer("system.serviceHandoffFence", {})).resolves.toMatchObject({ result: { outcome: "fenced" } })
+  })
+
+  // #576's design, kept: a stop is never refused, and a fence taken before it
+  // began stays held through it and after it, so no turn starts until the
+  // holder lets go. The stop denies what the fence held (tests above).
+  it("runs a stop to completion under a fence taken before it, and the fence stays held", async () => {
+    const { workspace, sessionId } = await readySession()
+    const { agent } = agentWithHeldTurns(false)
+    const saves = heldSaves()
+    const endpoint = await daemonWith(workspace, agent, saves.wrap)
+    const reader = await desktopConnection(endpoint)
+    const fence = await holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })
+    expect(fence).toEqual({ release: expect.any(Function) })
+    const save = saves.hold()
+    const stopping = reader("system.emergencyStop", { client: "desktop" })
+    try {
+      await save.reached
+      // The stop's own refusal answers first while it runs.
+      await expect(reader("session.send", { sessionId, prompt: "go", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
+      await expect(holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })).rejects.toThrow()
+    } finally {
+      save.release("succeeds")
+    }
+    await expect(stopping).resolves.toMatchObject({ result: { failures: [] } })
+    await expect(reader("session.send", { sessionId, prompt: "go", client: "desktop" })).resolves.toMatchObject({
+      error: { code: -32602, message: serviceHandoffFencedMessage },
+    })
+    expect(agent.startTurn).not.toHaveBeenCalled()
+    if ("release" in fence) fence.release()
+    await waitForDaemon(async () => {
+      const retry = await reader("session.send", { sessionId, prompt: "go", client: "desktop" })
+      expect(retry.error).toBeUndefined()
+    })
+  })
+
+  // Security review of #628: with the fence held, the holder goes on to stop
+  // the daemon (the desktop's stopOwned ends in DomovoiDaemon.stop, as the
+  // signal handlers do). A shutdown that meets a stop still saving must wait
+  // for that save before it closes the store, so the stop's record survives.
+  it("waits for a running stop's save before it closes the store, and the stop's record survives a restart", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = join(await mkdtemp(join(tmpdir(), "domovoi-fence-state-")), "workspace.sqlite")
+    scratchDirectories.push(dirname(statePath))
+    const order: string[] = []
+    const stopRecorded = (snapshot: WorkspaceSnapshot) => snapshot.thread.some((item) => item.kind === "system" && item.body.startsWith("Emergency stop requested"))
+    const saves = heldSaves()
+    const store = saves.wrap(new SqliteWorkspaceStore(statePath, workspace))
+    const saveAsync = store.saveAsync.bind(store)
+    store.saveAsync = async (snapshot) => {
+      const recorded = stopRecorded(snapshot)
+      await saveAsync(snapshot)
+      if (recorded) order.push("stop saved")
+    }
+    const close = store.close.bind(store)
+    store.close = async () => { order.push("store closed"); await close() }
+    const profileDirectory = await mkdtemp(join(tmpdir(), "domovoi-fence-"))
+    scratchDirectories.push(profileDirectory)
+    const terminal = {
+      process: "bash", write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+      onData: vi.fn(() => ({ dispose: vi.fn() })), onExit: vi.fn(() => ({ dispose: vi.fn() })),
+    } satisfies TerminalProcess
+    const daemon = new DomovoiDaemon({
+      port: 0, store, profileDirectory, agents: {},
+      skillCatalog: { list: async () => [], read: async () => { throw new Error("No skills here") } },
+      terminalService: { spawn: vi.fn(() => terminal) },
+    })
+    daemons.push(daemon)
+    const address = await daemon.start()
+    const endpoint = { url: `ws://${address.host}:${address.port}/rpc`, token: daemon.authToken }
+    const reader = await desktopConnection(endpoint)
+    // An open terminal gives the stop a session to record itself on, and does
+    // not refuse the fence.
+    await expect(reader("terminal.create", {
+      terminalId: "terminal-fence", sessionId, cols: 80, rows: 24, client: "desktop", clientId: "desktop-fence-test",
+    })).resolves.toMatchObject({ result: expect.anything() })
+    const fence = await holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })
+    expect(fence).toEqual({ release: expect.any(Function) })
+    const save = saves.hold(stopRecorded)
+    void reader("system.emergencyStop", { client: "desktop" })
+    let stopped: Promise<void> | undefined
+    try {
+      await save.reached
+      stopped = daemon.stop()
+      // Let the shutdown run as far as it goes without the save.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    } finally {
+      save.release("succeeds")
+    }
+    await stopped
+    expect(order).toEqual(["stop saved", "store closed"])
+    const reopened = new SqliteWorkspaceStore(statePath, quiet())
+    try {
+      expect(reopened.load().thread).toContainEqual(expect.objectContaining({
+        sessionId, kind: "system", body: "Emergency stop requested by desktop.",
+      }))
+    } finally {
+      await reopened.close()
+    }
+  })
+
+  // Security review round 2 of #628: the process can end without
+  // DomovoiDaemon.stop() (a crash, a kill, the desktop's quit bound) while a
+  // stop saves its state. The stop leaves a durable intent before it acts, and
+  // a restart on the same store finishes it before the daemon accepts RPC.
+  it("finishes a stop cut off before its save when the daemon restarts on the same store, before it accepts RPC", async () => {
+    const { workspace, sessionId } = await readySession()
+    const session = workspace.sessions.find(({ id }) => id === sessionId)!
+    session.runtime.permissionMode = "ask"
+    session.runtime.auto = false
+    const statePath = join(await mkdtemp(join(tmpdir(), "domovoi-fence-state-")), "workspace.sqlite")
+    scratchDirectories.push(dirname(statePath))
+    const stopLine = { sessionId, kind: "system", body: "Emergency stop requested by desktop." }
+    const onFile = (wrap?: (store: SqliteWorkspaceStore) => SqliteWorkspaceStore) => daemonOnFile(statePath, workspace, { ...(wrap ? { wrap } : {}) })
+
+    // The first daemon raises a gate, then a stop runs and is cut off at its
+    // save: that save never reaches the file, as if the process had ended.
+    const saves = heldSaves()
+    const first = await onFile(saves.wrap)
+    const reader = await desktopConnection(endpointOf(await first.daemon.start(), first.daemon))
+    first.emit({ type: "approval-requested", requestId: 7, threadId: "thread-fence", command: "rm -rf build", cwd: session.workspacePath!, reason: "Remove the build output" })
+    await waitForDaemon(async () => {
+      const read = (await reader("workspace.get", {})).result as WorkspaceSnapshot
+      expect(read.approvals).toMatchObject([{ sessionId, providerRequestId: 7 }])
+    })
+    const save = saves.hold(stopRecorded)
+    void reader("system.emergencyStop", { client: "desktop" })
+    try {
+      await save.reached
+
+      // A restart whose finishing save fails does not open: no RPC, so no
+      // fence, before the stop is finished.
+      const failing = await onFile((store) => {
+        const saveSync = store.save.bind(store)
+        store.save = (snapshot) => {
+          if (stopRecorded(snapshot)) throw new Error("The finishing save failed")
+          saveSync(snapshot)
+        }
+        return store
+      })
+      await expect(failing.daemon.start()).rejects.toThrow("The finishing save failed")
+      await failing.daemon.stop().catch(() => {})
+
+      const second = await onFile()
+      const endpoint = endpointOf(await second.daemon.start(), second.daemon)
+      const after = (await (await desktopConnection(endpoint))("workspace.get", {})).result as WorkspaceSnapshot
+      expect(after.thread).toContainEqual(expect.objectContaining(stopLine))
+      expect(after.approvals).toEqual([])
+      expect(after.sessions.find(({ id }) => id === sessionId)).not.toHaveProperty("activeTurnId")
+      await expect(holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })).resolves.toEqual({ release: expect.any(Function) })
+      await second.daemon.stop()
+
+      // Finished once: a later restart records nothing more.
+      const third = await onFile()
+      const again = (await (await desktopConnection(endpointOf(await third.daemon.start(), third.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+      expect(again.thread.filter((item) => item.kind === "system" && item.sessionId === sessionId && item.body === stopLine.body)).toHaveLength(1)
+      await third.daemon.stop()
+    } finally {
+      // The first daemon's save fails, so it writes nothing over the file.
+      save.release("fails")
+    }
+  })
+
+  // Security review round 3 of #628: a stop finished at restart must leave
+  // each session as a completed stop leaves it. A completed stop resets the
+  // provider thread of a dispatch it caught in flight and marks the session
+  // failed, so no later send resumes that thread. A restart has no provider
+  // left to reset, which is the reset's own outcome.
+  // Round 4: a provider thread id may hold any character, NUL included, and
+  // the restart compares the whole of it.
+  it.each([
+    { threadId: "thread-fence" },
+    { threadId: "thread\u0000fence\u0000tail" },
+  ])("leaves a dispatch caught in flight as a completed stop leaves it when the stop is finished at restart (thread $threadId)", async ({ threadId }) => {
+    const onThread = (ready: Awaited<ReturnType<typeof readySession>>) => {
+      ready.workspace.sessions.find(({ id }) => id === ready.sessionId)!.providerThreadId = threadId
+      return ready
+    }
+    const sessionState = (snapshot: WorkspaceSnapshot, id: string) => {
+      const { state, providerThreadId, activeTurnId } = snapshot.sessions.find((candidate) => candidate.id === id)!
+      return { state, providerThreadId, activeTurnId }
+    }
+    const dispatching = async (daemon: DomovoiDaemon, agent: AgentAdapter, sessionId: string) => {
+      const endpoint = endpointOf(await daemon.start(), daemon)
+      // The send waits on its own connection, which answers in order, and a
+      // new connection's hello would wait behind the send, so both open first.
+      const sender = await desktopConnection(endpoint)
+      const reader = await desktopConnection(endpoint)
+      void sender("session.send", { sessionId, prompt: "go", client: "desktop" })
+      await waitForDaemon(() => expect(agent.startTurn).toHaveBeenCalledOnce())
+      return reader
+    }
+
+    // A completed stop.
+    const completedCase = onThread(await readySession())
+    const completed = await daemonOnFile(await stateFile(), completedCase.workspace, { heldTurns: true })
+    const completedReader = await dispatching(completed.daemon, completed.agent, completedCase.sessionId)
+    const stopped = await completedReader("system.emergencyStop", { client: "desktop" })
+    expect(stopped.result).toMatchObject({ failures: [] })
+    // The state the stop left, as its result carries it: the held dispatch
+    // stays unanswered, as a provider that is gone never answers.
+    const expected = sessionState((stopped.result as { snapshot: WorkspaceSnapshot }).snapshot, completedCase.sessionId)
+    expect(expected).toEqual({ state: "failed", providerThreadId: undefined, activeTurnId: undefined })
+
+    // The same stop, cut off at its save, then finished by a restart.
+    const { workspace, sessionId } = onThread(await readySession())
+    const statePath = await stateFile()
+    const saves = heldSaves()
+    const first = await daemonOnFile(statePath, workspace, { wrap: saves.wrap, heldTurns: true })
+    const reader = await dispatching(first.daemon, first.agent, sessionId)
+    const save = saves.hold(stopRecorded)
+    void reader("system.emergencyStop", { client: "desktop" })
+    try {
+      await save.reached
+      const second = await daemonOnFile(statePath, workspace)
+      const after = (await (await desktopConnection(endpointOf(await second.daemon.start(), second.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+      expect(sessionState(after, sessionId)).toEqual(expected)
+    } finally {
+      save.release("fails")
+    }
+  })
+
+  // Security review round 3 of #628: a stop whose intent
+  // cannot be written still runs, and its result names the persistence
+  // failure, so it is not reported as a clean stop.
+  it("still stops when its intent cannot be written, and reports the persistence failure", async () => {
+    const { workspace, sessionId } = await readySession()
+    const session = workspace.sessions.find(({ id }) => id === sessionId)!
+    session.runtime.permissionMode = "ask"
+    session.runtime.auto = false
+    const first = await daemonOnFile(await stateFile(), workspace, {
+      wrap: (store) => {
+        store.emergencyStops.begin = () => { throw new Error("The intent write failed") }
+        return store
+      },
+      errorSink: () => {},
+    })
+    const reader = await desktopConnection(endpointOf(await first.daemon.start(), first.daemon))
+    first.emit({ type: "approval-requested", requestId: 7, threadId: "thread-fence", command: "rm -rf build", cwd: session.workspacePath!, reason: "Remove the build output" })
+    await waitForDaemon(async () => {
+      const read = (await reader("workspace.get", {})).result as WorkspaceSnapshot
+      expect(read.approvals).toMatchObject([{ sessionId, providerRequestId: 7 }])
+    })
+    const stopped = await reader("system.emergencyStop", { client: "desktop" })
+    expect(stopped.result).toMatchObject({
+      outcomes: { approvalsDenied: 1 },
+      failures: [expect.objectContaining({ target: "persistence" })],
+    })
+    expect(first.agent.resolveApproval).toHaveBeenCalledWith(7, "deny")
+  })
+
+  // Security review round 3 of #628: a journal row that does not read back
+  // must not keep the daemon from starting, and must not cost a readable stop
+  // its finish. An unreadable row is moved aside, kept whole, and reported
+  // once; a row whose key disagrees with its record is still a stop, and is
+  // finished from its record.
+  it("starts past an unreadable journal row, keeps it aside, and still finishes the readable stops", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    const seeded = new SqliteWorkspaceStore(statePath, workspace)
+    const intent = (stopId: string) => ({ version: 1 as const, stopId, client: "desktop" as const, requestedAt: "2026-09-26T10:00:00.000Z", sessionIds: [sessionId] })
+    const readable = `stop-${"1".repeat(8)}-1111-4111-8111-${"1".repeat(12)}`
+    const mismatched = `stop-${"2".repeat(8)}-2222-4222-8222-${"2".repeat(12)}`
+    seeded.emergencyStops.begin(intent(readable))
+    await seeded.close()
+    const database = new DatabaseSync(statePath)
+    try {
+      database.prepare("INSERT INTO emergency_stop_intents (stop_id, record) VALUES (?, ?)").run("stop-unreadable", "{ not json")
+      database.prepare("INSERT INTO emergency_stop_intents (stop_id, record) VALUES (?, ?)").run("stop-other-key", JSON.stringify(intent(mismatched)))
+    } finally {
+      database.close()
+    }
+
+    const reports: string[] = []
+    const first = await daemonOnFile(statePath, workspace, { errorSink: (entry) => { reports.push(entry.context) } })
+    const after = (await (await desktopConnection(endpointOf(await first.daemon.start(), first.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    const lines = after.thread.filter((item) => item.kind === "system" && item.sessionId === sessionId && item.body === "Emergency stop requested by desktop.")
+    expect(lines).toHaveLength(2)
+    expect(reports.filter((context) => context === "Domovoi set aside an unreadable emergency stop intent")).toHaveLength(1)
+    await first.daemon.stop()
+
+    const kept = new DatabaseSync(statePath, { readOnly: true })
+    try {
+      expect(kept.prepare("SELECT stop_id, record FROM emergency_stop_intent_quarantine").all()).toEqual([
+        expect.objectContaining({ stop_id: "stop-unreadable", record: "{ not json" }),
+      ])
+      expect(kept.prepare("SELECT stop_id FROM emergency_stop_intents").all()).toEqual([])
+    } finally {
+      kept.close()
+    }
+
+    const again: string[] = []
+    const second = await daemonOnFile(statePath, workspace, { errorSink: (entry) => { again.push(entry.context) } })
+    await second.daemon.start()
+    expect(again).not.toContain("Domovoi set aside an unreadable emergency stop intent")
+  })
+
+  // Round 4: a row that holds a readable stop beside something it does not
+  // know is still that stop. It is finished from the fields it can read; the
+  // row as stored is copied aside, so nothing in it is lost.
+  it("finishes a journal row that holds a stop beside an unknown field, and keeps a copy of the row", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopId = `stop-${"3".repeat(8)}-3333-4333-8333-${"3".repeat(12)}`
+    const record = JSON.stringify({
+      version: 1, stopId, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z", sessionIds: [sessionId],
+      inFlight: [{ sessionId, provider: "codex", providerThreadId: "thread-fence", note: "from a later build" }],
+      addedLater: true,
+    })
+    const database = new DatabaseSync(statePath)
+    try {
+      database.prepare("INSERT INTO emergency_stop_intents (stop_id, record) VALUES (?, ?)").run(stopId, record)
+    } finally {
+      database.close()
+    }
+
+    const first = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await first.daemon.start(), first.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.thread).toContainEqual(expect.objectContaining({ sessionId, kind: "system", body: "Emergency stop requested by desktop." }))
+    const session = after.sessions.find(({ id }) => id === sessionId)!
+    expect({ state: session.state, providerThreadId: session.providerThreadId }).toEqual({ state: "failed", providerThreadId: undefined })
+    await first.daemon.stop()
+
+    const kept = new DatabaseSync(statePath, { readOnly: true })
+    try {
+      expect(kept.prepare("SELECT stop_id, record FROM emergency_stop_intent_quarantine").all()).toEqual([
+        expect.objectContaining({ stop_id: stopId, record }),
+      ])
+      expect(kept.prepare("SELECT stop_id FROM emergency_stop_intents").all()).toEqual([])
+    } finally {
+      kept.close()
+    }
+  })
+
+  // Round 7: only the thread says a stop is already finished. An earlier row
+  // that names the same stop id (under another key, with no sessions) does
+  // not, so the later row is still finished, and each line is written once.
+  it("finishes a stop that an earlier row also names, and writes each of its lines once", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopId = `stop-${"a".repeat(8)}-aaaa-4aaa-8aaa-${"a".repeat(12)}`
+    const row = (sessionIds: string[]) => JSON.stringify({ version: 1, stopId, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z", sessionIds })
+    await journalRow(statePath, "stop-under-another-key", row([]))
+    await journalRow(statePath, stopId, row([sessionId]))
+    await journalRow(statePath, "stop-a-third-copy", row([sessionId]))
+
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.thread.filter((item) => item.kind === "system" && item.body === "Emergency stop requested by desktop.").map((item) => item.sessionId)).toEqual([sessionId])
+    await daemon.daemon.stop()
+    expect(journalTables(statePath).pending).toEqual([])
+  })
+
+  // Round 8: an archived session is read-only, and a failed state would break
+  // its archive record. A row that names one does not change it, and the
+  // daemon still starts.
+  it("starts when a journal row names an archived session, and leaves that session archived", async () => {
+    const { workspace } = await readySession()
+    const archived = workspace.sessions[1]!
+    archived.state = "archived"
+    archived.archiveRequestedAt = "2026-09-26T08:59:00.000Z"
+    archived.archiveCheckpoint = "d".repeat(40)
+    archived.archivedAt = "2026-09-26T09:00:00.000Z"
+    delete archived.workspacePath
+    delete archived.providerThreadId
+    delete archived.activeTurnId
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopId = `stop-${"b".repeat(8)}-bbbb-4bbb-8bbb-${"b".repeat(12)}`
+    await journalRow(statePath, stopId, JSON.stringify({
+      version: 1, stopId, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z",
+      sessionIds: [archived.id], inFlight: [{ sessionId: archived.id }],
+    }))
+
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.sessions.find(({ id }) => id === archived.id)).toMatchObject({ state: "archived", archivedAt: "2026-09-26T09:00:00.000Z" })
+    await daemon.daemon.stop()
+    expect(journalTables(statePath).pending).toEqual([])
+  })
+
+  // Round 5: a row can repeat a field, and JSON.parse keeps only the last
+  // value. The restart acts on every value the row gives, keeps a copy of the
+  // row, and so neither misnames nor skips the stop.
+  it("acts on every value of a repeated field in a journal row, and keeps a copy of the row", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const first = `stop-${"4".repeat(8)}-4444-4444-8444-${"4".repeat(12)}`
+    const second = `stop-${"5".repeat(8)}-5555-4555-8555-${"5".repeat(12)}`
+    const record = `{"version":1,"stopId":"${first}","client":"desktop","requestedAt":"2026-09-26T10:00:00.000Z",`
+      + `"sessionIds":["${sessionId}"],"inFlight":[{"sessionId":"${sessionId}","provider":"codex","providerThreadId":"thread-fence"}],`
+      + `"stopId":"${second}","sessionIds":[],"inFlight":[]}`
+    await journalRow(statePath, first, record)
+
+    const reports: string[] = []
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: (entry) => { reports.push(entry.context) } })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    const lines = after.thread.filter((item) => item.kind === "system" && item.sessionId === sessionId && item.body === "Emergency stop requested by desktop.")
+    expect(lines).toHaveLength(2)
+    const session = after.sessions.find(({ id }) => id === sessionId)!
+    expect({ state: session.state, providerThreadId: session.providerThreadId }).toEqual({ state: "failed", providerThreadId: undefined })
+    expect(reports).toContain("Domovoi read part of an emergency stop intent")
+    await daemon.daemon.stop()
+    expect(journalTables(statePath)).toEqual({ pending: [], quarantined: [{ stop_id: first, record }] })
+  })
+
+  // The reader behind the round 5 fix walks the row itself: brackets and
+  // quotes inside strings, and unknown fields nested far deeper than the
+  // stop's own, must not hide the stop's fields, including a repeated one
+  // (round 6: a later, empty session list does not replace the first).
+  it("reads a stop past deeply nested unknown fields and strings that look like JSON, keeping a repeated field's first value", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const stopId = `stop-${"8".repeat(8)}-8888-4888-8888-${"8".repeat(12)}`
+    const depth = 100_000
+    const record = `{"note":"}]\\",\\"stopId\\":\\"x","deep":${"[".repeat(depth)}{"sessionIds":["elsewhere"]}${"]".repeat(depth)},`
+      + `"version":1,"stopId":"${stopId}","client":"desktop","requestedAt":"2026-09-26T10:00:00.000Z","sessionIds":["${sessionId}"],"sessionIds":[]}`
+    await journalRow(statePath, stopId, record)
+
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: () => {} })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    expect(after.thread.filter((item) => item.kind === "system" && item.body === "Emergency stop requested by desktop.").map((item) => item.sessionId)).toEqual([sessionId])
+    await daemon.daemon.stop()
+    expect(journalTables(statePath)).toEqual({ pending: [], quarantined: [{ stop_id: stopId, record }] })
+  })
+
+  // Round 5: a row may hold many entries that do not read before one that
+  // does. The restart reads the whole row. More readable entries than it
+  // keeps leave the row pending and reported, never cleared.
+  it("reads every entry of a journal row past unreadable ones, and keeps a row with more entries than it holds pending", async () => {
+    const { workspace, sessionId } = await readySession()
+    const statePath = await stateFile()
+    await new SqliteWorkspaceStore(statePath, workspace).close()
+    const late = `stop-${"6".repeat(8)}-6666-4666-8666-${"6".repeat(12)}`
+    const many = `stop-${"7".repeat(8)}-7777-4777-8777-${"7".repeat(12)}`
+    const row = (stopId: string, sessionIds: unknown[]) => JSON.stringify({ version: 1, stopId, client: "desktop", requestedAt: "2026-09-26T10:00:00.000Z", sessionIds })
+    await journalRow(statePath, late, row(late, [...Array.from({ length: 10_000 }, () => ""), sessionId]))
+    await journalRow(statePath, many, row(many, [sessionId, ...Array.from({ length: 10_000 }, (_, index) => `other-${index}`)]))
+
+    const reports: string[] = []
+    const daemon = await daemonOnFile(statePath, workspace, { errorSink: (entry) => { reports.push(entry.context) } })
+    const after = (await (await desktopConnection(endpointOf(await daemon.daemon.start(), daemon.daemon)))("workspace.get", {})).result as WorkspaceSnapshot
+    const lines = after.thread.filter((item) => item.kind === "system" && item.sessionId === sessionId && item.body === "Emergency stop requested by desktop.")
+    expect(lines).toHaveLength(2)
+    expect(reports).toContain("Domovoi kept an emergency stop intent it could not finish whole")
+    await daemon.daemon.stop()
+    expect(journalTables(statePath).pending).toEqual([{ stop_id: many }])
+  })
+})
+
+// A journal row written as a store file holds it, as a damaged or foreign
+// build's row would be.
+async function journalRow(statePath: string, stopId: string, record: string): Promise<void> {
+  const database = new DatabaseSync(statePath)
+  try {
+    database.prepare("INSERT INTO emergency_stop_intents (stop_id, record) VALUES (?, ?)").run(stopId, record)
+  } finally {
+    database.close()
+  }
+}
+
+function journalTables(statePath: string): { pending: unknown[]; quarantined: unknown[] } {
+  const database = new DatabaseSync(statePath, { readOnly: true })
+  try {
+    const quarantine = database.prepare("SELECT 1 FROM sqlite_master WHERE name = 'emergency_stop_intent_quarantine'").get()
+    return {
+      pending: database.prepare("SELECT stop_id FROM emergency_stop_intents").all().map((row) => ({ ...row })),
+      quarantined: quarantine ? database.prepare("SELECT stop_id, record FROM emergency_stop_intent_quarantine").all().map((row) => ({ ...row })) : [],
+    }
+  } finally {
+    database.close()
+  }
+}
 
 // A narrow text check on the approval-requested handler, not proof. It
 // catches a direct `resolveApproval(event.requestId` or `#putApproval(` call

@@ -330,6 +330,9 @@ export const persistenceUnavailableContext = "Domovoi can no longer persist stat
 // answer to a turn asked for while the desktop holds the service handoff fence.
 export const serviceHandoffFencedMessage =
   "The daemon is moving to or from the login service, so no new turn starts until the switch finishes or stops. Nothing is interrupted."
+// The fence's refusal while an emergency stop runs. The stop clears turns and
+// gates before it saves its state, so the turn and gate check finds nothing.
+export const serviceHandoffStopRefusal = "An emergency stop is still running."
 export const persistenceUnavailableMessage =
   "Daemon cannot persist state, so changes are refused"
 
@@ -2024,6 +2027,7 @@ export class DomovoiDaemon {
     signal?.throwIfAborted()
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.())
     this.#recoverInterruptedTurns()
+    this.#recoverEmergencyStops()
     // Startup recovery expired every saved card (ruled 2026-09-24, #604), so
     // from here on every approval in the snapshot came out of settlement, and
     // saves and broadcasts seal any that did not.
@@ -2184,6 +2188,7 @@ export class DomovoiDaemon {
     const failures: unknown[] = []
     try {
       await fleetStopped
+      await this.#settleEmergencyStops()
       await this.#providerRefresh
       try {
         await withTimeout(
@@ -2234,6 +2239,8 @@ export class DomovoiDaemon {
     try { await this.#machineCredentials?.close(keyringShutdown) }
     catch (error) { failures.push(error) }
     finally { keyringShutdown.clear() }
+    // A stop asked for just before shutdown may have been queued since.
+    await this.#settleEmergencyStops()
     try {
       await this.#store.close()
     } catch (error) {
@@ -2260,6 +2267,20 @@ export class DomovoiDaemon {
     }
     this.#stopped = true
     if (failures.length > 0) throw new AggregateError(failures, "Domovoi shutdown failed")
+  }
+
+  // Security review of #628: a shutdown (stopOwned, a signal, a service
+  // replace) can meet an emergency stop still saving its state. The stop
+  // finishes first, its save included, so its record is written or its
+  // failure reported before the store closes. No extra deadline: the stop's
+  // provider calls carry their own, and its save is awaited as shutdown's is.
+  // The tail never rejects.
+  async #settleEmergencyStops(): Promise<void> {
+    let tail: Promise<unknown>
+    do {
+      tail = this.#emergencyStopTail
+      await tail
+    } while (tail !== this.#emergencyStopTail)
   }
 
   #dispatch(socket: RpcOutboundSocket, raw: string): void {
@@ -9870,8 +9891,10 @@ export class DomovoiDaemon {
 
   // The renderer's check, applied to what the daemon itself holds: turns with
   // an active id, dispatches not yet answered by the provider, and waiting
-  // gates. A dispatch in flight is named as a running turn.
+  // gates. A dispatch in flight is named as a running turn. An emergency stop
+  // refuses first until it has finished, its save included, failed or not.
   #serviceHandoffRefusal(): string | undefined {
+    if (this.#emergencyStopInProgress) return serviceHandoffStopRefusal
     const dispatching = new Set(this.#inFlightProviderThreads.values())
     return serviceHandoffRefusal({
       sessions: this.#snapshot.sessions.map((session) => session.activeTurnId || dispatching.has(session.id)
@@ -9972,6 +9995,37 @@ export class DomovoiDaemon {
     }
     for (const approval of this.#snapshot.approvals) affectedSessionIds.add(approval.sessionId)
     for (const terminal of this.#terminals.values()) affectedSessionIds.add(terminal.sessionId)
+    const activeThreadKeys = new Set(active.map((session) =>
+      providerThreadKey(session.runtime.provider, session.providerThreadId!),
+    ))
+    // Each dispatch caught in flight, with the thread the stop resets: the
+    // session's own provider and thread id, whole, when its thread is still the
+    // one dispatched to (a thread id may hold any character, so the key is
+    // never split). Otherwise the stop only marks the session failed.
+    const inFlightThreads = [...this.#inFlightProviderThreads]
+      .filter(([threadKey]) => !activeThreadKeys.has(threadKey))
+      .map(([threadKey, sessionId]) => {
+        const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
+        return session?.providerThreadId
+          && providerThreadKey(session.runtime.provider, session.providerThreadId) === threadKey
+          ? { sessionId, provider: session.runtime.provider, providerThreadId: session.providerThreadId }
+          : { sessionId }
+      })
+    // Security review round 2 of #628: durable before the first effect, so a
+    // restart on this store finishes a stop the process did not live to save.
+    // A stop is never refused for want of it: it runs, and its result names
+    // the persistence failure, so it does not read as a clean stop (round 3).
+    try {
+      this.#store.emergencyStops?.begin({
+        version: 1, stopId, client, requestedAt, sessionIds: [...affectedSessionIds], inFlight: inFlightThreads,
+      })
+    } catch (error) {
+      failures.push({
+        target: "persistence",
+        message: this.#emergencyFailureMessage(error, "Emergency state persistence failed"),
+      })
+      this.#reportError("Domovoi could not persist emergency stop state", error)
+    }
 
     const cancellation = new Error("Emergency stop requested")
     const cancelledMutations = this.#mutations.cancelAll(cancellation)
@@ -10032,9 +10086,6 @@ export class DomovoiDaemon {
 
     let turnsStopped = 0
     let providersReset = 0
-    const activeThreadKeys = new Set(active.map((session) =>
-      providerThreadKey(session.runtime.provider, session.providerThreadId!),
-    ))
     const turnResults = await Promise.allSettled(active.map((session) =>
       withTimeout(
         this.#agents.require(session.runtime.provider).interruptTurn(
@@ -10136,14 +10187,25 @@ export class DomovoiDaemon {
       })
     }
 
+    let saved = false
     try {
       await this.#saveAgentState(false)
+      saved = true
     } catch (error) {
       failures.push({
         target: "persistence",
         message: this.#emergencyFailureMessage(error, "Emergency state persistence failed"),
       })
       this.#reportError("Domovoi could not persist emergency stop state", error)
+    }
+    // The record is on disk. A failed save keeps the intent, so a restart
+    // records the stop; an intent left by a failed clear is found recorded.
+    if (saved) {
+      try {
+        this.#store.emergencyStops?.clear(stopId)
+      } catch (error) {
+        this.#reportError("Domovoi could not clear an emergency stop intent", error)
+      }
     }
     const result: SystemEmergencyStopResult = {
       snapshot: workspaceSnapshotForClient(this.#snapshot),
@@ -10509,6 +10571,87 @@ export class DomovoiDaemon {
       })
     }
     this.#auditExpiredApprovals(expiredApprovals, "startup-recovery", candidate.project?.id)
+  }
+
+  // Security review round 2 of #628: a stop whose intent outlived its process
+  // is finished here, before the listener opens, so no RPC and no handoff
+  // fence meets it half done. Recovery above has already ended the turns the
+  // stop was stopping and expired the gates it was denying. What is left is
+  // what a completed stop does with a provider that is gone: a running turn's
+  // interrupt has nothing left to stop, which leaves the session idle with
+  // its thread (as recovery left it); a dispatch caught in flight has its
+  // thread reset, which leaves the session failed without it (round 3). Then
+  // the stop's record on each session it touched. A stop already recorded
+  // (its own save, or a later one, landed) is not finished again. A failed
+  // save here fails startup and keeps the intent for the next one. A journal
+  // row that does not read back is set aside by the journal and reported.
+  #recoverEmergencyStops(): void {
+    const journal = this.#store.emergencyStops
+    if (!journal) return
+    const { intents: entries, partial, overflow, setAside } = journal.pending()
+    for (const { key, reason } of setAside) {
+      this.#reportError("Domovoi set aside an unreadable emergency stop intent", new Error(`${key}: ${reason}`))
+    }
+    for (const { key, reason } of partial) {
+      this.#reportError("Domovoi read part of an emergency stop intent", new Error(`${key}: ${reason}`))
+    }
+    for (const { key, reason } of overflow) {
+      this.#reportError("Domovoi kept an emergency stop intent it could not finish whole", new Error(`${key}: ${reason}`))
+    }
+    if (entries.length === 0) return
+    const candidate = structuredClone(this.#snapshot)
+    // One pass over the thread and the sessions, however many stop ids the
+    // journal names (round 6): the stops already recorded, by the detail a
+    // completed stop writes or the line id a restart writes.
+    const recorded = new Set<string>()
+    for (const item of candidate.thread) {
+      if (item.kind !== "system") continue
+      const stopId = /^(stop-[0-9a-f-]{36}):/.exec(item.detail ?? "")?.[1] ?? /^system-(stop-[0-9a-f-]{36})-/.exec(item.id)?.[1]
+      if (stopId !== undefined) recorded.add(stopId)
+    }
+    const sessions = new Map(candidate.sessions.map((session) => [session.id, session]))
+    // Only the thread says a stop is finished (round 7). Rows that name the
+    // same stop each act on what they hold; a line already written in this
+    // pass is not written again.
+    const written = new Set<string>()
+    for (const { intent } of entries) {
+      if (recorded.has(intent.stopId)) continue
+      for (const dispatch of intent.inFlight) {
+        // An archived or other read-only session holds no dispatch, and its
+        // state is its record (round 8): it is left as it is.
+        const session = sessions.get(dispatch.sessionId)
+        if (!session || sessionIsReadOnly(session)) continue
+        session.updatedAt = intent.requestedAt
+        session.state = "failed"
+        if (dispatch.providerThreadId !== undefined
+          && session.runtime.provider === dispatch.provider && session.providerThreadId === dispatch.providerThreadId) {
+          delete session.providerThreadId
+        }
+      }
+      // A line for each client the stop names; a stop whose client cannot be
+      // read is finished without one.
+      for (const client of intent.clients) {
+        for (const sessionId of intent.sessionIds) {
+          const session = sessions.get(sessionId)
+          const id = `system-${intent.stopId}-${client}-${sessionId}`
+          if (!session || sessionIsReadOnly(session) || written.has(id)) continue
+          written.add(id)
+          candidate.thread.push({
+            id,
+            sessionId,
+            kind: "system",
+            body: `Emergency stop requested by ${client}.`,
+            createdAt: intent.requestedAt,
+          })
+        }
+      }
+    }
+    workspaceSnapshotSchema.parse(candidate)
+    this.#store.save(candidate)
+    this.#snapshot = candidate
+    // A row kept for overflow stays in the journal, so it is reported again.
+    const kept = new Set(entries.filter(({ keep }) => keep).map(({ key }) => key))
+    for (const { key } of entries) if (!kept.has(key)) journal.clear(key)
   }
 
   // `storedApprovalIds` names cards read from storage when startup resumes an
