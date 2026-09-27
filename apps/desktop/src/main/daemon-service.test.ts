@@ -57,7 +57,7 @@ describe("DesktopDaemonService hands over an inert staged runtime", () => {
       expect(copy.publish, action).not.toHaveBeenCalled()
       // #635: the step handed over is the staged publish, with the read of
       // the copy the service runs before it.
-      const handed = (deps[action].mock.calls[0] as unknown as [{ staged: { publish: () => Promise<void> } }])[0].staged.publish
+      const handed = (vi.mocked(deps[action]).mock.calls[0] as unknown as [{ staged: { publish: () => Promise<void> } }])[0].staged.publish
       await handed()
       expect(copy.publish, action).toHaveBeenCalledOnce()
       expect(deps.runtimeCopy, action).toHaveBeenCalledOnce()
@@ -101,7 +101,7 @@ describe("DesktopDaemonService removes runtime copies no service names", () => {
       expect(calls.indexOf("publish"), action).toBeLessThan(calls.indexOf(action))
       expect(calls.indexOf("remove unused copies"), action).toBeGreaterThan(calls.indexOf("attach"))
       expect(deps.removeUnusedRuntimes, action).toHaveBeenCalledExactlyOnceWith({ published: runtime, previous: { installed: true, copy: previousCopy } })
-      expect(deps.status.mock.invocationCallOrder.at(-1)!, action).toBeLessThan(deps.removeUnusedRuntimes.mock.invocationCallOrder[0]!)
+      expect(vi.mocked(deps.status).mock.invocationCallOrder.at(-1)!, action).toBeLessThan(vi.mocked(deps.removeUnusedRuntimes).mock.invocationCallOrder[0]!)
     }
   })
 
@@ -554,6 +554,8 @@ describe("a renderer reconnect during the handoff", () => {
       profile: async () => undefined,
       refusal: async () => undefined,
       fence: async () => ({ release: () => {} }),
+      runtimeCopy: async () => ({ installed: false }),
+      removeUnusedRuntimes: async () => {},
       daemon,
     })
     const outcome = await service.install()

@@ -26,11 +26,14 @@ export function createDesktopDaemonService(
   const environment = app.environment ?? process.env
   const profileDirectory = environment.DOMOVOI_PROFILE_DIR
   const profile = profileDirectory === undefined ? {} : { DOMOVOI_PROFILE_DIR: profileDirectory }
+  // Where the runtime copies are published, and so where unused ones are
+  // looked for (#635).
+  const copies = profileDirectory ?? (process.platform === "win32" ? win32 : posix).join(home, ".domovoi")
   return new DesktopDaemonService({
     stageRuntime: (operation) => prepareDaemonRuntime({
       operation,
       resourcesPath: app.resourcesPath,
-      profileDirectory: profileDirectory ?? (process.platform === "win32" ? win32 : posix).join(home, ".domovoi"),
+      profileDirectory: copies,
       version: app.version,
       ...(app.dataDirectory === undefined ? {} : { dataDirectory: app.dataDirectory }),
       platform: process.platform,
@@ -43,6 +46,8 @@ export function createDesktopDaemonService(
     profile: async () => daemon.serviceProfileMismatch({ environment, homeDirectory: home }),
     remove: () => daemon.removeDaemonService(undefined, { environment: profile }),
     update: (options) => daemon.updateDaemonService({ ...options, environment: profile }),
+    runtimeCopy: () => daemon.readDaemonServiceRuntimeCopy(),
+    removeUnusedRuntimes: (options) => daemon.removeUnusedDaemonRuntimes({ ...options, profileDirectory: copies }),
     // The same check the renderer draws, applied to the daemon's own workspace.
     refusal: async () => {
       const endpoint = desktopDaemon.current()

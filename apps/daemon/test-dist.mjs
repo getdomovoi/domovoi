@@ -15,8 +15,8 @@ assert.deepEqual(Object.keys(publicApi).sort(), [
   "SystemdPathCharacterError",
   "WindowsTaskArgumentVariableError", "WindowsTaskNotDomovoiError", "WindowsTaskPathError", "WindowsTaskPercentSignError",
   "acquireLocalDaemon", "adoptRelayProfileSuccessor", "captureInheritedCredentials", "createProductionDaemon", "holdServiceHandoffFence",
-  "installDaemonService", "prepareRelayProfileSuccessor", "readDaemonServiceRuntimeVersion", "readDaemonServiceStatus", "readLocalServiceHandoffRefusal",
-  "removeDaemonService", "serviceProfileMismatch", "updateDaemonService", "verifyLocalFleetClientRoute",
+  "installDaemonService", "prepareRelayProfileSuccessor", "readDaemonServiceRuntimeCopy", "readDaemonServiceRuntimeVersion", "readDaemonServiceStatus", "readLocalServiceHandoffRefusal",
+  "removeDaemonService", "removeUnusedDaemonRuntimes", "serviceProfileMismatch", "updateDaemonService", "verifyLocalFleetClientRoute",
   "verifyRelayProfileSuccessor",
 ])
 

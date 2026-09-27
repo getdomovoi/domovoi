@@ -1,4 +1,4 @@
-import type { DaemonServiceInstallResult, DaemonServiceOptions, DaemonServiceRemovalResult, DaemonServiceRuntime, DaemonServiceStagedRuntime, DaemonServiceStatus } from "@getdomovoi/daemon"
+import type { DaemonServiceInstallResult, DaemonServiceOptions, DaemonServiceRemovalResult, DaemonServiceRuntime, DaemonServiceRuntimeCopy, DaemonServiceStagedRuntime, DaemonServiceStatus } from "@getdomovoi/daemon"
 import { publishFileDurably } from "@getdomovoi/credential-store"
 import { isLoginServiceRuntimeVersion } from "@getdomovoi/protocol"
 import { randomUUID } from "node:crypto"
@@ -106,6 +106,16 @@ export type DesktopDaemonServiceDependencies = {
   // is only a snapshot; a turn can start after it. Throws when the daemon
   // cannot be asked.
   fence: () => Promise<ServiceHandoffFence>
+  // #635: the published runtime copy the login service definition names
+  // (readDaemonServiceRuntimeCopy). Read inside the publish, which the service
+  // calls run under their service-operation lease before they write the new
+  // definition, so it is the copy the service ran before this change. Throws
+  // when it cannot be read.
+  runtimeCopy: () => Promise<DaemonServiceRuntimeCopy>
+  // #635: removes the copies under the profile that neither the definition
+  // now nor the one before this change names, under the service-operation
+  // lease (removeUnusedDaemonRuntimes). Its answer is not shown.
+  removeUnusedRuntimes: (options: { published: DaemonServiceRuntime; previous: DaemonServiceRuntimeCopy }) => Promise<unknown>
   daemon: {
     // Held while the service takes the profile or gives it back, so a
     // renderer reconnect waits instead of starting a daemon.
@@ -316,11 +326,16 @@ async function resolvedAhead(fs: RuntimeFileSystem, pathApi: typeof posix, path:
 // The runtime directory is pinned by its device, inode and real path when it
 // is checked, and must still be that directory right before the rename.
 // Limits: Node has no calls relative to an open directory, so a swap in the
-// instant between that check and the rename is not caught. Each successful
-// install or update leaves the copies earlier services used; removing them is
-// not built. Every publish leaves its private staging directory outside every
-// profile: empty after a publish, holding the partial copy after a failure
-// (round 8). It is only disk space.
+// instant between that check and the rename is not caught. Every publish
+// leaves its private staging directory outside every profile: empty after a
+// publish, holding the partial copy after a failure (round 8). It is only disk
+// space.
+//
+// #635 (ruled Q60 A): once an install or update has confirmed its new
+// service, DesktopDaemonService asks the daemon to remove the copies under the
+// profile that neither the service definition nor the one before this change
+// names (removeUnusedDaemonRuntimes). A copy a failed change published stays
+// until the next confirmed one.
 export type PreparedDaemonRuntime = {
   // Where the published copy will be, and the shipped runtime it copies.
   runtime: DaemonServiceRuntime
@@ -457,6 +472,10 @@ function message(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
 }
 
+// #635: what the publish of one change saw: the copy the service ran before
+// it, when that could be read, and whether the publish completed.
+type NotedRuntimeCopy = { previous?: DaemonServiceRuntimeCopy; published?: true }
+
 // The fence answered a refusal, or could not be taken, inside the installer's
 // handoff hook. Throwing it stops the install before anything is claimed.
 class HandoffNotFenced extends Error {
@@ -484,6 +503,7 @@ export class DesktopDaemonService {
     let released = false
     let fence: { release: () => void } | undefined
     let prepared: PreparedDaemonRuntime | undefined
+    const noted: NotedRuntimeCopy = {}
     try {
       const refused = (await this.#profileRefusal()) ?? (await this.#refusal())
       if (refused) return refused
@@ -492,7 +512,7 @@ export class DesktopDaemonService {
         prepared = await this.deps.stageRuntime("install")
         installed = await this.deps.install({
           runtime: prepared.runtime,
-          staged: { runtime: prepared.staged, publish: prepared.publish },
+          staged: { runtime: prepared.staged, publish: this.#publishNoting(prepared, noted) },
           releaseInAppDaemon: async () => {
             const held = await this.#fence()
             if (!("release" in held)) throw new HandoffNotFenced(held)
@@ -534,6 +554,7 @@ export class DesktopDaemonService {
         // this window could not reach the daemon".
         return { ok: false, reason: "installed-not-attached", kind: installed.kind, target, message: "The daemon this window reached is not the running service." }
       }
+      await this.#removeUnusedRuntimes(prepared, noted)
       return { ok: true, kind: installed.kind, target, configurationPath: installed.configurationPath, daemonRunning: true }
     } finally {
       fence?.release()
@@ -588,6 +609,7 @@ export class DesktopDaemonService {
     let held = false
     let fence: { release: () => void } | undefined
     let prepared: PreparedDaemonRuntime | undefined
+    const noted: NotedRuntimeCopy = {}
     try {
       const refused = (await this.#profileRefusal()) ?? (await this.#refusal())
       if (refused) return refused
@@ -604,7 +626,7 @@ export class DesktopDaemonService {
         prepared = await this.deps.stageRuntime("update")
         held = true
         this.deps.daemon.beginHandoff()
-        updated = await this.deps.update({ runtime: prepared.runtime, staged: { runtime: prepared.staged, publish: prepared.publish } })
+        updated = await this.deps.update({ runtime: prepared.runtime, staged: { runtime: prepared.staged, publish: this.#publishNoting(prepared, noted) } })
       } catch (cause) {
         const missing = runtimeMissing(cause)
         if (missing) return { ok: false, reason: "runtime-missing", ...missing }
@@ -627,11 +649,39 @@ export class DesktopDaemonService {
       if (attached.kind !== "attached" || attached.owner !== "daemon" || !(await this.#serviceRuns())) {
         return { ok: false, reason: "installed-not-attached", kind: updated.kind, target, message: "The daemon this window reached is not the running service." }
       }
+      await this.#removeUnusedRuntimes(prepared, noted)
       return { ok: true, kind: updated.kind, target, configurationPath: updated.configurationPath, daemonRunning: true }
     } finally {
       fence?.release()
       if (held) this.deps.daemon.endHandoff()
       this.#busy = false
+    }
+  }
+
+  // #635: the staged publish, with the read of the copy the service runs
+  // first. A read that fails leaves the previous copy unknown, and then no
+  // cleanup runs; the publish itself goes ahead either way.
+  #publishNoting(prepared: PreparedDaemonRuntime, noted: NotedRuntimeCopy): () => Promise<void> {
+    return async () => {
+      try {
+        noted.previous = await this.deps.runtimeCopy()
+      } catch {
+        delete noted.previous
+      }
+      await prepared.publish()
+      noted.published = true
+    }
+  }
+
+  // #635: runs once the new service is confirmed, and only when this change
+  // published a copy and knows what the service ran before. Nothing about it
+  // is shown: a failure keeps the copies and leaves the outcome as it is.
+  async #removeUnusedRuntimes(prepared: PreparedDaemonRuntime, noted: NotedRuntimeCopy): Promise<void> {
+    if (noted.published !== true || noted.previous === undefined) return
+    try {
+      await this.deps.removeUnusedRuntimes({ published: prepared.runtime, previous: noted.previous })
+    } catch {
+      // Kept: the next confirmed change tries again.
     }
   }
 

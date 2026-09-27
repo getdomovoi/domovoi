@@ -31,6 +31,9 @@ export const daemonModuleExports = [
   "removeDaemonService",
   "serviceProfileMismatch",
   "updateDaemonService",
+  // #635: the copy the service runs, and the removal of unused copies.
+  "readDaemonServiceRuntimeCopy",
+  "removeUnusedDaemonRuntimes",
   "DaemonServiceRuntimeMissingError",
 ] as const
 
