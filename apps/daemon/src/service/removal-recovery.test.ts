@@ -179,7 +179,7 @@ it("matches a legacy Linux service's default profile from a Windows host", async
   } finally { Object.defineProperty(process, "platform", real) }
 })
 
-const cannotDenyRead =process.platform === "win32" || process.getuid?.() === 0
+const cannotDenyRead = process.platform === "win32" || process.getuid?.() === 0
 it.each([
   ["truncated owner record", false, async (home: string) => {
     await writeFile(localOwnerRecordPath(home), '{"version":1,"state":"rea', { mode: 0o600 })
