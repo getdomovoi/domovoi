@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto"
-import { lstat, readdir, readFile, realpath } from "node:fs/promises"
-import { homedir } from "node:os"
-import { join } from "node:path"
+import { rmSync } from "node:fs"
+import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { homedir, tmpdir } from "node:os"
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { pathToFileURL } from "node:url"
 
 import type * as Daemon from "@getdomovoi/daemon"
@@ -37,7 +38,15 @@ export const daemonModuleExports = [
 export type DaemonModule = Pick<typeof Daemon, (typeof daemonModuleExports)[number]>
 
 // appPath: the app's own archive, which carries the digests packaging recorded.
-export type DaemonModuleLocation = { isPackaged: boolean; resourcesPath: string; appPath?: string }
+// copyParent: where the private checked copy is made (the system temporary
+// directory by default). afterCheck: for tests, runs between check and load.
+export type DaemonModuleLocation = {
+  isPackaged: boolean
+  resourcesPath: string
+  appPath?: string
+  copyParent?: string
+  afterCheck?: () => Promise<void>
+}
 
 export function daemonModuleSpecifier({ isPackaged, resourcesPath }: DaemonModuleLocation): string {
   return isPackaged
@@ -54,30 +63,69 @@ export class DaemonRuntimeLoadError extends Error {
   }
 }
 
-// Security review of #577 (P2): a packaged app imports its daemon only from
-// files inside its own resources that match the digests packaging recorded
-// (scripts/daemon-runtime.mjs, writeDaemonRuntimeManifest) and shipped inside
-// app.asar, not beside the runtime. It proves the dist files imported are the
-// ones this build shipped. Limits: dependencies under node_modules are covered
-// only by where that directory resolves, and a process running as the same
-// user can rewrite app.asar too (outside the threat model, ruled on #577).
-async function verifyShippedDaemon(resourcesPath: string, appPath = ""): Promise<void> {
-  const daemon = join(resourcesPath, "daemon-runtime", "daemon")
-  const inside = join(await realpath(resourcesPath), "daemon-runtime", "daemon")
+// Security review of #577 (P2), owner ruling 2026-09-26 (Q39 B): a packaged
+// app loads its daemon only from a private copy of bytes it has checked. Every
+// file of the shipped daemon, dist and node_modules alike, must match the
+// digests packaging recorded (scripts/daemon-runtime.mjs,
+// writeDaemonRuntimeManifest) inside app.asar, and the tree must hold exactly
+// those files and links. Each file is read once, hashed, and those bytes are
+// written to a fresh directory only this user can read, from which the daemon
+// is imported: the check and the load read the same bytes, and a file swapped
+// in the resources after its read is never loaded. The copy is removed when
+// the process exits. Limits: a process running as the same user can write the
+// copy or app.asar too (outside the threat model, ruled on #577), and a copy
+// left by a crash stays in the temporary directory until it is cleared.
+async function checkedDaemonCopy(location: DaemonModuleLocation): Promise<string> {
+  const daemon = join(location.resourcesPath, "daemon-runtime", "daemon")
+  const inside = join(await realpath(location.resourcesPath), "daemon-runtime", "daemon")
   for (const part of ["dist", "node_modules"]) {
     if (await realpath(join(daemon, part)) !== join(inside, part)) throw new Error(`${join(daemon, part)} leads outside this app's resources.`)
   }
-  const manifestPath = join(appPath, "daemon-runtime-manifests", `${process.platform}-${process.arch}.json`)
+  const manifestPath = join(location.appPath ?? "", "daemon-runtime-manifests", `${process.platform}-${process.arch}.json`)
   const manifest: unknown = JSON.parse(await readFile(manifestPath, "utf8"))
-  const expected: unknown = typeof manifest === "object" && manifest !== null && "dist" in manifest ? manifest.dist : undefined
-  if (typeof expected !== "object" || expected === null || Array.isArray(expected)) throw new Error(`${manifestPath} is not a digest manifest.`)
-  const digests = expected as Record<string, unknown>
-  const dist = join(daemon, "dist")
-  const names = (await readdir(dist)).sort()
-  if (names.join("/") !== Object.keys(digests).sort().join("/")) throw new Error(`${dist} does not hold the files this build shipped.`)
-  for (const name of names) {
-    const path = join(dist, name)
-    if (!(await lstat(path)).isFile() || createHash("sha256").update(await readFile(path)).digest("hex") !== digests[name]) throw new Error(`${path} does not match this build.`)
+  const record = (value: unknown) => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+  const files = record(record(manifest)?.files)
+  const links = record(record(manifest)?.links)
+  if (!files || !links) throw new Error(`${manifestPath} is not a digest manifest.`)
+  const found: { files: string[]; links: string[] } = { files: [], links: [] }
+  const walk = async (directory: string, prefix: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const key = prefix === "" ? entry.name : `${prefix}/${entry.name}`
+      if (entry.isDirectory()) await walk(join(directory, entry.name), key)
+      else if (entry.isFile()) found.files.push(key)
+      else if (entry.isSymbolicLink()) found.links.push(key)
+      else throw new Error(`${daemon} does not hold the files this build shipped.`)
+    }
+  }
+  await walk(daemon, "")
+  const same = (keys: string[], expected: Record<string, unknown>) => keys.sort().join("\n") === Object.keys(expected).sort().join("\n")
+  if (!same(found.files, files) || !same(found.links, links)) throw new Error(`${daemon} does not hold the files this build shipped.`)
+  const copy = await mkdtemp(join(location.copyParent ?? tmpdir(), "domovoi-daemon-"))
+  process.once("exit", () => rmSync(copy, { recursive: true, force: true }))
+  try {
+    for (const key of found.files) {
+      const path = join(daemon, ...key.split("/"))
+      const expected = record(files[key])
+      const bytes = await readFile(path)
+      if (createHash("sha256").update(bytes).digest("hex") !== expected?.sha256) throw new Error(`${path} does not match this build.`)
+      const target = join(copy, ...key.split("/"))
+      await mkdir(dirname(target), { recursive: true })
+      await writeFile(target, bytes, { flag: "wx", mode: expected.executable === true ? 0o700 : 0o600 })
+    }
+    for (const key of found.links) {
+      const path = join(daemon, ...key.split("/"))
+      const text = await readlink(path)
+      const target = join(copy, ...key.split("/"))
+      const into = relative(copy, resolve(dirname(target), text))
+      if (text !== links[key] || into === ".." || into.startsWith(`..${sep}`) || isAbsolute(into)) throw new Error(`${path} does not match this build.`)
+      await mkdir(dirname(target), { recursive: true })
+      await symlink(text, target)
+    }
+    await location.afterCheck?.()
+    return copy
+  } catch (cause) {
+    await rm(copy, { recursive: true, force: true })
+    throw cause
   }
 }
 
@@ -87,16 +135,17 @@ export type InheritedCredentialHandOff = { take: () => Daemon.InheritedCredentia
 
 export async function loadDaemonModule(
   location: DaemonModuleLocation,
-  importer: (specifier: string) => Promise<Record<string, unknown>> = async (specifier) => {
-    if (location.isPackaged) await verifyShippedDaemon(location.resourcesPath, location.appPath)
-    return import(specifier) as Promise<Record<string, unknown>>
-  },
+  importer?: (specifier: string) => Promise<Record<string, unknown>>,
   credentials: InheritedCredentialHandOff = { take: takeInheritedCredentials, homeDirectory: () => homedir() },
 ): Promise<{ module: DaemonModule; from: string }> {
-  const from = daemonModuleSpecifier(location)
+  let from = daemonModuleSpecifier(location)
   let loaded: Record<string, unknown>
   try {
-    loaded = await importer(from)
+    if (importer) loaded = await importer(from)
+    else {
+      if (location.isPackaged) from = pathToFileURL(join(await checkedDaemonCopy(location), "dist", "public.js")).href
+      loaded = await import(from) as Record<string, unknown>
+    }
   } catch (cause) {
     throw new DaemonRuntimeLoadError(`${from} could not be imported: ${cause instanceof Error ? cause.message : String(cause)}`)
   }

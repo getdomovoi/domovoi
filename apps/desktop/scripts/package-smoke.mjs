@@ -149,13 +149,15 @@ try {
     timeoutMs,
   })
   assertSmokeProcess(result, { timeoutMs, description })
-  // The in-app daemon must have been loaded from the same files the
-  // --version check above ran.
+  // The in-app daemon must have been loaded from the private copy the app
+  // makes of the checked bytes of the runtime the --version check above ran
+  // (owner ruling 2026-09-26, Q39 B), never from the resources directly. The
+  // copy is removed when the app exits, so only its place is checked here.
   const loadedFrom = result.stdout.split(/\r?\n/u).find((line) => line.startsWith("DOMOVOI_DESKTOP_DAEMON_MODULE "))?.slice("DOMOVOI_DESKTOP_DAEMON_MODULE ".length)
-  const expectedModule = pathToFileURL(join(resourcesDirectory, "daemon-runtime", "daemon", "dist", "public.js")).href
-  if (loadedFrom !== expectedModule) {
+  const loadedPath = loadedFrom?.startsWith("file:") ? fileURLToPath(loadedFrom) : undefined
+  if (loadedPath === undefined || !/[\\/]domovoi-daemon-[^\\/]+[\\/]dist[\\/]public\.js$/u.test(loadedPath) || loadedPath.startsWith(resourcesDirectory)) {
     reportSmokeOutput(result)
-    throw new Error(`${description} in-app daemon loaded from ${loadedFrom ?? "nowhere reported"}, expected ${expectedModule}`)
+    throw new Error(`${description} in-app daemon loaded from ${loadedFrom ?? "nowhere reported"}, expected a checked copy of ${pathToFileURL(join(resourcesDirectory, "daemon-runtime", "daemon", "dist", "public.js")).href}`)
   }
   process.stdout.write(`in-app daemon loaded from ${loadedFrom}\n`)
   await assertDaemonProfile(profileRoot, description)

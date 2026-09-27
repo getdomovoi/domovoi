@@ -367,23 +367,31 @@ export async function proveDaemonRuns({ nodeExecutable, nodeSha256, daemonEntry,
   return printed
 }
 
-// Security review of #577 (P2): the digest of every file in the shipped
-// daemon's dist, recorded after the tree is final and proven. electron-builder
-// puts the manifest inside app.asar, not beside the runtime it describes, and
-// the app checks the files it imports against it before loading them
-// (src/main/daemon-module.ts). A flat set of regular files only: the app
-// checks exactly that shape.
+// Security review of #577 (P2), owner ruling 2026-09-26 (Q39 B): the digest
+// of every file in the shipped daemon, dist and node_modules alike, recorded
+// after the tree is final and proven. electron-builder puts the manifest
+// inside app.asar, not beside the runtime it describes. The app checks each
+// file against it and loads the daemon from a copy of the checked bytes
+// (src/main/daemon-module.ts). Links are recorded by their text; the final
+// check has already required each to stay inside the tree. Paths use "/".
 export async function writeDaemonRuntimeManifest({ daemonRoot, manifestPath }) {
-  const dist = join(daemonRoot, "dist")
-  const digests = {}
-  for (const name of (await readdir(dist)).sort()) {
-    const path = join(dist, name)
-    if (!(await lstat(path)).isFile()) throw new Error(`${path} is not a regular file; the app checks a flat set of files in dist.`)
-    digests[name] = await sha256Of(path)
+  const files = {}
+  const links = {}
+  const walk = async (directory, prefix) => {
+    for (const name of (await readdir(directory)).sort()) {
+      const path = join(directory, name)
+      const key = prefix === "" ? name : `${prefix}/${name}`
+      const entry = await lstat(path)
+      if (entry.isSymbolicLink()) links[key] = await readlink(path)
+      else if (entry.isDirectory()) await walk(path, key)
+      else if (entry.isFile()) files[key] = { sha256: await sha256Of(path), executable: process.platform !== "win32" && (entry.mode & 0o111) !== 0 }
+      else throw new Error(`${path} is not a file, a directory or a link; the app checks only those.`)
+    }
   }
+  await walk(daemonRoot, "")
   await mkdir(dirname(manifestPath), { recursive: true })
-  await writeFile(manifestPath, `${JSON.stringify({ version: 1, dist: digests }, null, 2)}\n`)
-  return digests
+  await writeFile(manifestPath, `${JSON.stringify({ version: 2, files, links }, null, 2)}\n`)
+  return { files: Object.keys(files).length, links: Object.keys(links).length }
 }
 
 // Bytes on disk, links counted once as links: pnpm's store is reached through
@@ -423,8 +431,8 @@ export async function prepareDaemonRuntime({
     log(`${target.key} is not this host, so ${daemonEntry} was not run; the packaging job on that platform proves it`)
   }
   const manifestPath = join(desktopRoot, "daemon-runtime-manifests", `${target.key}.json`)
-  const digests = await writeDaemonRuntimeManifest({ daemonRoot: join(output, "daemon"), manifestPath })
-  log(`recorded the digests of ${Object.keys(digests).length} files in daemon-runtime/${target.key}/daemon/dist in ${manifestPath}`)
+  const recorded = await writeDaemonRuntimeManifest({ daemonRoot: join(output, "daemon"), manifestPath })
+  log(`recorded the digests of ${recorded.files} files and ${recorded.links} links in daemon-runtime/${target.key}/daemon in ${manifestPath}`)
   const nodeBytes = await directoryBytes(join(output, "node"))
   const daemonBytes = await directoryBytes(join(output, "daemon"))
   log(`daemon-runtime/${target.key}: node ${(nodeBytes / 1048576).toFixed(1)} MB, daemon ${(daemonBytes / 1048576).toFixed(1)} MB`)

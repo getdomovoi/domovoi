@@ -496,30 +496,39 @@ test("keeps a package link to the tree root itself, and the final check passes i
   }
 })
 
-// Security review of #577 (P2): the app checks the daemon it imports against
-// digests recorded here, after the tree is final, and shipped inside app.asar
-// rather than beside the runtime they describe.
-test("records the digest of every file in the daemon's dist, and refuses anything but a flat set of files", async () => {
-  const { mkdir, symlink } = await import("node:fs/promises")
+// Security review of #577 (P2), owner ruling 2026-09-26 (Q39 B): the app
+// checks every file of the daemon it loads, dist and node_modules alike,
+// against digests recorded here after the tree is final, shipped inside
+// app.asar rather than beside the runtime they describe. Links are recorded by
+// their text, and a file's executable bit is kept for the checked copy.
+test("records the digest of every file in the shipped daemon, its links and which files are executable", async () => {
+  const { chmod, mkdir, symlink } = await import("node:fs/promises")
   const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-manifest-"))
   try {
     const daemonRoot = join(root, "daemon")
     await mkdir(join(daemonRoot, "dist"), { recursive: true })
+    await mkdir(join(daemonRoot, "node_modules", "dep", "bin"), { recursive: true })
+    await writeFile(join(daemonRoot, "package.json"), "{}\n")
     await writeFile(join(daemonRoot, "dist", "public.js"), "export {}\n")
-    await writeFile(join(daemonRoot, "dist", "chunk-A.js"), "chunk\n")
+    await writeFile(join(daemonRoot, "node_modules", "dep", "index.js"), "dep\n")
+    await writeFile(join(daemonRoot, "node_modules", "dep", "bin", "helper"), "helper\n")
+    await chmod(join(daemonRoot, "node_modules", "dep", "bin", "helper"), 0o755)
+    await symlink("index.js", join(daemonRoot, "node_modules", "dep", "alias.js"))
     const manifestPath = join(root, "manifests", "darwin-arm64.json")
-    await writeDaemonRuntimeManifest({ daemonRoot, manifestPath })
+    const recorded = await writeDaemonRuntimeManifest({ daemonRoot, manifestPath })
     const digest = (text) => createHash("sha256").update(text).digest("hex")
-    assert.deepEqual(JSON.parse(await readFile(manifestPath, "utf8")), {
-      version: 1,
-      dist: { "chunk-A.js": digest("chunk\n"), "public.js": digest("export {}\n") },
-    })
-
-    await mkdir(join(daemonRoot, "dist", "nested"))
-    await assert.rejects(writeDaemonRuntimeManifest({ daemonRoot, manifestPath }), /nested is not a regular file/)
-    await rm(join(daemonRoot, "dist", "nested"), { recursive: true })
-    await symlink(join(daemonRoot, "dist", "public.js"), join(daemonRoot, "dist", "linked.js"))
-    await assert.rejects(writeDaemonRuntimeManifest({ daemonRoot, manifestPath }), /linked\.js is not a regular file/)
+    const expected = {
+      version: 2,
+      files: {
+        "dist/public.js": { sha256: digest("export {}\n"), executable: false },
+        "node_modules/dep/bin/helper": { sha256: digest("helper\n"), executable: process.platform !== "win32" },
+        "node_modules/dep/index.js": { sha256: digest("dep\n"), executable: false },
+        "package.json": { sha256: digest("{}\n"), executable: false },
+      },
+      links: { "node_modules/dep/alias.js": "index.js" },
+    }
+    assert.deepEqual(JSON.parse(await readFile(manifestPath, "utf8")), expected)
+    assert.equal(recorded.files, 4)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
