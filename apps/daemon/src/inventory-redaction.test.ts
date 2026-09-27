@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { toolInventoryEntrySchema } from "@getdomovoi/protocol"
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { inventoryFieldCaps, inventoryShellWords, redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
 
@@ -791,6 +791,45 @@ describe("output within the protocol's caps", () => {
     expect(redacted.length).toBeLessThanOrEqual(commandCap)
     expect(backstopAccepts(redacted)).toBe(true)
     expect(inventoryShellWords(redacted)).toEqual(inventoryShellWords(expected))
+  })
+
+  // Count the characters a string method builds while one redaction runs.
+  // Fitting a long input to the cap builds the shortened output once, not
+  // again for each word dropped: eight times the words builds about eight
+  // times as much, and a rebuild per dropped word about sixty-four times.
+  const built = <T>(target: T, method: keyof T & string, run: () => string) => {
+    let total = 0
+    const original = target[method] as (this: unknown, ...args: unknown[]) => unknown
+    const spy = vi.spyOn(target as Record<string, (...args: unknown[]) => unknown>, method).mockImplementation(function (this: unknown, ...args: unknown[]) {
+      const result = original.apply(this, args)
+      if (typeof result === "string") total += result.length
+      return result
+    })
+    let output: string
+    try {
+      output = run()
+    } finally {
+      spy.mockRestore()
+    }
+    return { output, total }
+  }
+  const words = (count: number) => Array.from({ length: count }, () => "a")
+
+  it("fits a long argument vector without building its line again per argument", () => {
+    const small = built(Array.prototype, "join", () => redactInventoryArgv(["echo", ...words(2_500)]))
+    const large = built(Array.prototype, "join", () => redactInventoryArgv(["echo", ...words(20_000)]))
+    for (const { output } of [small, large]) expect(output).toBe(`echo${" a".repeat(1_016)} [REDACTED]`)
+    expect(large.total / small.total).toBeLessThan(12)
+  })
+
+  it.each([
+    ["text", (text: string) => redactInventoryText(text), `a${" a".repeat(1_018)} [REDACTED]`],
+    ["command", (text: string) => redactInventoryCommand(text), `a${" a".repeat(1_018)} [REDACTED]`],
+  ] as const)("fits a long %s without building it again per word", (_kind, redact, expected) => {
+    const small = built(String.prototype, "slice", () => redact(words(2_500).join(" ")))
+    const large = built(String.prototype, "slice", () => redact(words(20_000).join(" ")))
+    for (const { output } of [small, large]) expect(output).toBe(expected)
+    expect(large.total / small.total).toBeLessThan(12)
   })
 
   // The outputs at the cap, read by real shells in a directory where each
