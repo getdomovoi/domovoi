@@ -621,12 +621,17 @@ describe("staging the shipped runtime under the profile", () => {
       })
     })
 
-    it("writes nothing until publish, so a refused change leaves nothing behind", async () => {
+    // Round 8 (P2): not even the profile or its runtime directory is made
+    // before publish, which the service calls run under their lease.
+    it("writes nothing until publish, not even the profile or runtime directory, so a refused change leaves nothing behind", async () => {
       await withScratch(async ({ resources, home }) => {
         const prepared = await prepareDaemonRuntime(input(resources, home))
         expect(await readdir(join(dirname(home), "staging"))).toEqual([])
-        expect(await readdir(join(home, ".domovoi", "runtime"))).toEqual([])
+        expect(await entries(home)).toEqual([])
         expect(prepared.staged).toEqual(daemonRuntimeLayout(resources, platform))
+        await prepared.publish()
+        expect(dirname(copyOf(prepared.runtime))).toBe(join(home, ".domovoi", "runtime", "0.9.4"))
+        expect(await readFile(prepared.runtime.daemonEntryPath, "utf8")).toBe("daemon")
       })
     })
 
@@ -744,6 +749,10 @@ describe("staging the shipped runtime under the profile", () => {
         const real = nodeRuntimeFileSystem()
         const fileSystem = nodeRuntimeFileSystem({ ...otherVolume(), makePrivateDirectory: async (prefix) => { made.push(prefix); return real.makePrivateDirectory(prefix) } })
         const prepared = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, dataDirectory, fileSystem })
+        // Round 8 (P2): preparing makes neither the staging directory nor
+        // the profile's.
+        expect(await readdir(dataDirectory)).toEqual([])
+        expect(await entries(home)).toEqual([])
         await prepared.publish()
         expect(made).toHaveLength(1)
         expect(made[0]!.startsWith(join(dataDirectory, "runtime-staging"))).toBe(true)
@@ -765,7 +774,7 @@ describe("staging the shipped runtime under the profile", () => {
           await mkdir(join(root, "far"), { recursive: true })
           await expect(prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, dataDirectory, fileSystem } as Parameters<typeof prepareDaemonRuntime>[0]), label)
             .rejects.toThrow(`The profile directory ${join(home, ".domovoi")} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`)
-          expect(await readdir(join(home, ".domovoi", "runtime")), label).toEqual([])
+          expect(await entries(home), label).toEqual([])
         }
         expect(await readdir(inRepository)).toEqual([])
       })

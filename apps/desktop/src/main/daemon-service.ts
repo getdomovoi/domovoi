@@ -259,21 +259,34 @@ async function checkShippedRuntime(fs: RuntimeFileSystem, pathApi: typeof posix,
 
 // The profile directory and its runtime directory must be real directories
 // owned by this profile: a link there would send the copy, and the
-// replacement of an earlier copy, somewhere else. Missing ones are made,
-// private to the user; the profile's parent must exist.
-async function runtimeRoot(fs: RuntimeFileSystem, pathApi: typeof posix, profileDirectory: string): Promise<string> {
+// replacement of an earlier copy, somewhere else. Checking makes nothing and
+// allows a missing one; publish makes the missing ones, private to the user
+// (the profile's parent must exist), and checks again. Whether the runtime
+// directory is there now is returned.
+async function runtimeRoot(fs: RuntimeFileSystem, pathApi: typeof posix, profileDirectory: string, make: boolean): Promise<boolean> {
   let at = profileDirectory
   for (const step of ["", "runtime"]) {
     at = step === "" ? at : pathApi.join(at, step)
-    if (await fs.entry(at) === "missing") await fs.makeDirectory(at)
-    if (await fs.entry(at) !== "directory") {
+    if (make && await fs.entry(at) === "missing") await fs.makeDirectory(at)
+    const found = await fs.entry(at)
+    if (found === "missing" && !make) return false
+    if (found !== "directory") {
       throw new Error(`${at} is not a directory (it may be a link), so no runtime was copied under it.`)
     }
   }
   if (await fs.realpath(at) !== pathApi.join(await fs.realpath(profileDirectory), "runtime")) {
     throw new Error(`${at} does not resolve inside the profile directory, so no runtime was copied under it.`)
   }
-  return at
+  return true
+}
+
+// The real path of a directory that may not exist yet: its nearest existing
+// ancestor resolved, with the missing names after it. That ancestor's device
+// is the one a directory made there will be on.
+async function resolvedAhead(fs: RuntimeFileSystem, pathApi: typeof posix, path: string): Promise<{ realpath: string; identity: string }> {
+  let at = path
+  while (await fs.entry(at) === "missing" && pathApi.dirname(at) !== at) at = pathApi.dirname(at)
+  return { realpath: pathApi.join(await fs.realpath(at), pathApi.relative(at, path)), identity: await fs.identity(at) }
 }
 
 // The copy under the profile outlives app updates and moves; the service
@@ -286,9 +299,10 @@ async function runtimeRoot(fs: RuntimeFileSystem, pathApi: typeof posix, profile
 // moves, replaces or deletes an earlier copy, so a failure after it leaves the
 // runtime the previous service runs as it was: there is no shared state to put
 // back, and a late or concurrent publish cannot replace another copy.
-// Preparing only checks and chooses; the service calls run publish under
-// their service-operation lease, after every profile check, so a refused
-// change writes nothing.
+// Preparing only checks and chooses, and makes no directory, the profile's
+// own included (round 8); the service calls run publish under their
+// service-operation lease, after every profile check, so a refused change
+// writes nothing.
 //
 // Rounds 5 to 7 (P2): the copy is made in a private directory outside every
 // profile and moved in by one rename, so a swapped path cannot redirect the
@@ -338,11 +352,16 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
   const versionDirectory = profileRuntimeDirectory(input.profileDirectory, input.version, input.platform)
   const shippedRoot = pathApi.join(input.resourcesPath, runtimeDirectory)
   await checkShippedRuntime(fs, pathApi, shippedRoot, input.platform, input.operation ?? "install")
-  const root = await runtimeRoot(fs, pathApi, input.profileDirectory)
-  const pinned = { identity: await fs.identity(root), realpath: await fs.realpath(root) }
+  // Round 8 (P2): preparing reads only. The profile directory, its runtime
+  // directory and <app data>/runtime-staging may be missing now; publish
+  // makes them under the service-operation lease and checks them again.
+  const root = pathApi.join(input.profileDirectory, "runtime")
+  const pin = async () => ({ identity: await fs.identity(root), realpath: await fs.realpath(root) })
+  let pinned = await runtimeRoot(fs, pathApi, input.profileDirectory, false) ? await pin() : undefined
   const samePath = (left: string, right: string) => input.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right
   const unchanged = async () => {
-    const intact = await fs.entry(input.profileDirectory) === "directory"
+    const intact = pinned !== undefined
+      && await fs.entry(input.profileDirectory) === "directory"
       && await fs.entry(root) === "directory"
       && await fs.identity(root) === pinned.identity
       && samePath(await fs.realpath(root), pinned.realpath)
@@ -355,26 +374,30 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
       if (pathApi.dirname(at) === at) return false
     }
   }
-  const profile = await fs.realpath(input.profileDirectory)
+  const ahead = await resolvedAhead(fs, pathApi, root)
+  const runtimeDevice = device(pinned?.identity ?? ahead.identity)
+  const profile = (await resolvedAhead(fs, pathApi, input.profileDirectory)).realpath
   const usable = async (path: string) => {
     if (!pathApi.isAbsolute(path) || await fs.entry(path) !== "directory") return false
-    if (device(await fs.identity(path)) !== device(pinned.identity)) return false
+    if (device(await fs.identity(path)) !== runtimeDevice) return false
     const real = await fs.realpath(path)
     return !inside(pathApi, profile, real) && !await insideRepository(real)
   }
+  const refusal = () => new Error(`The profile directory ${input.profileDirectory} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`)
   let parent: string | undefined
+  // A staging place under the app's data directory that is not there yet:
+  // made, and checked again, at publish.
+  let makeParent = false
   if (input.stagingParent !== undefined) {
     if (await usable(input.stagingParent)) parent = input.stagingParent
   } else if (await usable(tmpdir())) {
     parent = tmpdir()
   } else if (input.dataDirectory !== undefined && await usable(input.dataDirectory)) {
     const candidate = pathApi.join(input.dataDirectory, "runtime-staging")
-    if (await fs.entry(candidate) === "missing") await fs.makeDirectory(candidate)
-    if (await usable(candidate)) parent = candidate
+    makeParent = await fs.entry(candidate) === "missing"
+    if (makeParent || await usable(candidate)) parent = candidate
   }
-  if (parent === undefined) {
-    throw new Error(`The profile directory ${input.profileDirectory} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`)
-  }
+  if (parent === undefined) throw refusal()
   const stagingParent = parent
   const destination = pathApi.join(versionDirectory, randomUUID().replaceAll("-", "").slice(0, 12))
   const layout = (at: string): DaemonServiceRuntime => ({
@@ -385,6 +408,12 @@ export async function prepareDaemonRuntime(input: StageInput): Promise<PreparedD
   const publish = async () => {
     if (published) throw new Error("This staged runtime was already published.")
     published = true
+    if (makeParent) {
+      await fs.makeDirectory(stagingParent)
+      if (!await usable(stagingParent)) throw refusal()
+    }
+    await runtimeRoot(fs, pathApi, input.profileDirectory, true)
+    pinned ??= await pin()
     await unchanged()
     if (await fs.entry(versionDirectory) === "missing") await fs.makeDirectory(versionDirectory)
     for (const path of [versionDirectory, destination]) {
