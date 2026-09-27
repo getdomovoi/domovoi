@@ -9,7 +9,7 @@
 // entry under that program.
 import { createHash, randomBytes } from "node:crypto"
 import { createReadStream, createWriteStream } from "node:fs"
-import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { pipeline } from "node:stream/promises"
@@ -44,8 +44,11 @@ export async function sha256Of(path) {
   return hash.digest("hex")
 }
 
+// stat follows a link to what it names on every platform. access does not on
+// Windows: libuv answers it from the link's own attributes, so a link with
+// nothing behind it would count as there.
 async function exists(path) {
-  try { await access(path); return true } catch { return false }
+  try { await stat(path); return true } catch { return false }
 }
 
 // Downloads the archive once into the cache, refusing to keep bytes whose

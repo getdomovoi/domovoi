@@ -186,6 +186,30 @@ test("drops links with nothing behind them and links that leave the shipped tree
   }
 })
 
+test("drops a link with nothing behind it where access reads the link itself, as it does on Windows", async () => {
+  const { removeDanglingLinks } = await import("./daemon-runtime.mjs")
+  const { createRequire, syncBuiltinESMExports } = await import("node:module")
+  const { lstat, mkdir, symlink } = await import("node:fs/promises")
+  const promises = createRequire(import.meta.url)("node:fs/promises")
+  const checked = promises.access
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-windows-access-"))
+  try {
+    const modules = join(root, "node_modules")
+    await mkdir(modules)
+    await symlink(join(root, "gone"), join(modules, "dangling-link"), "file")
+    // libuv answers access on Windows from GetFileAttributesW, which reports
+    // a link's own attributes and does not follow it to its target.
+    promises.access = async (path) => { await lstat(path) }
+    syncBuiltinESMExports()
+    assert.equal(await removeDanglingLinks(modules), 1)
+    await assert.rejects(lstat(join(modules, "dangling-link")), { code: "ENOENT" })
+  } finally {
+    promises.access = checked
+    syncBuiltinESMExports()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("prunes the shipped daemon to what the runtime loads on the packaged platform", async () => {
   const { pruneDaemonRuntime } = await import("./daemon-runtime.mjs")
   const { mkdir, readdir } = await import("node:fs/promises")
