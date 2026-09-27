@@ -63,6 +63,30 @@ export class DaemonServiceUpdateError extends Error {
   }
 }
 
+// Security review round 10 of #577 (P2): the publish where it is an update's
+// first change (systemd, a WSL guest). It is not cut short by the deadline:
+// the update waits for it, however long, so the answer follows what happened
+// to the copy and the service-operation lease is held until it settles. Not
+// started because the deadline had expired, or failed, it changed nothing
+// about the service. Published, the copy exists: a failed check or a deadline
+// that expired meanwhile is "runtime-copied", naming the copy.
+export async function publishFirst(deadline: OperationDeadline, publish: () => Promise<void>, check: () => Promise<void>, copy: string): Promise<void> {
+  deadline.remainingMs()
+  if (deadline.signal.aborted) throw new DaemonServiceUpdateError("nothing-changed", deadline.signal.reason)
+  try {
+    await publish()
+  } catch (cause) {
+    throw new DaemonServiceUpdateError("nothing-changed", cause)
+  }
+  try {
+    await check()
+  } catch (cause) {
+    throw new DaemonServiceUpdateError("runtime-copied", cause, undefined, copy)
+  }
+  deadline.remainingMs()
+  if (deadline.signal.aborted) throw new DaemonServiceUpdateError("runtime-copied", deadline.signal.reason, undefined, copy)
+}
+
 // Ruled 2026-09-23: inside an update's texts, a profile another daemon holds
 // is named in a few words. ProfileAlreadyOwnedError keeps its text elsewhere.
 function briefly(cause: unknown): unknown {

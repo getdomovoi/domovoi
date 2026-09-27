@@ -23,7 +23,7 @@ import {
   type ServiceStatus,
 } from "./install.js"
 import { launchdPlistProgram, systemdUnitProgram } from "./units.js"
-import { DaemonServiceUpdateError, runServiceUpdate, trackInFlight } from "./update-outcome.js"
+import { DaemonServiceUpdateError, publishFirst, runServiceUpdate, trackInFlight } from "./update-outcome.js"
 import { prepareWslUpdate } from "./wsl-install.js"
 
 export { DaemonServiceUpdateError, type DaemonServiceUpdateOutcome } from "./update-outcome.js"
@@ -252,23 +252,23 @@ export async function updateDaemonService(
     // Round 8 (P2), ruled 2026-09-26 (Q64 A): on systemd and for a WSL guest
     // the publish is the first change, so a published runtime that fails its
     // check has changed nothing about the service. That is "runtime-copied",
-    // naming the copy, not "nothing-changed". launchd and the Windows task
-    // publish after the previous service was stopped; there a failure is a
-    // failed swap, and the previous service is put back.
+    // naming the copy, not "nothing-changed". Round 10 (P2): there the publish
+    // is not cut short by the deadline; publishFirst waits for it and answers
+    // by what happened to the copy. launchd and the Windows task publish after
+    // the previous service was stopped; there a failure is a failed swap, and
+    // the previous service is put back.
     const firstChange = dependencies.platform === "linux"
-    const publish = async () => {
+    const copy = posix.dirname(posix.dirname(posix.dirname(options.runtime.daemonEntryPath)))
+    const publish = async (deadline: OperationDeadline) => {
       if (options.staged === undefined) return
+      const check = () => checkRuntime(options.runtime, dependencies, "update")
+      if (firstChange) return publishFirst(deadline, () => tracked.effects.publishStaged(), check, copy)
       await tracked.effects.publishStaged()
-      try {
-        await checkRuntime(options.runtime, dependencies, "update")
-      } catch (cause) {
-        if (!firstChange) throw cause
-        throw new DaemonServiceUpdateError("runtime-copied", cause, undefined, posix.dirname(posix.dirname(posix.dirname(options.runtime.daemonEntryPath))))
-      }
+      await check()
     }
     if (dependencies.platform === "linux" && saved.wsl) {
       const steps = await prepareWslUpdate(saved, options.runtime, tracked.effects, waits, tracked.inFlight)(readDeadline)
-      return { ...steps, swap: async (deadline) => { await publish(); return { kind: "task" as const, ...await steps.swap(deadline) } } }
+      return { ...steps, swap: async (deadline) => { await publish(deadline); return { kind: "task" as const, ...await steps.swap(deadline) } } }
     }
     const steps = await prepareServiceUpdate({
       ...target(dependencies),

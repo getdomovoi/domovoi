@@ -892,8 +892,10 @@ function refuseWindowsTaskPath(path: string): void {
 // tracked by trackInFlight.
 // beforeWrite: runs once every step that can refuse with nothing changed has
 // passed, right before the new definition is written (security review rounds
-// 4 and 5 of #577: the caller's staged runtime goes into place there).
-export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits, inFlight: InFlight, beforeWrite?: () => Promise<void>) {
+// 4 and 5 of #577: the caller's staged runtime goes into place there). It is
+// given the swap's deadline. Round 10: on systemd it is not raced with that
+// deadline; it settles on its own and says what happened to the copy.
+export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits, inFlight: InFlight, beforeWrite?: (deadline: OperationDeadline) => Promise<void>) {
   return async (readDeadline: OperationDeadline): Promise<ServiceSwap<ServicePlan>> => {
     const plan = servicePlan(target)
     const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory)
@@ -960,7 +962,9 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
           swap: async (deadline) => {
             if (beforeWrite !== undefined) {
               try {
-                await withinServiceDeadline(deadline, beforeWrite)
+                // Round 10 (P2): not raced with the deadline. The hook settles
+                // on its own and says what happened to the copy (publishFirst).
+                await beforeWrite(deadline)
               } catch (cause) {
                 // The unit is untouched. A publish that fails writes only a
                 // fresh directory no service uses; one that completed says
@@ -1040,7 +1044,7 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
         swap: async (deadline) => {
           await bootoutIn(deadline)()
           await whileHeldIn(deadline, stoppedInstance)(async () => {
-            if (beforeWrite !== undefined) await withinServiceDeadline(deadline, beforeWrite)
+            if (beforeWrite !== undefined) await withinServiceDeadline(deadline, () => beforeWrite(deadline))
             wroteNew = true
             await writeIn(deadline)(plan.path, plan.contents)
             await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
@@ -1093,7 +1097,7 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
         await whileHeldIn(deadline, stoppedInstance)(async () => {
           // Round 6 (P1): under the profile lease, before service.json names
           // the new runtime and the task is registered to run it.
-          if (beforeWrite !== undefined) await withinServiceDeadline(deadline, beforeWrite)
+          if (beforeWrite !== undefined) await withinServiceDeadline(deadline, () => beforeWrite(deadline))
           wroteNew = true
           await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
         })
