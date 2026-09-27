@@ -67,11 +67,15 @@ describe("redactInventoryText", () => {
     ["curl -H'X-Custom: v' x", "curl -H'X-Custom: [REDACTED]' x"],
     ["sh -c 'curl -H \"X-Custom: v\" x'", "sh -c 'curl -H \"X-Custom: [REDACTED]\" x'"],
     ["sh -c \"curl -H \\\"X-Custom: v\\\" x\"", "sh -c \"curl -H \\\"X-Custom: [REDACTED]\\\" x\""],
-    ["sh -c \"curl -H \\\"X-Custom: v x\"", "sh -c \"curl -H \\\"X-Custom: [REDACTED]\""],
+    // The script's own quote is not closed, so it is redacted from that word on.
+    ["sh -c \"curl -H \\\"X-Custom: v x\"", "sh -c \"curl -H [REDACTED]\""],
     // A header name takes every RFC 9110 token character, quote marks included.
     ["curl -H \"X'Foo: s3cr3t-value\" x", "curl -H \"X'Foo: [REDACTED]\" x"],
     ["curl -H 'X`Foo: s3cr3t-value' x", "curl -H 'X`Foo: [REDACTED]' x"],
-    ["curl -H \"!#$%&'*+-.^_`|~Az09: s3cr3t-value\" x", "curl -H \"!#$%&'*+-.^_`|~Az09: [REDACTED]\" x"],
+    ["curl -H \"!#$%&'*+-.^_\\`|~Az09: s3cr3t-value\" x", "curl -H \"!#$%&'*+-.^_\\`|~Az09: [REDACTED]\" x"],
+    // An unescaped backquote in double quotes runs a command; the shell does
+    // not read it as a word, so it is redacted from that word on.
+    ["curl -H \"!#$%&'*+-.^_`|~Az09: s3cr3t-value\" x", "curl -H [REDACTED]"],
     ["sh -c \"curl -H \\\"X'Foo: s3cr3t-value\\\" x\"", "sh -c \"curl -H \\\"X'Foo: [REDACTED]\\\" x\""],
     // An unquoted name's quote opens a quoted run the value closes; the
     // redacted value closes it again.
@@ -92,7 +96,9 @@ describe("redactInventoryText", () => {
     ["curl -H X-Foo: \"s3cr3t value\" x", "curl -H X-Foo: \"[REDACTED]\" x"],
     ["curl -H X-Foo: s3cr3t'-value x' y", "curl -H X-Foo: [REDACTED] y"],
     ["sh -c 'curl -H X-Foo: s3cr3t-value x'", "sh -c 'curl -H X-Foo: [REDACTED] x'"],
-    ["sh -c \"curl -H X-Foo: \\\"s3cr3t value\\\" x\"", "sh -c \"curl -H X-Foo: \\\"[REDACTED]\\\" x\""],
+    // Inside a shell's script a rewritten value that opens a quoted run is
+    // written before that run's quote.
+    ["sh -c \"curl -H X-Foo: \\\"s3cr3t value\\\" x\"", "sh -c \"curl -H X-Foo: [REDACTED] x\""],
     // A flag after it is the next argument, not a value.
     ["curl -H X-Empty: -H 'X-Real: s3cr3t-value' x", "curl -H X-Empty: -H 'X-Real: [REDACTED]' x"],
     ["Bearer tok", "Bearer [REDACTED]"],
@@ -232,7 +238,7 @@ describe("redactInventoryArgv", () => {
 
   it("redacts a quoted header name with its value glued on", () => {
     const command = redactInventoryArgv(["curl", "-H", "'X-Foo':s3cr3t-value", "-H", "\"X-Bar\":hunter2", "--header='X-Baz':tok-abc"])
-    expect(command).toBe("curl -H \"'X-Foo':[REDACTED]\" -H \"\\\"X-Bar\\\":[REDACTED]\" \"--header='X-Baz':[REDACTED]\"")
+    expect(command).toBe("curl -H \"'X-Foo':[REDACTED]\" -H '\"X-Bar\":[REDACTED]' \"--header='X-Baz':[REDACTED]\"")
     expect(backstopAccepts(command)).toBe(true)
     const shell = redactInventoryArgv(["sh", "-c", "curl -H 'X-Foo':s3cr3t-value x"])
     expect(shell).toBe("sh -c \"curl -H 'X-Foo':[REDACTED] x\"")
