@@ -7717,13 +7717,16 @@ export class DomovoiDaemon {
                 ? "Provider recovery checkpoint timed out"
                 : "Provider handoff checkpoint timed out",
             )
-            await withTimeout(
-              this.#agents.require(previousRuntime.provider).stopThread(previousThreadId),
-              this.#agentTimeoutMs,
-              recoveringFailedThread
-                ? "Failed provider cleanup timed out"
-                : "Previous provider cleanup timed out",
-            )
+            // A turned-off provider is never run, so it has no thread to stop.
+            if (!this.#agents.isUnavailable(previousRuntime.provider)) {
+              await withTimeout(
+                this.#agents.require(previousRuntime.provider).stopThread(previousThreadId),
+                this.#agentTimeoutMs,
+                recoveringFailedThread
+                  ? "Failed provider cleanup timed out"
+                  : "Previous provider cleanup timed out",
+              )
+            }
           } catch (error) {
             try {
               await nextAgent.stopThread(nextThreadId)

@@ -51,7 +51,7 @@ export function acpProviderTurnedOffReason(name: string): string {
 
 export function acpProviderTurnedOffResumeRefusal(name: string): string {
   return `This session uses ${name}, which is turned off in Domovoi for now. ${repositoryConfiguration(name)} `
-    + "The worktree and conversation are kept."
+    + "The worktree and conversation are kept. Switch this session to another provider to continue."
 }
 
 type CatalogEntry = { id?: unknown; name?: unknown; default?: unknown; isDefault?: unknown }

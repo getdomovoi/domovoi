@@ -11314,7 +11314,8 @@ describe("DomovoiDaemon", () => {
       expect(response).toMatchObject({
         error: {
           code: -32602,
-          message: `This session uses ${name}, which is turned off in Domovoi for now. ${loads(name)} The worktree and conversation are kept.`,
+          message: `This session uses ${name}, which is turned off in Domovoi for now. ${loads(name)} The worktree and conversation are kept. `
+            + "Switch this session to another provider to continue.",
         },
       })
     })
@@ -11333,6 +11334,57 @@ describe("DomovoiDaemon", () => {
 
       expect(response).toMatchObject({
         error: { code: -32602, message: `${name} is turned off in Domovoi for now. ${loads(name)}` },
+      })
+    })
+
+    // Domovoi runs no process for a turned-off provider, so there is no thread
+    // of its to stop when the session moves on.
+    it.each(["cursor-agent", "grok"])("moves a stored %s session to another provider", async (provider) => {
+      const snapshot = structuredClone(demoWorkspace)
+      const session = snapshot.sessions[0]!
+      session.runtime = { provider, model: "stored-model", reasoning: "none", permissionMode: "build", auto: false }
+      session.state = "idle"
+      session.workspacePath = "/worktrees/stored"
+      session.providerThreadId = "thread-stored"
+      delete session.activeTurnId
+      const codex = {
+        connect: vi.fn(async () => {}),
+        listModels: vi.fn(async () => codexModels()),
+        startThread: vi.fn(async () => "codex-thread"),
+        resumeThread: vi.fn(async () => {}),
+        stopThread: vi.fn(async () => {}),
+        startTurn: vi.fn(async () => "turn"),
+        steerTurn: vi.fn(async () => {}),
+        interruptTurn: vi.fn(async () => {}),
+        resolveApproval: vi.fn(),
+        onEvent: vi.fn(() => () => {}),
+        close: vi.fn(async () => {}),
+      } satisfies AgentAdapter
+      const daemon = new DomovoiDaemon({
+        port: 0,
+        store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
+        agents: { codex },
+        workspaceService: {
+          ...checkpointingWorkspace(),
+          checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
+        },
+      })
+      running.push(daemon)
+
+      const response = await rpc(daemon, "session.setRuntime", {
+        sessionId: session.id,
+        client: "desktop",
+        runtime: { provider: "codex", model: "gpt-5.6-sol", reasoning: "xhigh", permissionMode: "build", auto: false },
+      })
+
+      expect(response).not.toHaveProperty("error")
+      expect(codex.startThread).toHaveBeenCalledWith({ cwd: "/worktrees/stored", runtime: expect.objectContaining({ provider: "codex" }) })
+      expect(response).toMatchObject({
+        result: { sessions: expect.arrayContaining([expect.objectContaining({
+          id: session.id,
+          runtime: expect.objectContaining({ provider: "codex" }),
+          providerThreadId: "codex-thread",
+        })]) },
       })
     })
 

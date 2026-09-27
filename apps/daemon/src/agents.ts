@@ -136,6 +136,11 @@ export class AgentRegistry {
     return [...this.#adapters.entries()].sort(([left], [right]) => left.localeCompare(right))
   }
 
+  // A provider the daemon does not run, so it holds no thread to stop.
+  isUnavailable(provider: string): boolean {
+    return this.#unavailable.has(provider)
+  }
+
   require(provider: string): AgentAdapter {
     const adapter = this.#adapters.get(provider)
     if (!adapter) {
