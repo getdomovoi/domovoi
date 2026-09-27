@@ -145,7 +145,7 @@ export class ServiceProfileMismatchError extends Error {
 // Security review round 3 of #577 (P1, P2): a registered service whose saved
 // configuration is missing, unreadable or malformed runs a profile nothing
 // names. A service change for a caller's profile refuses it rather than take
-// it for the caller's. Copy pending fetzy's approval.
+// it for the caller's. Copy approved by fetzy on 2026-09-26.
 export class ServiceProfileUnknownError extends Error {
   constructor(reason: string) {
     super(`${reason} Nothing was changed.`)
