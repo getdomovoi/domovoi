@@ -603,7 +603,7 @@ async function registeredServiceWithoutConfiguration(
     // Round 5 (P1): read the services block line by line, a pid or "-"
     // first and the label last, whatever columns launchd puts between. A
     // listing without that block, or with a line not in that shape, is not
-    // taken for one without a Domovoi job. Copy pending owner approval.
+    // taken for one without a Domovoi job. Copy approved by fetzy on 2026-09-26.
     const unreadable = () => new ServiceProfileUnknownError(`launchd listed the jobs in ${domain} in a form this app cannot read, so whether a login service is registered there is not known.`)
     const block = /^[ \t]*services = \{[ \t]*\r?$([\s\S]*?)^[ \t]*\}[ \t]*\r?$/mu.exec(listed.stdout)?.[1]
     if (block === undefined) throw unreadable()
