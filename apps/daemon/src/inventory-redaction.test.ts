@@ -7,7 +7,8 @@ import { toolInventoryEntrySchema } from "@getdomovoi/protocol"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { inventoryFieldCaps, inventoryShellWords, redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
-import { adversarialCommands, nearLinearGrowth, workGrowth } from "./test-work.js"
+import { hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords } from "./test-hidden-triggers.js"
+import { adversarialCommands, nearLinearGrowth, quadraticTimeGrowth, regexAdversaries, timeGrowth, workGrowth } from "./test-work.js"
 
 // The protocol backstop judges each emitted text; a hook entry is the smallest
 // shape that carries a free-text command.
@@ -272,6 +273,68 @@ describe("a scheme word before a sensitive flag", () => {
   })
 })
 
+// A word that names the next word's value is read wherever it sits in the
+// original words, whichever rule hid or read past the value it ends: the
+// value after it is hidden too, and the output is not refused.
+describe("a scheme word or sensitive flag inside a value another rule took", () => {
+  it.each([
+    ["curl --token 'https://host/ Token' s3cr3t-value", "curl --token '[REDACTED]' [REDACTED]", ["curl", "--token", "https://host/ Token", "s3cr3t-value"], "curl --token [REDACTED] [REDACTED]"],
+    ["curl --token 'x -H X-Foo: Bearer ' s3cr3t-value", "curl --token '[REDACTED]' [REDACTED]", ["curl", "--token", "x -H X-Foo: Bearer ", "s3cr3t-value"], "curl --token [REDACTED] [REDACTED]"],
+    ["curl 'https://host/ --token' s3cr3t-value", "curl 'https://host/[REDACTED]' [REDACTED]", ["curl", "https://host/ --token", "s3cr3t-value"], "curl 'https://host/[REDACTED]' [REDACTED]"],
+    ["sh -c 'curl Bearer' s3cr3t-value", "sh -c 'curl Bearer' [REDACTED]", ["sh", "-c", "curl Bearer", "s3cr3t-value"], "sh -c 'curl Bearer' [REDACTED]"],
+  ] as const)("redacts %s", (input, expected, argv, expectedArgv) => {
+    for (const redact of [redactInventoryText, redactInventoryCommand]) {
+      const redacted = redact(input)
+      expect(redacted).toBe(expected)
+      expect(backstopAccepts(redacted)).toBe(true)
+      expect(redact(redacted)).toBe(redacted)
+    }
+    const command = redactInventoryArgv(argv)
+    expect(command).toBe(expectedArgv)
+    expect(backstopAccepts(command)).toBe(true)
+  })
+
+  // Other rules whose value is the next word read the original words too: a
+  // private key's body after its header, and a header's value after a name
+  // that ends at an unquoted colon.
+  it.each([
+    [
+      "curl 'https://h/ -----BEGIN PRIVATE KEY-----' MIIEsecretbody '-----END PRIVATE KEY-----'",
+      "curl 'https://h/[REDACTED]' [REDACTED]",
+    ],
+    ["curl 'https://h/ -H' X-Foo: s3cr3t-value", "curl 'https://h/[REDACTED]' X-Foo: [REDACTED]"],
+  ])("redacts the next word's value in %s", (input, expected) => {
+    for (const redact of [redactInventoryText, redactInventoryCommand]) {
+      const redacted = redact(input)
+      expect(redacted).toBe(expected)
+      expect(backstopAccepts(redacted)).toBe(true)
+      expect(redact(redacted)).toBe(redacted)
+    }
+  })
+
+  it("redacts the value after a scheme word a URL read in through an operator", () => {
+    const input = "curl https://h/?q&Bearer s3cr3t-value"
+    expect(redactInventoryText(input)).toBe("curl https://h/?[REDACTED]'&[REDACTED]' [REDACTED]")
+    expect(redactInventoryCommand(input)).toBe("curl https://h/'?[REDACTED]&[REDACTED]' [REDACTED]")
+    for (const redact of [redactInventoryText, redactInventoryCommand]) expect(backstopAccepts(redact(input))).toBe(true)
+  })
+
+  it.each(hiddenTriggerPlacements.flatMap(([kind, place]) => hiddenTriggerWords.map((word) => [word, kind, place(word)] as const)))(
+    "hides the value after %s at the end of %s",
+    (_word, _kind, { text, argv }) => {
+      for (const redact of [redactInventoryText, redactInventoryCommand]) {
+        const redacted = redact(text)
+        expect(redacted).not.toContain(hiddenTriggerCredential)
+        expect(backstopAccepts(redacted)).toBe(true)
+        expect(redact(redacted)).toBe(redacted)
+      }
+      const command = redactInventoryArgv(argv)
+      expect(command).not.toContain(hiddenTriggerCredential)
+      expect(backstopAccepts(command)).toBe(true)
+    },
+  )
+})
+
 // Adversarial input, up to the reader's file limit, takes work that grows
 // about linearly with its length through each entry point: counted, not timed.
 describe("work on adversarial input", () => {
@@ -290,6 +353,25 @@ describe("work on adversarial input", () => {
       for (const result of results) expect(backstopAccepts(result)).toBe(true)
       expect(growth).toBeLessThan(nearLinearGrowth)
     },
+  )
+
+  // The counter cannot see the scanning inside one regular expression search,
+  // so input a pattern once searched in quadratic time is timed too.
+  it.each(regexAdversaries)("fails the timing check for %s with the pattern that searched it", (_name, size, generate, pattern) => {
+    const withPattern = (text: string) => redactInventoryCommand(pattern(text))
+    const small = generate(size)
+    const large = generate(size * 4)
+    expect(timeGrowth(() => withPattern(small), () => withPattern(large))).toBeGreaterThanOrEqual(quadraticTimeGrowth)
+  }, 30_000)
+
+  it.each(regexAdversaries.flatMap(([name, size, generate]) => redactors.map(([kind, redact]) => [name, kind, size, generate, redact] as const)))(
+    "redacts %s as %s in near-linear time",
+    (_name, _kind, size, generate, redact) => {
+      const small = generate(size)
+      const large = generate(size * 4)
+      expect(timeGrowth(() => redact(small), () => redact(large))).toBeLessThan(quadraticTimeGrowth)
+    },
+    30_000,
   )
 })
 

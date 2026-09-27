@@ -5,7 +5,9 @@ import { dirname, join, sep } from "node:path"
 import { toolInventoryProviderSchema, toolInventorySchema, type ToolInventoryProvider } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it } from "vitest"
 
+import { inventoryShellWords } from "./inventory-redaction.js"
 import { maximumRepositoryConfigFileBytes, readRepositoryProviderConfig } from "./repository-provider-config.js"
+import { hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords } from "./test-hidden-triggers.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { adversarialCommands, nearLinearGrowth, workGrowth } from "./test-work.js"
 
@@ -507,6 +509,44 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
       "curl Bearer [REDACTED] [REDACTED] [REDACTED]",
       "curl --token [REDACTED] [REDACTED]",
     ])
+  })
+
+  it("lists the hooks of the review's examples, the value after a word another rule took redacted", async () => {
+    const root = await scratch()
+    const hooks = ["curl --token 'https://host/ Token' s3cr3t-value", "curl --token 'x -H X-Foo: Bearer ' s3cr3t-value"].flatMap((command) => {
+      const argv = inventoryShellWords(command)!
+      return [{ type: "command", command }, { type: "command", command: argv[0], args: argv.slice(1) }, { type: "prompt", prompt: command }]
+    })
+    await put(root, ".claude/settings.json", JSON.stringify({ hooks: { Stop: [{ hooks }] } }))
+    const claude = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "claude-code")
+    expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+    expectNoSecret(claude)
+    expect(claude.omittedEntries).toBe(0)
+    expect(claude.entries.map((entry) => (entry.kind === "hook" ? entry.command : undefined))).toEqual([
+      "curl --token '[REDACTED]' [REDACTED]",
+      "curl --token [REDACTED] [REDACTED]",
+      "curl --token '[REDACTED]' [REDACTED]",
+      "curl --token '[REDACTED]' [REDACTED]",
+      "curl --token [REDACTED] [REDACTED]",
+      "curl --token '[REDACTED]' [REDACTED]",
+    ])
+  })
+
+  // Every scheme word and sensitive flag at the end of each kind of value
+  // another rule takes, with a credential after it, as a command, a command
+  // and its arguments, and a prompt: every hook is listed, none refused.
+  it.each(hiddenTriggerPlacements)("lists every hook with a scheme word or sensitive flag at the end of %s", async (_kind, place) => {
+    const root = await scratch()
+    const hooks = hiddenTriggerWords.flatMap((word) => {
+      const { text, argv } = place(word)
+      return [{ type: "command", command: text }, { type: "command", command: argv[0], args: argv.slice(1) }, { type: "prompt", prompt: text }]
+    })
+    await put(root, ".claude/settings.json", JSON.stringify({ hooks: { Stop: [{ hooks }] } }))
+    const claude = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "claude-code")
+    expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+    expect(JSON.stringify(claude)).not.toContain(hiddenTriggerCredential)
+    expect(claude.omittedEntries).toBe(0)
+    expect(claude.entries.filter((entry) => entry.kind === "hook")).toHaveLength(hooks.length)
   })
 
   // A hook whose command is adversarial input near the file limit is read in
