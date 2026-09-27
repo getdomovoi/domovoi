@@ -62,9 +62,11 @@ function pairHoldsValue(flag: string, quoteAfterKey: string, key: string, separa
 // The word after the value is looked at too: a scheme word that opens a line
 // of prose ("Token limit exceeded") is not a header, unless an Authorization
 // key comes right before it.
-const schemeValues = /(?<![\p{L}\p{N}_-])(?:Bearer|Basic|Token|Digest)\s+["'\x60]?([^\s"'\x60,;)]+)(?=(?:\s+([^\s"'\x60,;)]+))?)/giu
-const afterAuthorizationKey = /authorization["'\x60]?\s*[=:]\s*["'\x60]?$/iu
-const proseWord = /^\p{L}+$/u
+// The Authorization key is part of the same match, so each scheme is judged in
+// one pass rather than by rescanning the text before it.
+const schemeValues = /(?:(authorization["'\x60]?\s*[=:]\s*["'\x60]?)|(?<![\p{L}\p{N}_-]))(?:Bearer|Basic|Token|Digest)\s+["'\x60]?([^\s"'\x60,;)]+)(?=(?:\s+([^\s"'\x60,;)]+))?)/giu
+// A word of prose, with the punctuation a sentence puts after it.
+const proseWord = /^\p{L}+[.,;:!?"'\x60)\]}\u2019\u201d\u00bb]*$/u
 const schemeProse = new Set(["authentication", "authorization", "auth", "token", "tokens", "header", "headers", "scheme", "schemes", "credentials"])
 const schemeCredential = (value: string) => !redacted(value) && !schemeProse.has(value.toLowerCase())
 
@@ -155,8 +157,8 @@ export function holdsCredential(value: string): boolean {
   return decoded(value).some((view) => {
     if (shapes.some((shape) => shape.test(view))) return true
     for (const match of view.matchAll(schemeValues)) {
-      const [, schemeValue = "", nextWord] = match
-      const header = afterAuthorizationKey.test(view.slice(0, match.index))
+      const [, authorizationKey, schemeValue = "", nextWord] = match
+      const header = authorizationKey !== undefined
       const prose = !header && proseWord.test(schemeValue) && nextWord !== undefined && proseWord.test(nextWord)
       if (!prose && schemeCredential(schemeValue)) return true
     }

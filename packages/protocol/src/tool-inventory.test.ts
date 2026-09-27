@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 
+import { holdsCredential } from "./credential-backstop.js"
+
 import {
   approvalRequestSchema,
   executionResolutionSchema,
@@ -225,6 +227,21 @@ describe("tool inventory text", () => {
 })
 
 describe("credential backstop", () => {
+  it("scales linearly with the text it reads", () => {
+    // Many scheme words and no header: each must not rescan what came before.
+    const fastest = (text: string) => Math.min(...Array.from({ length: 5 }, () => {
+      const started = performance.now()
+      holdsCredential(text)
+      return performance.now() - started
+    }))
+    const phrase = "Token authentication failed "
+    const small = phrase.repeat(Math.ceil(8 * 1_024 / phrase.length))
+    const large = phrase.repeat(Math.ceil(64 * 1_024 / phrase.length))
+    fastest(small)
+    // Eight times the text; a rescan makes it about sixty times slower.
+    expect(fastest(large) / fastest(small)).toBeLessThan(20)
+  })
+
   const hook = sample.providers[0].entries[2]
   const accepts = (command: string) => toolInventorySchema.safeParse(withEntry({ ...hook, command })).success
 
@@ -279,7 +296,7 @@ describe("credential backstop", () => {
     "https://mcp.linear.app/mcp", "git@github.com:acme/api.git", "git log --format=%H --port=5432",
     "npx mcp --token-file ~/.config/pg", "npx mcp --api-key-env API_KEY", "llm --max-tokens 100",
     "EACCES: permission denied, open '/Users/ada/.claude/settings.local.json'",
-    "Token limit exceeded", "Basic usage information", 'cat <<<"/tmp/config=dev/index.js"', '["node","/tmp/config=dev/index.js"]',
+    "Token limit exceeded", "Basic usage information", "Token limit exceeded.", "Basic usage information, see docs.", '{"reason":"Token limit exceeded."}', 'cat <<<"/tmp/config=dev/index.js"', '["node","/tmp/config=dev/index.js"]',
     '["npx","mcp","--api-key","[REDACTED]"]',
     "node /tmp/config=dev/index.js", "Bearer token", "bearer auth header", "openssl dgst --digest sha256 ./build.tar",
     'API_KEY="[REDACTED]" ./start.sh', "env $'API_KEY=[REDACTED]' ./start.sh", "echo $'unclosed\\",
