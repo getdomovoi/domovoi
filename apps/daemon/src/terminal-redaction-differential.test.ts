@@ -562,7 +562,12 @@ describe("terminal redaction against main", () => {
     const report = [...failures].map(([shape, detail]) => `${shape}\n  ${detail}`)
     if (process.env.TERMINAL_REDACTION_FUZZ_REPORT) writeFileSync(process.env.TERMINAL_REDACTION_FUZZ_REPORT, report.join("\n"))
     expect(report).toEqual([])
-  }, 10_000 + cases * 2)
+    // 30 s at the default 4,000 cases, ruled 2026-09-26 (#617, Q53 A). It
+    // was 18 s. Main alone (5c8d544b, run 36271762650) ran this file in
+    // 16.9 s on ubuntu, 94% of the old limit, and ubuntu runners vary by
+    // about 1.7x between runs (secret-redaction.test.ts: 4.7 s, 5.1 s, 8.0 s).
+    // With #617's second stage, ubuntu ran this file in 21.2 s and 28.6 s.
+  }, 10_000 + cases * 5)
 
   it(`hides the leak shapes of #608 on their own terms, ${leakCases} cases from seed ${seed}`, () => {
     const failures = new Map<string, string>()
@@ -595,7 +600,13 @@ describe("terminal redaction against main", () => {
     // value nests.
     expect(retained).toBeLessThanOrEqual(16_384)
     expect(nesting).toBeLessThanOrEqual(16_384)
-  })
+    // 20 s at the default 2,000 cases, ruled 2026-09-26 (#617, Q53 A). It
+    // had vitest's 5 s default, which it passed locally in about 1.1 s with
+    // coverage but exceeded on ubuntu and macos in run 36280305098 (32c30c5e)
+    // and on ubuntu in run 36283529219 (948649f0). Ubuntu runners vary by
+    // about 1.7x between runs, and main's own terminal differential already
+    // uses 94% of its limit there.
+  }, leakCases * 10)
 
   it("fails a redactor that shows everything wherever main hides a value", () => {
     let hidden = 0
