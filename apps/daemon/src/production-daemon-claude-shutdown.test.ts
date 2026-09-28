@@ -7,7 +7,7 @@ import { join } from "node:path"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { ClaudeAgentSdkAdapter } from "./claude.js"
-import { runningClaudeProcesses, type ListWindowsChildren } from "./claude-process.js"
+import { runningClaudeProcesses } from "./claude-process.js"
 import { MachineCredentialStore } from "./machine-credentials.js"
 import { OperationDeadline } from "./operation-deadline.js"
 import { createProductionDaemonWithDependencies, productionDaemonDependencies } from "./production-daemon.js"
@@ -18,6 +18,18 @@ import { fakeClaudeChild, fakeClaudePid, spawningClaudeFactory } from "./test-cl
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForDaemon } from "./test-wait-for.js"
+
+// Every command started through Node's spawn while this file runs, in order.
+// Each still runs as it would.
+const launched = vi.hoisted((): string[] => [])
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>()
+  const recorded = (...args: Parameters<typeof actual.spawn>) => {
+    launched.push(String(args[0]))
+    return actual.spawn(...args)
+  }
+  return { ...actual, spawn: recorded }
+})
 
 const roots: string[] = []
 const claudes: number[] = []
@@ -225,21 +237,21 @@ it.skipIf(process.platform === "win32")("ends Claude through the sentinel once i
   }
 })
 
-// Security review round 3 of #647, R3-F1 and Q109: a Windows Claude that had
-// exited on its own counted as gone with everything it started, and the
-// shutdown released the lease while a tool could still run. When what it left
-// cannot be listed, the lease stays. Claude stays listed for the life of this
+// Security review round 3 of #647, R3-F1: a Windows Claude that had exited on
+// its own counted as gone with everything it started, and the shutdown
+// released the lease while a tool could still run. Q111 B, round 4: nothing
+// then confirms that what it started has gone, so the lease stays, and
+// Domovoi lists and kills nothing. Claude stays listed for the life of this
 // file's registry, so this comes last.
-it("keeps the daemon and its profile lease after a signal while what a Windows Claude left cannot be listed", async () => {
-  const homeDirectory = await mkdtemp(join(tmpdir(), "domovoi-claude-windows-list-"))
+it("keeps the daemon and its profile lease after a signal when a Windows Claude exited on its own", async () => {
+  const homeDirectory = await mkdtemp(join(tmpdir(), "domovoi-claude-windows-exit-"))
   roots.push(homeDirectory)
   const pid = fakeClaudePid + 50
   const claude = fakeClaudeChild({ pid })
-  const listChildren = vi.fn<ListWindowsChildren>(async () => { throw new Error("PowerShell could not start") })
   const killTree = vi.fn(async (_pid: number) => {})
   const { factory } = spawningClaudeFactory()
   const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-    spawn: () => claude.process, killTree, listChildren, platform: "win32", shutdownGraceMs: 20, killGraceMs: 20,
+    spawn: () => claude.process, killTree, platform: "win32", shutdownGraceMs: 20, killGraceMs: 20,
   })
   const { lease, signals, exit, writeStderr } = await daemonWith(adapter, homeDirectory)
   try {
@@ -247,8 +259,9 @@ it("keeps the daemon and its profile lease after a signal while what a Windows C
       provider: "claude-code", model: "sonnet", reasoning: "high", permissionMode: "build", auto: false,
     } })
     // Claude exits on its own, before any stop.
+    launched.splice(0)
     claude.exit()
-    await waitForDaemon(() => expect(listChildren).toHaveBeenCalledWith(pid, expect.any(Number)))
+    await new Promise((resolve) => { setTimeout(resolve, 50) })
 
     signals.emit("SIGTERM")
     await waitForDaemon(() => expect(writeStderr).toHaveBeenCalledWith(
@@ -256,7 +269,8 @@ it("keeps the daemon and its profile lease after a signal while what a Windows C
     ))
     expect(exit).not.toHaveBeenCalled()
     expect(() => claimProfile(homeDirectory)).toThrow(ProfileAlreadyOwnedError)
-    // Claude's own pid may name another process: no taskkill of it.
+    // No list and no taskkill: Claude's own pid may name another process.
+    expect(launched.filter((command) => /powershell|taskkill/i.test(command))).toEqual([])
     expect(killTree).not.toHaveBeenCalled()
   } finally {
     signals.emit("SIGINT")

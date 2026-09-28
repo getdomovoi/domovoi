@@ -22,6 +22,18 @@ import { FakeClaudeQuery, fakeClaudeChild, fakeClaudePid, spawningClaudeFactory 
 import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
+// Every command started through Node's spawn while this file runs, by the
+// tests or by Domovoi, in order. Each still runs as it would.
+const launched = vi.hoisted((): string[] => [])
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>()
+  const recorded = (...args: Parameters<typeof actual.spawn>) => {
+    launched.push(String(args[0]))
+    return actual.spawn(...args)
+  }
+  return { ...actual, spawn: recorded }
+})
+
 // Security review round 1 of #647, Q103 and Q104. A stop kills everything the
 // session started: on POSIX the whole process group, even when Claude exits on
 // its own within the grace, and on Windows the process tree through taskkill.
@@ -67,13 +79,13 @@ describe("the Windows process tree kill", () => {
     const taskkill = new EventEmitter()
     const run = vi.fn(() => taskkill as ChildProcess)
     let settled = false
-    const killing = windowsTreeKill(4_242, run).then(() => { settled = true })
+    const killing = windowsTreeKill(4_242, run, { SystemRoot: "C:\\Windows" }).then(() => { settled = true })
 
     expect(run).toHaveBeenCalledOnce()
     expect(run).toHaveBeenCalledWith(
-      "taskkill",
+      "C:\\Windows\\System32\\taskkill.exe",
       ["/PID", "4242", "/T", "/F"],
-      { windowsHide: true, shell: false, stdio: "ignore" },
+      { cwd: "C:\\Windows\\System32", windowsHide: true, shell: false, stdio: "ignore" },
     )
     await new Promise((resolve) => { setTimeout(resolve, 20) })
     expect(settled).toBe(false)
@@ -81,6 +93,33 @@ describe("the Windows process tree kill", () => {
     taskkill.emit("exit", 0, null)
     await killing
     expect(settled).toBe(true)
+  })
+
+  // Security review round 4 of #647, R4-F1: a bare name is looked up in the
+  // current directory, then PATH, where the project or a tool can put its own
+  // taskkill.exe. The system copy is named by SystemRoot, and a SystemRoot
+  // that is not an absolute local path gives way to the default.
+  it.each([
+    ["an absolute path", { SystemRoot: "D:\\WinNT" }, "D:\\WinNT"],
+    ["an absolute path with forward slashes", { SystemRoot: "D:/WinNT" }, "D:\\WinNT"],
+    ["missing", {}, "C:\\Windows"],
+    ["empty", { SystemRoot: "" }, "C:\\Windows"],
+    ["relative", { SystemRoot: "Windows" }, "C:\\Windows"],
+    ["relative to a drive's directory", { SystemRoot: "D:Windows" }, "C:\\Windows"],
+    ["a network share", { SystemRoot: "\\\\server\\share\\Windows" }, "C:\\Windows"],
+    ["cut by a NUL", { SystemRoot: "D:\\WinNT\0" }, "C:\\Windows"],
+  ])("runs the system taskkill when SystemRoot is %s, never one found on PATH", async (_case, environment, root) => {
+    const taskkill = new EventEmitter()
+    const run = vi.fn((_command: string, _args: string[], _options: object) => taskkill as ChildProcess)
+    const killing = windowsTreeKill(4_242, run, { ...environment, PATH: "C:\\project;C:\\tools" })
+    taskkill.emit("exit", 0, null)
+    await killing
+
+    expect(run).toHaveBeenCalledOnce()
+    const [command, args, options] = run.mock.calls[0]!
+    expect(command).toBe(`${root}\\System32\\taskkill.exe`)
+    expect(args).toEqual(["/PID", "4242", "/T", "/F"])
+    expect(options).toEqual({ cwd: `${root}\\System32`, windowsHide: true, shell: false, stdio: "ignore" })
   })
 
   // Review round 2 of #647, R2-F1: this used to settle as a success.
@@ -1010,5 +1049,36 @@ it.each([
   await expect(adapter.close()).rejects.toThrow(unconfirmed)
   // No taskkill of Claude's own pid, which may name another process now.
   expect(killTree.mock.calls).toEqual(killed)
+  expect(runningClaudeProcesses()).toContainEqual(expect.objectContaining({ pid, session: threadId }))
+})
+
+// Q111 B, security review round 4 of #647: a Windows Claude that exits on its
+// own, before any stop, leaves what it started unconfirmed. Domovoi lists no
+// process and kills none, since a pid found by a list may name any process by
+// the time it is killed. The stop fails, and Claude stays listed for the life
+// of the daemon, so this comes last too.
+it("fails a Windows stop, and starts no command, when Claude exited on its own before it", async () => {
+  const pid = fakeClaudePid + 95
+  const fake = fakeClaudeChild({ pid })
+  const killTree = vi.fn(async (_pid: number) => {})
+  const { factory } = spawningClaudeFactory()
+  const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+    spawn: () => fake.process, killTree, platform: "win32", shutdownGraceMs: 20, killGraceMs: 20,
+  })
+  const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
+  launched.splice(0)
+  fake.exit()
+  await new Promise((resolve) => { setTimeout(resolve, 50) })
+
+  await expect(adapter.stopThread(threadId)).rejects.toThrow(unconfirmed)
+  expect(runningClaudeProcesses()).toContainEqual(expect.objectContaining({ pid, session: threadId }))
+  await expect(adapter.stopThread(threadId)).rejects.toThrow(unconfirmed)
+  await expect(adapter.resumeThread({ threadId, cwd: "/worktree", runtime })).rejects.toThrow(unconfirmed)
+  await expect(adapter.close()).rejects.toThrow(unconfirmed)
+  // No list, no taskkill and no kill through Node's handle to Claude.
+  expect(launched).toEqual([])
+  expect(killTree).not.toHaveBeenCalled()
+  expect(fake.child.kill).not.toHaveBeenCalled()
+  expect(fake.commands).toEqual([])
   expect(runningClaudeProcesses()).toContainEqual(expect.objectContaining({ pid, session: threadId }))
 })
