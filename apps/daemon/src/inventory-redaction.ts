@@ -74,6 +74,7 @@ import {
   maximumToolInventoryMatcherLength,
   maximumToolInventoryNameLength,
   maximumToolInventoryRuleLength,
+  toolInventoryPathSchema,
 } from "@getdomovoi/protocol"
 
 const marker = "[REDACTED]"
@@ -1094,10 +1095,42 @@ export function redactInventoryText(text: string, maximum: number = inventoryFie
   return redactText(text, false, maximum)
 }
 
+// A path a repository or the machine names, shown in a file record, a rule's
+// detail or a trust refusal: text, cut at its first trigger and fitted to a
+// detail's cap, which the protocol also gives a path. A path the protocol's
+// path schema still refuses, one with a blank at either end included, is the
+// marker. The path as read stays with the caller, for reads and the digest.
+export function redactInventoryPath(path: string): string {
+  const shown = redactText(path, false, inventoryFieldCaps.detail)
+  return toolInventoryPathSchema.safeParse(shown).success ? shown : marker
+}
+
 // A command line a shell runs: a hook's or a helper's command. Pattern and
 // brace characters are written so the shell reads the words shown.
 export function redactInventoryCommand(text: string): string {
   return redactText(text, true, inventoryFieldCaps.command)
+}
+
+// A command line whose every argument can be a credential no trigger names,
+// such as a header helper, which prints header names and values: shown as its
+// program alone, with the marker after it when anything follows. A program
+// that is not the first shell word (text that opens with an operator or an
+// expansion, or does not read as words there), or that the argument vector
+// redaction cuts (an assignment, a trigger), is the marker alone. So is a
+// first word spelled with an unquoted `#`: it opens a shell comment, which
+// the lexer does not model, so it is not the program and its text can be
+// anything.
+export function redactInventoryProgram(text: string): string {
+  const { tokens, stoppedAt } = lexShell(text)
+  const first = tokens[0]
+  if (first?.kind !== "word" || (stoppedAt !== undefined && stoppedAt < first.end) || text[first.start] === "#") return marker
+  const program = redactInventoryArgv([first.value])
+  const words = inventoryShellWords(program)
+  if (words?.length !== 1 || words[0] !== first.value) return marker
+  const rest = tokens.length > 1 || stoppedAt !== undefined || text.slice(first.end).trim() !== ""
+  if (!rest) return program
+  const shown = `${program} ${marker}`
+  return shown.length <= inventoryFieldCaps.command && !holdsCredential(shown) ? shown : marker
 }
 
 // Shell text in an argument a hook would pass on to a shell: a command run by

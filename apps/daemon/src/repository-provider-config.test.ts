@@ -1,19 +1,22 @@
-import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { execFileSync } from "node:child_process"
+import { link, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
+import { performance } from "node:perf_hooks"
 import { dirname, join, sep } from "node:path"
 
-import { toolInventoryProviderSchema, toolInventorySchema, type ToolInventoryProvider } from "@getdomovoi/protocol"
-import { afterEach, describe, expect, it } from "vitest"
+import { toolInventoryProviderSchema, toolInventorySchema, type ToolInventoryFile, type ToolInventoryProvider } from "@getdomovoi/protocol"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { inventoryShellWords } from "./inventory-redaction.js"
 import { maximumRepositoryConfigFileBytes, readRepositoryProviderConfig } from "./repository-provider-config.js"
+import { maximumRepositoryTomlDepth, maximumRepositoryTomlParseMilliseconds, parseRepositoryToml, RepositoryTomlTooSlowError } from "./repository-toml.js"
 import {
   escapedBlankTexts, generatedShellReadingTexts, hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, quotedStringTexts, sameWordCases,
   sameWordCredentials, sameWordPlacements, sameWordWrappers, shellReadingTexts, unsettledViewTexts, viewCases, viewCredential, viewPlacements,
   viewSpellings, viewTexts,
 } from "./test-hidden-triggers.js"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { adversarialCommands, nearLinearGrowth, workGrowth } from "./test-work.js"
+import { adversarialCommands, adversarialTomlFiles, nearLinearGrowth, workGrowth } from "./test-work.js"
 
 const scratchDirectories: string[] = []
 afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
@@ -35,7 +38,9 @@ function provider(result: { providers: ToolInventoryProvider[] }, id: string): T
   return found
 }
 
-const secrets = ["s3cr3t-value", "hunter2", "prod-db-pass", "tok-abc", "q-secret", "env-secret", "opaque-header-secret", "opaque-fragment-secret"]
+const secrets = [
+  "s3cr3t-value", "hunter2", "prod-db-pass", "tok-abc", "q-secret", "env-secret", "opaque-header-secret", "opaque-fragment-secret", "inline-bearer-secret",
+]
 
 function expectNoSecret(value: unknown): void {
   const text = JSON.stringify(value)
@@ -228,6 +233,923 @@ describe("readRepositoryProviderConfig: OpenCode and Kilo", () => {
       { path: ".opencode/tui.json", source: "project-settings", state: "read" },
     ])
     expect(opencode.entries).toEqual([plugin("root-tui@1.0.0", "tui.json"), plugin("opencode-tui@1.0.0", ".opencode/tui.json")])
+  })
+})
+
+// Codex loads a repository's .codex/config.toml, .codex/hooks.json and
+// .codex/rules once the project is trusted, and skills from .codex/skills and
+// .agents/skills (codex-rs config loader, hooks discovery and skill roots at
+// rust-v0.156.1).
+describe("readRepositoryProviderConfig: Codex", () => {
+  const configToml = [
+    "approval_policy = \"never\"",
+    "sandbox_mode = \"danger-full-access\"",
+    "default_permissions = \"workspace\"",
+    "# Codex ignores these in a project file, so they are not listed.",
+    "notify = [\"notify-send\", \"--token\", \"tok-abc\"]",
+    "model_provider = \"elsewhere\"",
+    "",
+    "[sandbox_workspace_write]",
+    "writable_roots = [\"/var/data\", \"../shared\"]",
+    "network_access = true",
+    "",
+    "[shell_environment_policy]",
+    "inherit = \"all\"",
+    "ignore_default_excludes = true",
+    "set = { DATABASE_URL = \"postgres://u:hunter2@db/x\", DEBUG = \"1\" }",
+    "",
+    "[model_providers.elsewhere]",
+    "base_url = \"https://elsewhere.example.com/v1\"",
+    "env_key = \"OPENAI_API_KEY\"",
+    "",
+    "[mcp_servers.local]",
+    "command = \"npx\"",
+    "args = [\"server\", \"--api-key\", \"s3cr3t-value\"]",
+    "env = { API_TOKEN = \"env-secret\", REGION = \"eu\" }",
+    "env_vars = [\"GITHUB_TOKEN\", { name = \"LOCAL_ONLY\", source = \"local\" }]",
+    "default_tools_approval_mode = \"approve\"",
+    "",
+    "[mcp_servers.local.tools.deploy]",
+    "approval_mode = \"approve\"",
+    "",
+    "[mcp_servers.remote]",
+    "url = \"https://user:tok-abc@mcp.example.com:8443/v1?key=q-secret\"",
+    "bearer_token = \"inline-bearer-secret\"",
+    "bearer_token_env_var = \"REMOTE_TOKEN\"",
+    "http_headers = { Authorization = \"Bearer opaque-header-secret\" }",
+    "env_http_headers = { \"X-Api-Key\" = \"REMOTE_API_KEY\" }",
+    "http_headers_helper = \"print-headers --token tok-abc\"",
+    "enabled = false",
+    "",
+    "[plugins.\"formatter@market\"]",
+    "enabled = true",
+    "",
+    "[plugins.\"off@market\"]",
+    "enabled = false",
+    "",
+    "[[hooks.SessionStart]]",
+    "hooks = [{ type = \"command\", command = \"NODE_ENV=production pnpm build\" }]",
+    "",
+    "[[hooks.PreToolUse]]",
+    "matcher = \"shell\"",
+    "hooks = [",
+    "  { type = \"command\", command = \"./check.sh\", commandWindows = \"check.cmd\" },",
+    "  { type = \"mcp_tool\", server = \"local\", tool = \"audit\" },",
+    "  { type = \"prompt\" },",
+    "]",
+    "",
+    "# Codex reads hook state from the person's own config only.",
+    "[hooks.state.\"file:/repo/.codex/config.toml:pre_tool_use:0:0\"]",
+    "trusted_hash = \"sha256:abc\"",
+    "",
+  ].join("\n")
+
+  it("lists servers, hooks, env keys, rules, helpers and plugins from config.toml, redacted", async () => {
+    const root = await scratch()
+    await put(root, ".codex/config.toml", configToml)
+
+    const result = await readRepositoryProviderConfig(root, { heldBack: true })
+    const codex = provider(result, "codex")
+    expect(toolInventoryProviderSchema.safeParse(codex).success).toBe(true)
+    expectNoSecret(result)
+    expect(JSON.stringify(codex)).not.toMatch(/notify-send|elsewhere|OPENAI_API_KEY|trusted_hash|sha256:abc/u)
+    expect(codex.files).toEqual([{ path: ".codex/config.toml", source: "project-settings", state: "read" }])
+    expect(codex.omittedEntries).toBe(0)
+    const file = ".codex/config.toml"
+    const rule = (name: string, detail: string) => ({ kind: "permission-rule", rule: name, detail, file, startsAtSessionStart: false, heldBack: true })
+    expect(codex.entries).toEqual([
+      {
+        kind: "tool-server", name: "local", transport: "stdio", file, startsAtSessionStart: true, heldBack: true,
+        command: "npx server [REDACTED]", envKeys: ["API_TOKEN", "REGION", "GITHUB_TOKEN", "LOCAL_ONLY"],
+      },
+      rule("default_tools_approval_mode", "local approve"),
+      rule("approval_mode", "local deploy approve"),
+      // A remote server names the variables whose values Codex sends to it.
+      {
+        kind: "tool-server", name: "remote", transport: "http", file, startsAtSessionStart: false, heldBack: true,
+        host: "mcp.example.com:8443", envKeys: ["REMOTE_TOKEN", "REMOTE_API_KEY"],
+      },
+      { kind: "helper", name: "http_headers_helper remote", command: "print-headers [REDACTED]", file, startsAtSessionStart: false, heldBack: true },
+      { kind: "hook", event: "SessionStart", command: "[REDACTED]", file, startsAtSessionStart: true, heldBack: true },
+      { kind: "hook", event: "PreToolUse", matcher: "shell", command: "./check.sh", file, startsAtSessionStart: false, heldBack: true },
+      { kind: "hook", event: "PreToolUse", matcher: "shell", command: "check.cmd", file, startsAtSessionStart: false, heldBack: true },
+      { kind: "hook", event: "PreToolUse", matcher: "shell", command: "local audit", file, startsAtSessionStart: false, heldBack: true },
+      { kind: "env-key", key: "DATABASE_URL", file, startsAtSessionStart: false, heldBack: true },
+      { kind: "env-key", key: "DEBUG", file, startsAtSessionStart: false, heldBack: true },
+      rule("approval_policy", "never"),
+      rule("sandbox_mode", "danger-full-access"),
+      rule("default_permissions", "workspace"),
+      rule("sandbox_workspace_write.writable_roots", "/var/data"),
+      rule("sandbox_workspace_write.writable_roots", "../shared"),
+      rule("sandbox_workspace_write.network_access", "true"),
+      rule("shell_environment_policy.inherit", "all"),
+      rule("shell_environment_policy.ignore_default_excludes", "true"),
+      { kind: "plugin", name: "formatter@market", file, startsAtSessionStart: true, heldBack: true },
+    ])
+  })
+
+  it("lists a granular approval policy by the flows it allows", async () => {
+    const root = await scratch()
+    await put(root, ".codex/config.toml", "[approval_policy.granular]\nsandbox_approval = true\nrules = true\nmcp_elicitations = false\n")
+    const codex = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+    expect(codex.omittedEntries).toBe(0)
+    expect(codex.entries).toEqual([
+      { kind: "permission-rule", rule: "approval_policy", detail: "granular sandbox_approval rules", file: ".codex/config.toml", startsAtSessionStart: false, heldBack: true },
+    ])
+  })
+
+  // A permission profile grants filesystem, workspace-root and network access,
+  // and the shell's filters choose which of the person's variables reach a
+  // command: each grant and filter is listed, never a variable's value.
+  it("lists a named permission profile's grants and the shell's variable filters", async () => {
+    const root = await scratch()
+    await put(root, ".codex/config.toml", [
+      "default_permissions = \"wide\"",
+      "",
+      "[permissions.base]",
+      "description = \"shared base\"",
+      "[permissions.base.filesystem]",
+      "\"/var/cache\" = \"read\"",
+      "",
+      "[permissions.wide]",
+      "extends = \"base\"",
+      "[permissions.wide.workspace_roots]",
+      "\"../sibling\" = true",
+      "\"../off\" = false",
+      "[permissions.wide.filesystem]",
+      "\"/\" = \"write\"",
+      "glob_scan_max_depth = 3",
+      "\"/home\" = { \".ssh\" = \"deny\", \"projects\" = \"write\" }",
+      "[permissions.wide.network]",
+      "enabled = true",
+      "mode = \"full\"",
+      "proxy_url = \"http://proxy.example.com:3128\"",
+      "socks_url = \"socks5://user:hunter2@socks.example.com:1080\"",
+      "dangerously_allow_all_unix_sockets = true",
+      "[permissions.wide.network.domains]",
+      "\"*.example.com\" = \"allow\"",
+      "\"evil.example\" = \"deny\"",
+      "[permissions.wide.network.unix_sockets]",
+      "\"/var/run/docker.sock\" = \"allow\"",
+      "[permissions.wide.network.mitm.hooks.inject]",
+      "host = \"api.example.com\"",
+      "methods = [\"GET\"]",
+      "path_prefixes = [\"/\"]",
+      "action = [\"add\"]",
+      "",
+      "[shell_environment_policy]",
+      "include_only = [\"DEPLOY_TOKEN\", \"PATH\"]",
+      "exclude = [\"AWS_*\"]",
+      "[shell_environment_policy.filters]",
+      "\"GITHUB_*\" = \"include\"",
+      "",
+    ].join("\n"))
+    const codex = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+    expect(toolInventoryProviderSchema.safeParse(codex).success).toBe(true)
+    expectNoSecret(codex)
+    const rule = (name: string, detail: unknown) => ({ kind: "permission-rule", rule: name, detail, file: ".codex/config.toml", startsAtSessionStart: false, heldBack: true })
+    expect(codex.entries).toEqual([
+      rule("default_permissions", "wide"),
+      rule("permissions.filesystem", "base /var/cache read"),
+      rule("permissions.extends", "wide base"),
+      rule("permissions.workspace_roots", "wide ../sibling true"),
+      rule("permissions.workspace_roots", "wide ../off false"),
+      rule("permissions.filesystem", "wide / write"),
+      rule("permissions.filesystem", "wide /home .ssh deny"),
+      rule("permissions.filesystem", "wide /home projects write"),
+      rule("permissions.network.enabled", "wide true"),
+      rule("permissions.network.mode", "wide full"),
+      rule("permissions.network.proxy_url", "wide http://proxy.example.com:3128"),
+      rule("permissions.network.socks_url", expect.stringMatching(/^wide socks5:\/\/\S*\[REDACTED\]/u)),
+      rule("permissions.network.dangerously_allow_all_unix_sockets", "wide true"),
+      rule("permissions.network.domains", "wide *.example.com allow"),
+      rule("permissions.network.domains", "wide evil.example deny"),
+      rule("permissions.network.unix_sockets", "wide /var/run/docker.sock allow"),
+      rule("shell_environment_policy.include_only", "DEPLOY_TOKEN"),
+      rule("shell_environment_policy.include_only", "PATH"),
+      rule("shell_environment_policy.exclude", "AWS_*"),
+      rule("shell_environment_policy.filters", "GITHUB_* include"),
+    ])
+    // Man-in-the-middle hooks are not read here, so they are counted.
+    expect(codex.omittedEntries).toBe(1)
+  })
+
+  // Ruling Q114: an instruction override is listed by its key, and a file by
+  // its path, never by its text. Codex resolves the file's path against the
+  // .codex folder. A file in the repository is hashed like any other; one
+  // outside it, or reached through a link, refuses trust.
+  const instructionRule = (rule: string, detail: string) => ({
+    kind: "permission-rule", rule, detail, file: ".codex/config.toml", startsAtSessionStart: false, heldBack: true,
+  })
+
+  it("lists instruction overrides without their text and pins the file one names", async () => {
+    const root = await scratch()
+    await put(root, ".codex/config.toml", [
+      "model_instructions_file = \"../docs/policy.txt\"",
+      "instructions = \"INLINE-INSTRUCTIONS-TEXT\"",
+      "developer_instructions = \"\"\"DEVELOPER-INSTRUCTIONS-TEXT\"\"\"",
+      "",
+    ].join("\n"))
+    await put(root, "docs/policy.txt", "POLICY-FILE-TEXT")
+    const first = await readRepositoryProviderConfig(root, { heldBack: true })
+    const codex = provider(first, "codex")
+    expect(toolInventoryProviderSchema.safeParse(codex).success).toBe(true)
+    expect(JSON.stringify(first)).not.toMatch(/INLINE-INSTRUCTIONS-TEXT|DEVELOPER-INSTRUCTIONS-TEXT|POLICY-FILE-TEXT/u)
+    expect(codex.files).toEqual([
+      { path: ".codex/config.toml", source: "project-settings", state: "read" },
+      { path: "docs/policy.txt", source: "repository-file", state: "read" },
+    ])
+    expect(codex.entries).toEqual([
+      instructionRule("instructions", "inline"),
+      instructionRule("developer_instructions", "inline"),
+      instructionRule("model_instructions_file", "docs/policy.txt"),
+    ])
+    expect(codex.omittedEntries).toBe(0)
+    expect(first.trustRefusals).toEqual([])
+    await put(root, "docs/policy.txt", "CHANGED-POLICY-FILE-TEXT")
+    const changed = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(changed.configDigest).not.toBe(first.configDigest)
+    await rm(join(root, "docs", "policy.txt"))
+    const missing = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(new Set([first.configDigest, changed.configDigest, missing.configDigest]).size).toBe(3)
+    expect(provider(missing, "codex").files).toEqual([{ path: ".codex/config.toml", source: "project-settings", state: "read" }])
+
+    // The same caps as every other file.
+    await put(root, "docs/policy.txt", "x".repeat(maximumRepositoryConfigFileBytes + 1))
+    const large = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(provider(large, "codex").files[1]).toEqual({ path: "docs/policy.txt", source: "repository-file", state: "unreadable", reason: "too-large" })
+  })
+
+  it("refuses trust for an instruction file outside the repository or through a link", async () => {
+    const root = await scratch()
+    const outside = await scratch("domovoi-provider-outside-")
+    await put(outside, "policy.txt", "OUTSIDE-POLICY-TEXT")
+    const dir = process.platform === "win32" ? "junction" : "dir"
+    await symlink(join(outside, "policy.txt"), join(root, "linked.txt"))
+    await symlink(outside, join(root, "linked-docs"), dir)
+    await put(outside, "hard.txt", "HARD-LINKED-TEXT")
+    await link(join(outside, "hard.txt"), join(root, "hard.txt"))
+    const cases: Array<[string, string, { file?: object }]> = [
+      [join(outside, "policy.txt"), join(outside, "policy.txt"), {}],
+      ["../../outside.txt", "../../outside.txt", {}],
+      ["~/policy.txt", "~/policy.txt", {}],
+      ["../linked.txt", "linked.txt", { file: { path: "linked.txt", source: "repository-file", state: "unreadable", reason: "symbolic-link" } }],
+      ["../linked-docs/policy.txt", "linked-docs/policy.txt", { file: { path: "linked-docs/policy.txt", source: "repository-file", state: "unreadable", reason: "symbolic-link" } }],
+      ["../hard.txt", "hard.txt", { file: { path: "hard.txt", source: "repository-file", state: "unreadable", reason: "hard-link" } }],
+    ]
+    for (const [written, shown, { file }] of cases) {
+      await put(root, ".codex/config.toml", `model_instructions_file = ${JSON.stringify(written)}\n`)
+      const result = await readRepositoryProviderConfig(root, { heldBack: true })
+      const codex = provider(result, "codex")
+      expect(toolInventoryProviderSchema.safeParse(codex).success, written).toBe(true)
+      expect(JSON.stringify(result), written).not.toMatch(/OUTSIDE-POLICY-TEXT|HARD-LINKED-TEXT/u)
+      expect(result.trustRefusals, written).toEqual([{ provider: "codex", reason: "instructions-outside", path: shown }])
+      expect(codex.entries, written).toEqual([instructionRule("model_instructions_file", shown)])
+      expect(codex.files, written).toEqual([{ path: ".codex/config.toml", source: "project-settings", state: "read" }, ...(file ? [file] : [])])
+      // What lies outside is never read, so a change there changes nothing.
+      await put(outside, "policy.txt", "OUTSIDE-POLICY-TEXT again")
+      expect((await readRepositoryProviderConfig(root, { heldBack: true })).configDigest, written).toBe(result.configDigest)
+    }
+
+    await put(root, ".codex/config.toml", "model_instructions_file = 7\n")
+    const odd = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+    expect(odd.entries).toEqual([])
+    expect(odd.omittedEntries).toBe(1)
+  })
+
+  // A repository names the instruction file, so its path is shown redacted
+  // and within the path cap, the same text in the file record, the rule and
+  // the refusal. The file is still read and pinned by its own path.
+  it("shows an instruction file's path redacted wherever it is listed", async () => {
+    const root = await scratch()
+    const outside = await scratch("domovoi-provider-outside-")
+    const canary = "REVIEW_PATH_CANARY"
+    const name = `policy TOKEN=${canary}.txt`
+    await put(root, `docs/${name}`, "POLICY-FILE-TEXT")
+    await put(root, " lead.txt", "LEAD-FILE-TEXT")
+    await put(outside, "policy.txt", "OUTSIDE-POLICY-TEXT")
+    await mkdir(join(root, "linked"))
+    await symlink(join(outside, "policy.txt"), join(root, "linked", name))
+    const cases: Array<[string, string, ToolInventoryFile]> = [
+      [`../docs/${name}`, "docs/policy [REDACTED]", { path: "docs/policy [REDACTED]", source: "repository-file", state: "read" }],
+      [`../linked/${name}`, "linked/policy [REDACTED]", { path: "linked/policy [REDACTED]", source: "repository-file", state: "unreadable", reason: "symbolic-link" }],
+      // A path the protocol refuses as written is the marker.
+      ["../ lead.txt", "[REDACTED]", { path: "[REDACTED]", source: "repository-file", state: "read" }],
+    ]
+    for (const [written, shown, file] of cases) {
+      await put(root, ".codex/config.toml", `model_instructions_file = ${JSON.stringify(written)}\n`)
+      const result = await readRepositoryProviderConfig(root, { heldBack: true })
+      const codex = provider(result, "codex")
+      expect(toolInventoryProviderSchema.safeParse(codex).success, written).toBe(true)
+      expect(JSON.stringify(result), written).not.toMatch(new RegExp(`${canary}|POLICY-FILE-TEXT|LEAD-FILE-TEXT`, "u"))
+      expect(codex.files, written).toEqual([{ path: ".codex/config.toml", source: "project-settings", state: "read" }, file])
+      expect(codex.entries, written).toEqual([instructionRule("model_instructions_file", shown)])
+      expect(result.trustRefusals, written).toEqual(file.state === "unreadable" ? [{ provider: "codex", reason: "instructions-outside", path: shown }] : [])
+    }
+    await put(root, ".codex/config.toml", `model_instructions_file = ${JSON.stringify(`../docs/${name}`)}\n`)
+    const first = await readRepositoryProviderConfig(root, { heldBack: true })
+    await put(root, `docs/${name}`, "CHANGED-POLICY-FILE-TEXT")
+    expect((await readRepositoryProviderConfig(root, { heldBack: true })).configDigest).not.toBe(first.configDigest)
+  })
+
+  // An instruction file that is also a path in scope is listed once.
+  it("lists an instruction file that is also a Codex file once", async () => {
+    const root = await scratch()
+    await put(root, ".codex/hooks.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "stop-hook" }] }] } }))
+    await put(root, ".codex/skills/mine/SKILL.md", "mine")
+    for (const written of ["hooks.json", "skills"]) {
+      await put(root, ".codex/config.toml", `model_instructions_file = ${JSON.stringify(written)}\n`)
+      const codex = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+      expect(toolInventoryProviderSchema.safeParse(codex).success, written).toBe(true)
+      const paths = codex.files.map((file) => file.path)
+      expect(paths, written).toEqual([...new Set(paths)])
+    }
+  })
+
+  // A header helper prints the headers Codex sends, and a header's name and
+  // value need no word the redaction knows: every argument is cut, and the
+  // helper is listed by its program.
+  it("lists a header helper by its program, every argument cut", async () => {
+    const root = await scratch()
+    const canary = "REVIEW_CANARY_4821"
+    const helpers: Array<[string, string]> = [
+      ["echo", `echo '{"X-Custom":"${canary}"}'`],
+      ["printf", `printf '%s' '{"X-Custom":"${canary}"}'`],
+      ["spaced", `'/opt/header tools/print' ${canary}`],
+      ["bare", "print-headers"],
+      ["assigned", `HEADER=${canary} print-headers`],
+      ["piped", `cat headers.json | tr -d ${canary}`],
+      ["script", `sh -c 'echo ${canary}'`],
+      ["subshell", `(echo ${canary})`],
+      ["expanded", `$(echo ${canary}) x`],
+      // A word that starts with an unquoted `#` opens a shell comment: it is
+      // not the program.
+      ["comment", `#${canary}\nprintf '%s' '{"X-Custom":"${canary}"}'`],
+      ["indented", `  #${canary}`],
+      ["joined", `\\\n#${canary}\nprint-headers`],
+      ["quoted", `'#print' ${canary}`],
+    ]
+    await put(root, ".codex/config.toml", [
+      ...helpers.map(([name, helper]) => (
+        `[mcp_servers.${name}]\nurl = "https://mcp.example.test"\nhttp_headers_helper = ${JSON.stringify(helper)}\n`
+      )),
+      // The review's multiline literal string.
+      `[mcp_servers.multiline]\nurl = "https://mcp.example.test"\nhttp_headers_helper = '''\n#${canary}\nprintf '%s' '{"X-Custom":"${canary}"}'\n'''\n`,
+    ].join("\n"))
+    const codex = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+    expect(toolInventoryProviderSchema.safeParse(codex).success).toBe(true)
+    expect(JSON.stringify(codex)).not.toContain(canary)
+    expect(codex.omittedEntries).toBe(0)
+    expect(codex.entries.flatMap((entry) => (entry.kind === "helper" ? [[entry.name, entry.command]] : []))).toEqual([
+      ["http_headers_helper echo", "echo [REDACTED]"],
+      ["http_headers_helper printf", "printf [REDACTED]"],
+      ["http_headers_helper spaced", "'/opt/header tools/print' [REDACTED]"],
+      ["http_headers_helper bare", "print-headers"],
+      ["http_headers_helper assigned", "[REDACTED]"],
+      ["http_headers_helper piped", "cat [REDACTED]"],
+      ["http_headers_helper script", "sh [REDACTED]"],
+      ["http_headers_helper subshell", "[REDACTED]"],
+      ["http_headers_helper expanded", "[REDACTED]"],
+      ["http_headers_helper comment", "[REDACTED]"],
+      ["http_headers_helper indented", "[REDACTED]"],
+      ["http_headers_helper joined", "[REDACTED]"],
+      ["http_headers_helper quoted", "'#print' [REDACTED]"],
+      ["http_headers_helper multiline", "[REDACTED]"],
+    ])
+  })
+
+  it("lists hooks from hooks.json and counts what it cannot read", async () => {
+    const root = await scratch()
+    await put(root, ".codex/hooks.json", JSON.stringify({
+      description: "repository hooks",
+      hooks: {
+        Stop: [{ hooks: [
+          { type: "command", command: "pnpm lint", timeout: 30 },
+          { type: "command", command: "npm test\nPGPASSWORD=prod-db-pass psql", command_windows: "npm.cmd test" },
+          // Codex skips prompt and agent hooks, so there is nothing to list.
+          { type: "agent" },
+          { type: "unknown" },
+        ] }],
+        PostToolUse: "not a list",
+      },
+    }))
+    const codex = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+    expect(toolInventoryProviderSchema.safeParse(codex).success).toBe(true)
+    expectNoSecret(codex)
+    expect(codex.files).toEqual([{ path: ".codex/hooks.json", source: "project-settings", state: "read" }])
+    const hook = (command: string) => ({ kind: "hook", event: "Stop", command, file: ".codex/hooks.json", startsAtSessionStart: false, heldBack: true })
+    expect(codex.entries).toEqual([hook("pnpm lint"), hook("npm test [REDACTED]"), hook("npm.cmd test")])
+    expect(codex.omittedEntries).toBe(2)
+  })
+
+  it("names skills from .codex/skills and .agents/skills and keeps rules in the digest", async () => {
+    const root = await scratch()
+    await put(root, ".codex/skills/deploy/SKILL.md", "---\nname: deploy\n---\nDeploy.")
+    await put(root, ".agents/skills/review/SKILL.md", "---\nname: review\n---\nReview.")
+    await put(root, ".codex/rules/default.rules", "prefix_rule(pattern = [\"git\", \"push\"], decision = \"allow\")\n")
+    const result = await readRepositoryProviderConfig(root, { heldBack: true })
+    const codex = provider(result, "codex")
+    expect(toolInventoryProviderSchema.safeParse(codex).success).toBe(true)
+    expect(codex.files).toEqual([
+      { path: ".codex/rules", source: "repository-file", state: "read" },
+      { path: ".codex/skills", source: "repository-file", state: "read" },
+      { path: ".agents/skills", source: "repository-file", state: "read" },
+    ])
+    expect(codex.entries).toEqual([
+      { kind: "skill", name: "deploy", file: ".codex/skills", startsAtSessionStart: false, heldBack: true },
+      { kind: "skill", name: "review", file: ".agents/skills", startsAtSessionStart: false, heldBack: true },
+    ])
+    await put(root, ".codex/rules/default.rules", "prefix_rule(pattern = [\"git\"], decision = \"allow\")\n")
+    expect((await readRepositoryProviderConfig(root, { heldBack: true })).configDigest).not.toBe(result.configDigest)
+  })
+
+  // The counted growth tests cannot see every kind of slow input, so a parse
+  // that takes longer than its time limit is refused. The clock is stepped,
+  // never slept on: each read of it advances by `step` milliseconds.
+  it("refuses TOML whose parse takes longer than its time limit, and reads the rest", async () => {
+    const stepped = (step: number) => {
+      let now = 0
+      return vi.spyOn(performance, "now").mockImplementation(() => {
+        now += step
+        return now
+      })
+    }
+    const text = "sandbox_mode = \"read-only\"\n"
+    const limit = maximumRepositoryTomlParseMilliseconds
+    try {
+      stepped(limit)
+      expect(parseRepositoryToml(text)).toEqual({ sandbox_mode: "read-only" })
+      stepped(limit + 1)
+      expect(() => parseRepositoryToml(text)).toThrow(RepositoryTomlTooSlowError)
+
+      const root = await scratch()
+      await put(root, ".codex/config.toml", text)
+      await put(root, ".codex/hooks.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "pnpm lint" }] }] } }))
+      const codex = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+      expect(toolInventoryProviderSchema.safeParse(codex).success).toBe(true)
+      expect(codex.files).toEqual([
+        { path: ".codex/config.toml", source: "project-settings", state: "unreadable", reason: "too-slow" },
+        { path: ".codex/hooks.json", source: "project-settings", state: "read" },
+      ])
+      expect(codex.entries.map((entry) => entry.kind)).toEqual(["hook"])
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
+  it("refuses malformed TOML and TOML nested past its depth cap, and reads the rest", async () => {
+    const root = await scratch()
+    await put(root, ".codex/config.toml", "[mcp_servers.x\ncommand = \"a\"\n")
+    await put(root, ".codex/hooks.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "pnpm lint" }] }] } }))
+    const first = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+    expect(toolInventoryProviderSchema.safeParse(first).success).toBe(true)
+    expect(first.files).toEqual([
+      { path: ".codex/config.toml", source: "project-settings", state: "unreadable", reason: "invalid-toml" },
+      { path: ".codex/hooks.json", source: "project-settings", state: "read" },
+    ])
+    expect(first.entries.map((entry) => entry.kind === "hook" && entry.command)).toEqual(["pnpm lint"])
+
+    const depth = maximumRepositoryTomlDepth
+    await put(root, ".codex/config.toml", `sandbox_mode = "read-only"\nnested = ${"[".repeat(depth + 1)}${"]".repeat(depth + 1)}\n`)
+    const deep = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+    expect(deep.files[0]).toEqual({ path: ".codex/config.toml", source: "project-settings", state: "unreadable", reason: "invalid-toml" })
+    await put(root, ".codex/config.toml", `sandbox_mode = "read-only"\nnested = ${"[".repeat(depth)}${"]".repeat(depth)}\n`)
+    const atCap = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+    expect(atCap.files[0]).toEqual({ path: ".codex/config.toml", source: "project-settings", state: "read" })
+    expect(atCap.entries[0]).toEqual({
+      kind: "permission-rule", rule: "sandbox_mode", detail: "read-only", file: ".codex/config.toml", startsAtSessionStart: false, heldBack: true,
+    })
+  })
+
+  it("never follows a link, and refuses a hard link and an oversized file", async () => {
+    const root = await scratch()
+    const outside = await scratch("domovoi-provider-outside-")
+    await put(outside, "codex/config.toml", "[mcp_servers.stolen]\ncommand = \"outside-server\"\n")
+    await put(outside, "codex/skills/outside/SKILL.md", "outside")
+    await symlink(join(outside, "codex"), join(root, ".codex"), process.platform === "win32" ? "junction" : "dir")
+    const linked = await readRepositoryProviderConfig(root, { heldBack: true })
+    const codex = provider(linked, "codex")
+    expect(JSON.stringify(linked)).not.toMatch(/outside-server|stolen|outside/u)
+    expect(codex.files).toEqual([
+      { path: ".codex/config.toml", source: "project-settings", state: "unreadable", reason: "symbolic-link" },
+      { path: ".codex/hooks.json", source: "project-settings", state: "unreadable", reason: "symbolic-link" },
+      { path: ".codex/rules", source: "repository-file", state: "unreadable", reason: "symbolic-link" },
+      { path: ".codex/skills", source: "repository-file", state: "unreadable", reason: "symbolic-link" },
+    ])
+    expect(codex.entries).toEqual([])
+    await put(outside, "codex/config.toml", "sandbox_mode = \"read-only\"\n")
+    expect((await readRepositoryProviderConfig(root, { heldBack: true })).configDigest).toBe(linked.configDigest)
+
+    const other = await scratch()
+    await put(outside, "config.toml", "[shell_environment_policy]\nset = { HARD_LINKED = \"1\" }\n")
+    await mkdir(join(other, ".codex"), { recursive: true })
+    await link(join(outside, "config.toml"), join(other, ".codex", "config.toml"))
+    await put(other, ".codex/hooks.json", `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"${"x".repeat(maximumRepositoryConfigFileBytes)}"}]}]}}`)
+    const refused = await readRepositoryProviderConfig(other, { heldBack: true })
+    expect(JSON.stringify(refused)).not.toContain("HARD_LINKED")
+    expect(provider(refused, "codex").files).toEqual([
+      { path: ".codex/config.toml", source: "project-settings", state: "unreadable", reason: "hard-link" },
+      { path: ".codex/hooks.json", source: "project-settings", state: "unreadable", reason: "too-large" },
+    ])
+  })
+
+  // Q92 and Q99: an over-cap command and one the protocol backstop would
+  // refuse are listed cut, ending in the marker, not dropped.
+  it("lists an over-cap hook and one with a hidden trigger cut, none omitted", async () => {
+    const root = await scratch()
+    const long = `echo ${"a ".repeat(1_100)}a`
+    await put(root, ".codex/config.toml", [
+      "[[hooks.Stop]]",
+      `hooks = [{ type = "command", command = ${JSON.stringify(long)} }, { type = "command", command = "curl 'https://host Token swordfish tail'" }]`,
+      "",
+    ].join("\n"))
+    const codex = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+    expect(toolInventoryProviderSchema.safeParse(codex).success).toBe(true)
+    expect(JSON.stringify(codex)).not.toContain("swordfish")
+    expect(codex.omittedEntries).toBe(0)
+    expect(codex.entries.map((entry) => (entry.kind === "hook" ? entry.command : undefined))).toEqual([
+      `echo${" a".repeat(1_016)} [REDACTED]`,
+      "curl 'https://host [REDACTED]'",
+    ])
+  })
+
+  it("changes the digest with every Codex path in scope and nothing else", async () => {
+    const root = await scratch()
+    const digest = async () => (await readRepositoryProviderConfig(root, { heldBack: true })).configDigest
+    const first = await digest()
+    await put(root, ".codex/notes.md", "not read by Codex")
+    await put(root, "AGENTS.md", "instructions load without trust")
+    expect(await digest()).toBe(first)
+    const seen = new Set([first])
+    const changes: Array<[string, () => Promise<void>]> = [
+      ["add .codex/config.toml", () => put(root, ".codex/config.toml", "sandbox_mode = \"read-only\"\n")],
+      ["add a comment to config.toml", () => put(root, ".codex/config.toml", "# comment\nsandbox_mode = \"read-only\"\n")],
+      ["add .codex/hooks.json", () => put(root, ".codex/hooks.json", "{}")],
+      ["add a rules file", () => put(root, ".codex/rules/a.rules", "")],
+      ["edit the rules file", () => put(root, ".codex/rules/a.rules", "prefix_rule(pattern = [\"ls\"], decision = \"allow\")")],
+      ["add a Codex skill", () => put(root, ".codex/skills/x/SKILL.md", "x")],
+      ["delete config.toml", () => rm(join(root, ".codex/config.toml"))],
+    ]
+    for (const [label, change] of changes) {
+      await change()
+      const next = await digest()
+      expect(seen.has(next), label).toBe(false)
+      seen.add(next)
+    }
+  })
+
+  // Codex skips a project .codex folder that is its own CODEX_HOME, by path
+  // or by canonical path (discover_project_layers at rust-v0.156.1), so a
+  // repository at the person's home does not list their own configuration.
+  it("skips a .codex folder that is Codex's own home, by path or through a link to it", async () => {
+    const root = await scratch()
+    await put(root, ".codex/config.toml", "[mcp_servers.personal]\ncommand = \"personal-server\"\n")
+    await put(root, ".codex/hooks.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "personal-hook" }] }] } }))
+    await put(root, ".codex/rules/default.rules", "prefix_rule(pattern = [\"ls\"], decision = \"allow\")\n")
+    await put(root, ".codex/skills/mine/SKILL.md", "mine")
+    const elsewhere = await scratch("domovoi-provider-home-")
+    const linkedHome = join(elsewhere, "codex-home")
+    await symlink(join(root, ".codex"), linkedHome, process.platform === "win32" ? "junction" : "dir")
+    const read = async (codexHome: string) => readRepositoryProviderConfig(root, { heldBack: true, codexHome })
+    for (const codexHome of [join(root, ".codex"), linkedHome]) {
+      const result = await read(codexHome)
+      const codex = provider(result, "codex")
+      expect(JSON.stringify(result)).not.toMatch(/personal|mine/u)
+      expect(codex.files).toEqual([])
+      expect(codex.entries).toEqual([])
+      await put(root, ".codex/config.toml", "[mcp_servers.personal]\ncommand = \"personal-server-2\"\n")
+      expect((await read(codexHome)).configDigest).toBe(result.configDigest)
+    }
+    // CODEX_HOME from the environment, as Codex reads it.
+    vi.stubEnv("CODEX_HOME", join(root, ".codex"))
+    expect(provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex").files).toEqual([])
+    vi.unstubAllEnvs()
+    // Another home: the repository's folder is read.
+    const other = provider(await read(join(elsewhere, "other-home")), "codex")
+    expect(other.files.map((file) => file.path)).toEqual([".codex/config.toml", ".codex/hooks.json", ".codex/rules", ".codex/skills"])
+  })
+
+  // Codex takes a CODEX_HOME that is set as the canonical path of the value
+  // as written (find_codex_home at rust-v0.156.1): a `..` after a link steps
+  // up from the link's target, not from the link. A home spelled that way
+  // that only reads as the repository's folder is not Codex's home.
+  it("reads a .codex folder a set CODEX_HOME only spells, through a link and `..`", async () => {
+    const root = await scratch()
+    const elsewhere = await scratch("domovoi-provider-home-")
+    await mkdir(join(elsewhere, ".codex"))
+    await mkdir(join(elsewhere, "sub"))
+    await symlink(join(elsewhere, "sub"), join(root, "link"), process.platform === "win32" ? "junction" : "dir")
+    await put(root, ".codex/config.toml", "[mcp_servers.repository]\ncommand = \"repository-server\"\n")
+    const codexHome = `${root}/link/../.codex`
+    const codexServers = (result: { providers: ToolInventoryProvider[] }) => provider(result, "codex").entries.flatMap((entry) => (entry.kind === "tool-server" ? [entry.name] : []))
+    const first = await readRepositoryProviderConfig(root, { heldBack: true, codexHome })
+    expect(provider(first, "codex").files).toEqual([{ path: ".codex/config.toml", source: "project-settings", state: "read" }])
+    expect(codexServers(first)).toEqual(["repository"])
+    await put(root, ".codex/config.toml", "[mcp_servers.repository]\ncommand = \"repository-server-2\"\n")
+    const changed = await readRepositoryProviderConfig(root, { heldBack: true, codexHome })
+    expect(changed.configDigest).not.toBe(first.configDigest)
+    // The same value from the environment.
+    vi.stubEnv("CODEX_HOME", codexHome)
+    try {
+      expect(codexServers(await readRepositoryProviderConfig(root, { heldBack: true }))).toEqual(["repository"])
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("refuses trust for a nested .codex folder a set CODEX_HOME only spells", async () => {
+    const root = await scratch()
+    const elsewhere = await scratch("domovoi-provider-home-")
+    await mkdir(join(elsewhere, ".codex"))
+    await mkdir(join(elsewhere, "sub"))
+    await put(root, "app/.codex/config.toml", "[mcp_servers.nested]\ncommand = \"nested-server\"\n")
+    await symlink(join(elsewhere, "sub"), join(root, "app", "link"), process.platform === "win32" ? "junction" : "dir")
+    const nested = await readRepositoryProviderConfig(root, { heldBack: true, sessionFolder: "app", codexHome: `${root}/app/link/../.codex` })
+    expect(nested.trustRefusals).toEqual([{ provider: "codex", reason: "nested-config", path: "app/.codex" }])
+  })
+
+  // Platforms differ on a `..` after a link (Windows steps up lexically), so
+  // a set CODEX_HOME with any `..` segment is never taken as the home (ruling
+  // Q125): the repository's folder stays in scope even where `..` resolves to
+  // it exactly, and a nested folder still refuses trust.
+  it("never skips a folder for a set CODEX_HOME with a `..` segment", async () => {
+    const root = await scratch()
+    await mkdir(join(root, "x"))
+    await mkdir(join(root, "app", "x"), { recursive: true })
+    await put(root, ".codex/config.toml", "[mcp_servers.repository]\ncommand = \"repository-server\"\n")
+    await put(root, "app/.codex/config.toml", "[mcp_servers.nested]\ncommand = \"nested-server\"\n")
+    const codexServers = (result: { providers: ToolInventoryProvider[] }) => provider(result, "codex").entries.flatMap((entry) => (entry.kind === "tool-server" ? [entry.name] : []))
+    for (const spell of [(...parts: string[]) => parts.join("/"), (...parts: string[]) => parts.join(sep)]) {
+      const codexHome = spell(root, "x", "..", ".codex")
+      const read = await readRepositoryProviderConfig(root, { heldBack: true, codexHome })
+      expect(provider(read, "codex").files, codexHome).toEqual([{ path: ".codex/config.toml", source: "project-settings", state: "read" }])
+      expect(codexServers(read)).toEqual(["repository"])
+      vi.stubEnv("CODEX_HOME", codexHome)
+      try {
+        expect(codexServers(await readRepositoryProviderConfig(root, { heldBack: true }))).toEqual(["repository"])
+      } finally {
+        vi.unstubAllEnvs()
+      }
+      const nested = await readRepositoryProviderConfig(root, { heldBack: true, sessionFolder: "app", codexHome: spell(root, "app", "x", "..", ".codex") })
+      expect(nested.trustRefusals).toEqual([{ provider: "codex", reason: "nested-config", path: "app/.codex" }])
+    }
+  })
+
+  // A hook whose command is adversarial input, and TOML a parser has taken
+  // more than linear work on, near the file limit: read in work that grows
+  // about linearly with the input, counted, not timed.
+  it.each(adversarialCommands)("reads a config.toml hook with %s in near-linear work", async (_name, size, generate) => {
+    const roots = await Promise.all([size, size * 4].map(async (count) => {
+      const root = await scratch()
+      await put(root, ".codex/config.toml", `[[hooks.Stop]]\nhooks = [{ type = "command", command = ${JSON.stringify(generate(count))} }]\n`)
+      return root
+    }))
+    const { growth, results } = await workGrowth(
+      () => readRepositoryProviderConfig(roots[0]!, { heldBack: true }),
+      () => readRepositoryProviderConfig(roots[1]!, { heldBack: true }),
+    )
+    for (const result of results) {
+      const codex = provider(result, "codex")
+      expect(codex.omittedEntries).toBe(0)
+      expect(codex.entries).toHaveLength(1)
+    }
+    expect(growth).toBeLessThan(nearLinearGrowth)
+  })
+
+  it.each(adversarialTomlFiles)("reads a config.toml with %s in near-linear work", async (_name, size, generate) => {
+    const roots = await Promise.all([size, size * 4].map(async (count) => {
+      const root = await scratch()
+      await put(root, ".codex/config.toml", generate(count))
+      return root
+    }))
+    const { growth, results } = await workGrowth(
+      () => readRepositoryProviderConfig(roots[0]!, { heldBack: true }),
+      () => readRepositoryProviderConfig(roots[1]!, { heldBack: true }),
+      { characterReads: true },
+    )
+    for (const result of results) expect(provider(result, "codex").files).toEqual([{ path: ".codex/config.toml", source: "project-settings", state: "read" }])
+    expect(growth).toBeLessThan(nearLinearGrowth)
+  })
+
+  // The parser scans its input one character at a time with charCodeAt, so
+  // its own work is counted with every character read. Not timed: on Node 22
+  // four times the nested arrays took 8 to 10 times as long while the parser
+  // read 4.007 times the characters and built 4 times the arrays. The rest was
+  // the young generation collector copying the parsed result (growth 3.9 to
+  // 4.1 with a 64 MB semi-space), which a clock cannot tell from the parser.
+  it.each(adversarialTomlFiles)("parses TOML with %s in near-linear work, every character read counted", async (_name, size, generate) => {
+    const small = generate(size)
+    const large = generate(size * 4)
+    const { growth } = await workGrowth(() => parseRepositoryToml(small), () => parseRepositoryToml(large), { characterReads: true })
+    expect(growth).toBeLessThan(nearLinearGrowth)
+  })
+
+  // A positive control: a parser that reads the document again from its start
+  // at every line, one character at a time, fails the same check.
+  it("counts a character scan that starts again at every line as more than near-linear", async () => {
+    const rescanning = (text: string) => {
+      let reads = 0
+      for (let line = text.indexOf("\n"); line !== -1; line = text.indexOf("\n", line + 1)) {
+        for (let at = 0; at < line; at += 1) reads += text.charCodeAt(at) > 0 ? 1 : 0
+      }
+      return reads
+    }
+    const [, size, generate] = adversarialTomlFiles.find(([name]) => name === "table headers")!
+    const small = generate(size / 4)
+    const large = generate(size)
+    const { growth } = await workGrowth(() => rescanning(small), () => rescanning(large), { characterReads: true })
+    expect(growth).toBeGreaterThanOrEqual(nearLinearGrowth)
+  })
+})
+
+// A main checkout and a linked worktree of it, laid out as git lays them out.
+async function linkedWorktree(mainName?: string): Promise<{ main: string; worktree: string; gitDirectory: string }> {
+  const main = mainName === undefined ? await scratch("domovoi-provider-main-") : join(await scratch("domovoi-provider-main-"), mainName)
+  const worktree = await scratch("domovoi-provider-worktree-")
+  const gitDirectory = join(main, ".git", "worktrees", "session")
+  await put(main, ".git/HEAD", "ref: refs/heads/main\n")
+  await put(main, ".git/worktrees/session/HEAD", "ref: refs/heads/session\n")
+  await put(main, ".git/worktrees/session/gitdir", `${join(worktree, ".git")}\n`)
+  await put(main, ".git/worktrees/session/commondir", "../..\n")
+  await put(worktree, ".git", `gitdir: ${gitDirectory}\n`)
+  return { main, worktree, gitDirectory }
+}
+
+// Trust covers the root .codex folder only (ruling Q113, Refs #656): Codex
+// input anywhere else it would read keeps the repository untrusted, named by
+// a reason code.
+describe("readRepositoryProviderConfig: Codex input outside the root folder", () => {
+  const read = (root: string, options: { sessionFolder?: string; codexHome?: string } = {}) => (
+    readRepositoryProviderConfig(root, { heldBack: true, ...options })
+  )
+  const refusals = async (root: string, options: { sessionFolder?: string; codexHome?: string } = {}) => (await read(root, options)).trustRefusals
+
+  it("refuses trust while a linked worktree's main checkout holds Codex hooks", async () => {
+    const { main, worktree } = await linkedWorktree()
+    const clear = await read(worktree)
+    expect(clear.trustRefusals).toEqual([])
+    await put(main, ".codex/config.toml", "sandbox_mode = \"read-only\"\n")
+    expect(await refusals(worktree)).toEqual([])
+
+    await put(main, ".codex/config.toml", "[[hooks.Stop]]\nhooks = [{ type = \"command\", command = \"main-hook\" }]\n")
+    const hooked = await read(worktree)
+    expect(hooked.trustRefusals).toEqual([{ provider: "codex", reason: "main-checkout-hooks", path: join(main, ".codex", "config.toml") }])
+    expect(JSON.stringify(hooked)).not.toContain("main-hook")
+    expect(hooked.configDigest).not.toBe(clear.configDigest)
+    // A file the reader cannot read is refused as holding hooks.
+    await put(main, ".codex/config.toml", "[hooks\n")
+    expect(await refusals(worktree)).toEqual([{ provider: "codex", reason: "main-checkout-hooks", path: join(main, ".codex", "config.toml") }])
+    await rm(join(main, ".codex", "config.toml"))
+    await put(main, ".codex/hooks.json", "{}")
+    expect(await refusals(worktree)).toEqual([{ provider: "codex", reason: "main-checkout-hooks", path: join(main, ".codex", "hooks.json") }])
+    await rm(join(main, ".codex"), { recursive: true })
+
+    // The main checkout's folder for each directory on the session's way down.
+    await put(main, "sub/.codex/hooks.json", "{}")
+    expect(await refusals(worktree)).toEqual([])
+    await mkdir(join(worktree, "sub"))
+    expect(await refusals(worktree, { sessionFolder: "sub" })).toEqual([
+      { provider: "codex", reason: "main-checkout-hooks", path: join(main, "sub", ".codex", "hooks.json") },
+    ])
+    // The main checkout itself, and a checkout with no linked worktree.
+    expect(await refusals(main)).toEqual([])
+  })
+
+  it("refuses trust when a link or a mismatch is on the way to the main checkout", async () => {
+    const dir = process.platform === "win32" ? "junction" : "dir"
+    const unknown = [{ provider: "codex", reason: "main-checkout-unknown", path: ".git" }]
+
+    const linkedFile = await linkedWorktree()
+    await rm(join(linkedFile.worktree, ".git"))
+    await put(linkedFile.main, "git-file", `gitdir: ${linkedFile.gitDirectory}\n`)
+    await symlink(join(linkedFile.main, "git-file"), join(linkedFile.worktree, ".git"))
+    expect(await refusals(linkedFile.worktree)).toEqual(unknown)
+
+    const linkedDirectory = await linkedWorktree()
+    const alias = join(linkedDirectory.main, "alias")
+    await symlink(linkedDirectory.gitDirectory, alias, dir)
+    await put(linkedDirectory.worktree, ".git", `gitdir: ${alias}\n`)
+    expect(await refusals(linkedDirectory.worktree)).toEqual(unknown)
+
+    const linkedBacklink = await linkedWorktree()
+    await rm(join(linkedBacklink.gitDirectory, "commondir"))
+    await put(linkedBacklink.main, "commondir-target", "../..\n")
+    await symlink(join(linkedBacklink.main, "commondir-target"), join(linkedBacklink.gitDirectory, "commondir"))
+    expect(await refusals(linkedBacklink.worktree)).toEqual(unknown)
+
+    const mismatched = await linkedWorktree()
+    await put(mismatched.main, ".git/worktrees/session/gitdir", `${join(mismatched.main, "other", ".git")}\n`)
+    expect(await refusals(mismatched.worktree)).toEqual(unknown)
+
+    const missing = await linkedWorktree()
+    await rm(join(missing.gitDirectory, "commondir"))
+    expect(await refusals(missing.worktree)).toEqual(unknown)
+
+    const linkedFolder = await linkedWorktree()
+    const outside = await scratch("domovoi-provider-outside-")
+    await put(outside, "codex/config.toml", "sandbox_mode = \"read-only\"\n")
+    await symlink(join(outside, "codex"), join(linkedFolder.main, ".codex"), dir)
+    expect(await refusals(linkedFolder.worktree)).toEqual([{ provider: "codex", reason: "main-checkout-hooks", path: join(linkedFolder.main, ".codex") }])
+
+    // A submodule's .git file names no linked worktree: Codex takes no hooks
+    // from elsewhere.
+    const submodule = await scratch()
+    const parent = await scratch("domovoi-provider-parent-")
+    await put(parent, ".git/modules/sub/HEAD", "ref: refs/heads/main\n")
+    await put(submodule, ".git", `gitdir: ${join(parent, ".git", "modules", "sub")}\n`)
+    await put(parent, ".codex/hooks.json", "{}")
+    expect(await refusals(submodule)).toEqual([])
+  })
+
+  // Codex trims only ASCII whitespace from git's metadata files ([u8]::trim_ascii
+  // in resolve_root_git_project_for_trust at rust-v0.156.1), and git keeps
+  // the rest of the line: a no-break space (U+00A0) starts a file name.
+  it("finds the main checkout a .git file names after a no-break space", async () => {
+    const worktree = await scratch("domovoi-provider-worktree-")
+    const nbsp = " "
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "init.defaultBranch=main", ...args], { cwd, encoding: "utf8" })
+    // The checkout Codex and git find, and the one a Unicode trim finds.
+    const actual = join(worktree, `${nbsp}main`)
+    const decoy = join(worktree, "main")
+    for (const main of [actual, decoy]) {
+      await mkdir(main)
+      git(main, "init", "-q")
+      await put(main, ".git/worktrees/session/HEAD", "ref: refs/heads/session\n")
+      await put(main, ".git/worktrees/session/gitdir", `${join(worktree, ".git")}\n`)
+      await put(main, ".git/worktrees/session/commondir", "../..\n")
+    }
+    await put(worktree, ".git", `gitdir: ${nbsp}main/.git/worktrees/session\n`)
+    await put(worktree, ".codex/config.toml", "sandbox_mode = \"read-only\"\n")
+    await put(actual, ".codex/hooks.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "main-hook" }] }] } }))
+    const commonDirectory = git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir").trim()
+    expect(await realpath(commonDirectory)).toBe(await realpath(join(actual, ".git")))
+    expect(await refusals(worktree)).toEqual([{ provider: "codex", reason: "main-checkout-hooks", path: join(actual, ".codex", "hooks.json") }])
+  })
+
+  it("finds the main checkout of a worktree git made", async () => {
+    // git writes the canonical path of each checkout into its metadata, and
+    // the reader names the main checkout by it: build the expected path from
+    // the canonical scratch path (macOS /private/var, Windows long names).
+    const base = await realpath(await scratch("domovoi-provider-git-"))
+    const main = join(base, "main")
+    const worktree = join(base, "worktree")
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=Domovoi Test", "-c", "user.email=test@example.invalid", "-c", "init.defaultBranch=main", ...args], { cwd, stdio: "ignore" })
+    await mkdir(main)
+    git(main, "init", "-q")
+    git(main, "commit", "-q", "--allow-empty", "-m", "init")
+    git(main, "worktree", "add", "-q", worktree)
+    expect(await refusals(worktree)).toEqual([])
+    await put(main, ".codex/hooks.json", "{}")
+    expect(await refusals(worktree)).toEqual([{ provider: "codex", reason: "main-checkout-hooks", path: join(main, ".codex", "hooks.json") }])
+  })
+
+  // Codex reads a .codex folder and .agents/skills in each directory from the
+  // session's down to the root. Domovoi starts Codex at a worktree's root, so
+  // nothing below the root is read unless a deeper session folder is named.
+  it("refuses trust while Codex input sits below the root on the session's way down", async () => {
+    const root = await scratch()
+    await put(root, "packages/app/.codex/config.toml", "[mcp_servers.x]\ncommand = \"nested-server\"\n")
+    await put(root, "packages/.agents/skills/s/SKILL.md", "s")
+    await put(root, "tools/.codex/hooks.json", "{}")
+    const atRoot = await read(root)
+    expect(atRoot.trustRefusals).toEqual([])
+    expect(JSON.stringify(atRoot)).not.toContain("nested-server")
+    expect(atRoot.configDigest).toBe((await read(await scratch())).configDigest)
+
+    const nested = await read(root, { sessionFolder: "packages/app" })
+    expect(nested.trustRefusals).toEqual([
+      { provider: "codex", reason: "nested-config", path: "packages/.agents/skills" },
+      { provider: "codex", reason: "nested-config", path: "packages/app/.codex" },
+    ])
+    expect(JSON.stringify(nested)).not.toContain("nested-server")
+    expect(await refusals(root, { sessionFolder: "docs/site" })).toEqual([])
+    // A folder that is Codex's own home is the person's, and skipped.
+    expect(await refusals(root, { sessionFolder: "packages/app", codexHome: join(root, "packages", "app", ".codex") })).toEqual([
+      { provider: "codex", reason: "nested-config", path: "packages/.agents/skills" },
+    ])
+    // A link on the way down is refused, not followed.
+    await symlink(join(root, "packages"), join(root, "linked"), process.platform === "win32" ? "junction" : "dir")
+    expect(await refusals(root, { sessionFolder: "linked/app" })).toEqual([{ provider: "codex", reason: "nested-config", path: "linked" }])
+    for (const sessionFolder of ["../elsewhere", "/abs", "a//b", "a/./b", ""]) {
+      await expect(read(root, { sessionFolder })).rejects.toThrow(/session folder/u)
+    }
+  })
+
+  // Folder names come from the repository and the machine, so a refusal's
+  // path is shown redacted, as every listed path is.
+  it("shows the path of a refused folder redacted", async () => {
+    const canary = "REVIEW_PATH_CANARY"
+    const { main, worktree } = await linkedWorktree(`main TOKEN=${canary}`)
+    await put(main, ".codex/hooks.json", "{}")
+    const hooked = await read(worktree)
+    expect(hooked.trustRefusals).toEqual([{ provider: "codex", reason: "main-checkout-hooks", path: `${join(dirname(main), "main")} [REDACTED]` }])
+    expect(JSON.stringify(hooked)).not.toContain(canary)
+
+    const root = await scratch()
+    await put(root, `app TOKEN=${canary}/.codex/config.toml`, "sandbox_mode = \"read-only\"\n")
+    const nested = await read(root, { sessionFolder: `app TOKEN=${canary}` })
+    expect(nested.trustRefusals).toEqual([{ provider: "codex", reason: "nested-config", path: "app [REDACTED]" }])
+    expect(JSON.stringify(nested)).not.toContain(canary)
   })
 })
 

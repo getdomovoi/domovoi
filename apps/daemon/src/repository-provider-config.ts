@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto"
 import { constants } from "node:fs"
-import { type FileHandle, lstat, open, opendir, readlink } from "node:fs/promises"
-import { join, resolve } from "node:path"
+import { type FileHandle, lstat, open, opendir, readlink, realpath } from "node:fs/promises"
+import { homedir } from "node:os"
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import {
   toolInventoryEntrySchema,
+  toolInventoryProviderSchema,
   type ToolInventoryEntry,
   type ToolInventoryFile,
   type ToolInventoryProvider,
@@ -12,13 +14,17 @@ import {
 } from "@getdomovoi/protocol"
 import { parse as parseYaml } from "yaml"
 
-import { inventoryFieldCaps as caps, redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
+import {
+  inventoryFieldCaps as caps, redactInventoryArgv, redactInventoryCommand, redactInventoryPath, redactInventoryProgram, redactInventoryText,
+} from "./inventory-redaction.js"
+import { parseRepositoryToml, RepositoryTomlTooSlowError } from "./repository-toml.js"
 
-// What a repository's own Claude Code, OpenCode and Kilo configuration
+// What a repository's own Claude Code, OpenCode, Kilo and Codex configuration
 // declares, and the digest repository trust pins to. Nothing here executes,
 // imports or evaluates a repository file: files are read as bytes and parsed
-// as JSON, JSONC or YAML data. Only the fixed provider paths below, relative
-// to the repository root, are read, and no symbolic link is followed: every
+// as JSON, JSONC, YAML or TOML data. Only the fixed provider paths below, relative
+// to the repository root, are read, and the one instruction file a Codex
+// config.toml names when it is in the repository. No symbolic link is followed: every
 // path component, the repository root itself included, is checked with lstat,
 // and the root must stay the directory the reader first found. The file itself
 // is opened with O_NOFOLLOW, and the open descriptor must be the file lstat
@@ -44,11 +50,12 @@ const maximumProviderEntries = 512
 const maximumProviderFiles = 32
 const digestVersion = "domovoi-repository-config/1"
 
-type Parser = "claude-mcp" | "claude-settings" | "opencode-config" | "tui-config" | "kilo-mcp" | "kilo-modes" | "none"
+type Parser = "claude-mcp" | "claude-settings" | "opencode-config" | "tui-config" | "kilo-mcp" | "kilo-modes" | "codex-config" | "codex-hooks" | "none"
 type ScopedFile = { path: string; source: ToolInventorySource; parser: Parser }
 // Directory members give plugin or skill entries, or count in the digest only.
 type ScopedDirectory = { path: string; members?: "plugin" | "skill" }
-type ProviderScope = { provider: string; files: readonly ScopedFile[]; directories: readonly ScopedDirectory[] }
+// homeFolder: a folder the provider skips when it is the provider's own home.
+type ProviderScope = { provider: string; files: readonly ScopedFile[]; directories: readonly ScopedDirectory[]; homeFolder?: string }
 
 // OpenCode and Kilo load these under each of their config directories: read
 // from sst/opencode config/paths.ts, agent.ts, command.ts, plugin.ts,
@@ -111,11 +118,30 @@ export const repositoryProviderScopes: readonly ProviderScope[] = [
     ],
     directories: [...kiloConfigDirectories.flatMap(memberDirectories), ...sharedSkillDirectories],
   },
+  {
+    // Codex loads a trusted project's .codex folder: config.toml, hooks.json
+    // and rules/*.rules (codex-repository-config.ts lists the same files for
+    // its refusal), and skills from .codex/skills and .agents/skills. Read
+    // from the config loader, hooks discovery and skill roots at
+    // rust-v0.156.1. Rules are execution policy source, so they count in the
+    // digest only. A .codex folder that is Codex's own home is the person's
+    // configuration, so Codex skips it and so does this reader. Only the
+    // repository root's folder is read and hashed: Codex input below the root
+    // on a session's way down, or hooks a linked worktree takes from its main
+    // checkout, keep the repository untrusted instead (trustRefusals).
+    provider: "codex",
+    homeFolder: ".codex",
+    files: [
+      { path: ".codex/config.toml", source: "project-settings", parser: "codex-config" },
+      { path: ".codex/hooks.json", source: "project-settings", parser: "codex-hooks" },
+    ],
+    directories: [{ path: ".codex/rules" }, { path: ".codex/skills", members: "skill" }, { path: ".agents/skills", members: "skill" }],
+  },
 ]
 
 // Short reason codes, not prose: a client words them.
 type RefusalReason = "symbolic-link" | "hard-link" | "not-a-file" | "not-a-directory" | "too-large" | "changed-while-read"
-  | "too-many-members" | "too-deep" | "unreadable-member" | "io-error" | "invalid-json" | "invalid-yaml"
+  | "too-many-members" | "too-deep" | "unreadable-member" | "io-error" | "invalid-json" | "invalid-yaml" | "invalid-toml" | "too-slow"
 type Refused = { state: "unreadable"; reason: RefusalReason; digest: string }
 type FileRead = { state: "absent" } | { state: "read"; bytes: Buffer } | Refused
 type Identity = { dev: bigint; ino: bigint }
@@ -524,20 +550,289 @@ function kiloModes(document: Record<string, unknown>): Array<Candidate | Omissio
   })
 }
 
-type Parsed = { state: "read" | "empty"; candidates: Array<Candidate | Omission> } | { state: "unreadable"; reason: RefusalReason }
+const permissionRule = (rule: string, detail: unknown): Candidate | Omission => (
+  typeof detail === "string" ? { kind: "permission-rule", rule, detail: redactInventoryText(detail, caps.detail), startsAtSessionStart: false } : omission
+)
+const flagRule = (rule: string, value: unknown): Candidate | Omission => (typeof value === "boolean" ? permissionRule(rule, String(value)) : omission)
+
+// Codex hooks, from config.toml's [hooks] table or hooks.json's `hooks`: each
+// event holds matcher groups, each group its handlers. A command handler runs
+// `command`, or `commandWindows` in its place on Windows, so both are listed;
+// an mcp_tool handler calls a server's tool. Codex skips prompt and agent
+// handlers, so they list nothing. `state` holds per-hook trust and is read
+// from the person's own config only.
+function codexHook(event: string, matcher: unknown, hook: unknown): Array<Candidate | Omission> {
+  if (!isRecord(hook)) return [omission]
+  const hookOf = (command: string): Candidate => ({
+    kind: "hook", event: redactInventoryText(event, caps.event),
+    ...(typeof matcher === "string" && matcher !== "" ? { matcher: redactInventoryText(matcher, caps.matcher) } : {}),
+    command, startsAtSessionStart: event === "SessionStart",
+  })
+  if (hook.type === "command" && typeof hook.command === "string") {
+    const windows = hook.commandWindows ?? hook.command_windows
+    if (windows !== undefined && typeof windows !== "string") return [omission]
+    return [hook.command, ...(windows === undefined ? [] : [windows])].map((command) => hookOf(redactInventoryCommand(command)))
+  }
+  if (hook.type === "mcp_tool" && typeof hook.server === "string" && typeof hook.tool === "string") {
+    return [hookOf(redactInventoryText(`${hook.server} ${hook.tool}`, caps.command))]
+  }
+  return hook.type === "prompt" || hook.type === "agent" ? [] : [omission]
+}
+
+function codexHooks(events: unknown): Array<Candidate | Omission> {
+  if (events === undefined) return []
+  if (!isRecord(events)) return [omission]
+  return Object.entries(events).filter(([event]) => event !== "state").flatMap(([event, groups]) => {
+    if (!Array.isArray(groups)) return [omission]
+    return (groups as unknown[]).flatMap((group) => {
+      if (!isRecord(group) || (group.hooks !== undefined && !Array.isArray(group.hooks))) return [omission]
+      return ((group.hooks ?? []) as unknown[]).flatMap((hook) => codexHook(event, group.matcher, hook))
+    })
+  })
+}
+
+// A local server's env_vars: names Codex passes through from its own
+// environment, each a string or { name, source }.
+function codexEnvVarNames(value: unknown): string[] | undefined {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) return undefined
+  const names = (value as unknown[]).map((item) => (typeof item === "string" ? item : isRecord(item) && typeof item.name === "string" ? item.name : undefined))
+  return names.every((name) => name !== undefined) ? names as string[] : undefined
+}
+
+// A Codex MCP server: command, args, env and env_vars for a local one; url for
+// a streamable HTTP one, with the names of the variables whose values Codex
+// sends it (bearer_token_env_var, env_http_headers). An inline bearer_token and
+// http_headers are never read. http_headers_helper is a command Codex runs for
+// the headers: its output is header names and values, and its arguments can
+// hold one no trigger names, so it is listed by its program alone. The
+// approval modes let the server's tools run without asking.
+function codexServer(name: string, server: unknown): Array<Candidate | Omission> {
+  if (!isRecord(server)) return [omission]
+  const startsAtSessionStart = server.enabled !== false
+  const serverName = redactInventoryText(name, caps.name)
+  const candidates: Array<Candidate | Omission> = []
+  if (typeof server.command === "string") {
+    const args = server.args === undefined ? [] : stringArray(server.args)
+    const envVars = codexEnvVarNames(server.env_vars)
+    candidates.push(args && envVars
+      ? { kind: "tool-server", name: serverName, transport: "stdio", command: redactInventoryArgv([server.command, ...args]), envKeys: [...keysOf(server.env), ...envVars], startsAtSessionStart }
+      : omission)
+  } else if (typeof server.url === "string") {
+    const bearer = server.bearer_token_env_var
+    const headerVariables = Object.values(isRecord(server.env_http_headers) ? server.env_http_headers : {})
+    const envKeys = [...(bearer === undefined ? [] : [bearer]), ...headerVariables]
+    candidates.push(envKeys.every((key) => typeof key === "string") && (server.env_http_headers === undefined || isRecord(server.env_http_headers))
+      ? { kind: "tool-server", name: serverName, transport: "http", ...remoteHost(server.url), envKeys, startsAtSessionStart }
+      : omission)
+  } else candidates.push(omission)
+  if (server.http_headers_helper !== undefined) {
+    candidates.push(typeof server.http_headers_helper === "string"
+      ? { kind: "helper", name: redactInventoryText(`http_headers_helper ${name}`, caps.helperName), command: redactInventoryProgram(server.http_headers_helper), startsAtSessionStart }
+      : omission)
+  }
+  if (server.default_tools_approval_mode !== undefined) {
+    candidates.push(typeof server.default_tools_approval_mode === "string"
+      ? permissionRule("default_tools_approval_mode", `${name} ${server.default_tools_approval_mode}`)
+      : omission)
+  }
+  for (const [tool, settings] of recordEntries(server.tools)) {
+    if (!isRecord(settings)) candidates.push(omission)
+    else if (settings.approval_mode !== undefined) {
+      candidates.push(typeof settings.approval_mode === "string" ? permissionRule("approval_mode", `${name} ${tool} ${settings.approval_mode}`) : omission)
+    }
+  }
+  return candidates
+}
+
+// approval_policy is a word, or a table naming the approval flows it allows.
+function codexApprovalPolicy(policy: unknown): Array<Candidate | Omission> {
+  if (policy === undefined) return []
+  if (typeof policy === "string") return [permissionRule("approval_policy", policy)]
+  if (!isRecord(policy) || !isRecord(policy.granular)) return [omission]
+  const allowed = Object.entries(policy.granular).filter(([, value]) => value === true).map(([flow]) => flow)
+  return [permissionRule("approval_policy", ["granular", ...allowed].join(" "))]
+}
+
+// A profile's network settings that are a word, a flag or a proxy URL.
+const codexNetworkSettings = new Set([
+  "enabled", "mode", "proxy_url", "enable_socks5", "socks_url", "enable_socks5_udp", "allow_upstream_proxy",
+  "dangerously_allow_non_loopback_proxy", "dangerously_allow_all_unix_sockets", "allow_local_binding",
+])
+
+// Named permission profiles under [permissions]: what each grants, every
+// profile listed so a selected one and those it extends are all shown
+// (PermissionProfileToml at rust-v0.156.1). Each detail starts with the
+// profile's name: the profile it extends, a workspace root and whether it is
+// on, a filesystem path (and subpath) and its access, and each network
+// setting, domain and unix socket rule. A description grants nothing.
+// Man-in-the-middle hooks, and anything else, are not read here and are
+// counted.
+function codexPermissionProfiles(permissions: unknown): Array<Candidate | Omission> {
+  if (permissions === undefined) return []
+  if (!isRecord(permissions)) return [omission]
+  const candidates: Array<Candidate | Omission> = []
+  const rule = (name: string, parts: unknown[]) => {
+    candidates.push(parts.every((part) => typeof part === "string" || typeof part === "boolean")
+      ? permissionRule(`permissions.${name}`, parts.map(String).join(" "))
+      : omission)
+  }
+  const each = (value: unknown, visit: (key: string, item: unknown) => void) => {
+    if (!isRecord(value)) candidates.push(omission)
+    else for (const [key, item] of Object.entries(value)) visit(key, item)
+  }
+  for (const [profile, fields] of Object.entries(permissions)) {
+    each(fields, (field, value) => {
+      if (field === "description") return
+      if (field === "extends") rule("extends", [profile, value])
+      else if (field === "workspace_roots") each(value, (root, enabled) => rule("workspace_roots", [profile, root, enabled]))
+      else if (field === "filesystem") {
+        each(value, (path, access) => {
+          if (path === "glob_scan_max_depth") return
+          if (isRecord(access)) for (const [subpath, mode] of Object.entries(access)) rule("filesystem", [profile, path, subpath, mode])
+          else rule("filesystem", [profile, path, access])
+        })
+      } else if (field === "network") {
+        each(value, (setting, item) => {
+          if (codexNetworkSettings.has(setting)) rule(`network.${setting}`, [profile, item])
+          else if (setting === "domains" || setting === "unix_sockets") each(item, (target, action) => rule(`network.${setting}`, [profile, target, action]))
+          else candidates.push(omission)
+        })
+      } else candidates.push(omission)
+    })
+  }
+  return candidates
+}
+
+// The shell's filters on the person's variables: patterns of names, never a
+// value (ShellEnvironmentPolicyToml at rust-v0.156.1).
+function codexShellFilters(policy: Record<string, unknown>): Array<Candidate | Omission> {
+  const candidates: Array<Candidate | Omission> = []
+  for (const key of ["include_only", "exclude"]) {
+    if (policy[key] === undefined) continue
+    const patterns = stringArray(policy[key])
+    if (!patterns) candidates.push(omission)
+    else for (const pattern of patterns) candidates.push(permissionRule(`shell_environment_policy.${key}`, pattern))
+  }
+  if (policy.filters !== undefined && !isRecord(policy.filters)) candidates.push(omission)
+  for (const [pattern, action] of recordEntries(policy.filters)) {
+    candidates.push(typeof action === "string" ? permissionRule("shell_environment_policy.filters", `${pattern} ${action}`) : omission)
+  }
+  return candidates
+}
+
+// config.toml: servers, hooks, the variables set for every command the agent
+// runs (names only), the approval, sandbox, permission profile and shell
+// environment settings, plugins and instruction overrides. Codex
+// ignores notify, model providers, profiles and the other keys that choose
+// where credentials go in a project file, so they are not listed; like every
+// byte of the file, they are in the digest.
+function codexConfig(config: Record<string, unknown>): Array<Candidate | Omission> {
+  const candidates: Array<Candidate | Omission> = []
+  const defined = (value: unknown, candidate: () => Candidate | Omission) => {
+    if (value !== undefined) candidates.push(candidate())
+  }
+  if (config.mcp_servers !== undefined && !isRecord(config.mcp_servers)) candidates.push(omission)
+  for (const [name, server] of recordEntries(config.mcp_servers)) candidates.push(...codexServer(name, server))
+  candidates.push(...codexHooks(config.hooks))
+  const shell = config.shell_environment_policy
+  if (shell !== undefined && !isRecord(shell)) candidates.push(omission)
+  const shellPolicy = isRecord(shell) ? shell : {}
+  if (shellPolicy.set !== undefined && !isRecord(shellPolicy.set)) candidates.push(omission)
+  for (const key of keysOf(shellPolicy.set)) candidates.push({ kind: "env-key", key, startsAtSessionStart: false })
+  candidates.push(...codexApprovalPolicy(config.approval_policy))
+  defined(config.sandbox_mode, () => permissionRule("sandbox_mode", config.sandbox_mode))
+  defined(config.default_permissions, () => permissionRule("default_permissions", config.default_permissions))
+  const sandbox = config.sandbox_workspace_write
+  if (sandbox !== undefined && !isRecord(sandbox)) candidates.push(omission)
+  if (isRecord(sandbox)) {
+    if (sandbox.writable_roots !== undefined) {
+      const roots = stringArray(sandbox.writable_roots)
+      if (!roots) candidates.push(omission)
+      else for (const path of roots) candidates.push(permissionRule("sandbox_workspace_write.writable_roots", path))
+    }
+    defined(sandbox.network_access, () => flagRule("sandbox_workspace_write.network_access", sandbox.network_access))
+  }
+  candidates.push(...codexPermissionProfiles(config.permissions))
+  defined(shellPolicy.inherit, () => permissionRule("shell_environment_policy.inherit", shellPolicy.inherit))
+  defined(shellPolicy.ignore_default_excludes, () => flagRule("shell_environment_policy.ignore_default_excludes", shellPolicy.ignore_default_excludes))
+  candidates.push(...codexShellFilters(shellPolicy))
+  if (config.plugins !== undefined && !isRecord(config.plugins)) candidates.push(omission)
+  for (const [plugin, settings] of recordEntries(config.plugins)) {
+    if (!isRecord(settings)) candidates.push(omission)
+    else if (settings.enabled !== false) candidates.push({ kind: "plugin", name: redactInventoryText(plugin, caps.name), startsAtSessionStart: true })
+  }
+  // Inline instruction overrides are listed as present, never by their text
+  // (ruling Q114); like every byte of the file, the text is in the digest.
+  // model_instructions_file is listed where the file it names is read.
+  for (const key of ["instructions", "developer_instructions"]) {
+    defined(config[key], () => (typeof config[key] === "string" ? permissionRule(key, "inline") : omission))
+  }
+  return candidates
+}
+
+type InstructionsFile = {
+  candidate: Candidate | Omission
+  // The file, when it is in the repository, as the reader read it: its path
+  // below the root, and that path as shown.
+  file?: { path: string; shown: string; read: FileRead }
+  // The path as written or read, when the file is outside the repository or
+  // reached through a link.
+  outside?: string
+}
+
+// A permission rule whose detail is a path already shown by
+// redactInventoryPath, so the rule, the file record and a refusal show the
+// same text.
+const pathRule = (rule: string, shown: string): Candidate => ({ kind: "permission-rule", rule, detail: shown, startsAtSessionStart: false })
+
+// model_instructions_file names a file Codex reads in place of its base
+// instructions: a path relative to the .codex folder, with `~` for the home
+// folder (resolve_relative_paths_in_config_toml and AbsolutePathBuf at
+// rust-v0.156.1). It is listed by its path, never its text (ruling Q114). A
+// file in the repository is read with the same caps and link handling as
+// every other file and hashed; one outside it, or reached through a link,
+// hard links included, refuses trust. Nothing outside is read.
+async function codexInstructionsFile(root: RepositoryRoot, value: unknown): Promise<InstructionsFile | undefined> {
+  const rule = "model_instructions_file"
+  if (value === undefined) return undefined
+  if (typeof value !== "string") return { candidate: omission }
+  const home = value === "~" || value.startsWith("~/") || (process.platform === "win32" && value.startsWith("~\\"))
+  const resolved = resolve(root.path, ".codex", home ? join(homedir(), value.slice(1)) : value)
+  const inRoot = relative(root.path, resolved)
+  if (inRoot === "" || inRoot === ".." || inRoot.startsWith(`..${sep}`) || isAbsolute(inRoot)) {
+    return { candidate: pathRule(rule, redactInventoryPath(value)), outside: value }
+  }
+  const path = inRoot.split(sep).join("/")
+  const shown = redactInventoryPath(path)
+  const read = await readRepositoryFile(root, path)
+  const linked = read.state === "unreadable" && (read.reason === "symbolic-link" || read.reason === "hard-link")
+  return { candidate: pathRule(rule, shown), file: { path, shown, read }, ...(linked ? { outside: path } : {}) }
+}
+
+type Parsed = { state: "read" | "empty"; candidates: Array<Candidate | Omission>; document?: Record<string, unknown> } | { state: "unreadable"; reason: RefusalReason }
+
+// A file's text: UTF-8 without a leading byte order mark (U+FEFF).
+const byteOrderMark = String.fromCodePoint(0xfeff)
+function decodedText(bytes: Buffer): string {
+  const text = bytes.toString("utf8")
+  return text.startsWith(byteOrderMark) ? text.slice(byteOrderMark.length) : text
+}
 
 function parseFile(parser: Parser, bytes: Buffer): Parsed {
-  const text = bytes.toString("utf8").replace(/^\uFEFF/u, "")
+  const text = decodedText(bytes)
   if (text.trim() === "") return { state: "empty", candidates: [] }
   if (parser === "none") return { state: "read", candidates: [] }
-  const invalid: Parsed = { state: "unreadable", reason: parser === "kilo-modes" ? "invalid-yaml" : "invalid-json" }
+  const invalid: Parsed = { state: "unreadable", reason: parser === "kilo-modes" ? "invalid-yaml" : parser === "codex-config" ? "invalid-toml" : "invalid-json" }
   let document: unknown
   try {
     // The yaml package builds plain data: no custom tags run, and alias
-    // expansion is capped.
-    document = parser === "kilo-modes" ? parseYaml(text, { maxAliasCount: 64 }) : parseJsonc(text)
-  } catch {
-    return invalid
+    // expansion is capped. repository-toml.ts says the same of TOML.
+    document = parser === "kilo-modes" ? parseYaml(text, { maxAliasCount: 64 })
+      : parser === "codex-config" ? parseRepositoryToml(text)
+        : parseJsonc(text)
+  } catch (error) {
+    return error instanceof RepositoryTomlTooSlowError ? { state: "unreadable", reason: "too-slow" } : invalid
   }
   if (!isRecord(document)) return invalid
   switch (parser) {
@@ -553,6 +848,10 @@ function parseFile(parser: Parser, bytes: Buffer): Parsed {
       return { state: "read", candidates: pluginSpecs(document.plugin) }
     case "kilo-modes":
       return { state: "read", candidates: kiloModes(document) }
+    case "codex-config":
+      return { state: "read", candidates: codexConfig(document), document }
+    case "codex-hooks":
+      return { state: "read", candidates: codexHooks(document.hooks) }
   }
 }
 
@@ -568,23 +867,297 @@ function directoryCandidates(directory: ScopedDirectory, members: readonly strin
   return []
 }
 
+// Why a repository cannot be trusted whatever the person approves: input its
+// agent would load that the digest does not cover (ruling Q113; full support
+// is #656). Codes, not prose: a client words them.
+//   nested-config: a .codex folder or .agents/skills below the root, in a
+//     directory on the session folder's way down, or a link on that way.
+//   main-checkout-hooks: in a linked worktree, the main checkout's .codex
+//     folder for a directory on that way holds hooks (hooks.json, or a
+//     [hooks] table in config.toml), or a file there that could hold them
+//     cannot be read.
+//   main-checkout-unknown: the root's .git file names a linked worktree whose
+//     main checkout cannot be found safely: a link or a mismatch on the way.
+//   instructions-outside: model_instructions_file names a file outside the
+//     repository, or one reached through a link (ruling Q114).
+// The path is relative to the root when inside it, and absolute otherwise;
+// an instruction file outside is as written. A repository or the machine
+// names each one, so it is shown redacted (redactInventoryPath), and the
+// digest records it as read.
+export type RepositoryTrustRefusalReason = "nested-config" | "main-checkout-hooks" | "main-checkout-unknown" | "instructions-outside"
+export type RepositoryTrustRefusal = { provider: string; reason: RepositoryTrustRefusalReason; path: string }
+
 export type RepositoryProviderConfig = {
   // sha256 over every provider's paths in scope; see the header comment.
   configDigest: string
   providers: ToolInventoryProvider[]
+  // Empty unless the repository must stay untrusted; see above.
+  trustRefusals: RepositoryTrustRefusal[]
 }
 
-// heldBack marks every entry: whether the daemon keeps the repository's
-// configuration from the agent. It does not change the digest.
-export async function readRepositoryProviderConfig(rootPath: string, options: { heldBack: boolean }): Promise<RepositoryProviderConfig> {
+// Codex's home as written: CODEX_HOME when set and not empty, else ~/.codex
+// (find_codex_home at rust-v0.156.1). `set` says which, since Codex reads the
+// two differently; see codexHomePaths.
+type CodexHome = { path: string; set: boolean }
+
+function defaultCodexHome(): CodexHome {
+  const set = process.env.CODEX_HOME
+  return set ? { path: set, set: true } : { path: join(homedir(), ".codex"), set: false }
+}
+
+// The home's path as Codex compares it, and its canonical path. A CODEX_HOME
+// that is set is canonicalized as written (find_codex_home): a `..` after a
+// link steps up from the link's target, so reading it lexically could name
+// the repository's own folder while Codex uses another. Codex refuses to
+// start when that path is not a directory; a relative one depends on Codex's
+// working directory. Either way, no folder is its home here, and the
+// repository's folder stays in scope. ~/.codex is made absolute lexically
+// (AbsolutePathBuf::from_absolute_path) and canonicalized only to compare.
+async function codexHomePaths(home: CodexHome): Promise<{ path: string; canonical: string } | undefined> {
+  if (!home.set) {
+    const path = resolve(home.path)
+    return { path, canonical: await realpath(path).catch(() => path) }
+  }
+  // Platforms resolve a `..` after a link differently (Windows steps up
+  // lexically before following the link), so a set CODEX_HOME with any `..`
+  // segment names no folder as the home, on every platform (ruling Q125).
+  if (!isAbsolute(home.path) || home.path.split(/[\\/]/u).includes("..")) return undefined
+  try {
+    const canonical = await realpath(home.path)
+    return (await lstat(canonical)).isDirectory() ? { path: canonical, canonical } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// Whether `folder` in the root is the provider's own home: a real directory
+// whose path, or canonical path, is the home's as Codex compares them. Codex
+// skips such a project folder by the same two comparisons
+// (discover_project_layers at rust-v0.156.1). A link there is not skipped: it
+// is refused like any other.
+async function isProviderHome(root: RepositoryRoot, folder: string, home: CodexHome): Promise<boolean> {
+  const chain = await directoryChain(root, folder.split("/")).catch(() => undefined)
+  if (!Array.isArray(chain)) return false
+  const homePaths = await codexHomePaths(home)
+  if (homePaths === undefined) return false
+  const path = join(root.path, ...folder.split("/"))
+  if (path === homePaths.path) return true
+  try {
+    return await realpath(path) === homePaths.canonical
+  } catch {
+    return false
+  }
+}
+
+// A session folder's segments below the root: a relative path of plain
+// names, `/`-separated. Anything else is a caller's mistake.
+function sessionSegments(folder: string | undefined): string[] {
+  if (folder === undefined) return []
+  const segments = folder.split("/")
+  if (isAbsolute(folder) || segments.some((segment) => segment === "" || segment === "." || segment === ".." || segment.includes("\\"))) {
+    throw new TypeError("A session folder is a relative path of plain names below the repository root")
+  }
+  return segments
+}
+
+// Codex reads a .codex folder and .agents/skills in each directory from the
+// session's down to the project root (discover_project_layers and
+// repo_agents_skill_roots at rust-v0.156.1). The project root is the nearest
+// directory holding a root marker, .git unless the person's own config names
+// others, and a repository's config cannot change them. Domovoi starts every
+// Codex thread at a worktree's root, which holds .git, so by default this
+// reads nothing: a caller naming a deeper session folder has each directory
+// below the root on its way checked, and anything found there, or a link on
+// the way, refuses trust. A .codex folder that is Codex's home is skipped.
+async function nestedCodexInput(root: RepositoryRoot, segments: readonly string[], codexHome: CodexHome): Promise<RepositoryTrustRefusal[]> {
+  const refusals: RepositoryTrustRefusal[] = []
+  const refuse = (path: string) => refusals.push({ provider: "codex", reason: "nested-config", path })
+  const found = (path: string) => lstatOrAbsent(join(root.path, ...path.split("/"))).catch(() => "error" as const)
+  for (let depth = 1; depth <= segments.length; depth += 1) {
+    const directory = segments.slice(0, depth).join("/")
+    const info = await found(directory)
+    if (info === "error" || info?.isSymbolicLink()) {
+      refuse(directory)
+      break
+    }
+    if (!info?.isDirectory()) break
+    for (const folder of [`${directory}/.codex`, `${directory}/.agents/skills`]) {
+      const member = await found(folder)
+      if (member === undefined) continue
+      if (member !== "error" && folder.endsWith("/.codex") && await isProviderHome(root, folder, codexHome)) continue
+      refuse(folder)
+    }
+  }
+  return refusals
+}
+
+// Git's own metadata files are small.
+const maximumGitMetadataBytes = 64 * 1024
+
+// ASCII whitespace as Codex trims it from git's metadata files
+// ([u8]::trim_ascii in resolve_root_git_project_for_trust at rust-v0.156.1):
+// space, tab, line feed, form feed and carriage return. Anything else, a
+// no-break space (U+00A0) or a vertical tab included, is part of the path,
+// as it is to git.
+const gitBlank = new Set([" ", "\t", "\n", "\f", "\r"])
+
+function trimGitBlank(text: string): string {
+  let start = 0
+  let end = text.length
+  while (start < end && gitBlank.has(text[start]!)) start += 1
+  while (end > start && gitBlank.has(text[end - 1]!)) end -= 1
+  return text.slice(start, end)
+}
+
+// Codex reads the path bytes as written: text that is not UTF-8 cannot be
+// named the same way here, and a byte order mark is not stripped.
+const gitMetadataDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+
+// A git metadata file's text trimmed as Codex trims it, or undefined when it
+// is absent, a link, not a regular file, too large, not UTF-8 or unreadable.
+async function gitMetadata(path: string): Promise<string | undefined> {
+  let handle: FileHandle | undefined
+  try {
+    const info = await lstatOrAbsent(path)
+    if (!info?.isFile() || info.size > BigInt(maximumGitMetadataBytes)) return undefined
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+    const buffer = Buffer.alloc(maximumGitMetadataBytes + 1)
+    let length = 0
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null)
+      if (bytesRead === 0) break
+      length += bytesRead
+    }
+    return length > maximumGitMetadataBytes ? undefined : trimGitBlank(gitMetadataDecoder.decode(buffer.subarray(0, length)))
+  } catch {
+    return undefined
+  } finally {
+    await handle?.close().catch(() => undefined)
+  }
+}
+
+type MainCheckout = { state: "none" } | { state: "unknown" } | { state: "found"; path: string }
+
+// The main checkout of a linked worktree at the root, found as Codex finds it
+// (resolve_root_git_project_for_trust at rust-v0.156.1): the root's .git file
+// names a git directory in its common directory's worktrees/, whose gitdir
+// file names the root's .git again and whose commondir file names that common
+// directory, which is the main checkout's .git. A link at any step, or any
+// mismatch once the root names a worktree, makes it unknown. A .git
+// directory, or a .git file that names no worktree (a submodule's), leaves no
+// main checkout elsewhere.
+async function mainCheckoutOf(root: RepositoryRoot): Promise<MainCheckout> {
+  const none: MainCheckout = { state: "none" }
+  const unknown: MainCheckout = { state: "unknown" }
+  if (!Array.isArray(await directoryChain(root, []).catch(() => undefined))) return none
+  const marker = join(root.path, ".git")
+  const info = await lstatOrAbsent(marker).catch(() => "error" as const)
+  if (info === undefined || (info !== "error" && info.isDirectory())) return none
+  if (info === "error" || !info.isFile()) return unknown
+  const gitDirectory = await gitDirectoryNamedBy(marker)
+  if (gitDirectory === undefined || !(await lstatOrAbsent(gitDirectory).catch(() => undefined))?.isDirectory()) return unknown
+  try {
+    const canonical = await realpath(gitDirectory)
+    if (basename(dirname(canonical)) !== "worktrees") return none
+    const common = dirname(dirname(canonical))
+    const [backlink, commonDirectory] = await Promise.all([gitMetadata(join(canonical, "gitdir")), gitMetadata(join(canonical, "commondir"))])
+    if (!backlink || !commonDirectory) return unknown
+    const registered = resolve(canonical, backlink)
+    if (basename(registered) !== ".git") return unknown
+    const [registeredCheckout, checkout, linkedCommon] = await Promise.all([
+      realpath(dirname(registered)), realpath(root.path), realpath(resolve(canonical, commonDirectory)),
+    ])
+    if (registeredCheckout !== checkout || linkedCommon !== common) return unknown
+    // The main checkout as the .git file spells it, as Codex keeps it.
+    const main = dirname(dirname(dirname(gitDirectory)))
+    const mainMarker = join(main, ".git")
+    const mainInfo = await lstatOrAbsent(mainMarker)
+    const mainGit = mainInfo?.isDirectory() ? mainMarker : mainInfo?.isFile() ? await gitDirectoryNamedBy(mainMarker) : undefined
+    if (mainGit === undefined || await realpath(mainGit) !== common) return unknown
+    return { state: "found", path: main }
+  } catch {
+    return unknown
+  }
+}
+
+// The git directory a .git file names, relative to the file's directory.
+async function gitDirectoryNamedBy(marker: string): Promise<string | undefined> {
+  const text = await gitMetadata(marker)
+  const target = text?.startsWith("gitdir:") ? trimGitBlank(text.slice("gitdir:".length)) : undefined
+  return target ? resolve(dirname(marker), target) : undefined
+}
+
+// In a linked worktree Codex takes hook declarations from the main checkout's
+// .codex folder for each directory on the session's way down: hooks.json,
+// and the [hooks] table of config.toml in place of the worktree's
+// (merge_root_checkout_project_hooks at rust-v0.156.1). Any of them there, or
+// one that cannot be read, a link included, refuses trust.
+async function mainCheckoutHooks(root: RepositoryRoot, segments: readonly string[]): Promise<RepositoryTrustRefusal[]> {
+  const main = await mainCheckoutOf(root)
+  if (main.state === "none") return []
+  if (main.state === "unknown") return [{ provider: "codex", reason: "main-checkout-unknown", path: ".git" }]
+  const mainRoot = await anchorRoot(main.path)
+  const refusals: RepositoryTrustRefusal[] = []
+  const refuse = (path: string) => refusals.push({ provider: "codex", reason: "main-checkout-hooks", path })
+  for (let depth = 0; depth <= segments.length; depth += 1) {
+    const folder = [...segments.slice(0, depth), ".codex"]
+    const folderPath = join(main.path, ...folder)
+    const chain = await directoryChain(mainRoot, folder.slice(0, -1)).catch(() => undefined)
+    if (chain === undefined || (!Array.isArray(chain) && chain.state === "unreadable")) {
+      refuse(folderPath)
+      continue
+    }
+    if (!Array.isArray(chain)) continue
+    const info = await lstatOrAbsent(folderPath).catch(() => "error" as const)
+    if (info === undefined) continue
+    if (info === "error" || info.isSymbolicLink()) {
+      refuse(folderPath)
+      continue
+    }
+    if (!info.isDirectory()) continue
+    const hooksFile = join(folderPath, "hooks.json")
+    if (await lstatOrAbsent(hooksFile).catch(() => "error" as const) !== undefined) refuse(hooksFile)
+    const config = await readRepositoryFile(mainRoot, [...folder, "config.toml"].join("/"))
+    if (config.state === "absent") continue
+    let hooks = true
+    if (config.state === "read") {
+      try {
+        const document = parseRepositoryToml(decodedText(config.bytes))
+        hooks = !isRecord(document) || Object.hasOwn(document, "hooks")
+      } catch {
+        hooks = true
+      }
+    }
+    if (hooks) refuse(join(folderPath, "config.toml"))
+  }
+  return refusals
+}
+
+export type RepositoryProviderConfigOptions = {
+  // Whether the daemon keeps the repository's configuration from the agent;
+  // it marks every entry and does not change the digest.
+  heldBack: boolean
+  // Codex's home, when not the one its environment names: the CODEX_HOME
+  // value Codex is given, read as Codex reads a set CODEX_HOME.
+  codexHome?: string
+  // The folder below the root a session starts in, `/`-separated; the root
+  // when not given, where Domovoi starts every session.
+  sessionFolder?: string
+}
+
+export async function readRepositoryProviderConfig(rootPath: string, options: RepositoryProviderConfigOptions): Promise<RepositoryProviderConfig> {
+  const segments = sessionSegments(options.sessionFolder)
+  const codexHome: CodexHome = options.codexHome !== undefined ? { path: options.codexHome, set: true } : defaultCodexHome()
   // A root that is itself a link is refused like any other link: every path
   // under it reads as refused, and the digest records the link's target text.
   const root = await anchorRoot(rootPath)
   const digestRecords: string[] = [digestVersion]
   const providers: ToolInventoryProvider[] = []
+  const outsideInstructions: RepositoryTrustRefusal[] = []
   for (const scope of repositoryProviderScopes) {
     const files: ToolInventoryFile[] = []
     const entries: ToolInventoryEntry[] = []
+    const instructionFiles: ToolInventoryFile[] = []
     let omittedEntries = 0
     // A file past the file cap is not listed, so its entries are counted.
     const list = (file: ToolInventoryFile) => {
@@ -600,7 +1173,14 @@ export async function readRepositoryProviderConfig(rootPath: string, options: { 
         else omittedEntries += 1
       }
     }
+    // The provider's own home is the person's configuration, not the
+    // repository's: nothing under it is read, listed or hashed.
+    const home = scope.homeFolder !== undefined && await isProviderHome(root, scope.homeFolder, codexHome)
+      ? `${scope.homeFolder}/`
+      : undefined
+    if (home !== undefined) digestRecords.push(`${scope.provider}:home:${home}`)
     for (const scoped of scope.files) {
+      if (home !== undefined && scoped.path.startsWith(home)) continue
       const read = await readRepositoryFile(root, scoped.path)
       const base = { path: scoped.path, source: scoped.source }
       digestRecords.push(`${scope.provider}:file:${scoped.path}:${read.state}:${
@@ -616,8 +1196,20 @@ export async function readRepositoryProviderConfig(rootPath: string, options: { 
       }
       list({ ...base, state: parsed.state })
       take(scoped.path, parsed.candidates)
+      if (scoped.parser !== "codex-config" || parsed.document === undefined) continue
+      const instructions = await codexInstructionsFile(root, parsed.document.model_instructions_file)
+      if (instructions === undefined) continue
+      take(scoped.path, [instructions.candidate])
+      if (instructions.outside !== undefined) outsideInstructions.push({ provider: scope.provider, reason: "instructions-outside", path: instructions.outside })
+      if (instructions.file === undefined) continue
+      const { path, shown, read: file } = instructions.file
+      digestRecords.push(`${scope.provider}:instructions:${path}:${file.state}:${
+        file.state === "read" ? sha256(file.bytes) : file.state === "unreadable" ? file.digest : ""}`)
+      if (file.state === "unreadable") instructionFiles.push({ path: shown, source: "repository-file", state: "unreadable", reason: file.reason })
+      else if (file.state === "read") instructionFiles.push({ path: shown, source: "repository-file", state: decodedText(file.bytes).trim() === "" ? "empty" : "read" })
     }
     for (const directory of scope.directories) {
+      if (home !== undefined && directory.path.startsWith(home)) continue
       const read = await readRepositoryDirectory(root, directory.path)
       digestRecords.push(`${scope.provider}:directory:${directory.path}:${read.state}:${read.state === "absent" ? "" : read.digest}`)
       const base = { path: directory.path, source: "repository-file" as const }
@@ -625,7 +1217,22 @@ export async function readRepositoryProviderConfig(rootPath: string, options: { 
       else list({ ...base, state: read.state })
       if (read.state === "read") take(directory.path, directoryCandidates(directory, read.members))
     }
-    providers.push({ provider: scope.provider, toolServers: "read-from-files", omittedEntries, files, entries })
+    // An instruction file is listed after the paths in scope, and not again
+    // when it is one of them, so a file is listed once, as its own path's
+    // reader found it.
+    for (const file of instructionFiles) {
+      if (!files.some((listed) => listed.path === file.path)) list(file)
+    }
+    // Every entry and path was checked on its own; the provider is checked
+    // whole as well, so the reader never returns an inventory the protocol
+    // refuses. The error names no path or value.
+    const provider: ToolInventoryProvider = { provider: scope.provider, toolServers: "read-from-files", omittedEntries, files, entries }
+    if (!toolInventoryProviderSchema.safeParse(provider).success) throw new Error(`The ${scope.provider} repository inventory does not fit the protocol`)
+    providers.push(provider)
   }
-  return { configDigest: `sha256:${sha256(digestRecords.join("\n"))}`, providers }
+  // Refusals are pinned by their paths as read and shown redacted.
+  const refused = [...outsideInstructions, ...await nestedCodexInput(root, segments, codexHome), ...await mainCheckoutHooks(root, segments)]
+  for (const refusal of refused) digestRecords.push(`${refusal.provider}:refused:${refusal.reason}:${refusal.path}`)
+  const trustRefusals = refused.map((refusal) => ({ ...refusal, path: redactInventoryPath(refusal.path) }))
+  return { configDigest: `sha256:${sha256(digestRecords.join("\n"))}`, providers, trustRefusals }
 }
