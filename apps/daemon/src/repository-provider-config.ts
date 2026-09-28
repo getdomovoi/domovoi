@@ -884,24 +884,52 @@ export type RepositoryProviderConfig = {
   trustRefusals: RepositoryTrustRefusal[]
 }
 
-// Codex's home as Codex finds it: CODEX_HOME when set and not empty, else
-// ~/.codex (find_codex_home at rust-v0.156.1).
-function defaultCodexHome(): string {
-  return process.env.CODEX_HOME || join(homedir(), ".codex")
+// Codex's home as written: CODEX_HOME when set and not empty, else ~/.codex
+// (find_codex_home at rust-v0.156.1). `set` says which, since Codex reads the
+// two differently; see codexHomePaths.
+type CodexHome = { path: string; set: boolean }
+
+function defaultCodexHome(): CodexHome {
+  const set = process.env.CODEX_HOME
+  return set ? { path: set, set: true } : { path: join(homedir(), ".codex"), set: false }
+}
+
+// The home's path as Codex compares it, and its canonical path. A CODEX_HOME
+// that is set is canonicalized as written (find_codex_home): a `..` after a
+// link steps up from the link's target, so reading it lexically could name
+// the repository's own folder while Codex uses another. Codex refuses to
+// start when that path is not a directory; a relative one depends on Codex's
+// working directory. Either way, no folder is its home here, and the
+// repository's folder stays in scope. ~/.codex is made absolute lexically
+// (AbsolutePathBuf::from_absolute_path) and canonicalized only to compare.
+async function codexHomePaths(home: CodexHome): Promise<{ path: string; canonical: string } | undefined> {
+  if (!home.set) {
+    const path = resolve(home.path)
+    return { path, canonical: await realpath(path).catch(() => path) }
+  }
+  if (!isAbsolute(home.path)) return undefined
+  try {
+    const canonical = await realpath(home.path)
+    return (await lstat(canonical)).isDirectory() ? { path: canonical, canonical } : undefined
+  } catch {
+    return undefined
+  }
 }
 
 // Whether `folder` in the root is the provider's own home: a real directory
-// whose path, or canonical path, is the home's. Codex skips such a project
-// folder by the same two comparisons (discover_project_layers at
-// rust-v0.156.1). A link there is not skipped: it is refused like any other.
-async function isProviderHome(root: RepositoryRoot, folder: string, home: string): Promise<boolean> {
+// whose path, or canonical path, is the home's as Codex compares them. Codex
+// skips such a project folder by the same two comparisons
+// (discover_project_layers at rust-v0.156.1). A link there is not skipped: it
+// is refused like any other.
+async function isProviderHome(root: RepositoryRoot, folder: string, home: CodexHome): Promise<boolean> {
   const chain = await directoryChain(root, folder.split("/")).catch(() => undefined)
   if (!Array.isArray(chain)) return false
+  const homePaths = await codexHomePaths(home)
+  if (homePaths === undefined) return false
   const path = join(root.path, ...folder.split("/"))
-  if (path === resolve(home)) return true
+  if (path === homePaths.path) return true
   try {
-    const [canonical, canonicalHome] = await Promise.all([realpath(path), realpath(home)])
-    return canonical === canonicalHome
+    return await realpath(path) === homePaths.canonical
   } catch {
     return false
   }
@@ -927,7 +955,7 @@ function sessionSegments(folder: string | undefined): string[] {
 // reads nothing: a caller naming a deeper session folder has each directory
 // below the root on its way checked, and anything found there, or a link on
 // the way, refuses trust. A .codex folder that is Codex's home is skipped.
-async function nestedCodexInput(root: RepositoryRoot, segments: readonly string[], codexHome: string): Promise<RepositoryTrustRefusal[]> {
+async function nestedCodexInput(root: RepositoryRoot, segments: readonly string[], codexHome: CodexHome): Promise<RepositoryTrustRefusal[]> {
   const refusals: RepositoryTrustRefusal[] = []
   const refuse = (path: string) => refusals.push({ provider: "codex", reason: "nested-config", path })
   const found = (path: string) => lstatOrAbsent(join(root.path, ...path.split("/"))).catch(() => "error" as const)
@@ -1076,7 +1104,8 @@ export type RepositoryProviderConfigOptions = {
   // Whether the daemon keeps the repository's configuration from the agent;
   // it marks every entry and does not change the digest.
   heldBack: boolean
-  // Codex's home, when not the one its environment names.
+  // Codex's home, when not the one its environment names: the CODEX_HOME
+  // value Codex is given, read as Codex reads a set CODEX_HOME.
   codexHome?: string
   // The folder below the root a session starts in, `/`-separated; the root
   // when not given, where Domovoi starts every session.
@@ -1085,7 +1114,7 @@ export type RepositoryProviderConfigOptions = {
 
 export async function readRepositoryProviderConfig(rootPath: string, options: RepositoryProviderConfigOptions): Promise<RepositoryProviderConfig> {
   const segments = sessionSegments(options.sessionFolder)
-  const codexHome = options.codexHome ?? defaultCodexHome()
+  const codexHome: CodexHome = options.codexHome !== undefined ? { path: options.codexHome, set: true } : defaultCodexHome()
   // A root that is itself a link is refused like any other link: every path
   // under it reads as refused, and the digest records the link's target text.
   const root = await anchorRoot(rootPath)
