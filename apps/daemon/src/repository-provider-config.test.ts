@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { performance } from "node:perf_hooks"
 import { dirname, join, sep } from "node:path"
 
-import { toolInventoryProviderSchema, toolInventorySchema, type ToolInventoryProvider } from "@getdomovoi/protocol"
+import { toolInventoryProviderSchema, toolInventorySchema, type ToolInventoryFile, type ToolInventoryProvider } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { inventoryShellWords } from "./inventory-redaction.js"
@@ -517,6 +517,41 @@ describe("readRepositoryProviderConfig: Codex", () => {
     expect(odd.omittedEntries).toBe(1)
   })
 
+  // A repository names the instruction file, so its path is shown redacted
+  // and within the path cap, the same text in the file record, the rule and
+  // the refusal. The file is still read and pinned by its own path.
+  it("shows an instruction file's path redacted wherever it is listed", async () => {
+    const root = await scratch()
+    const outside = await scratch("domovoi-provider-outside-")
+    const canary = "REVIEW_PATH_CANARY"
+    const name = `policy TOKEN=${canary}.txt`
+    await put(root, `docs/${name}`, "POLICY-FILE-TEXT")
+    await put(root, " lead.txt", "LEAD-FILE-TEXT")
+    await put(outside, "policy.txt", "OUTSIDE-POLICY-TEXT")
+    await mkdir(join(root, "linked"))
+    await symlink(join(outside, "policy.txt"), join(root, "linked", name))
+    const cases: Array<[string, string, ToolInventoryFile]> = [
+      [`../docs/${name}`, "docs/policy [REDACTED]", { path: "docs/policy [REDACTED]", source: "repository-file", state: "read" }],
+      [`../linked/${name}`, "linked/policy [REDACTED]", { path: "linked/policy [REDACTED]", source: "repository-file", state: "unreadable", reason: "symbolic-link" }],
+      // A path the protocol refuses as written is the marker.
+      ["../ lead.txt", "[REDACTED]", { path: "[REDACTED]", source: "repository-file", state: "read" }],
+    ]
+    for (const [written, shown, file] of cases) {
+      await put(root, ".codex/config.toml", `model_instructions_file = ${JSON.stringify(written)}\n`)
+      const result = await readRepositoryProviderConfig(root, { heldBack: true })
+      const codex = provider(result, "codex")
+      expect(toolInventoryProviderSchema.safeParse(codex).success, written).toBe(true)
+      expect(JSON.stringify(result), written).not.toMatch(new RegExp(`${canary}|POLICY-FILE-TEXT|LEAD-FILE-TEXT`, "u"))
+      expect(codex.files, written).toEqual([{ path: ".codex/config.toml", source: "project-settings", state: "read" }, file])
+      expect(codex.entries, written).toEqual([instructionRule("model_instructions_file", shown)])
+      expect(result.trustRefusals, written).toEqual(file.state === "unreadable" ? [{ provider: "codex", reason: "instructions-outside", path: shown }] : [])
+    }
+    await put(root, ".codex/config.toml", `model_instructions_file = ${JSON.stringify(`../docs/${name}`)}\n`)
+    const first = await readRepositoryProviderConfig(root, { heldBack: true })
+    await put(root, `docs/${name}`, "CHANGED-POLICY-FILE-TEXT")
+    expect((await readRepositoryProviderConfig(root, { heldBack: true })).configDigest).not.toBe(first.configDigest)
+  })
+
   // A header helper prints the headers Codex sends, and a header's name and
   // value need no word the redaction knows: every argument is cut, and the
   // helper is listed by its program.
@@ -887,8 +922,8 @@ describe("readRepositoryProviderConfig: Codex", () => {
 })
 
 // A main checkout and a linked worktree of it, laid out as git lays them out.
-async function linkedWorktree(): Promise<{ main: string; worktree: string; gitDirectory: string }> {
-  const main = await scratch("domovoi-provider-main-")
+async function linkedWorktree(mainName?: string): Promise<{ main: string; worktree: string; gitDirectory: string }> {
+  const main = mainName === undefined ? await scratch("domovoi-provider-main-") : join(await scratch("domovoi-provider-main-"), mainName)
   const worktree = await scratch("domovoi-provider-worktree-")
   const gitDirectory = join(main, ".git", "worktrees", "session")
   await put(main, ".git/HEAD", "ref: refs/heads/main\n")
@@ -1054,6 +1089,23 @@ describe("readRepositoryProviderConfig: Codex input outside the root folder", ()
     for (const sessionFolder of ["../elsewhere", "/abs", "a//b", "a/./b", ""]) {
       await expect(read(root, { sessionFolder })).rejects.toThrow(/session folder/u)
     }
+  })
+
+  // Folder names come from the repository and the machine, so a refusal's
+  // path is shown redacted, as every listed path is.
+  it("shows the path of a refused folder redacted", async () => {
+    const canary = "REVIEW_PATH_CANARY"
+    const { main, worktree } = await linkedWorktree(`main TOKEN=${canary}`)
+    await put(main, ".codex/hooks.json", "{}")
+    const hooked = await read(worktree)
+    expect(hooked.trustRefusals).toEqual([{ provider: "codex", reason: "main-checkout-hooks", path: `${join(dirname(main), "main")} [REDACTED]` }])
+    expect(JSON.stringify(hooked)).not.toContain(canary)
+
+    const root = await scratch()
+    await put(root, `app TOKEN=${canary}/.codex/config.toml`, "sandbox_mode = \"read-only\"\n")
+    const nested = await read(root, { sessionFolder: `app TOKEN=${canary}` })
+    expect(nested.trustRefusals).toEqual([{ provider: "codex", reason: "nested-config", path: "app [REDACTED]" }])
+    expect(JSON.stringify(nested)).not.toContain(canary)
   })
 })
 
