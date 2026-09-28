@@ -544,7 +544,9 @@ describe("the first trigger in every view of every view", () => {
   const doubleQuoted = (script: string) => `"${script.replace(/[\\"$`]/gu, "\\$&")}"`
   const expectCut = (label: string, redacted: string, redo: (text: string) => string) => {
     expect(leaks(redacted), `${label} -> ${redacted}`).toBe(false)
-    expect(redacted, label).toMatch(/\[REDACTED\]['"]?$/u)
+    // The marker ends the text, closed by the quotes of each word or script
+    // it was cut in.
+    expect(redacted, label).toMatch(/\[REDACTED\]['"]*$/u)
     expect(backstopAccepts(redacted), `${label} -> ${redacted}`).toBe(true)
     expect(redo(redacted), label).toBe(redacted)
   }

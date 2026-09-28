@@ -4,21 +4,27 @@
 // an entry it still refuses is dropped and counted by the reader.
 //
 // Every text is cut at its first trigger. It is read in every view the
-// backstop reads: as written, quoted strings and all; after one layer of
-// percent decoding; after backslash and \u escapes, as written and
-// percent-decoded; as the words the shell assembles, as written and
-// percent-decoded; and as its double-quoted strings alone (a JSON argv), as
-// written and percent-decoded. A trigger is a scheme word and a blank after
-// it, in any case; a sensitive key or flag, an assignment or an
-// environment-style key, where the backstop reads one before its separator; a
-// header flag (-H, alone or last among short options, --header,
-// --proxy-header); and every credential shape the backstop knows (URL user
-// info, a known token prefix, a JSON Web Token, an access key, a private key's
-// header). The scheme words, key parts and shapes are the protocol's own, read
-// from it rather than copied. Each view maps every character to the source
-// text it was read from, so a trigger read in any view cuts the text at the
-// first source character it came from: the words before it are kept, the word
-// it starts in is kept up to that character, and the rest reads [REDACTED].
+// backstop reads, and in every view of those views: as written, quoted
+// strings and all; after one layer of percent decoding; after backslash and
+// \u escapes; as the words the shell assembles; and as its double-quoted
+// strings alone (a JSON argv). Each of those readings is taken again of every
+// view another makes, until no new view appears. A text whose views still
+// change past maximumViewDepth readings or maximumViews views is not read
+// further: it is cut after its program name, or shown as [REDACTED] alone
+// when that name's own views do not settle or hold a trigger; a script in it
+// that does not settle cuts the whole text the same way.
+//
+// A trigger is a scheme word and a blank after it, in any case; a sensitive
+// key or flag, an assignment or an environment-style key, where the backstop
+// reads one before its separator; a header flag (-H, alone or last among
+// short options, --header, --proxy-header); and every credential shape the
+// backstop knows (URL user info, a known token prefix, a JSON Web Token, an
+// access key, a private key's header). The scheme words, key parts and
+// shapes are the protocol's own, read from it rather than copied. Each view
+// maps every character to the source text it was read from, so a trigger read
+// in any view cuts the text at the first source character it came from: the
+// words before it are kept, the word it starts in is kept up to that
+// character, and the rest reads [REDACTED].
 // No value is judged and no prose is let through, so no view or spelling can
 // show what follows a trigger. The script a shell's `-c` option takes (bash,
 // zsh and the rest, `-lc` included) is read in turn as text of its own, to a
@@ -685,29 +691,73 @@ function shellWordsView(view: View): View {
   return builder.view()
 }
 
-// Every view of `text` the protocol backstop reads: as written, quoted
-// strings and all; percent-decoded; unescaped, as written and
-// percent-decoded; the shell's words, as written and percent-decoded; and the
-// double-quoted strings, as written and percent-decoded. The shell's words
-// are read in each of those views too, as the backstop reads the words a
-// shell hands a command (an argument vector of them, or a script): `'Token'
-// x` is `Token x` there. A second view with one text is left out.
-function viewsOf(text: string): View[] {
-  const views: View[] = []
-  const seen = new Set<string>()
-  const add = (view: View) => {
-    if (seen.has(view.text)) return
-    seen.add(view.text)
-    views.push(view)
+// The readings the protocol backstop takes a text through, each read again in
+// every view another one makes: one layer of percent encoding; \u escapes and
+// then backslash escapes; the words the shell assembles; and the double-quoted
+// strings alone. A reading that cannot change the view (no `%`, no backslash,
+// no double quote) is not built: it would be the same view, or an empty one.
+const viewReadings: ReadonlyArray<(view: View) => View | undefined> = [
+  (view) => (view.text.includes("%") ? percentDecoded(view) : undefined),
+  (view) => (view.text.includes("\\") ? unescaped(view) : undefined),
+  shellWordsView,
+  (view) => (view.text.includes("\"") ? quotedStringsView(view) : undefined),
+]
+
+// How many readings deep views are read, and how many views of one text are
+// read at most. Each reading strips one layer (a quote, an escape, an
+// encoding), so a text's views stop changing within as many readings as it
+// has layers; one whose views go on changing past either bound is not read
+// further, and is cut after its program name. Both bounds keep the work a
+// constant number of linear passes.
+const maximumViewDepth = 6
+const maximumViews = 64
+
+// Whether `read`, a view with the same text as `known`, maps any character
+// to an earlier source character; `known` is given the earlier of the two for
+// each. Each reading maps a character from where the view it reads maps it,
+// so every view read from `known` after that maps as early as one read from
+// `read` would.
+function mappedEarlier(known: View, read: View): boolean {
+  let earlier = false
+  for (let index = 0; index < known.from.length; index += 1) {
+    if (read.from[index]! < known.from[index]!) {
+      known.from[index] = read.from[index]!
+      earlier = true
+    }
   }
-  const each = (base: View) => {
-    const percent = percentDecoded(base)
-    for (const view of [base, percent, unescaped(base), unescaped(percent), shellWordsView(percent), quotedStringsView(base), quotedStringsView(percent)]) add(view)
-  }
+  return earlier
+}
+
+// Every view of `text` the protocol backstop reads, and every view of those
+// views, as it reads the words a shell hands a command (an argument vector,
+// or a script): `"To'ken'"` is `To'ken'` in the shell's words, and `Token`
+// in theirs. Each view is read once, the first time its text appears; a view
+// with the same text is left out, and only lowers where its characters map.
+// Views are read breadth first from the text as written. `settled` is false
+// when a view still new, or mapped earlier, would be read more than
+// maximumViewDepth readings deep or past maximumViews views: the views
+// returned are then only some of them.
+function viewsOf(text: string): { views: View[]; settled: boolean } {
   const source: View = { text, from: Array.from({ length: text.length }, (_, index) => index) }
-  each(source)
-  each(shellWordsView(source))
-  return views
+  const byText = new Map<string, View>([[text, source]])
+  const views = [source]
+  const queue: Array<{ view: View; depth: number }> = [{ view: source, depth: 0 }]
+  for (let next = 0; next < queue.length; next += 1) {
+    const { view, depth } = queue[next]!
+    for (const reading of viewReadings) {
+      const read = reading(view)
+      if (read === undefined) continue
+      const known = byText.get(read.text)
+      if (known !== undefined && !mappedEarlier(known, read)) continue
+      if (depth >= maximumViewDepth || queue.length >= maximumViews) return { views, settled: false }
+      if (known === undefined) {
+        byText.set(read.text, read)
+        views.push(read)
+      }
+      queue.push({ view: known ?? read, depth: depth + 1 })
+    }
+  }
+  return { views, settled: true }
 }
 
 // Whether a key the backstop's pattern reads at `at` is a trigger: the key
@@ -755,13 +805,22 @@ function firstTriggerIn(text: string): number | undefined {
 // Where in `text` the first trigger any view reads starts, or undefined. A
 // view's characters start where their spelling does, so the first source
 // character a trigger came from is where its first character starts.
-function firstTrigger(text: string): number | undefined {
+// `settled` is false when not every view was read.
+interface Cut { at: number | undefined; settled: boolean }
+function firstTrigger(text: string): Cut {
+  const { views, settled } = viewsOf(text)
   let first: number | undefined
-  for (const view of viewsOf(text)) {
+  for (const view of views) {
     const at = firstTriggerIn(view.text)
     if (at !== undefined && (first === undefined || view.from[at]! < first)) first = view.from[at]!
   }
-  return first
+  return { at: first, settled }
+}
+
+// Whether a word shown alone has every view read and no trigger in any.
+function wordReadsClean(word: string): boolean {
+  const { at, settled } = firstTrigger(word)
+  return settled && at === undefined
 }
 
 // Where shell text is cut: the first source index from which nothing is
@@ -769,8 +828,11 @@ function firstTrigger(text: string): number | undefined {
 // reading it as words stopped; the start of a token that holds a control
 // character, or of a gap between tokens that holds one; where a trigger
 // starts in any view; and where a shell's script is cut, read as text of its
-// own (a script nested too deep is cut at its start).
-function cutOf(text: string, depth: number, { tokens, stoppedAt }: Lexed = lexShell(text)): number | undefined {
+// own (a script nested too deep is cut at its start). When not every view of
+// the text or of a script in it was read, `settled` is false and the text is
+// cut after its program name, a word whose own views read clean, or else at
+// its start; the text around such a script is cut the same way.
+function cutOf(text: string, depth: number, { tokens, stoppedAt }: Lexed = lexShell(text)): Cut {
   let cut = stoppedAt
   const earlier = (at: number) => {
     if (cut === undefined || at < cut) cut = at
@@ -789,14 +851,20 @@ function cutOf(text: string, depth: number, { tokens, stoppedAt }: Lexed = lexSh
   const control = controlAt()
   if (control !== undefined) earlier(control)
   const trigger = firstTrigger(text)
-  if (trigger !== undefined) earlier(trigger)
+  let { settled } = trigger
+  if (trigger.at !== undefined) earlier(trigger.at)
   for (const index of scripts) {
     const word = tokens[index] as Word
     if (cut !== undefined && word.start >= cut) break
-    const inner = depth >= maximumDepth ? 0 : cutOf(word.value, depth + 1)
-    if (inner !== undefined) earlier(word.characters[inner]?.source ?? word.start)
+    const inner = depth >= maximumDepth ? { at: 0, settled: true } : cutOf(word.value, depth + 1)
+    if (!inner.settled) settled = false
+    else if (inner.at !== undefined) earlier(word.characters[inner.at]?.source ?? word.start)
   }
-  return cut
+  if (!settled) {
+    const program = tokens[0]
+    earlier(program?.kind === "word" && wordReadsClean(text.slice(program.start, program.end)) ? program.end : 0)
+  }
+  return { at: cut, settled }
 }
 
 // The token a source index `cut` falls in, and how many characters of its
@@ -990,7 +1058,7 @@ function redactShell(text: string, depth: number, nested: boolean, command: bool
 // Shell text a hook or provider file supplies, cut at its first trigger.
 function redactText(text: string, command: boolean, maximum: number): string {
   const lexed = lexShell(text)
-  return redactShell(text, 0, false, command, maximum, cutOf(text, 0, lexed), lexed)
+  return redactShell(text, 0, false, command, maximum, cutOf(text, 0, lexed).at, lexed)
 }
 
 // The output when it reads back as exactly the tokens meant, and in a command
@@ -1055,21 +1123,28 @@ export function redactInventoryArgv(argv: readonly string[]): string {
   const given = argv.map(argumentWord)
   let cut = argv.length
   const trigger = firstTrigger(given.join(" "))
-  if (trigger !== undefined) {
+  let { settled } = trigger
+  if (trigger.at !== undefined) {
     // The argument whose spelling ends after the trigger's start.
     let end = -1
     for (cut = 0; cut < given.length; cut += 1) {
       end += given[cut]!.length + 1
-      if (end > trigger) break
+      if (end > trigger.at) break
     }
   }
   for (let index = 0; index < cut; index += 1) {
     const argument = argv[index]!
-    if (scripts.has(index) ? cutOf(argument, 1) !== undefined : runsOrExpands.test(argument)) {
+    const script = scripts.has(index) ? cutOf(argument, 1) : undefined
+    if (script !== undefined && !script.settled) settled = false
+    if (script === undefined ? runsOrExpands.test(argument) : !script.settled || script.at !== undefined) {
       cut = index
       break
     }
   }
+  // When not every view was read, of the line or of a script in it, the line
+  // is cut after its program name when that name's own views read clean, and
+  // is the marker alone otherwise.
+  if (!settled && argv.length > 0) cut = Math.min(cut, wordReadsClean(given[0]!) ? 1 : 0)
   const plan = planTokens(tokens, tokens.map(() => false), cut < argv.length ? { token: cut, kept: 0 } : undefined, 0, true)
   const kept = plan.values.slice(0, cut).map((word, index) => (controlCharacter.test(argv[index]!) ? marker : word))
   const shown = cut < argv.length ? [...kept, marker] : kept

@@ -694,7 +694,7 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     expect(claude.omittedEntries).toBe(0)
     const commands = claude.entries.flatMap((entry) => (entry.kind === "hook" ? [entry.command] : []))
     expect(commands).toHaveLength(hooks.length)
-    for (const command of commands) expect(command).toMatch(/\[REDACTED\]['"]?$/u)
+    for (const command of commands) expect(command).toMatch(/\[REDACTED\]['"]*$/u)
   })
 
   // A hook whose command is adversarial input near the file limit is read in
