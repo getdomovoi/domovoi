@@ -11753,10 +11753,10 @@ describe("DomovoiDaemon", () => {
   })
 
   describe("stored turns when a project opens", () => {
-    // One daemon owns a profile (the profile lease), and closing a project
-    // stops its turns, so no process runs a turn saved with a closed project.
-    // Opening it ends that turn for a provider this build runs too, and pause
-    // and emergency stop then find an idle session with nothing to interrupt.
+    // Opening a project retires a turn saved with it, for a provider this
+    // build runs too, as startup does. Pause and emergency stop then find an
+    // idle session and make no call for the retired turn. These doubles do
+    // not show a provider process has exited; #646 tracks that for Claude.
     it.each(["codex", "claude-code"])("ends a stored %s turn when its project opens", async (provider) => {
       const projectPath = "/code/stored"
       const projectId = `project-${createHash("sha256").update(projectPath).digest("hex").slice(0, 12)}`
