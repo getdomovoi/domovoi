@@ -7,14 +7,14 @@ import { afterEach, describe, expect, it } from "vitest"
 
 import { inventoryShellWords } from "./inventory-redaction.js"
 import { maximumRepositoryConfigFileBytes, readRepositoryProviderConfig } from "./repository-provider-config.js"
+import { maximumRepositoryTomlDepth, parseRepositoryToml } from "./repository-toml.js"
 import {
   escapedBlankTexts, generatedShellReadingTexts, hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, quotedStringTexts, sameWordCases,
   sameWordCredentials, sameWordPlacements, sameWordWrappers, shellReadingTexts, unsettledViewTexts, viewCases, viewCredential, viewPlacements,
   viewSpellings, viewTexts,
 } from "./test-hidden-triggers.js"
-import { maximumRepositoryTomlDepth, parseRepositoryToml } from "./repository-toml.js"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { adversarialCommands, adversarialTomlFiles, nearLinearGrowth, quadraticTimeGrowth, timeGrowth, workGrowth } from "./test-work.js"
+import { adversarialCommands, adversarialTomlFiles, nearLinearGrowth, workGrowth } from "./test-work.js"
 
 const scratchDirectories: string[] = []
 afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
@@ -532,17 +532,40 @@ describe("readRepositoryProviderConfig: Codex", () => {
     const { growth, results } = await workGrowth(
       () => readRepositoryProviderConfig(roots[0]!, { heldBack: true }),
       () => readRepositoryProviderConfig(roots[1]!, { heldBack: true }),
+      { characterReads: true },
     )
     for (const result of results) expect(provider(result, "codex").files).toEqual([{ path: ".codex/config.toml", source: "project-settings", state: "read" }])
     expect(growth).toBeLessThan(nearLinearGrowth)
   })
 
-  // The parser scans characters one at a time, which the counter cannot see,
-  // so its growth is timed as well.
-  it.each(adversarialTomlFiles)("parses TOML with %s in near-linear time", (_name, size, generate) => {
+  // The parser scans its input one character at a time with charCodeAt, so
+  // its own work is counted with every character read. Not timed: on Node 22
+  // four times the nested arrays took 8 to 10 times as long while the parser
+  // read 4.007 times the characters and built 4 times the arrays. The rest was
+  // the young generation collector copying the parsed result (growth 3.9 to
+  // 4.1 with a 64 MB semi-space), which a clock cannot tell from the parser.
+  it.each(adversarialTomlFiles)("parses TOML with %s in near-linear work, every character read counted", async (_name, size, generate) => {
     const small = generate(size)
     const large = generate(size * 4)
-    expect(timeGrowth(() => parseRepositoryToml(small), () => parseRepositoryToml(large))).toBeLessThan(quadraticTimeGrowth)
+    const { growth } = await workGrowth(() => parseRepositoryToml(small), () => parseRepositoryToml(large), { characterReads: true })
+    expect(growth).toBeLessThan(nearLinearGrowth)
+  })
+
+  // A positive control: a parser that reads the document again from its start
+  // at every line, one character at a time, fails the same check.
+  it("counts a character scan that starts again at every line as more than near-linear", async () => {
+    const rescanning = (text: string) => {
+      let reads = 0
+      for (let line = text.indexOf("\n"); line !== -1; line = text.indexOf("\n", line + 1)) {
+        for (let at = 0; at < line; at += 1) reads += text.charCodeAt(at) > 0 ? 1 : 0
+      }
+      return reads
+    }
+    const [, size, generate] = adversarialTomlFiles.find(([name]) => name === "table headers")!
+    const small = generate(size / 4)
+    const large = generate(size)
+    const { growth } = await workGrowth(() => rescanning(small), () => rescanning(large), { characterReads: true })
+    expect(growth).toBeGreaterThanOrEqual(nearLinearGrowth)
   })
 })
 

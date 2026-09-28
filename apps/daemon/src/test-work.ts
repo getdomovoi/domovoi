@@ -2,7 +2,8 @@
 // with its input and cannot flake on a loaded runner. Counted: each visit of a
 // callback given to an array method, each regular expression match attempt
 // and the characters it matched, and the characters or elements built by
-// slice, substring and join. Work inside one regular expression search (its
+// slice, substring and join, and on request each charCodeAt call. Work inside
+// one regular expression search (its
 // backtracking) and inside indexOf, includes or startsWith is not visible here;
 // timeGrowth below times the first.
 
@@ -12,7 +13,11 @@ type Method = (this: unknown, ...args: unknown[]) => unknown
 
 const callbackMethods = ["every", "filter", "find", "findIndex", "flatMap", "forEach", "map", "reduce", "some", "sort"] as const
 
-export async function countWork<T>(run: () => T | Promise<T>): Promise<{ work: number; result: Awaited<T> }> {
+// characterReads also counts each charCodeAt call, for a parser that scans its
+// input one character at a time (smol-toml reads TOML this way).
+export type WorkOptions = { characterReads?: boolean }
+
+export async function countWork<T>(run: () => T | Promise<T>, options: WorkOptions = {}): Promise<{ work: number; result: Awaited<T> }> {
   let work = 0
   const restores: Array<() => void> = []
   const patch = (target: object, name: string, replacement: (original: Method) => Method) => {
@@ -41,6 +46,12 @@ export async function countWork<T>(run: () => T | Promise<T>): Promise<{ work: n
     patch(String.prototype, "substring", built)
     patch(Array.prototype, "slice", built)
     patch(Array.prototype, "join", built)
+    if (options.characterReads) {
+      patch(String.prototype, "charCodeAt", (original) => function (this: unknown, ...args: unknown[]) {
+        work += 1
+        return Reflect.apply(original, this, args)
+      })
+    }
     patch(RegExp.prototype, "exec", (original) => function (this: unknown, ...args: unknown[]) {
       const result = Reflect.apply(original, this, args) as RegExpExecArray | null
       work += 1 + (result === null ? 0 : result[0].length)
@@ -55,9 +66,11 @@ export async function countWork<T>(run: () => T | Promise<T>): Promise<{ work: n
 
 // How much more work four times the input takes: about 4 when the work grows
 // linearly, about 16 when it grows with the square of the input.
-export async function workGrowth<T>(small: () => T | Promise<T>, large: () => T | Promise<T>): Promise<{ growth: number; results: [Awaited<T>, Awaited<T>] }> {
-  const first = await countWork(small)
-  const second = await countWork(large)
+export async function workGrowth<T>(
+  small: () => T | Promise<T>, large: () => T | Promise<T>, options: WorkOptions = {},
+): Promise<{ growth: number; results: [Awaited<T>, Awaited<T>] }> {
+  const first = await countWork(small, options)
+  const second = await countWork(large, options)
   return { growth: second.work / first.work, results: [first.result, second.result] }
 }
 
