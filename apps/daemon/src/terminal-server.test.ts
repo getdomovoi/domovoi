@@ -528,9 +528,9 @@ describe("terminal RPC", () => {
         defaultReasoningEffort: session.runtime.reasoning,
         isDefault: true,
       }]),
-      startThread: vi.fn()
-        .mockResolvedValueOnce("thread-discarded-recovery")
-        .mockResolvedValueOnce("thread-recovered-emergency"),
+      // Recovery stops the failed thread before it starts a replacement, so
+      // only the recovery whose cleanup succeeds ever starts a thread.
+      startThread: vi.fn().mockResolvedValueOnce("thread-recovered-emergency"),
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async (threadId: string) => {
         if (threadId !== "thread-failed-emergency") return
@@ -625,10 +625,11 @@ describe("terminal RPC", () => {
       runtime: session.runtime,
       client: "desktop",
     })).resolves.toMatchObject({ error: { code: -32603, message: "Internal daemon error" } })
-    expect(agent.startThread).toHaveBeenCalledWith(expect.objectContaining({
-      cwd: session.workspacePath,
-    }))
-    expect(agent.stopThread).toHaveBeenCalledWith("thread-discarded-recovery")
+    // The failed thread refused cleanup again, so no replacement agent may
+    // start in its worktree and no recovery checkpoint may be taken.
+    expect(failedThreadStopAttempts).toBe(2)
+    expect(agent.startThread).not.toHaveBeenCalled()
+    expect(workspaceService.checkpoint).not.toHaveBeenCalled()
     await expect(rpc("session.send", {
       sessionId: session.id,
       prompt: "failed recovery must stay quarantined",
@@ -662,6 +663,19 @@ describe("terminal RPC", () => {
       expect.any(AbortSignal),
     )
     expect(failedThreadStopAttempts).toBe(3)
+    expect(agent.startThread).toHaveBeenCalledOnce()
+    expect(agent.startThread).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: session.workspacePath,
+    }))
+    // The failed thread's successful stop comes first, then the replacement,
+    // then the checkpoint.
+    const failedStopOrder = agent.stopThread.mock.calls
+      .map(([threadId], index) => ({ threadId, order: agent.stopThread.mock.invocationCallOrder[index]! }))
+      .filter(({ threadId }) => threadId === "thread-failed-emergency")
+      .at(-1)!.order
+    expect(failedStopOrder).toBeLessThan(agent.startThread.mock.invocationCallOrder[0]!)
+    expect(agent.startThread.mock.invocationCallOrder[0]!)
+      .toBeLessThan(workspaceService.checkpoint.mock.invocationCallOrder[0]!)
     await expect(rpc("session.send", {
       sessionId: session.id,
       prompt: "continue on the replacement thread",

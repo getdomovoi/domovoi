@@ -17,6 +17,7 @@ import { callDaemon, readDaemonResult, type CliRpcTarget } from "./cli-rpc.js"
 import { runOpenCommand } from "./open-command.js"
 import { publishEndpointFile, publishesEndpointFor, removeEndpointFile } from "./endpoint-file.js"
 import { installShutdownHandlers } from "./shutdown.js"
+import { runningClaudeProcesses } from "./claude-process.js"
 import type { OpenTarget } from "./wsl-open-target.js"
 import { connectionForTarget } from "./open-connection.js"
 import { readDistroEndpoint } from "./wsl-endpoint.js"
@@ -313,6 +314,7 @@ async function main() {
     stopDaemon: () => daemon.stop(),
     exit: (code) => process.exit(code),
     writeStderr: (text) => process.stderr.write(text),
+    runningProcesses: runningClaudeProcesses,
   })
 }
 

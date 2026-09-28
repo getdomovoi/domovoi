@@ -7837,6 +7837,17 @@ export class DomovoiDaemon {
             return nextThreadId
           }
           let checkpoint: Awaited<ReturnType<WorkspaceService["checkpoint"]>>
+          // Recovery establishes that the failed thread has exited before it
+          // starts or checkpoints a replacement. A stop that fails again
+          // throws here, and the session stays failed and fenced (security
+          // review round 1 of #647).
+          if (recoveringFailedThread) {
+            await withTimeout(
+              this.#agents.require(previousRuntime.provider).stopThread(previousThreadId),
+              this.#agentTimeoutMs,
+              "Failed provider cleanup timed out",
+            )
+          }
           const nextThreadId = await startNextThread()
           try {
             checkpoint = await this.#withAbortTimeout(
@@ -7851,14 +7862,13 @@ export class DomovoiDaemon {
                 : "Provider handoff checkpoint timed out",
             )
             // A turned-off provider is never run, so it has no thread to stop.
-            // One whose stop failed was refused above.
-            if (!this.#agents.isUnavailable(previousRuntime.provider)) {
+            // One whose stop failed was refused above, and a recovered one
+            // was stopped before the replacement started.
+            if (!recoveringFailedThread && !this.#agents.isUnavailable(previousRuntime.provider)) {
               await withTimeout(
                 this.#agents.require(previousRuntime.provider).stopThread(previousThreadId),
                 this.#agentTimeoutMs,
-                recoveringFailedThread
-                  ? "Failed provider cleanup timed out"
-                  : "Previous provider cleanup timed out",
+                "Previous provider cleanup timed out",
               )
             }
           } catch (error) {
@@ -10080,6 +10090,8 @@ export class DomovoiDaemon {
     const stopId = `stop-${randomUUID()}`
     const failures: SystemEmergencyStopResult["failures"] = []
     const affectedSessionIds = new Set<string>()
+    // Threads an earlier stop could not stop, taken before this one adds any.
+    const retainedFailedThreads = [...this.#failedEmergencyThreads]
     const active = this.#snapshot.sessions.filter(
       (session) => !sessionIsReadOnly(session)
         && session.providerThreadId
@@ -10289,6 +10301,41 @@ export class DomovoiDaemon {
           message: this.#emergencyFailureMessage(result.reason, "Provider reset failed"),
         })
       }
+    }
+
+    // A thread an earlier stop could not stop is fenced, but its process may
+    // still run. Each stop tries it again, and reports it until its exit is
+    // established. The fence stays until the session is recovered (security
+    // review round 1 of #647).
+    const handledThreadKeys = new Set([...activeThreadKeys, ...inFlight.map(([threadKey]) => threadKey)])
+    const retained = retainedFailedThreads
+      .filter((threadKey) => !handledThreadKeys.has(threadKey))
+      .map((threadKey) => {
+        const separator = threadKey.indexOf("\u0000")
+        const provider = threadKey.slice(0, separator)
+        const providerThreadId = threadKey.slice(separator + 1)
+        const session = this.#snapshot.sessions.find((candidate) => candidate.providerThreadId === providerThreadId
+          && candidate.runtime.provider === provider)
+        return { provider, providerThreadId, sessionId: session?.id }
+      })
+      // A turned-off provider is never run, so it has nothing to stop.
+      .filter(({ provider }) => !this.#agents.isUnavailable(provider))
+    const retainedResults = await Promise.allSettled(retained.map(async ({ provider, providerThreadId }) =>
+      withTimeout(
+        this.#agents.require(provider).stopThread(providerThreadId),
+        this.#agentTimeoutMs,
+        "Emergency provider reset timed out",
+      ),
+    ))
+    for (const [index, result] of retainedResults.entries()) {
+      if (result.status === "fulfilled") continue
+      const { providerThreadId, sessionId } = retained[index]!
+      if (sessionId) affectedSessionIds.add(sessionId)
+      failures.push({
+        target: "provider",
+        targetId: providerThreadId,
+        message: this.#emergencyFailureMessage(result.reason, "Provider reset failed"),
+      })
     }
 
     for (const sessionId of affectedSessionIds) {

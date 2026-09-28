@@ -8,6 +8,8 @@ import {
   type PermissionResult,
   type PermissionUpdate,
   type SDKUserMessage,
+  type SpawnedProcess,
+  type SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk"
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
@@ -23,6 +25,12 @@ import { gitReadCanRunProgram } from "./git-read-config.js"
 import { permissionDecisionFor } from "./permission-policy.js"
 import { DurableOutputRedactor, redactDurableText } from "./secret-redaction.js"
 import { checkClaudeInstall, resolveClaudeSdkExecutable } from "./claude-install.js"
+import {
+  spawnClaudeProcess,
+  stopClaudeProcess,
+  type ClaudeProcess,
+  type ClaudeProcessOptions,
+} from "./claude-process.js"
 import { normalizeProviderUsage } from "./usage.js"
 
 const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const
@@ -96,6 +104,7 @@ export type ClaudeQueryOptions = {
   systemPrompt?: { type: "preset"; preset: "claude_code"; append?: string }
   hooks?: { PreToolUse?: Array<{ hooks: ClaudePreToolUseHook[] }> }
   stderr?: (data: string) => void
+  spawnClaudeCodeProcess?: (options: SpawnOptions) => SpawnedProcess
   canUseTool?: (
     toolName: string,
     input: Record<string, unknown>,
@@ -161,7 +170,15 @@ type Session = {
   // then, so a reopen before it must start a fresh one.
   started?: true
   ended?: true
+  // The Claude processes this session's query started, normally one. A stop
+  // is complete only when every one of them has exited.
+  processes: ClaudeProcess[]
+  stop?: Promise<void>
 }
+
+// A query Domovoi started Claude for: a session's, or a model list's, which
+// has no thread.
+type OwnedQuery = Pick<Session, "input" | "query" | "processes" | "stop"> & { threadId?: string }
 
 type PendingApproval = {
   input: Record<string, unknown>
@@ -187,7 +204,28 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   readonly #factory: ClaudeQueryFactory
   readonly #id: () => ClaudeMessageId
   readonly #preflight: (() => Promise<void>) | undefined
+  readonly #processOptions: ClaudeProcessOptions
   #sessions = new Map<string, Session>()
+  // Stopped queries whose Claude process has not exited yet. A retried stop,
+  // a reopen and a shutdown wait on these instead of finding nothing to stop.
+  #stopping = new Set<OwnedQuery>()
+  // Set when close begins, before it waits on anything. No Claude process is
+  // started while it is set.
+  #closing = false
+  // Set for good once a close has succeeded: nothing reopens the adapter.
+  #closed = false
+  // Closes run one at a time, each after the one before it has settled, and
+  // a close that fails reopens the adapter only when no other close waits:
+  // one close's failure never undoes another's success (review round 2 of
+  // #647, R2-F3).
+  #closeQueue: Promise<void> = Promise.resolve()
+  #closesWaiting = 0
+  // Model lists from the moment their query exists, finished or not. Close
+  // stops each one and waits for its Claude (R2-F4).
+  #discoveries = new Set<OwnedQuery>()
+  // Starts still in their install check or instruction read, which close
+  // waits for: each refuses to start Claude once it resumes.
+  #preparing = new Set<Promise<unknown>>()
   #listeners = new Set<(event: AgentEvent) => void>()
   #pendingApprovals = new Map<number, PendingApproval>()
   #nextApprovalId = 0
@@ -200,33 +238,40 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     preflight: (() => Promise<void>) | undefined = factory === defaultClaudeQueryFactory
       ? () => checkClaudeInstall(process.env.PATH ?? "", process.platform)
       : undefined,
+    processOptions: ClaudeProcessOptions = {},
   ) {
     this.#factory = factory
     this.#id = id
     this.#preflight = preflight
+    this.#processOptions = processOptions
   }
 
   async connect(): Promise<void> {}
 
   async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
     signal?.throwIfAborted()
+    this.#refuseWhenClosing()
     if (this.#preflight) {
-      await this.#preflight()
+      await this.#prepared(this.#preflight())
       signal?.throwIfAborted()
     }
+    this.#refuseWhenClosing()
     const input = new PushStream<ClaudeUserMessage>()
     const stderr = new ClaudeStderrTail()
+    // The model list's Claude is started and stopped like a session's, so a
+    // shutdown waits for it too, whether the list succeeds, fails or is
+    // cancelled.
+    const processes: ClaudeProcess[] = []
     const runtime = this.#factory(input, {
       ...baseOptions(),
       settingSources: [],
       stderr: (data) => stderr.push(data),
+      spawnClaudeCodeProcess: (spawnOptions) => this.#spawn(spawnOptions, input, stderr, processes),
     })
-    let closed = false
+    const discovery: OwnedQuery = { input, query: runtime, processes }
+    this.#discoveries.add(discovery)
     const close = () => {
-      if (closed) return
-      closed = true
-      input.close()
-      runtime.close()
+      void this.#stopSession(discovery).then(() => this.#discoveries.delete(discovery), () => {})
     }
     signal?.addEventListener("abort", close, { once: true })
     try {
@@ -270,6 +315,9 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     cwd: string
     runtime: Runtime
   }): Promise<void> {
+    // A conversation whose last process still runs is not reopened beside
+    // it, and a loaded one is not reported ready while it does.
+    await this.#stopped(threadId)
     if (this.#sessions.has(threadId)) return
     await this.#openSession(threadId, cwd, runtime, true)
   }
@@ -287,6 +335,11 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     // below. Only a session that has ended needs reopening.
     if (session.ended) {
       const previous = session
+      // The ended query's process, and that of any earlier reopen that
+      // failed, must be gone before a new one resumes the same conversation
+      // in the same worktree.
+      await this.#stopSession(previous)
+      await this.#stopped(threadId)
       this.#sessions.delete(threadId)
       try {
         // Resume only a conversation that exists. Moving the mode before the
@@ -294,14 +347,13 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         // opened, which failed with "No conversation found".
         await this.#openSession(threadId, previous.cwd, runtime, previous.started === true)
       } catch (error) {
-        // Put back what was working. Dropping the session here made the first
-        // failure permanent: every later send found nothing and reported that
-        // the session was not loaded, which hid the real cause.
+        // Put back the ended session, so a later send reopens the
+        // conversation instead of finding nothing loaded, which hid the real
+        // cause. It is never used as it is: being ended, every send reopens,
+        // and a reopen first waits for the failed query's process to exit.
         if (!this.#sessions.has(threadId)) this.#sessions.set(threadId, previous)
         throw error
       }
-      previous.input.close()
-      previous.query.close()
       session = this.#requireSession(threadId)
     }
     const turnId = this.#id()
@@ -341,12 +393,15 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     await session.query.interrupt()
   }
 
+  // Resolves once Claude has exited, and rejects while it still runs after the
+  // kill: the caller then keeps the thread fenced and the profile lease held.
   async stopThread(threadId: string): Promise<void> {
     const session = this.#sessions.get(threadId)
-    if (!session) return
-    session.input.close()
-    session.query.close()
-    this.#sessions.delete(threadId)
+    if (session) {
+      this.#sessions.delete(threadId)
+      void this.#stopSession(session)
+    }
+    await this.#stopped(threadId)
   }
 
   resolveApproval(requestId: number, decision: ApprovalDecision): void {
@@ -365,16 +420,118 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     return () => this.#listeners.delete(listener)
   }
 
+  // Resolves once every Claude process the adapter started, and everything
+  // it started, is gone. From the call on no process is started. A close
+  // that fails leaves the adapter open, as a failed stop leaves its thread:
+  // once the process has exited, the thread can be stopped, reopened and
+  // closed again. A close that succeeds closes the adapter for good.
   async close(): Promise<void> {
-    for (const session of this.#sessions.values()) {
-      session.input.close()
-      session.query.close()
+    this.#closing = true
+    this.#closesWaiting += 1
+    const previous = this.#closeQueue
+    let settled!: () => void
+    this.#closeQueue = new Promise((resolve) => { settled = resolve })
+    try {
+      await previous
+      if (this.#closed) return
+      await this.#closeOnce()
+      this.#closed = true
+    } catch (error) {
+      if (this.#closesWaiting === 1 && !this.#closed) this.#closing = false
+      throw error
+    } finally {
+      this.#closesWaiting -= 1
+      settled()
     }
+  }
+
+  async #closeOnce(): Promise<void> {
+    for (const session of this.#sessions.values()) void this.#stopSession(session)
     this.#sessions.clear()
+    for (const discovery of this.#discoveries) {
+      void this.#stopSession(discovery).then(() => this.#discoveries.delete(discovery), () => {})
+    }
     for (const pending of this.#pendingApprovals.values()) {
       pending.resolve({ behavior: "deny", message: "Domovoi closed the Claude session" })
     }
     this.#pendingApprovals.clear()
+    // A start still preparing refuses once it resumes. Whatever a start
+    // began before close is a session above, or stopping.
+    await Promise.allSettled([...this.#preparing])
+    await this.#stopped()
+  }
+
+  #refuseWhenClosing(): void {
+    if (this.#closing) throw new Error("Claude adapter is closed")
+  }
+
+  // Tracks a start's preparation, so that close can wait for it.
+  async #prepared<T>(preparation: Promise<T>): Promise<T> {
+    this.#preparing.add(preparation)
+    try {
+      return await preparation
+    } finally {
+      this.#preparing.delete(preparation)
+    }
+  }
+
+  // The spawnClaudeCodeProcess option: starts Claude, and tracks it, unless
+  // the adapter is closing or the query's stop has begun, which refuses its
+  // input first.
+  #spawn(
+    spawnOptions: SpawnOptions,
+    input: PushStream<ClaudeUserMessage>,
+    stderr: ClaudeStderrTail,
+    processes: ClaudeProcess[],
+    session?: string,
+  ): SpawnedProcess {
+    this.#refuseWhenClosing()
+    if (input.closed) throw new Error("Claude query was stopped before its process started")
+    const child = spawnClaudeProcess(spawnOptions, (data) => stderr.push(data), this.#processOptions, session)
+    processes.push(child)
+    return child.spawned
+  }
+
+  // Closes the query's input and the query, and waits for its processes, as
+  // stopClaudeProcess does. The stop is made once per query: every later
+  // caller waits on the same exit. Once every process has exited, even after
+  // a stop that already failed, the query is stopped.
+  #stopSession(session: OwnedQuery): Promise<void> {
+    if (session.stop) {
+      return session.processes.every((child) => child.hasExited()) ? Promise.resolve() : session.stop
+    }
+    // From here the input takes no message and starts no process. It closes
+    // when stopClaudeProcess says: on Windows only after the tree kill (Q106).
+    session.input.refuse()
+    let closed = false
+    const close = () => {
+      if (closed) return
+      closed = true
+      session.input.close()
+      session.query.close()
+    }
+    const running = session.processes.filter((child) => !child.hasExited())
+    if (running.length === 0) close()
+    const stop = Promise.all(running.map((child) => stopClaudeProcess(child, close, this.#processOptions)))
+      .then(() => {})
+    // Callers observe the failure; the promise is kept for the next one.
+    stop.catch(() => {})
+    session.stop = stop
+    if (running.length > 0) {
+      this.#stopping.add(session)
+      void Promise.all(running.map((child) => child.exited)).then(() => {
+        this.#stopping.delete(session)
+      })
+    }
+    return stop
+  }
+
+  // Waits for the stops of one thread's sessions, or of every session.
+  async #stopped(threadId?: string): Promise<void> {
+    const stops = [...this.#stopping]
+      .filter((session) => threadId === undefined || session.threadId === threadId)
+      .map((session) => this.#stopSession(session))
+    await Promise.all(stops)
   }
 
   async #openSession(
@@ -383,11 +540,20 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     runtime: Runtime,
     resume: boolean,
   ): Promise<void> {
-    if (this.#preflight) await this.#preflight()
+    // A start that close overtook while it prepared starts no Claude.
+    this.#refuseWhenClosing()
+    const preflight = this.#preflight
+    const instructions = await this.#prepared((async () => {
+      if (preflight) await preflight()
+      return projectInstructions(cwd, "claude")
+    })())
+    this.#refuseWhenClosing()
     const input = new PushStream<ClaudeUserMessage>()
     const stderr = new ClaudeStderrTail()
     const permission = claudePermissionFor(runtime)
-    const instructions = await projectInstructions(cwd, "claude")
+    // Domovoi starts the process itself so that a stop can wait for it to
+    // exit, and kill it with its tools when it will not.
+    const processes: ClaudeProcess[] = []
     const options: ClaudeQueryOptions = {
       ...baseOptions(),
       ...(instructions
@@ -405,6 +571,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         PreToolUse: [{ hooks: [(hookInput) => this.#screenToolUse(threadId, cwd, hookInput)] }],
       },
       stderr: (data) => stderr.push(data),
+      spawnClaudeCodeProcess: (spawnOptions) => this.#spawn(spawnOptions, input, stderr, processes, threadId),
     }
     const query = this.#factory(input, options)
     const session: Session = {
@@ -418,6 +585,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       turnMessageIds: new Set(),
       interruptedMessageIds: new Set(),
       stderr,
+      processes,
     }
     this.#sessions.set(threadId, session)
     void this.#consume(session).then(
@@ -430,11 +598,17 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     try {
       await query.initializationResult()
     } catch (error) {
-      input.close()
-      query.close()
-      this.#sessions.delete(threadId)
+      if (this.#sessions.get(threadId) === session) this.#sessions.delete(threadId)
+      try {
+        await this.#stopSession(session)
+      } catch {
+        // The start failure is the one to report. A process that outlived
+        // the stop stays tracked, so a reopen and a shutdown still wait on it.
+      }
       throw claudeFailureError(error, stderr.take())
     }
+    // Close stopped this session while it started.
+    this.#refuseWhenClosing()
   }
 
   async #applyRuntime(session: Session, runtime: Runtime): Promise<void> {
@@ -759,6 +933,11 @@ class PushStream<T> implements AsyncIterable<T> {
   #values: T[] = []
   #waiters: Array<(result: IteratorResult<T>) => void> = []
   #closed = false
+  #ended = false
+
+  get closed(): boolean {
+    return this.#closed
+  }
 
   push(value: T): void {
     if (this.#closed) throw new Error("Claude input stream is closed")
@@ -767,8 +946,15 @@ class PushStream<T> implements AsyncIterable<T> {
     else this.#values.push(value)
   }
 
+  // Takes no more values, but does not end the stream yet: a Windows stop
+  // ends it only after its tree kill (Q106).
+  refuse(): void {
+    this.#closed = true
+  }
+
   close(): void {
     this.#closed = true
+    this.#ended = true
     for (const waiter of this.#waiters.splice(0)) waiter({ value: undefined, done: true })
   }
 
@@ -777,7 +963,7 @@ class PushStream<T> implements AsyncIterable<T> {
       next: async () => {
         const value = this.#values.shift()
         if (value !== undefined) return { value, done: false }
-        if (this.#closed) return { value: undefined, done: true }
+        if (this.#ended) return { value: undefined, done: true }
         return new Promise((resolve) => this.#waiters.push(resolve))
       },
     }
