@@ -172,6 +172,7 @@ import {
   codexSandboxNotice,
 } from "./codex.js"
 import { committedCodexSecretPaths } from "./codex-git-secrets.js"
+import { emergencyStopRecoveryRounds, type SqliteEmergencyStopIntents } from "./emergency-stop-intents.js"
 import { ClaudeAgentSdkAdapter } from "./claude.js"
 import { OpenCodeSdkAdapter } from "./opencode.js"
 import { KiloSdkAdapter } from "./kilo.js"
@@ -10692,10 +10693,85 @@ export class DomovoiDaemon {
   // (its own save, or a later one, landed) is not finished again. A failed
   // save here fails startup and keeps the intent for the next one. A journal
   // row that does not read back is set aside by the journal and reported.
+  //
+  // Issue #632: the journal is read a bounded number of rows at a time. Owner
+  // ruling Q93 B on #641: a pass keeps neither a copy of the workspace nor
+  // what earlier passes did. It writes the rows it read, the stops it acted
+  // on and the lines it will write to the store (see `stage` in the
+  // journal), and changes a copy of the sessions made once per round. What a
+  // pass holds, and the work it does, is its own rows and the stops they
+  // name, against the thread as the round found it; the passes before it do
+  // not add to either. The workspace is copied and saved once per round,
+  // with the round's lines, and only then are the rows it finished cleared.
+  // A start that ends before that save leaves in the journal every row the
+  // round read a stop from; a row no stop could be read from may already be
+  // in quarantine (`pending` moves it there). A build without journal
+  // recovery, such as the desktop 0.0.1 release, does not read the journal
+  // at all: started on a store with a stop pending, it accepts connections
+  // without applying the stop. Nothing here prevents that downgrade.
+  //
+  // Rows that name the same stop act the same whether one round or two read
+  // them, and whether or not a startup ended between the two (review round 1
+  // of #641): the journal lists the stops this recovery has acted on until
+  // it is done, and a line of a listed stop does not count as its record.
+  //
+  // Passes read forward by rowid, and a row can reach the journal behind
+  // them, or take the rowid of one a round cleared (from another writer on
+  // the store, or a trigger in it). So once a round is saved, another reads
+  // every row no round has read yet, known by rowid and content, not by how
+  // many rows are left (security review round 2 of #641). The recovery is
+  // done, and the listener may open, only once a round finds no such row
+  // and the journal empties its stop list with still none there. Past
+  // `emergencyStopRecoveryRounds` rounds, startup fails instead. The rounds
+  // so far stay saved and the stop list stays, so the next start continues
+  // the same recovery.
   #recoverEmergencyStops(): void {
     const journal = this.#store.emergencyStops
     if (!journal) return
-    const { intents: entries, partial, overflow, setAside } = journal.pending()
+    journal.beginRecovery()
+    for (let round = 1; ; round += 1) {
+      if (!this.#recoverEmergencyStopRound(journal) && journal.finishRecovery()) return
+      if (round === emergencyStopRecoveryRounds) {
+        throw new Error(`Domovoi stopped finishing the emergency stop journal after ${round} rounds, because new rows kept taking the place of the rows it cleared. The rounds it finished are saved, and the next start continues from there. If this happens again, something outside Domovoi is writing to the store, and it needs repair before Domovoi can start.`)
+      }
+    }
+  }
+
+  // One round: every pass over the rows no round has read, then one save.
+  // Answers whether it read a row.
+  #recoverEmergencyStopRound(journal: SqliteEmergencyStopIntents): boolean {
+    const sessions = structuredClone(this.#snapshot.sessions)
+    const byId = new Map(sessions.map((session) => [session.id, session]))
+    let read = false
+    let acted = false
+    let after: bigint | undefined
+    do {
+      const pass = journal.pending(after)
+      if (pass.read.length > 0 || pass.setAside.length > 0) read = true
+      if (this.#recoverEmergencyStopPass(journal, pass, byId)) acted = true
+      after = pass.next
+    } while (after !== undefined)
+    if (!read) return false
+    if (acted) {
+      const thread = [...this.#snapshot.thread]
+      for (const { id, sessionId, client, createdAt } of journal.stagedLines()) {
+        thread.push({ id, sessionId, kind: "system", body: `Emergency stop requested by ${client}.`, createdAt })
+      }
+      const candidate = { ...this.#snapshot, sessions, thread }
+      workspaceSnapshotSchema.parse(candidate)
+      this.#store.save(candidate)
+      this.#snapshot = candidate
+    }
+    journal.finishRound()
+    return true
+  }
+
+  // Answers whether the pass read a stop.
+  #recoverEmergencyStopPass(
+    journal: SqliteEmergencyStopIntents,
+    { intents: entries, partial, overflow, setAside, read }: ReturnType<SqliteEmergencyStopIntents["pending"]>,
+    sessions: ReadonlyMap<string, WorkspaceSnapshot["sessions"][number]>,
+  ): boolean {
     for (const { key, reason } of setAside) {
       this.#reportError("Domovoi set aside an unreadable emergency stop intent", new Error(`${key}: ${reason}`))
     }
@@ -10705,24 +10781,38 @@ export class DomovoiDaemon {
     for (const { key, reason } of overflow) {
       this.#reportError("Domovoi kept an emergency stop intent it could not finish whole", new Error(`${key}: ${reason}`))
     }
-    if (entries.length === 0) return
-    const candidate = structuredClone(this.#snapshot)
-    // One pass over the thread and the sessions, however many stop ids the
-    // journal names (round 6): the stops already recorded, by the detail a
-    // completed stop writes or the line id a restart writes.
-    const recorded = new Set<string>()
-    for (const item of candidate.thread) {
-      if (item.kind !== "system") continue
-      const stopId = /^(stop-[0-9a-f-]{36}):/.exec(item.detail ?? "")?.[1] ?? /^system-(stop-[0-9a-f-]{36})-/.exec(item.id)?.[1]
-      if (stopId !== undefined) recorded.add(stopId)
+    if (entries.length === 0) {
+      if (read.length > 0) journal.stage({ read, acted: [], lines: [] })
+      return false
     }
-    const sessions = new Map(candidate.sessions.map((session) => [session.id, session]))
+    // One pass over the thread as the round found it, however many stop ids
+    // the pass names (round 6): which of its stops have a line, by the detail
+    // a completed stop writes or the line id a restart writes, and the
+    // restart lines already there. Only the stops of this pass are kept.
+    // Lines earlier passes of the round wrote are in the journal, which
+    // writes each id once.
+    const named = new Set(entries.map(({ intent }) => intent.stopId))
+    const onThread = new Set<string>()
+    const lines = new Set<string>()
+    for (const item of this.#snapshot.thread) {
+      if (item.kind !== "system") continue
+      const restartLine = /^system-(stop-[0-9a-f-]{36})-/.exec(item.id)?.[1]
+      const stopId = /^(stop-[0-9a-f-]{36}):/.exec(item.detail ?? "")?.[1] ?? restartLine
+      if (stopId !== undefined && named.has(stopId)) onThread.add(stopId)
+      if (restartLine !== undefined && named.has(restartLine)) lines.add(item.id)
+    }
+    // A line counts as the stop's record unless this recovery, in this
+    // startup or one that ended before it finished, wrote it.
+    const ours = journal.recovering(onThread)
+    const recorded = new Set([...onThread].filter((stopId) => !ours.has(stopId)))
+    const acted = new Set<string>()
+    const written: Array<{ id: string; sessionId: string; client: string; createdAt: string }> = []
     // Only the thread says a stop is finished (round 7). Rows that name the
-    // same stop each act on what they hold; a line already written in this
-    // pass is not written again.
-    const written = new Set<string>()
+    // same stop each act on what they hold; a line already on the thread is
+    // not written again.
     for (const { intent } of entries) {
       if (recorded.has(intent.stopId)) continue
+      acted.add(intent.stopId)
       for (const dispatch of intent.inFlight) {
         // An archived or other read-only session holds no dispatch, and its
         // state is its record (round 8): it is left as it is.
@@ -10741,24 +10831,19 @@ export class DomovoiDaemon {
         for (const sessionId of intent.sessionIds) {
           const session = sessions.get(sessionId)
           const id = `system-${intent.stopId}-${client}-${sessionId}`
-          if (!session || sessionIsReadOnly(session) || written.has(id)) continue
-          written.add(id)
-          candidate.thread.push({
-            id,
-            sessionId,
-            kind: "system",
-            body: `Emergency stop requested by ${client}.`,
-            createdAt: intent.requestedAt,
-          })
+          if (!session || sessionIsReadOnly(session) || lines.has(id)) continue
+          lines.add(id)
+          written.push({ id, sessionId, client, createdAt: intent.requestedAt })
         }
       }
     }
-    workspaceSnapshotSchema.parse(candidate)
-    this.#store.save(candidate)
-    this.#snapshot = candidate
-    // A row kept for overflow stays in the journal, so it is reported again.
-    const kept = new Set(entries.filter(({ keep }) => keep).map(({ key }) => key))
-    for (const { key } of entries) if (!kept.has(key)) journal.clear(key)
+    // Listed before the round's save, so no saved line of a stop acted on
+    // here is ever read as its record while this recovery is unfinished. The
+    // rows the pass read are listed with them; `finishRound` clears each one
+    // it finished once the save lands. A row kept for overflow stays in the
+    // journal, and the next start reads it again.
+    journal.stage({ read, acted, lines: written })
+    return true
   }
 
   // `storedApprovalIds` names cards read from storage when startup resumes an
