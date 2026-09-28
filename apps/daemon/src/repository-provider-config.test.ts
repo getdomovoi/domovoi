@@ -533,10 +533,20 @@ describe("readRepositoryProviderConfig: Codex", () => {
       ["script", `sh -c 'echo ${canary}'`],
       ["subshell", `(echo ${canary})`],
       ["expanded", `$(echo ${canary}) x`],
+      // A word that starts with an unquoted `#` opens a shell comment: it is
+      // not the program.
+      ["comment", `#${canary}\nprintf '%s' '{"X-Custom":"${canary}"}'`],
+      ["indented", `  #${canary}`],
+      ["joined", `\\\n#${canary}\nprint-headers`],
+      ["quoted", `'#print' ${canary}`],
     ]
-    await put(root, ".codex/config.toml", helpers.map(([name, helper]) => (
-      `[mcp_servers.${name}]\nurl = "https://mcp.example.test"\nhttp_headers_helper = ${JSON.stringify(helper)}\n`
-    )).join("\n"))
+    await put(root, ".codex/config.toml", [
+      ...helpers.map(([name, helper]) => (
+        `[mcp_servers.${name}]\nurl = "https://mcp.example.test"\nhttp_headers_helper = ${JSON.stringify(helper)}\n`
+      )),
+      // The review's multiline literal string.
+      `[mcp_servers.multiline]\nurl = "https://mcp.example.test"\nhttp_headers_helper = '''\n#${canary}\nprintf '%s' '{"X-Custom":"${canary}"}'\n'''\n`,
+    ].join("\n"))
     const codex = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
     expect(toolInventoryProviderSchema.safeParse(codex).success).toBe(true)
     expect(JSON.stringify(codex)).not.toContain(canary)
@@ -551,6 +561,11 @@ describe("readRepositoryProviderConfig: Codex", () => {
       ["http_headers_helper script", "sh [REDACTED]"],
       ["http_headers_helper subshell", "[REDACTED]"],
       ["http_headers_helper expanded", "[REDACTED]"],
+      ["http_headers_helper comment", "[REDACTED]"],
+      ["http_headers_helper indented", "[REDACTED]"],
+      ["http_headers_helper joined", "[REDACTED]"],
+      ["http_headers_helper quoted", "'#print' [REDACTED]"],
+      ["http_headers_helper multiline", "[REDACTED]"],
     ])
   })
 
