@@ -4,14 +4,17 @@ import { join } from "node:path"
 
 import { afterEach, expect, it, vi } from "vitest"
 
+import { ClaudeAgentSdkAdapter } from "./claude.js"
 import { MachineCredentialStore } from "./machine-credentials.js"
+import { OperationDeadline } from "./operation-deadline.js"
 import {
   createProductionDaemonWithDependencies,
   productionDaemonDependencies,
   type ProductionDaemonHandle,
 } from "./production-daemon.js"
 import { claimProfile, ProfileAlreadyOwnedError } from "./profile-lease.js"
-import type { DaemonServerOptions } from "./server.js"
+import { DomovoiDaemon, type DaemonServerOptions } from "./server.js"
+import { fakeClaudeChild, spawningClaudeFactory } from "./test-claude-process.js"
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
@@ -55,4 +58,36 @@ it("constructs the daemon, and with it the state store, only while holding the p
   // the same claim succeeds.
   await handle.stop()
   expect(() => claimProfile(homeDirectory).release()).not.toThrow()
+})
+
+// Issue #646, the second probe of the #645 security review: a stopped daemon
+// released the profile to the next owner while its Claude query still ran.
+it("keeps the profile lease while a Claude process will not exit", async () => {
+  const homeDirectory = await mkdtemp(join(tmpdir(), "domovoi-claude-lease-"))
+  roots.push(homeDirectory)
+  const stuck = fakeClaudeChild({ exitsOnEof: false })
+  const { factory } = spawningClaudeFactory()
+  const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+    spawn: () => stuck.process, kill: vi.fn(), platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+  })
+  const lease = claimProfile(homeDirectory)
+  const handle = await createProductionDaemonWithDependencies({ homeDirectory, environment: { DOMOVOI_PORT: "0" } }, {
+    ...productionDaemonDependencies,
+    createProviderProbe: () => ({ inspect: async () => [] }),
+    createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+    createDaemon: (options) => new DomovoiDaemon({ ...options, port: 0, agents: { "claude-code": adapter } }),
+  }, { lease, deadline: OperationDeadline.start(30_000) })
+  running.push(handle)
+  await handle.start()
+  await adapter.startThread({ cwd: homeDirectory, runtime: {
+    provider: "claude-code", model: "sonnet", reasoning: "high", permissionMode: "build", auto: false,
+  } })
+
+  await expect(handle.stop()).rejects.toThrow()
+  expect(() => claimProfile(homeDirectory)).toThrow(ProfileAlreadyOwnedError)
+
+  // The daemon keeps the lease for good; this test hands it back so the
+  // scratch directory can be removed.
+  stuck.exit("SIGKILL")
+  try { lease.release() } catch { /* Released by the daemon. */ }
 })

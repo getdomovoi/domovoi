@@ -1,14 +1,16 @@
 import { waitForDaemon } from "./test-wait-for.js"
-import { execFileSync } from "node:child_process"
-import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
+import { execFileSync, spawn as nodeSpawn, type ChildProcess } from "node:child_process"
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, sep } from "node:path"
+import { dirname, join, sep } from "node:path"
 
+import type { SpawnedProcess, SpawnOptions } from "@anthropic-ai/claude-agent-sdk"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
 import type { AgentEvent } from "./agents.js"
+import type { ClaudeSpawn } from "./claude-process.js"
 import {
   ClaudeAgentSdkAdapter,
   claudePermissionFor,
@@ -20,6 +22,7 @@ import {
   type ClaudeUserMessage,
 } from "./claude.js"
 import { providerTurnCompletion } from "./provider-failures.js"
+import { claudeSpawnOptions, fakeClaudeChild, fakeClaudePid } from "./test-claude-process.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const scratchDirectories: string[] = []
@@ -1427,6 +1430,292 @@ describe("the install check before a query", () => {
     await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow(problem)
     await expect(adapter.listModels()).rejects.toThrow(problem)
     expect(calls).toHaveLength(0)
+    await adapter.close()
+  })
+})
+
+// Issue #646. Domovoi starts the Claude process itself, through the SDK's
+// spawnClaudeCodeProcess option, so a stop can wait for that process to exit
+// and kill it, with every tool it started, when it will not.
+describe("stopping the Claude process", () => {
+  const claudeCommand = "/opt/claude/bin/claude"
+  const claudeArgs = ["--output-format", "stream-json", "--input-format", "stream-json"]
+  const started: ChildProcess[] = []
+  const tools: number[] = []
+
+  afterEach(() => {
+    // Only processes these tests started.
+    for (const child of started.splice(0)) {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
+    }
+    for (const pid of tools.splice(0)) {
+      try { process.kill(pid, "SIGKILL") } catch { /* Already gone. */ }
+    }
+  })
+
+  const realSpawn: ClaudeSpawn = (command, args, options) => {
+    const child = nodeSpawn(command, args, options)
+    started.push(child)
+    return child
+  }
+
+  // A query double that starts its process the way the SDK does, through the
+  // spawn option the adapter passes, and whose close ends that process's
+  // stdin, as the SDK's close does.
+  function spawningFactory(command = claudeCommand, args = claudeArgs) {
+    const calls: Array<{
+      options: ClaudeQueryOptions
+      spawnOptions: SpawnOptions
+      process: SpawnedProcess | undefined
+      query: FakeQuery
+    }> = []
+    const factory: ClaudeQueryFactory = (_input, options) => {
+      const spawnOptions = claudeSpawnOptions(options, command, args)
+      const process = options.spawnClaudeCodeProcess?.(spawnOptions)
+      const query = new FakeQuery()
+      query.close.mockImplementation(() => {
+        query.closeStream()
+        process?.stdin.end()
+      })
+      calls.push({ options, spawnOptions, process, query })
+      return query
+    }
+    return { calls, factory }
+  }
+
+  async function script(source: string): Promise<string> {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-claude-stop-"))
+    scratchDirectories.push(directory)
+    const path = join(directory, "claude.mjs")
+    await writeFile(path, source)
+    return path
+  }
+
+  it.each([
+    ["darwin", true],
+    ["linux", true],
+    ["win32", false],
+  ] as const)("starts Claude itself with the SDK's own spawn settings on %s", async (platform, detached) => {
+    const fake = fakeClaudeChild()
+    const spawn = vi.fn<ClaudeSpawn>(() => fake.process)
+    const { calls, factory } = spawningFactory()
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, { spawn, kill: vi.fn(), platform })
+
+    await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+
+    // Copied from the SDK's own spawn (spawnLocalProcess in 0.3.263): the
+    // command, arguments, directory, environment and abort signal exactly as
+    // the SDK built them, piped stdio and no console window. Detached is
+    // Domovoi's: on POSIX it gives Claude and its tools one process group.
+    expect(spawn).toHaveBeenCalledOnce()
+    const [command, args, options] = spawn.mock.calls[0]!
+    const given = calls[0]!.spawnOptions
+    expect(command).toBe(claudeCommand)
+    expect(args).toEqual(claudeArgs)
+    expect(options).toEqual({
+      cwd: "/worktree",
+      env: given.env,
+      signal: given.signal,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      detached,
+    })
+    expect(options.env).toBe(given.env)
+    expect(options.signal).toBe(given.signal)
+    expect(calls[0]!.process?.stdin).toBe(fake.child.stdin)
+    expect(calls[0]!.process?.stdout).toBe(fake.child.stdout)
+    await adapter.close()
+  })
+
+  it("pipes Claude's stderr, decoded as UTF-8, to the stderr option", async () => {
+    const fake = fakeClaudeChild()
+    const { calls, factory } = spawningFactory()
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+      spawn: () => fake.process, kill: vi.fn(), platform: "linux",
+    })
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Run tests", runtime: runtime("build") })
+
+    // One character split across two reads, as a pipe can deliver it.
+    const bytes = Buffer.from("café quota reached\n")
+    const split = bytes.indexOf(0xc3) + 1
+    fake.child.stderr.write(bytes.subarray(0, split))
+    fake.child.stderr.write(bytes.subarray(split))
+    await new Promise((resolve) => { setTimeout(resolve, 0) })
+    calls[0]!.query.closeStream()
+
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({
+        turn: expect.objectContaining({ status: "failed", error: expect.stringContaining("café quota reached") }),
+      }),
+    })))
+    await adapter.close()
+  })
+
+  it("resolves a stop without a kill when Claude exits within the grace", async () => {
+    const path = await script("process.stdin.resume()\nprocess.stdin.on('end', () => process.exit(0))\n")
+    const kill = vi.fn()
+    const { factory } = spawningFactory(process.execPath, [path])
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, { spawn: realSpawn, kill })
+    const threadId = await adapter.startThread({ cwd: dirname(path), runtime: runtime("build") })
+
+    await adapter.stopThread(threadId)
+
+    expect(started).toHaveLength(1)
+    expect(started[0]!.exitCode).toBe(0)
+    expect(started[0]!.killed).toBe(false)
+    expect(kill).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("kills Claude when it outlives the grace, and resolves once it has exited", async () => {
+    const path = await script("process.on('SIGTERM', () => {})\nprocess.stdin.resume()\nsetInterval(() => {}, 1_000)\n")
+    const { factory } = spawningFactory(process.execPath, [path])
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+      spawn: realSpawn, shutdownGraceMs: 100,
+    })
+    const threadId = await adapter.startThread({ cwd: dirname(path), runtime: runtime("build") })
+
+    await adapter.stopThread(threadId)
+
+    expect(started).toHaveLength(1)
+    expect(started[0]!.signalCode).toBe("SIGKILL")
+    await adapter.close()
+  })
+
+  it("reaches the tools Claude started with the kill", async () => {
+    const path = await script([
+      "import { spawn } from 'node:child_process'",
+      "import { writeFileSync } from 'node:fs'",
+      "process.on('SIGTERM', () => {})",
+      "process.stdin.resume()",
+      "const tool = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"], { stdio: 'ignore' })",
+      "writeFileSync(process.argv[2], String(tool.pid))",
+      "setInterval(() => {}, 1_000)",
+    ].join("\n"))
+    const pidFile = join(dirname(path), "tool.pid")
+    const { factory } = spawningFactory(process.execPath, [path, pidFile])
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+      spawn: realSpawn, shutdownGraceMs: 100,
+    })
+    const threadId = await adapter.startThread({ cwd: dirname(path), runtime: runtime("build") })
+    const toolPid = await waitForDaemon(async () => {
+      const pid = Number(await readFile(pidFile, "utf8"))
+      expect(pid).toBeGreaterThan(0)
+      return pid
+    })
+    tools.push(toolPid)
+
+    await adapter.stopThread(threadId)
+
+    await waitForDaemon(() => expect(() => process.kill(toolPid, 0)).toThrow())
+    await adapter.close()
+  })
+
+  it("fails a stop when Claude outlives the kill, and keeps its thread closed until it exits", async () => {
+    const stuck = fakeClaudeChild({ exitsOnEof: false })
+    const next = fakeClaudeChild({ pid: fakeClaudePid + 1 })
+    const spawn = vi.fn<ClaudeSpawn>()
+      .mockReturnValueOnce(stuck.process)
+      .mockReturnValueOnce(next.process)
+    const kill = vi.fn()
+    const { calls, factory } = spawningFactory()
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+      spawn, kill, platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+    })
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+
+    await expect(adapter.stopThread(threadId)).rejects.toThrow("did not exit")
+    // The whole process group, so the tools Claude started go with it.
+    expect(kill).toHaveBeenCalledWith(-fakeClaudePid, "SIGKILL")
+
+    // A retry, a reopen and a shutdown all find the same live process.
+    await expect(adapter.stopThread(threadId)).rejects.toThrow("did not exit")
+    await expect(adapter.resumeThread({ threadId, cwd: "/worktree", runtime: runtime("build") }))
+      .rejects.toThrow("did not exit")
+    expect(calls).toHaveLength(1)
+    await expect(adapter.close()).rejects.toThrow("did not exit")
+
+    stuck.exit("SIGKILL")
+    await expect(adapter.stopThread(threadId)).resolves.toBeUndefined()
+    await adapter.resumeThread({ threadId, cwd: "/worktree", runtime: runtime("build") })
+    expect(calls).toHaveLength(2)
+    await expect(adapter.close()).resolves.toBeUndefined()
+  })
+
+  it("makes a retry during a stop wait for the same exit", async () => {
+    const fake = fakeClaudeChild({ exitsOnEof: false })
+    const kill = vi.fn()
+    const { factory } = spawningFactory()
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+      spawn: () => fake.process, kill, platform: "linux",
+    })
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+
+    const settled: string[] = []
+    const first = adapter.stopThread(threadId).then(() => { settled.push("first") })
+    const retry = adapter.stopThread(threadId).then(() => { settled.push("retry") })
+    await new Promise((resolve) => { setTimeout(resolve, 50) })
+    expect(settled).toEqual([])
+
+    fake.exit()
+    await Promise.all([first, retry])
+    expect(settled.sort()).toEqual(["first", "retry"])
+    expect(kill).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("waits two seconds before the kill and five more for the exit", async () => {
+    const fake = fakeClaudeChild({ exitsOnEof: false })
+    const kill = vi.fn()
+    const { factory } = spawningFactory()
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+      spawn: () => fake.process, kill, platform: "linux",
+    })
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+
+    vi.useFakeTimers()
+    try {
+      let outcome: string | undefined
+      void adapter.stopThread(threadId).then(
+        () => { outcome = "resolved" },
+        (error: unknown) => { outcome = error instanceof Error ? error.message : "rejected" },
+      )
+      await vi.advanceTimersByTimeAsync(1_999)
+      expect(kill).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(kill).toHaveBeenCalledWith(-fakeClaudePid, "SIGKILL")
+      await vi.advanceTimersByTimeAsync(4_999)
+      expect(outcome).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(outcome).toContain("did not exit")
+    } finally {
+      vi.useRealTimers()
+    }
+    fake.exit("SIGKILL")
+    await adapter.close()
+  })
+
+  it("kills Claude itself on Windows, which has no process groups", async () => {
+    const fake = fakeClaudeChild({ exitsOnEof: false })
+    fake.child.kill.mockImplementation((signal) => {
+      if (signal === "SIGKILL") setImmediate(() => fake.exit("SIGKILL"))
+      return true
+    })
+    const kill = vi.fn()
+    const { factory } = spawningFactory()
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+      spawn: () => fake.process, kill, platform: "win32", shutdownGraceMs: 20,
+    })
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+
+    await adapter.stopThread(threadId)
+
+    expect(fake.child.kill).toHaveBeenCalledWith("SIGKILL")
+    expect(kill).not.toHaveBeenCalled()
     await adapter.close()
   })
 })
