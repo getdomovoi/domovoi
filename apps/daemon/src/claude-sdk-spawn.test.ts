@@ -88,6 +88,10 @@ describe("the SDK spawn Domovoi copies", () => {
     await writeFile(executable, "#!/bin/sh\nexit 1\n")
     await chmod(executable, 0o755)
     vi.stubEnv("PATH", directory)
+    // The SDK builds the environment from this process's and names itself
+    // as the entry point unless one is set already.
+    vi.stubEnv("CLAUDE_CODE_ENTRYPOINT", undefined)
+    vi.stubEnv("DOMOVOI_CLAUDE_SPAWN_MARKER", "inherited")
     const fake = fakeClaudeChild()
     const spawn = vi.fn<ClaudeSpawn>(() => fake.process)
     const kill = vi.fn()
@@ -104,6 +108,7 @@ describe("the SDK spawn Domovoi copies", () => {
     expect(command).toBe(executable)
     expect(args.slice(0, 5)).toEqual(["--output-format", "stream-json", "--verbose", "--input-format", "stream-json"])
     expect(options.cwd).toBe(directory)
+    expect(options.env.DOMOVOI_CLAUDE_SPAWN_MARKER).toBe("inherited")
     expect(options.env.CLAUDE_CODE_ENTRYPOINT).toBe("sdk-ts")
     expect(options.signal).toBeInstanceOf(AbortSignal)
     expect(options).toMatchObject({ stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: true })

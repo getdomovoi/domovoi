@@ -8,6 +8,8 @@ import {
   type PermissionResult,
   type PermissionUpdate,
   type SDKUserMessage,
+  type SpawnedProcess,
+  type SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk"
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
@@ -23,6 +25,12 @@ import { gitReadCanRunProgram } from "./git-read-config.js"
 import { permissionDecisionFor } from "./permission-policy.js"
 import { DurableOutputRedactor, redactDurableText } from "./secret-redaction.js"
 import { checkClaudeInstall, resolveClaudeSdkExecutable } from "./claude-install.js"
+import {
+  spawnClaudeProcess,
+  stopClaudeProcess,
+  type ClaudeProcess,
+  type ClaudeProcessOptions,
+} from "./claude-process.js"
 import { normalizeProviderUsage } from "./usage.js"
 
 const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const
@@ -96,6 +104,7 @@ export type ClaudeQueryOptions = {
   systemPrompt?: { type: "preset"; preset: "claude_code"; append?: string }
   hooks?: { PreToolUse?: Array<{ hooks: ClaudePreToolUseHook[] }> }
   stderr?: (data: string) => void
+  spawnClaudeCodeProcess?: (options: SpawnOptions) => SpawnedProcess
   canUseTool?: (
     toolName: string,
     input: Record<string, unknown>,
@@ -161,6 +170,10 @@ type Session = {
   // then, so a reopen before it must start a fresh one.
   started?: true
   ended?: true
+  // The Claude processes this session's query started, normally one. A stop
+  // is complete only when every one of them has exited.
+  processes: ClaudeProcess[]
+  stop?: Promise<void>
 }
 
 type PendingApproval = {
@@ -187,7 +200,11 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   readonly #factory: ClaudeQueryFactory
   readonly #id: () => ClaudeMessageId
   readonly #preflight: (() => Promise<void>) | undefined
+  readonly #processOptions: ClaudeProcessOptions
   #sessions = new Map<string, Session>()
+  // Stopped sessions whose Claude process has not exited yet. A retried stop,
+  // a reopen and a shutdown wait on these instead of finding nothing to stop.
+  #stopping = new Set<Session>()
   #listeners = new Set<(event: AgentEvent) => void>()
   #pendingApprovals = new Map<number, PendingApproval>()
   #nextApprovalId = 0
@@ -200,10 +217,12 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     preflight: (() => Promise<void>) | undefined = factory === defaultClaudeQueryFactory
       ? () => checkClaudeInstall(process.env.PATH ?? "", process.platform)
       : undefined,
+    processOptions: ClaudeProcessOptions = {},
   ) {
     this.#factory = factory
     this.#id = id
     this.#preflight = preflight
+    this.#processOptions = processOptions
   }
 
   async connect(): Promise<void> {}
@@ -271,6 +290,9 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     runtime: Runtime
   }): Promise<void> {
     if (this.#sessions.has(threadId)) return
+    // A conversation whose last process still runs is not reopened beside it.
+    await this.#stopped(threadId)
+    if (this.#sessions.has(threadId)) return
     await this.#openSession(threadId, cwd, runtime, true)
   }
 
@@ -287,6 +309,9 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     // below. Only a session that has ended needs reopening.
     if (session.ended) {
       const previous = session
+      // The ended query's process must be gone before a new one resumes the
+      // same conversation in the same worktree.
+      await this.#stopSession(previous)
       this.#sessions.delete(threadId)
       try {
         // Resume only a conversation that exists. Moving the mode before the
@@ -300,8 +325,6 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         if (!this.#sessions.has(threadId)) this.#sessions.set(threadId, previous)
         throw error
       }
-      previous.input.close()
-      previous.query.close()
       session = this.#requireSession(threadId)
     }
     const turnId = this.#id()
@@ -341,12 +364,15 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     await session.query.interrupt()
   }
 
+  // Resolves once Claude has exited, and rejects while it still runs after the
+  // kill: the caller then keeps the thread fenced and the profile lease held.
   async stopThread(threadId: string): Promise<void> {
     const session = this.#sessions.get(threadId)
-    if (!session) return
-    session.input.close()
-    session.query.close()
-    this.#sessions.delete(threadId)
+    if (session) {
+      this.#sessions.delete(threadId)
+      void this.#stopSession(session)
+    }
+    await this.#stopped(threadId)
   }
 
   resolveApproval(requestId: number, decision: ApprovalDecision): void {
@@ -366,15 +392,46 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   }
 
   async close(): Promise<void> {
-    for (const session of this.#sessions.values()) {
-      session.input.close()
-      session.query.close()
-    }
+    for (const session of this.#sessions.values()) void this.#stopSession(session)
     this.#sessions.clear()
     for (const pending of this.#pendingApprovals.values()) {
       pending.resolve({ behavior: "deny", message: "Domovoi closed the Claude session" })
     }
     this.#pendingApprovals.clear()
+    await this.#stopped()
+  }
+
+  // Closes the session's input and query, then waits for its processes as
+  // stopClaudeProcess does. The stop is made once per session: every later
+  // caller waits on the same exit. Once every process has exited, even after
+  // a stop that already failed, the session is stopped.
+  #stopSession(session: Session): Promise<void> {
+    if (session.stop) {
+      return session.processes.every((child) => child.hasExited()) ? Promise.resolve() : session.stop
+    }
+    session.input.close()
+    session.query.close()
+    const running = session.processes.filter((child) => !child.hasExited())
+    const stop = Promise.all(running.map((child) => stopClaudeProcess(child, this.#processOptions)))
+      .then(() => {})
+    // Callers observe the failure; the promise is kept for the next one.
+    stop.catch(() => {})
+    session.stop = stop
+    if (running.length > 0) {
+      this.#stopping.add(session)
+      void Promise.all(running.map((child) => child.exited)).then(() => {
+        this.#stopping.delete(session)
+      })
+    }
+    return stop
+  }
+
+  // Waits for the stops of one thread's sessions, or of every session.
+  async #stopped(threadId?: string): Promise<void> {
+    const stops = [...this.#stopping]
+      .filter((session) => threadId === undefined || session.threadId === threadId)
+      .map((session) => this.#stopSession(session))
+    await Promise.all(stops)
   }
 
   async #openSession(
@@ -388,6 +445,9 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const stderr = new ClaudeStderrTail()
     const permission = claudePermissionFor(runtime)
     const instructions = await projectInstructions(cwd, "claude")
+    // Domovoi starts the process itself so that a stop can wait for it to
+    // exit, and kill it with its tools when it will not.
+    const processes: ClaudeProcess[] = []
     const options: ClaudeQueryOptions = {
       ...baseOptions(),
       ...(instructions
@@ -405,6 +465,11 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         PreToolUse: [{ hooks: [(hookInput) => this.#screenToolUse(threadId, cwd, hookInput)] }],
       },
       stderr: (data) => stderr.push(data),
+      spawnClaudeCodeProcess: (spawnOptions) => {
+        const child = spawnClaudeProcess(spawnOptions, (data) => stderr.push(data), this.#processOptions)
+        processes.push(child)
+        return child.spawned
+      },
     }
     const query = this.#factory(input, options)
     const session: Session = {
@@ -418,6 +483,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       turnMessageIds: new Set(),
       interruptedMessageIds: new Set(),
       stderr,
+      processes,
     }
     this.#sessions.set(threadId, session)
     void this.#consume(session).then(
@@ -430,9 +496,13 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     try {
       await query.initializationResult()
     } catch (error) {
-      input.close()
-      query.close()
-      this.#sessions.delete(threadId)
+      if (this.#sessions.get(threadId) === session) this.#sessions.delete(threadId)
+      try {
+        await this.#stopSession(session)
+      } catch {
+        // The start failure is the one to report. A process that outlived
+        // the stop stays tracked, so a reopen and a shutdown still wait on it.
+      }
       throw claudeFailureError(error, stderr.take())
     }
   }
