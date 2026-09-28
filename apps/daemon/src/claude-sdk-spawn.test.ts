@@ -105,14 +105,15 @@ describe("the SDK spawn Domovoi copies", () => {
     await waitForDaemon(() => expect(spawn).toHaveBeenCalledOnce())
     // On POSIX Domovoi starts the keeper that leads Claude's process group,
     // with Claude's directory and abort signal and an empty environment, and
-    // hands it the command, arguments and environment the SDK built.
+    // hands it the command, arguments and environment the SDK built. The fifth
+    // pipe goes to the sentinel the keeper starts in the group (R3-F2).
     const [command, args, options] = spawn.mock.calls[0]!
     expect(command).toBe(process.execPath)
     expect(args).toEqual(["-e", claudeKeeperSource])
     expect(options.cwd).toBe(directory)
     expect(options.env).toEqual({})
     expect(options.signal).toBeInstanceOf(AbortSignal)
-    expect(options).toMatchObject({ stdio: ["pipe", "pipe", "pipe", "pipe"], windowsHide: true, detached: true })
+    expect(options).toMatchObject({ stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"], windowsHide: true, detached: true })
     const claude = fake.commands[0]?.spawn as { command: string; args: string[]; env: NodeJS.ProcessEnv }
     expect(claude.command).toBe(executable)
     expect(claude.args.slice(0, 5)).toEqual(["--output-format", "stream-json", "--verbose", "--input-format", "stream-json"])

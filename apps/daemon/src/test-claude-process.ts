@@ -32,17 +32,38 @@ class FakeControl extends Duplex {
   }
 }
 
+// The sentinel's pipe, seen from Domovoi: each line Domovoi writes is recorded.
+class FakeSentinel extends Duplex {
+  constructor(readonly received: (line: string) => void) {
+    super()
+  }
+
+  override _read(): void {}
+
+  override _write(chunk: Buffer | string, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    this.received(String(chunk))
+    callback()
+  }
+}
+
 // A stand-in for the Claude CLI process. Like Claude, it exits when its stdin
 // ends, unless it is made to hang, when it ignores that and every signal until
 // the test calls exit; `killable` makes the group kill end it. On POSIX it also
 // stands in for the keeper that leads Claude's process group: it records what
-// Domovoi sends on the control pipe, and at exit reports Claude's exit there.
-// Its exitCode and signalCode are Claude's.
+// Domovoi sends on the control pipe, and at exit reports Claude's exit there,
+// and for the sentinel in that group, whose pipe records what Domovoi sends
+// it. Its exitCode and signalCode are Claude's, until `crash` kills only the
+// keeper: then they are the keeper's, and Claude runs on until exit.
 export function fakeClaudeChild({ exitsOnEof = true, pid = fakeClaudePid, killable = false } = {}) {
   const commands: Array<Record<string, unknown>> = []
+  const sentinelLines: string[] = []
   const control = new FakeControl((command) => {
     commands.push(command)
     if (killable && command.kill === true) setImmediate(() => exit("SIGKILL"))
+  })
+  const sentinel = new FakeSentinel((line) => {
+    sentinelLines.push(line)
+    if (killable && line === "kill\n") setImmediate(() => exit("SIGKILL"))
   })
   const stdin = new PassThrough()
   const stdout = new PassThrough()
@@ -52,25 +73,43 @@ export function fakeClaudeChild({ exitsOnEof = true, pid = fakeClaudePid, killab
     stdin,
     stdout,
     stderr,
-    stdio: [stdin, stdout, stderr, control] as const,
+    stdio: [stdin, stdout, stderr, control, sentinel] as const,
     exitCode: null as number | null,
     signalCode: null as NodeJS.Signals | null,
     killed: false,
     kill: vi.fn((_signal?: NodeJS.Signals | number): boolean => true),
   })
+  let keeperAlive = true
+  let claudeAlive = true
   const exit = (signal: NodeJS.Signals | null = null) => {
-    if (child.exitCode !== null || child.signalCode !== null) return
-    child.exitCode = signal ? null : 0
-    child.signalCode = signal
-    control.push(`${JSON.stringify({ exit: { code: child.exitCode, signal } })}\n`)
-    control.push(null)
-    child.emit("exit", child.exitCode, signal)
+    if (!claudeAlive) return
+    claudeAlive = false
+    if (keeperAlive) {
+      keeperAlive = false
+      child.exitCode = signal ? null : 0
+      child.signalCode = signal
+      control.push(`${JSON.stringify({ exit: { code: child.exitCode, signal } })}\n`)
+      control.push(null)
+      child.emit("exit", child.exitCode, signal)
+    }
     child.stdout.end()
     child.stderr.end()
-    child.emit("close", child.exitCode, signal)
+    sentinel.push(null)
+    child.emit("close", child.exitCode, child.signalCode)
+  }
+  // The keeper is killed on its own, and reports nothing: Claude, its stdio
+  // and the sentinel stay.
+  const crash = () => {
+    if (!keeperAlive) return
+    keeperAlive = false
+    child.signalCode = "SIGKILL"
+    control.push(null)
+    child.emit("exit", null, "SIGKILL")
   }
   if (exitsOnEof) child.stdin.once("finish", () => exit())
-  return { child, process: child as unknown as ChildProcessWithoutNullStreams, exit, commands }
+  return {
+    child, process: child as unknown as ChildProcessWithoutNullStreams, exit, crash, commands, sentinel: sentinelLines,
+  }
 }
 
 export function claudeSpawnOptions(

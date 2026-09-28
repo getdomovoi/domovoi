@@ -1513,7 +1513,8 @@ describe("stopping the Claude process", () => {
     // led by the keeper, which is what Domovoi starts there. The keeper gets
     // Claude's directory and abort signal, an empty environment and a control
     // pipe, and on that pipe the command, arguments and environment as the SDK
-    // built them (review round 2 of #647, R2-F2).
+    // built them (review round 2 of #647, R2-F2). The fifth pipe goes to the
+    // sentinel the keeper starts in the group (review round 3, R3-F2).
     expect(spawn).toHaveBeenCalledOnce()
     const [command, args, options] = spawn.mock.calls[0]!
     const given = calls[0]!.spawnOptions
@@ -1524,7 +1525,7 @@ describe("stopping the Claude process", () => {
         cwd: "/worktree",
         env: {},
         signal: given.signal,
-        stdio: ["pipe", "pipe", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
         windowsHide: true,
         detached,
       })
