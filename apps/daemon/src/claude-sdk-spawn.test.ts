@@ -113,10 +113,12 @@ describe("the SDK spawn Domovoi copies", () => {
     expect(options.signal).toBeInstanceOf(AbortSignal)
     expect(options).toMatchObject({ stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: true })
 
-    // The SDK's close ends stdin, Claude exits on that, and nothing is killed.
+    // The SDK's close ends stdin and Claude exits on that. Q104: the process
+    // group it leaves is killed as it exits, and Claude itself is not.
     await adapter.close()
     expect(fake.child.exitCode).toBe(0)
-    expect(kill).not.toHaveBeenCalled()
+    expect(fake.child.kill).not.toHaveBeenCalled()
+    expect(kill.mock.calls).toEqual([[-fake.child.pid, "SIGKILL"]])
     await starting
   })
 })

@@ -50,11 +50,12 @@ async function fixture() {
   const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
     spawn, kill, platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
   })
+  const checkpoint = vi.fn(async (_path: string, _label: string) => ({ commit: "b".repeat(40), changedFiles: [] }))
   const workspaceService = {
     inspect: async (path: string) => ({ root: path, name: path.split("/").at(-1), branch: "main", head: "a".repeat(40) }),
     createSessionWorkspace: async () => ({ path: scratch, branch: "domovoi/claude", baseCommit: "a".repeat(40) }),
     removeSessionWorkspace: async () => {},
-    checkpoint: async () => ({ commit: "b".repeat(40), changedFiles: [] }),
+    checkpoint,
     restore: async () => ({ restoredCommit: "b".repeat(40), recoveryCommit: "c".repeat(40) }),
   } as unknown as WorkspaceService
   const daemon = new DomovoiDaemon({
@@ -117,7 +118,17 @@ async function fixture() {
     expect(back.error).toBeUndefined()
     return { sessionId, back }
   }
-  return { rpc, sessions, children, kill, hangInProjectOne }
+  // A Claude turn runs; its interrupt fails and its process will not exit.
+  const hangTurn = async () => {
+    await openProject("/code/one")
+    const created = await rpc("session.create", { title: "One", runtime, client: "desktop" })
+    expect(created.error).toBeUndefined()
+    const sessionId = created.result?.activeSessionId as string
+    expect(await rpc("session.send", { sessionId, prompt: "first", client: "desktop" })).not.toHaveProperty("error")
+    sessions()[0]!.interrupt.mockRejectedValue(new Error("Claude did not answer the interrupt"))
+    return sessionId
+  }
+  return { rpc, sessions, children, kill, checkpoint, hangInProjectOne, hangTurn }
 }
 
 describe("a Claude process that will not stop", () => {
@@ -151,5 +162,54 @@ describe("a Claude process that will not stop", () => {
     const recovered = await rpc("session.setRuntime", { sessionId, client: "desktop", runtime })
     expect(recovered.error).toBeUndefined()
     expect(await rpc("session.send", { sessionId, prompt: "again", client: "desktop" })).not.toHaveProperty("error")
+  })
+
+  // Security review round 1 of #647, F1: recovery started its replacement
+  // query, and took its checkpoint, before it tried to stop the failed one.
+  it("starts no replacement query and takes no checkpoint while recovery cannot stop the failed process", async () => {
+    const { rpc, sessions, children, checkpoint, hangInProjectOne } = await fixture()
+    const { sessionId } = await hangInProjectOne()
+    const checkpointsBefore = checkpoint.mock.calls.length
+
+    const refused = await rpc("session.setRuntime", { sessionId, client: "desktop", runtime })
+    expect(refused.error).toBeDefined()
+    expect(sessions()).toHaveLength(1)
+    expect(checkpoint).toHaveBeenCalledTimes(checkpointsBefore)
+    expect((await rpc("session.send", { sessionId, prompt: "again", client: "desktop" })).error?.message)
+      .toBe(fence)
+
+    children[0]!.exit("SIGKILL")
+    expect((await rpc("session.setRuntime", { sessionId, client: "desktop", runtime })).error).toBeUndefined()
+    expect(sessions()).toHaveLength(2)
+    expect(checkpoint).toHaveBeenCalledTimes(checkpointsBefore + 1)
+  })
+
+  // F6: a second emergency stop left out the thread the first could not
+  // stop, and reported no failure while its process still ran.
+  it("reports the failed stop again on each emergency stop until the process exits, and keeps the fence", async () => {
+    const { rpc, sessions, children, hangTurn } = await fixture()
+    const sessionId = await hangTurn()
+    type Stop = { failures: Array<{ target: string; message: string }> }
+
+    const first = (await rpc("system.emergencyStop", { client: "desktop" })).result as unknown as Stop
+    expect(first.failures).toContainEqual(expect.objectContaining({ target: "turn" }))
+
+    const second = (await rpc("system.emergencyStop", { client: "desktop" })).result as unknown as Stop
+    expect(second.failures).toContainEqual({
+      target: "provider",
+      targetId: expect.any(String),
+      message: expect.stringContaining("did not exit"),
+    })
+    expect(children[0]!.child.exitCode).toBeNull()
+    expect(children[0]!.child.signalCode).toBeNull()
+    expect((await rpc("session.send", { sessionId, prompt: "again", client: "desktop" })).error?.message)
+      .toBe(fence)
+
+    children[0]!.exit("SIGKILL")
+    const third = (await rpc("system.emergencyStop", { client: "desktop" })).result as unknown as Stop
+    expect(third.failures).toEqual([])
+    expect((await rpc("session.send", { sessionId, prompt: "again", client: "desktop" })).error?.message)
+      .toBe(fence)
+    expect(sessions()).toHaveLength(1)
   })
 })

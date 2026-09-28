@@ -1555,7 +1555,7 @@ describe("stopping the Claude process", () => {
     await adapter.close()
   })
 
-  it("resolves a stop without a kill when Claude exits within the grace", async () => {
+  it("resolves a stop without killing Claude when it exits within the grace", async () => {
     const path = await script("process.stdin.resume()\nprocess.stdin.on('end', () => process.exit(0))\n")
     const kill = vi.fn()
     const { factory } = spawningFactory(process.execPath, [path])
@@ -1567,7 +1567,9 @@ describe("stopping the Claude process", () => {
     expect(started).toHaveLength(1)
     expect(started[0]!.exitCode).toBe(0)
     expect(started[0]!.killed).toBe(false)
-    expect(kill).not.toHaveBeenCalled()
+    // Q104: the group Claude leaves behind is killed as it exits, on POSIX.
+    if (process.platform === "win32") expect(kill).not.toHaveBeenCalled()
+    else expect(kill.mock.calls).toEqual([[-started[0]!.pid!, "SIGKILL"]])
     await adapter.close()
   })
 
@@ -1660,11 +1662,13 @@ describe("stopping the Claude process", () => {
     const retry = adapter.stopThread(threadId).then(() => { settled.push("retry") })
     await new Promise((resolve) => { setTimeout(resolve, 50) })
     expect(settled).toEqual([])
+    expect(kill).not.toHaveBeenCalled()
 
     fake.exit()
     await Promise.all([first, retry])
     expect(settled.sort()).toEqual(["first", "retry"])
-    expect(kill).not.toHaveBeenCalled()
+    // Q104: one group kill, as Claude exits, and none before.
+    expect(kill.mock.calls).toEqual([[-fakeClaudePid, "SIGKILL"]])
     await adapter.close()
   })
 
@@ -1706,16 +1710,147 @@ describe("stopping the Claude process", () => {
       return true
     })
     const kill = vi.fn()
+    // Q103: the tree kill comes first; this one reaches nothing, so the
+    // kill of Claude itself still ends it.
+    const killTree = vi.fn(async (_pid: number) => {})
     const { factory } = spawningFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: () => fake.process, kill, platform: "win32", shutdownGraceMs: 20,
+      spawn: () => fake.process, kill, killTree, platform: "win32", shutdownGraceMs: 20,
     })
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
 
     await adapter.stopThread(threadId)
 
+    expect(killTree).toHaveBeenCalledWith(fakeClaudePid)
     expect(fake.child.kill).toHaveBeenCalledWith("SIGKILL")
     expect(kill).not.toHaveBeenCalled()
     await adapter.close()
+  })
+
+  // Security review round 1 of #647, F2: a reopen whose query failed, and
+  // whose process then outlived the kill, put back the ended query before it.
+  // The next send reopened the conversation beside the live process.
+  it("opens no query beside a failed reopen whose process still runs", async () => {
+    const first = fakeClaudeChild()
+    const stuck = fakeClaudeChild({ exitsOnEof: false, pid: fakeClaudePid + 1 })
+    const third = fakeClaudeChild({ pid: fakeClaudePid + 2 })
+    const spawn = vi.fn<ClaudeSpawn>()
+      .mockReturnValueOnce(first.process)
+      .mockReturnValueOnce(stuck.process)
+      .mockReturnValueOnce(third.process)
+    const { calls, factory: spawning } = spawningFactory()
+    let failNextStart = false
+    const factory: ClaudeQueryFactory = (input, options) => {
+      const query = spawning(input, options) as FakeQuery
+      if (failNextStart) query.initializationResult.mockRejectedValueOnce(new Error("Claude could not resume"))
+      return query
+    }
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+      spawn, kill: vi.fn(), platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+    })
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "one", runtime: runtime("build") })
+    // The first query ends on its own.
+    calls[0]!.query.closeStream()
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed" })))
+
+    failNextStart = true
+    await expect(adapter.startTurn({ threadId, cwd: "/worktree", prompt: "two", runtime: runtime("build") }))
+      .rejects.toThrow("Claude could not resume")
+    failNextStart = false
+    expect(calls).toHaveLength(2)
+    expect(first.child.exitCode).toBe(0)
+
+    await expect(adapter.startTurn({ threadId, cwd: "/worktree", prompt: "three", runtime: runtime("build") }))
+      .rejects.toThrow("did not exit")
+    await expect(adapter.resumeThread({ threadId, cwd: "/worktree", runtime: runtime("build") }))
+      .rejects.toThrow("did not exit")
+    expect(calls).toHaveLength(2)
+    expect(stuck.child.exitCode).toBeNull()
+    expect(stuck.child.signalCode).toBeNull()
+
+    stuck.exit("SIGKILL")
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "four", runtime: runtime("build") })
+    expect(calls).toHaveLength(3)
+    await adapter.close()
+  })
+
+  // F3: a start still waiting on its install check or instruction read when
+  // the adapter closed started Claude after close had resolved.
+  it("starts nothing for a start that was waiting when close began, and close waits for it", async () => {
+    let release: (() => void) | undefined
+    const preflight = vi.fn(() => new Promise<void>((resolve) => { release = resolve }))
+    const spawn = vi.fn<ClaudeSpawn>(() => fakeClaudeChild().process)
+    const { factory } = spawningFactory()
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, preflight, {
+      spawn, kill: vi.fn(), platform: "linux",
+    })
+    const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("build") }).then(
+      () => "started",
+      (error: unknown) => error instanceof Error ? error.message : "failed",
+    )
+    await waitForDaemon(() => expect(preflight).toHaveBeenCalledOnce())
+
+    let closed = false
+    const closing = adapter.close().then(() => { closed = true })
+    await new Promise((resolve) => { setTimeout(resolve, 20) })
+    expect(closed).toBe(false)
+
+    release!()
+    await closing
+    expect(await starting).toBe("Claude adapter is closed")
+    expect(spawn).not.toHaveBeenCalled()
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") }))
+      .rejects.toThrow("Claude adapter is closed")
+    expect(spawn).not.toHaveBeenCalled()
+  })
+
+  // F5: listing models starts a Claude process too. It went through the SDK's
+  // own spawn, so no stop or close waited for it.
+  it("starts the model list's Claude itself, and makes close wait for it to exit", async () => {
+    const stuck = fakeClaudeChild({ exitsOnEof: false })
+    const spawn = vi.fn<ClaudeSpawn>(() => stuck.process)
+    const { factory } = spawningFactory()
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+      spawn, kill: vi.fn(), platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+    })
+
+    await expect(adapter.listModels()).resolves.toEqual([expect.objectContaining({ id: "sonnet" })])
+
+    expect(spawn).toHaveBeenCalledOnce()
+    await expect(adapter.close()).rejects.toThrow("did not exit")
+    stuck.exit("SIGKILL")
+    await expect(adapter.close()).resolves.toBeUndefined()
+  })
+
+  it.each([
+    ["fails", undefined],
+    ["is aborted", new AbortController()],
+  ] as const)("waits on close for the model list's Claude when its start %s", async (_case, controller) => {
+    const stuck = fakeClaudeChild({ exitsOnEof: false })
+    const spawn = vi.fn<ClaudeSpawn>(() => stuck.process)
+    const { factory: spawning } = spawningFactory()
+    let rejectStart: ((error: Error) => void) | undefined
+    const factory: ClaudeQueryFactory = (input, options) => {
+      const query = spawning(input, options) as FakeQuery
+      query.initializationResult.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectStart = reject }))
+      return query
+    }
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+      spawn, kill: vi.fn(), platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+    })
+
+    const listing = adapter.listModels(controller?.signal)
+    await waitForDaemon(() => expect(rejectStart).toBeDefined())
+    controller?.abort()
+    rejectStart!(new Error("Claude could not start"))
+    await expect(listing).rejects.toThrow()
+
+    expect(spawn).toHaveBeenCalledOnce()
+    await expect(adapter.close()).rejects.toThrow("did not exit")
+    stuck.exit("SIGKILL")
+    await expect(adapter.close()).resolves.toBeUndefined()
   })
 })
