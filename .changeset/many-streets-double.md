@@ -28,26 +28,21 @@ Claude.
 
 On Windows a stop first runs `taskkill /PID <pid> /T /F` on Claude's process tree, while Claude
 still runs, because once Claude has exited taskkill can no longer find the processes it started.
-Claude gets no time to finish writing its transcript. Once taskkill has finished, Domovoi kills
+Domovoi runs the system copy, `System32\taskkill.exe` under the `SystemRoot` directory, from that
+directory, and never looks the name up in the current directory or on PATH. If `SystemRoot` is not
+an absolute path on a drive, it uses `C:\Windows`. Claude gets no time to finish writing its
+transcript. Once taskkill has finished, Domovoi kills
 Claude through its own process handle if it still runs, closes the input and the query, and waits
 up to 5 seconds from the start of the stop for Claude to exit. If taskkill cannot start or reports a
 failure, the stop fails, and every later stop of that process fails too: once Claude has exited,
 nothing can say whether the processes it started have ended.
 
-A Claude process that exits on its own, before any stop, gets no taskkill, because its pid can name
-another process by then. Its exit alone no longer counts as the end of what it started. As it exits,
-Domovoi runs PowerShell with fixed arguments, no shell and no window, and lists with
-`Get-CimInstance Win32_Process` the processes whose parent pid was Claude's, with their creation
-times. It keeps those created after Domovoi started Claude and before it saw Claude exit, which
-leaves out processes started by an earlier or later process with the same pid. It runs
-`taskkill /PID <pid> /T /F` on each of them, never on Claude's own pid, then lists them again. Only a
-list that shows none of them left confirms that they have ended. If PowerShell cannot start, fails,
-takes more than 15 seconds, or prints anything but that list, or a process is still listed after its
-taskkill, what Claude started stays unconfirmed: the stop fails, and every later stop and daemon stop
-fails too, as after a failed taskkill. A stop waits for the list within its 5 seconds, and a list
-that confirms later still ends a daemon's wait for that process. This list reaches Claude's direct
-children and their trees.
-It does not reach a process whose parent, started by Claude, had already exited.
+A Windows Claude process that exits on its own, before any stop, gets no taskkill, because its pid
+can name another process by then. Its exit alone no longer counts as the end of what it started, and
+Domovoi does not look for what it left: a process found by a list is named only by its pid, which
+can name another process by the time it is killed. What that Claude started stays unconfirmed. The
+stop fails, and every later stop and daemon stop fails too, as after a failed taskkill. This
+includes a Claude that the Claude Agent SDK ends itself, outside a stop.
 
 If the process still runs after the kill, or a process it started is not known to have ended, for
 example because it refused the kill, the stop fails. Closing a project then leaves the session
