@@ -14,11 +14,6 @@ export const claudeShutdownGraceMs = 2_000
 export const claudeKillGraceMs = 5_000
 // How often a process group whose leader has gone is checked for members.
 const groupProbeIntervalMs = 50
-// How long the list of what a Windows Claude left may take. PowerShell can
-// take seconds to start on a busy machine.
-export const windowsChildListTimeoutMs = 15_000
-// No list of child processes comes near this; more output is not a list.
-const windowsChildListMaxBytes = 1024 * 1024
 
 export type ClaudeSpawnOptions = {
   cwd?: string
@@ -30,15 +25,6 @@ export type ClaudeSpawnOptions = {
   windowsHide: true
   detached: boolean
 }
-
-// A process found on Windows by its parent's pid, with its creation time in
-// milliseconds since the epoch.
-export type WindowsChildProcess = { readonly pid: number; readonly created: number }
-
-// Lists the processes whose parent process id is `parentPid` and which were
-// created after `createdAfter`, in milliseconds since the epoch. Rejects when
-// the list cannot be read. A test passes a stub.
-export type ListWindowsChildren = (parentPid: number, createdAfter: number) => Promise<WindowsChildProcess[]>
 
 export type ClaudeSpawn = (
   command: string,
@@ -57,8 +43,6 @@ export type ClaudeProcessOptions = {
   // Kills a Windows process tree, and rejects when taskkill cannot start or
   // reports a failure. A test passes a spy.
   killTree?: (pid: number) => Promise<void>
-  // Lists what a Windows Claude that exited on its own left running.
-  listChildren?: ListWindowsChildren
   platform?: NodeJS.Platform
   shutdownGraceMs?: number
   killGraceMs?: number
@@ -68,8 +52,9 @@ export type ClaudeProcess = {
   // What the SDK drives: Claude's stdio, its state and its exit.
   readonly spawned: SpawnedProcess
   // Settles once Claude and every process it started are known to be gone:
-  // on POSIX its whole process group, on Windows the tree taskkill ended, or
-  // what Claude left once it had exited on its own.
+  // on POSIX its whole process group, on Windows the tree a stop's taskkill
+  // ended. A Windows Claude that exited on its own before any stop never
+  // settles it: nothing then says what became of what it started.
   readonly exited: Promise<void>
   hasExited(): boolean
   // Whether Claude itself is known to have exited, whatever became of what
@@ -146,152 +131,6 @@ export function windowsTreeKill(
       else failed(signal === null ? `exited with status ${String(code)}` : `ended by ${signal}`)
     })
   })
-}
-
-type PowerShellSpawn = (
-  command: "powershell.exe",
-  args: string[],
-  options: { windowsHide: true; shell: false; stdio: ["ignore", "pipe", "ignore"] },
-) => ChildProcess
-
-// A Windows process id: a positive integer that fits a DWORD.
-function isProcessId(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= 0xFFFF_FFFF
-}
-
-// What the PowerShell command below writes, read as untrusted: an object whose
-// `children` is a list of processes, each a pid and a creation time. Anything
-// else throws.
-function windowsChildren(output: string): WindowsChildProcess[] {
-  // A byte order mark, should PowerShell write one, is not part of the list.
-  const byteOrderMark = 0xFEFF
-  const value: unknown = JSON.parse(output.charCodeAt(0) === byteOrderMark ? output.slice(1) : output)
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("not a list of processes")
-  const { children } = value as Record<string, unknown>
-  if (!Array.isArray(children)) throw new Error("not a list of processes")
-  return children.map((entry: unknown) => {
-    if (typeof entry !== "object" || entry === null) throw new Error("not a process")
-    const { ProcessId: pid, CreationDate: created } = entry as Record<string, unknown>
-    if (!isProcessId(pid) || typeof created !== "number" || !Number.isFinite(created)) throw new Error("not a process")
-    return { pid, created }
-  })
-}
-
-// Lists the children of one Windows process with their creation times (Q109,
-// review round 3 of #647, R3-F1). PowerShell runs with fixed arguments, no
-// shell, no profile and no console window. The one value in its command is
-// the pid, checked to be a process id first, so nothing else reaches the
-// command text. A process with no creation time fails the command, and so
-// the list. It rejects when PowerShell cannot start, fails, takes longer than
-// its limit, or writes anything but the list: then nothing says what Claude
-// left.
-export function listWindowsChildren(
-  parentPid: number,
-  createdAfter: number,
-  { run = spawn, timeoutMs = windowsChildListTimeoutMs }: { run?: PowerShellSpawn; timeoutMs?: number } = {},
-): Promise<WindowsChildProcess[]> {
-  return new Promise((resolve, reject) => {
-    if (!isProcessId(parentPid)) {
-      reject(new Error(`Domovoi could not list the processes Claude started: ${String(parentPid)} is not a process id`))
-      return
-    }
-    const script = [
-      "$ErrorActionPreference = 'Stop'",
-      `$children = @(Get-CimInstance -ClassName Win32_Process -Filter 'ParentProcessId = ${String(parentPid)}' | `
-        + "ForEach-Object { [pscustomobject]@{ ProcessId = [long]$_.ProcessId; "
-        + "CreationDate = ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } })",
-      "ConvertTo-Json -Compress -Depth 4 -InputObject @{ children = $children }",
-    ].join("; ")
-    let lister: ChildProcess | undefined
-    let exited = false
-    let settled = false
-    const settle = (outcome: () => void) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      outcome()
-    }
-    const fail = (reason: string) => settle(() => {
-      if (lister && !exited) {
-        try { lister.kill() } catch { /* Gone already. */ }
-      }
-      reject(new Error(`Domovoi could not list the processes Claude started: PowerShell ${reason}`))
-    })
-    const timer = setTimeout(() => fail(`timed out after ${timeoutMs} ms`), timeoutMs)
-    timer.unref()
-    try {
-      lister = run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
-        windowsHide: true, shell: false, stdio: ["ignore", "pipe", "ignore"],
-      })
-    } catch {
-      fail("could not start")
-      return
-    }
-    const output: Buffer[] = []
-    let size = 0
-    lister.once("error", () => fail("could not start"))
-    lister.once("exit", () => { exited = true })
-    if (!lister.stdout) {
-      fail("gave no output")
-      return
-    }
-    lister.stdout.on("error", () => fail("output could not be read"))
-    lister.stdout.on("data", (chunk: Buffer | string) => {
-      const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk
-      size += bytes.length
-      if (size > windowsChildListMaxBytes) fail("wrote more than a list of processes")
-      else output.push(bytes)
-    })
-    lister.once("close", (code: number | null, signal: NodeJS.Signals | null) => {
-      if (code !== 0) {
-        fail(signal === null ? `exited with status ${String(code)}` : `was ended by ${signal}`)
-        return
-      }
-      let children: WindowsChildProcess[]
-      try {
-        children = windowsChildren(Buffer.concat(output).toString("utf8"))
-      } catch {
-        fail("wrote something other than a list of processes")
-        return
-      }
-      settle(() => resolve(children.filter(({ created }) => created > createdAfter)))
-    })
-  })
-}
-
-// Ends what a Windows Claude that exited on its own left running (Q109): the
-// processes whose parent pid was Claude's and which were created while Claude
-// ran. Each is ended with its tree by taskkill, then the list is read again,
-// and only a list with none of them left settles this. Anything else rejects:
-// a list that could not be read, or one of them still listed.
-//
-// A child keeps its parent's pid after the parent has gone, and Windows hands
-// out pids again, so the creation times say which children were Claude's.
-// `startedAt` was taken before Claude was created, and Claude runs for far
-// longer than the clock's step before it starts a tool, so everything Claude
-// started was created after it; a child of an earlier process with Claude's
-// pid was created before Claude was, and is left alone. `exitedAt` was taken
-// as Node reported the exit, while Node still held Claude's handle and so its
-// pid, so a child of a later process with Claude's pid was created after it,
-// and is left alone too. Claude's own pid is never ended, since it may name
-// another process by now. What this cannot reach: a grandchild whose parent,
-// a child of Claude, had exited before the list, a process whose pid is
-// handed to another between the list and its taskkill, and times read across
-// a change to the machine's clock.
-async function endWhatClaudeLeft(
-  claudePid: number,
-  startedAt: number,
-  exitedAt: number,
-  list: ListWindowsChildren,
-  killTree: (pid: number) => Promise<void>,
-): Promise<void> {
-  const left = async () => (await list(claudePid, startedAt))
-    .filter(({ pid, created }) => pid !== claudePid && created > startedAt && created <= exitedAt)
-  const found = await left()
-  if (found.length === 0) return
-  // A failed taskkill is settled by the list that follows.
-  for (const { pid } of found) await killTree(pid).catch(() => {})
-  if ((await left()).length > 0) throw new Error("A process Claude started is still running")
 }
 
 // The keeper: a small Node program that leads Claude's process group on
@@ -433,16 +272,12 @@ export function spawnClaudeProcess(
     spawn: start = spawn,
     probe = (pid) => { process.kill(pid, 0) },
     killTree = windowsTreeKill,
-    listChildren = listWindowsChildren,
     platform = process.platform,
-  }: Pick<ClaudeProcessOptions, "spawn" | "probe" | "killTree" | "listChildren" | "platform"> = {},
+  }: Pick<ClaudeProcessOptions, "spawn" | "probe" | "killTree" | "platform"> = {},
   session?: string,
 ): ClaudeProcess {
   const windows = platform === "win32"
   const directory = options.cwd !== undefined ? { cwd: options.cwd } : {}
-  // Taken before Claude is created: every process Claude starts is created
-  // after it (see endWhatClaudeLeft).
-  const startedAt = Date.now()
   const child = windows
     ? start(options.command, options.args, {
       ...directory,
@@ -506,42 +341,25 @@ export function spawnClaudeProcess(
     //
     // A Claude that exits on its own, before any stop killed its tree, may
     // leave processes running all the same, and its exit says nothing of
-    // them (R3-F1). They are listed by parent pid and creation time, ended,
-    // and listed again (Q109, see endWhatClaudeLeft), and until the list
-    // shows none left Claude is not reported gone. A list that fails leaves
-    // it unconfirmed for good, as a failed taskkill does.
-    let tree: "untouched" | "killing" | "killed" | "listing" | "unconfirmed" = "untouched"
-    let exitedAt = startedAt
-    let listing: Promise<void> | undefined
+    // them (R3-F1). Domovoi does not look for them (Q111): a process found
+    // by a list is named only by its pid, which may name another process by
+    // the time it is killed, and its parent pid and creation time do not
+    // prove that Claude started it (security review round 4 of #647, R4-F2
+    // and R4-F3). So its tree stays unconfirmed for good, as after a failed
+    // taskkill: every stop of it fails, and it stays listed, which keeps a
+    // daemon stop's profile lease. #655 tracks a design that can confirm it.
+    let tree: "untouched" | "killing" | "killed" | "unconfirmed" = "untouched"
     const settle = () => {
       if (!claudeExited) return
-      if (tree === "killed" || pid === undefined) {
-        finish()
-      } else if (tree === "untouched") {
-        tree = "listing"
-        listing = endWhatClaudeLeft(pid, startedAt, exitedAt, listChildren, killTree).then(
-          () => {
-            tree = "killed"
-            finish()
-          },
-          () => { tree = "unconfirmed" },
-        )
-      }
+      if (tree === "killed" || pid === undefined) finish()
+      else if (tree === "untouched") tree = "unconfirmed"
     }
     child.once("exit", () => {
-      // Node has asked for its handle to Claude to be closed as it reports
-      // the exit, but libuv closes it later in its loop, so a later process
-      // with Claude's pid is created after this moment.
-      exitedAt = Date.now()
       claudeExited = true
       settle()
     })
     spawned = new ClaudeSpawnedProcess(child)
     kill = async () => {
-      if (listing) {
-        await listing
-        return
-      }
       if (gone || claudeExited || tree !== "untouched" || pid === undefined) return
       tree = "killing"
       try {
@@ -656,14 +474,14 @@ function send(control: Duplex, message: Record<string, unknown>): void {
 // has exited on its own, taskkill /T can no longer find the processes it
 // started (Q106). Claude gets no grace to flush its transcript. The input
 // closes once taskkill has finished, or the kill grace has run out. A Claude
-// that had already exited is not killed again: the stop waits for the list
-// of what it left (Q109, see endWhatClaudeLeft).
+// that had already exited is not killed, and nothing it started is looked
+// for (Q111, see spawnClaudeProcess).
 //
 // Either way the stop fails when, after the kill grace, Claude still runs or
 // the processes it started are not known to be gone: a kill refused or not
-// yet seen to take effect, a taskkill that failed (R2-F1), or a list of what
-// a Windows Claude left that failed or still shows one of them (R3-F1). The
-// grace also bounds the wait for taskkill and for that list.
+// yet seen to take effect, a taskkill that failed (R2-F1), or a Windows
+// Claude that exited on its own before the stop (R3-F1, Q111). The grace
+// also bounds the wait for taskkill.
 export async function stopClaudeProcess(
   child: ClaudeProcess,
   close: () => void,

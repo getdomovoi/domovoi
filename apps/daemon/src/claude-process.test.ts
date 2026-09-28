@@ -10,13 +10,12 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { ClaudeAgentSdkAdapter, type ClaudeQueryFactory } from "./claude.js"
 import {
-  listWindowsChildren,
   runningClaudeProcesses,
   spawnClaudeProcess,
   stopClaudeProcess,
   windowsTreeKill,
+  type ClaudeProcess,
   type ClaudeSpawn,
-  type ListWindowsChildren,
 } from "./claude-process.js"
 import { FakeClaudeQuery, fakeClaudeChild, fakeClaudePid, spawningClaudeFactory } from "./test-claude-process.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -223,228 +222,6 @@ describe("the Windows process tree kill", () => {
     await adapter.close()
   })
 
-  // Review round 3 of #647, R3-F1 and Q109: Claude's exit alone used to
-  // confirm that everything it started had gone. What it left is now listed
-  // by parent pid and creation time, and this listing found nothing.
-  it("sends no taskkill for a Claude that exited before the stop began, when its pid may name another process", async () => {
-    const fake = fakeClaudeChild()
-    const killTree = vi.fn(async (_pid: number) => {})
-    const listChildren = vi.fn<ListWindowsChildren>(async () => [])
-    const { factory } = spawningClaudeFactory()
-    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: () => fake.process, killTree, listChildren, platform: "win32",
-    })
-    const before = Date.now()
-    const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
-    fake.exit()
-
-    await adapter.stopThread(threadId)
-
-    expect(fake.child.exitCode).toBe(0)
-    expect(killTree).not.toHaveBeenCalled()
-    expect(fake.child.kill).not.toHaveBeenCalled()
-    expect(fake.commands).toEqual([])
-    expect(listChildren.mock.calls).toEqual([[fakeClaudePid, expect.any(Number)]])
-    const startedAt = listChildren.mock.calls[0]![1]
-    expect(startedAt).toBeGreaterThanOrEqual(before)
-    expect(startedAt).toBeLessThanOrEqual(Date.now())
-    await adapter.close()
-  })
-
-  // R3-F1 with real processes, on every platform through the Windows branch:
-  // the tool is a real Node process that outlives the real Node Claude, and
-  // the taskkill and the listing stand in for Windows's.
-  it("kills a tool that outlived a Claude which exited before the stop, and confirms it gone before the stop settles", async () => {
-    const path = await script([
-      "import { spawn } from 'node:child_process'",
-      "import { writeFileSync } from 'node:fs'",
-      "const tool = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"], { stdio: 'ignore' })",
-      "writeFileSync(process.argv[2], JSON.stringify({ pid: tool.pid, created: Date.now() }))",
-      "process.exit(0)",
-    ].join("\n"))
-    const toolFile = join(dirname(path), "tool.json")
-    const readTool = async () => {
-      const tool = JSON.parse(await readFile(toolFile, "utf8")) as { pid: number; created: number }
-      if (!tools.includes(tool.pid)) tools.push(tool.pid)
-      return tool
-    }
-    const alive = (pid: number) => {
-      try {
-        process.kill(pid, 0)
-        return true
-      } catch {
-        return false
-      }
-    }
-    let relisted: (() => void) | undefined
-    const listChildren = vi.fn<ListWindowsChildren>(async () => {
-      const tool = await readTool()
-      if (listChildren.mock.calls.length === 2) await new Promise<void>((resolve) => { relisted = resolve })
-      return alive(tool.pid) ? [tool] : []
-    })
-    // taskkill /F returns once the process has ended.
-    const killTree = vi.fn(async (pid: number) => {
-      process.kill(pid, "SIGKILL")
-      await waitForDaemon(() => expect(alive(pid)).toBe(false))
-    })
-    const { factory } = spawningClaudeFactory(process.execPath, [path, toolFile])
-    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: realSpawn, killTree, listChildren, platform: "win32",
-    })
-    const before = Date.now()
-    const threadId = await adapter.startThread({ cwd: dirname(path), runtime })
-    const claude = started.at(-1)!
-    const claudePid = claude.pid!
-
-    // Claude exits on its own, before any stop, and its tool runs on.
-    await waitForDaemon(() => expect(claude.exitCode).toBe(0))
-    await waitForDaemon(() => expect(listChildren).toHaveBeenCalledTimes(2))
-    const tool = await readTool()
-    const startedAt = listChildren.mock.calls[0]![1]
-    expect(listChildren.mock.calls).toEqual([[claudePid, startedAt], [claudePid, startedAt]])
-    expect(startedAt).toBeGreaterThanOrEqual(before)
-    expect(startedAt).toBeLessThan(tool.created)
-    expect(killTree.mock.calls).toEqual([[tool.pid]])
-    expect(alive(tool.pid)).toBe(false)
-
-    // Until the second listing shows nothing left, Claude stays listed and
-    // the stop waits.
-    expect(runningClaudeProcesses()).toContainEqual(expect.objectContaining({ pid: claudePid, session: threadId }))
-    let stopped = false
-    const stopping = adapter.stopThread(threadId).then(() => { stopped = true })
-    await new Promise((resolve) => { setTimeout(resolve, 50) })
-    expect(stopped).toBe(false)
-
-    relisted!()
-    await stopping
-    expect(runningClaudeProcesses()).not.toContainEqual(expect.objectContaining({ pid: claudePid }))
-    // Never Claude's own pid, which may name another process by now.
-    expect(killTree.mock.calls).toEqual([[tool.pid]])
-    await adapter.close()
-  })
-
-  it("kills nothing listed that Claude cannot have started, and nothing under Claude's own pid", async () => {
-    const fake = fakeClaudeChild()
-    const killTree = vi.fn(async (_pid: number) => {})
-    const listChildren = vi.fn<ListWindowsChildren>(async (_parent, after) => [
-      // Started with Claude, or before: a child of an earlier process that
-      // had Claude's pid.
-      { pid: 5_000_001, created: after },
-      { pid: 5_000_002, created: after - 1_000 },
-      // Started after Claude had exited: a child of a later one.
-      { pid: 5_000_003, created: Date.now() + 60_000 },
-      { pid: fakeClaudePid, created: after + 1 },
-    ])
-    const { factory } = spawningClaudeFactory()
-    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: () => fake.process, killTree, listChildren, platform: "win32",
-    })
-    const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
-    await new Promise((resolve) => { setTimeout(resolve, 5) })
-    fake.exit()
-
-    await adapter.stopThread(threadId)
-
-    expect(killTree).not.toHaveBeenCalled()
-    expect(listChildren).toHaveBeenCalledOnce()
-    expect(runningClaudeProcesses()).not.toContainEqual(expect.objectContaining({ pid: fakeClaudePid }))
-    await adapter.close()
-  })
-})
-
-// Q109: the list of what a Windows Claude left, by parent pid and creation
-// time. PowerShell is never run here: the tests pass its double.
-describe("the Windows child process list", () => {
-  function lister() {
-    const stdout = new PassThrough()
-    const child = Object.assign(new EventEmitter(), { stdout, kill: vi.fn((_signal?: NodeJS.Signals | number) => true) })
-    const run = vi.fn((_command: "powershell.exe", _args: string[], _options: object) => child as unknown as ChildProcess)
-    const finish = (output: string, code: number | null = 0, signal: NodeJS.Signals | null = null) => {
-      stdout.end(output)
-      child.emit("exit", code, signal)
-      setImmediate(() => child.emit("close", code, signal))
-    }
-    return { child, run, finish }
-  }
-
-  it("lists the children of one pid with a fixed PowerShell command, no shell and no window, created after a time", async () => {
-    const { run, finish } = lister()
-    const listing = listWindowsChildren(4_242, 1_000, { run })
-
-    expect(run).toHaveBeenCalledOnce()
-    const [command, args, options] = run.mock.calls[0]!
-    expect(command).toBe("powershell.exe")
-    expect(args.slice(0, 4)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
-    expect(args).toHaveLength(5)
-    expect(args[4]).toContain("Get-CimInstance -ClassName Win32_Process -Filter 'ParentProcessId = 4242'")
-    expect(args[4]).toContain("ConvertTo-Json")
-    expect(options).toEqual({ windowsHide: true, shell: false, stdio: ["ignore", "pipe", "ignore"] })
-
-    finish(JSON.stringify({ children: [
-      { ProcessId: 5_001, CreationDate: 1_001 },
-      { ProcessId: 5_002, CreationDate: 1_000 },
-      { ProcessId: 5_003, CreationDate: 999 },
-    ] }))
-    await expect(listing).resolves.toEqual([{ pid: 5_001, created: 1_001 }])
-  })
-
-  it("lists nothing when the pid has no children", async () => {
-    const { run, finish } = lister()
-    const listing = listWindowsChildren(4_242, 1_000, { run })
-    finish("{\"children\":[]}\r\n")
-    await expect(listing).resolves.toEqual([])
-  })
-
-  it.each([0, -1, 1.5, Number.NaN, 2 ** 32])("refuses %s as a pid without starting PowerShell", async (pid) => {
-    const { run } = lister()
-    await expect(listWindowsChildren(pid, 1_000, { run })).rejects.toThrow()
-    expect(run).not.toHaveBeenCalled()
-  })
-
-  it.each([
-    ["is not JSON", "Get-CimInstance : Access denied"],
-    ["is empty", ""],
-    ["is a bare list", "[]"],
-    ["has no list", "{}"],
-    ["names a pid as text", JSON.stringify({ children: [{ ProcessId: "5001", CreationDate: 1_001 }] })],
-    ["names no process", JSON.stringify({ children: [{ ProcessId: 0, CreationDate: 1_001 }] })],
-    ["has no creation time", JSON.stringify({ children: [{ ProcessId: 5_001, CreationDate: null }] })],
-    ["has an entry that is not a process", JSON.stringify({ children: [5_001] })],
-  ])("fails when the output %s", async (_case, output) => {
-    const { run, finish } = lister()
-    const listing = listWindowsChildren(4_242, 1_000, { run })
-    finish(output)
-    await expect(listing).rejects.toThrow()
-  })
-
-  it("fails when PowerShell exits with an error, or cannot start", async () => {
-    const failing = lister()
-    const failed = listWindowsChildren(4_242, 1_000, { run: failing.run })
-    failing.finish(JSON.stringify({ children: [] }), 1)
-    await expect(failed).rejects.toThrow()
-
-    const missing = lister()
-    const unstarted = listWindowsChildren(4_242, 1_000, { run: missing.run })
-    missing.child.emit("error", new Error("spawn powershell.exe ENOENT"))
-    await expect(unstarted).rejects.toThrow()
-
-    const throwing = vi.fn(() => { throw new Error("spawn EPERM") })
-    await expect(listWindowsChildren(4_242, 1_000, { run: throwing })).rejects.toThrow()
-  })
-
-  it("fails, and ends PowerShell, when the list takes longer than its limit", async () => {
-    const { child, run } = lister()
-    await expect(listWindowsChildren(4_242, 1_000, { run, timeoutMs: 10 })).rejects.toThrow("timed out")
-    expect(child.kill).toHaveBeenCalled()
-  })
-
-  it("fails, and ends PowerShell, when the output is larger than any list", async () => {
-    const { child, run } = lister()
-    const listing = listWindowsChildren(4_242, 1_000, { run })
-    child.stdout.write("x".repeat(2 * 1024 * 1024))
-    await expect(listing).rejects.toThrow()
-    expect(child.kill).toHaveBeenCalled()
-  })
 })
 
 describe("the POSIX process group kill", () => {
@@ -776,135 +553,6 @@ describe("a keeper killed while Claude runs", () => {
   })
 })
 
-// R2-F2: what the SDK sees of the process it asked for, whatever Domovoi
-// starts to hold Claude's process group.
-describe("the Claude process the SDK sees", () => {
-  const environment = { PATH: "/usr/bin:/bin", DOMOVOI_KEEPER_MARKER: "kept" }
-  const windowsRequiredVariables = new Set([
-    "HOMEDRIVE", "HOMEPATH", "LOGONSERVER", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "USERDOMAIN", "USERNAME",
-    "USERPROFILE", "WINDIR",
-  ])
-  // Windows has no signal a process can handle: Node ends it outright.
-  const handlesSignals = process.platform !== "win32"
-
-  async function start(lines: string[], { command = process.execPath, signal = new AbortController().signal } = {}) {
-    const path = await script([
-      "import { fstatSync, writeFileSync } from 'node:fs'",
-      "import { join, dirname } from 'node:path'",
-      "const here = dirname(process.argv[1])",
-      "const kind = (fd) => { try { const s = fstatSync(fd); return s.isSocket() ? 'socket' : s.isFIFO() ? 'pipe' : s.isCharacterDevice() ? 'device' : 'file' } catch (error) { return error.code } }",
-      "const fd3 = kind(3)",
-      "const fd4 = kind(4)",
-      "writeFileSync(join(here, 'seen.json'), JSON.stringify({ pid: process.pid, argv: process.argv.slice(2), cwd: process.cwd(), keys: Object.keys(process.env).sort(), marker: process.env.DOMOVOI_KEEPER_MARKER, fd3, fd4 }))",
-      ...lines,
-    ].join("\n"))
-    const directory = dirname(path)
-    const stderr: string[] = []
-    const claude = spawnClaudeProcess({
-      command, args: command === process.execPath ? [path, "first argument", "--flag=two"] : ["one"],
-      cwd: directory, env: environment, signal,
-    }, (text) => stderr.push(text), { spawn: realSpawn })
-    const exits: Array<[number | null, NodeJS.Signals | null]> = []
-    claude.spawned.once("exit", (code: number | null, exitSignal: NodeJS.Signals | null) => exits.push([code, exitSignal]))
-    const errors: Error[] = []
-    claude.spawned.on("error", (error: Error) => errors.push(error))
-    const seen = () => waitForDaemon(async () => {
-      const value = JSON.parse(await readFile(join(directory, "seen.json"), "utf8")) as {
-        pid: number; argv: string[]; cwd: string; keys: string[]; marker: string; fd3: string; fd4: string
-      }
-      tools.push(value.pid)
-      return value
-    })
-    return { claude, directory, stderr, exits, errors, seen }
-  }
-
-  it("gets the SDK's arguments, directory and environment, its stdio, and its exit code", async () => {
-    const { claude, directory, stderr, exits, seen } = await start([
-      "process.stderr.write('café\\n')",
-      "process.stdin.setEncoding('utf8')",
-      "process.stdin.on('data', (text) => process.stdout.write(text.toUpperCase()))",
-      "process.stdin.on('end', () => process.exit(7))",
-    ])
-    const view = await seen()
-    expect(view.argv).toEqual(["first argument", "--flag=two"])
-    expect(view.cwd).toBe(await realpath(directory))
-    // macOS adds __CF_USER_TEXT_ENCODING to every process it starts, and on
-    // Windows libuv copies the variables a Windows process needs.
-    const added = (key: string) => key.startsWith("__CF_")
-      || (process.platform === "win32" && windowsRequiredVariables.has(key.toUpperCase()))
-    expect(view.keys.filter((key) => !added(key))).toEqual(["DOMOVOI_KEEPER_MARKER", "PATH"])
-    expect(view.marker).toBe("kept")
-    // No pipe to Domovoi beyond stdio reaches Claude or its tools: neither
-    // the keeper's control pipe nor the sentinel's, both sockets. Node itself
-    // may hold a pipe of its own at fd 4.
-    expect(["socket", "pipe"]).not.toContain(view.fd3)
-    expect(view.fd4).not.toBe("socket")
-
-    const output: string[] = []
-    claude.spawned.stdout.setEncoding("utf8")
-    claude.spawned.stdout.on("data", (text: string) => output.push(text))
-    claude.spawned.stdin.write("hello\n")
-    await waitForDaemon(() => expect(output.join("")).toBe("HELLO\n"))
-    claude.spawned.stdin.end()
-    await claude.exited
-
-    await waitForDaemon(() => expect(exits).toEqual([[7, null]]))
-    expect(claude.spawned.exitCode).toBe(7)
-    expect(claude.spawned.signalCode).toBeNull()
-    expect(claude.spawned.killed).toBe(false)
-    expect(stderr.join("")).toBe("café\n")
-  })
-
-  it("forwards a signal the SDK sends to Claude", async () => {
-    const { claude, directory, exits, seen } = await start([
-      "process.on('SIGTERM', () => { writeFileSync(join(here, 'term'), 'yes'); process.exit(3) })",
-      "process.stdin.resume()",
-      "setInterval(() => {}, 1000)",
-    ])
-    await seen()
-    expect(claude.spawned.kill("SIGTERM")).toBe(true)
-    await claude.exited
-    expect(claude.spawned.killed).toBe(true)
-    if (handlesSignals) {
-      await waitForDaemon(() => expect(exits).toEqual([[3, null]]))
-      expect(await readFile(join(directory, "term"), "utf8")).toBe("yes")
-    } else {
-      await waitForDaemon(() => expect(exits).toEqual([[null, "SIGTERM"]]))
-    }
-  })
-
-  it("reports Claude killed by a signal", async () => {
-    const { claude, exits, seen } = await start(["process.stdin.resume()", "setInterval(() => {}, 1000)"])
-    await seen()
-    claude.spawned.kill("SIGKILL")
-    await claude.exited
-    await waitForDaemon(() => expect(exits).toEqual([[null, "SIGKILL"]]))
-    expect(claude.spawned.signalCode).toBe("SIGKILL")
-  })
-
-  it("forwards the SDK's abort to Claude as SIGTERM, with the abort error", async () => {
-    const controller = new AbortController()
-    const { claude, directory, errors, seen } = await start([
-      "process.on('SIGTERM', () => { writeFileSync(join(here, 'term'), 'yes'); process.exit(0) })",
-      "process.stdin.resume()",
-      "setInterval(() => {}, 1000)",
-    ], { signal: controller.signal })
-    await seen()
-    controller.abort()
-    await claude.exited
-    expect(errors.map(({ name }) => name)).toEqual(["AbortError"])
-    if (handlesSignals) expect(await readFile(join(directory, "term"), "utf8")).toBe("yes")
-  })
-
-  it("reports a Claude that cannot start as the spawn error the SDK expects", async () => {
-    const missing = join(tmpdir(), "domovoi-no-such-claude", "claude")
-    const { claude, errors } = await start([], { command: missing })
-    await claude.exited
-    await waitForDaemon(() => expect(errors).toHaveLength(1))
-    expect(errors[0]).toMatchObject({ code: "ENOENT", syscall: `spawn ${missing}`, path: missing })
-  })
-})
-
 // R2-F3: an overlapping close that failed reopened the adapter after another
 // close had succeeded, and the next start spawned Claude.
 it("stays closed after overlapping closes when one of them succeeded", async () => {
@@ -981,6 +629,150 @@ describe("a model list that close overtakes", () => {
   })
 })
 
+// R2-F2: what the SDK sees of the process it asked for, whatever Domovoi
+// starts to hold Claude's process group. On Windows a Claude that exits
+// without a stop's tree kill stays listed for the life of the daemon (Q111),
+// so these come after every test that expects no Claude listed.
+describe("the Claude process the SDK sees", () => {
+  const environment = { PATH: "/usr/bin:/bin", DOMOVOI_KEEPER_MARKER: "kept" }
+  const windowsRequiredVariables = new Set([
+    "HOMEDRIVE", "HOMEPATH", "LOGONSERVER", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "USERDOMAIN", "USERNAME",
+    "USERPROFILE", "WINDIR",
+  ])
+  // Windows has no signal a process can handle: Node ends it outright.
+  const handlesSignals = process.platform !== "win32"
+
+  // Waits for Claude's own end. On POSIX its whole group is then seen gone.
+  // On Windows nothing is: no stop killed its tree while it ran, so what it
+  // started stays unconfirmed (Q111).
+  async function ended(claude: ClaudeProcess): Promise<void> {
+    if (process.platform !== "win32") {
+      await claude.exited
+      return
+    }
+    await waitForDaemon(() => expect(claude.claudeHasExited()).toBe(true))
+    expect(claude.hasExited()).toBe(false)
+  }
+
+  async function start(lines: string[], { command = process.execPath, signal = new AbortController().signal } = {}) {
+    const path = await script([
+      "import { fstatSync, writeFileSync } from 'node:fs'",
+      "import { join, dirname } from 'node:path'",
+      "const here = dirname(process.argv[1])",
+      "const kind = (fd) => { try { const s = fstatSync(fd); return s.isSocket() ? 'socket' : s.isFIFO() ? 'pipe' : s.isCharacterDevice() ? 'device' : 'file' } catch (error) { return error.code } }",
+      "const fd3 = kind(3)",
+      "const fd4 = kind(4)",
+      "writeFileSync(join(here, 'seen.json'), JSON.stringify({ pid: process.pid, argv: process.argv.slice(2), cwd: process.cwd(), keys: Object.keys(process.env).sort(), marker: process.env.DOMOVOI_KEEPER_MARKER, fd3, fd4 }))",
+      ...lines,
+    ].join("\n"))
+    const directory = dirname(path)
+    const stderr: string[] = []
+    const claude = spawnClaudeProcess({
+      command, args: command === process.execPath ? [path, "first argument", "--flag=two"] : ["one"],
+      cwd: directory, env: environment, signal,
+    }, (text) => stderr.push(text), { spawn: realSpawn })
+    const exits: Array<[number | null, NodeJS.Signals | null]> = []
+    claude.spawned.once("exit", (code: number | null, exitSignal: NodeJS.Signals | null) => exits.push([code, exitSignal]))
+    const errors: Error[] = []
+    claude.spawned.on("error", (error: Error) => errors.push(error))
+    const seen = () => waitForDaemon(async () => {
+      const value = JSON.parse(await readFile(join(directory, "seen.json"), "utf8")) as {
+        pid: number; argv: string[]; cwd: string; keys: string[]; marker: string; fd3: string; fd4: string
+      }
+      tools.push(value.pid)
+      return value
+    })
+    return { claude, directory, stderr, exits, errors, seen }
+  }
+
+  it("gets the SDK's arguments, directory and environment, its stdio, and its exit code", async () => {
+    const { claude, directory, stderr, exits, seen } = await start([
+      "process.stderr.write('café\\n')",
+      "process.stdin.setEncoding('utf8')",
+      "process.stdin.on('data', (text) => process.stdout.write(text.toUpperCase()))",
+      "process.stdin.on('end', () => process.exit(7))",
+    ])
+    const view = await seen()
+    expect(view.argv).toEqual(["first argument", "--flag=two"])
+    expect(view.cwd).toBe(await realpath(directory))
+    // macOS adds __CF_USER_TEXT_ENCODING to every process it starts, and on
+    // Windows libuv copies the variables a Windows process needs.
+    const added = (key: string) => key.startsWith("__CF_")
+      || (process.platform === "win32" && windowsRequiredVariables.has(key.toUpperCase()))
+    expect(view.keys.filter((key) => !added(key))).toEqual(["DOMOVOI_KEEPER_MARKER", "PATH"])
+    expect(view.marker).toBe("kept")
+    // No pipe to Domovoi beyond stdio reaches Claude or its tools: neither
+    // the keeper's control pipe nor the sentinel's, both sockets. Node itself
+    // may hold a pipe of its own at fd 4.
+    expect(["socket", "pipe"]).not.toContain(view.fd3)
+    expect(view.fd4).not.toBe("socket")
+
+    const output: string[] = []
+    claude.spawned.stdout.setEncoding("utf8")
+    claude.spawned.stdout.on("data", (text: string) => output.push(text))
+    claude.spawned.stdin.write("hello\n")
+    await waitForDaemon(() => expect(output.join("")).toBe("HELLO\n"))
+    claude.spawned.stdin.end()
+    await ended(claude)
+
+    await waitForDaemon(() => expect(exits).toEqual([[7, null]]))
+    expect(claude.spawned.exitCode).toBe(7)
+    expect(claude.spawned.signalCode).toBeNull()
+    expect(claude.spawned.killed).toBe(false)
+    expect(stderr.join("")).toBe("café\n")
+  })
+
+  it("forwards a signal the SDK sends to Claude", async () => {
+    const { claude, directory, exits, seen } = await start([
+      "process.on('SIGTERM', () => { writeFileSync(join(here, 'term'), 'yes'); process.exit(3) })",
+      "process.stdin.resume()",
+      "setInterval(() => {}, 1000)",
+    ])
+    await seen()
+    expect(claude.spawned.kill("SIGTERM")).toBe(true)
+    await ended(claude)
+    expect(claude.spawned.killed).toBe(true)
+    if (handlesSignals) {
+      await waitForDaemon(() => expect(exits).toEqual([[3, null]]))
+      expect(await readFile(join(directory, "term"), "utf8")).toBe("yes")
+    } else {
+      await waitForDaemon(() => expect(exits).toEqual([[null, "SIGTERM"]]))
+    }
+  })
+
+  it("reports Claude killed by a signal", async () => {
+    const { claude, exits, seen } = await start(["process.stdin.resume()", "setInterval(() => {}, 1000)"])
+    await seen()
+    claude.spawned.kill("SIGKILL")
+    await ended(claude)
+    await waitForDaemon(() => expect(exits).toEqual([[null, "SIGKILL"]]))
+    expect(claude.spawned.signalCode).toBe("SIGKILL")
+  })
+
+  it("forwards the SDK's abort to Claude as SIGTERM, with the abort error", async () => {
+    const controller = new AbortController()
+    const { claude, directory, errors, seen } = await start([
+      "process.on('SIGTERM', () => { writeFileSync(join(here, 'term'), 'yes'); process.exit(0) })",
+      "process.stdin.resume()",
+      "setInterval(() => {}, 1000)",
+    ], { signal: controller.signal })
+    await seen()
+    controller.abort()
+    await ended(claude)
+    expect(errors.map(({ name }) => name)).toEqual(["AbortError"])
+    if (handlesSignals) expect(await readFile(join(directory, "term"), "utf8")).toBe("yes")
+  })
+
+  it("reports a Claude that cannot start as the spawn error the SDK expects", async () => {
+    const missing = join(tmpdir(), "domovoi-no-such-claude", "claude")
+    const { claude, errors } = await start([], { command: missing })
+    // A Claude that never started has nothing to wait for, on any platform.
+    await claude.exited
+    await waitForDaemon(() => expect(errors).toHaveLength(1))
+    expect(errors[0]).toMatchObject({ code: "ENOENT", syscall: `spawn ${missing}`, path: missing })
+  })
+})
+
 // R2-F1 on Windows: a taskkill that fails cannot be retried once Claude has
 // exited, since its pid may then name another process, so the stop stays
 // failed and Claude stays listed for the life of the daemon. Last in this file
@@ -1015,41 +807,6 @@ it.each([
   await expect(adapter.close()).rejects.toThrow(unconfirmed)
   // Claude's pid may name another process now: no second taskkill.
   expect(run).toHaveBeenCalledOnce()
-})
-
-// Review round 3 of #647, R3-F1 and Q109: what a Windows Claude that exited
-// on its own left behind stays unconfirmed when it cannot be listed, or is
-// still listed after its taskkill. Claude stays listed for the life of the
-// daemon, so these come last too.
-it.each([
-  ["cannot be listed", 97, [], async (): Promise<Array<{ pid: number; created: number }>> => {
-    throw new Error("PowerShell could not start")
-  }],
-  ["is still listed after its taskkill", 96, [[5_000_004]], async (_parent: number, after: number) => [
-    { pid: 5_000_004, created: after + 1 },
-  ]],
-] as const)("fails a Windows stop, and keeps Claude listed, when what Claude left %s", async (_case, offset, killed, list) => {
-  const pid = fakeClaudePid + offset
-  const fake = fakeClaudeChild({ pid })
-  const killTree = vi.fn(async (_pid: number) => {})
-  const listChildren = vi.fn<ListWindowsChildren>(list)
-  const { factory } = spawningClaudeFactory()
-  const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-    spawn: () => fake.process, killTree, listChildren, platform: "win32", shutdownGraceMs: 20, killGraceMs: 20,
-  })
-  const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
-  await new Promise((resolve) => { setTimeout(resolve, 5) })
-  fake.exit()
-
-  await expect(adapter.stopThread(threadId)).rejects.toThrow(unconfirmed)
-  expect(listChildren).toHaveBeenCalledWith(pid, expect.any(Number))
-  expect(runningClaudeProcesses()).toContainEqual(expect.objectContaining({ pid, session: threadId }))
-  await expect(adapter.stopThread(threadId)).rejects.toThrow(unconfirmed)
-  await expect(adapter.resumeThread({ threadId, cwd: "/worktree", runtime })).rejects.toThrow(unconfirmed)
-  await expect(adapter.close()).rejects.toThrow(unconfirmed)
-  // No taskkill of Claude's own pid, which may name another process now.
-  expect(killTree.mock.calls).toEqual(killed)
-  expect(runningClaudeProcesses()).toContainEqual(expect.objectContaining({ pid, session: threadId }))
 })
 
 // Q111 B, security review round 4 of #647: a Windows Claude that exits on its
