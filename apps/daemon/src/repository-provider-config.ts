@@ -14,7 +14,7 @@ import {
 import { parse as parseYaml } from "yaml"
 
 import { inventoryFieldCaps as caps, redactInventoryArgv, redactInventoryCommand, redactInventoryProgram, redactInventoryText } from "./inventory-redaction.js"
-import { parseRepositoryToml } from "./repository-toml.js"
+import { parseRepositoryToml, RepositoryTomlTooSlowError } from "./repository-toml.js"
 
 // What a repository's own Claude Code, OpenCode, Kilo and Codex configuration
 // declares, and the digest repository trust pins to. Nothing here executes,
@@ -138,7 +138,7 @@ export const repositoryProviderScopes: readonly ProviderScope[] = [
 
 // Short reason codes, not prose: a client words them.
 type RefusalReason = "symbolic-link" | "hard-link" | "not-a-file" | "not-a-directory" | "too-large" | "changed-while-read"
-  | "too-many-members" | "too-deep" | "unreadable-member" | "io-error" | "invalid-json" | "invalid-yaml" | "invalid-toml"
+  | "too-many-members" | "too-deep" | "unreadable-member" | "io-error" | "invalid-json" | "invalid-yaml" | "invalid-toml" | "too-slow"
 type Refused = { state: "unreadable"; reason: RefusalReason; digest: string }
 type FileRead = { state: "absent" } | { state: "read"; bytes: Buffer } | Refused
 type Identity = { dev: bigint; ino: bigint }
@@ -822,8 +822,8 @@ function parseFile(parser: Parser, bytes: Buffer): Parsed {
     document = parser === "kilo-modes" ? parseYaml(text, { maxAliasCount: 64 })
       : parser === "codex-config" ? parseRepositoryToml(text)
         : parseJsonc(text)
-  } catch {
-    return invalid
+  } catch (error) {
+    return error instanceof RepositoryTomlTooSlowError ? { state: "unreadable", reason: "too-slow" } : invalid
   }
   if (!isRecord(document)) return invalid
   switch (parser) {

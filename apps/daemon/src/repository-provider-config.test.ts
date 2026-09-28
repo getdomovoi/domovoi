@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
+import { performance } from "node:perf_hooks"
 import { dirname, join, sep } from "node:path"
 
 import { toolInventoryProviderSchema, toolInventorySchema, type ToolInventoryProvider } from "@getdomovoi/protocol"
@@ -8,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { inventoryShellWords } from "./inventory-redaction.js"
 import { maximumRepositoryConfigFileBytes, readRepositoryProviderConfig } from "./repository-provider-config.js"
-import { maximumRepositoryTomlDepth, parseRepositoryToml } from "./repository-toml.js"
+import { maximumRepositoryTomlDepth, maximumRepositoryTomlParseMilliseconds, parseRepositoryToml, RepositoryTomlTooSlowError } from "./repository-toml.js"
 import {
   escapedBlankTexts, generatedShellReadingTexts, hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, quotedStringTexts, sameWordCases,
   sameWordCredentials, sameWordPlacements, sameWordWrappers, shellReadingTexts, unsettledViewTexts, viewCases, viewCredential, viewPlacements,
@@ -596,6 +597,40 @@ describe("readRepositoryProviderConfig: Codex", () => {
     ])
     await put(root, ".codex/rules/default.rules", "prefix_rule(pattern = [\"git\"], decision = \"allow\")\n")
     expect((await readRepositoryProviderConfig(root, { heldBack: true })).configDigest).not.toBe(result.configDigest)
+  })
+
+  // The counted growth tests cannot see every kind of slow input, so a parse
+  // that takes longer than its time limit is refused. The clock is stepped,
+  // never slept on: each read of it advances by `step` milliseconds.
+  it("refuses TOML whose parse takes longer than its time limit, and reads the rest", async () => {
+    const stepped = (step: number) => {
+      let now = 0
+      return vi.spyOn(performance, "now").mockImplementation(() => {
+        now += step
+        return now
+      })
+    }
+    const text = "sandbox_mode = \"read-only\"\n"
+    const limit = maximumRepositoryTomlParseMilliseconds
+    try {
+      stepped(limit)
+      expect(parseRepositoryToml(text)).toEqual({ sandbox_mode: "read-only" })
+      stepped(limit + 1)
+      expect(() => parseRepositoryToml(text)).toThrow(RepositoryTomlTooSlowError)
+
+      const root = await scratch()
+      await put(root, ".codex/config.toml", text)
+      await put(root, ".codex/hooks.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "pnpm lint" }] }] } }))
+      const codex = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+      expect(toolInventoryProviderSchema.safeParse(codex).success).toBe(true)
+      expect(codex.files).toEqual([
+        { path: ".codex/config.toml", source: "project-settings", state: "unreadable", reason: "too-slow" },
+        { path: ".codex/hooks.json", source: "project-settings", state: "read" },
+      ])
+      expect(codex.entries.map((entry) => entry.kind)).toEqual(["hook"])
+    } finally {
+      vi.restoreAllMocks()
+    }
   })
 
   it("refuses malformed TOML and TOML nested past its depth cap, and reads the rest", async () => {
