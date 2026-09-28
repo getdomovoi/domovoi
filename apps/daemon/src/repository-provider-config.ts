@@ -12,7 +12,7 @@ import {
 } from "@getdomovoi/protocol"
 import { parse as parseYaml } from "yaml"
 
-import { inventoryFieldCaps as caps, redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
+import { inventoryFieldCaps as caps, redactInventoryArgv, redactInventoryCommand, redactInventoryProgram, redactInventoryText } from "./inventory-redaction.js"
 import { parseRepositoryToml } from "./repository-toml.js"
 
 // What a repository's own Claude Code, OpenCode, Kilo and Codex configuration
@@ -595,7 +595,9 @@ function codexEnvVarNames(value: unknown): string[] | undefined {
 // a streamable HTTP one, with the names of the variables whose values Codex
 // sends it (bearer_token_env_var, env_http_headers). An inline bearer_token and
 // http_headers are never read. http_headers_helper is a command Codex runs for
-// the headers; the approval modes let the server's tools run without asking.
+// the headers: its output is header names and values, and its arguments can
+// hold one no trigger names, so it is listed by its program alone. The
+// approval modes let the server's tools run without asking.
 function codexServer(name: string, server: unknown): Array<Candidate | Omission> {
   if (!isRecord(server)) return [omission]
   const startsAtSessionStart = server.enabled !== false
@@ -617,7 +619,7 @@ function codexServer(name: string, server: unknown): Array<Candidate | Omission>
   } else candidates.push(omission)
   if (server.http_headers_helper !== undefined) {
     candidates.push(typeof server.http_headers_helper === "string"
-      ? { kind: "helper", name: redactInventoryText(`http_headers_helper ${name}`, caps.helperName), command: redactInventoryCommand(server.http_headers_helper), startsAtSessionStart }
+      ? { kind: "helper", name: redactInventoryText(`http_headers_helper ${name}`, caps.helperName), command: redactInventoryProgram(server.http_headers_helper), startsAtSessionStart }
       : omission)
   }
   if (server.default_tools_approval_mode !== undefined) {

@@ -1100,6 +1100,25 @@ export function redactInventoryCommand(text: string): string {
   return redactText(text, true, inventoryFieldCaps.command)
 }
 
+// A command line whose every argument can be a credential no trigger names,
+// such as a header helper, which prints header names and values: shown as its
+// program alone, with the marker after it when anything follows. A program
+// that is not the first shell word (text that opens with an operator or an
+// expansion, or does not read as words there), or that the argument vector
+// redaction cuts (an assignment, a trigger), is the marker alone.
+export function redactInventoryProgram(text: string): string {
+  const { tokens, stoppedAt } = lexShell(text)
+  const first = tokens[0]
+  if (first?.kind !== "word" || (stoppedAt !== undefined && stoppedAt < first.end)) return marker
+  const program = redactInventoryArgv([first.value])
+  const words = inventoryShellWords(program)
+  if (words?.length !== 1 || words[0] !== first.value) return marker
+  const rest = tokens.length > 1 || stoppedAt !== undefined || text.slice(first.end).trim() !== ""
+  if (!rest) return program
+  const shown = `${program} ${marker}`
+  return shown.length <= inventoryFieldCaps.command && !holdsCredential(shown) ? shown : marker
+}
+
 // Shell text in an argument a hook would pass on to a shell: a command run by
 // `$(...)`, backquotes, `<(...)`, `>(...)` or zsh's `=(...)`, a `${...}` that
 // is not bare, or `$'...'` and `$"..."`, which are not POSIX quoting.

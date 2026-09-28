@@ -356,6 +356,43 @@ describe("readRepositoryProviderConfig: Codex", () => {
     ])
   })
 
+  // A header helper prints the headers Codex sends, and a header's name and
+  // value need no word the redaction knows: every argument is cut, and the
+  // helper is listed by its program.
+  it("lists a header helper by its program, every argument cut", async () => {
+    const root = await scratch()
+    const canary = "REVIEW_CANARY_4821"
+    const helpers: Array<[string, string]> = [
+      ["echo", `echo '{"X-Custom":"${canary}"}'`],
+      ["printf", `printf '%s' '{"X-Custom":"${canary}"}'`],
+      ["spaced", `'/opt/header tools/print' ${canary}`],
+      ["bare", "print-headers"],
+      ["assigned", `HEADER=${canary} print-headers`],
+      ["piped", `cat headers.json | tr -d ${canary}`],
+      ["script", `sh -c 'echo ${canary}'`],
+      ["subshell", `(echo ${canary})`],
+      ["expanded", `$(echo ${canary}) x`],
+    ]
+    await put(root, ".codex/config.toml", helpers.map(([name, helper]) => (
+      `[mcp_servers.${name}]\nurl = "https://mcp.example.test"\nhttp_headers_helper = ${JSON.stringify(helper)}\n`
+    )).join("\n"))
+    const codex = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+    expect(toolInventoryProviderSchema.safeParse(codex).success).toBe(true)
+    expect(JSON.stringify(codex)).not.toContain(canary)
+    expect(codex.omittedEntries).toBe(0)
+    expect(codex.entries.flatMap((entry) => (entry.kind === "helper" ? [[entry.name, entry.command]] : []))).toEqual([
+      ["http_headers_helper echo", "echo [REDACTED]"],
+      ["http_headers_helper printf", "printf [REDACTED]"],
+      ["http_headers_helper spaced", "'/opt/header tools/print' [REDACTED]"],
+      ["http_headers_helper bare", "print-headers"],
+      ["http_headers_helper assigned", "[REDACTED]"],
+      ["http_headers_helper piped", "cat [REDACTED]"],
+      ["http_headers_helper script", "sh [REDACTED]"],
+      ["http_headers_helper subshell", "[REDACTED]"],
+      ["http_headers_helper expanded", "[REDACTED]"],
+    ])
+  })
+
   it("lists hooks from hooks.json and counts what it cannot read", async () => {
     const root = await scratch()
     await put(root, ".codex/hooks.json", JSON.stringify({
