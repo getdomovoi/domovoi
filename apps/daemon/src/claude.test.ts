@@ -10,7 +10,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Runtime } from "@getdomovoi/protocol"
 
 import type { AgentEvent } from "./agents.js"
-import { claudeKeeperSource, type ClaudeSpawn } from "./claude-process.js"
+import {
+  claudeKeeperSource,
+  runningClaudeProcesses,
+  windowsTreeKill,
+  type ClaudeSpawn,
+} from "./claude-process.js"
 import {
   ClaudeAgentSdkAdapter,
   claudePermissionFor,
@@ -1607,15 +1612,33 @@ describe("stopping the Claude process", () => {
   it("kills Claude when it outlives the grace, and resolves once it has exited", async () => {
     const path = await script("process.on('SIGTERM', () => {})\nprocess.stdin.resume()\nsetInterval(() => {}, 1_000)\n")
     const { factory } = spawningFactory(process.execPath, [path])
+    // The system's taskkill, watched: a Windows stop runs it on Claude's tree.
+    const killTree = vi.fn((pid: number) => windowsTreeKill(pid))
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: realSpawn, shutdownGraceMs: 100,
+      spawn: realSpawn, killTree, shutdownGraceMs: 100,
     })
     const threadId = await adapter.startThread({ cwd: dirname(path), runtime: runtime("build") })
 
     await adapter.stopThread(threadId)
 
     expect(started).toHaveLength(1)
-    expect(started[0]!.signalCode).toBe("SIGKILL")
+    const claude = started[0]!
+    if (process.platform === "win32") {
+      // Q106: the stop kills Claude's tree with taskkill /T /F first, which
+      // ends Claude with exit code 1 and no signal Node sees. Node's own kill
+      // through its handle comes after taskkill, and records SIGKILL only if
+      // it reached Claude first.
+      expect([[1, null], [null, "SIGKILL"]]).toContainEqual([claude.exitCode, claude.signalCode])
+      // taskkill ran on Claude's own pid and reported success, so the tree
+      // is confirmed gone.
+      expect(killTree).toHaveBeenCalledExactlyOnceWith(claude.pid)
+      await expect(killTree.mock.results[0]!.value).resolves.toBeUndefined()
+    } else {
+      expect(claude.signalCode).toBe("SIGKILL")
+      expect(killTree).not.toHaveBeenCalled()
+    }
+    // Claude and what it started are known to be gone, so nothing keeps it listed.
+    expect(runningClaudeProcesses().map(({ pid }) => pid)).not.toContain(claude.pid)
     await adapter.close()
   })
 
