@@ -88,6 +88,10 @@ export const adversarialCommands: ReadonlyArray<readonly [string, number, (size:
   ["scheme words in a shell's script", 500, (size) => `sh -c '${"curl Bearer ".repeat(size)}' x`],
   ["private key headers in a URL's path", 250, (size) => `curl 'https://h/ ${"-----BEGIN PRIVATE KEY----- ".repeat(size)}' x`],
   ["header flags in a URL's path", 500, (size) => `curl 'https://h/ ${"-H X: ".repeat(size)}' x`],
+  // Values in the same word as the word that names them, inside a URL.
+  ["scheme words and values in a URL's authority", 500, (size) => `curl 'https://h ${"Token x ".repeat(size)}' x`],
+  ["sensitive keys in a URL's query names", 500, (size) => `curl 'https://h/?${"--token x=1&".repeat(size)}' x`],
+  ["assignments in a URL's query", 500, (size) => `curl 'https://h/?${"a=1&b=".repeat(size)}' x`],
 ]
 
 // The scanning inside one regular expression search is the work the counter

@@ -18,8 +18,13 @@
 // rule hides or reads past (a URL, a header's value, a shell's script) is
 // still read as one, so its own value is hidden too: `--token Bearer x` reads
 // `--token [REDACTED] [REDACTED]`, and `--token 'https://h/ Token' x` reads
-// `--token '[REDACTED]' [REDACTED]`. Every rule reads the text in work that
-// grows linearly with it. The daemon's durable-text redaction leaves
+// `--token '[REDACTED]' [REDACTED]`. When such a word's value is in its own
+// shell word and the rule that took that word did not hide all of it (a URL
+// keeps its host and each query name, a header keeps its name and a scheme
+// word), the word is hidden from that scheme word, key or flag to its end:
+// `'https://host Token x y'` reads `'https://host [REDACTED]'`. A scheme word
+// or flag starts where the protocol backstop reads one, after a `/`, `?` or
+// `#` too. Every rule reads the text in work that grows linearly with it. The daemon's durable-text redaction leaves
 // `DATABASE_URL=x`, `https://tok@host` and `Bearer tok` alone, so this pass is
 // separate from it.
 //
@@ -111,6 +116,12 @@ const keyPair = /(-{1,2})?(["'`]?)([A-Za-z_][A-Za-z0-9_.-]*)\2(\s*[=:]\s*|\s+)/u
 const urlStart = /[A-Za-z][A-Za-z0-9+.-]*:\/\//uy
 const scheme = /(?:Bearer|Basic|Token|Digest)\s+/iuy
 const schemeWord = /(?:Bearer|Basic|Token|Digest)/iuy
+// A scheme word starts wherever the protocol backstop reads one: after
+// anything but a letter, digit, underscore or hyphen, so `?Bearer x` in a
+// URL's query is one too.
+const schemeBoundary = /[\p{L}\p{N}_-]/u
+// What ends a key's value as the protocol backstop reads it.
+const valueStop = /[\s"'`,;}&|)]/u
 // A private key's header, and the footer that ends it.
 const privateKeyHeader = /-----BEGIN [A-Z ]*PRIVATE KEY-----/uy
 const privateKeyFooter = /-----END [A-Z ]*PRIVATE KEY-----/gu
@@ -183,38 +194,64 @@ function withoutJsonWebTokens(text: string): string {
   return pieces.join("")
 }
 
-// A query or fragment: each `name=value` part keeps its name, and a bare part
-// is a value in whole, since `?opaque` or `#opaque` can be the token itself.
-function redactUrlParts(payload: string): string {
-  return payload.split(/([&;])/u).map((part, index) => {
-    if (index % 2 === 1 || part === "" || isMarker(part)) return part
-    const equals = part.indexOf("=")
-    if (equals === -1) return marker
-    const value = part.slice(equals + 1)
-    return value === "" || isMarker(value) ? part : `${part.slice(0, equals + 1)}${marker}`
-  }).join("")
+// A span of text and what it is written as instead.
+interface Change { start: number; end: number; text: string }
+
+// A query or fragment starting at `offset` in its URL: each `name=value` part
+// keeps its name, and a bare part is a value in whole, since `?opaque` or
+// `#opaque` can be the token itself.
+function urlPartHides(payload: string, offset: number, hides: Change[]): void {
+  let partStart = 0
+  for (let index = 0; index <= payload.length; index += 1) {
+    if (index < payload.length && payload[index] !== "&" && payload[index] !== ";") continue
+    const part = payload.slice(partStart, index)
+    if (part !== "" && !isMarker(part)) {
+      const equals = part.indexOf("=")
+      const value = part.slice(equals + 1)
+      if (equals === -1) hides.push({ start: offset + partStart, end: offset + index, text: marker })
+      else if (value !== "" && !isMarker(value)) hides.push({ start: offset + partStart + equals + 1, end: offset + index, text: marker })
+    }
+    partStart = index + 1
+  }
 }
 
-// A URL's user info, its whole path after the host, and every query and
-// fragment part, redacted. A path can be the credential itself (a webhook's
-// /services/T0/B0/XXXX) and no rule tells which segment is, so the path goes
-// whole; an empty path or a bare `/` stays.
-function redactUrl(url: string): string {
+// What a URL hides, in order: its user info, its whole path after the host,
+// and every query and fragment part. A path can be the credential itself (a
+// webhook's /services/T0/B0/XXXX) and no rule tells which segment is, so the
+// path goes whole; an empty path or a bare `/` stays. What it keeps (the
+// scheme, the host, a part's name) is kept as written.
+function urlHides(url: string): Change[] {
+  const hides: Change[] = []
   const authorityStart = url.indexOf("://") + 3
   const authorityEnd = url.slice(authorityStart).search(/[/?#]/u)
   const authorityStop = authorityEnd === -1 ? url.length : authorityStart + authorityEnd
-  const authority = url.slice(authorityStart, authorityStop)
-  const at = authority.lastIndexOf("@")
-  const host = at === -1 ? authority : `${marker}@${authority.slice(at + 1)}`
+  const at = url.slice(authorityStart, authorityStop).lastIndexOf("@")
+  if (at !== -1) hides.push({ start: authorityStart, end: authorityStart + at, text: marker })
   const rest = url.slice(authorityStop)
   const hash = rest.indexOf("#")
   const beforeHash = hash === -1 ? rest : rest.slice(0, hash)
   const question = beforeHash.indexOf("?")
   const givenPath = question === -1 ? beforeHash : beforeHash.slice(0, question)
-  const path = givenPath === "" || givenPath === "/" ? givenPath : `/${marker}`
-  const query = question === -1 ? "" : `?${redactUrlParts(beforeHash.slice(question + 1))}`
-  const fragment = hash === -1 ? "" : `#${redactUrlParts(rest.slice(hash + 1))}`
-  return `${url.slice(0, authorityStart)}${host}${path}${query}${fragment}`
+  if (givenPath !== "" && givenPath !== "/") hides.push({ start: authorityStop, end: authorityStop + givenPath.length, text: `/${marker}` })
+  if (question !== -1) urlPartHides(beforeHash.slice(question + 1), authorityStop + question + 1, hides)
+  if (hash !== -1) urlPartHides(rest.slice(hash + 1), authorityStop + hash + 1, hides)
+  return hides
+}
+
+// A URL written with what it hides, up to `cut`: from there the rest is the
+// marker. A cut inside a hidden span ends with that span's marker.
+function writtenUrl(url: string, hides: readonly Change[], cut = Number.POSITIVE_INFINITY): string {
+  const pieces: string[] = []
+  let cursor = 0
+  for (const hide of hides) {
+    if (hide.start >= cut) break
+    pieces.push(url.slice(cursor, hide.start), hide.text)
+    cursor = hide.end
+    if (cursor > cut) return pieces.join("")
+  }
+  if (cut === Number.POSITIVE_INFINITY) return `${pieces.join("")}${url.slice(cursor)}`
+  const kept = `${pieces.join("")}${url.slice(cursor, cut)}`
+  return kept.endsWith(marker) ? kept : `${kept}${marker}`
 }
 
 // The quoting a character of a word's value was written in: none, single or
@@ -383,8 +420,13 @@ function doubleQuotedEnd(text: string, open: number, add: (piece: string, quotin
 const plainCharacter = /[A-Za-z0-9_@%+=:,./[\]?#~!^-]/u
 const plainCommandCharacter = /[A-Za-z0-9_@%+=:,./\]#~!^-]/u
 const singleQuoted = (text: string) => text.replace(/'/gu, "'\"'\"'")
+// Inside double quotes a character escaped right after the marker is
+// single-quoted between two double-quoted runs instead: the protocol backstop
+// reads `[REDACTED]\"` after a scheme word or sensitive key as a value that is
+// not the marker.
+const doubleQuoted = (text: string) => text.replace(/[\\"$`]/gu, (character: string, at: number) => (text.endsWith(marker, at) ? `"'${character}'"` : `\\${character}`))
 function spelled(text: string, quoting: Quoting, wordStart: boolean, command: boolean): string {
-  if (quoting === "\"") return `${text.replace(/[\\"$`]/gu, "\\$&")}"`
+  if (quoting === "\"") return `${doubleQuoted(text)}"`
   if (quoting === "'") return `${singleQuoted(text)}'`
   const plainAt = (index: number) => (command ? plainCommandCharacter : plainCharacter).test(text[index]!)
   let plain = 0
@@ -517,8 +559,6 @@ function shellScripts(tokens: readonly Token[]): Set<number> {
 // are a shell's script, and the token after which everything is dropped.
 interface Plan { values: string[]; anchors: number[]; dropped: boolean[]; scripts: Set<number>; stopAfter?: number }
 
-interface Change { start: number; end: number; text: string }
-
 // One token's changes in order, overlapping ones made one: a change that
 // holds another keeps its own text, and two that only overlap become the
 // marker over both. Rules read inside a value another rule hid, so a change
@@ -558,19 +598,66 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
   const scripts = shellScripts(tokens)
   let stopAfter: number | undefined
 
-  // Whether the rules run in the second pass below, and the token whose
-  // character it reads there.
+  // Whether the rules run in the second pass below, and the character it
+  // reads there and that character's token.
   let passing = false
+  let passAt = -1
   let passToken = -1
-  // A change is recorded and true returned. The second pass records only a
-  // value in a later word than the one it reads: a value in the same word is
-  // that word's rule's to hide (a URL's, a header's) or, in a shell's script,
-  // the script's own when it is read on its own. A value that is a later
-  // shell's script hides that script whole.
+  // What the first pass hid, as a count of hiding changes over each index of
+  // the joined text: one more where a change starts, one fewer where it ends.
+  // A URL counts only the spans it hides, not the host or names it keeps.
+  const hiding = new Int32Array(joined.length + 1)
+  const hide = (from: number, to: number) => {
+    hiding[from]! += 1
+    hiding[to]! -= 1
+  }
+  // Filled after the first pass: how many characters before each index
+  // nothing hid, so whether a span was hidden is asked in constant time.
+  const shown = new Int32Array(joined.length + 1)
+  const hidden = (from: number, to: number) => shown[to]! - shown[from]! === 0
+
+  // Each URL the first pass changed: the token it starts in and the last
+  // token it read in, where it starts, its text, the spans it hides, its
+  // change, and where a later rule cut it. `urlOf` names the URL each of its
+  // tokens belongs to, and `urlOffsets` where each token's text starts in it.
+  interface UrlRead { token: number; last: number; index: number; url: string; hides: Change[]; change: Change; cut: number }
+  const urls: UrlRead[] = []
+  const urlOf = new Int32Array(tokens.length).fill(-1)
+  const urlOffsets = new Int32Array(tokens.length)
+  // Where the second pass hid a word from a trigger to its end, per token.
+  const tails = new Float64Array(tokens.length).fill(Number.POSITIVE_INFINITY)
+  // The word from `at` to its end is hidden. In a URL the first pass changed,
+  // its text was written as one change, so the URL is cut there instead.
+  const hideTail = (token: number, at: number) => {
+    const read = urlOf[token] === -1 ? undefined : urls[urlOf[token]!]
+    if (read !== undefined && (token !== read.token || at >= read.index)) {
+      read.cut = Math.min(read.cut, urlOffsets[token]! + at - (token === read.token ? read.index : starts[token]!))
+    } else if (at < tails[token]!) {
+      tails[token] = at
+      changes[token]!.push({ start: at - starts[token]!, end: ends[token]! - starts[token]!, text: marker })
+    }
+  }
+
+  // Where a same-word value is checked to, when its rule reads less of it.
+  let sameWordStop = Number.POSITIVE_INFINITY
+  // A change is recorded and true returned. The second pass records a value
+  // in a later word than the one it reads; a value that is a later shell's
+  // script hides that script whole. A value in the same word is that word's
+  // rule's to hide (a URL's, a header's) or, in a shell's script, the
+  // script's own when it is read on its own. When that rule took the word
+  // without hiding all of the value (a URL's host or a query name, a header's
+  // name before a scheme word it keeps), the word is hidden from the trigger
+  // the second pass read, the scheme word, key, flag or header flag, to its
+  // end.
   const change = (token: number, from: number, to: number, text: string): boolean => {
-    if (passing && token === passToken) return false
-    if (passing && scripts.has(token)) changes[token]!.push({ start: 0, end: ends[token]! - starts[token]!, text: marker })
-    else changes[token]!.push({ start: from - starts[token]!, end: to - starts[token]!, text })
+    if (passing && token === passToken) {
+      if (scripts.has(token) || hidden(from, Math.max(from, Math.min(to, sameWordStop)))) return false
+      hideTail(token, passAt)
+    } else if (passing && scripts.has(token)) changes[token]!.push({ start: 0, end: ends[token]! - starts[token]!, text: marker })
+    else {
+      changes[token]!.push({ start: from - starts[token]!, end: to - starts[token]!, text })
+      if (!passing) hide(from, to)
+    }
     consumed.add(token)
     return true
   }
@@ -590,19 +677,23 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
   // Facts about the joined text, read once from the end so a rule asks them
   // in constant time wherever it starts: where the run of header-name
   // characters, and of blanks, starting at each index ends, and where the
-  // next colon is. A header flag read them from the rest of its word, which
-  // many flags in one word made quadratic.
+  // next colon is, and where a key's value as the protocol backstop reads it
+  // ends. A header flag read them from the rest of its word, which many flags
+  // in one word made quadratic.
   const nameRuns = new Int32Array(joined.length + 1)
   const blankRuns = new Int32Array(joined.length + 1)
   const colons = new Int32Array(joined.length + 1)
+  const valueStops = new Int32Array(joined.length + 1)
   nameRuns[joined.length] = joined.length
   blankRuns[joined.length] = joined.length
   colons[joined.length] = joined.length
+  valueStops[joined.length] = joined.length
   for (let at = joined.length - 1; at >= 0; at -= 1) {
     const character = joined[at]!
     nameRuns[at] = headerNameCharacter.test(character) ? nameRuns[at + 1]! : at
     blankRuns[at] = /\s/u.test(character) ? blankRuns[at + 1]! : at
     colons[at] = character === ":" ? at : colons[at + 1]!
+    valueStops[at] = valueStop.test(character) ? at : valueStops[at + 1]!
   }
   // The first word at or after each token, or -1.
   const nextWords = new Int32Array(tokens.length + 1)
@@ -646,9 +737,28 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
       last += 1
       url += tokens[last]!.value
     }
-    const redacted = redactUrl(url)
+    const hides = urlHides(url)
+    const redacted = writtenUrl(url, hides)
     if (redacted === url) return ends[token]!
-    change(token, index, ends[token]!, redacted)
+    const read: UrlRead = { token, last, index, url, hides, change: { start: index - starts[token]!, end: ends[token]! - starts[token]!, text: redacted }, cut: Number.POSITIVE_INFINITY }
+    changes[token]!.push(read.change)
+    consumed.add(token)
+    // Each token's text in the URL, and the spans it hides in the joined text.
+    let hideIndex = 0
+    for (let part = token, offset = 0; part <= last; offset += ends[part]! - (part === token ? index : starts[part]!), part += 1) {
+      urlOf[part] = urls.length
+      urlOffsets[part] = offset
+      const from = part === token ? index : starts[part]!
+      const length = ends[part]! - from
+      // A span can run on into the next token's text.
+      while (hideIndex < hides.length && hides[hideIndex]!.start < offset + length) {
+        const { start, end } = hides[hideIndex]!
+        hide(from + Math.max(start - offset, 0), from + Math.min(end - offset, length))
+        if (end > offset + length) break
+        hideIndex += 1
+      }
+    }
+    urls.push(read)
     for (let merged = token + 1; merged <= last; merged += 1) {
       dropped[merged] = true
       consumed.add(merged)
@@ -656,8 +766,11 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     return ends[last]!
   }
 
+  // A header flag starts where a sensitive flag does: after anything but a
+  // letter, digit, underscore, dot or hyphen, so `?-H X-Foo: v` in a URL's
+  // query is one too.
   const headerAt = (index: number): number | undefined => {
-    if (index > 0 && !wordBoundary.test(joined[index - 1]!)) return undefined
+    if (index > 0 && /[\p{L}\p{N}_.-]/u.test(joined[index - 1]!)) return undefined
     headerFlag.lastIndex = index
     const match = headerFlag.exec(joined)
     if (!match) return undefined
@@ -731,6 +844,15 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     } else if (joinedBy === "=") redacts = flag === "" && keyQuote === "" && wordStart && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)
     else redacts = /^[A-Z_][A-Z0-9_]+$/u.test(key) && (quotedKey || key.includes("_"))
     if (!redacts) return undefined
+    // A value in the key's own word counts as hidden when the value the
+    // protocol backstop reads after the key is: its first run, after one
+    // opening quote. The rest of the word can be a URL's next query part
+    // (`?access_token=x&mode=fast`), whose name the URL keeps. When that run is
+    // empty, a sensitive key's value is the rest of its word (`--token ,x`); an
+    // assignment's (`;b=&d`) is empty.
+    const valueFrom = /["'`]/u.test(joined[start]!) ? start + 1 : start
+    const stop = valueStops[valueFrom]!
+    sameWordStop = stop === valueFrom && isSensitiveKey(key) ? Number.POSITIVE_INFINITY : stop
     // A value that is one quoted string in the text (a JSON value) ends at its
     // closing quote and keeps its quotes. Every rule reads a value it hid, so
     // a scheme or flag word in it is still read as one.
@@ -757,7 +879,7 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     return schemeProse.has(joined.slice(start, trimmed).toLowerCase())
   }
   const schemeAt = (index: number, token: number): number | undefined => {
-    if (index > 0 && !/[\s"'`(=:,{[]/u.test(joined[index - 1]!)) return undefined
+    if (index > 0 && schemeBoundary.test(joined[index - 1]!)) return undefined
     scheme.lastIndex = index
     if (!scheme.test(joined)) return undefined
     const start = scheme.lastIndex
@@ -803,21 +925,35 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
   // whose value can be the next word (a scheme word, a sensitive key or flag,
   // a header's name, a private key's header) is tried at every character of
   // the original words, whatever the pass above took, and each value it
-  // finds in a later word is hidden. What it finds joins the changes above
-  // and is merged with them once, so no rule decides what another reads.
+  // finds in a later word is hidden. A value it finds in the same word that
+  // the pass above did not hide hides that word from the rule's start to its
+  // end: `'https://host Token x'` kept the host whole. What it finds joins
+  // the changes above and is merged with them once, so no rule decides what
+  // another reads.
   // Each rule reads in constant work apart from what it matches, so the pass
-  // is linear too.
+  // is linear too. A value in the same word counts as hidden when the first
+  // pass hid every character of it, or the text already held the marker there.
+  for (let at = joined.indexOf(marker); at !== -1; at = joined.indexOf(marker, at + marker.length)) hide(at, at + marker.length)
+  for (let at = 0, depth = 0; at < joined.length; at += 1) {
+    depth += hiding[at]!
+    shown[at + 1] = shown[at]! + (depth === 0 ? 1 : 0)
+  }
   passing = true
+  sameWordStop = Number.POSITIVE_INFINITY
   footer = undefined
   for (let at = 0; at < joined.length && (stopAfter === undefined || at < ends[stopAfter]!); at += 1) {
     const token = owners[at]!
     if (token === -1 || tokens[token]!.kind === "operator") continue
+    passAt = at
     passToken = token
     if (joined.startsWith("-----BEGIN ", at)) privateKeyAt(at, token)
     headerAt(at)
     pairAt(at, token)
+    sameWordStop = Number.POSITIVE_INFINITY
     schemeAt(at, token)
   }
+  // A URL cut in the second pass is written again up to its cut.
+  for (const read of urls) if (read.cut !== Number.POSITIVE_INFINITY) read.change.text = writtenUrl(read.url, read.hides, read.cut)
   const merged = changes.map(mergedChanges)
   const values = tokens.map((token, index) => {
     if (token.kind !== "word" || dropped[index] || (stopAfter !== undefined && index > stopAfter)) return token.value

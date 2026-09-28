@@ -75,7 +75,8 @@ describe("redactInventoryText", () => {
     ["curl -H X-Custom:v x", "curl -H X-Custom:[REDACTED] x"],
     ["curl -H'X-Custom: v' x", "curl -H'X-Custom: [REDACTED]' x"],
     ["sh -c 'curl -H \"X-Custom: v\" x'", "sh -c 'curl -H \"X-Custom: [REDACTED]\" x'"],
-    ["sh -c \"curl -H \\\"X-Custom: v\\\" x\"", "sh -c \"curl -H \\\"X-Custom: [REDACTED]\\\" x\""],
+    // A quote escaped right after the marker is single-quoted instead.
+    ["sh -c \"curl -H \\\"X-Custom: v\\\" x\"", "sh -c \"curl -H \\\"X-Custom: [REDACTED]\"'\"'\" x\""],
     // The script's own quote is not closed, so it is redacted from that word on.
     ["sh -c \"curl -H \\\"X-Custom: v x\"", "sh -c \"curl -H [REDACTED]\""],
     // A header name takes every RFC 9110 token character, quote marks included.
@@ -85,7 +86,7 @@ describe("redactInventoryText", () => {
     // An unescaped backquote in double quotes runs a command; the shell does
     // not read it as a word, so it is redacted from that word on.
     ["curl -H \"!#$%&'*+-.^_`|~Az09: s3cr3t-value\" x", "curl -H [REDACTED]"],
-    ["sh -c \"curl -H \\\"X'Foo: s3cr3t-value\\\" x\"", "sh -c \"curl -H \\\"X'Foo: [REDACTED]\\\" x\""],
+    ["sh -c \"curl -H \\\"X'Foo: s3cr3t-value\\\" x\"", "sh -c \"curl -H \\\"X'Foo: [REDACTED]\"'\"'\" x\""],
     // An unquoted name's quote opens a quoted run the value closes; the
     // redacted value closes it again.
     ["curl -H X'Foo: s3cr3t-value' x", "curl -H X'Foo: [REDACTED]' x"],
@@ -125,6 +126,10 @@ describe("redactInventoryText", () => {
     // Every shell escape in a header name is read before the name is matched.
     ["curl -H X\\&Foo: opaque-secret x", "curl -H X\\&Foo: [REDACTED] x"],
     ["curl -H X\\*Foo:opaque-secret x", "curl -H X\\*Foo:[REDACTED] x"],
+    // A scheme word starts wherever the protocol backstop reads one, after a
+    // `/` too, and the backstop refuses the text with its value shown.
+    ["tool --token-file ./token --max-tokens 10", "tool --token-file ./token [REDACTED] 10"],
+    ["cat ./Token swordfish tail", "cat ./Token [REDACTED] tail"],
   ])("redacts %j", (input, expected) => {
     const redacted = redactInventoryText(input)
     expect(redacted).toBe(expected)
@@ -134,7 +139,7 @@ describe("redactInventoryText", () => {
   it.each([
     "pnpm build",
     "node /tmp/config=dev/index.js",
-    "tool --token-file ./token --max-tokens 10",
+    "tool --token-file ./secrets --max-tokens 10",
     "Bearer [REDACTED]",
     "NODE_ENV=[REDACTED] pnpm build",
     // A URL with no path, or only `/`, keeps it.
@@ -365,6 +370,19 @@ describe("a scheme word or sensitive flag and its value in one word another rule
     ["sh -c \"curl 'https://host Token swordfish tail'\"", "sh -c \"curl 'https://host [REDACTED]'\""],
     ["bash -lc \"curl 'https://host Token swordfish tail'\"", "bash -lc \"curl 'https://host [REDACTED]'\""],
     ["env MODE=x sh -c \"curl 'https://host Token swordfish tail'\"", "env MODE=[REDACTED] sh -c \"curl 'https://host [REDACTED]'\""],
+    // A scheme word or header flag right after a URL's `?` or `#` is one too.
+    ["curl 'https://host/#Bearer swordfish=1'", "curl 'https://host/#[REDACTED]'"],
+    ["curl 'https://host/?-H X-Foo: swordfish=1'", "curl 'https://host/?[REDACTED]'"],
+    // An assignment's value, and a sensitive key's that the protocol reads
+    // as empty, run to the end of the word.
+    ["curl 'https://host A=swordfish'", "curl 'https://host [REDACTED]'"],
+    ["curl 'https://host --token ,swordfish'", "curl 'https://host [REDACTED]'"],
+    // A value the URL hid keeps the query's other names.
+    ["curl 'https://host/?access_token=zzz&mode=fast'", "curl 'https://host/?access_token=[REDACTED]&mode=[REDACTED]'"],
+    // A quote escaped right after the marker in a double-quoted script is
+    // single-quoted, so the backstop does not read a backslash as the value.
+    ["bash -lc \"curl \\\"x Bearer swordfish\\\"\"", "bash -lc \"curl \\\"x Bearer [REDACTED]\"'\"'\"\""],
+    ["bash -lc \"curl \\\"x --token swordfish\\\"\"", "bash -lc \"curl \\\"x --token [REDACTED]\"'\"'\"\""],
   ])("redacts %s", (input, expected) => {
     for (const redact of [redactInventoryText, redactInventoryCommand]) {
       const redacted = redact(input)
