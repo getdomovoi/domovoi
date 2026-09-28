@@ -552,6 +552,20 @@ describe("readRepositoryProviderConfig: Codex", () => {
     expect((await readRepositoryProviderConfig(root, { heldBack: true })).configDigest).not.toBe(first.configDigest)
   })
 
+  // An instruction file that is also a path in scope is listed once.
+  it("lists an instruction file that is also a Codex file once", async () => {
+    const root = await scratch()
+    await put(root, ".codex/hooks.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "stop-hook" }] }] } }))
+    await put(root, ".codex/skills/mine/SKILL.md", "mine")
+    for (const written of ["hooks.json", "skills"]) {
+      await put(root, ".codex/config.toml", `model_instructions_file = ${JSON.stringify(written)}\n`)
+      const codex = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+      expect(toolInventoryProviderSchema.safeParse(codex).success, written).toBe(true)
+      const paths = codex.files.map((file) => file.path)
+      expect(paths, written).toEqual([...new Set(paths)])
+    }
+  })
+
   // A header helper prints the headers Codex sends, and a header's name and
   // value need no word the redaction knows: every argument is cut, and the
   // helper is listed by its program.
