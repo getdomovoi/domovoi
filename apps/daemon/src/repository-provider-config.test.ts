@@ -780,6 +780,45 @@ describe("readRepositoryProviderConfig: Codex", () => {
     expect(other.files.map((file) => file.path)).toEqual([".codex/config.toml", ".codex/hooks.json", ".codex/rules", ".codex/skills"])
   })
 
+  // Codex takes a CODEX_HOME that is set as the canonical path of the value
+  // as written (find_codex_home at rust-v0.156.1): a `..` after a link steps
+  // up from the link's target, not from the link. A home spelled that way
+  // that only reads as the repository's folder is not Codex's home.
+  it("reads a .codex folder a set CODEX_HOME only spells, through a link and `..`", async () => {
+    const root = await scratch()
+    const elsewhere = await scratch("domovoi-provider-home-")
+    await mkdir(join(elsewhere, ".codex"))
+    await mkdir(join(elsewhere, "sub"))
+    await symlink(join(elsewhere, "sub"), join(root, "link"), process.platform === "win32" ? "junction" : "dir")
+    await put(root, ".codex/config.toml", "[mcp_servers.repository]\ncommand = \"repository-server\"\n")
+    const codexHome = `${root}/link/../.codex`
+    const codexServers = (result: { providers: ToolInventoryProvider[] }) => provider(result, "codex").entries.map((entry) => entry.name)
+    const first = await readRepositoryProviderConfig(root, { heldBack: true, codexHome })
+    expect(provider(first, "codex").files).toEqual([{ path: ".codex/config.toml", source: "project-settings", state: "read" }])
+    expect(codexServers(first)).toEqual(["repository"])
+    await put(root, ".codex/config.toml", "[mcp_servers.repository]\ncommand = \"repository-server-2\"\n")
+    const changed = await readRepositoryProviderConfig(root, { heldBack: true, codexHome })
+    expect(changed.configDigest).not.toBe(first.configDigest)
+    // The same value from the environment.
+    vi.stubEnv("CODEX_HOME", codexHome)
+    try {
+      expect(codexServers(await readRepositoryProviderConfig(root, { heldBack: true }))).toEqual(["repository"])
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("refuses trust for a nested .codex folder a set CODEX_HOME only spells", async () => {
+    const root = await scratch()
+    const elsewhere = await scratch("domovoi-provider-home-")
+    await mkdir(join(elsewhere, ".codex"))
+    await mkdir(join(elsewhere, "sub"))
+    await put(root, "app/.codex/config.toml", "[mcp_servers.nested]\ncommand = \"nested-server\"\n")
+    await symlink(join(elsewhere, "sub"), join(root, "app", "link"), process.platform === "win32" ? "junction" : "dir")
+    const nested = await readRepositoryProviderConfig(root, { heldBack: true, sessionFolder: "app", codexHome: `${root}/app/link/../.codex` })
+    expect(nested.trustRefusals).toEqual([{ provider: "codex", reason: "nested-config", path: "app/.codex" }])
+  })
+
   // A hook whose command is adversarial input, and TOML a parser has taken
   // more than linear work on, near the file limit: read in work that grows
   // about linearly with the input, counted, not timed.
