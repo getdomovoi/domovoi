@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { EventEmitter } from "node:events"
+import { win32 } from "node:path"
 import type { Duplex } from "node:stream"
 import { StringDecoder } from "node:string_decoder"
 
@@ -96,22 +97,45 @@ export function runningClaudeProcesses(): RunningClaudeProcess[] {
 }
 
 type TaskkillSpawn = (
-  command: "taskkill",
+  command: string,
   args: string[],
-  options: { windowsHide: true; shell: false; stdio: "ignore" },
+  options: { cwd: string; windowsHide: true; shell: false; stdio: "ignore" },
 ) => ChildProcess
 
+// The Windows directory when SystemRoot does not name one.
+const defaultSystemRoot = "C:\\Windows"
+
+// The system's own System32 directory (security review round 4 of #647,
+// R4-F1). A bare name such as "taskkill" is looked up in the current
+// directory, then along PATH, where the project or a tool can put a program
+// of that name. So the directory comes from SystemRoot, and only when that is
+// an absolute path on a drive: a missing, relative, drive-relative or network
+// path, or one with a NUL, gives way to the default.
+function windowsSystemDirectory(environment: NodeJS.ProcessEnv): string {
+  const root = environment.SystemRoot
+  const usable = root !== undefined && /^[A-Za-z]:[\\/]/.test(root) && !root.includes("\0")
+  return win32.join(usable ? root : defaultSystemRoot, "System32")
+}
+
 // Windows has no process groups: taskkill /T ends the process and every
-// process it started, and /F does so without asking. Fixed arguments, no
-// shell and no console window. It resolves once taskkill has reported
-// success, and rejects when taskkill cannot start or exits with any other
-// status: then nothing says that the processes Claude started have ended.
-export function windowsTreeKill(pid: number, run: TaskkillSpawn = spawn): Promise<void> {
+// process it started, and /F does so without asking. The system's taskkill,
+// run from its own directory with fixed arguments, no shell and no console
+// window. It resolves once taskkill has reported success, and rejects when
+// taskkill cannot start or exits with any other status: then nothing says
+// that the processes Claude started have ended.
+export function windowsTreeKill(
+  pid: number,
+  run: TaskkillSpawn = spawn,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const failed = (reason: string) => reject(new Error(`taskkill ${reason}`))
+    const system = windowsSystemDirectory(environment)
     let taskkill: ChildProcess
     try {
-      taskkill = run("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, shell: false, stdio: "ignore" })
+      taskkill = run(win32.join(system, "taskkill.exe"), ["/PID", String(pid), "/T", "/F"], {
+        cwd: system, windowsHide: true, shell: false, stdio: "ignore",
+      })
     } catch {
       failed("could not start")
       return
