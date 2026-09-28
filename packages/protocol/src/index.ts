@@ -1,5 +1,6 @@
 export * from "./build-version.js"
 export * from "./client-admission.js"
+export * from "./credential-backstop.js"
 export * from "./devices.js"
 export * from "./execution.js"
 export * from "./fixtures.js"
