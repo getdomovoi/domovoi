@@ -92,6 +92,18 @@ export const adversarialCommands: ReadonlyArray<readonly [string, number, (size:
   ["scheme words and values in a URL's authority", 500, (size) => `curl 'https://h ${"Token x ".repeat(size)}' x`],
   ["sensitive keys in a URL's query names", 500, (size) => `curl 'https://h/?${"--token x=1&".repeat(size)}' x`],
   ["assignments in a URL's query", 500, (size) => `curl 'https://h/?${"a=1&b=".repeat(size)}' x`],
+  // Triggers read only in a view the protocol backstop reads, and outputs it
+  // is asked about again.
+  ["percent-encoded scheme words in a URL's authority", 500, (size) => `curl 'https://h ${"%54oken x ".repeat(size)}' x`],
+  ["percent-encoded blanks after scheme words", 500, (size) => `curl 'https://h ${"Token%20x ".repeat(size)}' x`],
+  ["percent-encoded keys in one word", 500, (size) => `echo '${"api%5fkey=x ".repeat(size)}'`],
+  ["\\u escapes in scheme words", 500, (size) => `echo '${"\\u0054oken x ".repeat(size)}'`],
+  ["ANSI C escapes the decoded shell words read", 500, (size) => `echo '$'"'"'${"\\x54oken x ".repeat(size)}'`],
+  ["a JSON argv's strings in one word", 500, (size) => `curl '[${"\"--token\",\"x\",".repeat(size)}]'`],
+  ["quotes before scheme values in one word", 500, (size) => `curl 'https://h ${"Token \"x\" ".repeat(size)}' x`],
+  ["escaped blanks after a sensitive header's name", 500, (size) => `curl -H X-Api-Token:${"\\ --token".repeat(size)}\\ x`],
+  ["escaped blanks after assignments", 500, (size) => `echo ${"A=\\ x ".repeat(size)}`],
+  ["quoted strings a hidden string pairs again, in a script", 250, (size) => `sh -c '${"curl \"\\\\u0054oken\" \"\\\"x\" \"t\\\"\" ".repeat(size)}'`],
 ]
 
 // The scanning inside one regular expression search is the work the counter

@@ -13,7 +13,10 @@ each `NAME=value`, each value after a sensitive key, flag or authorization schem
 after a header flag, every URL path after the host, every URL query and fragment part and URL user
 info read `[REDACTED]`, and
 environment values are never read. A flag right after an authorization scheme word is hidden whole
-once its own value is redacted. Nothing calls the reader yet; the `tool.inventory` handler and the
+once its own value is redacted. A scheme word or key is also read where the protocol's credential
+check reads one: after one layer of percent encoding, after backslash and `\u` escapes, among a JSON
+argument vector's strings, and before a value that opens with a quote. Text that check would still
+refuse is cut before the word it reads there, the rest `[REDACTED]`. Nothing calls the reader yet; the `tool.inventory` handler and the
 trust store come later.
 
 The protocol exports the cap on each tool inventory entry text field

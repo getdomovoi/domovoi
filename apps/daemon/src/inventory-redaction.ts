@@ -24,7 +24,16 @@
 // word), the word is hidden from that scheme word, key or flag to its end:
 // `'https://host Token x y'` reads `'https://host [REDACTED]'`. A scheme word
 // or flag starts where the protocol backstop reads one, after a `/`, `?` or
-// `#` too. Every rule reads the text in work that grows linearly with it. The daemon's durable-text redaction leaves
+// `#` too, and its value starts after one opening quote, as there. The text
+// is read in the backstop's other views as well (one layer of percent
+// decoding, backslash and \u escapes, the shell words of the percent-decoded
+// text, a JSON argv's double-quoted strings): a scheme word or key read only
+// in one (`%54oken x y`, `Token%20x y`, `api%5fkey=x`) is mapped back to the
+// text it was read from and its value hidden as above, its word from the
+// trigger to its end when the value is in the same word. Every output is then
+// judged as the backstop judges scheme and key values, in all its views, and
+// one it would still refuse is cut before the token it reads the trigger in,
+// the rest the marker. Every rule reads the text in work that grows linearly with it. The daemon's durable-text redaction leaves
 // `DATABASE_URL=x`, `https://tok@host` and `Bearer tok` alone, so this pass is
 // separate from it.
 //
@@ -481,11 +490,12 @@ function expandingSources(text: string, word: Word): number[] {
 // A word's source from its start to `end`. In a command, a backslash goes
 // before each character the shell would expand, so it reads as the same word;
 // other text (a rule, a matcher, a name) keeps its exact source.
-function sourceSpelling(text: string, word: Word, end: number, command: boolean): string {
-  if (!command) return text.slice(word.start, end)
+function sourceSpelling(text: string, word: Word, end: number, command: boolean, start = word.start): string {
+  if (!command) return text.slice(start, end)
   let spelling = ""
-  let cursor = word.start
+  let cursor = start
   for (const source of expandingSources(text, word)) {
+    if (source < start) continue
     if (source >= end) break
     spelling += `${text.slice(cursor, source)}\\`
     cursor = source
@@ -511,15 +521,29 @@ function commonPrefix(left: string, right: string): number {
 // script, a rewrite that starts a quoted run is written before its opening
 // quote instead: the script is quoted again in the word around it, and an
 // escaped quote between a key and its [REDACTED] reads as a value to the
-// protocol backstop.
+// protocol backstop. For the same reason no source escape is kept right after
+// an `=` or `:`: the backstop reads the backslash in `X-Api-Token:\ [REDACTED]`
+// as the header's value, so the word is written again from that escape, as
+// `X-Api-Token:' [REDACTED]'`. A word written again from its first character
+// drops the empty quotes its source opened with (`''"'"'x`), whose quote the
+// backstop would read after a scheme word once the script is quoted again.
 function rewrittenWord(text: string, word: Word, value: string, anchor: number, nested: boolean, command: boolean): string {
   if (value === word.value) return sourceSpelling(text, word, word.end, command)
   const { characters } = word
   let at = Math.min(anchor, commonPrefix(word.value, value))
   while (at > 0 && at < characters.length && characters[at - 1]!.source === characters[at]!.source) at -= 1
+  for (let index = 1; index < at; index += 1) {
+    const separator = word.value[index - 1]
+    const escaped = characters[index]!.quoting === "" && text[characters[index]!.source] === "\\"
+    if (escaped && (separator === "=" || separator === ":") && text[characters[index - 1]!.source] === separator) {
+      at = index
+      break
+    }
+  }
   const next = characters[at]
   const opens = nested ? next?.opens : undefined
-  const prefix = sourceSpelling(text, word, opens ?? next?.source ?? word.end, command)
+  const start = at === 0 && next !== undefined ? next.opens ?? next.source : word.start
+  const prefix = sourceSpelling(text, word, opens ?? next?.source ?? word.end, command, start)
   return `${prefix}${spelled(value.slice(at), opens === undefined ? next?.quoting ?? "" : "", prefix === "", command)}`
 }
 
@@ -573,6 +597,348 @@ function mergedChanges(list: readonly Change[]): Change[] {
     else if (change.end > last.end) merged[merged.length - 1] = { start: last.start, end: change.end, text: marker }
   }
   return merged
+}
+
+// A view of the joined text as the protocol backstop reads it: its characters,
+// and for each the span of joined text it was read from. A character read
+// from other text than itself (`%54` as `T`, `\-` as `-`), or put between two
+// strings (the blank that joins a JSON argv's strings), is decoded.
+interface View { text: string; from: number[]; to: number[] }
+
+// A view built from another view's characters, each mapped to the joined text.
+class ViewBuilder {
+  private readonly parts: string[] = []
+  private readonly from: number[] = []
+  private readonly to: number[] = []
+  constructor(private readonly source: View) {}
+  // The source's characters from `start` to `end`, as they are.
+  copy(start: number, end: number): void {
+    this.parts.push(this.source.text.slice(start, end))
+    for (let index = start; index < end; index += 1) {
+      this.from.push(this.source.from[index]!)
+      this.to.push(this.source.to[index]!)
+    }
+  }
+  // `written`, read from the source's characters from `start` to `end`.
+  read(written: string, start: number, end: number): void {
+    this.parts.push(written)
+    for (let index = 0; index < written.length; index += 1) {
+      this.from.push(this.source.from[start]!)
+      this.to.push(this.source.to[end - 1]!)
+    }
+  }
+  // Another view's characters, already mapped to the joined text.
+  append(view: View): void {
+    this.parts.push(view.text)
+    // One at a time: a long view spread as arguments would overflow the stack.
+    for (let index = 0; index < view.text.length; index += 1) {
+      this.from.push(view.from[index]!)
+      this.to.push(view.to[index]!)
+    }
+  }
+  view(): View {
+    return { text: this.parts.join(""), from: this.from, to: this.to }
+  }
+}
+
+// Every match of `pattern` (global) in a view written as `replacement` says.
+function replacedView(view: View, pattern: RegExp, replacement: (match: RegExpExecArray) => string): View {
+  const builder = new ViewBuilder(view)
+  let cursor = 0
+  for (const match of view.text.matchAll(pattern)) {
+    builder.copy(cursor, match.index)
+    builder.read(replacement(match), match.index, match.index + match[0].length)
+    cursor = match.index + match[0].length
+  }
+  builder.copy(cursor, view.text.length)
+  return builder.view()
+}
+
+// The protocol backstop's decodings, each as it writes them in `decoded`:
+// one layer of percent encoding; \u escapes and then backslash escapes.
+const percentDecoded = (view: View) => replacedView(view, /%([0-9A-Fa-f]{2})/gu, ([, hex]) => String.fromCharCode(Number.parseInt(hex!, 16)))
+const unescaped = (view: View) => replacedView(
+  replacedView(view, /\\u([0-9A-Fa-f]{4})/gu, ([, hex]) => String.fromCharCode(Number.parseInt(hex!, 16))),
+  /\\(.)/gu,
+  ([, character]) => character!,
+)
+
+// A view's double-quoted strings alone, each unescaped, joined by one blank
+// read from the closing quote before it: a JSON argv's strings as words. As
+// the backstop reads them, a string left unclosed ends the reading.
+function quotedStringsView(view: View): View {
+  const { text } = view
+  const builder = new ViewBuilder(view)
+  let closed = -1
+  for (let open = text.indexOf("\""); open !== -1; open = text.indexOf("\"", closed + 1)) {
+    let end = open + 1
+    while (end < text.length && text[end] !== "\"") end += text[end] === "\\" ? 2 : 1
+    if (end >= text.length) break
+    if (closed !== -1) builder.read(" ", closed, closed + 1)
+    builder.append(unescaped({ text: text.slice(open + 1, end), from: view.from.slice(open + 1, end), to: view.to.slice(open + 1, end) }))
+    closed = end
+  }
+  return builder.view()
+}
+
+// An ANSI C escape inside $'...', as the backstop reads one.
+const ansiEscape = /\\(?:x([0-9A-Fa-f]{1,2})|([0-7]{1,3})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|(.))/suy
+
+// A view read as the backstop's shellWords reads text: quotes joined, backslash
+// escapes taken, $'...' decoded, words joined by one blank read from the blank
+// that ended the word before. An escape is read where it stands, not from a
+// copy of the rest of the text, so many escapes stay linear.
+function shellWordsView(view: View): View {
+  const { text } = view
+  const builder = new ViewBuilder(view)
+  let inWord = false
+  let words = 0
+  let ended = -1
+  const startWord = () => {
+    if (inWord) return
+    if (words > 0) builder.read(" ", ended, ended + 1)
+    words += 1
+    inWord = true
+  }
+  let index = 0
+  while (index < text.length) {
+    const character = text[index]!
+    if (/\s/u.test(character)) {
+      if (inWord) ended = index
+      inWord = false
+      index += 1
+    } else if (character === "\\") {
+      startWord()
+      if (index + 1 < text.length) builder.read(text[index + 1]!, index, index + 2)
+      index += 2
+    } else if (character === "'") {
+      startWord()
+      const end = text.indexOf("'", index + 1)
+      const close = end === -1 ? text.length : end
+      builder.copy(index + 1, close)
+      index = close + 1
+    } else if (character === "$" && text[index + 1] === "'") {
+      startWord()
+      index += 2
+      while (index < text.length && text[index] !== "'") {
+        if (text[index] !== "\\") {
+          builder.copy(index, index + 1)
+          index += 1
+          continue
+        }
+        ansiEscape.lastIndex = index
+        const escape = ansiEscape.exec(text)
+        if (escape === null) {
+          // A lone backslash at the end escapes nothing.
+          index += 1
+          continue
+        }
+        const [whole, hex, octal, short, long, other] = escape
+        const code = hex ?? short ?? long
+        const written = code !== undefined ? String.fromCodePoint(Math.min(Number.parseInt(code, 16), 0x10ffff))
+          : octal !== undefined ? String.fromCharCode(Number.parseInt(octal, 8) & 0xff)
+          : other ?? ""
+        builder.read(written, index, index + whole.length)
+        index += whole.length
+      }
+      index += 1
+    } else if (character === "\"" || (character === "$" && text[index + 1] === "\"")) {
+      startWord()
+      index += character === "$" ? 2 : 1
+      while (index < text.length && text[index] !== "\"") {
+        const escaped = text[index] === "\\" && /[$`"\\]/u.test(text[index + 1] ?? "")
+        if (escaped) builder.read(text[index + 1]!, index, index + 2)
+        else builder.copy(index, index + 1)
+        index += escaped ? 2 : 1
+      }
+      index += 1
+    } else {
+      startWord()
+      builder.copy(index, index + 1)
+      index += 1
+    }
+  }
+  return builder.view()
+}
+
+// Every view of `text` the protocol backstop reads besides the words the
+// shell assembles, which the rules read already: percent-decoded, unescaped
+// (as written and percent-decoded), percent-decoded shell words, and the
+// double-quoted strings (as written and percent-decoded). A view with the
+// same text as the words is left out, and so is a second view with one text.
+function backstopViews(text: string): View[] {
+  const words: View = { text, from: Array.from({ length: text.length }, (_, index) => index), to: Array.from({ length: text.length }, (_, index) => index + 1) }
+  const percent = percentDecoded(words)
+  const views = [percent, unescaped(words), unescaped(percent), shellWordsView(percent), quotedStringsView(words), quotedStringsView(percent)]
+  const seen = new Set([text])
+  return views.filter((view) => {
+    if (seen.has(view.text)) return false
+    seen.add(view.text)
+    return true
+  })
+}
+
+// The backstop's judgement of a key and its value, as `pairHoldsValue` in the
+// protocol makes it: whether it refuses the text for that value.
+const sentenceEnd = new Set([".", ",", ";", ":", "!", "?", "\"", "'", "`", ")", "]", "}", "\u2019", "\u201d", "\u00bb"])
+const authorizationSchemes = new Set(["bearer", "basic", "token", "digest"])
+function backstopRefusesPair(flag: string, quoteAfterKey: string, key: string, separator: string, value: string, assignmentStart: boolean): boolean {
+  if (value === "") return false
+  const joinedBy = separator.trim()
+  if (joinedBy === "") return flag !== "" && isSensitiveKey(key) && !value.startsWith("-") && value !== marker
+  if (isSensitiveKey(key)) return !(key.toLowerCase() === "authorization" && authorizationSchemes.has(value.toLowerCase())) && value !== marker
+  if (joinedBy === "=") return flag === "" && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(key) && assignmentStart && value !== marker
+  const keyForm = quoteAfterKey !== "" || (/\s$/u.test(separator) && key.includes("_"))
+  return /^[A-Z_][A-Z0-9_]+$/u.test(key) && keyForm && value !== marker
+}
+// A key as the backstop's keyPairs pattern reads one, before its separator.
+const viewKey = /(-{1,2})?(["'`]?)([A-Za-z_][A-Za-z0-9_.-]*)(["'`]?)/uy
+
+// A trigger found in a view: the view's index where it starts, and where the
+// value after it starts and ends.
+interface ViewTrigger { start: number; valueStart: number; valueEnd: number }
+
+// A word of prose after a scheme word, with the punctuation a sentence puts
+// after it, as the backstop reads one.
+const proseWord = /^\p{L}+[.,;:!?"'`)\]}’”»]*$/u
+
+// Every scheme word and key in a view whose value the protocol backstop reads
+// as a credential or would refuse the text for, judged one of two ways. To
+// hide: a scheme word's value unless it is the marker (a word of prose too,
+// which the backstop lets through), read at every scheme word. To refuse:
+// exactly as the backstop does, prose and an Authorization key before the
+// scheme included, each search going on past the value it read. Either way a
+// key's value counts when the backstop would refuse it. Each is read in
+// constant work apart from its own key, separator and value, from facts read
+// once from the view's end, so the reading is linear.
+function viewTriggers(view: View, judge: "hide" | "refuse"): ViewTrigger[] {
+  const { text } = view
+  const blankEnds = new Int32Array(text.length + 1)
+  const schemeValueEnds = new Int32Array(text.length + 1)
+  const keyValueEnds = new Int32Array(text.length + 1)
+  blankEnds[text.length] = text.length
+  schemeValueEnds[text.length] = text.length
+  keyValueEnds[text.length] = text.length
+  for (let at = text.length - 1; at >= 0; at -= 1) {
+    const character = text[at]!
+    blankEnds[at] = /\s/u.test(character) ? blankEnds[at + 1]! : at
+    schemeValueEnds[at] = /[\s"'`,;)]/u.test(character) ? at : schemeValueEnds[at + 1]!
+    keyValueEnds[at] = /[\s"'`,;}&|)]/u.test(character) ? at : keyValueEnds[at + 1]!
+  }
+  const afterQuote = (at: number) => (at < text.length && /["'`]/u.test(text[at]!) ? at + 1 : at)
+  // Where an Authorization key and its separator end right before `at`, the
+  // start of that key; read backwards over a quote, blanks, `=` or `:`,
+  // blanks and a quote, as the backstop's pattern reads them forwards.
+  const authorizationBefore = (at: number): number | undefined => {
+    let index = at
+    if (index > 0 && /["'`]/u.test(text[index - 1]!)) index -= 1
+    while (index > 0 && /\s/u.test(text[index - 1]!)) index -= 1
+    if (index === 0 || !"=:".includes(text[index - 1]!)) return undefined
+    index -= 1
+    while (index > 0 && /\s/u.test(text[index - 1]!)) index -= 1
+    if (index > 0 && /["'`]/u.test(text[index - 1]!)) index -= 1
+    const key = index - "authorization".length
+    return key >= 0 && text.slice(key, index).toLowerCase() === "authorization" ? key : undefined
+  }
+  // Where the backstop's next search for a scheme starts: past the value
+  // its last match read.
+  let schemeFrom = 0
+  const triggers: ViewTrigger[] = []
+  for (let at = 0; at < text.length; at += 1) {
+    const before = at === 0 ? "" : text[at - 1]!
+    schemeWord.lastIndex = at
+    if (schemeWord.test(text)) {
+      const blanks = schemeWord.lastIndex
+      const valueStart = afterQuote(blankEnds[blanks]!)
+      const valueEnd = schemeValueEnds[valueStart]!
+      const authorization = judge === "refuse" ? authorizationBefore(at) : undefined
+      const header = authorization !== undefined && authorization >= schemeFrom
+      const read = blankEnds[blanks]! > blanks && valueEnd > valueStart && (header || (!schemeBoundary.test(before) && at >= schemeFrom))
+      if (read) {
+        // The marker, alone or ending a sentence, is judged as the backstop
+        // judges it; the punctuation after it is read once.
+        let ending = valueEnd
+        while (ending > valueStart + marker.length && sentenceEnd.has(text[ending - 1]!)) ending -= 1
+        const markerOnly = ending === valueStart + marker.length && text.startsWith(marker, valueStart)
+        if (judge === "hide") {
+          if (!markerOnly) triggers.push({ start: at, valueStart, valueEnd })
+        } else {
+          schemeFrom = valueEnd
+          const value = text.slice(valueStart, valueEnd)
+          const nextStart = blankEnds[valueEnd]!
+          const nextEnd = schemeValueEnds[nextStart]!
+          const prose = !header && proseWord.test(value) && nextStart > valueEnd && nextEnd > nextStart && proseWord.test(text.slice(nextStart, nextEnd))
+          let word = value
+          if (!header) {
+            let end = value.length
+            while (end > 0 && sentenceEnd.has(value[end - 1]!)) end -= 1
+            word = value.slice(0, end)
+          }
+          if (!markerOnly && word !== "" && !prose && word !== marker && !schemeProse.has(word.toLowerCase())) {
+            triggers.push({ start: header ? authorization : at, valueStart, valueEnd })
+          }
+        }
+      }
+    }
+    if (/[\p{L}\p{N}_.-]/u.test(before)) continue
+    viewKey.lastIndex = at
+    const key = viewKey.exec(text)
+    if (key === null) continue
+    const [whole, flag = "", , name = "", quoteAfterKey = ""] = key
+    const separatorStart = at + whole.length
+    const blanks = blankEnds[separatorStart]!
+    const joiner = text[blanks]
+    const separatorEnd = joiner === "=" || joiner === ":" ? blankEnds[blanks + 1]! : blanks
+    if (separatorEnd === separatorStart) continue
+    const valueStart = afterQuote(separatorEnd)
+    const valueEnd = keyValueEnds[valueStart]!
+    // Only whether the value is empty, opens with a hyphen, or is the marker
+    // or a scheme word matters, so a longer value is read no further than
+    // one character past the marker's length.
+    const value = text.slice(valueStart, Math.min(valueEnd, valueStart + marker.length + 1))
+    const assignmentStart = at === 0 || /[\s(;&|`<]/u.test(before)
+    if (backstopRefusesPair(flag, quoteAfterKey, name, text.slice(separatorStart, separatorEnd), value, assignmentStart)) {
+      triggers.push({ start: at, valueStart, valueEnd })
+    }
+  }
+  return triggers
+}
+
+// Whether a trigger reads as one only in its view: some character from the
+// one before it to its value's start was decoded, or does not follow the one
+// before it in the joined text. A trigger read from the joined text as it is
+// was read by the rules already.
+function decodedTrigger(view: View, joined: string, { start, valueStart }: ViewTrigger): boolean {
+  const first = Math.max(start - 1, 0)
+  for (let index = first; index < valueStart; index += 1) {
+    const from = view.from[index]!
+    if (view.to[index]! - from !== 1 || joined[from] !== view.text[index]) return true
+    if (index > first && from !== view.to[index - 1]) return true
+  }
+  return false
+}
+
+// Where the protocol backstop would first read a scheme word or key in text
+// it refuses for the value after it, in any view it reads, or undefined when
+// no such trigger is there. An output is checked with it, so a spelling the
+// rules chose that still reads as a value (a quote pairing changed by a
+// hidden string, a backslash kept before the marker) is cut there rather
+// than left for the backstop to drop the whole entry.
+function refusalAt(text: string): number | undefined {
+  const words: View = { text, from: Array.from({ length: text.length }, (_, index) => index), to: Array.from({ length: text.length }, (_, index) => index + 1) }
+  const percent = percentDecoded(words)
+  const views = [words, percent, unescaped(words), unescaped(percent), shellWordsView(words), shellWordsView(percent), quotedStringsView(words), quotedStringsView(percent)]
+  const seen = new Set<string>()
+  let first: number | undefined
+  for (const view of views) {
+    if (seen.has(view.text)) continue
+    seen.add(view.text)
+    for (const trigger of viewTriggers(view, "refuse")) {
+      const at = view.from[trigger.start]!
+      if (first === undefined || at < first) first = at
+    }
+  }
+  return first
 }
 
 // The rules, run over the tokens' values joined by one space. `glued` says a
@@ -886,8 +1252,12 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     const value = wordAtIndex(start)
     if (value === undefined) return undefined
     // A value in the next word is that whole word; one in the same word ends
-    // where a word of prose would.
-    let end = start
+    // where a word of prose would. The protocol backstop reads a value after
+    // one opening quote, so one in the same word starts past it and the
+    // quote is kept: `Token "x y"` reads `Token "[REDACTED] y"`.
+    let valueStart = start
+    if (value === token && valueStart + 1 < ends[value]! && /["'`]/u.test(joined[valueStart]!)) valueStart += 1
+    let end = valueStart
     if (value !== token) end = ends[value]!
     else while (end < ends[value]! && !/[\s"'`,;)]/u.test(joined[end]!)) end += 1
     // A value kept (a word of prose, or the marker) or hidden is still read
@@ -897,8 +1267,8 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     // scheme as its credential: `Bearer --token x` reads `Bearer [REDACTED]
     // [REDACTED]`. A change a rule then makes inside it (`--token=x`) is
     // taken into its marker.
-    const kept = end === start || (end - start === marker.length && joined.startsWith(marker, start))
-    if (!kept && (joined[start] === "-" || !isSchemeProse(start, end))) change(value, start, end, marker)
+    const kept = end === valueStart || (end - valueStart === marker.length && joined.startsWith(marker, valueStart))
+    if (!kept && (joined[valueStart] === "-" || !isSchemeProse(valueStart, end))) change(value, valueStart, end, marker)
     return start
   }
 
@@ -951,6 +1321,33 @@ function planTokens(tokens: readonly Token[], glued: readonly boolean[], leading
     pairAt(at, token)
     sameWordStop = Number.POSITIVE_INFINITY
     schemeAt(at, token)
+  }
+  // The views the protocol backstop reads besides the words (percent-decoded,
+  // unescaped, its shell words of the percent-decoded text, a JSON argv's
+  // strings) are read too: `%54oken x y` and `Token%20x y` are a scheme and
+  // its value there, and `api%5fkey=x` a key. A scheme word or key read only
+  // in a view is mapped back to the joined text it came from, and its value
+  // hidden as the second pass hides one: a value in a later word hides that
+  // word whole, and one in the same word that the first pass did not hide
+  // hides the word from where the trigger's text starts to its end. A value
+  // that is not a word (an operator the view read into it) hides the
+  // trigger's own word from there instead. Each view is read in linear work.
+  for (const view of backstopViews(joined)) {
+    for (const trigger of viewTriggers(view, "hide")) {
+      if (!decodedTrigger(view, joined, trigger)) continue
+      const start = view.from[trigger.start]!
+      const token = wordAtIndex(start)
+      if (token === undefined || (stopAfter !== undefined && token > stopAfter)) continue
+      const valueFrom = view.from[trigger.valueStart]!
+      const valueTo = view.to[trigger.valueEnd - 1]!
+      const value = wordAtIndex(valueFrom)
+      passAt = start
+      passToken = token
+      sameWordStop = Number.POSITIVE_INFINITY
+      if (value === token) change(token, valueFrom, valueTo, marker)
+      else if (value !== undefined) change(value, starts[value]!, ends[value]!, marker)
+      else if (!scripts.has(token)) hideTail(token, start)
+    }
   }
   // A URL cut in the second pass is written again up to its cut.
   for (const read of urls) if (read.cut !== Number.POSITIVE_INFINITY) read.change.text = writtenUrl(read.url, read.hides, read.cut)
@@ -1006,19 +1403,34 @@ function redactShell(text: string, depth: number, nested: boolean, command: bool
   // it and reads back, or the marker alone. A cut is measured before it is
   // built, so one too long is never built: the work stays linear in the
   // output and the cap, not the output times its tokens.
-  const fitted = () => {
+  // A cut is also no longer than `limit`, when one is given.
+  const fitted = (limit = Number.POSITIVE_INFINITY) => {
     for (let index = cuts.length - 1; index >= 0; index -= 1) {
       const { length, count } = cuts[index]!
-      if (length + 1 + marker.length > maximum) continue
+      if (length + 1 + marker.length > maximum || length > limit) continue
       const shortened = `${output.slice(0, length)} ${marker}`
       const read = readBack(shortened, [...meant.slice(0, count), { kind: "word", value: marker }], command)
       if (read !== marker) return read
     }
     return marker
   }
+  // An output the protocol backstop would still refuse is cut as a long one
+  // is, before the token where it reads the trigger: whole tokens before it
+  // are kept, and the rest is the marker. Each cut is shorter than
+  // the last, so the checks end.
+  const accepted = (result: string) => {
+    let checked = result
+    let longest = Number.POSITIVE_INFINITY
+    for (let at = refusalAt(checked); at !== undefined && checked !== marker; at = refusalAt(checked)) {
+      checked = fitted(Math.min(at, longest))
+      // The kept text before ` [REDACTED]`, less one: the next cut is shorter.
+      longest = checked.length - marker.length - 2
+    }
+    return checked
+  }
   const readsBack = (whole: string, words: ReadonlyArray<Pick<Token, "kind" | "value">>) => {
     const read = readBack(whole, words, command)
-    return read.length <= maximum ? read : fitted()
+    return accepted(read.length <= maximum ? read : fitted())
   }
   // The rest of the text from `gap` on is redacted: a gap with a control
   // character in it is written as one blank.
@@ -1067,6 +1479,13 @@ function readBack(output: string, meant: ReadonlyArray<Pick<Token, "kind" | "val
 export function inventoryShellWords(text: string): string[] | undefined {
   const { tokens, stoppedAt } = lexShell(text)
   return stoppedAt === undefined ? tokens.flatMap((token) => (token.kind === "word" ? [token.value] : [])) : undefined
+}
+
+// Whether the protocol backstop would refuse text for a scheme's or key's
+// value, as this module mirrors it. Tests use it to check that the mirror and
+// the backstop agree, so the two cannot drift apart unseen.
+export function inventoryBackstopRefuses(text: string): boolean {
+  return refusalAt(text) !== undefined
 }
 
 // Text a shell does not run: a rule, a matcher, a name, a prompt or a URL. It
@@ -1124,7 +1543,17 @@ export function redactInventoryArgv(argv: readonly string[]): string {
       kept += 1
     }
   }
-  const line = kept === shown.length ? spellings.join(" ") : [...spellings.slice(0, kept), marker].join(" ")
-  const meant = kept === shown.length ? shown : [...shown.slice(0, kept), marker]
-  return readBack(line, meant.map((value) => ({ kind: "word", value })), true)
+  // A line the protocol backstop would still refuse keeps the arguments that
+  // end before where it reads the trigger, with the marker after them; each
+  // try keeps fewer, so the checks end.
+  for (;;) {
+    const line = kept === shown.length ? spellings.join(" ") : [...spellings.slice(0, kept), marker].join(" ")
+    const meant = kept === shown.length ? shown : [...shown.slice(0, kept), marker]
+    const read = readBack(line, meant.map((value) => ({ kind: "word", value })), true)
+    const at = read === marker ? undefined : refusalAt(read)
+    if (at === undefined) return read
+    let before = 0
+    for (let length = spellings[0]!.length; before < kept && length <= at; length += 1 + (spellings[before + 1]?.length ?? 0)) before += 1
+    kept = Math.min(before, kept - 1)
+  }
 }

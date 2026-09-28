@@ -6,7 +6,9 @@ import { join } from "node:path"
 import { toolInventoryEntrySchema } from "@getdomovoi/protocol"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
-import { inventoryFieldCaps, inventoryShellWords, redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
+import {
+  inventoryBackstopRefuses, inventoryFieldCaps, inventoryShellWords, redactInventoryArgv, redactInventoryCommand, redactInventoryText,
+} from "./inventory-redaction.js"
 import {
   escapedBlankTexts, hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, sameWordCases, sameWordCredentials, sameWordPlacements,
   sameWordWrappers, viewCases, viewCredential, viewPlacements, viewSpellings, viewTexts,
@@ -479,6 +481,26 @@ describe("triggers the protocol backstop reads in its other views", () => {
     [placement, spelling, wrapping, viewCases(place, spell, wrap)] as const
   )))))("hides every encoded trigger's credential in %s, %s, %s", (_placement, _spelling, _wrapping, cases) => {
     for (const { text, argv } of cases) expectEveryEntryPoint(text, argv)
+  })
+
+  // The redactor mirrors the backstop's views and its judgement of scheme
+  // and key values to check what it writes. On the same generated corpus,
+  // before redaction and after, the mirror refuses exactly what the backstop
+  // refuses. The corpus holds no other shape the backstop knows.
+  it.each(viewPlacements.flatMap(([placement, place]) => viewSpellings.flatMap(([spelling, spell]) => sameWordWrappers.map(([wrapping, wrap]) => (
+    [placement, spelling, wrapping, viewCases(place, spell, wrap)] as const
+  )))))("refuses what the backstop refuses in %s, %s, %s", (_placement, _spelling, _wrapping, cases) => {
+    for (const { text, argv } of cases) {
+      for (const judged of [text, redactInventoryText(text), redactInventoryCommand(text), redactInventoryArgv(argv)]) {
+        expect(inventoryBackstopRefuses(judged), judged).toBe(!backstopAccepts(judged))
+      }
+    }
+  })
+
+  it.each([...viewTexts, ...escapedBlankTexts])("refuses what the backstop refuses in %s", (text) => {
+    for (const judged of [text, redactInventoryText(text), redactInventoryCommand(text), redactInventoryArgv(inventoryShellWords(text)!)]) {
+      expect(inventoryBackstopRefuses(judged), judged).toBe(!backstopAccepts(judged))
+    }
   })
 })
 
