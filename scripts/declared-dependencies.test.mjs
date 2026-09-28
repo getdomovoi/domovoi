@@ -1,8 +1,11 @@
 import assert from "node:assert/strict"
 import { readdir, readFile } from "node:fs/promises"
+import { builtinModules } from "node:module"
 import { join } from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
+
+import { desktopPackages } from "./dependency-licenses.mjs"
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url))
 
@@ -55,3 +58,21 @@ for (const { directory, sources } of packages) {
     assert.deepEqual(unused, [], `${directory} declares dependencies nothing in ${sources.join(", ")} loads`)
   })
 }
+
+// The converse for the desktop app. electron-vite leaves `dependencies` in
+// node_modules and bundles every other import into out/, so a third-party
+// package moved to devDependencies would still load but leave the production
+// graph the license audit and the notices read. Electron and Node's builtins
+// come from the runtime. Workspace packages are bundled or, like the daemon
+// since #577, shipped beside the archive; either way desktopPackages names
+// them, and scripts/dependency-licenses.test.mjs checks that list.
+test("apps/desktop declares every third-party package its shipped code loads", async () => {
+  const root = join(repositoryRoot, "apps/desktop")
+  const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"))
+  const loaded = [...await runtimeImports(root, ["src/main", "src/preload", "src/shared"])]
+  const workspace = loaded.filter((name) => name.startsWith("@getdomovoi/"))
+  assert.deepEqual(workspace.filter((name) => !desktopPackages.includes(name)), [], "workspace packages the license audit does not name")
+  const undeclared = loaded.filter((name) => !name.startsWith("@getdomovoi/") && name !== "electron"
+    && !builtinModules.includes(name) && !Object.hasOwn(manifest.dependencies ?? {}, name))
+  assert.deepEqual(undeclared, [], "apps/desktop loads third-party packages outside its dependencies")
+})
