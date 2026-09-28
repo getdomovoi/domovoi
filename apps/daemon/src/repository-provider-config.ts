@@ -980,8 +980,27 @@ async function nestedCodexInput(root: RepositoryRoot, segments: readonly string[
 // Git's own metadata files are small.
 const maximumGitMetadataBytes = 64 * 1024
 
-// A git metadata file's trimmed text, or undefined when it is absent, a link,
-// not a regular file, too large or unreadable.
+// ASCII whitespace as Codex trims it from git's metadata files
+// ([u8]::trim_ascii in resolve_root_git_project_for_trust at rust-v0.156.1):
+// space, tab, line feed, form feed and carriage return. Anything else, a
+// no-break space (U+00A0) or a vertical tab included, is part of the path,
+// as it is to git.
+const gitBlank = new Set([" ", "\t", "\n", "\f", "\r"])
+
+function trimGitBlank(text: string): string {
+  let start = 0
+  let end = text.length
+  while (start < end && gitBlank.has(text[start]!)) start += 1
+  while (end > start && gitBlank.has(text[end - 1]!)) end -= 1
+  return text.slice(start, end)
+}
+
+// Codex reads the path bytes as written: text that is not UTF-8 cannot be
+// named the same way here, and a byte order mark is not stripped.
+const gitMetadataDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+
+// A git metadata file's text trimmed as Codex trims it, or undefined when it
+// is absent, a link, not a regular file, too large, not UTF-8 or unreadable.
 async function gitMetadata(path: string): Promise<string | undefined> {
   let handle: FileHandle | undefined
   try {
@@ -995,7 +1014,7 @@ async function gitMetadata(path: string): Promise<string | undefined> {
       if (bytesRead === 0) break
       length += bytesRead
     }
-    return length > maximumGitMetadataBytes ? undefined : buffer.subarray(0, length).toString("utf8").trim()
+    return length > maximumGitMetadataBytes ? undefined : trimGitBlank(gitMetadataDecoder.decode(buffer.subarray(0, length)))
   } catch {
     return undefined
   } finally {
@@ -1050,7 +1069,7 @@ async function mainCheckoutOf(root: RepositoryRoot): Promise<MainCheckout> {
 // The git directory a .git file names, relative to the file's directory.
 async function gitDirectoryNamedBy(marker: string): Promise<string | undefined> {
   const text = await gitMetadata(marker)
-  const target = text?.startsWith("gitdir:") ? text.slice("gitdir:".length).trim() : undefined
+  const target = text?.startsWith("gitdir:") ? trimGitBlank(text.slice("gitdir:".length)) : undefined
   return target ? resolve(dirname(marker), target) : undefined
 }
 
