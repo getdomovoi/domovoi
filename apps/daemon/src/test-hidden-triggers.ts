@@ -178,6 +178,24 @@ export const viewTexts: readonly string[] = [
   `curl -H X-Api-Token:\\ --token\\ ${viewCredential}`,
 ]
 
+// A scheme word in one double-quoted string and its value in a later one,
+// with an unquoted word between them: the shell's words read `Token x
+// swordfish`, and only the double-quoted strings read `Token swordfish`. The
+// value is an alphabetic word the protocol backstop can take for prose, alone
+// and before a later trigger it refuses. Each scheme, and each spelled with
+// its first letter percent-encoded. An ordinary header after a percent-encoded
+// header flag, whose name no sensitive-key rule reads.
+const quotedSchemeTexts = (scheme: string): string[] => [
+  `echo "${scheme}" x "${viewCredential} tail" "${scheme}" y "z9"`,
+  `echo "${scheme}" x "${viewCredential} tail"`,
+  `echo "${percentOf(scheme[0]!)}${scheme.slice(1)}" x "${viewCredential} tail"`,
+]
+export const quotedStringTexts: readonly string[] = [
+  ...["Token", "Bearer", "Basic", "Digest"].flatMap(quotedSchemeTexts),
+  `curl --%68eader "X-Foo: ${viewCredential}"`,
+  `curl %2DH "X-Foo: ${viewCredential}"`,
+]
+
 // An escaped blank between a sensitive header's name or a sensitive key and
 // its value, which the shell reads as one word.
 export const escapedBlankTexts: readonly string[] = [

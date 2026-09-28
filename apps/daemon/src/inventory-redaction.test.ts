@@ -10,8 +10,8 @@ import {
   inventoryBackstopRefuses, inventoryFieldCaps, inventoryShellWords, redactInventoryArgv, redactInventoryCommand, redactInventoryText,
 } from "./inventory-redaction.js"
 import {
-  escapedBlankTexts, hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, sameWordCases, sameWordCredentials, sameWordPlacements,
-  sameWordWrappers, viewCases, viewCredential, viewPlacements, viewSpellings, viewTexts,
+  escapedBlankTexts, hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, quotedStringTexts, sameWordCases, sameWordCredentials,
+  sameWordPlacements, sameWordWrappers, viewCases, viewCredential, viewPlacements, viewSpellings, viewTexts,
 } from "./test-hidden-triggers.js"
 import { adversarialCommands, nearLinearGrowth, quadraticTimeGrowth, regexAdversaries, timeGrowth, workGrowth } from "./test-work.js"
 
@@ -500,6 +500,90 @@ describe("triggers the protocol backstop reads in its other views", () => {
   it.each([...viewTexts, ...escapedBlankTexts])("refuses what the backstop refuses in %s", (text) => {
     for (const judged of [text, redactInventoryText(text), redactInventoryCommand(text), redactInventoryArgv(inventoryShellWords(text)!)]) {
       expect(inventoryBackstopRefuses(judged), judged).toBe(!backstopAccepts(judged))
+    }
+  })
+})
+
+// Every entry is cut before the first trigger any view of it holds, and ends
+// in the marker: a scheme word in one double-quoted string and its value in
+// another, which only the strings read together; an ordinary header after a
+// percent-encoded header flag.
+describe("the first trigger in any view", () => {
+  const program = (text: string) => inventoryShellWords(text)![0]!
+  it.each(quotedStringTexts)("cuts %s before its first trigger", (text) => {
+    const cut = `${program(text)} [REDACTED]`
+    for (const redact of [redactInventoryText, redactInventoryCommand]) {
+      const redacted = redact(text)
+      expect(redacted, text).toBe(cut)
+      expect(backstopAccepts(redacted)).toBe(true)
+      expect(redact(redacted)).toBe(redacted)
+    }
+    expect(redactInventoryArgv(inventoryShellWords(text)!)).toBe(cut)
+    expect(redactInventoryArgv(["sh", "-c", text])).toBe("sh -c [REDACTED]")
+    expect(redactInventoryArgv(["bash", "-lc", text])).toBe("bash -lc [REDACTED]")
+    expect(redactInventoryArgv(["env", "MODE=x", "sh", "-c", text])).toBe("env [REDACTED]")
+  })
+
+  it.each(quotedStringTexts)("hides the credential in %s given to a shell as text", (text) => {
+    const singleQuoted = (script: string) => `'${script.replace(/'/gu, "'\\''")}'`
+    const doubleQuoted = (script: string) => `"${script.replace(/[\\"$`]/gu, "\\$&")}"`
+    for (const wrapped of [`sh -c ${singleQuoted(text)}`, `bash -lc ${doubleQuoted(text)}`, `env MODE=x sh -c ${singleQuoted(text)}`]) {
+      for (const redact of [redactInventoryText, redactInventoryCommand]) {
+        const redacted = redact(wrapped)
+        expect(redacted, wrapped).not.toContain(viewCredential)
+        expect(redacted, wrapped).toMatch(/\[REDACTED\]['"]?$/u)
+        expect(backstopAccepts(redacted), `${wrapped} -> ${redacted}`).toBe(true)
+        expect(redact(redacted), wrapped).toBe(redacted)
+      }
+    }
+  })
+})
+
+// The redactor reads its scheme words, sensitive key parts and fixed shapes
+// from the protocol, so a rule the backstop gains is a rule it cuts at.
+describe("the protocol's credential rules", () => {
+  interface Rules { schemeWords: readonly string[]; keyParts: readonly string[]; exactKeys: readonly string[]; tokenPrefixes: readonly string[] }
+  const exported = async () => (await import("@getdomovoi/protocol") as Record<string, unknown>).credentialRules as Rules | undefined
+
+  it("cuts at every scheme word, sensitive key and token prefix the protocol exports", async () => {
+    const rules = await exported()
+    expect(rules, "the protocol exports the rules its backstop reads").toBeDefined()
+    const inputs = [
+      ...rules!.schemeWords.flatMap((word) => [`curl ${word} swordfish`, `curl ${word.toUpperCase()} swordfish`]),
+      ...[...rules!.keyParts, ...rules!.exactKeys].flatMap((key) => [`curl --${key} swordfish`, `curl --${key}=swordfish`, `curl ${key}=swordfish`, `curl '{"${key}": "swordfish"}'`]),
+      ...rules!.tokenPrefixes.map((prefix) => `curl ${prefix}-swordfish0swordfish`),
+    ]
+    for (const input of inputs) {
+      expect(backstopAccepts(input), `the backstop refuses ${input}`).toBe(false)
+      for (const redacted of [redactInventoryText(input), redactInventoryCommand(input), redactInventoryArgv(inventoryShellWords(input)!)]) {
+        expect(redacted, input).not.toContain("swordfish")
+        expect(redacted, input).toMatch(/^curl \S*\[REDACTED\]'?$/u)
+        expect(backstopAccepts(redacted), `${input} -> ${redacted}`).toBe(true)
+      }
+    }
+  })
+
+  it("cuts at a sensitive key part and a scheme word added to the protocol's rules", async () => {
+    const rules = await exported()
+    expect(rules, "the protocol exports the rules its backstop reads").toBeDefined()
+    const inputs = ["curl --authcode swordfish", "curl Hoba swordfish"]
+    for (const input of inputs) expect(redactInventoryText(input)).toBe(input)
+    vi.resetModules()
+    vi.doMock("@getdomovoi/protocol", async (importOriginal) => {
+      const actual = await importOriginal<Record<string, unknown>>()
+      const actualRules = actual.credentialRules as Rules
+      return { ...actual, credentialRules: { ...actualRules, keyParts: [...actualRules.keyParts, "authcode"], schemeWords: [...actualRules.schemeWords, "hoba"] } }
+    })
+    try {
+      const mutated = await import("./inventory-redaction.js")
+      for (const input of inputs) {
+        expect(mutated.redactInventoryText(input), input).toBe("curl [REDACTED]")
+        expect(mutated.redactInventoryCommand(input), input).toBe("curl [REDACTED]")
+        expect(mutated.redactInventoryArgv(inventoryShellWords(input)!), input).toBe("curl [REDACTED]")
+      }
+    } finally {
+      vi.doUnmock("@getdomovoi/protocol")
+      vi.resetModules()
     }
   })
 })

@@ -104,6 +104,17 @@ export const adversarialCommands: ReadonlyArray<readonly [string, number, (size:
   ["escaped blanks after a sensitive header's name", 500, (size) => `curl -H X-Api-Token:${"\\ --token".repeat(size)}\\ x`],
   ["escaped blanks after assignments", 500, (size) => `echo ${"A=\\ x ".repeat(size)}`],
   ["quoted strings a hidden string pairs again, in a script", 250, (size) => `sh -c '${"curl \"\\\\u0054oken\" \"\\\"x\" \"t\\\"\" ".repeat(size)}'`],
+  // A scheme word and its value in double-quoted strings of their own, each
+  // value read as prose until the word after it is gone, before one value the
+  // backstop refuses, in a shell's script: a cut that rereads what it keeps
+  // finds one more trigger each time.
+  ["quoted scheme words before a refused one, in a script", 64, (size) => `sh -c '${`echo ${"\"Token\" x \"swordfish\" y ".repeat(size)}"Token" x "z9"`}'`],
+  // What the first-trigger scan reads in every view: many triggers, many
+  // double-quoted strings, many encoded characters.
+  ["sensitive flags and values in words of their own", 500, (size) => `curl ${"--token x ".repeat(size)}`],
+  ["double-quoted strings with no trigger", 1_000, (size) => `echo ${"\"a\" ".repeat(size)}`],
+  ["percent-encoded characters", 1_000, (size) => `echo ${"%41".repeat(size)}`],
+  ["\\u escapes of ordinary letters", 1_000, (size) => `echo '${"\\u0041".repeat(size)}'`],
 ]
 
 // The scanning inside one regular expression search is the work the counter
