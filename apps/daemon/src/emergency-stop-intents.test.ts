@@ -254,9 +254,12 @@ describe("reading a damaged emergency stop journal of many rows", () => {
 // Stages `count` journal rows as one round read them: a third kept for
 // overflow, a third whose clear a trigger refuses, a third to clear,
 // interleaved. Then counts the listed rows SQLite reads while the round
-// clears. A temporary view in front of the listed rows' table (SQLite looks
-// in `temp` first) calls `visit` for each row it reads, and triggers pass the
-// round's writes through to the table.
+// clears. The listed rows' table is renamed for the round, keeping its rows
+// and indexes, and a temporary view under the old name calls `visit` for each
+// row it reads. Triggers pass the round's writes through to the renamed
+// table. They name it unqualified: the SQLite in Node 22 (3.51) refuses a
+// schema name on a trigger's UPDATE or DELETE, and the old name would find
+// the view.
 function roundClearVisits(count: number): { visited: number; left: { journal: number; listed: number } } {
   const database = new DatabaseSync(":memory:")
   const journal = new SqliteEmergencyStopIntents(database)
@@ -269,17 +272,19 @@ function roundClearVisits(count: number): { visited: number; left: { journal: nu
 
   let visited = 0
   database.function("visit", { varargs: true }, () => { visited += 1; return 1 })
+  database.exec("ALTER TABLE emergency_stop_recovery_rows RENAME TO counted_recovery_rows")
   database.exec(`CREATE TEMP VIEW emergency_stop_recovery_rows AS
-    SELECT row, identity, keep, cleared FROM main.emergency_stop_recovery_rows WHERE visit(row)`)
+    SELECT row, identity, keep, cleared FROM counted_recovery_rows WHERE visit(row)`)
   database.exec(`CREATE TEMP TRIGGER held INSTEAD OF UPDATE ON emergency_stop_recovery_rows BEGIN
-    UPDATE main.emergency_stop_recovery_rows SET cleared = new.cleared WHERE row = old.row AND identity = old.identity;
+    UPDATE counted_recovery_rows SET cleared = new.cleared WHERE row = old.row AND identity = old.identity;
   END`)
   database.exec(`CREATE TEMP TRIGGER forget INSTEAD OF DELETE ON emergency_stop_recovery_rows BEGIN
-    DELETE FROM main.emergency_stop_recovery_rows WHERE row = old.row AND identity = old.identity;
+    DELETE FROM counted_recovery_rows WHERE row = old.row AND identity = old.identity;
   END`)
 
   journal.finishRound()
 
   database.exec("DROP VIEW temp.emergency_stop_recovery_rows")
+  database.exec("ALTER TABLE counted_recovery_rows RENAME TO emergency_stop_recovery_rows")
   return { visited, left: { journal: stored(database, "emergency_stop_intents"), listed: stored(database, "emergency_stop_recovery_rows") } }
 }
