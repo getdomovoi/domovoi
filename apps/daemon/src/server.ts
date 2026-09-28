@@ -8120,18 +8120,16 @@ export class DomovoiDaemon {
           this.#snapshot.artifacts = restored?.artifacts ?? []
           this.#snapshot.workingPlans = restored?.workingPlans ?? []
           this.#snapshot.annotations = restored?.annotations ?? []
-          // The project's provider threads were stopped when it was closed,
-          // possibly by another daemon process, so its saved cards expire.
+          // Only one daemon owns a profile (the profile lease), and closing a
+          // project stops its provider turns, so nothing runs a turn saved
+          // with a closed project. Its saved cards expire, and every stored
+          // turn ends here as startup ends it, whatever the provider.
           const expiredAt = new Date().toISOString()
           const expiredApprovals = this.#expireStoredApprovals(this.#snapshot, expiredAt, restored?.approvals ?? [])
-          // A turned-off provider is never run by this build, so a turn saved
-          // for it ended when the older build that ran it stopped. It ends
-          // here as startup ends every stored turn.
           const endedTurnSessionIds = new Set(this.#snapshot.sessions.flatMap((session) => (
             session.activeTurnId
               && session.state !== "archiving"
               && session.state !== "archived"
-              && this.#agents.isUnavailable(session.runtime.provider)
               ? [session.id]
               : []
           )))
