@@ -25,6 +25,24 @@ const text = (maximum: number) => z.string().min(1).check(utf16MaxLength(maximum
   // An overlength text is already refused by its cap; the backstop does not read it.
   .refine((value) => value.length > maximum || !holdsCredential(value), "Text must not carry a credential; the reader redacts it first")
 
+// The cap on each free-text field of an inventory entry, in UTF-16 code
+// units. The daemon's reader fits every redacted text to its field's cap, so
+// it reads the caps from here rather than keeping its own copy.
+// A hook's, helper's or local tool server's command.
+export const maximumToolInventoryCommandLength = 2_048
+// A permission rule's detail.
+export const maximumToolInventoryDetailLength = 1_024
+// A hook's matcher.
+export const maximumToolInventoryMatcherLength = 256
+// A tool server's, plugin's or skill's name.
+export const maximumToolInventoryNameLength = 256
+// A helper's name.
+export const maximumToolInventoryHelperNameLength = 128
+// A permission rule's rule.
+export const maximumToolInventoryRuleLength = 128
+// A hook's event.
+export const maximumToolInventoryEventLength = 64
+
 export const toolInventoryPathSchema = text(1_024)
 // An environment variable identifier, never `NAME=value`.
 export const toolInventoryEnvKeySchema = z.string().check(utf16MaxLength(128)).regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
@@ -88,21 +106,27 @@ export const toolInventoryEntrySchema = z.discriminatedUnion("kind", [
   z.object({
     ...entryFields,
     kind: z.literal("tool-server"),
-    name: text(256),
+    name: text(maximumToolInventoryNameLength),
     transport: toolServerTransportSchema,
     // A local server's command line; a remote one's host.
-    command: text(2_048).optional(),
+    command: text(maximumToolInventoryCommandLength).optional(),
     host: toolServerHostSchema.optional(),
     envKeys: z.array(toolInventoryEnvKeySchema).max(64),
   }).strict(),
-  z.object({ ...entryFields, kind: z.literal("hook"), event: text(64), matcher: text(256).optional(), command: text(2_048) }).strict(),
+  z.object({
+    ...entryFields,
+    kind: z.literal("hook"),
+    event: text(maximumToolInventoryEventLength),
+    matcher: text(maximumToolInventoryMatcherLength).optional(),
+    command: text(maximumToolInventoryCommandLength),
+  }).strict(),
   // A provider-side rule or setting: allow Bash(pnpm test:*), sandbox_mode workspace-write.
-  z.object({ ...entryFields, kind: z.literal("permission-rule"), rule: text(128), detail: text(1_024) }).strict(),
+  z.object({ ...entryFields, kind: z.literal("permission-rule"), rule: text(maximumToolInventoryRuleLength), detail: text(maximumToolInventoryDetailLength) }).strict(),
   z.object({ ...entryFields, kind: z.literal("env-key"), key: toolInventoryEnvKeySchema }).strict(),
   // A command the provider runs for its own needs, such as apiKeyHelper.
-  z.object({ ...entryFields, kind: z.literal("helper"), name: text(128), command: text(2_048) }).strict(),
-  z.object({ ...entryFields, kind: z.literal("plugin"), name: text(256) }).strict(),
-  z.object({ ...entryFields, kind: z.literal("skill"), name: text(256) }).strict(),
+  z.object({ ...entryFields, kind: z.literal("helper"), name: text(maximumToolInventoryHelperNameLength), command: text(maximumToolInventoryCommandLength) }).strict(),
+  z.object({ ...entryFields, kind: z.literal("plugin"), name: text(maximumToolInventoryNameLength) }).strict(),
+  z.object({ ...entryFields, kind: z.literal("skill"), name: text(maximumToolInventoryNameLength) }).strict(),
 ])
 
 export const toolInventoryProviderSchema = z.object({
