@@ -1154,6 +1154,7 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
   for (const scope of repositoryProviderScopes) {
     const files: ToolInventoryFile[] = []
     const entries: ToolInventoryEntry[] = []
+    const instructionFiles: ToolInventoryFile[] = []
     let omittedEntries = 0
     // A file past the file cap is not listed, so its entries are counted.
     const list = (file: ToolInventoryFile) => {
@@ -1201,9 +1202,8 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
       const { path, shown, read: file } = instructions.file
       digestRecords.push(`${scope.provider}:instructions:${path}:${file.state}:${
         file.state === "read" ? sha256(file.bytes) : file.state === "unreadable" ? file.digest : ""}`)
-      if (files.some((listed) => listed.path === shown)) continue
-      if (file.state === "unreadable") list({ path: shown, source: "repository-file", state: "unreadable", reason: file.reason })
-      else if (file.state === "read") list({ path: shown, source: "repository-file", state: decodedText(file.bytes).trim() === "" ? "empty" : "read" })
+      if (file.state === "unreadable") instructionFiles.push({ path: shown, source: "repository-file", state: "unreadable", reason: file.reason })
+      else if (file.state === "read") instructionFiles.push({ path: shown, source: "repository-file", state: decodedText(file.bytes).trim() === "" ? "empty" : "read" })
     }
     for (const directory of scope.directories) {
       if (home !== undefined && directory.path.startsWith(home)) continue
@@ -1213,6 +1213,12 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
       if (read.state === "unreadable") list({ ...base, state: "unreadable", reason: read.reason })
       else list({ ...base, state: read.state })
       if (read.state === "read") take(directory.path, directoryCandidates(directory, read.members))
+    }
+    // An instruction file is listed after the paths in scope, and not again
+    // when it is one of them, so a file is listed once, as its own path's
+    // reader found it.
+    for (const file of instructionFiles) {
+      if (!files.some((listed) => listed.path === file.path)) list(file)
     }
     // Every entry and path was checked on its own; the provider is checked
     // whole as well, so the reader never returns an inventory the protocol
