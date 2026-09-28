@@ -386,6 +386,12 @@ it("signals no process group by number, and still leaves no tool running when Cl
 // starts to hold Claude's process group.
 describe("the Claude process the SDK sees", () => {
   const environment = { PATH: "/usr/bin:/bin", DOMOVOI_KEEPER_MARKER: "kept" }
+  const windowsRequiredVariables = new Set([
+    "HOMEDRIVE", "HOMEPATH", "LOGONSERVER", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "USERDOMAIN", "USERNAME",
+    "USERPROFILE", "WINDIR",
+  ])
+  // Windows has no signal a process can handle: Node ends it outright.
+  const handlesSignals = process.platform !== "win32"
 
   async function start(lines: string[], { command = process.execPath, signal = new AbortController().signal } = {}) {
     const path = await script([
@@ -427,8 +433,11 @@ describe("the Claude process the SDK sees", () => {
     const view = await seen()
     expect(view.argv).toEqual(["first argument", "--flag=two"])
     expect(view.cwd).toBe(await realpath(directory))
-    // macOS adds __CF_USER_TEXT_ENCODING to every process it starts.
-    expect(view.keys.filter((key) => !key.startsWith("__CF_"))).toEqual(["DOMOVOI_KEEPER_MARKER", "PATH"])
+    // macOS adds __CF_USER_TEXT_ENCODING to every process it starts, and on
+    // Windows libuv copies the variables a Windows process needs.
+    const added = (key: string) => key.startsWith("__CF_")
+      || (process.platform === "win32" && windowsRequiredVariables.has(key.toUpperCase()))
+    expect(view.keys.filter((key) => !added(key))).toEqual(["DOMOVOI_KEEPER_MARKER", "PATH"])
     expect(view.marker).toBe("kept")
     // No pipe to Domovoi beyond stdio reaches Claude or its tools.
     expect(["socket", "pipe"]).not.toContain(view.fd3)
@@ -457,9 +466,13 @@ describe("the Claude process the SDK sees", () => {
     await seen()
     expect(claude.spawned.kill("SIGTERM")).toBe(true)
     await claude.exited
-    await waitForDaemon(() => expect(exits).toEqual([[3, null]]))
     expect(claude.spawned.killed).toBe(true)
-    expect(await readFile(join(directory, "term"), "utf8")).toBe("yes")
+    if (handlesSignals) {
+      await waitForDaemon(() => expect(exits).toEqual([[3, null]]))
+      expect(await readFile(join(directory, "term"), "utf8")).toBe("yes")
+    } else {
+      await waitForDaemon(() => expect(exits).toEqual([[null, "SIGTERM"]]))
+    }
   })
 
   it("reports Claude killed by a signal", async () => {
@@ -482,7 +495,7 @@ describe("the Claude process the SDK sees", () => {
     controller.abort()
     await claude.exited
     expect(errors.map(({ name }) => name)).toEqual(["AbortError"])
-    expect(await readFile(join(directory, "term"), "utf8")).toBe("yes")
+    if (handlesSignals) expect(await readFile(join(directory, "term"), "utf8")).toBe("yes")
   })
 
   it("reports a Claude that cannot start as the spawn error the SDK expects", async () => {
