@@ -357,6 +357,89 @@ describe("readRepositoryProviderConfig: Codex", () => {
     ])
   })
 
+  // Ruling Q114: an instruction override is listed by its key, and a file by
+  // its path, never by its text. Codex resolves the file's path against the
+  // .codex folder. A file in the repository is hashed like any other; one
+  // outside it, or reached through a link, refuses trust.
+  const instructionRule = (rule: string, detail: string) => ({
+    kind: "permission-rule", rule, detail, file: ".codex/config.toml", startsAtSessionStart: false, heldBack: true,
+  })
+
+  it("lists instruction overrides without their text and pins the file one names", async () => {
+    const root = await scratch()
+    await put(root, ".codex/config.toml", [
+      "model_instructions_file = \"../docs/policy.txt\"",
+      "instructions = \"INLINE-INSTRUCTIONS-TEXT\"",
+      "developer_instructions = \"\"\"DEVELOPER-INSTRUCTIONS-TEXT\"\"\"",
+      "",
+    ].join("\n"))
+    await put(root, "docs/policy.txt", "POLICY-FILE-TEXT")
+    const first = await readRepositoryProviderConfig(root, { heldBack: true })
+    const codex = provider(first, "codex")
+    expect(toolInventoryProviderSchema.safeParse(codex).success).toBe(true)
+    expect(JSON.stringify(first)).not.toMatch(/INLINE-INSTRUCTIONS-TEXT|DEVELOPER-INSTRUCTIONS-TEXT|POLICY-FILE-TEXT/u)
+    expect(codex.files).toEqual([
+      { path: ".codex/config.toml", source: "project-settings", state: "read" },
+      { path: "docs/policy.txt", source: "repository-file", state: "read" },
+    ])
+    expect(codex.entries).toEqual([
+      instructionRule("instructions", "inline"),
+      instructionRule("developer_instructions", "inline"),
+      instructionRule("model_instructions_file", "docs/policy.txt"),
+    ])
+    expect(codex.omittedEntries).toBe(0)
+    expect(first.trustRefusals).toEqual([])
+    await put(root, "docs/policy.txt", "CHANGED-POLICY-FILE-TEXT")
+    const changed = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(changed.configDigest).not.toBe(first.configDigest)
+    await rm(join(root, "docs", "policy.txt"))
+    const missing = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(new Set([first.configDigest, changed.configDigest, missing.configDigest]).size).toBe(3)
+    expect(provider(missing, "codex").files).toEqual([{ path: ".codex/config.toml", source: "project-settings", state: "read" }])
+
+    // The same caps as every other file.
+    await put(root, "docs/policy.txt", "x".repeat(maximumRepositoryConfigFileBytes + 1))
+    const large = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(provider(large, "codex").files[1]).toEqual({ path: "docs/policy.txt", source: "repository-file", state: "unreadable", reason: "too-large" })
+  })
+
+  it("refuses trust for an instruction file outside the repository or through a link", async () => {
+    const root = await scratch()
+    const outside = await scratch("domovoi-provider-outside-")
+    await put(outside, "policy.txt", "OUTSIDE-POLICY-TEXT")
+    const dir = process.platform === "win32" ? "junction" : "dir"
+    await symlink(join(outside, "policy.txt"), join(root, "linked.txt"))
+    await symlink(outside, join(root, "linked-docs"), dir)
+    await put(outside, "hard.txt", "HARD-LINKED-TEXT")
+    await link(join(outside, "hard.txt"), join(root, "hard.txt"))
+    const cases: Array<[string, string, { file?: object }]> = [
+      [join(outside, "policy.txt"), join(outside, "policy.txt"), {}],
+      ["../../outside.txt", "../../outside.txt", {}],
+      ["~/policy.txt", "~/policy.txt", {}],
+      ["../linked.txt", "linked.txt", { file: { path: "linked.txt", source: "repository-file", state: "unreadable", reason: "symbolic-link" } }],
+      ["../linked-docs/policy.txt", "linked-docs/policy.txt", { file: { path: "linked-docs/policy.txt", source: "repository-file", state: "unreadable", reason: "symbolic-link" } }],
+      ["../hard.txt", "hard.txt", { file: { path: "hard.txt", source: "repository-file", state: "unreadable", reason: "hard-link" } }],
+    ]
+    for (const [written, shown, { file }] of cases) {
+      await put(root, ".codex/config.toml", `model_instructions_file = ${JSON.stringify(written)}\n`)
+      const result = await readRepositoryProviderConfig(root, { heldBack: true })
+      const codex = provider(result, "codex")
+      expect(toolInventoryProviderSchema.safeParse(codex).success, written).toBe(true)
+      expect(JSON.stringify(result), written).not.toMatch(/OUTSIDE-POLICY-TEXT|HARD-LINKED-TEXT/u)
+      expect(result.trustRefusals, written).toEqual([{ provider: "codex", reason: "instructions-outside", path: shown }])
+      expect(codex.entries, written).toEqual([instructionRule("model_instructions_file", shown)])
+      expect(codex.files, written).toEqual([{ path: ".codex/config.toml", source: "project-settings", state: "read" }, ...(file ? [file] : [])])
+      // What lies outside is never read, so a change there changes nothing.
+      await put(outside, "policy.txt", "OUTSIDE-POLICY-TEXT again")
+      expect((await readRepositoryProviderConfig(root, { heldBack: true })).configDigest, written).toBe(result.configDigest)
+    }
+
+    await put(root, ".codex/config.toml", "model_instructions_file = 7\n")
+    const odd = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+    expect(odd.entries).toEqual([])
+    expect(odd.omittedEntries).toBe(1)
+  })
+
   // A header helper prints the headers Codex sends, and a header's name and
   // value need no word the redaction knows: every argument is cut, and the
   // helper is listed by its program.

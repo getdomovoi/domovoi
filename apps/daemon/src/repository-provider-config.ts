@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { constants } from "node:fs"
 import { type FileHandle, lstat, open, opendir, readlink, realpath } from "node:fs/promises"
 import { homedir } from "node:os"
-import { basename, dirname, isAbsolute, join, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import {
   toolInventoryEntrySchema,
@@ -20,7 +20,8 @@ import { parseRepositoryToml } from "./repository-toml.js"
 // declares, and the digest repository trust pins to. Nothing here executes,
 // imports or evaluates a repository file: files are read as bytes and parsed
 // as JSON, JSONC, YAML or TOML data. Only the fixed provider paths below, relative
-// to the repository root, are read, and no symbolic link is followed: every
+// to the repository root, are read, and the one instruction file a Codex
+// config.toml names when it is in the repository. No symbolic link is followed: every
 // path component, the repository root itself included, is checked with lstat,
 // and the root must stay the directory the reader first found. The file itself
 // is opened with O_NOFOLLOW, and the open descriptor must be the file lstat
@@ -688,10 +689,49 @@ function codexConfig(config: Record<string, unknown>): Array<Candidate | Omissio
     if (!isRecord(settings)) candidates.push(omission)
     else if (settings.enabled !== false) candidates.push({ kind: "plugin", name: redactInventoryText(plugin, caps.name), startsAtSessionStart: true })
   }
+  // Inline instruction overrides are listed as present, never by their text
+  // (ruling Q114); like every byte of the file, the text is in the digest.
+  // model_instructions_file is listed where the file it names is read.
+  for (const key of ["instructions", "developer_instructions"]) {
+    defined(config[key], () => (typeof config[key] === "string" ? permissionRule(key, "inline") : omission))
+  }
   return candidates
 }
 
-type Parsed = { state: "read" | "empty"; candidates: Array<Candidate | Omission> } | { state: "unreadable"; reason: RefusalReason }
+type InstructionsFile = {
+  candidate: Candidate | Omission
+  // The file, when it is in the repository, as the reader read it.
+  file?: { path: string; read: FileRead }
+  // The path as shown, when the file is outside the repository or reached
+  // through a link.
+  outside?: string
+}
+
+// model_instructions_file names a file Codex reads in place of its base
+// instructions: a path relative to the .codex folder, with `~` for the home
+// folder (resolve_relative_paths_in_config_toml and AbsolutePathBuf at
+// rust-v0.156.1). It is listed by its path, never its text (ruling Q114). A
+// file in the repository is read with the same caps and link handling as
+// every other file and hashed; one outside it, or reached through a link,
+// hard links included, refuses trust. Nothing outside is read.
+async function codexInstructionsFile(root: RepositoryRoot, value: unknown): Promise<InstructionsFile | undefined> {
+  const rule = "model_instructions_file"
+  if (value === undefined) return undefined
+  if (typeof value !== "string") return { candidate: omission }
+  const home = value === "~" || value.startsWith("~/") || (process.platform === "win32" && value.startsWith("~\\"))
+  const resolved = resolve(root.path, ".codex", home ? join(homedir(), value.slice(1)) : value)
+  const inRoot = relative(root.path, resolved)
+  if (inRoot === "" || inRoot === ".." || inRoot.startsWith(`..${sep}`) || isAbsolute(inRoot)) {
+    const shown = redactInventoryText(value, caps.detail)
+    return { candidate: permissionRule(rule, shown), outside: shown }
+  }
+  const path = inRoot.split(sep).join("/")
+  const read = await readRepositoryFile(root, path)
+  const linked = read.state === "unreadable" && (read.reason === "symbolic-link" || read.reason === "hard-link")
+  return { candidate: permissionRule(rule, path), file: { path, read }, ...(linked ? { outside: path } : {}) }
+}
+
+type Parsed = { state: "read" | "empty"; candidates: Array<Candidate | Omission>; document?: Record<string, unknown> } | { state: "unreadable"; reason: RefusalReason }
 
 // A file's text: UTF-8 without a leading byte order mark (U+FEFF).
 const byteOrderMark = String.fromCodePoint(0xfeff)
@@ -730,7 +770,7 @@ function parseFile(parser: Parser, bytes: Buffer): Parsed {
     case "kilo-modes":
       return { state: "read", candidates: kiloModes(document) }
     case "codex-config":
-      return { state: "read", candidates: codexConfig(document) }
+      return { state: "read", candidates: codexConfig(document), document }
     case "codex-hooks":
       return { state: "read", candidates: codexHooks(document.hooks) }
   }
@@ -759,8 +799,11 @@ function directoryCandidates(directory: ScopedDirectory, members: readonly strin
 //     cannot be read.
 //   main-checkout-unknown: the root's .git file names a linked worktree whose
 //     main checkout cannot be found safely: a link or a mismatch on the way.
-// The path is relative to the root when inside it, and absolute otherwise.
-export type RepositoryTrustRefusalReason = "nested-config" | "main-checkout-hooks" | "main-checkout-unknown"
+//   instructions-outside: model_instructions_file names a file outside the
+//     repository, or one reached through a link (ruling Q114).
+// The path is relative to the root when inside it, and absolute otherwise;
+// an instruction file outside is shown as written, redacted.
+export type RepositoryTrustRefusalReason = "nested-config" | "main-checkout-hooks" | "main-checkout-unknown" | "instructions-outside"
 export type RepositoryTrustRefusal = { provider: string; reason: RepositoryTrustRefusalReason; path: string }
 
 export type RepositoryProviderConfig = {
@@ -978,6 +1021,7 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
   const root = await anchorRoot(rootPath)
   const digestRecords: string[] = [digestVersion]
   const providers: ToolInventoryProvider[] = []
+  const outsideInstructions: RepositoryTrustRefusal[] = []
   for (const scope of repositoryProviderScopes) {
     const files: ToolInventoryFile[] = []
     const entries: ToolInventoryEntry[] = []
@@ -1019,6 +1063,18 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
       }
       list({ ...base, state: parsed.state })
       take(scoped.path, parsed.candidates)
+      if (scoped.parser !== "codex-config" || parsed.document === undefined) continue
+      const instructions = await codexInstructionsFile(root, parsed.document.model_instructions_file)
+      if (instructions === undefined) continue
+      take(scoped.path, [instructions.candidate])
+      if (instructions.outside !== undefined) outsideInstructions.push({ provider: scope.provider, reason: "instructions-outside", path: instructions.outside })
+      if (instructions.file === undefined) continue
+      const { path, read: file } = instructions.file
+      digestRecords.push(`${scope.provider}:instructions:${path}:${file.state}:${
+        file.state === "read" ? sha256(file.bytes) : file.state === "unreadable" ? file.digest : ""}`)
+      if (files.some((listed) => listed.path === path)) continue
+      if (file.state === "unreadable") list({ path, source: "repository-file", state: "unreadable", reason: file.reason })
+      else if (file.state === "read") list({ path, source: "repository-file", state: decodedText(file.bytes).trim() === "" ? "empty" : "read" })
     }
     for (const directory of scope.directories) {
       if (home !== undefined && directory.path.startsWith(home)) continue
@@ -1031,7 +1087,7 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
     }
     providers.push({ provider: scope.provider, toolServers: "read-from-files", omittedEntries, files, entries })
   }
-  const trustRefusals = [...await nestedCodexInput(root, segments, codexHome), ...await mainCheckoutHooks(root, segments)]
+  const trustRefusals = [...outsideInstructions, ...await nestedCodexInput(root, segments, codexHome), ...await mainCheckoutHooks(root, segments)]
   for (const refusal of trustRefusals) digestRecords.push(`${refusal.provider}:refused:${refusal.reason}:${refusal.path}`)
   return { configDigest: `sha256:${sha256(digestRecords.join("\n"))}`, providers, trustRefusals }
 }
