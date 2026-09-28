@@ -4,16 +4,20 @@
 
 Stopping a Claude session now waits for the Claude process to exit. Domovoi starts that process
 itself, through the Claude Agent SDK's `spawnClaudeCodeProcess` option, with the settings the SDK's
-own spawn uses. The Claude process that lists models is started the same way. A stop closes the
-input and the query, then waits up to 2 seconds for the process to exit, then kills what it
-started, and waits up to 5 seconds more for Claude to exit.
+own spawn uses. The Claude process that lists models is started the same way.
 
-On POSIX Claude starts in its own process group, which the commands its tools run join. Domovoi
-sends SIGKILL to that group when Claude exits, whether it exits on its own or after the grace, so
-no command a session started outlives it. A command that moves itself to a new session or process
-group is out of reach. On Windows Domovoi runs `taskkill /PID <pid> /T /F` on Claude's process tree
-after the grace. Once a Windows Claude process has exited on its own, its pid can name another
-process, so Domovoi sends no taskkill then, and the commands it left are not killed.
+On POSIX a stop closes the input and the query, then waits up to 2 seconds for the process to
+exit, then kills what it started, and waits up to 5 seconds more for Claude to exit. Claude starts
+in its own process group, which the commands its tools run join. Domovoi sends SIGKILL to that
+group when Claude exits, whether it exits on its own or after the grace, so no command a session
+started outlives it. A command that moves itself to a new session or process group is out of reach.
+
+On Windows a stop first runs `taskkill /PID <pid> /T /F` on Claude's process tree, while Claude
+still runs, because once Claude has exited taskkill can no longer find the processes it started.
+Claude gets no time to finish writing its transcript. Once taskkill has finished, Domovoi kills
+Claude through its own process handle if it still runs, closes the input and the query, and waits
+up to 5 seconds from the start of the stop for Claude to exit. A Claude process that exited before
+the stop began gets no taskkill, because its pid can name another process by then.
 
 If the process still runs after the kill, the stop fails. Closing a project then leaves the session
 failed, and it refuses new messages until it is recovered. Recovery stops the failed process before

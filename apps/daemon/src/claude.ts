@@ -446,7 +446,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   }
 
   // The spawnClaudeCodeProcess option: starts Claude, and tracks it, unless
-  // the adapter is closing or the query's stop has begun, which closes its
+  // the adapter is closing or the query's stop has begun, which refuses its
   // input first.
   #spawn(
     spawnOptions: SpawnOptions,
@@ -462,7 +462,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     return child.spawned
   }
 
-  // Closes the query's input and the query, then waits for its processes as
+  // Closes the query's input and the query, and waits for its processes, as
   // stopClaudeProcess does. The stop is made once per query: every later
   // caller waits on the same exit. Once every process has exited, even after
   // a stop that already failed, the query is stopped.
@@ -470,10 +470,19 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     if (session.stop) {
       return session.processes.every((child) => child.hasExited()) ? Promise.resolve() : session.stop
     }
-    session.input.close()
-    session.query.close()
+    // From here the input takes no message and starts no process. It closes
+    // when stopClaudeProcess says: on Windows only after the tree kill (Q106).
+    session.input.refuse()
+    let closed = false
+    const close = () => {
+      if (closed) return
+      closed = true
+      session.input.close()
+      session.query.close()
+    }
     const running = session.processes.filter((child) => !child.hasExited())
-    const stop = Promise.all(running.map((child) => stopClaudeProcess(child, this.#processOptions)))
+    if (running.length === 0) close()
+    const stop = Promise.all(running.map((child) => stopClaudeProcess(child, close, this.#processOptions)))
       .then(() => {})
     // Callers observe the failure; the promise is kept for the next one.
     stop.catch(() => {})
@@ -894,6 +903,7 @@ class PushStream<T> implements AsyncIterable<T> {
   #values: T[] = []
   #waiters: Array<(result: IteratorResult<T>) => void> = []
   #closed = false
+  #ended = false
 
   get closed(): boolean {
     return this.#closed
@@ -906,8 +916,15 @@ class PushStream<T> implements AsyncIterable<T> {
     else this.#values.push(value)
   }
 
+  // Takes no more values, but does not end the stream yet: a Windows stop
+  // ends it only after its tree kill (Q106).
+  refuse(): void {
+    this.#closed = true
+  }
+
   close(): void {
     this.#closed = true
+    this.#ended = true
     for (const waiter of this.#waiters.splice(0)) waiter({ value: undefined, done: true })
   }
 
@@ -916,7 +933,7 @@ class PushStream<T> implements AsyncIterable<T> {
       next: async () => {
         const value = this.#values.shift()
         if (value !== undefined) return { value, done: false }
-        if (this.#closed) return { value: undefined, done: true }
+        if (this.#ended) return { value: undefined, done: true }
         return new Promise((resolve) => this.#waiters.push(resolve))
       },
     }

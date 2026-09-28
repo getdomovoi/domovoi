@@ -155,7 +155,8 @@ export function spawnClaudeProcess(
       //
       // Windows gets no tree kill here. Node closes its handle to Claude as
       // it reports the exit, so the pid can name another process at once, and
-      // taskkill /T finds nothing below a process that has exited.
+      // taskkill /T finds nothing below a process that has exited. A stop
+      // kills the tree first instead (see stopClaudeProcess).
       if (platform !== "win32" && pid !== undefined) {
         try {
           kill(-pid, "SIGKILL")
@@ -199,20 +200,38 @@ export function spawnClaudeProcess(
   }
 }
 
-// Waits for Claude to exit after its input was closed, then kills its process
-// group or tree. When Claude exited within the grace its group was killed as
-// it exited (see spawnClaudeProcess); otherwise the kill comes now, and the
-// stop fails when Claude still runs after the kill grace. The kill grace also
-// bounds the wait for taskkill.
+// Stops a running Claude. `close` closes its input and query, which asks it
+// to exit.
+//
+// On POSIX the input closes first, and Claude has the grace to exit. When it
+// exits within the grace its group was killed as it exited (see
+// spawnClaudeProcess); otherwise the kill comes after the grace.
+//
+// On Windows the tree kill comes first, while Claude still runs: once Claude
+// has exited on its own, taskkill /T can no longer find the processes it
+// started (Q106). Claude gets no grace to flush its transcript. The input
+// closes once taskkill has finished, or the kill grace has run out.
+//
+// Either way the stop fails when Claude still runs after the kill grace,
+// which also bounds the wait for taskkill.
 export async function stopClaudeProcess(
   child: ClaudeProcess,
+  close: () => void,
   {
+    platform = process.platform,
     shutdownGraceMs = claudeShutdownGraceMs,
     killGraceMs = claudeKillGraceMs,
-  }: Pick<ClaudeProcessOptions, "shutdownGraceMs" | "killGraceMs"> = {},
+  }: Pick<ClaudeProcessOptions, "platform" | "shutdownGraceMs" | "killGraceMs"> = {},
 ): Promise<void> {
-  if (await settlesBefore(child.exited, shutdownGraceMs)) return
-  const killed = child.kill().catch(() => {})
+  let killed: Promise<void>
+  if (platform === "win32") {
+    killed = child.kill().catch(() => {})
+    void settlesBefore(killed, killGraceMs).then(close)
+  } else {
+    close()
+    if (await settlesBefore(child.exited, shutdownGraceMs)) return
+    killed = child.kill().catch(() => {})
+  }
   if (await settlesBefore(Promise.all([child.exited, killed]).then(() => {}), killGraceMs)) return
   if (child.hasExited()) return
   throw new Error("Claude Code did not exit after Domovoi stopped it")
