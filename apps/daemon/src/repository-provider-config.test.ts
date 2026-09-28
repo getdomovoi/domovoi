@@ -75,16 +75,16 @@ describe("readRepositoryProviderConfig: Claude Code", () => {
     expect(claude.entries).toEqual(expect.arrayContaining([
       {
         kind: "tool-server", name: "local", transport: "stdio", file: ".mcp.json", startsAtSessionStart: true, heldBack: true,
-        command: "npx server --api-key [REDACTED] DATABASE_URL=[REDACTED]", envKeys: ["API_TOKEN", "REGION"],
+        command: "npx server [REDACTED]", envKeys: ["API_TOKEN", "REGION"],
       },
       {
         kind: "tool-server", name: "remote", transport: "http", file: ".mcp.json", startsAtSessionStart: true, heldBack: true,
         host: "mcp.example.com:8443", envKeys: [],
       },
-      { kind: "hook", event: "SessionStart", command: "NODE_ENV=[REDACTED] pnpm build", file: ".claude/settings.json", startsAtSessionStart: true, heldBack: true },
-      { kind: "hook", event: "PreToolUse", matcher: "Bash", command: "PGPASSWORD=[REDACTED] psql -c 'select 1'", file: ".claude/settings.json", startsAtSessionStart: false, heldBack: true },
+      { kind: "hook", event: "SessionStart", command: "[REDACTED]", file: ".claude/settings.json", startsAtSessionStart: true, heldBack: true },
+      { kind: "hook", event: "PreToolUse", matcher: "Bash", command: "[REDACTED]", file: ".claude/settings.json", startsAtSessionStart: false, heldBack: true },
       {
-        kind: "hook", event: "PostToolUse", command: "curl -H 'X-Custom: [REDACTED]' https://hooks.example.com/[REDACTED]#[REDACTED]",
+        kind: "hook", event: "PostToolUse", command: "curl [REDACTED]",
         file: ".claude/settings.json", startsAtSessionStart: false, heldBack: true,
       },
       { kind: "env-key", key: "DATABASE_URL", file: ".claude/settings.json", startsAtSessionStart: true, heldBack: true },
@@ -151,12 +151,12 @@ describe("readRepositoryProviderConfig: OpenCode and Kilo", () => {
       { path: ".opencode/plugin", source: "repository-file", state: "read" },
     ])
     expect(opencode.entries).toEqual(expect.arrayContaining([
-      { kind: "tool-server", name: "db", transport: "stdio", command: "db-mcp --password [REDACTED]", envKeys: ["PGPASSWORD"], file: "opencode.jsonc", startsAtSessionStart: true, heldBack: true },
+      { kind: "tool-server", name: "db", transport: "stdio", command: "db-mcp [REDACTED]", envKeys: ["PGPASSWORD"], file: "opencode.jsonc", startsAtSessionStart: true, heldBack: true },
       { kind: "tool-server", name: "docs", transport: "http", host: "docs.example.com", envKeys: [], file: "opencode.jsonc", startsAtSessionStart: false, heldBack: true },
       { kind: "plugin", name: "opencode-helper@1.0.0", file: "opencode.jsonc", startsAtSessionStart: true, heldBack: true },
       { kind: "permission-rule", rule: "ask", detail: "bash git push *", file: "opencode.jsonc", startsAtSessionStart: false, heldBack: true },
       { kind: "permission-rule", rule: "allow", detail: "edit", file: "opencode.jsonc", startsAtSessionStart: false, heldBack: true },
-      { kind: "helper", name: "formatter fmt", command: "fmt --token [REDACTED]", file: "opencode.jsonc", startsAtSessionStart: false, heldBack: true },
+      { kind: "helper", name: "formatter fmt", command: "fmt [REDACTED]", file: "opencode.jsonc", startsAtSessionStart: false, heldBack: true },
       { kind: "plugin", name: "side-effect.ts", file: ".opencode/plugin", startsAtSessionStart: true, heldBack: true },
     ]))
     // Kilo reads opencode.jsonc too, but not .opencode/.
@@ -389,7 +389,7 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     expect(claude.omittedEntries).toBe(0)
     expect(claude.entries.map((entry) => (entry.kind === "hook" ? entry.command : undefined))).toEqual([
       "npm test [REDACTED]",
-      "curl -H X-Foo: [REDACTED]",
+      "curl [REDACTED]",
       "cmd [REDACTED] x",
       "[REDACTED]",
     ])
@@ -487,8 +487,8 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     expectNoSecret(claude)
     expect(claude.omittedEntries).toBe(0)
     expect(claude.entries.map((entry) => (entry.kind === "hook" ? entry.command : undefined))).toEqual([
-      "curl Bearer [REDACTED] [REDACTED] https://example.com",
-      "curl Bearer [REDACTED] [REDACTED]",
+      "curl [REDACTED]",
+      "curl [REDACTED]",
     ])
   })
 
@@ -507,10 +507,10 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     expectNoSecret(claude)
     expect(claude.omittedEntries).toBe(0)
     expect(claude.entries.map((entry) => (entry.kind === "hook" ? entry.command : undefined))).toEqual([
-      "curl Bearer [REDACTED] [REDACTED] [REDACTED]",
-      "curl Bearer [REDACTED] [REDACTED]",
-      "curl Bearer [REDACTED] [REDACTED] [REDACTED]",
-      "curl --token [REDACTED] [REDACTED]",
+      "curl [REDACTED]",
+      "curl [REDACTED]",
+      "curl [REDACTED]",
+      "curl [REDACTED]",
     ])
   })
 
@@ -526,12 +526,12 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     expectNoSecret(claude)
     expect(claude.omittedEntries).toBe(0)
     expect(claude.entries.map((entry) => (entry.kind === "hook" ? entry.command : undefined))).toEqual([
-      "curl --token '[REDACTED]' [REDACTED]",
-      "curl --token [REDACTED] [REDACTED]",
-      "curl --token '[REDACTED]' [REDACTED]",
-      "curl --token '[REDACTED]' [REDACTED]",
-      "curl --token [REDACTED] [REDACTED]",
-      "curl --token '[REDACTED]' [REDACTED]",
+      "curl [REDACTED]",
+      "curl [REDACTED]",
+      "curl [REDACTED]",
+      "curl [REDACTED]",
+      "curl [REDACTED]",
+      "curl [REDACTED]",
     ])
   })
 
@@ -569,9 +569,10 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
     expect(JSON.stringify(claude)).not.toContain("swordfish")
     expect(claude.omittedEntries).toBe(0)
+    // The arguments are cut at the whole argument that holds the scheme word.
     expect(claude.entries.map((entry) => (entry.kind === "hook" ? entry.command : undefined))).toEqual([
       "curl 'https://host [REDACTED]'",
-      "curl 'https://host [REDACTED]'",
+      "curl [REDACTED]",
       "curl 'https://host [REDACTED]'",
     ])
   })
@@ -587,7 +588,10 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
     expect(JSON.stringify(claude)).not.toContain("swordfish")
     expect(claude.omittedEntries).toBe(0)
-    expect(claude.entries.map((entry) => (entry.kind === "hook" ? entry.command : undefined))).toEqual(Array.from({ length: 6 }, () => "curl 'https://host [REDACTED]'"))
+    // A command and a prompt are cut in the word; the arguments at the whole argument.
+    expect(claude.entries.map((entry) => (entry.kind === "hook" ? entry.command : undefined))).toEqual(
+      [1, 2].flatMap(() => ["curl 'https://host [REDACTED]'", "curl [REDACTED]", "curl 'https://host [REDACTED]'"]),
+    )
   })
 
   // Every trigger inside every place one word can hold it, its credential in

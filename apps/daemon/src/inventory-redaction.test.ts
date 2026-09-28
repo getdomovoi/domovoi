@@ -25,24 +25,27 @@ function backstopAccepts(command: string): boolean {
 
 describe("redactInventoryText", () => {
   it.each([
-    ["NODE_ENV=production pnpm build", "NODE_ENV=[REDACTED] pnpm build"],
-    ["DATABASE_URL=x node app.js", "DATABASE_URL=[REDACTED] node app.js"],
-    ["PGPASSWORD=x psql -h db", "PGPASSWORD=[REDACTED] psql -h db"],
-    ["export FOO=bar && run", "export FOO=[REDACTED] && run"],
-    ["API_KEY=\"a b\" run", "API_KEY=\"[REDACTED]\" run"],
-    ["API_KEY='a b' run", "API_KEY='[REDACTED]' run"],
-    ["API_KEY=a\\ b run", "API_KEY=[REDACTED] run"],
-    ["env \"PASSWORD=correct horse\" run", "env \"PASSWORD=[REDACTED]\" run"],
-    ["sh -c 'TOKEN=abc run'", "sh -c 'TOKEN=[REDACTED]'"],
-    ["cd x;SECRET=1 make", "cd x;SECRET=[REDACTED] make"],
-    ["curl https://tok@example.com/x", "curl https://[REDACTED]@example.com/[REDACTED]"],
-    ["curl https://user:pass@example.com:8443/x", "curl https://[REDACTED]@example.com:8443/[REDACTED]"],
-    ["curl 'https://example.com/p?key=abc&mode=fast'", "curl 'https://example.com/[REDACTED]?key=[REDACTED]&mode=[REDACTED]'"],
-    ["open https://example.com/cb#access_token=zzz", "open https://example.com/[REDACTED]#access_token=[REDACTED]"],
+    // An assignment is a trigger, so the text is cut before it.
+    ["NODE_ENV=production pnpm build", "[REDACTED]"],
+    ["DATABASE_URL=x node app.js", "[REDACTED]"],
+    ["PGPASSWORD=x psql -h db", "[REDACTED]"],
+    ["export FOO=bar && run", "export [REDACTED]"],
+    ["API_KEY=\"a b\" run", "[REDACTED]"],
+    ["API_KEY='a b' run", "[REDACTED]"],
+    ["API_KEY=a\\ b run", "[REDACTED]"],
+    ["env \"PASSWORD=correct horse\" run", "env [REDACTED]"],
+    ["sh -c 'TOKEN=abc run'", "sh -c [REDACTED]"],
+    ["cd x;SECRET=1 make", "cd x;[REDACTED]"],
+    // URL user info is a trigger; a query's or fragment's sensitive key or
+    // assignment is one too.
+    ["curl https://tok@example.com/x", "curl https://[REDACTED]"],
+    ["curl https://user:pass@example.com:8443/x", "curl https://[REDACTED]"],
+    ["curl 'https://example.com/p?key=abc&mode=fast'", "curl 'https://example.com/[REDACTED]?key=[REDACTED]&[REDACTED]'"],
+    ["open https://example.com/cb#access_token=zzz", "open https://example.com/[REDACTED]#[REDACTED]"],
     // A query or fragment part without an equals sign is a value too.
     ["open https://example.com/cb#opaque-fragment-secret", "open https://example.com/[REDACTED]#[REDACTED]"],
     ["curl 'https://example.com/p?token-without-equals'", "curl 'https://example.com/[REDACTED]?[REDACTED]'"],
-    ["curl 'https://example.com/p?a=1&bare;b=&d#x;c=2'", "curl 'https://example.com/[REDACTED]?a=[REDACTED]&[REDACTED];b=&[REDACTED]#[REDACTED];c=[REDACTED]'"],
+    ["curl 'https://example.com/p?a=1&bare;b=&d#x;c=2'", "curl 'https://example.com/[REDACTED]?a=[REDACTED]&[REDACTED];[REDACTED]'"],
     // The whole path after the host is a value: a webhook path is its token.
     ["curl -X POST https://hooks.example.com/services/T0/B0/XXXX", "curl -X POST https://hooks.example.com/[REDACTED]"],
     ["curl 'https://h.example.com:8443/a/b?key=abc#frag'", "curl 'https://h.example.com:8443/[REDACTED]?key=[REDACTED]#[REDACTED]'"],
@@ -58,81 +61,81 @@ describe("redactInventoryText", () => {
     ["sh -c \"curl https://h.example.com/'s3cr3t-value' x\"", "sh -c \"curl https://h.example.com/[REDACTED] x\""],
     ["sh -c 'curl https://h.example.com/\"s3cr3t value\" x'", "sh -c 'curl https://h.example.com/[REDACTED] x'"],
     ["sh -c \"curl https://h.example.com/\\\"s3cr3t value\\\" x\"", "sh -c \"curl https://h.example.com/[REDACTED] x\""],
-    // A shell escape in a header name is read before the name is matched.
-    ["curl -H \"X\\`Foo: opaque-secret\" x", "curl -H \"X\\`Foo: [REDACTED]\" x"],
-    ["curl -H \"X\\$Foo: s3cr3t-value\" x", "curl -H \"X\\$Foo: [REDACTED]\" x"],
-    ["curl -H \"X\\\"Foo: s3cr3t-value\" x", "curl -H \"X\\\"Foo: [REDACTED]\" x"],
-    ["curl -H X\\`Foo:s3cr3t-value x", "curl -H X\\`Foo:[REDACTED] x"],
-    ["sh -c 'curl -H \"X\\`Foo: s3cr3t-value\" x'", "sh -c 'curl -H \"X\\`Foo: [REDACTED]\" x'"],
-    // A header argument with a colon that still does not read as a header is
-    // redacted whole.
-    ["curl -H \"X Foo: s3cr3t-value\" x", "curl -H \"[REDACTED]\" x"],
-    ["curl -H 'X(Foo): s3cr3t-value' x", "curl -H '[REDACTED]' x"],
-    ["curl -H X\\\\Foo:s3cr3t-value x", "curl -H [REDACTED] x"],
-    ["curl -H 'Authorization: Bearer tok' x", "curl -H 'Authorization: Bearer [REDACTED]' x"],
-    // A header's value is redacted whatever the header is called.
-    ["curl -H 'X-Custom: opaque-header-secret' x", "curl -H 'X-Custom: [REDACTED]' x"],
-    ["curl --header \"X-Custom: a b\" x", "curl --header \"X-Custom: [REDACTED]\" x"],
-    ["curl --proxy-header 'X-Custom: v' x", "curl --proxy-header 'X-Custom: [REDACTED]' x"],
-    ["wget --header='X-Custom: v' x", "wget --header='X-Custom: [REDACTED]' x"],
-    ["curl -H X-Custom:v x", "curl -H X-Custom:[REDACTED] x"],
-    ["curl -H'X-Custom: v' x", "curl -H'X-Custom: [REDACTED]' x"],
-    ["sh -c 'curl -H \"X-Custom: v\" x'", "sh -c 'curl -H \"X-Custom: [REDACTED]\" x'"],
-    // A quote escaped right after the marker is single-quoted instead.
-    ["sh -c \"curl -H \\\"X-Custom: v\\\" x\"", "sh -c \"curl -H \\\"X-Custom: [REDACTED]\"'\"'\" x\""],
-    // The script's own quote is not closed, so it is redacted from that word on.
-    ["sh -c \"curl -H \\\"X-Custom: v x\"", "sh -c \"curl -H [REDACTED]\""],
-    // A header name takes every RFC 9110 token character, quote marks included.
-    ["curl -H \"X'Foo: s3cr3t-value\" x", "curl -H \"X'Foo: [REDACTED]\" x"],
-    ["curl -H 'X`Foo: s3cr3t-value' x", "curl -H 'X`Foo: [REDACTED]' x"],
-    ["curl -H \"!#$%&'*+-.^_\\`|~Az09: s3cr3t-value\" x", "curl -H \"!#$%&'*+-.^_\\`|~Az09: [REDACTED]\" x"],
+    // A header flag is a trigger whatever the header is called, so the text
+    // is cut before it: escaped, quoted or unreadable names, a scheme word in
+    // the value, and a value in the next word alike.
+    ["curl -H \"X\\`Foo: opaque-secret\" x", "curl [REDACTED]"],
+    ["curl -H \"X\\$Foo: s3cr3t-value\" x", "curl [REDACTED]"],
+    ["curl -H \"X\\\"Foo: s3cr3t-value\" x", "curl [REDACTED]"],
+    ["curl -H X\\`Foo:s3cr3t-value x", "curl [REDACTED]"],
+    ["sh -c 'curl -H \"X\\`Foo: s3cr3t-value\" x'", "sh -c 'curl [REDACTED]'"],
+    ["curl -H \"X Foo: s3cr3t-value\" x", "curl [REDACTED]"],
+    ["curl -H 'X(Foo): s3cr3t-value' x", "curl [REDACTED]"],
+    ["curl -H X\\\\Foo:s3cr3t-value x", "curl [REDACTED]"],
+    ["curl -H 'Authorization: Bearer tok' x", "curl [REDACTED]"],
+    ["curl -H 'X-Custom: opaque-header-secret' x", "curl [REDACTED]"],
+    ["curl --header \"X-Custom: a b\" x", "curl [REDACTED]"],
+    ["curl --proxy-header 'X-Custom: v' x", "curl [REDACTED]"],
+    ["wget --header='X-Custom: v' x", "wget [REDACTED]"],
+    ["curl -H X-Custom:v x", "curl [REDACTED]"],
+    ["curl -H'X-Custom: v' x", "curl [REDACTED]"],
+    ["sh -c 'curl -H \"X-Custom: v\" x'", "sh -c 'curl [REDACTED]'"],
+    ["sh -c \"curl -H \\\"X-Custom: v\\\" x\"", "sh -c \"curl [REDACTED]\""],
+    // The script's own quote is not closed; the header flag comes first.
+    ["sh -c \"curl -H \\\"X-Custom: v x\"", "sh -c \"curl [REDACTED]\""],
+    ["curl -H \"X'Foo: s3cr3t-value\" x", "curl [REDACTED]"],
+    ["curl -H 'X`Foo: s3cr3t-value' x", "curl [REDACTED]"],
+    ["curl -H \"!#$%&'*+-.^_\\`|~Az09: s3cr3t-value\" x", "curl [REDACTED]"],
     // An unescaped backquote in double quotes runs a command; the shell does
-    // not read it as a word, so it is redacted from that word on.
-    ["curl -H \"!#$%&'*+-.^_`|~Az09: s3cr3t-value\" x", "curl -H [REDACTED]"],
-    ["sh -c \"curl -H \\\"X'Foo: s3cr3t-value\\\" x\"", "sh -c \"curl -H \\\"X'Foo: [REDACTED]\"'\"'\" x\""],
-    // An unquoted name's quote opens a quoted run the value closes; the
-    // redacted value closes it again.
-    ["curl -H X'Foo: s3cr3t-value' x", "curl -H X'Foo: [REDACTED]' x"],
-    // A quoted part with text glued after it is one shell word, name and value.
-    ["curl -H 'X-Foo':s3cr3t-value x", "curl -H 'X-Foo':[REDACTED] x"],
-    ["curl -H \"X-Foo\":s3cr3t-value x", "curl -H \"X-Foo\":[REDACTED] x"],
-    ["curl -H 'X-Foo: a':s3cr3t-value x", "curl -H 'X-Foo: [REDACTED]' x"],
-    ["sh -c \"curl -H 'X-Foo':s3cr3t-value x\"", "sh -c \"curl -H 'X-Foo':[REDACTED] x\""],
-    ["sh -c 'curl -H \"X-Foo\":s3cr3t-value x'", "sh -c 'curl -H \"X-Foo\":[REDACTED] x'"],
-    ["sh -c 'curl -H X\"Foo: a s3cr3t-value\" x'", "sh -c 'curl -H X\"Foo: [REDACTED]\" x'"],
-    ["curl -H 'X-Foo': s3cr3t-value x", "curl -H 'X-Foo': [REDACTED] x"],
-    ["curl -H \"X-Foo\": s3cr3t-value x", "curl -H \"X-Foo\": [REDACTED] x"],
-    // A header argument that ends at its colon leaves the value in the next word.
-    ["curl -H X-Foo: s3cr3t-value https://example.com", "curl -H X-Foo: [REDACTED] https://example.com"],
-    ["curl -HX-Foo: s3cr3t-value x", "curl -HX-Foo: [REDACTED] x"],
-    ["wget --header=X-Foo: s3cr3t-value x", "wget --header=X-Foo: [REDACTED] x"],
-    ["curl -H X-Foo: \"s3cr3t value\" x", "curl -H X-Foo: \"[REDACTED]\" x"],
-    ["curl -H X-Foo: s3cr3t'-value x' y", "curl -H X-Foo: [REDACTED] y"],
-    ["sh -c 'curl -H X-Foo: s3cr3t-value x'", "sh -c 'curl -H X-Foo: [REDACTED] x'"],
-    // Inside a shell's script a rewritten value that opens a quoted run is
-    // written before that run's quote.
-    ["sh -c \"curl -H X-Foo: \\\"s3cr3t value\\\" x\"", "sh -c \"curl -H X-Foo: [REDACTED] x\""],
-    // A flag after it is the next argument, not a value.
-    ["curl -H X-Empty: -H 'X-Real: s3cr3t-value' x", "curl -H X-Empty: -H 'X-Real: [REDACTED]' x"],
-    ["Bearer tok", "Bearer [REDACTED]"],
-    ["curl -H \"X-Api-Key: abc def\" x", "curl -H \"X-Api-Key: [REDACTED]\" x"],
-    ["tool --api-key abc --port 8080", "tool --api-key [REDACTED] --port 8080"],
-    ["tool --api-key=abc", "tool --api-key=[REDACTED]"],
-    ["tool --password \"a b\" next", "tool --password \"[REDACTED]\" next"],
-    ["echo '{\"apiKey\": \"abc\", \"n\": 1}'", "echo '{\"apiKey\": \"[REDACTED]\", \"n\": 1}'"],
-    ["echo '{\"DATABASE_URL\": \"x\"}'", "echo '{\"DATABASE_URL\": \"[REDACTED]\"}'"],
+    // not read it as a word, and the header flag comes first.
+    ["curl -H \"!#$%&'*+-.^_`|~Az09: s3cr3t-value\" x", "curl [REDACTED]"],
+    ["sh -c \"curl -H \\\"X'Foo: s3cr3t-value\\\" x\"", "sh -c \"curl [REDACTED]\""],
+    ["curl -H X'Foo: s3cr3t-value' x", "curl [REDACTED]"],
+    ["curl -H 'X-Foo':s3cr3t-value x", "curl [REDACTED]"],
+    ["curl -H \"X-Foo\":s3cr3t-value x", "curl [REDACTED]"],
+    ["curl -H 'X-Foo: a':s3cr3t-value x", "curl [REDACTED]"],
+    ["sh -c \"curl -H 'X-Foo':s3cr3t-value x\"", "sh -c \"curl [REDACTED]\""],
+    ["sh -c 'curl -H \"X-Foo\":s3cr3t-value x'", "sh -c 'curl [REDACTED]'"],
+    ["sh -c 'curl -H X\"Foo: a s3cr3t-value\" x'", "sh -c 'curl [REDACTED]'"],
+    ["curl -H 'X-Foo': s3cr3t-value x", "curl [REDACTED]"],
+    ["curl -H \"X-Foo\": s3cr3t-value x", "curl [REDACTED]"],
+    ["curl -H X-Foo: s3cr3t-value https://example.com", "curl [REDACTED]"],
+    ["curl -HX-Foo: s3cr3t-value x", "curl [REDACTED]"],
+    ["wget --header=X-Foo: s3cr3t-value x", "wget [REDACTED]"],
+    ["curl -H X-Foo: \"s3cr3t value\" x", "curl [REDACTED]"],
+    ["curl -H X-Foo: s3cr3t'-value x' y", "curl [REDACTED]"],
+    ["sh -c 'curl -H X-Foo: s3cr3t-value x'", "sh -c 'curl [REDACTED]'"],
+    ["sh -c \"curl -H X-Foo: \\\"s3cr3t value\\\" x\"", "sh -c \"curl [REDACTED]\""],
+    ["curl -H X-Empty: -H 'X-Real: s3cr3t-value' x", "curl [REDACTED]"],
+    // A scheme word, a sensitive flag or key, and a known token shape are
+    // triggers too.
+    ["Bearer tok", "[REDACTED]"],
+    ["curl -H \"X-Api-Key: abc def\" x", "curl [REDACTED]"],
+    ["tool --api-key abc --port 8080", "tool [REDACTED]"],
+    ["tool --api-key=abc", "tool [REDACTED]"],
+    ["tool --password \"a b\" next", "tool [REDACTED]"],
+    ["echo '{\"apiKey\": \"abc\", \"n\": 1}'", "echo '{[REDACTED]'"],
+    ["echo '{\"DATABASE_URL\": \"x\"}'", "echo '{[REDACTED]'"],
     ["run sk-abcdefghijklmnop", "run [REDACTED]"],
     ["run ghp_abcdefghijklmnopqrstuvwxyz0123456789", "run [REDACTED]"],
     // A quoted run with a blank in it stays in the URL's shell word.
     ["curl https://h.example.com/'opaque secret' x", "curl https://h.example.com/[REDACTED] x"],
     ["bash -lc 'curl https://h.example.com/\"a b\" x'", "bash -lc 'curl https://h.example.com/[REDACTED] x'"],
-    // Every shell escape in a header name is read before the name is matched.
-    ["curl -H X\\&Foo: opaque-secret x", "curl -H X\\&Foo: [REDACTED] x"],
-    ["curl -H X\\*Foo:opaque-secret x", "curl -H X\\*Foo:[REDACTED] x"],
+    ["curl -H X\\&Foo: opaque-secret x", "curl [REDACTED]"],
+    ["curl -H X\\*Foo:opaque-secret x", "curl [REDACTED]"],
     // A scheme word starts wherever the protocol backstop reads one, after a
-    // `/` too, and the backstop refuses the text with its value shown.
-    ["tool --token-file ./token --max-tokens 10", "tool --token-file ./token [REDACTED] 10"],
-    ["cat ./Token swordfish tail", "cat ./Token [REDACTED] tail"],
+    // `/` too.
+    ["tool --token-file ./token --max-tokens 10", "tool --token-file ./[REDACTED]"],
+    ["cat ./Token swordfish tail", "cat ./[REDACTED]"],
+    // Kept whole before texts were cut at their first trigger: a scheme word
+    // or assignment before the marker, and a header flag.
+    ["Bearer [REDACTED]", "[REDACTED]"],
+    ["NODE_ENV=[REDACTED] pnpm build", "[REDACTED]"],
+    ["curl -H @headers.txt x", "curl [REDACTED]"],
+    ["grep -Hn pattern file", "grep [REDACTED]"],
+    ["curl -H X-Foo:", "curl [REDACTED]"],
+    ["curl -H X-Foo: ; ls", "curl [REDACTED]"],
+    ["curl -H \"Host:\" https://example.com", "curl [REDACTED]"],
   ])("redacts %j", (input, expected) => {
     const redacted = redactInventoryText(input)
     expect(redacted).toBe(expected)
@@ -143,21 +146,13 @@ describe("redactInventoryText", () => {
     "pnpm build",
     "node /tmp/config=dev/index.js",
     "tool --token-file ./secrets --max-tokens 10",
-    "Bearer [REDACTED]",
-    "NODE_ENV=[REDACTED] pnpm build",
     // A URL with no path, or only `/`, keeps it.
     "curl https://example.com",
     "curl https://example.com/",
     "https://example.com:8443/",
-    "curl -H @headers.txt x",
-    "grep -Hn pattern file",
     // A quoted URL with no path, or only `/`, keeps its quotes.
     "curl 'https://example.com' x",
     "curl \"https://example.com/\"",
-    // An empty header with nothing after it, or a quoted one the author closed.
-    "curl -H X-Foo:",
-    "curl -H X-Foo: ; ls",
-    "curl -H \"Host:\" https://example.com",
   ])("keeps %j", (input) => {
     expect(redactInventoryText(input)).toBe(input)
   })
@@ -170,29 +165,29 @@ describe("redactInventoryText", () => {
 
   it("is idempotent for quote marks in header names", () => {
     const once = redactInventoryText("curl -H \"X'Foo: v\" -H 'X`Bar: v' -H X'Baz: v w' x")
-    expect(once).toBe("curl -H \"X'Foo: [REDACTED]\" -H 'X`Bar: [REDACTED]' -H X'Baz: [REDACTED]' x")
+    expect(once).toBe("curl [REDACTED]")
     expect(redactInventoryText(once)).toBe(once)
     expect(backstopAccepts(once)).toBe(true)
   })
 
   it("is idempotent for a header value split from its header", () => {
     const once = redactInventoryText("curl -H X-Qux: v -H X-Quux: \"v w\" x")
-    expect(once).toBe("curl -H X-Qux: [REDACTED] -H X-Quux: \"[REDACTED]\" x")
+    expect(once).toBe("curl [REDACTED]")
     expect(redactInventoryText(once)).toBe(once)
     expect(backstopAccepts(once)).toBe(true)
   })
 
   it("is idempotent for a redacted URL path", () => {
     const once = redactInventoryText("curl https://u:p@h.example.com:8443/a/b?k=v&bare#f")
-    // The `&` read into the URL is quoted, so the word reads back as one word.
-    expect(once).toBe("curl https://[REDACTED]@h.example.com:8443/[REDACTED]?k=[REDACTED]'&[REDACTED]#[REDACTED]'")
+    // The URL's user info is a trigger, so it is cut there.
+    expect(once).toBe("curl https://[REDACTED]")
     expect(redactInventoryText(once)).toBe(once)
     expect(backstopAccepts(once)).toBe(true)
   })
 
   it("is idempotent for escaped and unreadable header names", () => {
     const once = redactInventoryText("curl -H \"X\\`Foo: v\" -H X\\`Bar:v -H \"X Baz: v\" -H 'X(Qux): v' x")
-    expect(once).toBe("curl -H \"X\\`Foo: [REDACTED]\" -H X\\`Bar:[REDACTED] -H \"[REDACTED]\" -H '[REDACTED]' x")
+    expect(once).toBe("curl [REDACTED]")
     expect(redactInventoryText(once)).toBe(once)
     expect(backstopAccepts(once)).toBe(true)
   })
@@ -206,30 +201,28 @@ describe("redactInventoryText", () => {
 
   it("is idempotent for a quoted header name with its value glued on", () => {
     const once = redactInventoryText("curl -H 'X-Foo':v -H \"X-Bar\":v -H 'X-Baz: a':v x")
-    expect(once).toBe("curl -H 'X-Foo':[REDACTED] -H \"X-Bar\":[REDACTED] -H 'X-Baz: [REDACTED]' x")
+    expect(once).toBe("curl [REDACTED]")
     expect(redactInventoryText(once)).toBe(once)
     expect(backstopAccepts(once)).toBe(true)
   })
 })
 
-// A flag after a scheme word is read for its own value, and then hidden
-// whole: the protocol backstop takes any word after a scheme as its
-// credential, a flag too, and would refuse the entry.
+// A scheme word, a sensitive flag and a header flag are each a trigger, so a
+// chain of them is cut before the first: nothing after it is shown.
 describe("a scheme word before a sensitive flag", () => {
   const texts: ReadonlyArray<[string, string]> = [
-    ["curl Bearer --token s3cr3t-value", "curl Bearer [REDACTED] [REDACTED]"],
-    ["curl Bearer --token=s3cr3t-value", "curl Bearer [REDACTED]"],
-    ["curl Token --api-key hunter2 x", "curl Token [REDACTED] [REDACTED] x"],
-    ["curl Bearer -H 'X-Foo: s3cr3t-value' x", "curl Bearer [REDACTED] 'X-Foo: [REDACTED]' x"],
-    ["curl Bearer --verbose x", "curl Bearer [REDACTED] x"],
-    ["curl Token Token s3cr3t-value", "curl Token Token [REDACTED]"],
-    // A scheme word taken as another rule's value is still read as a scheme.
-    ["curl Bearer --token Token s3cr3t-value", "curl Bearer [REDACTED] [REDACTED] [REDACTED]"],
-    ["curl Bearer Basic s3cr3t-value", "curl Bearer [REDACTED] [REDACTED]"],
-    ["curl --token Bearer s3cr3t-value", "curl --token [REDACTED] [REDACTED]"],
-    ["curl Token --api-key Digest s3cr3t-value x", "curl Token [REDACTED] [REDACTED] [REDACTED] x"],
-    ["curl -H 'X-Foo: Bearer' s3cr3t-value", "curl -H 'X-Foo: [REDACTED]' [REDACTED]"],
-    ["tool --password Token s3cr3t-value", "tool --password [REDACTED] [REDACTED]"],
+    ["curl Bearer --token s3cr3t-value", "curl [REDACTED]"],
+    ["curl Bearer --token=s3cr3t-value", "curl [REDACTED]"],
+    ["curl Token --api-key hunter2 x", "curl [REDACTED]"],
+    ["curl Bearer -H 'X-Foo: s3cr3t-value' x", "curl [REDACTED]"],
+    ["curl Bearer --verbose x", "curl [REDACTED]"],
+    ["curl Token Token s3cr3t-value", "curl [REDACTED]"],
+    ["curl Bearer --token Token s3cr3t-value", "curl [REDACTED]"],
+    ["curl Bearer Basic s3cr3t-value", "curl [REDACTED]"],
+    ["curl --token Bearer s3cr3t-value", "curl [REDACTED]"],
+    ["curl Token --api-key Digest s3cr3t-value x", "curl [REDACTED]"],
+    ["curl -H 'X-Foo: Bearer' s3cr3t-value", "curl [REDACTED]"],
+    ["tool --password Token s3cr3t-value", "tool [REDACTED]"],
   ]
 
   it.each(texts)("redacts the flag's value in %s", (input, expected) => {
@@ -243,15 +236,15 @@ describe("a scheme word before a sensitive flag", () => {
 
   it("redacts the flag's value in an argument vector", () => {
     const command = redactInventoryArgv(["curl", "Bearer", "--token", "s3cr3t-value", "Basic", "--password=hunter2"])
-    expect(command).toBe("curl Bearer [REDACTED] [REDACTED] Basic [REDACTED]")
+    expect(command).toBe("curl [REDACTED]")
     expect(backstopAccepts(command)).toBe(true)
   })
 
   it.each([
-    [["curl", "Bearer", "--token", "Token", "s3cr3t-value"], "curl Bearer [REDACTED] [REDACTED] [REDACTED]"],
-    [["curl", "Bearer", "Basic", "s3cr3t-value"], "curl Bearer [REDACTED] [REDACTED]"],
-    [["curl", "--token", "Bearer", "s3cr3t-value"], "curl --token [REDACTED] [REDACTED]"],
-    [["curl", "-H", "X-Foo: Bearer", "s3cr3t-value"], "curl -H 'X-Foo: [REDACTED]' [REDACTED]"],
+    [["curl", "Bearer", "--token", "Token", "s3cr3t-value"], "curl [REDACTED]"],
+    [["curl", "Bearer", "Basic", "s3cr3t-value"], "curl [REDACTED]"],
+    [["curl", "--token", "Bearer", "s3cr3t-value"], "curl [REDACTED]"],
+    [["curl", "-H", "X-Foo: Bearer", "s3cr3t-value"], "curl [REDACTED]"],
   ])("redacts a scheme word taken as a value in the argument vector %j", (argv, expected) => {
     const command = redactInventoryArgv(argv)
     expect(command).toBe(expected)
@@ -283,15 +276,15 @@ describe("a scheme word before a sensitive flag", () => {
   })
 })
 
-// A word that names the next word's value is read wherever it sits in the
-// original words, whichever rule hid or read past the value it ends: the
-// value after it is hidden too, and the output is not refused.
+// A word that names the next word's value is read wherever it sits, inside a
+// URL, a header's value or a shell's script too: the text is cut before it,
+// so the value after it is never shown, and the output is not refused.
 describe("a scheme word or sensitive flag inside a value another rule took", () => {
   it.each([
-    ["curl --token 'https://host/ Token' s3cr3t-value", "curl --token '[REDACTED]' [REDACTED]", ["curl", "--token", "https://host/ Token", "s3cr3t-value"], "curl --token [REDACTED] [REDACTED]"],
-    ["curl --token 'x -H X-Foo: Bearer ' s3cr3t-value", "curl --token '[REDACTED]' [REDACTED]", ["curl", "--token", "x -H X-Foo: Bearer ", "s3cr3t-value"], "curl --token [REDACTED] [REDACTED]"],
-    ["curl 'https://host/ --token' s3cr3t-value", "curl 'https://host/[REDACTED]' [REDACTED]", ["curl", "https://host/ --token", "s3cr3t-value"], "curl https://host/[REDACTED] [REDACTED]"],
-    ["sh -c 'curl Bearer' s3cr3t-value", "sh -c 'curl Bearer' [REDACTED]", ["sh", "-c", "curl Bearer", "s3cr3t-value"], "sh -c 'curl Bearer' [REDACTED]"],
+    ["curl --token 'https://host/ Token' s3cr3t-value", "curl [REDACTED]", ["curl", "--token", "https://host/ Token", "s3cr3t-value"], "curl [REDACTED]"],
+    ["curl --token 'x -H X-Foo: Bearer ' s3cr3t-value", "curl [REDACTED]", ["curl", "--token", "x -H X-Foo: Bearer ", "s3cr3t-value"], "curl [REDACTED]"],
+    ["curl 'https://host/ --token' s3cr3t-value", "curl 'https://host/[REDACTED]'", ["curl", "https://host/ --token", "s3cr3t-value"], "curl [REDACTED]"],
+    ["sh -c 'curl Bearer' s3cr3t-value", "sh -c 'curl [REDACTED]'", ["sh", "-c", "curl Bearer", "s3cr3t-value"], "sh -c [REDACTED]"],
   ] as const)("redacts %s", (input, expected, argv, expectedArgv) => {
     for (const redact of [redactInventoryText, redactInventoryCommand]) {
       const redacted = redact(input)
@@ -304,15 +297,14 @@ describe("a scheme word or sensitive flag inside a value another rule took", () 
     expect(backstopAccepts(command)).toBe(true)
   })
 
-  // Other rules whose value is the next word read the original words too: a
-  // private key's body after its header, and a header's value after a name
-  // that ends at an unquoted colon.
+  // Other triggers whose value is the next word are read there too: a private
+  // key's header, and a header flag.
   it.each([
     [
       "curl 'https://h/ -----BEGIN PRIVATE KEY-----' MIIEsecretbody '-----END PRIVATE KEY-----'",
-      "curl 'https://h/[REDACTED]' [REDACTED]",
+      "curl 'https://h/[REDACTED]'",
     ],
-    ["curl 'https://h/ -H' X-Foo: s3cr3t-value", "curl 'https://h/[REDACTED]' X-Foo: [REDACTED]"],
+    ["curl 'https://h/ -H' X-Foo: s3cr3t-value", "curl 'https://h/[REDACTED]'"],
   ])("redacts the next word's value in %s", (input, expected) => {
     for (const redact of [redactInventoryText, redactInventoryCommand]) {
       const redacted = redact(input)
@@ -324,8 +316,8 @@ describe("a scheme word or sensitive flag inside a value another rule took", () 
 
   it("redacts the value after a scheme word a URL read in through an operator", () => {
     const input = "curl https://h/?q&Bearer s3cr3t-value"
-    expect(redactInventoryText(input)).toBe("curl https://h/?[REDACTED]'&[REDACTED]' [REDACTED]")
-    expect(redactInventoryCommand(input)).toBe("curl https://h/'?[REDACTED]&[REDACTED]' [REDACTED]")
+    expect(redactInventoryText(input)).toBe("curl https://h/?[REDACTED]'&[REDACTED]'")
+    expect(redactInventoryCommand(input)).toBe("curl https://h/'?[REDACTED]&[REDACTED]'")
     for (const redact of [redactInventoryText, redactInventoryCommand]) expect(backstopAccepts(redact(input))).toBe(true)
   })
 
@@ -346,10 +338,9 @@ describe("a scheme word or sensitive flag inside a value another rule took", () 
 })
 
 // A word that makes the rest of its own shell word a value, inside a word a
-// rule took whole without hiding that value (a URL's host or query name, a
-// header's name before a kept scheme word): the word is hidden from there to
-// its end, so its credential is never shown and the protocol does not refuse
-// the text.
+// rule would otherwise keep in part (a URL's host or query name): the word is
+// cut there, so its credential is never shown and the protocol does not
+// refuse the text. An argument vector is cut at the whole argument.
 describe("a scheme word or sensitive flag and its value in one word another rule took", () => {
   it("hides the value in a URL's authority as text", () => {
     expect(redactInventoryText("curl 'https://host Token swordfish tail'")).toBe("curl 'https://host [REDACTED]'")
@@ -360,19 +351,21 @@ describe("a scheme word or sensitive flag and its value in one word another rule
   })
 
   it("hides the value in a URL's authority as an argument vector", () => {
-    expect(redactInventoryArgv(["curl", "https://host Token swordfish tail"])).toBe("curl 'https://host [REDACTED]'")
+    expect(redactInventoryArgv(["curl", "https://host Token swordfish tail"])).toBe("curl [REDACTED]")
   })
 
   it.each([
     ["curl 'https://host Token x'", "curl 'https://host [REDACTED]'"],
     ["curl 'https://host --token swordfish'", "curl 'https://host [REDACTED]'"],
-    ["curl 'https://user@host Token swordfish'", "curl 'https://[REDACTED]@host [REDACTED]'"],
+    ["curl 'https://user@host Token swordfish'", "curl 'https://[REDACTED]'"],
     ["curl 'https://host/?Token swordfish=1'", "curl 'https://host/?[REDACTED]'"],
     ["curl 'https://host/p?a=1&--token swordfish=2#f'", "curl 'https://host/[REDACTED]?a=[REDACTED]&[REDACTED]'"],
-    ["curl -H 'X-Api-Token: Bearer swordfish'", "curl -H '[REDACTED]'"],
-    ["sh -c \"curl 'https://host Token swordfish tail'\"", "sh -c \"curl 'https://host [REDACTED]'\""],
-    ["bash -lc \"curl 'https://host Token swordfish tail'\"", "bash -lc \"curl 'https://host [REDACTED]'\""],
-    ["env MODE=x sh -c \"curl 'https://host Token swordfish tail'\"", "env MODE=[REDACTED] sh -c \"curl 'https://host [REDACTED]'\""],
+    ["curl -H 'X-Api-Token: Bearer swordfish'", "curl [REDACTED]"],
+    // Inside a shell's script, a word written again from its first character
+    // is written before its opening quote.
+    ["sh -c \"curl 'https://host Token swordfish tail'\"", "sh -c \"curl https://host' [REDACTED]'\""],
+    ["bash -lc \"curl 'https://host Token swordfish tail'\"", "bash -lc \"curl https://host' [REDACTED]'\""],
+    ["env MODE=x sh -c \"curl 'https://host Token swordfish tail'\"", "env [REDACTED]"],
     // A scheme word or header flag right after a URL's `?` or `#` is one too.
     ["curl 'https://host/#Bearer swordfish=1'", "curl 'https://host/#[REDACTED]'"],
     ["curl 'https://host/?-H X-Foo: swordfish=1'", "curl 'https://host/?[REDACTED]'"],
@@ -380,12 +373,12 @@ describe("a scheme word or sensitive flag and its value in one word another rule
     // as empty, run to the end of the word.
     ["curl 'https://host A=swordfish'", "curl 'https://host [REDACTED]'"],
     ["curl 'https://host --token ,swordfish'", "curl 'https://host [REDACTED]'"],
-    // A value the URL hid keeps the query's other names.
-    ["curl 'https://host/?access_token=zzz&mode=fast'", "curl 'https://host/?access_token=[REDACTED]&mode=[REDACTED]'"],
+    // A sensitive key in a URL's query is a trigger too.
+    ["curl 'https://host/?access_token=zzz&mode=fast'", "curl 'https://host/?[REDACTED]'"],
     // A quote escaped right after the marker in a double-quoted script is
     // single-quoted, so the backstop does not read a backslash as the value.
-    ["bash -lc \"curl \\\"x Bearer swordfish\\\"\"", "bash -lc \"curl \\\"x Bearer [REDACTED]\"'\"'\"\""],
-    ["bash -lc \"curl \\\"x --token swordfish\\\"\"", "bash -lc \"curl \\\"x --token [REDACTED]\"'\"'\"\""],
+    ["bash -lc \"curl \\\"x Bearer swordfish\\\"\"", "bash -lc \"curl \\\"x [REDACTED]\"'\"'\"\""],
+    ["bash -lc \"curl \\\"x --token swordfish\\\"\"", "bash -lc \"curl \\\"x [REDACTED]\"'\"'\"\""],
   ])("redacts %s", (input, expected) => {
     for (const redact of [redactInventoryText, redactInventoryCommand]) {
       const redacted = redact(input)
@@ -450,19 +443,20 @@ describe("triggers the protocol backstop reads in its other views", () => {
     for (const [wrapping, wrap] of scripts) expectHidden(`${wrapping} ${text}`, redactInventoryArgv(wrap(text)))
   })
 
+  // Shell text is cut at the trigger's first source character; an argument
+  // vector at the whole argument that holds it.
   it.each([
-    ["curl 'https://host Token \"swordfish tail\"'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
-    ["curl 'https://host Token \"swordfish\"'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
-    ["curl 'https://host/?Token \"swordfish\"=1'", "curl 'https://host/?[REDACTED]'", "curl 'https://host/?[REDACTED]'"],
-    ["curl 'https://host %54oken swordfish tail'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
-    ["curl 'https://host Token%20swordfish tail'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
-    ["curl 'https://host %54oken swordfish'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
-    ["curl 'https://host --%74oken swordfish'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
-    ["curl 'https://host --token%20swordfish'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
-    ["curl 'https://host api%5fkey=swordfish'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
-    // The escaped blank is written in quotes, so no backslash stands between
-    // the header's name and the marker.
-    ["curl -H X-Api-Token:\\ --token\\ swordfish", "curl -H X-Api-Token:' [REDACTED]'", "curl -H 'X-Api-Token: [REDACTED]'"],
+    ["curl 'https://host Token \"swordfish tail\"'", "curl 'https://host [REDACTED]'", "curl [REDACTED]"],
+    ["curl 'https://host Token \"swordfish\"'", "curl 'https://host [REDACTED]'", "curl [REDACTED]"],
+    ["curl 'https://host/?Token \"swordfish\"=1'", "curl 'https://host/?[REDACTED]'", "curl [REDACTED]"],
+    ["curl 'https://host %54oken swordfish tail'", "curl 'https://host [REDACTED]'", "curl [REDACTED]"],
+    ["curl 'https://host Token%20swordfish tail'", "curl 'https://host [REDACTED]'", "curl [REDACTED]"],
+    ["curl 'https://host %54oken swordfish'", "curl 'https://host [REDACTED]'", "curl [REDACTED]"],
+    ["curl 'https://host --%74oken swordfish'", "curl 'https://host [REDACTED]'", "curl [REDACTED]"],
+    ["curl 'https://host --token%20swordfish'", "curl 'https://host [REDACTED]'", "curl [REDACTED]"],
+    ["curl 'https://host api%5fkey=swordfish'", "curl 'https://host [REDACTED]'", "curl [REDACTED]"],
+    // The header flag comes first.
+    ["curl -H X-Api-Token:\\ --token\\ swordfish", "curl [REDACTED]", "curl [REDACTED]"],
   ])("redacts %s", (input, expected, expectedArgv) => {
     for (const redact of [redactInventoryText, redactInventoryCommand]) {
       const redacted = redact(input)
@@ -633,7 +627,8 @@ describe("redactInventoryArgv", () => {
     const command = redactInventoryArgv([
       "npx", "server", "--api-key", "abc", "DATABASE_URL=postgres://u:p@h/db", "--url", "https://t@h/x", "env", "PASSWORD=correct horse",
     ])
-    expect(command).toBe("npx server --api-key [REDACTED] DATABASE_URL=[REDACTED] --url https://[REDACTED]@h/[REDACTED] env PASSWORD=[REDACTED]")
+    // Cut at the whole argument that holds the first trigger.
+    expect(command).toBe("npx server [REDACTED]")
     expect(backstopAccepts(command)).toBe(true)
   })
 
@@ -642,17 +637,14 @@ describe("redactInventoryArgv", () => {
       "curl", "-H", "X-Custom: opaque-header-secret", "--header=X-Other: v2", "-HX-Third: v3", "--proxy-header", "X-Proxy: v4",
       "https://example.com/cb?bare-query-secret#opaque-fragment-secret",
     ])
-    expect(command).toBe(
-      "curl -H 'X-Custom: [REDACTED]' '--header=X-Other: [REDACTED]' '-HX-Third: [REDACTED]' --proxy-header 'X-Proxy: [REDACTED]' 'https://example.com/[REDACTED]?[REDACTED]#[REDACTED]'",
-    )
+    // A header flag is a trigger, so the vector is cut at it.
+    expect(command).toBe("curl [REDACTED]")
     expect(backstopAccepts(command)).toBe(true)
   })
 
-  // A backquote is shell text a hook would pass on, so it is redacted from
-  // its argument on.
   it("redacts header values whose names hold quote marks", () => {
     const command = redactInventoryArgv(["curl", "-H", "X'Foo: s3cr3t-value", "--header=X`Bar: hunter2", "-HX'Baz: tok-abc"])
-    expect(command).toBe("curl -H 'X'\"'\"'Foo: [REDACTED]' [REDACTED]")
+    expect(command).toBe("curl [REDACTED]")
     expect(backstopAccepts(command)).toBe(true)
   })
 
@@ -660,7 +652,7 @@ describe("redactInventoryArgv", () => {
     const command = redactInventoryArgv([
       "curl", "-H", "X-Foo:", "s3cr3t-value", "-HX-Bar:", "hunter2", "--header=X-Baz:", "tok abc", "-H", "X-Empty:", "-H", "X-Real: q-secret", "x",
     ])
-    expect(command).toBe("curl -H X-Foo: [REDACTED] -HX-Bar: [REDACTED] --header=X-Baz: [REDACTED] -H X-Empty: -H 'X-Real: [REDACTED]' x")
+    expect(command).toBe("curl [REDACTED]")
     expect(backstopAccepts(command)).toBe(true)
   })
 
@@ -674,18 +666,17 @@ describe("redactInventoryArgv", () => {
 
   it("redacts a quoted header name with its value glued on", () => {
     const command = redactInventoryArgv(["curl", "-H", "'X-Foo':s3cr3t-value", "-H", "\"X-Bar\":hunter2", "--header='X-Baz':tok-abc"])
-    expect(command).toBe("curl -H ''\"'\"'X-Foo'\"'\"':[REDACTED]' -H '\"X-Bar\":[REDACTED]' '--header='\"'\"'X-Baz'\"'\"':[REDACTED]'")
+    expect(command).toBe("curl [REDACTED]")
     expect(backstopAccepts(command)).toBe(true)
+    // A shell's script with a trigger in it is cut at the whole argument.
     const shell = redactInventoryArgv(["sh", "-c", "curl -H 'X-Foo':s3cr3t-value x"])
-    expect(shell).toBe("sh -c 'curl -H '\"'\"'X-Foo'\"'\"':[REDACTED] x'")
+    expect(shell).toBe("sh -c [REDACTED]")
     expect(backstopAccepts(shell)).toBe(true)
   })
 
-  // A header argument that does not read as a header is redacted whole; a
-  // backquote is shell text a hook would pass on, redacted from its argument on.
   it("redacts a header argument that does not read as a header", () => {
     const command = redactInventoryArgv(["curl", "-H", "X Foo: hunter2", "--header=X(Foo): tok-abc", "-H", "@headers.txt", "-H", "X`Foo: opaque-secret", "x"])
-    expect(command).toBe("curl -H [REDACTED] --header=[REDACTED] -H @headers.txt -H [REDACTED]")
+    expect(command).toBe("curl [REDACTED]")
     expect(backstopAccepts(command)).toBe(true)
   })
 
@@ -701,21 +692,21 @@ describe("redactInventoryArgv", () => {
 
   it("redacts a URL path with a blank and a header named with a shell metacharacter", () => {
     const command = redactInventoryArgv(["curl", "https://h.example.com/opaque secret", "-H", "X&Foo:", "hunter2", "-H", "X*Bar: tok-abc"])
-    expect(command).toBe("curl https://h.example.com/[REDACTED] -H 'X&Foo:' [REDACTED] -H 'X*Bar: [REDACTED]'")
+    expect(command).toBe("curl https://h.example.com/[REDACTED] [REDACTED]")
     expect(backstopAccepts(command)).toBe(true)
   })
 })
 
-// Text the shell cannot be read as words is redacted from the word where
-// reading stopped to the end.
+// Text the shell cannot be read as words is cut at the word where reading
+// stopped, or at a trigger before it.
 describe("redactInventoryText when the text does not read as shell words", () => {
   it.each([
-    ["curl -H \"X-Foo: s3cr3t value", "curl -H [REDACTED]"],
-    ["curl -H 'X-Foo: s3cr3t value", "curl -H [REDACTED]"],
+    ["curl -H \"X-Foo: s3cr3t value", "curl [REDACTED]"],
+    ["curl -H 'X-Foo: s3cr3t value", "curl [REDACTED]"],
     ["echo $(cat token) x", "echo [REDACTED]"],
     ["echo `cat token` x", "echo [REDACTED]"],
     ["cat <<EOF", "cat [REDACTED]"],
-    ["sh -c 'curl -H \"X-Foo: s3cr3t value'", "sh -c 'curl -H [REDACTED]'"],
+    ["sh -c 'curl -H \"X-Foo: s3cr3t value'", "sh -c 'curl [REDACTED]'"],
   ])("redacts %j", (input, expected) => {
     const redacted = redactInventoryText(input)
     expect(redacted).toBe(expected)
@@ -791,19 +782,21 @@ describe("shell words around a URL path and a header value", () => {
 // is written again.
 describe("shell text that runs, expands or escapes an operator", () => {
   it.each([
-    ["curl -H X-Foo: <(printf opaque-secret) x", "curl -H X-Foo: [REDACTED]"],
-    ["curl -H X-Foo: >(printf opaque-secret) x", "curl -H X-Foo: [REDACTED]"],
+    // A header flag, an assignment, or a key before a blank and `=` (as the
+    // backstop reads `diff =(...`) is cut before where reading stops.
+    ["curl -H X-Foo: <(printf opaque-secret) x", "curl [REDACTED]"],
+    ["curl -H X-Foo: >(printf opaque-secret) x", "curl [REDACTED]"],
     ["cat x<(printf opaque-secret) y", "cat x [REDACTED]"],
-    ["diff =(printf opaque-secret) x", "diff [REDACTED]"],
+    ["diff =(printf opaque-secret) x", "[REDACTED]"],
     ["run API_KEY=(opaque-secret) x", "run [REDACTED]"],
     ["echo ${TOKEN-opaque-secret} x", "echo [REDACTED]"],
     ["echo ${TOKEN+opaque-secret} x", "echo [REDACTED]"],
     ["echo ${TOKEN?opaque-secret} x", "echo [REDACTED]"],
     ["echo \"${TOKEN:-opaque-secret}\" x", "echo [REDACTED]"],
-    ["sh -c 'curl -H X-Foo: <(printf opaque-secret) x'", "sh -c 'curl -H X-Foo: [REDACTED]'"],
+    ["sh -c 'curl -H X-Foo: <(printf opaque-secret) x'", "sh -c 'curl [REDACTED]'"],
     ["sh -c 'echo ${TOKEN-opaque-secret} x'", "sh -c 'echo [REDACTED]'"],
-    ["curl https://h.example.com/p?a=one\\&b=two", "curl https://h.example.com/[REDACTED]?a=[REDACTED]'&b=[REDACTED]'"],
-    ["curl https://h.example.com/p?a=one\\;b=two x", "curl https://h.example.com/[REDACTED]?a=[REDACTED]';b=[REDACTED]' x"],
+    ["curl https://h.example.com/p?a=one\\&b=two", "curl https://h.example.com/[REDACTED]?a=[REDACTED]'&[REDACTED]'"],
+    ["curl https://h.example.com/p?a=one\\;b=two x", "curl https://h.example.com/[REDACTED]?a=[REDACTED]';[REDACTED]'"],
   ])("redacts %j", (input, expected) => {
     const redacted = redactInventoryText(input)
     expect(redacted).toBe(expected)
@@ -866,6 +859,27 @@ describe("shell text that runs, expands or escapes an operator", () => {
     "curl -H 'X-Foo: opaque-secret; b|c&d' x",
     "curl -H X-Foo: opaque-secret\\&\\;\\| y",
   ]
+  // The words each escaped text a trigger cuts reads as once cut: the words
+  // before the cut, the last ending in the marker. A header flag, or an
+  // assignment after an escaped or quoted operator, is that trigger.
+  const cutWords = new Map([
+    "curl https://h.example.com/p?a=one\\&b=opaque-secret x",
+    "curl https://h.example.com/p?a=opaque-secret\\;b=two x",
+    "curl https://h.example.com/p?a=opaque-secret\\|b=two x",
+    "curl https://h.example.com/p?a='1&b'=opaque-secret x",
+    "curl https://h.example.com/p?a=\"1;b|c\"=opaque-secret x",
+    "curl 'https://h.example.com/p?a=1&b=opaque-secret;c|d' x",
+    "curl \"https://h.example.com/p?a=1&b=opaque-secret\" x",
+    "curl -H X-Foo:opaque-secret\\&b x",
+    "curl -H X-Foo:opaque-secret\\;b x",
+    "curl -H X-Foo:opaque-secret\\|b x",
+    "curl -H X\\&Foo: opaque-secret\\;x y",
+    "curl -H X\\|Foo:opaque-secret\\&x y",
+    "curl -H X\\&Foo\\;: opaque-secret y",
+    "curl -H 'X-Foo: opaque-secret; b|c&d' x",
+    "curl -H X-Foo: opaque-secret\\&\\;\\| y",
+  ].map((input) => [input, 2]))
+  const wordsKept = (input: string) => cutWords.get(input) ?? inventoryShellWords(input)!.length
   const singleQuoted = (text: string) => `'${text.replace(/'/gu, "'\\''")}'`
   const doubleQuoted = (text: string) => `"${text.replace(/[\\"$`]/gu, "\\$&")}"`
   const wrapped = (command: string) => [command, `sh -c ${singleQuoted(command)}`, `bash -lc ${doubleQuoted(command)}`]
@@ -883,12 +897,13 @@ describe("shell text that runs, expands or escapes an operator", () => {
     expect(redacted).not.toMatch(/opaque-secret/u)
     expect(redactInventoryText(redacted)).toBe(redacted)
     expect(backstopAccepts(redacted)).toBe(true)
-    expect(inventoryShellWords(redacted)).toHaveLength(inventoryShellWords(input)!.length)
+    expect(inventoryShellWords(redacted)).toHaveLength(wordsKept(input))
+    if (cutWords.has(input)) expect(inventoryShellWords(redacted)!.at(-1)).toMatch(/\[REDACTED\]$/u)
   })
 
   it.each(escaped)("keeps the words of the script in %j", (input) => {
     const script = inventoryShellWords(redactInventoryText(`sh -c ${singleQuoted(input)}`))![2]!
-    expect(inventoryShellWords(script)).toHaveLength(inventoryShellWords(input)!.length)
+    expect(inventoryShellWords(script)).toHaveLength(wordsKept(input))
   })
 
   it.each([
@@ -896,10 +911,12 @@ describe("shell text that runs, expands or escapes an operator", () => {
     [["cmd", "x", "`printf opaque-secret`", "y"], "cmd x [REDACTED]"],
     [["cmd", "<(printf opaque-secret)", "y"], "cmd [REDACTED]"],
     [["cmd", "a>(printf opaque-secret)"], "cmd [REDACTED]"],
-    [["cmd", "=(printf opaque-secret)"], "cmd [REDACTED]"],
+    // The shell's words read `cmd =(printf`, a key before a blank and `=`.
+    [["cmd", "=(printf opaque-secret)"], "[REDACTED]"],
     [["cmd", "--opt=${TOKEN:-opaque-secret}", "y"], "cmd [REDACTED]"],
-    [["sh", "-c", "curl -H X-Foo: <(printf opaque-secret) x"], "sh -c 'curl -H X-Foo: [REDACTED]'"],
-    [["curl", "https://h.example.com/p?a=one&b=two"], "curl 'https://h.example.com/[REDACTED]?a=[REDACTED]&b=[REDACTED]'"],
+    [["sh", "-c", "curl -H X-Foo: <(printf opaque-secret) x"], "sh -c [REDACTED]"],
+    // An assignment after `&` is a trigger.
+    [["curl", "https://h.example.com/p?a=one&b=two"], "curl [REDACTED]"],
   ])("redacts the argument vector %j", (argv, expected) => {
     const redacted = redactInventoryArgv(argv)
     expect(redacted).toBe(expected)
@@ -966,9 +983,9 @@ describe("pattern and brace characters in emitted words", () => {
     // rewritten URL is written again.
     ["curl https://example.com/?q=1", "curl https://example.com/'?q=[REDACTED]'"],
     ["https://example.com/p?a=", "https://example.com/[REDACTED]'?a='"],
-    ["curl https://u:p@h.example.com:8443/a/b?k=v&bare#f", "curl https://[REDACTED]@h.example.com:8443/[REDACTED]'?k=[REDACTED]&[REDACTED]#[REDACTED]'"],
-    ["curl https://h.example.com/p?a=one\\&b=two", "curl https://h.example.com/[REDACTED]'?a=[REDACTED]&b=[REDACTED]'"],
-    ["curl https://h.example.com/p?a=one\\;b=two x", "curl https://h.example.com/[REDACTED]'?a=[REDACTED];b=[REDACTED]' x"],
+    ["curl https://u:p@h.example.com:8443/a/b?k=v&bare#f", "curl https://[REDACTED]"],
+    ["curl https://h.example.com/p?a=one\\&b=two", "curl https://h.example.com/[REDACTED]'?a=[REDACTED]&[REDACTED]'"],
+    ["curl https://h.example.com/p?a=one\\;b=two x", "curl https://h.example.com/[REDACTED]'?a=[REDACTED];[REDACTED]'"],
     ["echo {a,b}", "echo \\{a,b}"],
     ["echo {1..3} x", "echo \\{1..3} x"],
     ["ls a?b", "ls a\\?b"],
@@ -977,9 +994,10 @@ describe("pattern and brace characters in emitted words", () => {
     ["ls \"$HOME\"/*.ts", "ls \"$HOME\"/\\*.ts"],
     ["sh -c 'ls a?b'", "sh -c 'ls a\\?b'"],
     ["bash -lc \"ls a?b *\"", "bash -lc \"ls a\\\\?b \\\\*\""],
-    ["curl -H X*Foo:opaque-secret x", "curl -H X\\*Foo:[REDACTED] x"],
-    ["curl -H X*Foo: opaque-secret a?b", "curl -H X\\*Foo: [REDACTED] a\\?b"],
-    ["tool --token opaque-secret a?b", "tool --token [REDACTED] a\\?b"],
+    // A header flag and a sensitive flag cut the text before any pattern.
+    ["curl -H X*Foo:opaque-secret x", "curl [REDACTED]"],
+    ["curl -H X*Foo: opaque-secret a?b", "curl [REDACTED]"],
+    ["tool --token opaque-secret a?b", "tool [REDACTED]"],
   ]
 
   it.each(textCases)("writes the command %j so no pattern expands", (input, expected) => {
@@ -1023,14 +1041,16 @@ describe("pattern and brace characters in emitted words", () => {
     [["cmd", "a?b"], "cmd 'a?b'"],
     [["cmd", "a[bc]"], "cmd 'a[bc]'"],
     [["cmd", "x*", "{a,b}", "[", "a]"], "cmd 'x*' '{a,b}' '[' a]"],
-    [["cmd", "--token", "opaque-secret", "a?b"], "cmd --token [REDACTED] 'a?b'"],
+    [["cmd", "--token", "opaque-secret", "a?b"], "cmd [REDACTED]"],
   ]
 
   it.each(argvCases)("quotes the argument vector %j", (argv, expected) => {
     const redacted = redactInventoryArgv(argv)
     expect(redacted).toBe(expected)
     expect(backstopAccepts(redacted)).toBe(true)
-    expect(inventoryShellWords(redacted)).toEqual(argv.map((word) => (word === "opaque-secret" ? "[REDACTED]" : word)))
+    // A vector with a sensitive flag is cut at it.
+    const cut = argv.indexOf("--token")
+    expect(inventoryShellWords(redacted)).toEqual(cut === -1 ? argv : [...argv.slice(0, cut), "[REDACTED]"])
   })
 
   // The same outputs read by real shells, in a directory where each pattern
@@ -1067,7 +1087,8 @@ describe("control characters in emitted text", () => {
   const rightToLeftOverride = String.fromCodePoint(0x202e)
 
   it.each([
-    ["curl -H X-Foo: \\\nopaque-secret tail", "curl -H X-Foo: [REDACTED]"],
+    // The header flag comes before the line break.
+    ["curl -H X-Foo: \\\nopaque-secret tail", "curl [REDACTED]"],
     ["npm test\nnpm run lint", "npm test [REDACTED]"],
     ["npm test\n", "npm test [REDACTED]"],
     ["\nnpm test", "[REDACTED]"],
@@ -1077,7 +1098,8 @@ describe("control characters in emitted text", () => {
     ["echo a\\\nb x", "echo [REDACTED]"],
     [`echo "a${rightToLeftOverride}b" x`, "echo [REDACTED]"],
     ["sh -c 'npm test\nnpm run lint'", "sh -c 'npm test [REDACTED]'"],
-    ["sh -c \"TOKEN=a\tb\"", "sh -c \"TOKEN=[REDACTED]\""],
+    // The assignment comes before the tab.
+    ["sh -c \"TOKEN=a\tb\"", "sh -c [REDACTED]"],
   ])("redacts %j as text and as a command", (input, expected) => {
     for (const redact of [redactInventoryText, redactInventoryCommand]) {
       const redacted = redact(input)
@@ -1093,7 +1115,8 @@ describe("control characters in emitted text", () => {
     [["cmd", "line\nbreak", "x"], "cmd [REDACTED] x"],
     [["cmd", "tab\there", "x"], "cmd [REDACTED] x"],
     [["cmd", `a${rightToLeftOverride}b`], "cmd [REDACTED]"],
-    [["sh", "-c", "npm test\nnpm run lint"], "sh -c 'npm test [REDACTED]'"],
+    // A shell's script with a line break in it is cut at the whole argument.
+    [["sh", "-c", "npm test\nnpm run lint"], "sh -c [REDACTED]"],
   ])("redacts the argument vector %j", (argv, expected) => {
     const redacted = redactInventoryArgv(argv)
     expect(redacted).toBe(expected)
@@ -1184,8 +1207,9 @@ describe("output within the protocol's caps", () => {
 
   // A text is fitted to the cap of the field it fills.
   const textCases: ReadonlyArray<[string, number, string]> = [
-    [`${"x".repeat(1_008)} FOO=1`, 1_024, `${"x".repeat(1_008)} FOO=[REDACTED]`],
-    [`${"x".repeat(1_009)} FOO=1`, 1_024, `${"x".repeat(1_009)} FOO=[REDACTED]`],
+    // The assignment is a trigger, so each is cut before it.
+    [`${"x".repeat(1_008)} FOO=1`, 1_024, `${"x".repeat(1_008)} [REDACTED]`],
+    [`${"x".repeat(1_009)} FOO=1`, 1_024, `${"x".repeat(1_009)} [REDACTED]`],
     [`${"x".repeat(1_010)} FOO=1`, 1_024, `${"x".repeat(1_010)} [REDACTED]`],
     [`${"x".repeat(243)} FOO=1`, 256, `${"x".repeat(243)} [REDACTED]`],
     // A rule keeps its pattern characters when it is fitted too.
