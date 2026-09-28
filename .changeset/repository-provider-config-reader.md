@@ -14,8 +14,10 @@ and environment values are never read. Each text is cut before its first trigger
 (`-H`, `--header`, `--proxy-header`), URL user info, or any credential shape the protocol's check
 knows. The reader looks for a trigger in every form that check reads: as written, quoted strings
 included; after one layer of percent encoding; after backslash and `\u` escapes; as the shell's
-words; and among a JSON argument vector's strings. A command given as an argument vector is cut at
-whole arguments. Before the cut, a URL keeps its scheme and host, and its path and every query and
+words; and among a JSON argument vector's strings. Each of those readings is taken again of every
+form another makes, until no new form appears. Text whose forms still change after six readings or
+64 forms is cut after its program name, or reads `[REDACTED]` alone. A command given as an argument
+vector is cut at whole arguments. Before the cut, a URL keeps its scheme and host, and its path and every query and
 fragment value read `[REDACTED]`. The protocol's check then judges each text once; one it would still
 refuse is cut after its program name, or reads `[REDACTED]` alone. Nothing calls the reader yet; the
 `tool.inventory` handler and the trust store come later.
