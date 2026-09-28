@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process"
+import { existsSync, realpathSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import { dirname, join, resolve } from "node:path"
@@ -35,6 +36,30 @@ export const auditedPackages = [...new Set([...publishablePackages, ...desktopPa
 // production graph never lists it. Chromium's own third-party licenses ship as
 // LICENSES.chromium.html; this audit reads Electron's declared license only.
 export const bundledRuntimes = [{ name: "electron", workspace: "apps/desktop" }]
+
+// @tailwindcss/vite inlines the CSS these UI development dependencies publish
+// into out/renderer through @import rules in packages/ui/src/styles.css:
+// Tailwind's preflight and generated CSS, and shadcn's tailwind.css. The
+// production graph never lists them. scripts/third-party-notices.test.mjs
+// checks the renderer bundle against the notices, so a new import fails there.
+export const inlinedStylesheetPackages = [
+  { name: "tailwindcss", workspace: "packages/ui" },
+  { name: "shadcn", workspace: "packages/ui" },
+]
+
+// Development dependencies whose code every desktop build contains.
+export const shippedDevelopmentPackages = [...bundledRuntimes, ...inlinedStylesheetPackages]
+
+// The manifest a workspace would load for name, found along Node's lookup
+// paths so a package whose exports field hides package.json is found too.
+function installedManifest(root, workspace, name) {
+  const paths = createRequire(join(root, workspace, "package.json")).resolve.paths(name) ?? []
+  for (const directory of paths) {
+    const path = join(directory, name, "package.json")
+    if (existsSync(path)) return realpathSync(path)
+  }
+  throw new Error(`${name} is not installed for ${workspace}`)
+}
 
 function exceptionMatcher(key) {
   if (!key.includes("*")) return (name) => name === key
@@ -89,17 +114,12 @@ export function evaluateDependencyLicenses(graph, policy) {
   return failures
 }
 
-// Adds each bundled runtime as pnpm licenses list would describe it, so the
-// policy and the notices treat it like any other shipped package.
-export async function collectRuntimeLicenses(root = repositoryRoot, runtimes = bundledRuntimes) {
+// Adds each shipped development package as pnpm licenses list would describe
+// it, so the policy and the notices treat it like any other shipped package.
+export async function collectRuntimeLicenses(root = repositoryRoot, packages = shippedDevelopmentPackages) {
   const graph = {}
-  for (const { name, workspace } of runtimes) {
-    let path
-    try {
-      path = createRequire(join(root, workspace, "package.json")).resolve(`${name}/package.json`)
-    } catch (error) {
-      throw new Error(`${name} is not installed for ${workspace}: ${error.message}`, { cause: error })
-    }
+  for (const { name, workspace } of packages) {
+    const path = installedManifest(root, workspace, name)
     const manifest = JSON.parse(await readFile(path, "utf8"))
     const license = typeof manifest.license === "string" ? manifest.license : "Unknown"
     graph[license] = [...(graph[license] ?? []), { name, versions: [manifest.version], paths: [dirname(path)], license }]

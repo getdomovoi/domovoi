@@ -14,8 +14,9 @@ const root = fileURLToPath(new URL("../", import.meta.url))
 const names = (graph) => new Set(Object.values(graph).flat().map((entry) => entry.name))
 
 // The desktop app ships more than the npm packages: electron-vite inlines the
-// UI graph into the renderer, electron-builder copies the daemon's graph, and
-// Electron itself is the runtime every build carries.
+// UI graph into the renderer, electron-builder copies the daemon's graph,
+// Electron itself is the runtime every build carries, and Tailwind copies the
+// CSS of tailwindcss and shadcn into the renderer stylesheet.
 test("the audit reads the graph every published artifact ships, the desktop app included", { timeout: 60_000 }, async () => {
   const audited = names(await collectAuditGraph(root))
   const direct = async (directory) => Object.keys(JSON.parse(await readFile(join(root, directory, "package.json"), "utf8")).dependencies)
@@ -24,6 +25,8 @@ test("the audit reads the graph every published artifact ships, the desktop app 
     ...(await direct("apps/cli")).filter((name) => !name.startsWith("@getdomovoi/")),
     "react-dom",
     "electron",
+    "tailwindcss",
+    "shadcn",
   ]) {
     assert.ok(audited.has(name), `${name} is in the audited graph`)
   }

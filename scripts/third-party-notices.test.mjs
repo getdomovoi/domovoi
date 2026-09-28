@@ -6,7 +6,7 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 
 import { collectDesktopNotices, readNoticeTexts, renderThirdPartyNotices } from "./third-party-notices.mjs"
-import { rendererBundlePackages } from "./renderer-bundle-packages.mjs"
+import { cssImportSpecifiers, rendererBundlePackages } from "./renderer-bundle-packages.mjs"
 
 const root = fileURLToPath(new URL("../", import.meta.url))
 
@@ -51,12 +51,24 @@ test("the desktop notices carry the renderer fonts' license and leave out the ag
   assert.deepEqual(entries.filter((entry) => entry.name.startsWith("@getdomovoi/")), [], "first-party packages are not third-party")
 })
 
+test("reads the @import specifiers of a stylesheet and skips commented rules", () => {
+  assert.deepEqual(cssImportSpecifiers([
+    '@import "tailwindcss" source(none);',
+    "@import 'tw-animate-css';",
+    '/* @import "commented-out"; */',
+    '@import url("shadcn/tailwind.css") layer(base);',
+    '@import "./local.css";',
+  ].join("\n")), ["tailwindcss", "tw-animate-css", "shadcn/tailwind.css", "./local.css"])
+})
+
 // The notices read the UI's own production graph, not the desktop app's, so a
 // package vite inlines into out/renderer keeps its notice when the desktop
-// manifest does not list it. The fonts' OFL texts are among them.
+// manifest does not list it. The fonts' OFL texts are among them. The CSS
+// @tailwindcss/vite inlines through @import counts too: Tailwind's preflight
+// and its license banner, tw-animate-css, and shadcn's tailwind.css.
 test("every package the renderer bundle contains has a desktop notice", { timeout: 60_000 }, async () => {
   const bundled = await rendererBundlePackages(root)
-  for (const name of ["@fontsource-variable/instrument-sans", "@fontsource-variable/jetbrains-mono", "lucide-react", "@xterm/xterm", "react", "react-dom"]) {
+  for (const name of ["@fontsource-variable/instrument-sans", "@fontsource-variable/jetbrains-mono", "lucide-react", "@xterm/xterm", "react", "react-dom", "tailwindcss", "tw-animate-css", "shadcn"]) {
     assert.ok(bundled.includes(name), `the renderer bundle contains ${name}`)
   }
   const noticed = new Set((await collectDesktopNotices(root)).map((entry) => entry.name))
