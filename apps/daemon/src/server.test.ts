@@ -608,11 +608,15 @@ describe("DomovoiDaemon", () => {
     ])))
     releasePersist()
     await pendingOther
-    await waitForDaemon(() => expect(notifications).toEqual(expect.arrayContaining([
-      expect.objectContaining({ method: "workspace.changed" }),
-    ])))
+    // The session.send broadcast follows its response and can arrive after the
+    // clear above. Its snapshot predates the delta, so wait for the broadcast
+    // that holds it rather than taking the first one.
+    const holdsDelta = (notification: (typeof notifications)[number]) =>
+      notification.method === "workspace.changed"
+      && assistantBodies(notification.params).some((body) => body?.includes("hello from A"))
+    await waitForDaemon(() => expect(notifications.some(holdsDelta)).toBe(true))
 
-    const changed = notifications.find((notification) => notification.method === "workspace.changed")!
+    const changed = notifications.find(holdsDelta)!
     expect(assistantBodies(changed.params)).toEqual(
       expect.arrayContaining([expect.stringContaining("hello from A")]),
     )
