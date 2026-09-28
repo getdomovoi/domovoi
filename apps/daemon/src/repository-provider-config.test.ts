@@ -841,7 +841,7 @@ describe("readRepositoryProviderConfig: Codex", () => {
     await symlink(join(elsewhere, "sub"), join(root, "link"), process.platform === "win32" ? "junction" : "dir")
     await put(root, ".codex/config.toml", "[mcp_servers.repository]\ncommand = \"repository-server\"\n")
     const codexHome = `${root}/link/../.codex`
-    const codexServers = (result: { providers: ToolInventoryProvider[] }) => provider(result, "codex").entries.map((entry) => entry.name)
+    const codexServers = (result: { providers: ToolInventoryProvider[] }) => provider(result, "codex").entries.flatMap((entry) => (entry.kind === "tool-server" ? [entry.name] : []))
     const first = await readRepositoryProviderConfig(root, { heldBack: true, codexHome })
     expect(provider(first, "codex").files).toEqual([{ path: ".codex/config.toml", source: "project-settings", state: "read" }])
     expect(codexServers(first)).toEqual(["repository"])
