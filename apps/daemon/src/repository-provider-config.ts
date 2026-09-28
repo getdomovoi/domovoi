@@ -918,7 +918,10 @@ async function codexHomePaths(home: CodexHome): Promise<{ path: string; canonica
     const path = resolve(home.path)
     return { path, canonical: await realpath(path).catch(() => path) }
   }
-  if (!isAbsolute(home.path)) return undefined
+  // Platforms resolve a `..` after a link differently (Windows steps up
+  // lexically before following the link), so a set CODEX_HOME with any `..`
+  // segment names no folder as the home, on every platform (ruling Q125).
+  if (!isAbsolute(home.path) || home.path.split(/[\\/]/u).includes("..")) return undefined
   try {
     const canonical = await realpath(home.path)
     return (await lstat(canonical)).isDirectory() ? { path: canonical, canonical } : undefined

@@ -24,8 +24,9 @@ digest.
 
 Only the repository root's `.codex` folder is read, and a `.codex` folder that is Codex's own
 home is skipped, as Codex skips it: a `CODEX_HOME` that is set is compared by the canonical path
-of the value as written, as Codex canonicalizes it, and one that is relative or is not a
-directory skips nothing. A linked worktree's `.git`, `gitdir` and `commondir` files are trimmed
+of the value as written, as Codex canonicalizes it, and one that is relative, is not a
+directory, or has a `..` segment skips nothing, since platforms resolve a `..` after a link
+differently. A linked worktree's `.git`, `gitdir` and `commondir` files are trimmed
 of ASCII whitespace only, as Codex trims them, and one that is not UTF-8 leaves the main checkout
 unknown. The reader also returns trust refusal codes for Codex input
 the digest does not cover: `nested-config` for a `.codex` folder or `.agents/skills` below the
