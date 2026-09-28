@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 
 import {
   toolInventoryEntrySchema,
+  toolInventoryProviderSchema,
   type ToolInventoryEntry,
   type ToolInventoryFile,
   type ToolInventoryProvider,
@@ -13,7 +14,9 @@ import {
 } from "@getdomovoi/protocol"
 import { parse as parseYaml } from "yaml"
 
-import { inventoryFieldCaps as caps, redactInventoryArgv, redactInventoryCommand, redactInventoryProgram, redactInventoryText } from "./inventory-redaction.js"
+import {
+  inventoryFieldCaps as caps, redactInventoryArgv, redactInventoryCommand, redactInventoryPath, redactInventoryProgram, redactInventoryText,
+} from "./inventory-redaction.js"
 import { parseRepositoryToml, RepositoryTomlTooSlowError } from "./repository-toml.js"
 
 // What a repository's own Claude Code, OpenCode, Kilo and Codex configuration
@@ -770,12 +773,18 @@ function codexConfig(config: Record<string, unknown>): Array<Candidate | Omissio
 
 type InstructionsFile = {
   candidate: Candidate | Omission
-  // The file, when it is in the repository, as the reader read it.
-  file?: { path: string; read: FileRead }
-  // The path as shown, when the file is outside the repository or reached
-  // through a link.
+  // The file, when it is in the repository, as the reader read it: its path
+  // below the root, and that path as shown.
+  file?: { path: string; shown: string; read: FileRead }
+  // The path as written or read, when the file is outside the repository or
+  // reached through a link.
   outside?: string
 }
+
+// A permission rule whose detail is a path already shown by
+// redactInventoryPath, so the rule, the file record and a refusal show the
+// same text.
+const pathRule = (rule: string, shown: string): Candidate => ({ kind: "permission-rule", rule, detail: shown, startsAtSessionStart: false })
 
 // model_instructions_file names a file Codex reads in place of its base
 // instructions: a path relative to the .codex folder, with `~` for the home
@@ -792,13 +801,13 @@ async function codexInstructionsFile(root: RepositoryRoot, value: unknown): Prom
   const resolved = resolve(root.path, ".codex", home ? join(homedir(), value.slice(1)) : value)
   const inRoot = relative(root.path, resolved)
   if (inRoot === "" || inRoot === ".." || inRoot.startsWith(`..${sep}`) || isAbsolute(inRoot)) {
-    const shown = redactInventoryText(value, caps.detail)
-    return { candidate: permissionRule(rule, shown), outside: shown }
+    return { candidate: pathRule(rule, redactInventoryPath(value)), outside: value }
   }
   const path = inRoot.split(sep).join("/")
+  const shown = redactInventoryPath(path)
   const read = await readRepositoryFile(root, path)
   const linked = read.state === "unreadable" && (read.reason === "symbolic-link" || read.reason === "hard-link")
-  return { candidate: permissionRule(rule, path), file: { path, read }, ...(linked ? { outside: path } : {}) }
+  return { candidate: pathRule(rule, shown), file: { path, shown, read }, ...(linked ? { outside: path } : {}) }
 }
 
 type Parsed = { state: "read" | "empty"; candidates: Array<Candidate | Omission>; document?: Record<string, unknown> } | { state: "unreadable"; reason: RefusalReason }
@@ -872,7 +881,9 @@ function directoryCandidates(directory: ScopedDirectory, members: readonly strin
 //   instructions-outside: model_instructions_file names a file outside the
 //     repository, or one reached through a link (ruling Q114).
 // The path is relative to the root when inside it, and absolute otherwise;
-// an instruction file outside is shown as written, redacted.
+// an instruction file outside is as written. A repository or the machine
+// names each one, so it is shown redacted (redactInventoryPath), and the
+// digest records it as read.
 export type RepositoryTrustRefusalReason = "nested-config" | "main-checkout-hooks" | "main-checkout-unknown" | "instructions-outside"
 export type RepositoryTrustRefusal = { provider: string; reason: RepositoryTrustRefusalReason; path: string }
 
@@ -1187,12 +1198,12 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
       take(scoped.path, [instructions.candidate])
       if (instructions.outside !== undefined) outsideInstructions.push({ provider: scope.provider, reason: "instructions-outside", path: instructions.outside })
       if (instructions.file === undefined) continue
-      const { path, read: file } = instructions.file
+      const { path, shown, read: file } = instructions.file
       digestRecords.push(`${scope.provider}:instructions:${path}:${file.state}:${
         file.state === "read" ? sha256(file.bytes) : file.state === "unreadable" ? file.digest : ""}`)
-      if (files.some((listed) => listed.path === path)) continue
-      if (file.state === "unreadable") list({ path, source: "repository-file", state: "unreadable", reason: file.reason })
-      else if (file.state === "read") list({ path, source: "repository-file", state: decodedText(file.bytes).trim() === "" ? "empty" : "read" })
+      if (files.some((listed) => listed.path === shown)) continue
+      if (file.state === "unreadable") list({ path: shown, source: "repository-file", state: "unreadable", reason: file.reason })
+      else if (file.state === "read") list({ path: shown, source: "repository-file", state: decodedText(file.bytes).trim() === "" ? "empty" : "read" })
     }
     for (const directory of scope.directories) {
       if (home !== undefined && directory.path.startsWith(home)) continue
@@ -1203,9 +1214,16 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
       else list({ ...base, state: read.state })
       if (read.state === "read") take(directory.path, directoryCandidates(directory, read.members))
     }
-    providers.push({ provider: scope.provider, toolServers: "read-from-files", omittedEntries, files, entries })
+    // Every entry and path was checked on its own; the provider is checked
+    // whole as well, so the reader never returns an inventory the protocol
+    // refuses. The error names no path or value.
+    const provider: ToolInventoryProvider = { provider: scope.provider, toolServers: "read-from-files", omittedEntries, files, entries }
+    if (!toolInventoryProviderSchema.safeParse(provider).success) throw new Error(`The ${scope.provider} repository inventory does not fit the protocol`)
+    providers.push(provider)
   }
-  const trustRefusals = [...outsideInstructions, ...await nestedCodexInput(root, segments, codexHome), ...await mainCheckoutHooks(root, segments)]
-  for (const refusal of trustRefusals) digestRecords.push(`${refusal.provider}:refused:${refusal.reason}:${refusal.path}`)
+  // Refusals are pinned by their paths as read and shown redacted.
+  const refused = [...outsideInstructions, ...await nestedCodexInput(root, segments, codexHome), ...await mainCheckoutHooks(root, segments)]
+  for (const refusal of refused) digestRecords.push(`${refusal.provider}:refused:${refusal.reason}:${refusal.path}`)
+  const trustRefusals = refused.map((refusal) => ({ ...refusal, path: redactInventoryPath(refusal.path) }))
   return { configDigest: `sha256:${sha256(digestRecords.join("\n"))}`, providers, trustRefusals }
 }

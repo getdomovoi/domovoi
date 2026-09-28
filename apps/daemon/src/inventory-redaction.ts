@@ -74,6 +74,7 @@ import {
   maximumToolInventoryMatcherLength,
   maximumToolInventoryNameLength,
   maximumToolInventoryRuleLength,
+  toolInventoryPathSchema,
 } from "@getdomovoi/protocol"
 
 const marker = "[REDACTED]"
@@ -1092,6 +1093,16 @@ export function inventoryBackstopRefuses(text: string): boolean {
 // command.
 export function redactInventoryText(text: string, maximum: number = inventoryFieldCaps.command): string {
   return redactText(text, false, maximum)
+}
+
+// A path a repository or the machine names, shown in a file record, a rule's
+// detail or a trust refusal: text, cut at its first trigger and fitted to a
+// detail's cap, which the protocol also gives a path. A path the protocol's
+// path schema still refuses, one with a blank at either end included, is the
+// marker. The path as read stays with the caller, for reads and the digest.
+export function redactInventoryPath(path: string): string {
+  const shown = redactText(path, false, inventoryFieldCaps.detail)
+  return toolInventoryPathSchema.safeParse(shown).success ? shown : marker
 }
 
 // A command line a shell runs: a hook's or a helper's command. Pattern and
