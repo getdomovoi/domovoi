@@ -11752,6 +11752,138 @@ describe("DomovoiDaemon", () => {
     })
   })
 
+  describe("stored turns when a project opens", () => {
+    // One daemon owns a profile (the profile lease), and closing a project
+    // stops its turns, so no process runs a turn saved with a closed project.
+    // Opening it ends that turn for a provider this build runs too, and pause
+    // and emergency stop then find an idle session with nothing to interrupt.
+    it.each(["codex", "claude-code"])("ends a stored %s turn when its project opens", async (provider) => {
+      const projectPath = "/code/stored"
+      const projectId = `project-${createHash("sha256").update(projectPath).digest("hex").slice(0, 12)}`
+      const stored = structuredClone(demoWorkspace)
+      stored.project = { ...stored.project!, id: projectId, path: projectPath }
+      for (const candidate of stored.sessions) candidate.projectId = projectId
+      const session = stored.sessions[0]!
+      session.runtime = { provider, model: "stored-model", reasoning: "none", permissionMode: "build", auto: false }
+      session.state = "active"
+      session.workspacePath = "/worktrees/stored"
+      session.providerThreadId = "thread-stored"
+      session.activeTurnId = "turn-stored"
+      expect(stored.approvals).toEqual([expect.objectContaining({ sessionId: session.id })])
+      const current = structuredClone(demoWorkspace)
+      current.project = { ...current.project!, id: "project-elsewhere", path: "/code/elsewhere" }
+      current.sessions = []
+      current.activeSessionId = null
+      current.approvals = []
+      current.thread = []
+      current.artifacts = []
+      current.workingPlans = []
+      current.annotations = []
+      const store = new SqliteWorkspaceStore(":memory:", current)
+      store.save(stored)
+      store.save(current)
+      const adapter = () => ({
+        connect: vi.fn(async () => {}),
+        listModels: vi.fn(async () => codexModels()),
+        startThread: vi.fn(async () => "new-thread"),
+        resumeThread: vi.fn(async () => {}),
+        stopThread: vi.fn(async () => {}),
+        startTurn: vi.fn(async () => "turn"),
+        steerTurn: vi.fn(async () => {}),
+        interruptTurn: vi.fn(async () => {}),
+        resolveApproval: vi.fn(),
+        onEvent: vi.fn(() => () => {}),
+        close: vi.fn(async () => {}),
+      }) satisfies AgentAdapter
+      const codex = adapter()
+      const claude = adapter()
+      const errorSink = vi.fn()
+      const daemon = new DomovoiDaemon({
+        port: 0,
+        store,
+        agents: { codex, "claude-code": claude },
+        errorSink,
+        workspaceService: {
+          ...checkpointingWorkspace(),
+          inspect: vi.fn(async (path: string, _signal?: AbortSignal) => ({
+            root: path,
+            name: path === projectPath ? "stored" : "elsewhere",
+            branch: "main",
+            head: "a".repeat(40),
+          })),
+          checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
+        },
+      })
+      running.push(daemon)
+      const address = await daemon.start()
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+      onTestFinished(() => { socket.close() })
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      await identifyClient(socket)
+      let requestId = 0
+      const call = (method: string, params: Record<string, unknown>) => {
+        const id = ++requestId
+        const response = new Promise<Record<string, unknown>>((resolve) => {
+          const receive = (data: WebSocket.RawData) => {
+            const message = JSON.parse(data.toString()) as { id?: number }
+            if (message.id !== id) return
+            socket.off("message", receive)
+            resolve(message as Record<string, unknown>)
+          }
+          socket.on("message", receive)
+        })
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+        return response
+      }
+
+      const opened = await call("project.open", { path: projectPath, client: "desktop" })
+
+      const result = opened.result as WorkspaceSnapshot
+      const restored = result.sessions.find(({ id }) => id === session.id)
+      expect(restored).toMatchObject({ state: "idle", providerThreadId: "thread-stored" })
+      expect(restored).not.toHaveProperty("activeTurnId")
+      expect(result.approvals).toEqual([])
+      const lines = result.thread.filter((item) => item.sessionId === session.id && item.kind === "system")
+      expect(lines).toContainEqual(expect.objectContaining({
+        body: "Daemon restart interrupted the active turn.",
+        detail: "Pending approval requests were expired. The worktree and session history were preserved. "
+          + "Send another message to continue with a new provider turn.",
+      }))
+      expect(lines).not.toContainEqual(expect.objectContaining({
+        body: "This approval request expired when the project closed. Send a message to continue.",
+      }))
+      expect(store.auditLog.query({ action: "session.turn-interrupted" }).entries).toEqual([
+        expect.objectContaining({
+          sessionId: session.id,
+          target: "turn-stored",
+          outcome: "cancelled",
+          actor: expect.objectContaining({ component: "project-open" }),
+        }),
+      ])
+
+      const paused = await call("session.pause", { sessionId: session.id, client: "desktop" })
+      expect(paused).not.toHaveProperty("error")
+      const stopped = await call("system.emergencyStop", { client: "desktop" })
+      expect(stopped).not.toHaveProperty("error")
+      const stop = stopped.result as RpcResult<"system.emergencyStop">
+      expect(stop.outcomes).toMatchObject({ turnsStopped: 0, providersReset: 0 })
+      expect(stop.failures).toEqual([])
+      const afterStop = stop.snapshot.sessions.find(({ id }) => id === session.id)
+      expect(afterStop).toMatchObject({ state: "idle", providerThreadId: "thread-stored" })
+      expect(afterStop).not.toHaveProperty("activeTurnId")
+      for (const agent of [codex, claude]) {
+        expect(agent.interruptTurn).not.toHaveBeenCalled()
+        expect(agent.stopThread).not.toHaveBeenCalled()
+      }
+      expect(errorSink).not.toHaveBeenCalledWith(expect.objectContaining({
+        context: expect.stringMatching(/emergency|pause|interrupt/i),
+      }))
+    })
+  })
+
   it.each([
     ["build", "ask"],
     ["ask", "build"],
