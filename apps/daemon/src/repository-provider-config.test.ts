@@ -1060,7 +1060,10 @@ describe("readRepositoryProviderConfig: Codex input outside the root folder", ()
   })
 
   it("finds the main checkout of a worktree git made", async () => {
-    const base = await scratch("domovoi-provider-git-")
+    // git writes the canonical path of each checkout into its metadata, and
+    // the reader names the main checkout by it: build the expected path from
+    // the canonical scratch path (macOS /private/var, Windows long names).
+    const base = await realpath(await scratch("domovoi-provider-git-"))
     const main = join(base, "main")
     const worktree = join(base, "worktree")
     const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=Domovoi Test", "-c", "user.email=test@example.invalid", "-c", "init.defaultBranch=main", ...args], { cwd, stdio: "ignore" })
