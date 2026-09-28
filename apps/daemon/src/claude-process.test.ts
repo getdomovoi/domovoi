@@ -694,7 +694,14 @@ describe("the Claude process the SDK sees", () => {
     ])
     const view = await seen()
     expect(view.argv).toEqual(["first argument", "--flag=two"])
-    expect(view.cwd).toBe(await realpath(directory))
+    // Claude runs in the supplied folder: both paths name one directory once
+    // canonical. realpath here is libuv's, which returns long names on
+    // Windows. A Windows child reports its folder as it was spawned, so on the
+    // runner it keeps the 8.3 short name RUNNER~1 from the temp path and only
+    // its canonical form can equal the supplied folder's. POSIX getcwd
+    // already returns the resolved path, so there it must match as reported.
+    expect(await realpath(view.cwd)).toBe(await realpath(directory))
+    if (process.platform !== "win32") expect(view.cwd).toBe(await realpath(directory))
     // macOS adds __CF_USER_TEXT_ENCODING to every process it starts, and on
     // Windows libuv copies the variables a Windows process needs.
     const added = (key: string) => key.startsWith("__CF_")
