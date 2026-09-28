@@ -167,6 +167,96 @@ describe("a shutdown that a live Claude process holds open", () => {
     expect(instance.exit).toHaveBeenCalledOnce()
   })
 
+  // Security review round 2 of #647, R2-F5: SIGINTs are counted across the
+  // whole shutdown, and a SIGTERM is never one.
+  function pendingStopHarness() {
+    let failStop!: () => void
+    const stopping = new Promise<void>((_resolve, reject) => { failStop = () => reject(stopFailure) })
+    let exitClaude!: () => void
+    const exited = new Promise<void>((resolve) => { exitClaude = resolve })
+    let alive = true
+    void exited.then(() => { alive = false })
+    const instance = harness(
+      () => stopping,
+      () => alive ? [{ pid: 4321, session: "thread-1", exited }] : [],
+    )
+    return { ...instance, failStop, exitClaude }
+  }
+
+  it("remembers a second SIGINT sent during the stop, and exits as soon as the stop has failed", async () => {
+    const instance = pendingStopHarness()
+    instance.events.emit("SIGINT")
+    await settle()
+    instance.events.emit("SIGINT")
+    await settle()
+    expect(instance.exit).not.toHaveBeenCalled()
+
+    instance.failStop()
+    await settle()
+
+    expect(instance.writeStderr.mock.calls).toEqual([
+      [`domovoid shutdown failed: ${String(stopFailure)}\n`],
+      [waiting],
+      [forced],
+    ])
+    expect(instance.exit).toHaveBeenCalledOnce()
+    expect(instance.exit).toHaveBeenCalledWith(1)
+    instance.exitClaude()
+    await settle()
+    expect(instance.exit).toHaveBeenCalledOnce()
+  })
+
+  it("waits at the first SIGINT after a SIGTERM began the shutdown, and exits at the second", async () => {
+    const instance = stuckHarness()
+    instance.events.emit("SIGTERM")
+    await settle()
+
+    instance.events.emit("SIGINT")
+    await settle()
+    expect(instance.exit).not.toHaveBeenCalled()
+    expect(instance.writeStderr).not.toHaveBeenCalledWith(forced)
+
+    instance.events.emit("SIGINT")
+    await settle()
+    expect(instance.writeStderr).toHaveBeenLastCalledWith(forced)
+    expect(instance.exit).toHaveBeenCalledOnce()
+    expect(instance.exit).toHaveBeenCalledWith(1)
+    instance.exitClaude()
+  })
+
+  it("does not count a SIGTERM sent during the stop as the second SIGINT", async () => {
+    const instance = pendingStopHarness()
+    instance.events.emit("SIGINT")
+    await settle()
+    instance.events.emit("SIGTERM")
+    instance.failStop()
+    await settle()
+    expect(instance.exit).not.toHaveBeenCalled()
+    expect(instance.writeStderr).toHaveBeenLastCalledWith(hint)
+
+    instance.events.emit("SIGINT")
+    await settle()
+    expect(instance.writeStderr).toHaveBeenLastCalledWith(forced)
+    expect(instance.exit).toHaveBeenCalledOnce()
+    instance.exitClaude()
+  })
+
+  it("exits normally when a second SIGINT came during a stop that then succeeded", async () => {
+    let finishStop!: () => void
+    const instance = harness(() => new Promise<void>((resolve) => { finishStop = resolve }), () => [])
+    instance.events.emit("SIGINT")
+    await settle()
+    instance.events.emit("SIGINT")
+    await settle()
+    expect(instance.exit).not.toHaveBeenCalled()
+
+    finishStop()
+    await settle()
+    expect(instance.exit).toHaveBeenCalledOnce()
+    expect(instance.exit).toHaveBeenCalledWith(0)
+    expect(instance.writeStderr).not.toHaveBeenCalled()
+  })
+
   it("does not exit at a later SIGTERM", async () => {
     const instance = stuckHarness()
     instance.events.emit("SIGINT")

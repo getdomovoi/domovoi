@@ -74,3 +74,61 @@ it("keeps the daemon and its profile lease after a signal while Claude will not 
     try { lease.release() } catch { /* Released by the daemon. */ }
   }
 })
+
+// Security review round 2 of #647, R2-F1: once Claude itself had exited, a
+// group kill the kernel refused counted as success, and the shutdown released
+// the profile lease while a tool Claude started could still run.
+it("keeps the daemon and its profile lease after a signal while a tool Claude started cannot be seen to exit", async () => {
+  const homeDirectory = await mkdtemp(join(tmpdir(), "domovoi-claude-tool-signal-"))
+  roots.push(homeDirectory)
+  const claude = fakeClaudeChild()
+  let tool = true
+  const refused = (code: string) => Object.assign(new Error(`kill ${code}`), { code, syscall: "kill" })
+  const { factory } = spawningClaudeFactory()
+  const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+    spawn: () => claude.process,
+    kill: vi.fn(() => { throw refused("EPERM") }),
+    probe: () => { throw refused(tool ? "EPERM" : "ESRCH") },
+    platform: "linux",
+    shutdownGraceMs: 20,
+    killGraceMs: 20,
+  } as never)
+  const lease = claimProfile(homeDirectory)
+  const handle = await createProductionDaemonWithDependencies({ homeDirectory, environment: { DOMOVOI_PORT: "0" } }, {
+    ...productionDaemonDependencies,
+    createProviderProbe: () => ({ inspect: async () => [] }),
+    createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+    createDaemon: (options) => new DomovoiDaemon({ ...options, port: 0, agents: { "claude-code": adapter } }),
+  }, { lease, deadline: OperationDeadline.start(30_000) })
+  await handle.start()
+  const threadId = await adapter.startThread({ cwd: homeDirectory, runtime: {
+    provider: "claude-code", model: "sonnet", reasoning: "high", permissionMode: "build", auto: false,
+  } })
+  const signals = new EventEmitter()
+  const exit = vi.fn()
+  const writeStderr = vi.fn()
+  installShutdownHandlers({
+    removeEndpointFile: async () => {},
+    stopDaemon: () => handle.stop(),
+    exit,
+    writeStderr,
+    runningProcesses: runningClaudeProcesses,
+  }, signals as unknown as NodeJS.Process)
+
+  try {
+    signals.emit("SIGTERM")
+    await waitForDaemon(() => expect(writeStderr).toHaveBeenCalledWith(
+      `domovoid: Claude process ${fakeClaudePid} (Claude session ${threadId}) is still running. The profile lock stays held until it exits.\n`,
+    ))
+    expect(claude.child.exitCode).toBe(0)
+    expect(exit).not.toHaveBeenCalled()
+    expect(() => claimProfile(homeDirectory)).toThrow(ProfileAlreadyOwnedError)
+
+    tool = false
+    await waitForDaemon(() => expect(exit).toHaveBeenCalledWith(1))
+    expect(exit).toHaveBeenCalledOnce()
+  } finally {
+    tool = false
+    try { lease.release() } catch { /* Released by the daemon. */ }
+  }
+})
