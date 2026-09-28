@@ -8121,9 +8121,11 @@ export class DomovoiDaemon {
           this.#snapshot.workingPlans = restored?.workingPlans ?? []
           this.#snapshot.annotations = restored?.annotations ?? []
           // Only one daemon owns a profile (the profile lease), and closing a
-          // project stops its provider turns, so nothing runs a turn saved
-          // with a closed project. Its saved cards expire, and every stored
-          // turn ends here as startup ends it, whatever the provider.
+          // project asks its providers to stop their turns, so no turn saved
+          // with a closed project is still this daemon's to finish. Its saved
+          // cards expire, and every stored turn ends here as startup ends it,
+          // whatever the provider. Claude's stop can return before its query
+          // has exited (#646).
           const expiredAt = new Date().toISOString()
           const expiredApprovals = this.#expireStoredApprovals(this.#snapshot, expiredAt, restored?.approvals ?? [])
           const endedTurnSessionIds = new Set(this.#snapshot.sessions.flatMap((session) => (
