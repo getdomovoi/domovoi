@@ -1565,11 +1565,17 @@ describe("stopping the Claude process", () => {
     await adapter.stopThread(threadId)
 
     expect(started).toHaveLength(1)
-    expect(started[0]!.exitCode).toBe(0)
-    expect(started[0]!.killed).toBe(false)
-    // Q104: the group Claude leaves behind is killed as it exits, on POSIX.
-    if (process.platform === "win32") expect(kill).not.toHaveBeenCalled()
-    else expect(kill.mock.calls).toEqual([[-started[0]!.pid!, "SIGKILL"]])
+    if (process.platform === "win32") {
+      // Q106: Windows has no grace. The tree kill comes before the input
+      // closes, so Claude does not get to exit on its own.
+      expect(started[0]!.exitCode).not.toBe(0)
+      expect(kill).not.toHaveBeenCalled()
+    } else {
+      expect(started[0]!.exitCode).toBe(0)
+      expect(started[0]!.killed).toBe(false)
+      // Q104: the group Claude leaves behind is killed as it exits, on POSIX.
+      expect(kill.mock.calls).toEqual([[-started[0]!.pid!, "SIGKILL"]])
+    }
     await adapter.close()
   })
 

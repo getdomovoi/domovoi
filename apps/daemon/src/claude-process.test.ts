@@ -77,7 +77,55 @@ describe("the Windows process tree kill", () => {
     await expect(killing).resolves.toBeUndefined()
   })
 
-  it("kills Claude's tree after the grace, and waits for taskkill before the stop settles", async () => {
+  // Q106: once Claude has exited on its own, taskkill /T can no longer find
+  // the processes it started, so the tree kill comes first, before any grace
+  // and before Claude's input closes. Claude gets no grace to flush on Windows.
+  it("kills Claude's tree as the stop begins, then closes its input, and fails after the kill grace", async () => {
+    const fake = fakeClaudeChild({ exitsOnEof: false })
+    const seen: Array<{ at: number; exited: boolean; inputOpen: boolean }> = []
+    const killTree = vi.fn(async (_pid: number) => {
+      seen.push({
+        at: Date.now(),
+        exited: fake.child.exitCode !== null || fake.child.signalCode !== null,
+        inputOpen: !fake.child.stdin.writableEnded,
+      })
+    })
+    const kill = vi.fn()
+    const { factory } = spawningClaudeFactory()
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+      spawn: () => fake.process, kill, killTree, platform: "win32",
+    })
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
+
+    vi.useFakeTimers()
+    try {
+      const began = Date.now()
+      let outcome: string | undefined
+      void adapter.stopThread(threadId).then(
+        () => { outcome = "resolved" },
+        (error: unknown) => { outcome = error instanceof Error ? error.message : "rejected" },
+      )
+      await vi.advanceTimersByTimeAsync(1_999)
+      expect(killTree.mock.calls).toEqual([[fakeClaudePid]])
+      expect(seen).toEqual([{ at: began, exited: false, inputOpen: true }])
+      // Once taskkill has finished: Node's own handle, then the input.
+      expect(fake.child.kill).toHaveBeenCalledWith("SIGKILL")
+      expect(fake.child.stdin.writableEnded).toBe(true)
+      expect(kill).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(outcome).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(outcome).toContain("did not exit")
+      expect(killTree).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+      fake.exit("SIGKILL")
+      await adapter.close().catch(() => {})
+    }
+  })
+
+  it("kills Claude's tree, and waits for taskkill before the stop settles", async () => {
     const fake = fakeClaudeChild({ exitsOnEof: false })
     let finish: (() => void) | undefined
     const killTree = vi.fn((_pid: number) => new Promise<void>((resolve) => {
@@ -105,9 +153,10 @@ describe("the Windows process tree kill", () => {
     await adapter.close()
   })
 
-  it("sends no taskkill once Claude's own exit is recorded, when its pid may name another process", async () => {
+  it("kills Claude's tree before its input closes, though Claude would then exit on its own", async () => {
     const fake = fakeClaudeChild()
-    const killTree = vi.fn(async (_pid: number) => {})
+    const inputOpen: boolean[] = []
+    const killTree = vi.fn(async (_pid: number) => { inputOpen.push(!fake.child.stdin.writableEnded) })
     const { factory } = spawningClaudeFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
       spawn: () => fake.process, kill: vi.fn(), killTree, platform: "win32",
@@ -116,8 +165,29 @@ describe("the Windows process tree kill", () => {
 
     await adapter.stopThread(threadId)
 
+    expect(killTree.mock.calls).toEqual([[fakeClaudePid]])
+    expect(inputOpen).toEqual([true])
+    expect(fake.child.exitCode).toBe(0)
+    await adapter.close()
+  })
+
+  it("sends no taskkill for a Claude that exited before the stop began, when its pid may name another process", async () => {
+    const fake = fakeClaudeChild()
+    const killTree = vi.fn(async (_pid: number) => {})
+    const kill = vi.fn()
+    const { factory } = spawningClaudeFactory()
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
+      spawn: () => fake.process, kill, killTree, platform: "win32",
+    })
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
+    fake.exit()
+
+    await adapter.stopThread(threadId)
+
     expect(fake.child.exitCode).toBe(0)
     expect(killTree).not.toHaveBeenCalled()
+    expect(fake.child.kill).not.toHaveBeenCalled()
+    expect(kill).not.toHaveBeenCalled()
     await adapter.close()
   })
 })
@@ -144,7 +214,7 @@ describe("the POSIX process group kill", () => {
 })
 
 // Runs on every platform: on Windows the tree kill has to reach the tool too.
-it("leaves no tool running when Claude exits on its own within the grace", async () => {
+it("leaves no tool running when Claude would exit on its own within the grace", async () => {
   const path = await script([
     "import { spawn } from 'node:child_process'",
     "import { writeFileSync } from 'node:fs'",
@@ -166,7 +236,10 @@ it("leaves no tool running when Claude exits on its own within the grace", async
 
   await adapter.stopThread(threadId)
 
-  expect(started[0]!.exitCode).toBe(0)
+  // Q106: on Windows the tree kill comes before the input closes, so Claude
+  // does not get to exit on its own.
+  if (process.platform === "win32") expect(started[0]!.exitCode).not.toBe(0)
+  else expect(started[0]!.exitCode).toBe(0)
   await waitForDaemon(() => expect(() => process.kill(toolPid, 0)).toThrow())
   await adapter.close()
 })
