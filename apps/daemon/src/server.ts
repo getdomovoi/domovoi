@@ -226,6 +226,7 @@ import type { SkillReviews } from "./skill-reviews.js"
 import { skillTrustPath as defaultSkillTrustPath } from "./skill-signing.js"
 import { configuredProfileDirectory } from "./profile-directory.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
+import { readToolInventory, type RepositoryProviderConfigReader } from "./tool-inventory.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
 import {
@@ -522,6 +523,7 @@ const unauditedRpcMethods = new Set<RpcMethod>([
   "runtime.discover",
   "skill.list",
   "skill.inventory",
+  "tool.inventory",
   "skill.read",
   "skill.reviewRevision",
   "skill.installPreview",
@@ -1354,6 +1356,8 @@ export type DaemonServerOptions = {
   skillCatalog?: SkillCatalog
   skillReviews?: SkillReviews
   skillTrustPath?: string
+  // Tests may replace the repository configuration reader behind tool.inventory.
+  repositoryProviderConfig?: RepositoryProviderConfigReader
   profileDirectory?: string
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
@@ -1588,6 +1592,7 @@ export class DomovoiDaemon {
   #skillCatalog: SkillCatalog | undefined
   #skillReviews: SkillReviews | undefined
   #skillTrustPath: string
+  #repositoryProviderConfig: RepositoryProviderConfigReader | undefined
   #profileDirectory: string
   #fileSkillCatalog: { projectPath: string | undefined; catalog: FileSkillCatalog } | undefined
   #workspaceAbort = new AbortController()
@@ -1871,6 +1876,7 @@ export class DomovoiDaemon {
     this.#skillCatalog = options.skillCatalog
     this.#skillReviews = options.skillReviews ?? this.#store.skillReviews
     this.#skillTrustPath = options.skillTrustPath ?? defaultSkillTrustPath({ profileDirectory: this.#profileDirectory })
+    this.#repositoryProviderConfig = options.repositoryProviderConfig
     this.#artifactWatcherFactory = options.artifactWatcherFactory
       ?? ((watcherOptions) => new ArtifactWatcher(watcherOptions))
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
@@ -4466,6 +4472,7 @@ export class DomovoiDaemon {
         || request.method === "usage.window"
         || request.method === "skill.list"
         || request.method === "skill.inventory"
+        || request.method === "tool.inventory"
         || request.method === "skill.read"
         || request.method === "skill.reviewRevision"
         || request.method === "skill.installPreview"
@@ -6768,6 +6775,24 @@ export class DomovoiDaemon {
               version: machine.version,
             },
             skills: (await catalog.list()).map(skillInventoryEntryFromSummary),
+          }),
+        })
+        return
+      }
+
+      if (method === "tool.inventory") {
+        const { id, name, platform, arch, version } = this.#snapshot.machine
+        const project = this.#snapshot.project
+        // readToolInventory checks the whole answer against the protocol, and
+        // #sendResult checks it again; a reader failure or an unfit answer
+        // reaches the catch below and the daemon's internal error.
+        this.#sendResult(socket, method, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: await readToolInventory({
+            machine: { id, name, platform, arch, version },
+            project: project ? { id: project.id, path: project.path } : undefined,
+            ...(this.#repositoryProviderConfig ? { read: this.#repositoryProviderConfig } : {}),
           }),
         })
         return
