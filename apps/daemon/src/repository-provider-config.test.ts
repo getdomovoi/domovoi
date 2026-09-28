@@ -357,6 +357,82 @@ describe("readRepositoryProviderConfig: Codex", () => {
     ])
   })
 
+  // A permission profile grants filesystem, workspace-root and network access,
+  // and the shell's filters choose which of the person's variables reach a
+  // command: each grant and filter is listed, never a variable's value.
+  it("lists a named permission profile's grants and the shell's variable filters", async () => {
+    const root = await scratch()
+    await put(root, ".codex/config.toml", [
+      "default_permissions = \"wide\"",
+      "",
+      "[permissions.base]",
+      "description = \"shared base\"",
+      "[permissions.base.filesystem]",
+      "\"/var/cache\" = \"read\"",
+      "",
+      "[permissions.wide]",
+      "extends = \"base\"",
+      "[permissions.wide.workspace_roots]",
+      "\"../sibling\" = true",
+      "\"../off\" = false",
+      "[permissions.wide.filesystem]",
+      "\"/\" = \"write\"",
+      "glob_scan_max_depth = 3",
+      "\"/home\" = { \".ssh\" = \"deny\", \"projects\" = \"write\" }",
+      "[permissions.wide.network]",
+      "enabled = true",
+      "mode = \"full\"",
+      "proxy_url = \"http://proxy.example.com:3128\"",
+      "socks_url = \"socks5://user:hunter2@socks.example.com:1080\"",
+      "dangerously_allow_all_unix_sockets = true",
+      "[permissions.wide.network.domains]",
+      "\"*.example.com\" = \"allow\"",
+      "\"evil.example\" = \"deny\"",
+      "[permissions.wide.network.unix_sockets]",
+      "\"/var/run/docker.sock\" = \"allow\"",
+      "[permissions.wide.network.mitm.hooks.inject]",
+      "host = \"api.example.com\"",
+      "methods = [\"GET\"]",
+      "path_prefixes = [\"/\"]",
+      "action = [\"add\"]",
+      "",
+      "[shell_environment_policy]",
+      "include_only = [\"DEPLOY_TOKEN\", \"PATH\"]",
+      "exclude = [\"AWS_*\"]",
+      "[shell_environment_policy.filters]",
+      "\"GITHUB_*\" = \"include\"",
+      "",
+    ].join("\n"))
+    const codex = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex")
+    expect(toolInventoryProviderSchema.safeParse(codex).success).toBe(true)
+    expectNoSecret(codex)
+    const rule = (name: string, detail: unknown) => ({ kind: "permission-rule", rule: name, detail, file: ".codex/config.toml", startsAtSessionStart: false, heldBack: true })
+    expect(codex.entries).toEqual([
+      rule("default_permissions", "wide"),
+      rule("permissions.filesystem", "base /var/cache read"),
+      rule("permissions.extends", "wide base"),
+      rule("permissions.workspace_roots", "wide ../sibling true"),
+      rule("permissions.workspace_roots", "wide ../off false"),
+      rule("permissions.filesystem", "wide / write"),
+      rule("permissions.filesystem", "wide /home .ssh deny"),
+      rule("permissions.filesystem", "wide /home projects write"),
+      rule("permissions.network.enabled", "wide true"),
+      rule("permissions.network.mode", "wide full"),
+      rule("permissions.network.proxy_url", "wide http://proxy.example.com:3128"),
+      rule("permissions.network.socks_url", expect.stringMatching(/^wide socks5:\/\/\S*\[REDACTED\]/u)),
+      rule("permissions.network.dangerously_allow_all_unix_sockets", "wide true"),
+      rule("permissions.network.domains", "wide *.example.com allow"),
+      rule("permissions.network.domains", "wide evil.example deny"),
+      rule("permissions.network.unix_sockets", "wide /var/run/docker.sock allow"),
+      rule("shell_environment_policy.include_only", "DEPLOY_TOKEN"),
+      rule("shell_environment_policy.include_only", "PATH"),
+      rule("shell_environment_policy.exclude", "AWS_*"),
+      rule("shell_environment_policy.filters", "GITHUB_* include"),
+    ])
+    // Man-in-the-middle hooks are not read here, so they are counted.
+    expect(codex.omittedEntries).toBe(1)
+  })
+
   // Ruling Q114: an instruction override is listed by its key, and a file by
   // its path, never by its text. Codex resolves the file's path against the
   // .codex folder. A file in the repository is hashed like any other; one

@@ -651,8 +651,76 @@ function codexApprovalPolicy(policy: unknown): Array<Candidate | Omission> {
   return [permissionRule("approval_policy", ["granular", ...allowed].join(" "))]
 }
 
+// A profile's network settings that are a word, a flag or a proxy URL.
+const codexNetworkSettings = new Set([
+  "enabled", "mode", "proxy_url", "enable_socks5", "socks_url", "enable_socks5_udp", "allow_upstream_proxy",
+  "dangerously_allow_non_loopback_proxy", "dangerously_allow_all_unix_sockets", "allow_local_binding",
+])
+
+// Named permission profiles under [permissions]: what each grants, every
+// profile listed so a selected one and those it extends are all shown
+// (PermissionProfileToml at rust-v0.156.1). Each detail starts with the
+// profile's name: the profile it extends, a workspace root and whether it is
+// on, a filesystem path (and subpath) and its access, and each network
+// setting, domain and unix socket rule. A description grants nothing.
+// Man-in-the-middle hooks, and anything else, are not read here and are
+// counted.
+function codexPermissionProfiles(permissions: unknown): Array<Candidate | Omission> {
+  if (permissions === undefined) return []
+  if (!isRecord(permissions)) return [omission]
+  const candidates: Array<Candidate | Omission> = []
+  const rule = (name: string, parts: unknown[]) => {
+    candidates.push(parts.every((part) => typeof part === "string" || typeof part === "boolean")
+      ? permissionRule(`permissions.${name}`, parts.map(String).join(" "))
+      : omission)
+  }
+  const each = (value: unknown, visit: (key: string, item: unknown) => void) => {
+    if (!isRecord(value)) candidates.push(omission)
+    else for (const [key, item] of Object.entries(value)) visit(key, item)
+  }
+  for (const [profile, fields] of Object.entries(permissions)) {
+    each(fields, (field, value) => {
+      if (field === "description") return
+      if (field === "extends") rule("extends", [profile, value])
+      else if (field === "workspace_roots") each(value, (root, enabled) => rule("workspace_roots", [profile, root, enabled]))
+      else if (field === "filesystem") {
+        each(value, (path, access) => {
+          if (path === "glob_scan_max_depth") return
+          if (isRecord(access)) for (const [subpath, mode] of Object.entries(access)) rule("filesystem", [profile, path, subpath, mode])
+          else rule("filesystem", [profile, path, access])
+        })
+      } else if (field === "network") {
+        each(value, (setting, item) => {
+          if (codexNetworkSettings.has(setting)) rule(`network.${setting}`, [profile, item])
+          else if (setting === "domains" || setting === "unix_sockets") each(item, (target, action) => rule(`network.${setting}`, [profile, target, action]))
+          else candidates.push(omission)
+        })
+      } else candidates.push(omission)
+    })
+  }
+  return candidates
+}
+
+// The shell's filters on the person's variables: patterns of names, never a
+// value (ShellEnvironmentPolicyToml at rust-v0.156.1).
+function codexShellFilters(policy: Record<string, unknown>): Array<Candidate | Omission> {
+  const candidates: Array<Candidate | Omission> = []
+  for (const key of ["include_only", "exclude"]) {
+    if (policy[key] === undefined) continue
+    const patterns = stringArray(policy[key])
+    if (!patterns) candidates.push(omission)
+    else for (const pattern of patterns) candidates.push(permissionRule(`shell_environment_policy.${key}`, pattern))
+  }
+  if (policy.filters !== undefined && !isRecord(policy.filters)) candidates.push(omission)
+  for (const [pattern, action] of recordEntries(policy.filters)) {
+    candidates.push(typeof action === "string" ? permissionRule("shell_environment_policy.filters", `${pattern} ${action}`) : omission)
+  }
+  return candidates
+}
+
 // config.toml: servers, hooks, the variables set for every command the agent
-// runs (names only), the approval and sandbox settings, and plugins. Codex
+// runs (names only), the approval, sandbox, permission profile and shell
+// environment settings, plugins and instruction overrides. Codex
 // ignores notify, model providers, profiles and the other keys that choose
 // where credentials go in a project file, so they are not listed; like every
 // byte of the file, they are in the digest.
@@ -682,8 +750,10 @@ function codexConfig(config: Record<string, unknown>): Array<Candidate | Omissio
     }
     defined(sandbox.network_access, () => flagRule("sandbox_workspace_write.network_access", sandbox.network_access))
   }
+  candidates.push(...codexPermissionProfiles(config.permissions))
   defined(shellPolicy.inherit, () => permissionRule("shell_environment_policy.inherit", shellPolicy.inherit))
   defined(shellPolicy.ignore_default_excludes, () => flagRule("shell_environment_policy.ignore_default_excludes", shellPolicy.ignore_default_excludes))
+  candidates.push(...codexShellFilters(shellPolicy))
   if (config.plugins !== undefined && !isRecord(config.plugins)) candidates.push(omission)
   for (const [plugin, settings] of recordEntries(config.plugins)) {
     if (!isRecord(settings)) candidates.push(omission)
