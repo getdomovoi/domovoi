@@ -1105,11 +1105,14 @@ export function redactInventoryCommand(text: string): string {
 // program alone, with the marker after it when anything follows. A program
 // that is not the first shell word (text that opens with an operator or an
 // expansion, or does not read as words there), or that the argument vector
-// redaction cuts (an assignment, a trigger), is the marker alone.
+// redaction cuts (an assignment, a trigger), is the marker alone. So is a
+// first word spelled with an unquoted `#`: it opens a shell comment, which
+// the lexer does not model, so it is not the program and its text can be
+// anything.
 export function redactInventoryProgram(text: string): string {
   const { tokens, stoppedAt } = lexShell(text)
   const first = tokens[0]
-  if (first?.kind !== "word" || (stoppedAt !== undefined && stoppedAt < first.end)) return marker
+  if (first?.kind !== "word" || (stoppedAt !== undefined && stoppedAt < first.end) || text[first.start] === "#") return marker
   const program = redactInventoryArgv([first.value])
   const words = inventoryShellWords(program)
   if (words?.length !== 1 || words[0] !== first.value) return marker
