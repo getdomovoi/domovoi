@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join, sep } from "node:path"
 
 import { toolInventoryProviderSchema, toolInventorySchema, type ToolInventoryProvider } from "@getdomovoi/protocol"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { inventoryShellWords } from "./inventory-redaction.js"
 import { maximumRepositoryConfigFileBytes, readRepositoryProviderConfig } from "./repository-provider-config.js"
@@ -537,6 +537,37 @@ describe("readRepositoryProviderConfig: Codex", () => {
       expect(seen.has(next), label).toBe(false)
       seen.add(next)
     }
+  })
+
+  // Codex skips a project .codex folder that is its own CODEX_HOME, by path
+  // or by canonical path (discover_project_layers at rust-v0.156.1), so a
+  // repository at the person's home does not list their own configuration.
+  it("skips a .codex folder that is Codex's own home, by path or through a link to it", async () => {
+    const root = await scratch()
+    await put(root, ".codex/config.toml", "[mcp_servers.personal]\ncommand = \"personal-server\"\n")
+    await put(root, ".codex/hooks.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "personal-hook" }] }] } }))
+    await put(root, ".codex/rules/default.rules", "prefix_rule(pattern = [\"ls\"], decision = \"allow\")\n")
+    await put(root, ".codex/skills/mine/SKILL.md", "mine")
+    const elsewhere = await scratch("domovoi-provider-home-")
+    const linkedHome = join(elsewhere, "codex-home")
+    await symlink(join(root, ".codex"), linkedHome, process.platform === "win32" ? "junction" : "dir")
+    const read = async (codexHome: string) => readRepositoryProviderConfig(root, { heldBack: true, codexHome })
+    for (const codexHome of [join(root, ".codex"), linkedHome]) {
+      const result = await read(codexHome)
+      const codex = provider(result, "codex")
+      expect(JSON.stringify(result)).not.toMatch(/personal|mine/u)
+      expect(codex.files).toEqual([])
+      expect(codex.entries).toEqual([])
+      await put(root, ".codex/config.toml", "[mcp_servers.personal]\ncommand = \"personal-server-2\"\n")
+      expect((await read(codexHome)).configDigest).toBe(result.configDigest)
+    }
+    // CODEX_HOME from the environment, as Codex reads it.
+    vi.stubEnv("CODEX_HOME", join(root, ".codex"))
+    expect(provider(await readRepositoryProviderConfig(root, { heldBack: true }), "codex").files).toEqual([])
+    vi.unstubAllEnvs()
+    // Another home: the repository's folder is read.
+    const other = provider(await read(join(elsewhere, "other-home")), "codex")
+    expect(other.files.map((file) => file.path)).toEqual([".codex/config.toml", ".codex/hooks.json", ".codex/rules", ".codex/skills"])
   })
 
   // A hook whose command is adversarial input, and TOML a parser has taken

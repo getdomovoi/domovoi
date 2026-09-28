@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import { constants } from "node:fs"
-import { type FileHandle, lstat, open, opendir, readlink } from "node:fs/promises"
+import { type FileHandle, lstat, open, opendir, readlink, realpath } from "node:fs/promises"
+import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 
 import {
@@ -49,7 +50,8 @@ type Parser = "claude-mcp" | "claude-settings" | "opencode-config" | "tui-config
 type ScopedFile = { path: string; source: ToolInventorySource; parser: Parser }
 // Directory members give plugin or skill entries, or count in the digest only.
 type ScopedDirectory = { path: string; members?: "plugin" | "skill" }
-type ProviderScope = { provider: string; files: readonly ScopedFile[]; directories: readonly ScopedDirectory[] }
+// homeFolder: a folder the provider skips when it is the provider's own home.
+type ProviderScope = { provider: string; files: readonly ScopedFile[]; directories: readonly ScopedDirectory[]; homeFolder?: string }
 
 // OpenCode and Kilo load these under each of their config directories: read
 // from sst/opencode config/paths.ts, agent.ts, command.ts, plugin.ts,
@@ -118,10 +120,13 @@ export const repositoryProviderScopes: readonly ProviderScope[] = [
     // its refusal), and skills from .codex/skills and .agents/skills. Read
     // from the config loader, hooks discovery and skill roots at
     // rust-v0.156.1. Rules are execution policy source, so they count in the
-    // digest only. Only the repository root's folder is read: Codex also
+    // digest only. A .codex folder that is Codex's own home is the person's
+    // configuration, so Codex skips it and so does this reader.
+    // Only the repository root's folder is read: Codex also
     // reads one in each directory from the session's down to the root, and
     // in a linked worktree takes hooks from the main checkout.
     provider: "codex",
+    homeFolder: ".codex",
     files: [
       { path: ".codex/config.toml", source: "project-settings", parser: "codex-config" },
       { path: ".codex/hooks.json", source: "project-settings", parser: "codex-hooks" },
@@ -742,9 +747,38 @@ export type RepositoryProviderConfig = {
   providers: ToolInventoryProvider[]
 }
 
-// heldBack marks every entry: whether the daemon keeps the repository's
-// configuration from the agent. It does not change the digest.
-export async function readRepositoryProviderConfig(rootPath: string, options: { heldBack: boolean }): Promise<RepositoryProviderConfig> {
+// Codex's home as Codex finds it: CODEX_HOME when set and not empty, else
+// ~/.codex (find_codex_home at rust-v0.156.1).
+function defaultCodexHome(): string {
+  return process.env.CODEX_HOME || join(homedir(), ".codex")
+}
+
+// Whether `folder` in the root is the provider's own home: a real directory
+// whose path, or canonical path, is the home's. Codex skips such a project
+// folder by the same two comparisons (discover_project_layers at
+// rust-v0.156.1). A link there is not skipped: it is refused like any other.
+async function isProviderHome(root: RepositoryRoot, folder: string, home: string): Promise<boolean> {
+  const chain = await directoryChain(root, [folder]).catch(() => undefined)
+  if (!Array.isArray(chain)) return false
+  const path = join(root.path, folder)
+  if (path === resolve(home)) return true
+  try {
+    const [canonical, canonicalHome] = await Promise.all([realpath(path), realpath(home)])
+    return canonical === canonicalHome
+  } catch {
+    return false
+  }
+}
+
+export type RepositoryProviderConfigOptions = {
+  // Whether the daemon keeps the repository's configuration from the agent;
+  // it marks every entry and does not change the digest.
+  heldBack: boolean
+  // Codex's home, when not the one its environment names.
+  codexHome?: string
+}
+
+export async function readRepositoryProviderConfig(rootPath: string, options: RepositoryProviderConfigOptions): Promise<RepositoryProviderConfig> {
   // A root that is itself a link is refused like any other link: every path
   // under it reads as refused, and the digest records the link's target text.
   const root = await anchorRoot(rootPath)
@@ -768,7 +802,14 @@ export async function readRepositoryProviderConfig(rootPath: string, options: { 
         else omittedEntries += 1
       }
     }
+    // The provider's own home is the person's configuration, not the
+    // repository's: nothing under it is read, listed or hashed.
+    const home = scope.homeFolder !== undefined && await isProviderHome(root, scope.homeFolder, options.codexHome ?? defaultCodexHome())
+      ? `${scope.homeFolder}/`
+      : undefined
+    if (home !== undefined) digestRecords.push(`${scope.provider}:home:${home}`)
     for (const scoped of scope.files) {
+      if (home !== undefined && scoped.path.startsWith(home)) continue
       const read = await readRepositoryFile(root, scoped.path)
       const base = { path: scoped.path, source: scoped.source }
       digestRecords.push(`${scope.provider}:file:${scoped.path}:${read.state}:${
@@ -786,6 +827,7 @@ export async function readRepositoryProviderConfig(rootPath: string, options: { 
       take(scoped.path, parsed.candidates)
     }
     for (const directory of scope.directories) {
+      if (home !== undefined && directory.path.startsWith(home)) continue
       const read = await readRepositoryDirectory(root, directory.path)
       digestRecords.push(`${scope.provider}:directory:${directory.path}:${read.state}:${read.state === "absent" ? "" : read.digest}`)
       const base = { path: directory.path, source: "repository-file" as const }
