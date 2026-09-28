@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process"
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, sep } from "node:path"
@@ -634,6 +635,152 @@ describe("readRepositoryProviderConfig: Codex", () => {
     const large = generate(size)
     const { growth } = await workGrowth(() => rescanning(small), () => rescanning(large), { characterReads: true })
     expect(growth).toBeGreaterThanOrEqual(nearLinearGrowth)
+  })
+})
+
+// A main checkout and a linked worktree of it, laid out as git lays them out.
+async function linkedWorktree(): Promise<{ main: string; worktree: string; gitDirectory: string }> {
+  const main = await scratch("domovoi-provider-main-")
+  const worktree = await scratch("domovoi-provider-worktree-")
+  const gitDirectory = join(main, ".git", "worktrees", "session")
+  await put(main, ".git/HEAD", "ref: refs/heads/main\n")
+  await put(main, ".git/worktrees/session/HEAD", "ref: refs/heads/session\n")
+  await put(main, ".git/worktrees/session/gitdir", `${join(worktree, ".git")}\n`)
+  await put(main, ".git/worktrees/session/commondir", "../..\n")
+  await put(worktree, ".git", `gitdir: ${gitDirectory}\n`)
+  return { main, worktree, gitDirectory }
+}
+
+// Trust covers the root .codex folder only (ruling Q113, Refs #656): Codex
+// input anywhere else it would read keeps the repository untrusted, named by
+// a reason code.
+describe("readRepositoryProviderConfig: Codex input outside the root folder", () => {
+  const read = (root: string, options: { sessionFolder?: string; codexHome?: string } = {}) => (
+    readRepositoryProviderConfig(root, { heldBack: true, ...options })
+  )
+  const refusals = async (root: string, options: { sessionFolder?: string; codexHome?: string } = {}) => (await read(root, options)).trustRefusals
+
+  it("refuses trust while a linked worktree's main checkout holds Codex hooks", async () => {
+    const { main, worktree } = await linkedWorktree()
+    const clear = await read(worktree)
+    expect(clear.trustRefusals).toEqual([])
+    await put(main, ".codex/config.toml", "sandbox_mode = \"read-only\"\n")
+    expect(await refusals(worktree)).toEqual([])
+
+    await put(main, ".codex/config.toml", "[[hooks.Stop]]\nhooks = [{ type = \"command\", command = \"main-hook\" }]\n")
+    const hooked = await read(worktree)
+    expect(hooked.trustRefusals).toEqual([{ provider: "codex", reason: "main-checkout-hooks", path: join(main, ".codex", "config.toml") }])
+    expect(JSON.stringify(hooked)).not.toContain("main-hook")
+    expect(hooked.configDigest).not.toBe(clear.configDigest)
+    // A file the reader cannot read is refused as holding hooks.
+    await put(main, ".codex/config.toml", "[hooks\n")
+    expect(await refusals(worktree)).toEqual([{ provider: "codex", reason: "main-checkout-hooks", path: join(main, ".codex", "config.toml") }])
+    await rm(join(main, ".codex", "config.toml"))
+    await put(main, ".codex/hooks.json", "{}")
+    expect(await refusals(worktree)).toEqual([{ provider: "codex", reason: "main-checkout-hooks", path: join(main, ".codex", "hooks.json") }])
+    await rm(join(main, ".codex"), { recursive: true })
+
+    // The main checkout's folder for each directory on the session's way down.
+    await put(main, "sub/.codex/hooks.json", "{}")
+    expect(await refusals(worktree)).toEqual([])
+    await mkdir(join(worktree, "sub"))
+    expect(await refusals(worktree, { sessionFolder: "sub" })).toEqual([
+      { provider: "codex", reason: "main-checkout-hooks", path: join(main, "sub", ".codex", "hooks.json") },
+    ])
+    // The main checkout itself, and a checkout with no linked worktree.
+    expect(await refusals(main)).toEqual([])
+  })
+
+  it("refuses trust when a link or a mismatch is on the way to the main checkout", async () => {
+    const dir = process.platform === "win32" ? "junction" : "dir"
+    const unknown = [{ provider: "codex", reason: "main-checkout-unknown", path: ".git" }]
+
+    const linkedFile = await linkedWorktree()
+    await rm(join(linkedFile.worktree, ".git"))
+    await put(linkedFile.main, "git-file", `gitdir: ${linkedFile.gitDirectory}\n`)
+    await symlink(join(linkedFile.main, "git-file"), join(linkedFile.worktree, ".git"))
+    expect(await refusals(linkedFile.worktree)).toEqual(unknown)
+
+    const linkedDirectory = await linkedWorktree()
+    const alias = join(linkedDirectory.main, "alias")
+    await symlink(linkedDirectory.gitDirectory, alias, dir)
+    await put(linkedDirectory.worktree, ".git", `gitdir: ${alias}\n`)
+    expect(await refusals(linkedDirectory.worktree)).toEqual(unknown)
+
+    const linkedBacklink = await linkedWorktree()
+    await rm(join(linkedBacklink.gitDirectory, "commondir"))
+    await put(linkedBacklink.main, "commondir-target", "../..\n")
+    await symlink(join(linkedBacklink.main, "commondir-target"), join(linkedBacklink.gitDirectory, "commondir"))
+    expect(await refusals(linkedBacklink.worktree)).toEqual(unknown)
+
+    const mismatched = await linkedWorktree()
+    await put(mismatched.main, ".git/worktrees/session/gitdir", `${join(mismatched.main, "other", ".git")}\n`)
+    expect(await refusals(mismatched.worktree)).toEqual(unknown)
+
+    const missing = await linkedWorktree()
+    await rm(join(missing.gitDirectory, "commondir"))
+    expect(await refusals(missing.worktree)).toEqual(unknown)
+
+    const linkedFolder = await linkedWorktree()
+    const outside = await scratch("domovoi-provider-outside-")
+    await put(outside, "codex/config.toml", "sandbox_mode = \"read-only\"\n")
+    await symlink(join(outside, "codex"), join(linkedFolder.main, ".codex"), dir)
+    expect(await refusals(linkedFolder.worktree)).toEqual([{ provider: "codex", reason: "main-checkout-hooks", path: join(linkedFolder.main, ".codex") }])
+
+    // A submodule's .git file names no linked worktree: Codex takes no hooks
+    // from elsewhere.
+    const submodule = await scratch()
+    const parent = await scratch("domovoi-provider-parent-")
+    await put(parent, ".git/modules/sub/HEAD", "ref: refs/heads/main\n")
+    await put(submodule, ".git", `gitdir: ${join(parent, ".git", "modules", "sub")}\n`)
+    await put(parent, ".codex/hooks.json", "{}")
+    expect(await refusals(submodule)).toEqual([])
+  })
+
+  it("finds the main checkout of a worktree git made", async () => {
+    const base = await scratch("domovoi-provider-git-")
+    const main = join(base, "main")
+    const worktree = join(base, "worktree")
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=Domovoi Test", "-c", "user.email=test@example.invalid", "-c", "init.defaultBranch=main", ...args], { cwd, stdio: "ignore" })
+    await mkdir(main)
+    git(main, "init", "-q")
+    git(main, "commit", "-q", "--allow-empty", "-m", "init")
+    git(main, "worktree", "add", "-q", worktree)
+    expect(await refusals(worktree)).toEqual([])
+    await put(main, ".codex/hooks.json", "{}")
+    expect(await refusals(worktree)).toEqual([{ provider: "codex", reason: "main-checkout-hooks", path: join(main, ".codex", "hooks.json") }])
+  })
+
+  // Codex reads a .codex folder and .agents/skills in each directory from the
+  // session's down to the root. Domovoi starts Codex at a worktree's root, so
+  // nothing below the root is read unless a deeper session folder is named.
+  it("refuses trust while Codex input sits below the root on the session's way down", async () => {
+    const root = await scratch()
+    await put(root, "packages/app/.codex/config.toml", "[mcp_servers.x]\ncommand = \"nested-server\"\n")
+    await put(root, "packages/.agents/skills/s/SKILL.md", "s")
+    await put(root, "tools/.codex/hooks.json", "{}")
+    const atRoot = await read(root)
+    expect(atRoot.trustRefusals).toEqual([])
+    expect(JSON.stringify(atRoot)).not.toContain("nested-server")
+    expect(atRoot.configDigest).toBe((await read(await scratch())).configDigest)
+
+    const nested = await read(root, { sessionFolder: "packages/app" })
+    expect(nested.trustRefusals).toEqual([
+      { provider: "codex", reason: "nested-config", path: "packages/.agents/skills" },
+      { provider: "codex", reason: "nested-config", path: "packages/app/.codex" },
+    ])
+    expect(JSON.stringify(nested)).not.toContain("nested-server")
+    expect(await refusals(root, { sessionFolder: "docs/site" })).toEqual([])
+    // A folder that is Codex's own home is the person's, and skipped.
+    expect(await refusals(root, { sessionFolder: "packages/app", codexHome: join(root, "packages", "app", ".codex") })).toEqual([
+      { provider: "codex", reason: "nested-config", path: "packages/.agents/skills" },
+    ])
+    // A link on the way down is refused, not followed.
+    await symlink(join(root, "packages"), join(root, "linked"), process.platform === "win32" ? "junction" : "dir")
+    expect(await refusals(root, { sessionFolder: "linked/app" })).toEqual([{ provider: "codex", reason: "nested-config", path: "linked" }])
+    for (const sessionFolder of ["../elsewhere", "/abs", "a//b", "a/./b", ""]) {
+      await expect(read(root, { sessionFolder })).rejects.toThrow(/session folder/u)
+    }
   })
 })
 
