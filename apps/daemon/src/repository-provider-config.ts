@@ -13,11 +13,12 @@ import {
 import { parse as parseYaml } from "yaml"
 
 import { inventoryFieldCaps as caps, redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
+import { parseRepositoryToml } from "./repository-toml.js"
 
-// What a repository's own Claude Code, OpenCode and Kilo configuration
+// What a repository's own Claude Code, OpenCode, Kilo and Codex configuration
 // declares, and the digest repository trust pins to. Nothing here executes,
 // imports or evaluates a repository file: files are read as bytes and parsed
-// as JSON, JSONC or YAML data. Only the fixed provider paths below, relative
+// as JSON, JSONC, YAML or TOML data. Only the fixed provider paths below, relative
 // to the repository root, are read, and no symbolic link is followed: every
 // path component, the repository root itself included, is checked with lstat,
 // and the root must stay the directory the reader first found. The file itself
@@ -44,7 +45,7 @@ const maximumProviderEntries = 512
 const maximumProviderFiles = 32
 const digestVersion = "domovoi-repository-config/1"
 
-type Parser = "claude-mcp" | "claude-settings" | "opencode-config" | "tui-config" | "kilo-mcp" | "kilo-modes" | "none"
+type Parser = "claude-mcp" | "claude-settings" | "opencode-config" | "tui-config" | "kilo-mcp" | "kilo-modes" | "codex-config" | "codex-hooks" | "none"
 type ScopedFile = { path: string; source: ToolInventorySource; parser: Parser }
 // Directory members give plugin or skill entries, or count in the digest only.
 type ScopedDirectory = { path: string; members?: "plugin" | "skill" }
@@ -111,11 +112,27 @@ export const repositoryProviderScopes: readonly ProviderScope[] = [
     ],
     directories: [...kiloConfigDirectories.flatMap(memberDirectories), ...sharedSkillDirectories],
   },
+  {
+    // Codex loads a trusted project's .codex folder: config.toml, hooks.json
+    // and rules/*.rules (codex-repository-config.ts lists the same files for
+    // its refusal), and skills from .codex/skills and .agents/skills. Read
+    // from the config loader, hooks discovery and skill roots at
+    // rust-v0.156.1. Rules are execution policy source, so they count in the
+    // digest only. Only the repository root's folder is read: Codex also
+    // reads one in each directory from the session's down to the root, and
+    // in a linked worktree takes hooks from the main checkout.
+    provider: "codex",
+    files: [
+      { path: ".codex/config.toml", source: "project-settings", parser: "codex-config" },
+      { path: ".codex/hooks.json", source: "project-settings", parser: "codex-hooks" },
+    ],
+    directories: [{ path: ".codex/rules" }, { path: ".codex/skills", members: "skill" }, { path: ".agents/skills", members: "skill" }],
+  },
 ]
 
 // Short reason codes, not prose: a client words them.
 type RefusalReason = "symbolic-link" | "hard-link" | "not-a-file" | "not-a-directory" | "too-large" | "changed-while-read"
-  | "too-many-members" | "too-deep" | "unreadable-member" | "io-error" | "invalid-json" | "invalid-yaml"
+  | "too-many-members" | "too-deep" | "unreadable-member" | "io-error" | "invalid-json" | "invalid-yaml" | "invalid-toml"
 type Refused = { state: "unreadable"; reason: RefusalReason; digest: string }
 type FileRead = { state: "absent" } | { state: "read"; bytes: Buffer } | Refused
 type Identity = { dev: bigint; ino: bigint }
@@ -524,18 +541,163 @@ function kiloModes(document: Record<string, unknown>): Array<Candidate | Omissio
   })
 }
 
+const permissionRule = (rule: string, detail: unknown): Candidate | Omission => (
+  typeof detail === "string" ? { kind: "permission-rule", rule, detail: redactInventoryText(detail, caps.detail), startsAtSessionStart: false } : omission
+)
+const flagRule = (rule: string, value: unknown): Candidate | Omission => (typeof value === "boolean" ? permissionRule(rule, String(value)) : omission)
+
+// Codex hooks, from config.toml's [hooks] table or hooks.json's `hooks`: each
+// event holds matcher groups, each group its handlers. A command handler runs
+// `command`, or `commandWindows` in its place on Windows, so both are listed;
+// an mcp_tool handler calls a server's tool. Codex skips prompt and agent
+// handlers, so they list nothing. `state` holds per-hook trust and is read
+// from the person's own config only.
+function codexHook(event: string, matcher: unknown, hook: unknown): Array<Candidate | Omission> {
+  if (!isRecord(hook)) return [omission]
+  const hookOf = (command: string): Candidate => ({
+    kind: "hook", event: redactInventoryText(event, caps.event),
+    ...(typeof matcher === "string" && matcher !== "" ? { matcher: redactInventoryText(matcher, caps.matcher) } : {}),
+    command, startsAtSessionStart: event === "SessionStart",
+  })
+  if (hook.type === "command" && typeof hook.command === "string") {
+    const windows = hook.commandWindows ?? hook.command_windows
+    if (windows !== undefined && typeof windows !== "string") return [omission]
+    return [hook.command, ...(windows === undefined ? [] : [windows])].map((command) => hookOf(redactInventoryCommand(command)))
+  }
+  if (hook.type === "mcp_tool" && typeof hook.server === "string" && typeof hook.tool === "string") {
+    return [hookOf(redactInventoryText(`${hook.server} ${hook.tool}`, caps.command))]
+  }
+  return hook.type === "prompt" || hook.type === "agent" ? [] : [omission]
+}
+
+function codexHooks(events: unknown): Array<Candidate | Omission> {
+  if (events === undefined) return []
+  if (!isRecord(events)) return [omission]
+  return Object.entries(events).filter(([event]) => event !== "state").flatMap(([event, groups]) => {
+    if (!Array.isArray(groups)) return [omission]
+    return (groups as unknown[]).flatMap((group) => {
+      if (!isRecord(group) || (group.hooks !== undefined && !Array.isArray(group.hooks))) return [omission]
+      return ((group.hooks ?? []) as unknown[]).flatMap((hook) => codexHook(event, group.matcher, hook))
+    })
+  })
+}
+
+// A local server's env_vars: names Codex passes through from its own
+// environment, each a string or { name, source }.
+function codexEnvVarNames(value: unknown): string[] | undefined {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) return undefined
+  const names = (value as unknown[]).map((item) => (typeof item === "string" ? item : isRecord(item) && typeof item.name === "string" ? item.name : undefined))
+  return names.every((name) => name !== undefined) ? names as string[] : undefined
+}
+
+// A Codex MCP server: command, args, env and env_vars for a local one; url for
+// a streamable HTTP one, with the names of the variables whose values Codex
+// sends it (bearer_token_env_var, env_http_headers). An inline bearer_token and
+// http_headers are never read. http_headers_helper is a command Codex runs for
+// the headers; the approval modes let the server's tools run without asking.
+function codexServer(name: string, server: unknown): Array<Candidate | Omission> {
+  if (!isRecord(server)) return [omission]
+  const startsAtSessionStart = server.enabled !== false
+  const serverName = redactInventoryText(name, caps.name)
+  const candidates: Array<Candidate | Omission> = []
+  if (typeof server.command === "string") {
+    const args = server.args === undefined ? [] : stringArray(server.args)
+    const envVars = codexEnvVarNames(server.env_vars)
+    candidates.push(args && envVars
+      ? { kind: "tool-server", name: serverName, transport: "stdio", command: redactInventoryArgv([server.command, ...args]), envKeys: [...keysOf(server.env), ...envVars], startsAtSessionStart }
+      : omission)
+  } else if (typeof server.url === "string") {
+    const bearer = server.bearer_token_env_var
+    const headerVariables = Object.values(isRecord(server.env_http_headers) ? server.env_http_headers : {})
+    const envKeys = [...(bearer === undefined ? [] : [bearer]), ...headerVariables]
+    candidates.push(envKeys.every((key) => typeof key === "string") && (server.env_http_headers === undefined || isRecord(server.env_http_headers))
+      ? { kind: "tool-server", name: serverName, transport: "http", ...remoteHost(server.url), envKeys, startsAtSessionStart }
+      : omission)
+  } else candidates.push(omission)
+  if (server.http_headers_helper !== undefined) {
+    candidates.push(typeof server.http_headers_helper === "string"
+      ? { kind: "helper", name: redactInventoryText(`http_headers_helper ${name}`, caps.helperName), command: redactInventoryCommand(server.http_headers_helper), startsAtSessionStart }
+      : omission)
+  }
+  if (server.default_tools_approval_mode !== undefined) {
+    candidates.push(typeof server.default_tools_approval_mode === "string"
+      ? permissionRule("default_tools_approval_mode", `${name} ${server.default_tools_approval_mode}`)
+      : omission)
+  }
+  for (const [tool, settings] of recordEntries(server.tools)) {
+    if (!isRecord(settings)) candidates.push(omission)
+    else if (settings.approval_mode !== undefined) {
+      candidates.push(typeof settings.approval_mode === "string" ? permissionRule("approval_mode", `${name} ${tool} ${settings.approval_mode}`) : omission)
+    }
+  }
+  return candidates
+}
+
+// approval_policy is a word, or a table naming the approval flows it allows.
+function codexApprovalPolicy(policy: unknown): Array<Candidate | Omission> {
+  if (policy === undefined) return []
+  if (typeof policy === "string") return [permissionRule("approval_policy", policy)]
+  if (!isRecord(policy) || !isRecord(policy.granular)) return [omission]
+  const allowed = Object.entries(policy.granular).filter(([, value]) => value === true).map(([flow]) => flow)
+  return [permissionRule("approval_policy", ["granular", ...allowed].join(" "))]
+}
+
+// config.toml: servers, hooks, the variables set for every command the agent
+// runs (names only), the approval and sandbox settings, and plugins. Codex
+// ignores notify, model providers, profiles and the other keys that choose
+// where credentials go in a project file, so they are not listed; like every
+// byte of the file, they are in the digest.
+function codexConfig(config: Record<string, unknown>): Array<Candidate | Omission> {
+  const candidates: Array<Candidate | Omission> = []
+  const defined = (value: unknown, candidate: () => Candidate | Omission) => {
+    if (value !== undefined) candidates.push(candidate())
+  }
+  if (config.mcp_servers !== undefined && !isRecord(config.mcp_servers)) candidates.push(omission)
+  for (const [name, server] of recordEntries(config.mcp_servers)) candidates.push(...codexServer(name, server))
+  candidates.push(...codexHooks(config.hooks))
+  const shell = config.shell_environment_policy
+  if (shell !== undefined && !isRecord(shell)) candidates.push(omission)
+  const shellPolicy = isRecord(shell) ? shell : {}
+  if (shellPolicy.set !== undefined && !isRecord(shellPolicy.set)) candidates.push(omission)
+  for (const key of keysOf(shellPolicy.set)) candidates.push({ kind: "env-key", key, startsAtSessionStart: false })
+  candidates.push(...codexApprovalPolicy(config.approval_policy))
+  defined(config.sandbox_mode, () => permissionRule("sandbox_mode", config.sandbox_mode))
+  defined(config.default_permissions, () => permissionRule("default_permissions", config.default_permissions))
+  const sandbox = config.sandbox_workspace_write
+  if (sandbox !== undefined && !isRecord(sandbox)) candidates.push(omission)
+  if (isRecord(sandbox)) {
+    if (sandbox.writable_roots !== undefined) {
+      const roots = stringArray(sandbox.writable_roots)
+      if (!roots) candidates.push(omission)
+      else for (const path of roots) candidates.push(permissionRule("sandbox_workspace_write.writable_roots", path))
+    }
+    defined(sandbox.network_access, () => flagRule("sandbox_workspace_write.network_access", sandbox.network_access))
+  }
+  defined(shellPolicy.inherit, () => permissionRule("shell_environment_policy.inherit", shellPolicy.inherit))
+  defined(shellPolicy.ignore_default_excludes, () => flagRule("shell_environment_policy.ignore_default_excludes", shellPolicy.ignore_default_excludes))
+  if (config.plugins !== undefined && !isRecord(config.plugins)) candidates.push(omission)
+  for (const [plugin, settings] of recordEntries(config.plugins)) {
+    if (!isRecord(settings)) candidates.push(omission)
+    else if (settings.enabled !== false) candidates.push({ kind: "plugin", name: redactInventoryText(plugin, caps.name), startsAtSessionStart: true })
+  }
+  return candidates
+}
+
 type Parsed = { state: "read" | "empty"; candidates: Array<Candidate | Omission> } | { state: "unreadable"; reason: RefusalReason }
 
 function parseFile(parser: Parser, bytes: Buffer): Parsed {
   const text = bytes.toString("utf8").replace(/^\uFEFF/u, "")
   if (text.trim() === "") return { state: "empty", candidates: [] }
   if (parser === "none") return { state: "read", candidates: [] }
-  const invalid: Parsed = { state: "unreadable", reason: parser === "kilo-modes" ? "invalid-yaml" : "invalid-json" }
+  const invalid: Parsed = { state: "unreadable", reason: parser === "kilo-modes" ? "invalid-yaml" : parser === "codex-config" ? "invalid-toml" : "invalid-json" }
   let document: unknown
   try {
     // The yaml package builds plain data: no custom tags run, and alias
-    // expansion is capped.
-    document = parser === "kilo-modes" ? parseYaml(text, { maxAliasCount: 64 }) : parseJsonc(text)
+    // expansion is capped. repository-toml.ts says the same of TOML.
+    document = parser === "kilo-modes" ? parseYaml(text, { maxAliasCount: 64 })
+      : parser === "codex-config" ? parseRepositoryToml(text)
+        : parseJsonc(text)
   } catch {
     return invalid
   }
@@ -553,6 +715,10 @@ function parseFile(parser: Parser, bytes: Buffer): Parsed {
       return { state: "read", candidates: pluginSpecs(document.plugin) }
     case "kilo-modes":
       return { state: "read", candidates: kiloModes(document) }
+    case "codex-config":
+      return { state: "read", candidates: codexConfig(document) }
+    case "codex-hooks":
+      return { state: "read", candidates: codexHooks(document.hooks) }
   }
 }
 

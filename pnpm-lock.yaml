@@ -127,6 +127,9 @@ importers:
       qrcode-generator:
         specifier: 2.0.4
         version: 2.0.4
+      smol-toml:
+        specifier: ^1.9.0
+        version: 1.9.0
       ws:
         specifier: ^8.18.3
         version: 8.21.3
@@ -7400,6 +7403,10 @@ packages:
   smart-buffer@4.2.0:
     resolution: {integrity: sha512-94hK0Hh8rPqQl2xXc3HsaBoOXKV20MToPkcXvwbISWLEs+64sBq5kFgn2kJDHb1Pry9yrP0dxrCI9RRci7RXKg==}
     engines: {node: '>= 6.0.0', npm: '>= 3.0.0'}
+
+  smol-toml@1.9.0:
+    resolution: {integrity: sha512-hpd+HLON7HdZXqYchMM/+LaTTbdK0AU3NngIJ4KVyWbY9bfQqdL9cD+4yf6dUoU2Ap4VsU0JkQi6FxAI1B2mXQ==}
+    engines: {node: '>= 18'}
 
   smtp-address-parser@1.1.0:
     resolution: {integrity: sha512-Gz11jbNU0plrReU9Sj7fmshSBxxJ9ShdD2q4ktHIHo/rpTH6lFyQoYHYKINPJtPe8aHFnsbtW46Ls0tCCBsIZg==}
@@ -16663,6 +16670,8 @@ snapshots:
   slugify@1.6.9: {}
 
   smart-buffer@4.2.0: {}
+
+  smol-toml@1.9.0: {}
 
   smtp-address-parser@1.1.0:
     dependencies:
