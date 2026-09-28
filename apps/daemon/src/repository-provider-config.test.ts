@@ -868,6 +868,33 @@ describe("readRepositoryProviderConfig: Codex", () => {
     expect(nested.trustRefusals).toEqual([{ provider: "codex", reason: "nested-config", path: "app/.codex" }])
   })
 
+  // Platforms differ on a `..` after a link (Windows steps up lexically), so
+  // a set CODEX_HOME with any `..` segment is never taken as the home (ruling
+  // Q125): the repository's folder stays in scope even where `..` resolves to
+  // it exactly, and a nested folder still refuses trust.
+  it("never skips a folder for a set CODEX_HOME with a `..` segment", async () => {
+    const root = await scratch()
+    await mkdir(join(root, "x"))
+    await mkdir(join(root, "app", "x"), { recursive: true })
+    await put(root, ".codex/config.toml", "[mcp_servers.repository]\ncommand = \"repository-server\"\n")
+    await put(root, "app/.codex/config.toml", "[mcp_servers.nested]\ncommand = \"nested-server\"\n")
+    const codexServers = (result: { providers: ToolInventoryProvider[] }) => provider(result, "codex").entries.flatMap((entry) => (entry.kind === "tool-server" ? [entry.name] : []))
+    for (const spell of [(...parts: string[]) => parts.join("/"), (...parts: string[]) => parts.join(sep)]) {
+      const codexHome = spell(root, "x", "..", ".codex")
+      const read = await readRepositoryProviderConfig(root, { heldBack: true, codexHome })
+      expect(provider(read, "codex").files, codexHome).toEqual([{ path: ".codex/config.toml", source: "project-settings", state: "read" }])
+      expect(codexServers(read)).toEqual(["repository"])
+      vi.stubEnv("CODEX_HOME", codexHome)
+      try {
+        expect(codexServers(await readRepositoryProviderConfig(root, { heldBack: true }))).toEqual(["repository"])
+      } finally {
+        vi.unstubAllEnvs()
+      }
+      const nested = await readRepositoryProviderConfig(root, { heldBack: true, sessionFolder: "app", codexHome: spell(root, "app", "x", "..", ".codex") })
+      expect(nested.trustRefusals).toEqual([{ provider: "codex", reason: "nested-config", path: "app/.codex" }])
+    }
+  })
+
   // A hook whose command is adversarial input, and TOML a parser has taken
   // more than linear work on, near the file limit: read in work that grows
   // about linearly with the input, counted, not timed.
