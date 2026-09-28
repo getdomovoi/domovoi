@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it } from "vitest"
 import { inventoryShellWords } from "./inventory-redaction.js"
 import { maximumRepositoryConfigFileBytes, readRepositoryProviderConfig } from "./repository-provider-config.js"
 import {
-  hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, sameWordCases, sameWordCredentials, sameWordPlacements, sameWordWrappers,
+  escapedBlankTexts, hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, sameWordCases, sameWordCredentials, sameWordPlacements,
+  sameWordWrappers, viewCases, viewCredential, viewPlacements, viewSpellings, viewTexts,
 } from "./test-hidden-triggers.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { adversarialCommands, nearLinearGrowth, workGrowth } from "./test-work.js"
@@ -607,6 +608,39 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
       expect(claude.entries.filter((entry) => entry.kind === "hook")).toHaveLength(hooks.length)
     },
   )
+
+  // A trigger the protocol backstop reads in another view than the one written
+  // (percent-decoded, unescaped, a JSON argv's strings, a value after an
+  // opening quote), or a sensitive key with an escaped blank before its value,
+  // as a command, a command and its arguments, a prompt and a shell's script
+  // in arguments: every hook is listed, its credential hidden.
+  const viewHooks = (text: string, argv: readonly string[]) => [
+    { type: "command", command: text }, { type: "command", command: argv[0], args: argv.slice(1) }, { type: "prompt", prompt: text },
+    { type: "command", command: "sh", args: ["-c", text] },
+  ]
+  const expectViewHooksListed = async (cases: ReadonlyArray<{ text: string; argv: readonly string[] }>) => {
+    // Each file stays under the reader's cap on entries.
+    for (let from = 0; from < cases.length; from += 100) {
+      const root = await scratch()
+      const hooks = cases.slice(from, from + 100).flatMap(({ text, argv }) => viewHooks(text, argv))
+      await put(root, ".claude/settings.json", JSON.stringify({ hooks: { Stop: [{ hooks }] } }))
+      const claude = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "claude-code")
+      expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+      expect(JSON.stringify(claude)).not.toContain(viewCredential)
+      expect(claude.omittedEntries).toBe(0)
+      expect(claude.entries.filter((entry) => entry.kind === "hook")).toHaveLength(hooks.length)
+    }
+  }
+
+  it.each([...viewTexts, ...escapedBlankTexts])("lists the hooks of %s, the credential redacted", async (text) => {
+    await expectViewHooksListed([{ text, argv: inventoryShellWords(text)! }])
+  })
+
+  it.each(viewPlacements.flatMap(([placement, place]) => viewSpellings.flatMap(([spelling, spell]) => sameWordWrappers.map(([wrapping, wrap]) => (
+    [placement, spelling, wrapping, viewCases(place, spell, wrap)] as const
+  )))))("lists every hook with an encoded trigger in %s, %s, %s", async (_placement, _spelling, _wrapping, cases) => {
+    await expectViewHooksListed(cases)
+  })
 
   // A hook whose command is adversarial input near the file limit is read in
   // work that grows about linearly with it: counted, not timed.

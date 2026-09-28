@@ -8,7 +8,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { inventoryFieldCaps, inventoryShellWords, redactInventoryArgv, redactInventoryCommand, redactInventoryText } from "./inventory-redaction.js"
 import {
-  hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, sameWordCases, sameWordCredentials, sameWordPlacements, sameWordWrappers,
+  escapedBlankTexts, hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, sameWordCases, sameWordCredentials, sameWordPlacements,
+  sameWordWrappers, viewCases, viewCredential, viewPlacements, viewSpellings, viewTexts,
 } from "./test-hidden-triggers.js"
 import { adversarialCommands, nearLinearGrowth, quadraticTimeGrowth, regexAdversaries, timeGrowth, workGrowth } from "./test-work.js"
 
@@ -413,6 +414,72 @@ describe("a scheme word or sensitive flag and its value in one word another rule
       }
     },
   )
+})
+
+// The protocol backstop reads a text in other views than the one written: one
+// layer of percent decoding, backslash and \u escapes, a JSON argv's quoted
+// strings, and a scheme's value after an opening quote. A trigger it reads in
+// any of them hides its credential here too, and no source escape is kept
+// between a sensitive key and the marker, so every output is accepted.
+describe("triggers the protocol backstop reads in its other views", () => {
+  const scripts: ReadonlyArray<readonly [string, (text: string) => string[]]> = [
+    ["sh -c", (text) => ["sh", "-c", text]],
+    ["bash -lc", (text) => ["bash", "-lc", text]],
+    ["env MODE=x sh -c", (text) => ["env", "MODE=x", "sh", "-c", text]],
+  ]
+  const redoneArgv = (command: string) => redactInventoryArgv(inventoryShellWords(command)!)
+  const expectHidden = (label: string, redacted: string) => {
+    expect(redacted, label).not.toContain(viewCredential)
+    expect(backstopAccepts(redacted), `${label} -> ${redacted}`).toBe(true)
+  }
+  const expectEveryEntryPoint = (text: string, argv: readonly string[]) => {
+    for (const redact of [redactInventoryText, redactInventoryCommand]) {
+      const redacted = redact(text)
+      expectHidden(text, redacted)
+      expect(redact(redacted), text).toBe(redacted)
+    }
+    const literal = redactInventoryArgv(argv)
+    expectHidden(JSON.stringify(argv), literal)
+    expect(redoneArgv(literal), JSON.stringify(argv)).toBe(literal)
+  }
+
+  it.each([...viewTexts, ...escapedBlankTexts])("hides the credential in %s as text, command, argument vector and script", (text) => {
+    expectEveryEntryPoint(text, inventoryShellWords(text)!)
+    for (const [wrapping, wrap] of scripts) expectHidden(`${wrapping} ${text}`, redactInventoryArgv(wrap(text)))
+  })
+
+  it.each([
+    ["curl 'https://host Token \"swordfish tail\"'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
+    ["curl 'https://host Token \"swordfish\"'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
+    ["curl 'https://host/?Token \"swordfish\"=1'", "curl 'https://host/?[REDACTED]'", "curl 'https://host/?[REDACTED]'"],
+    ["curl 'https://host %54oken swordfish tail'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
+    ["curl 'https://host Token%20swordfish tail'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
+    ["curl 'https://host %54oken swordfish'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
+    ["curl 'https://host --%74oken swordfish'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
+    ["curl 'https://host --token%20swordfish'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
+    ["curl 'https://host api%5fkey=swordfish'", "curl 'https://host [REDACTED]'", "curl 'https://host [REDACTED]'"],
+    // The escaped blank is written in quotes, so no backslash stands between
+    // the header's name and the marker.
+    ["curl -H X-Api-Token:\\ --token\\ swordfish", "curl -H X-Api-Token:' [REDACTED]'", "curl -H 'X-Api-Token: [REDACTED]'"],
+  ])("redacts %s", (input, expected, expectedArgv) => {
+    for (const redact of [redactInventoryText, redactInventoryCommand]) {
+      const redacted = redact(input)
+      expect(redacted).toBe(expected)
+      expect(backstopAccepts(redacted)).toBe(true)
+      expect(redact(redacted)).toBe(redacted)
+    }
+    const command = redactInventoryArgv(inventoryShellWords(input)!)
+    expect(command).toBe(expectedArgv)
+    expect(backstopAccepts(command)).toBe(true)
+  })
+
+  // The same generated corpus the protocol backstop judges: every encoded
+  // trigger and quoted value, in each placement, spelling and wrapper.
+  it.each(viewPlacements.flatMap(([placement, place]) => viewSpellings.flatMap(([spelling, spell]) => sameWordWrappers.map(([wrapping, wrap]) => (
+    [placement, spelling, wrapping, viewCases(place, spell, wrap)] as const
+  )))))("hides every encoded trigger's credential in %s, %s, %s", (_placement, _spelling, _wrapping, cases) => {
+    for (const { text, argv } of cases) expectEveryEntryPoint(text, argv)
+  })
 })
 
 // Adversarial input, up to the reader's file limit, takes work that grows

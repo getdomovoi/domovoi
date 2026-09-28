@@ -91,3 +91,102 @@ export const sameWordCases = (
   const { text, argv } = place(value)
   return wrap(text, argv)
 }))
+
+// The protocol backstop reads each text as written and in other views too:
+// after one layer of percent decoding, after backslash and \u escapes, and
+// as its double-quoted strings alone. It reads a scheme's value after an
+// opening quote. A trigger that reads as one only in such a view, or whose
+// value opens with a quote, is still a trigger, and its credential is hidden.
+export const viewCredential = "swordfish"
+
+const percentOf = (character: string) => `%${character.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`
+const encodedAt = (text: string, index: number) => `${text.slice(0, index)}${percentOf(text[index]!)}${text.slice(index + 1)}`
+
+// Each trigger with the separator before its value, spelled with one of its
+// characters percent-encoded: every character of the first three, the first
+// letter of the rest, and every separator. An underscore is encoded in lower
+// case too, and a scheme's first letter as a \u escape.
+const viewTriggers: ReadonlyArray<readonly [string, string, boolean]> = [
+  ["Token", " ", true], ["--token", " ", true], ["api_key", "=", true],
+  ["Bearer", " ", false], ["Basic", " ", false], ["Digest", " ", false], ["--api-key", " ", false], ["password", "=", false], ["X-Api-Token", ": ", false],
+]
+export const encodedTriggers: readonly string[] = viewTriggers.flatMap(([trigger, separator, everyCharacter]) => {
+  const first = trigger.search(/[A-Za-z]/u)
+  const positions = everyCharacter ? Array.from(trigger, (_, index) => index) : [first]
+  return [
+    ...positions.map((index) => `${encodedAt(trigger, index)}${separator}`),
+    `${trigger}${Array.from(separator, percentOf).join("")}`,
+    ...(trigger.includes("_") ? [`${trigger.replace("_", "%5f")}${separator}`] : []),
+    ...(separator === " " && first === 0 ? [`\\u${trigger.charCodeAt(0).toString(16).padStart(4, "0")}${trigger.slice(1)}${separator}`] : []),
+  ]
+})
+
+// Values the backstop reads after a trigger: an alphabetic word it can take
+// for prose, alone and with a word after it, and each behind an opening
+// double or single quote.
+export const viewValues: readonly string[] = [
+  viewCredential, `${viewCredential} tail`, `"${viewCredential}"`, `"${viewCredential} tail"`, `'${viewCredential} tail'`,
+]
+
+// Where a trigger and its value sit: in one argument (a URL's authority, a
+// URL's query name, a quoted string) or as words of their own.
+export const viewPlacements: ReadonlyArray<readonly [string, (content: string) => string[]]> = [
+  ["a URL's authority", (content) => [`https://host ${content}`]],
+  ["a URL's query name", (content) => [`https://host/?${content}=1`]],
+  ["a quoted string", (content) => [`x ${content}`]],
+  ["words of their own", (content) => content.split(" ")],
+]
+
+const plainWord = /^[A-Za-z0-9_@%+=:,./-]+$/u
+const singleWord = (word: string) => (plainWord.test(word) ? word : `'${word.replace(/'/gu, "'\\''")}'`)
+const doubleWord = (word: string) => (plainWord.test(word) ? word : `"${word.replace(/[\\"$`]/gu, "\\$&")}"`)
+
+// Each argument spelled in single quotes and in double quotes.
+export const viewSpellings: ReadonlyArray<readonly [string, (word: string) => string]> = [["single-quoted", singleWord], ["double-quoted", doubleWord]]
+
+// Every encoded trigger and value in one placement, spelling and wrapper, as
+// shell text and as the argument vector of the same words.
+export const viewCases = (
+  place: (content: string) => string[],
+  spell: (word: string) => string,
+  wrap: (text: string, argv: readonly string[]) => { text: string; argv: string[] },
+): Array<{ text: string; argv: string[] }> => encodedTriggers.flatMap((trigger) => viewValues.map((value) => {
+  const words = ["curl", ...place(`${trigger}${value}`)]
+  return wrap(words.map(spell).join(" "), words)
+}))
+
+// The concrete texts a review found: a quote before a value in the same word,
+// encoded scheme words, keys and separators, a JSON argv's strings, a \u
+// escape, and an escaped blank after a sensitive header's name or flag.
+export const viewTexts: readonly string[] = [
+  `curl 'https://host Token "${viewCredential} tail"'`,
+  `curl 'https://host Token "${viewCredential}"'`,
+  `curl 'https://host/?Token "${viewCredential}"=1'`,
+  `curl 'https://host %54oken ${viewCredential} tail'`,
+  `curl 'https://host Token%20${viewCredential} tail'`,
+  `curl 'https://host %54oken ${viewCredential}'`,
+  `curl 'https://host --%74oken ${viewCredential}'`,
+  `curl 'https://host --token%20${viewCredential}'`,
+  `curl 'https://host api%5fkey=${viewCredential}'`,
+  `curl %54oken ${viewCredential} tail`,
+  `curl 'x%20Token ${viewCredential} tail'`,
+  `curl %27Token ${viewCredential} tail%27`,
+  `curl 'https://host Authorization%3A Bearer ${viewCredential}'`,
+  `curl '["--token","${viewCredential}"]'`,
+  `curl '"Token" "${viewCredential} tail"'`,
+  `curl '\\u0054oken ${viewCredential} tail'`,
+  `curl -H X-Api-Token:\\ --token\\ ${viewCredential}`,
+]
+
+// An escaped blank between a sensitive header's name or a sensitive key and
+// its value, which the shell reads as one word.
+export const escapedBlankTexts: readonly string[] = [
+  ...["X-Api-Token", "X-Auth-Token", "Cookie", "X-Secret"].flatMap((name) => [":\\ ", ":\\ \\ "].flatMap((separator) => (
+    [viewCredential, `--token\\ ${viewCredential}`, `${viewCredential}\\ tail`].map((value) => `curl -H ${name}${separator}${value}`)
+  ))),
+  `API_KEY=\\ ${viewCredential} run`,
+  `curl --api-key=\\ ${viewCredential}`,
+  `curl --token\\ ${viewCredential}`,
+  `curl --password=\\ \\ ${viewCredential}\\ tail`,
+  `curl -H Authorization:\\ Bearer\\ ${viewCredential}`,
+]
