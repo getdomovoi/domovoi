@@ -14,8 +14,11 @@ Domovoi publishes:
   `@getdomovoi/daemon` and `@getdomovoi/cli`;
 - the production graph of the desktop app and of every workspace package it ships, listed as
   `desktopPackages` in `scripts/dependency-licenses.mjs`. That includes `@getdomovoi/ui`, whose
-  graph electron-vite inlines into the renderer bundle, and its two fonts; and
-- Electron, the runtime every desktop build contains, listed as `bundledRuntimes`.
+  graph electron-vite inlines into the renderer bundle, and its two fonts;
+- Electron, the runtime every desktop build contains, listed as `bundledRuntimes`; and
+- `tailwindcss` and `shadcn`, UI development dependencies whose CSS `@tailwindcss/vite` inlines
+  into the renderer stylesheet through `@import` rules in `packages/ui/src/styles.css`, listed
+  as `inlinedStylesheetPackages`.
 
 `pnpm licenses list` does not follow workspace links, so the audit names each workspace package.
 `scripts/dependency-licenses.test.mjs` compares `desktopPackages` with the desktop's workspace
@@ -37,8 +40,9 @@ pnpm license:audit
 ```
 
 It reads the graph from `pnpm licenses list --prod`, so it reports the licenses actually installed
-for the current lockfile rather than the ranges written in manifests. Electron's entry comes from
-the installed `electron` manifest. CI runs it on Linux, macOS, and Windows.
+for the current lockfile rather than the ranges written in manifests. The entries for Electron,
+`tailwindcss` and `shadcn` come from their installed manifests. CI runs it on Linux, macOS, and
+Windows.
 
 The audit reads Electron's declared license only. Chromium and the other projects Electron builds
 on carry their own licenses, which Electron publishes as `LICENSES.chromium.html`; the policy does
@@ -145,8 +149,16 @@ itself. A new OFL-1.1 package fails the audit until it is reviewed the same way.
 
 ## Development dependencies
 
-Development dependencies are out of the audit's scope, with one exception. Build tooling does not
+Development dependencies are out of the audit's scope, with two exceptions. Build tooling does not
 reach a user's machine, and holding it to the redistribution rules of published artifacts would
-reject tools that never ship. Electron is the exception: it is a development dependency of
+reject tools that never ship. Electron is the first exception: it is a development dependency of
 `apps/desktop` because electron-builder bundles it rather than installing it, and every desktop
 build contains it, so the audit and the notices include it.
+
+The second is CSS that Tailwind copies into the renderer. `@tailwindcss/vite` resolves the
+`@import` rules in `packages/ui/src/styles.css` itself, so the files they name never become bundle
+modules: Tailwind's preflight, its license banner and its generated utilities, and shadcn's
+`tailwind.css`. `scripts/renderer-bundle-packages.mjs` follows those rules from every bundled
+stylesheet and names each package they resolve into. `scripts/third-party-notices.test.mjs`
+fails when a package it names has no notice, so a new `@import` of a development dependency
+fails there until `inlinedStylesheetPackages` names it.
