@@ -38,9 +38,16 @@ afterEach(async () => {
 
 async function fixture() {
   const scratch = await mkdtemp(join(tmpdir(), "domovoi-claude-stop-fence-"))
-  // The first Claude process hangs; any later one exits when its stdin ends.
+  // The first session's Claude process hangs; any later one exits when its
+  // stdin ends. A model list's Claude, started with no directory, always does.
   const children: Array<ReturnType<typeof fakeClaudeChild>> = []
-  const spawn: ClaudeSpawn = () => {
+  const listing: Array<ReturnType<typeof fakeClaudeChild>> = []
+  const spawn: ClaudeSpawn = (_command, _args, options) => {
+    if (options.cwd === undefined) {
+      const child = fakeClaudeChild({ pid: fakeClaudePid + 1_000 + listing.length })
+      listing.push(child)
+      return child.process
+    }
     const child = fakeClaudeChild({ exitsOnEof: children.length > 0, pid: fakeClaudePid + children.length })
     children.push(child)
     return child.process
@@ -76,7 +83,7 @@ async function fixture() {
   cleanups.push(async () => {
     socket.terminate()
     // The hung process is a double; end it so the daemon can stop.
-    for (const child of children) child.exit("SIGKILL")
+    for (const child of [...children, ...listing]) child.exit("SIGKILL")
     await daemon.stop()
     await rm(scratch, { recursive: true, force: true })
   })

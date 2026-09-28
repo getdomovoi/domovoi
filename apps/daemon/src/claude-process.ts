@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { StringDecoder } from "node:string_decoder"
 
@@ -30,6 +30,9 @@ export type ClaudeProcessOptions = {
   spawn?: ClaudeSpawn
   // Signals a process group by its negative pid. A test passes a spy.
   kill?: (pid: number, signal: NodeJS.Signals) => void
+  // Kills a Windows process tree and settles once that is done. A test
+  // passes a spy.
+  killTree?: (pid: number) => Promise<void>
   platform?: NodeJS.Platform
   shutdownGraceMs?: number
   killGraceMs?: number
@@ -40,7 +43,48 @@ export type ClaudeProcess = {
   readonly spawned: SpawnedProcess
   readonly exited: Promise<void>
   hasExited(): boolean
-  kill(): void
+  kill(): Promise<void>
+}
+
+// A Claude process Domovoi started that has not exited yet, named by its pid
+// and the Claude session it runs, if any. A model list runs none.
+export type RunningClaudeProcess = {
+  readonly pid: number
+  readonly session?: string
+  readonly exited: Promise<void>
+}
+
+// Every Claude process this daemon started and has not seen exit. A shutdown
+// whose stop failed reads it to keep the profile until each one has exited.
+const running = new Set<RunningClaudeProcess>()
+
+export function runningClaudeProcesses(): RunningClaudeProcess[] {
+  return [...running]
+}
+
+type TaskkillSpawn = (
+  command: "taskkill",
+  args: string[],
+  options: { windowsHide: true; shell: false; stdio: "ignore" },
+) => ChildProcess
+
+// Windows has no process groups: taskkill /T ends the process and every
+// process it started, and /F does so without asking. Fixed arguments, no
+// shell and no console window. It settles once taskkill has finished, or has
+// failed to start; the exit of the process it was asked to kill, not this,
+// decides whether a stop succeeded.
+export function windowsTreeKill(pid: number, run: TaskkillSpawn = spawn): Promise<void> {
+  return new Promise((resolve) => {
+    let taskkill: ChildProcess
+    try {
+      taskkill = run("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, shell: false, stdio: "ignore" })
+    } catch {
+      resolve()
+      return
+    }
+    taskkill.once("error", () => resolve())
+    taskkill.once("exit", () => resolve())
+  })
 }
 
 // Starts Claude the way the SDK's own spawn does (spawnLocalProcess in
@@ -51,17 +95,18 @@ export type ClaudeProcess = {
 // comes once stderr has drained, so a failure carries its last line.
 //
 // On POSIX Claude is detached into its own process group, which the commands
-// its tools run join, so one kill reaches all of them. Windows has no process
-// groups and the repository has no process tree kill, so there the kill
-// reaches Claude alone.
+// its tools run join, so one kill reaches all of them. On Windows the kill is
+// taskkill on Claude's process tree.
 export function spawnClaudeProcess(
   options: SpawnOptions,
   stderr: (data: string) => void,
   {
     spawn: start = spawn,
     kill = (pid, signal) => process.kill(pid, signal),
+    killTree = windowsTreeKill,
     platform = process.platform,
-  }: Pick<ClaudeProcessOptions, "spawn" | "kill" | "platform"> = {},
+  }: Pick<ClaudeProcessOptions, "spawn" | "kill" | "killTree" | "platform"> = {},
+  session?: string,
 ): ClaudeProcess {
   const child = start(options.command, options.args, {
     ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -83,27 +128,64 @@ export function spawnClaudeProcess(
   // A stderr read failure loses diagnostics, not the session.
   child.stderr.on("error", () => {})
 
+  const pid = child.pid
   let exited = false
+  let entry: RunningClaudeProcess | undefined
   const exit = new Promise<void>((resolve) => {
     const finish = () => {
+      if (exited) return
       exited = true
+      if (entry) running.delete(entry)
       resolve()
     }
-    child.once("exit", finish)
+    child.once("exit", () => {
+      // Whatever Claude leaves in its process group dies with it, so nothing
+      // a session started outlives its Claude, stopped or not (Q104).
+      //
+      // A group id can be signalled only while it still names this group.
+      // POSIX does not reuse a pid while its process is unreaped, nor while a
+      // process group with that id has a member. Node reaps Claude and runs
+      // this callback in the same turn, with no other JavaScript between, and
+      // nothing signals the group after it: kill() does nothing once the exit
+      // is recorded. So either a member still lives and the id is reserved,
+      // or the group is empty and its id has been free only since Claude was
+      // reaped, microseconds ago; pids are handed out in increasing order and
+      // wrap at the system maximum, so reuse in that window would need the
+      // whole range to cycle.
+      //
+      // Windows gets no tree kill here. Node closes its handle to Claude as
+      // it reports the exit, so the pid can name another process at once, and
+      // taskkill /T finds nothing below a process that has exited.
+      if (platform !== "win32" && pid !== undefined) {
+        try {
+          kill(-pid, "SIGKILL")
+        } catch {
+          // The group is empty.
+        }
+      }
+      finish()
+    })
     // A process that never started has no exit to wait for.
     child.on("error", () => {
       if (child.pid === undefined) finish()
     })
   })
+  if (pid !== undefined && !exited) {
+    entry = { pid, ...(session !== undefined ? { session } : {}), exited: exit }
+    running.add(entry)
+  }
   return {
     spawned: new ClaudeSpawnedProcess(child),
     exited: exit,
     hasExited: () => exited,
-    kill: () => {
-      const pid = child.pid
+    kill: async () => {
       if (exited || pid === undefined) return
       if (platform === "win32") {
-        child.kill("SIGKILL")
+        // Until its exit is recorded Node holds a handle to Claude, which
+        // keeps its pid from naming another process. The kill of Claude
+        // itself goes through that handle, in case taskkill reached nothing.
+        await killTree(pid)
+        if (!exited) child.kill("SIGKILL")
         return
       }
       try {
@@ -117,8 +199,11 @@ export function spawnClaudeProcess(
   }
 }
 
-// Waits for Claude to exit after its input was closed, kills it when it does
-// not within the grace, and fails when it still runs after the kill grace.
+// Waits for Claude to exit after its input was closed, then kills its process
+// group or tree. When Claude exited within the grace its group was killed as
+// it exited (see spawnClaudeProcess); otherwise the kill comes now, and the
+// stop fails when Claude still runs after the kill grace. The kill grace also
+// bounds the wait for taskkill.
 export async function stopClaudeProcess(
   child: ClaudeProcess,
   {
@@ -127,8 +212,9 @@ export async function stopClaudeProcess(
   }: Pick<ClaudeProcessOptions, "shutdownGraceMs" | "killGraceMs"> = {},
 ): Promise<void> {
   if (await settlesBefore(child.exited, shutdownGraceMs)) return
-  child.kill()
-  if (await settlesBefore(child.exited, killGraceMs)) return
+  const killed = child.kill().catch(() => {})
+  if (await settlesBefore(Promise.all([child.exited, killed]).then(() => {}), killGraceMs)) return
+  if (child.hasExited()) return
   throw new Error("Claude Code did not exit after Domovoi stopped it")
 }
 
