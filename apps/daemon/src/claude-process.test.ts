@@ -646,6 +646,27 @@ describe("a keeper killed while Claude runs", () => {
     }
   })
 
+  // The SDK's own close sends SIGTERM, then SIGKILL.
+  it("ends the group through the sentinel for the SDK's SIGKILL, and passes on nothing else, once the keeper has gone", async () => {
+    const fake = fakeClaudeChild({ exitsOnEof: false })
+    let members = true
+    const probe = vi.fn((_pid: number) => { if (!members) throw killError("ESRCH") })
+    const claude = spawnClaudeProcess(options, () => {}, { spawn: () => fake.process, probe, platform: "linux" }, "sdk kill")
+    try {
+      fake.crash()
+      expect(claude.spawned.kill("SIGTERM")).toBe(false)
+      expect(fake.sentinel).toEqual([])
+      expect(claude.spawned.kill("SIGKILL")).toBe(true)
+      expect(claude.spawned.killed).toBe(true)
+      expect(fake.sentinel).toEqual(["kill\n"])
+      expect(fake.commands).toEqual([{ spawn: { command: options.command, args: [], env: options.env } }])
+    } finally {
+      members = false
+      fake.exit("SIGKILL")
+      await claude.exited
+    }
+  })
+
   it("fails the stop, and keeps Claude listed, when the sentinel has gone too", async () => {
     const fake = fakeClaudeChild({ exitsOnEof: false })
     let members = true

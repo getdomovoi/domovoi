@@ -13,16 +13,31 @@ export const claudeShutdownGraceMs = 2_000
 export const claudeKillGraceMs = 5_000
 // How often a process group whose leader has gone is checked for members.
 const groupProbeIntervalMs = 50
+// How long the list of what a Windows Claude left may take. PowerShell can
+// take seconds to start on a busy machine.
+export const windowsChildListTimeoutMs = 15_000
+// No list of child processes comes near this; more output is not a list.
+const windowsChildListMaxBytes = 1024 * 1024
 
 export type ClaudeSpawnOptions = {
   cwd?: string
   env: NodeJS.ProcessEnv
   signal: AbortSignal
-  // On POSIX the fourth pipe is the keeper's control pipe.
-  stdio: ["pipe", "pipe", "pipe"] | ["pipe", "pipe", "pipe", "pipe"]
+  // On POSIX the fourth pipe is the keeper's control pipe, and the fifth the
+  // sentinel's (see claudeKeeperSource).
+  stdio: ["pipe", "pipe", "pipe"] | ["pipe", "pipe", "pipe", "pipe", "pipe"]
   windowsHide: true
   detached: boolean
 }
+
+// A process found on Windows by its parent's pid, with its creation time in
+// milliseconds since the epoch.
+export type WindowsChildProcess = { readonly pid: number; readonly created: number }
+
+// Lists the processes whose parent process id is `parentPid` and which were
+// created after `createdAfter`, in milliseconds since the epoch. Rejects when
+// the list cannot be read. A test passes a stub.
+export type ListWindowsChildren = (parentPid: number, createdAfter: number) => Promise<WindowsChildProcess[]>
 
 export type ClaudeSpawn = (
   command: string,
@@ -41,6 +56,8 @@ export type ClaudeProcessOptions = {
   // Kills a Windows process tree, and rejects when taskkill cannot start or
   // reports a failure. A test passes a spy.
   killTree?: (pid: number) => Promise<void>
+  // Lists what a Windows Claude that exited on its own left running.
+  listChildren?: ListWindowsChildren
   platform?: NodeJS.Platform
   shutdownGraceMs?: number
   killGraceMs?: number
@@ -50,10 +67,12 @@ export type ClaudeProcess = {
   // What the SDK drives: Claude's stdio, its state and its exit.
   readonly spawned: SpawnedProcess
   // Settles once Claude and every process it started are known to be gone:
-  // on POSIX its whole process group, on Windows the tree taskkill ended.
+  // on POSIX its whole process group, on Windows the tree taskkill ended, or
+  // what Claude left once it had exited on its own.
   readonly exited: Promise<void>
   hasExited(): boolean
-  // Whether Claude itself has exited, whatever became of what it started.
+  // Whether Claude itself is known to have exited, whatever became of what
+  // it started.
   claudeHasExited(): boolean
   kill(): Promise<void>
 }
@@ -105,6 +124,152 @@ export function windowsTreeKill(pid: number, run: TaskkillSpawn = spawn): Promis
   })
 }
 
+type PowerShellSpawn = (
+  command: "powershell.exe",
+  args: string[],
+  options: { windowsHide: true; shell: false; stdio: ["ignore", "pipe", "ignore"] },
+) => ChildProcess
+
+// A Windows process id: a positive integer that fits a DWORD.
+function isProcessId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= 0xFFFF_FFFF
+}
+
+// What the PowerShell command below writes, read as untrusted: an object whose
+// `children` is a list of processes, each a pid and a creation time. Anything
+// else throws.
+function windowsChildren(output: string): WindowsChildProcess[] {
+  // A byte order mark, should PowerShell write one, is not part of the list.
+  const byteOrderMark = 0xFEFF
+  const value: unknown = JSON.parse(output.charCodeAt(0) === byteOrderMark ? output.slice(1) : output)
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("not a list of processes")
+  const { children } = value as Record<string, unknown>
+  if (!Array.isArray(children)) throw new Error("not a list of processes")
+  return children.map((entry: unknown) => {
+    if (typeof entry !== "object" || entry === null) throw new Error("not a process")
+    const { ProcessId: pid, CreationDate: created } = entry as Record<string, unknown>
+    if (!isProcessId(pid) || typeof created !== "number" || !Number.isFinite(created)) throw new Error("not a process")
+    return { pid, created }
+  })
+}
+
+// Lists the children of one Windows process with their creation times (Q109,
+// review round 3 of #647, R3-F1). PowerShell runs with fixed arguments, no
+// shell, no profile and no console window. The one value in its command is
+// the pid, checked to be a process id first, so nothing else reaches the
+// command text. A process with no creation time fails the command, and so
+// the list. It rejects when PowerShell cannot start, fails, takes longer than
+// its limit, or writes anything but the list: then nothing says what Claude
+// left.
+export function listWindowsChildren(
+  parentPid: number,
+  createdAfter: number,
+  { run = spawn, timeoutMs = windowsChildListTimeoutMs }: { run?: PowerShellSpawn; timeoutMs?: number } = {},
+): Promise<WindowsChildProcess[]> {
+  return new Promise((resolve, reject) => {
+    if (!isProcessId(parentPid)) {
+      reject(new Error(`Domovoi could not list the processes Claude started: ${String(parentPid)} is not a process id`))
+      return
+    }
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      `$children = @(Get-CimInstance -ClassName Win32_Process -Filter 'ParentProcessId = ${String(parentPid)}' | `
+        + "ForEach-Object { [pscustomobject]@{ ProcessId = [long]$_.ProcessId; "
+        + "CreationDate = ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } })",
+      "ConvertTo-Json -Compress -Depth 4 -InputObject @{ children = $children }",
+    ].join("; ")
+    let lister: ChildProcess | undefined
+    let exited = false
+    let settled = false
+    const settle = (outcome: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      outcome()
+    }
+    const fail = (reason: string) => settle(() => {
+      if (lister && !exited) {
+        try { lister.kill() } catch { /* Gone already. */ }
+      }
+      reject(new Error(`Domovoi could not list the processes Claude started: PowerShell ${reason}`))
+    })
+    const timer = setTimeout(() => fail(`timed out after ${timeoutMs} ms`), timeoutMs)
+    timer.unref()
+    try {
+      lister = run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
+        windowsHide: true, shell: false, stdio: ["ignore", "pipe", "ignore"],
+      })
+    } catch {
+      fail("could not start")
+      return
+    }
+    const output: Buffer[] = []
+    let size = 0
+    lister.once("error", () => fail("could not start"))
+    lister.once("exit", () => { exited = true })
+    if (!lister.stdout) {
+      fail("gave no output")
+      return
+    }
+    lister.stdout.on("error", () => fail("output could not be read"))
+    lister.stdout.on("data", (chunk: Buffer | string) => {
+      const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk
+      size += bytes.length
+      if (size > windowsChildListMaxBytes) fail("wrote more than a list of processes")
+      else output.push(bytes)
+    })
+    lister.once("close", (code: number | null, signal: NodeJS.Signals | null) => {
+      if (code !== 0) {
+        fail(signal === null ? `exited with status ${String(code)}` : `was ended by ${signal}`)
+        return
+      }
+      let children: WindowsChildProcess[]
+      try {
+        children = windowsChildren(Buffer.concat(output).toString("utf8"))
+      } catch {
+        fail("wrote something other than a list of processes")
+        return
+      }
+      settle(() => resolve(children.filter(({ created }) => created > createdAfter)))
+    })
+  })
+}
+
+// Ends what a Windows Claude that exited on its own left running (Q109): the
+// processes whose parent pid was Claude's and which were created while Claude
+// ran. Each is ended with its tree by taskkill, then the list is read again,
+// and only a list with none of them left settles this. Anything else rejects:
+// a list that could not be read, or one of them still listed.
+//
+// A child keeps its parent's pid after the parent has gone, and Windows hands
+// out pids again, so the creation times say which children were Claude's.
+// `startedAt` was taken before Claude was created, and Claude runs for far
+// longer than the clock's step before it starts a tool, so everything Claude
+// started was created after it; a child of an earlier process with Claude's
+// pid was created before Claude was, and is left alone. `exitedAt` was taken
+// as Node reported the exit, while Node still held Claude's handle and so its
+// pid, so a child of a later process with Claude's pid was created after it,
+// and is left alone too. Claude's own pid is never ended, since it may name
+// another process by now. What this cannot reach: a grandchild whose parent,
+// a child of Claude, had exited before the list, a process whose pid is
+// handed to another between the list and its taskkill, and times read across
+// a change to the machine's clock.
+async function endWhatClaudeLeft(
+  claudePid: number,
+  startedAt: number,
+  exitedAt: number,
+  list: ListWindowsChildren,
+  killTree: (pid: number) => Promise<void>,
+): Promise<void> {
+  const left = async () => (await list(claudePid, startedAt))
+    .filter(({ pid, created }) => pid !== claudePid && created > startedAt && created <= exitedAt)
+  const found = await left()
+  if (found.length === 0) return
+  // A failed taskkill is settled by the list that follows.
+  for (const { pid } of found) await killTree(pid).catch(() => {})
+  if ((await left()).length > 0) throw new Error("A process Claude started is still running")
+}
+
 // The keeper: a small Node program that leads Claude's process group on
 // POSIX (security review round 2 of #647, R2-F2). Domovoi starts it detached,
 // so it is the group leader and the group's id is its pid, and it starts
@@ -112,10 +277,11 @@ export function windowsTreeKill(pid: number, run: TaskkillSpawn = spawn): Promis
 //
 // A process group's id cannot name another group while the group has a
 // member, and the keeper is one until it dies. So the group is only ever
-// killed by the keeper itself, with kill(0), which names the caller's own
-// group: when Claude exits, whether a stop asked for it or not (Q104), and
-// when Domovoi asks for the kill. Domovoi never signals the group by number,
-// which after Node has reaped the group's last process could name another.
+// killed from inside it, with kill(0), which names the caller's own group: by
+// the keeper when Claude exits, whether a stop asked for it or not (Q104), and
+// when Domovoi asks for the kill, and by the sentinel below once the keeper
+// has gone. Domovoi never signals the group by number, which after the
+// group's last process has been reaped could name another.
 //
 // What Claude sees is what the SDK asked for: the command, arguments and
 // environment arrive on the control pipe (fd 3) and are passed to spawn as
@@ -129,11 +295,38 @@ export function windowsTreeKill(pid: number, run: TaskkillSpawn = spawn): Promis
 // Domovoi has gone and nothing else can stop the group, so the keeper kills
 // it. The source is plain CommonJS, run with node -e, so nothing is shipped
 // or written to disk for it.
+//
+// The sentinel (security review round 3 of #647, R3-F2): the keeper can die
+// on its own, sent SIGKILL by a tool for one, and Claude and its tools would
+// then have no one to end their group, since Domovoi never signals it by
+// number. So before Claude, the keeper starts a second member of the group:
+// /bin/sh, with no environment, in /, whose input is Domovoi's fifth pipe
+// (fd 4, closed in the keeper as soon as the sentinel has it, and /dev/null
+// in Claude). It ignores HUP, INT and TERM, reads one line, and on that line,
+// or on the pipe's end when Domovoi has gone, kills its own group with
+// kill(0), which names the caller's group and so no other. Domovoi writes the
+// line once the keeper has gone. If the sentinel has died as well, the line
+// reaches no one, nothing is signalled, and the stop fails: Claude stays
+// listed and the profile lease stays held until the group is seen empty. A
+// keeper whose sentinel did not start does not start Claude.
 export const claudeKeeperSource = `"use strict"
 const { spawn } = require("node:child_process")
 const { closeSync, openSync } = require("node:fs")
 const { Socket } = require("node:net")
 const control = new Socket({ fd: 3, readable: true, writable: true })
+let sentinel
+try {
+  const nothing = openSync("/dev/null", "r")
+  try {
+    sentinel = spawn("/bin/sh", ["-c", "trap '' HUP INT TERM; read line; kill -s KILL 0"], {
+      cwd: "/", env: {}, stdio: [4, "ignore", "ignore", nothing, nothing],
+    })
+    sentinel.on("error", () => {})
+  } finally {
+    closeSync(nothing)
+  }
+} catch {}
+try { closeSync(4) } catch {}
 let claude
 let buffered = ""
 const waiting = []
@@ -156,11 +349,16 @@ const forward = (signal) => {
   }
 }
 const start = ({ command, args, env }) => {
-  // "ignore" would leave fd 3 as it is above stdio, so /dev/null replaces it.
+  if (sentinel === undefined || sentinel.pid === undefined || sentinel.exitCode !== null || sentinel.signalCode !== null) {
+    report({ error: { message: "Domovoi could not start the process that holds Claude's process group" } })
+    return
+  }
+  // "ignore" would leave fds 3 and 4 as they are above stdio, so /dev/null
+  // replaces them.
   let nothing
   try {
     nothing = openSync("/dev/null", "r")
-    claude = spawn(command, args, { env, stdio: ["inherit", "inherit", "inherit", nothing] })
+    claude = spawn(command, args, { env, stdio: ["inherit", "inherit", "inherit", nothing, nothing] })
   } catch (error) {
     report({ error: { message: String(error && error.message), code: error && error.code } })
     return
@@ -211,12 +409,16 @@ export function spawnClaudeProcess(
     spawn: start = spawn,
     probe = (pid) => { process.kill(pid, 0) },
     killTree = windowsTreeKill,
+    listChildren = listWindowsChildren,
     platform = process.platform,
-  }: Pick<ClaudeProcessOptions, "spawn" | "probe" | "killTree" | "platform"> = {},
+  }: Pick<ClaudeProcessOptions, "spawn" | "probe" | "killTree" | "listChildren" | "platform"> = {},
   session?: string,
 ): ClaudeProcess {
   const windows = platform === "win32"
   const directory = options.cwd !== undefined ? { cwd: options.cwd } : {}
+  // Taken before Claude is created: every process Claude starts is created
+  // after it (see endWhatClaudeLeft).
+  const startedAt = Date.now()
   const child = windows
     ? start(options.command, options.args, {
       ...directory,
@@ -230,7 +432,7 @@ export function spawnClaudeProcess(
       ...directory,
       env: {},
       signal: options.signal,
-      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
       windowsHide: true,
       detached: true,
     })
@@ -247,7 +449,7 @@ export function spawnClaudeProcess(
   child.stderr.on("error", () => {})
 
   const pid = child.pid
-  // Claude itself has exited, or never started.
+  // Claude itself is known to have exited, or never started.
   let claudeExited = false
   // Claude and every process it started are known to be gone.
   let gone = false
@@ -257,6 +459,7 @@ export function spawnClaudeProcess(
   const finish = () => {
     if (gone) return
     gone = true
+    claudeExited = true
     if (entry) running.delete(entry)
     resolveGone()
   }
@@ -276,16 +479,45 @@ export function spawnClaudeProcess(
     // stop kills the tree first instead (Q106, see stopClaudeProcess). Once
     // that taskkill has failed, nothing can say that what Claude started has
     // ended, so Claude is never reported gone (R2-F1).
-    let tree: "untouched" | "killing" | "killed" | "unconfirmed" = "untouched"
+    //
+    // A Claude that exits on its own, before any stop killed its tree, may
+    // leave processes running all the same, and its exit says nothing of
+    // them (R3-F1). They are listed by parent pid and creation time, ended,
+    // and listed again (Q109, see endWhatClaudeLeft), and until the list
+    // shows none left Claude is not reported gone. A list that fails leaves
+    // it unconfirmed for good, as a failed taskkill does.
+    let tree: "untouched" | "killing" | "killed" | "listing" | "unconfirmed" = "untouched"
+    let exitedAt = startedAt
+    let listing: Promise<void> | undefined
     const settle = () => {
-      if (claudeExited && (tree === "untouched" || tree === "killed")) finish()
+      if (!claudeExited) return
+      if (tree === "killed" || pid === undefined) {
+        finish()
+      } else if (tree === "untouched") {
+        tree = "listing"
+        listing = endWhatClaudeLeft(pid, startedAt, exitedAt, listChildren, killTree).then(
+          () => {
+            tree = "killed"
+            finish()
+          },
+          () => { tree = "unconfirmed" },
+        )
+      }
     }
     child.once("exit", () => {
+      // Node has asked for its handle to Claude to be closed as it reports
+      // the exit, but libuv closes it later in its loop, so a later process
+      // with Claude's pid is created after this moment.
+      exitedAt = Date.now()
       claudeExited = true
       settle()
     })
     spawned = new ClaudeSpawnedProcess(child)
     kill = async () => {
+      if (listing) {
+        await listing
+        return
+      }
       if (gone || claudeExited || tree !== "untouched" || pid === undefined) return
       tree = "killing"
       try {
@@ -306,7 +538,14 @@ export function spawnClaudeProcess(
     // credentials refuses the kill, and one that was sent it may not have
     // died yet. So once the keeper has gone, the group is checked with
     // signal 0 until it has no process left (R2-F1).
+    //
+    // Nor is its death Claude's (R3-F2): only the keeper's report says that
+    // Claude has exited, and a keeper killed on its own reports nothing.
+    // Claude is then known to have exited once the group is seen empty. A
+    // kill after the keeper has gone is the sentinel's (see
+    // claudeKeeperSource), asked for on its pipe.
     const control = keeperControl(child)
+    const sentinel = sentinelPipe(child)
     const empty = () => {
       if (pid === undefined) return true
       try {
@@ -322,16 +561,26 @@ export function spawnClaudeProcess(
       else setTimeout(check, groupProbeIntervalMs).unref()
     }
     let keeperExited = false
+    let claudeReported = false
+    // Once the keeper has gone: the sentinel kills the group from inside it,
+    // or, if it has gone too, nothing is signalled.
+    const killGroup = () => {
+      if (!gone && sentinel.writable) sentinel.write("kill\n")
+    }
     child.once("exit", () => {
       keeperExited = true
-      claudeExited = true
       check()
     })
-    spawned = new KeptClaudeProcess(child, control, () => { claudeExited = true })
+    spawned = new KeptClaudeProcess(child, control, exited, killGroup, () => {
+      claudeReported = true
+      claudeExited = true
+    })
     send(control, { spawn: { command: options.command, args: options.args, env: options.env } })
     kill = async () => {
-      if (gone || claudeExited || keeperExited) return
-      send(control, { kill: true })
+      if (gone) return
+      if (keeperExited) killGroup()
+      // A keeper that has reported Claude's exit kills the group itself.
+      else if (!claudeReported) send(control, { kill: true })
     }
   }
   if (pid !== undefined && !gone) {
@@ -355,6 +604,17 @@ function keeperControl(child: ChildProcessWithoutNullStreams): Duplex {
   return control
 }
 
+// Domovoi's end of the sentinel's pipe. Only the sentinel holds the other end,
+// so it ends as the sentinel dies. It is read to that end, which the keeper's
+// close waits for, and a write after it fails and signals nothing.
+function sentinelPipe(child: ChildProcessWithoutNullStreams): Duplex {
+  const pipe = (child.stdio as unknown as Array<Duplex | null | undefined>)[4]
+  if (!pipe) throw new Error("Claude's keeper has no pipe to its sentinel")
+  pipe.on("error", () => {})
+  pipe.resume()
+  return pipe
+}
+
 function send(control: Duplex, message: Record<string, unknown>): void {
   if (!control.writable) return
   control.write(`${JSON.stringify(message)}\n`)
@@ -365,17 +625,21 @@ function send(control: Duplex, message: Record<string, unknown>): void {
 //
 // On POSIX the input closes first, and Claude has the grace to exit. When it
 // exits within the grace the keeper killed its group as it exited (see
-// claudeKeeperSource); otherwise the kill comes after the grace.
+// claudeKeeperSource); otherwise the kill comes after the grace, from the
+// keeper, or from the sentinel once the keeper has gone.
 //
 // On Windows the tree kill comes first, while Claude still runs: once Claude
 // has exited on its own, taskkill /T can no longer find the processes it
 // started (Q106). Claude gets no grace to flush its transcript. The input
-// closes once taskkill has finished, or the kill grace has run out.
+// closes once taskkill has finished, or the kill grace has run out. A Claude
+// that had already exited is not killed again: the stop waits for the list
+// of what it left (Q109, see endWhatClaudeLeft).
 //
 // Either way the stop fails when, after the kill grace, Claude still runs or
 // the processes it started are not known to be gone: a kill refused or not
-// yet seen to take effect, or a taskkill that failed (R2-F1). The grace also
-// bounds the wait for taskkill.
+// yet seen to take effect, a taskkill that failed (R2-F1), or a list of what
+// a Windows Claude left that failed or still shows one of them (R3-F1). The
+// grace also bounds the wait for taskkill and for that list.
 export async function stopClaudeProcess(
   child: ClaudeProcess,
   close: () => void,
@@ -474,26 +738,39 @@ function keeperReport(line: string): KeeperReport | undefined {
 // the keeper's pipes, Claude's exit code or signal, and signals sent to
 // Claude. The exit is reported once the keeper has gone, so after the kill
 // of Claude's group, and once stdio has drained, as the SDK's own spawn
-// reports it. A spawn error the keeper reports is raised as the error Node
-// would have raised to Domovoi.
+// reports it. A keeper that has gone without reporting Claude's exit, killed
+// on its own or by Domovoi's kill, says nothing of Claude, which may still
+// run and answer the SDK: its exit is reported once the group is seen empty
+// (R3-F2). A spawn error the keeper reports is raised as the error Node would
+// have raised to Domovoi.
 class KeptClaudeProcess extends EventEmitter implements SpawnedProcess {
   readonly stdin: ChildProcessWithoutNullStreams["stdin"]
   readonly stdout: ChildProcessWithoutNullStreams["stdout"]
   readonly #keeper: ChildProcessWithoutNullStreams
   readonly #control: Duplex
+  readonly #killGroup: () => void
+  #groupGone = false
   #reported: ExitStatus | undefined
   #status: ExitStatus | undefined
   #killed = false
 
-  constructor(keeper: ChildProcessWithoutNullStreams, control: Duplex, claudeExited: () => void) {
+  constructor(
+    keeper: ChildProcessWithoutNullStreams,
+    control: Duplex,
+    groupGone: Promise<void>,
+    killGroup: () => void,
+    claudeExited: () => void,
+  ) {
     super()
     this.#keeper = keeper
     this.#control = control
+    this.#killGroup = killGroup
     this.stdin = keeper.stdin
     this.stdout = keeper.stdout
 
     // Claude's exit is known once the keeper has exited and its report has
-    // been read, which the end of the control pipe says.
+    // been read, which the end of the control pipe says, or, with no report,
+    // once the group is seen empty.
     const ends = new EventEmitter()
     let keeperExit: ExitStatus | undefined
     let keeperClosed = false
@@ -503,6 +780,7 @@ class KeptClaudeProcess extends EventEmitter implements SpawnedProcess {
     const status = (): ExitStatus => this.#reported ?? keeperExit ?? { code: keeper.exitCode, signal: keeper.signalCode }
     const update = () => {
       if (!controlEnded) return
+      if (this.#reported === undefined && !this.#groupGone) return
       if (keeperExit && !exitSent) {
         exitSent = true
         const { code, signal } = status()
@@ -529,6 +807,10 @@ class KeptClaudeProcess extends EventEmitter implements SpawnedProcess {
     control.once("end", controlEnd)
     control.once("close", controlEnd)
     control.once("error", controlEnd)
+    void groupGone.then(() => {
+      this.#groupGone = true
+      update()
+    })
 
     let buffered = ""
     control.setEncoding("utf8")
@@ -564,9 +846,18 @@ class KeptClaudeProcess extends EventEmitter implements SpawnedProcess {
   get exitCode(): number | null { return this.#status?.code ?? null }
   get signalCode(): NodeJS.Signals | null { return this.#status?.signal ?? null }
 
-  // The keeper sends the signal on to Claude.
+  // The keeper sends the signal on to Claude. Once the keeper has gone
+  // without a report, nothing can signal Claude alone, whose pid Domovoi
+  // does not hold, but a SIGKILL may still end it with its whole group,
+  // through the sentinel.
   kill(signal: NodeJS.Signals): boolean {
-    if (this.#reported !== undefined || this.#keeper.exitCode !== null || this.#keeper.signalCode !== null) return false
+    if (this.#reported !== undefined || this.#groupGone) return false
+    if (this.#keeper.exitCode !== null || this.#keeper.signalCode !== null) {
+      if (signal !== "SIGKILL") return false
+      this.#killGroup()
+      this.#killed = true
+      return true
+    }
     if (!this.#control.writable) return false
     send(this.#control, { signal })
     this.#killed = true
