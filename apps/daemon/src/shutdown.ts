@@ -12,6 +12,11 @@ export function installShutdownHandlers(
   target: NodeJS.Process = process,
 ): void {
   let shuttingDown = false
+  // Every SIGINT counts, from the first, whatever started the shutdown and
+  // whatever step it is in; a SIGTERM never does. The second one ends a wait
+  // for a Claude process, at once, or as soon as the wait begins (security
+  // review round 2 of #647, R2-F5).
+  let interrupts = 0
   // Set while a failed stop waits for a Claude process to exit.
   let forceExit: (() => void) | undefined
   const shutdown = async (): Promise<void> => {
@@ -41,25 +46,36 @@ export function installShutdownHandlers(
           `domovoid: Claude process ${pid}${named} is still running. The profile lock stays held until it exits.\n`,
         )
       }
-      hooks.writeStderr("domovoid: press Ctrl-C again to exit now.\n")
+      // Once the second SIGINT has come, during the stop, the hint is moot.
+      if (interrupts < 2) hooks.writeStderr("domovoid: press Ctrl-C again to exit now.\n")
       const forced = new Promise<true>((resolve) => { forceExit = () => resolve(true) })
+      if (interrupts >= 2) forceExit?.()
       const gone = Promise.all(running.map(({ exited }) => exited)).then(() => false as const)
-      if (await Promise.race([gone, forced])) {
-        const alive = hooks.runningProcesses?.() ?? running
-        const pids = alive.map(({ pid }) => pid).join(", ")
-        if (alive.length > 0) {
-          hooks.writeStderr(
-            `domovoid: exiting now. The profile lock is released while Claude ${alive.length === 1 ? "process" : "processes"} ${pids} may still be running.\n`,
-          )
+      // Nothing else may keep the event loop alive while this waits, and an
+      // exit then would release the profile lock just the same.
+      const hold = setInterval(() => {}, 60_000)
+      try {
+        if (await Promise.race([gone, forced])) {
+          const alive = hooks.runningProcesses?.() ?? running
+          const pids = alive.map(({ pid }) => pid).join(", ")
+          if (alive.length > 0) {
+            hooks.writeStderr(
+              `domovoid: exiting now. The profile lock is released while Claude ${alive.length === 1 ? "process" : "processes"} ${pids} may still be running.\n`,
+            )
+          }
         }
+      } finally {
+        clearInterval(hold)
       }
     }
     hooks.exit(failed ? 1 : 0)
   }
   target.on("SIGINT", () => {
-    // Only a SIGINT ends the wait for a Claude process; a SIGTERM does not.
-    if (forceExit) forceExit()
-    else void shutdown()
+    // Only a second SIGINT ends the wait for a Claude process; a SIGTERM
+    // does not, and does not count toward it.
+    interrupts += 1
+    if (!shuttingDown) void shutdown()
+    else if (interrupts >= 2) forceExit?.()
   })
   target.on("SIGTERM", () => void shutdown())
   target.on("unhandledRejection", (reason: unknown) => {

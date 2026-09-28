@@ -68,7 +68,7 @@ it("keeps the profile lease while a Claude process will not exit", async () => {
   const stuck = fakeClaudeChild({ exitsOnEof: false })
   const { factory } = spawningClaudeFactory()
   const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-    spawn: () => stuck.process, kill: vi.fn(), platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+    spawn: () => stuck.process, platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
   })
   const lease = claimProfile(homeDirectory)
   const handle = await createProductionDaemonWithDependencies({ homeDirectory, environment: { DOMOVOI_PORT: "0" } }, {

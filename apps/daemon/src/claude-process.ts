@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { EventEmitter } from "node:events"
+import type { Duplex } from "node:stream"
 import { StringDecoder } from "node:string_decoder"
 
 import type { SpawnedProcess, SpawnOptions } from "@anthropic-ai/claude-agent-sdk"
@@ -10,12 +11,15 @@ import { onProcessEnd } from "./process-end.js"
 export const claudeShutdownGraceMs = 2_000
 // How long a killed Claude has to exit before the stop is reported as failed.
 export const claudeKillGraceMs = 5_000
+// How often a process group whose leader has gone is checked for members.
+const groupProbeIntervalMs = 50
 
 export type ClaudeSpawnOptions = {
   cwd?: string
   env: NodeJS.ProcessEnv
   signal: AbortSignal
-  stdio: ["pipe", "pipe", "pipe"]
+  // On POSIX the fourth pipe is the keeper's control pipe.
+  stdio: ["pipe", "pipe", "pipe"] | ["pipe", "pipe", "pipe", "pipe"]
   windowsHide: true
   detached: boolean
 }
@@ -28,10 +32,14 @@ export type ClaudeSpawn = (
 
 export type ClaudeProcessOptions = {
   spawn?: ClaudeSpawn
-  // Signals a process group by its negative pid. A test passes a spy.
-  kill?: (pid: number, signal: NodeJS.Signals) => void
-  // Kills a Windows process tree and settles once that is done. A test
-  // passes a spy.
+  // Sends signal 0 to a process group by its negative pid, as process.kill
+  // does: it returns while the group has a process, even one that may not
+  // be signalled, and throws ESRCH once it has none. Signal 0 is never
+  // delivered, so a number that names another group by then costs only a
+  // longer wait. A test passes a stub.
+  probe?: (pid: number) => void
+  // Kills a Windows process tree, and rejects when taskkill cannot start or
+  // reports a failure. A test passes a spy.
   killTree?: (pid: number) => Promise<void>
   platform?: NodeJS.Platform
   shutdownGraceMs?: number
@@ -39,23 +47,29 @@ export type ClaudeProcessOptions = {
 }
 
 export type ClaudeProcess = {
-  // What the SDK drives: the child's stdio, its state and its exit.
+  // What the SDK drives: Claude's stdio, its state and its exit.
   readonly spawned: SpawnedProcess
+  // Settles once Claude and every process it started are known to be gone:
+  // on POSIX its whole process group, on Windows the tree taskkill ended.
   readonly exited: Promise<void>
   hasExited(): boolean
+  // Whether Claude itself has exited, whatever became of what it started.
+  claudeHasExited(): boolean
   kill(): Promise<void>
 }
 
-// A Claude process Domovoi started that has not exited yet, named by its pid
-// and the Claude session it runs, if any. A model list runs none.
+// A Claude process Domovoi started that is not known to be gone, named by its
+// pid and the Claude session it runs, if any. A model list runs none. On
+// POSIX the pid is the keeper's, which is also the process group's id.
 export type RunningClaudeProcess = {
   readonly pid: number
   readonly session?: string
   readonly exited: Promise<void>
 }
 
-// Every Claude process this daemon started and has not seen exit. A shutdown
-// whose stop failed reads it to keep the profile until each one has exited.
+// Every Claude process this daemon started and has not seen gone, with what
+// it started. A shutdown whose stop failed reads it to keep the profile until
+// each one is gone.
 const running = new Set<RunningClaudeProcess>()
 
 export function runningClaudeProcesses(): RunningClaudeProcess[] {
@@ -70,22 +84,114 @@ type TaskkillSpawn = (
 
 // Windows has no process groups: taskkill /T ends the process and every
 // process it started, and /F does so without asking. Fixed arguments, no
-// shell and no console window. It settles once taskkill has finished, or has
-// failed to start; the exit of the process it was asked to kill, not this,
-// decides whether a stop succeeded.
+// shell and no console window. It resolves once taskkill has reported
+// success, and rejects when taskkill cannot start or exits with any other
+// status: then nothing says that the processes Claude started have ended.
 export function windowsTreeKill(pid: number, run: TaskkillSpawn = spawn): Promise<void> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    const failed = (reason: string) => reject(new Error(`taskkill ${reason}`))
     let taskkill: ChildProcess
     try {
       taskkill = run("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, shell: false, stdio: "ignore" })
     } catch {
-      resolve()
+      failed("could not start")
       return
     }
-    taskkill.once("error", () => resolve())
-    taskkill.once("exit", () => resolve())
+    taskkill.once("error", () => failed("could not start"))
+    taskkill.once("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+      if (code === 0) resolve()
+      else failed(signal === null ? `exited with status ${String(code)}` : `ended by ${signal}`)
+    })
   })
 }
+
+// The keeper: a small Node program that leads Claude's process group on
+// POSIX (security review round 2 of #647, R2-F2). Domovoi starts it detached,
+// so it is the group leader and the group's id is its pid, and it starts
+// Claude inside that group, where the commands Claude's tools run join them.
+//
+// A process group's id cannot name another group while the group has a
+// member, and the keeper is one until it dies. So the group is only ever
+// killed by the keeper itself, with kill(0), which names the caller's own
+// group: when Claude exits, whether a stop asked for it or not (Q104), and
+// when Domovoi asks for the kill. Domovoi never signals the group by number,
+// which after Node has reaped the group's last process could name another.
+//
+// What Claude sees is what the SDK asked for: the command, arguments and
+// environment arrive on the control pipe (fd 3) and are passed to spawn as
+// they are, Claude inherits the keeper's directory and its stdio, which are
+// Domovoi's pipes, and fd 3 is /dev/null in Claude, so the control pipe
+// reaches neither Claude nor its tools. Signals the SDK sends, and SIGTERM,
+// SIGINT and SIGHUP sent to the keeper, go on to Claude. Claude's exit code
+// or signal is reported back on the control pipe before the group is killed.
+// The keeper's own environment is empty, so nothing in the SDK's, such as
+// NODE_OPTIONS, changes how the keeper runs. If the control pipe closes,
+// Domovoi has gone and nothing else can stop the group, so the keeper kills
+// it. The source is plain CommonJS, run with node -e, so nothing is shipped
+// or written to disk for it.
+export const claudeKeeperSource = `"use strict"
+const { spawn } = require("node:child_process")
+const { closeSync, openSync } = require("node:fs")
+const { Socket } = require("node:net")
+const control = new Socket({ fd: 3, readable: true, writable: true })
+let claude
+let buffered = ""
+const waiting = []
+const end = () => {
+  try { process.kill(0, "SIGKILL") } catch {}
+  process.exit(1)
+}
+const report = (message) => {
+  const done = setTimeout(end, 1000)
+  try {
+    control.write(JSON.stringify(message) + "\\n", () => { clearTimeout(done); end() })
+  } catch {
+    end()
+  }
+}
+const forward = (signal) => {
+  if (claude === undefined) waiting.push(signal)
+  else if (claude.exitCode === null && claude.signalCode === null) {
+    try { claude.kill(signal) } catch {}
+  }
+}
+const start = ({ command, args, env }) => {
+  // "ignore" would leave fd 3 as it is above stdio, so /dev/null replaces it.
+  let nothing
+  try {
+    nothing = openSync("/dev/null", "r")
+    claude = spawn(command, args, { env, stdio: ["inherit", "inherit", "inherit", nothing] })
+  } catch (error) {
+    report({ error: { message: String(error && error.message), code: error && error.code } })
+    return
+  } finally {
+    if (nothing !== undefined) closeSync(nothing)
+  }
+  claude.on("error", (error) => {
+    if (claude.pid !== undefined) return
+    const { message, code, errno, syscall, path, spawnargs } = error
+    report({ error: { message, code, errno, syscall, path, spawnargs } })
+  })
+  claude.once("exit", (code, signal) => report({ exit: { code, signal } }))
+  for (const signal of waiting.splice(0)) forward(signal)
+}
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, () => forward(signal))
+process.on("uncaughtException", end)
+control.setEncoding("utf8")
+control.on("data", (text) => {
+  buffered += text
+  for (let newline = buffered.indexOf("\\n"); newline >= 0; newline = buffered.indexOf("\\n")) {
+    let message
+    try { message = JSON.parse(buffered.slice(0, newline)) } catch { message = {} }
+    buffered = buffered.slice(newline + 1)
+    if (message.spawn && claude === undefined) start(message.spawn)
+    else if (typeof message.signal === "string") forward(message.signal)
+    else if (message.kill === true) end()
+  }
+})
+control.on("end", end)
+control.on("error", end)
+`
 
 // Starts Claude the way the SDK's own spawn does (spawnLocalProcess in
 // @anthropic-ai/claude-agent-sdk 0.3.263): the command, arguments, directory,
@@ -94,28 +200,40 @@ export function windowsTreeKill(pid: number, run: TaskkillSpawn = spawn): Promis
 // custom spawn does not get from the SDK. Like the SDK's, the exit it reports
 // comes once stderr has drained, so a failure carries its last line.
 //
-// On POSIX Claude is detached into its own process group, which the commands
-// its tools run join, so one kill reaches all of them. On Windows the kill is
-// taskkill on Claude's process tree.
+// On POSIX Claude runs under the keeper (claudeKeeperSource), detached into
+// its own process group, which the commands its tools run join, so one kill
+// reaches all of them. On Windows Claude is started directly and the kill is
+// taskkill on its process tree.
 export function spawnClaudeProcess(
   options: SpawnOptions,
   stderr: (data: string) => void,
   {
     spawn: start = spawn,
-    kill = (pid, signal) => process.kill(pid, signal),
+    probe = (pid) => { process.kill(pid, 0) },
     killTree = windowsTreeKill,
     platform = process.platform,
-  }: Pick<ClaudeProcessOptions, "spawn" | "kill" | "killTree" | "platform"> = {},
+  }: Pick<ClaudeProcessOptions, "spawn" | "probe" | "killTree" | "platform"> = {},
   session?: string,
 ): ClaudeProcess {
-  const child = start(options.command, options.args, {
-    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
-    env: options.env,
-    signal: options.signal,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-    detached: platform !== "win32",
-  })
+  const windows = platform === "win32"
+  const directory = options.cwd !== undefined ? { cwd: options.cwd } : {}
+  const child = windows
+    ? start(options.command, options.args, {
+      ...directory,
+      env: options.env,
+      signal: options.signal,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      detached: false,
+    })
+    : start(process.execPath, ["-e", claudeKeeperSource], {
+      ...directory,
+      env: {},
+      signal: options.signal,
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      windowsHide: true,
+      detached: true,
+    })
   const decoder = new StringDecoder("utf8")
   child.stderr.on("data", (chunk: Buffer) => {
     const text = decoder.write(chunk)
@@ -129,91 +247,135 @@ export function spawnClaudeProcess(
   child.stderr.on("error", () => {})
 
   const pid = child.pid
-  let exited = false
+  // Claude itself has exited, or never started.
+  let claudeExited = false
+  // Claude and every process it started are known to be gone.
+  let gone = false
   let entry: RunningClaudeProcess | undefined
-  const exit = new Promise<void>((resolve) => {
-    const finish = () => {
-      if (exited) return
-      exited = true
-      if (entry) running.delete(entry)
-      resolve()
+  let resolveGone!: () => void
+  const exited = new Promise<void>((resolve) => { resolveGone = resolve })
+  const finish = () => {
+    if (gone) return
+    gone = true
+    if (entry) running.delete(entry)
+    resolveGone()
+  }
+  // A process that never started has nothing to wait for.
+  child.on("error", () => {
+    if (child.pid !== undefined) return
+    claudeExited = true
+    finish()
+  })
+
+  let spawned: SpawnedProcess
+  let kill: () => Promise<void>
+  if (windows) {
+    // Windows gets no tree kill as Claude exits: Node closes its handle to
+    // Claude as it reports the exit, so the pid can name another process at
+    // once, and taskkill /T finds nothing below a process that has exited. A
+    // stop kills the tree first instead (Q106, see stopClaudeProcess). Once
+    // that taskkill has failed, nothing can say that what Claude started has
+    // ended, so Claude is never reported gone (R2-F1).
+    let tree: "untouched" | "killing" | "killed" | "unconfirmed" = "untouched"
+    const settle = () => {
+      if (claudeExited && (tree === "untouched" || tree === "killed")) finish()
     }
     child.once("exit", () => {
-      // Whatever Claude leaves in its process group dies with it, so nothing
-      // a session started outlives its Claude, stopped or not (Q104).
-      //
-      // A group id can be signalled only while it still names this group.
-      // POSIX does not reuse a pid while its process is unreaped, nor while a
-      // process group with that id has a member. Node reaps Claude and runs
-      // this callback in the same turn, with no other JavaScript between, and
-      // nothing signals the group after it: kill() does nothing once the exit
-      // is recorded. So either a member still lives and the id is reserved,
-      // or the group is empty and its id has been free only since Claude was
-      // reaped, microseconds ago; pids are handed out in increasing order and
-      // wrap at the system maximum, so reuse in that window would need the
-      // whole range to cycle.
-      //
-      // Windows gets no tree kill here. Node closes its handle to Claude as
-      // it reports the exit, so the pid can name another process at once, and
-      // taskkill /T finds nothing below a process that has exited. A stop
-      // kills the tree first instead (see stopClaudeProcess).
-      if (platform !== "win32" && pid !== undefined) {
-        try {
-          kill(-pid, "SIGKILL")
-        } catch {
-          // The group is empty.
-        }
+      claudeExited = true
+      settle()
+    })
+    spawned = new ClaudeSpawnedProcess(child)
+    kill = async () => {
+      if (gone || claudeExited || tree !== "untouched" || pid === undefined) return
+      tree = "killing"
+      try {
+        await killTree(pid)
+        tree = "killed"
+      } catch {
+        tree = "unconfirmed"
       }
-      finish()
+      // Until its exit is recorded Node holds a handle to Claude, which keeps
+      // its pid from naming another process. The kill of Claude itself goes
+      // through that handle, in case taskkill reached nothing.
+      if (!claudeExited) child.kill("SIGKILL")
+      settle()
+    }
+  } else {
+    // The keeper kills the group as Claude exits, stopped or not (Q104), or
+    // when asked. Its death is not the group's: a process that changed its
+    // credentials refuses the kill, and one that was sent it may not have
+    // died yet. So once the keeper has gone, the group is checked with
+    // signal 0 until it has no process left (R2-F1).
+    const control = keeperControl(child)
+    const empty = () => {
+      if (pid === undefined) return true
+      try {
+        probe(-pid)
+        return false
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code === "ESRCH"
+      }
+    }
+    const check = () => {
+      if (gone) return
+      if (empty()) finish()
+      else setTimeout(check, groupProbeIntervalMs).unref()
+    }
+    let keeperExited = false
+    child.once("exit", () => {
+      keeperExited = true
+      claudeExited = true
+      check()
     })
-    // A process that never started has no exit to wait for.
-    child.on("error", () => {
-      if (child.pid === undefined) finish()
-    })
-  })
-  if (pid !== undefined && !exited) {
-    entry = { pid, ...(session !== undefined ? { session } : {}), exited: exit }
+    spawned = new KeptClaudeProcess(child, control, () => { claudeExited = true })
+    send(control, { spawn: { command: options.command, args: options.args, env: options.env } })
+    kill = async () => {
+      if (gone || claudeExited || keeperExited) return
+      send(control, { kill: true })
+    }
+  }
+  if (pid !== undefined && !gone) {
+    entry = { pid, ...(session !== undefined ? { session } : {}), exited }
     running.add(entry)
   }
   return {
-    spawned: new ClaudeSpawnedProcess(child),
-    exited: exit,
-    hasExited: () => exited,
-    kill: async () => {
-      if (exited || pid === undefined) return
-      if (platform === "win32") {
-        // Until its exit is recorded Node holds a handle to Claude, which
-        // keeps its pid from naming another process. The kill of Claude
-        // itself goes through that handle, in case taskkill reached nothing.
-        await killTree(pid)
-        if (!exited) child.kill("SIGKILL")
-        return
-      }
-      try {
-        kill(-pid, "SIGKILL")
-      } catch {
-        // The group is gone, or cannot be signalled: kill Claude itself. The
-        // exit, not this call, decides whether the stop succeeded.
-        child.kill("SIGKILL")
-      }
-    },
+    spawned,
+    exited,
+    hasExited: () => gone,
+    claudeHasExited: () => claudeExited,
+    kill,
   }
+}
+
+function keeperControl(child: ChildProcessWithoutNullStreams): Duplex {
+  const control = (child.stdio as unknown as Array<Duplex | null | undefined>)[3]
+  if (!control) throw new Error("Claude's keeper has no control pipe")
+  // A write after the keeper has gone fails; the keeper's exit says so.
+  control.on("error", () => {})
+  return control
+}
+
+function send(control: Duplex, message: Record<string, unknown>): void {
+  if (!control.writable) return
+  control.write(`${JSON.stringify(message)}\n`)
 }
 
 // Stops a running Claude. `close` closes its input and query, which asks it
 // to exit.
 //
 // On POSIX the input closes first, and Claude has the grace to exit. When it
-// exits within the grace its group was killed as it exited (see
-// spawnClaudeProcess); otherwise the kill comes after the grace.
+// exits within the grace the keeper killed its group as it exited (see
+// claudeKeeperSource); otherwise the kill comes after the grace.
 //
 // On Windows the tree kill comes first, while Claude still runs: once Claude
 // has exited on its own, taskkill /T can no longer find the processes it
 // started (Q106). Claude gets no grace to flush its transcript. The input
 // closes once taskkill has finished, or the kill grace has run out.
 //
-// Either way the stop fails when Claude still runs after the kill grace,
-// which also bounds the wait for taskkill.
+// Either way the stop fails when, after the kill grace, Claude still runs or
+// the processes it started are not known to be gone: a kill refused or not
+// yet seen to take effect, or a taskkill that failed (R2-F1). The grace also
+// bounds the wait for taskkill.
 export async function stopClaudeProcess(
   child: ClaudeProcess,
   close: () => void,
@@ -234,7 +396,9 @@ export async function stopClaudeProcess(
   }
   if (await settlesBefore(Promise.all([child.exited, killed]).then(() => {}), killGraceMs)) return
   if (child.hasExited()) return
-  throw new Error("Claude Code did not exit after Domovoi stopped it")
+  throw new Error(child.claudeHasExited()
+    ? "Claude Code exited, but Domovoi could not confirm that every process it started has exited"
+    : "Claude Code did not exit after Domovoi stopped it")
 }
 
 class ClaudeSpawnedProcess extends EventEmitter implements SpawnedProcess {
@@ -259,6 +423,154 @@ class ClaudeSpawnedProcess extends EventEmitter implements SpawnedProcess {
 
   kill(signal: NodeJS.Signals): boolean {
     return this.#child.kill(signal)
+  }
+}
+
+type ExitStatus = { code: number | null; signal: NodeJS.Signals | null }
+
+type SpawnErrorDetails = { code?: string; errno?: number; syscall?: string; path?: string; spawnargs?: string[] }
+
+type KeeperReport = {
+  exit?: ExitStatus
+  error?: SpawnErrorDetails & { message?: string }
+}
+
+// One line the keeper wrote, or nothing when it is not a report.
+function keeperReport(line: string): KeeperReport | undefined {
+  let value: unknown
+  try {
+    value = JSON.parse(line)
+  } catch {
+    return undefined
+  }
+  if (typeof value !== "object" || value === null) return undefined
+  const { exit, error } = value as Record<string, unknown>
+  if (typeof exit === "object" && exit !== null) {
+    const { code, signal } = exit as Record<string, unknown>
+    return {
+      exit: {
+        code: typeof code === "number" ? code : null,
+        signal: typeof signal === "string" ? signal as NodeJS.Signals : null,
+      },
+    }
+  }
+  if (typeof error === "object" && error !== null) {
+    const { message, code, errno, syscall, path, spawnargs } = error as Record<string, unknown>
+    return {
+      error: {
+        ...(typeof message === "string" ? { message } : {}),
+        ...(typeof code === "string" ? { code } : {}),
+        ...(typeof errno === "number" ? { errno } : {}),
+        ...(typeof syscall === "string" ? { syscall } : {}),
+        ...(typeof path === "string" ? { path } : {}),
+        ...(Array.isArray(spawnargs) && spawnargs.every((arg) => typeof arg === "string") ? { spawnargs: spawnargs as string[] } : {}),
+      },
+    }
+  }
+  return undefined
+}
+
+// Claude under the keeper, as the SDK sees it: Claude's own stdio, which are
+// the keeper's pipes, Claude's exit code or signal, and signals sent to
+// Claude. The exit is reported once the keeper has gone, so after the kill
+// of Claude's group, and once stdio has drained, as the SDK's own spawn
+// reports it. A spawn error the keeper reports is raised as the error Node
+// would have raised to Domovoi.
+class KeptClaudeProcess extends EventEmitter implements SpawnedProcess {
+  readonly stdin: ChildProcessWithoutNullStreams["stdin"]
+  readonly stdout: ChildProcessWithoutNullStreams["stdout"]
+  readonly #keeper: ChildProcessWithoutNullStreams
+  readonly #control: Duplex
+  #reported: ExitStatus | undefined
+  #status: ExitStatus | undefined
+  #killed = false
+
+  constructor(keeper: ChildProcessWithoutNullStreams, control: Duplex, claudeExited: () => void) {
+    super()
+    this.#keeper = keeper
+    this.#control = control
+    this.stdin = keeper.stdin
+    this.stdout = keeper.stdout
+
+    // Claude's exit is known once the keeper has exited and its report has
+    // been read, which the end of the control pipe says.
+    const ends = new EventEmitter()
+    let keeperExit: ExitStatus | undefined
+    let keeperClosed = false
+    let controlEnded = false
+    let exitSent = false
+    let closeSent = false
+    const status = (): ExitStatus => this.#reported ?? keeperExit ?? { code: keeper.exitCode, signal: keeper.signalCode }
+    const update = () => {
+      if (!controlEnded) return
+      if (keeperExit && !exitSent) {
+        exitSent = true
+        const { code, signal } = status()
+        ends.emit("exit", code, signal)
+      }
+      if (keeperClosed && !closeSent) {
+        closeSent = true
+        const { code, signal } = status()
+        ends.emit("close", code, signal)
+      }
+    }
+    keeper.once("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+      keeperExit = { code, signal }
+      update()
+    })
+    keeper.once("close", () => {
+      keeperClosed = true
+      update()
+    })
+    const controlEnd = () => {
+      controlEnded = true
+      update()
+    }
+    control.once("end", controlEnd)
+    control.once("close", controlEnd)
+    control.once("error", controlEnd)
+
+    let buffered = ""
+    control.setEncoding("utf8")
+    control.on("data", (text: string) => {
+      buffered += text
+      for (let newline = buffered.indexOf("\n"); newline >= 0; newline = buffered.indexOf("\n")) {
+        const report = keeperReport(buffered.slice(0, newline))
+        buffered = buffered.slice(newline + 1)
+        if (report === undefined || this.#reported !== undefined) continue
+        if (report.exit) {
+          this.#reported = { code: report.exit.code, signal: report.exit.signal }
+          claudeExited()
+        } else if (report.error) {
+          const { message, ...details } = report.error
+          this.#reported = { code: typeof details.errno === "number" ? details.errno : null, signal: null }
+          claudeExited()
+          if (this.listenerCount("error") > 0) this.emit("error", Object.assign(new Error(message ?? "Claude Code could not start"), details))
+        }
+      }
+    })
+
+    onProcessEnd(ends, (code, signal) => {
+      this.#status = { code, signal }
+      this.emit("exit", code, signal)
+    })
+    // The keeper's own start failed, or the SDK aborted it.
+    keeper.on("error", (error) => {
+      if (this.listenerCount("error") > 0) this.emit("error", error)
+    })
+  }
+
+  get killed(): boolean { return this.#killed }
+  get exitCode(): number | null { return this.#status?.code ?? null }
+  get signalCode(): NodeJS.Signals | null { return this.#status?.signal ?? null }
+
+  // The keeper sends the signal on to Claude.
+  kill(signal: NodeJS.Signals): boolean {
+    if (this.#reported !== undefined || this.#keeper.exitCode !== null || this.#keeper.signalCode !== null) return false
+    if (!this.#control.writable) return false
+    send(this.#control, { signal })
+    this.#killed = true
+    return true
   }
 }
 

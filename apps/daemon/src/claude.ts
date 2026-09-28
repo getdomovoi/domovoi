@@ -212,6 +212,17 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   // Set when close begins, before it waits on anything. No Claude process is
   // started while it is set.
   #closing = false
+  // Set for good once a close has succeeded: nothing reopens the adapter.
+  #closed = false
+  // Closes run one at a time, each after the one before it has settled, and
+  // a close that fails reopens the adapter only when no other close waits:
+  // one close's failure never undoes another's success (review round 2 of
+  // #647, R2-F3).
+  #closeQueue: Promise<void> = Promise.resolve()
+  #closesWaiting = 0
+  // Model lists from the moment their query exists, finished or not. Close
+  // stops each one and waits for its Claude (R2-F4).
+  #discoveries = new Set<OwnedQuery>()
   // Starts still in their install check or instruction read, which close
   // waits for: each refuses to start Claude once it resumes.
   #preparing = new Set<Promise<unknown>>()
@@ -258,8 +269,9 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       spawnClaudeCodeProcess: (spawnOptions) => this.#spawn(spawnOptions, input, stderr, processes),
     })
     const discovery: OwnedQuery = { input, query: runtime, processes }
+    this.#discoveries.add(discovery)
     const close = () => {
-      void this.#stopSession(discovery)
+      void this.#stopSession(discovery).then(() => this.#discoveries.delete(discovery), () => {})
     }
     signal?.addEventListener("abort", close, { once: true })
     try {
@@ -408,27 +420,45 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     return () => this.#listeners.delete(listener)
   }
 
-  // Resolves once every Claude process the adapter started has exited. While
-  // it runs no process is started. A close that fails leaves the adapter
-  // open, as a failed stop leaves its thread: once the process has exited,
-  // the thread can be stopped, reopened and closed again.
+  // Resolves once every Claude process the adapter started, and everything
+  // it started, is gone. From the call on no process is started. A close
+  // that fails leaves the adapter open, as a failed stop leaves its thread:
+  // once the process has exited, the thread can be stopped, reopened and
+  // closed again. A close that succeeds closes the adapter for good.
   async close(): Promise<void> {
     this.#closing = true
+    this.#closesWaiting += 1
+    const previous = this.#closeQueue
+    let settled!: () => void
+    this.#closeQueue = new Promise((resolve) => { settled = resolve })
     try {
-      for (const session of this.#sessions.values()) void this.#stopSession(session)
-      this.#sessions.clear()
-      for (const pending of this.#pendingApprovals.values()) {
-        pending.resolve({ behavior: "deny", message: "Domovoi closed the Claude session" })
-      }
-      this.#pendingApprovals.clear()
-      // A start still preparing refuses once it resumes. Whatever a start
-      // began before close is a session above, or stopping.
-      await Promise.allSettled([...this.#preparing])
-      await this.#stopped()
+      await previous
+      if (this.#closed) return
+      await this.#closeOnce()
+      this.#closed = true
     } catch (error) {
-      this.#closing = false
+      if (this.#closesWaiting === 1 && !this.#closed) this.#closing = false
       throw error
+    } finally {
+      this.#closesWaiting -= 1
+      settled()
     }
+  }
+
+  async #closeOnce(): Promise<void> {
+    for (const session of this.#sessions.values()) void this.#stopSession(session)
+    this.#sessions.clear()
+    for (const discovery of this.#discoveries) {
+      void this.#stopSession(discovery).then(() => this.#discoveries.delete(discovery), () => {})
+    }
+    for (const pending of this.#pendingApprovals.values()) {
+      pending.resolve({ behavior: "deny", message: "Domovoi closed the Claude session" })
+    }
+    this.#pendingApprovals.clear()
+    // A start still preparing refuses once it resumes. Whatever a start
+    // began before close is a session above, or stopping.
+    await Promise.allSettled([...this.#preparing])
+    await this.#stopped()
   }
 
   #refuseWhenClosing(): void {

@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Runtime } from "@getdomovoi/protocol"
 
 import type { AgentEvent } from "./agents.js"
-import type { ClaudeSpawn } from "./claude-process.js"
+import { claudeKeeperSource, type ClaudeSpawn } from "./claude-process.js"
 import {
   ClaudeAgentSdkAdapter,
   claudePermissionFor,
@@ -1499,28 +1499,50 @@ describe("stopping the Claude process", () => {
     const fake = fakeClaudeChild()
     const spawn = vi.fn<ClaudeSpawn>(() => fake.process)
     const { calls, factory } = spawningFactory()
-    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, { spawn, kill: vi.fn(), platform })
+    // A taskkill that reports success: the real one, which a win32 stop runs,
+    // fails on this fake pid, and would leave the stop unconfirmed.
+    const killTree = vi.fn(async (_pid: number) => {})
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, { spawn, killTree, platform })
 
     await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
 
     // Copied from the SDK's own spawn (spawnLocalProcess in 0.3.263): the
     // command, arguments, directory, environment and abort signal exactly as
     // the SDK built them, piped stdio and no console window. Detached is
-    // Domovoi's: on POSIX it gives Claude and its tools one process group.
+    // Domovoi's: on POSIX it gives Claude and its tools one process group,
+    // led by the keeper, which is what Domovoi starts there. The keeper gets
+    // Claude's directory and abort signal, an empty environment and a control
+    // pipe, and on that pipe the command, arguments and environment as the SDK
+    // built them (review round 2 of #647, R2-F2).
     expect(spawn).toHaveBeenCalledOnce()
     const [command, args, options] = spawn.mock.calls[0]!
     const given = calls[0]!.spawnOptions
-    expect(command).toBe(claudeCommand)
-    expect(args).toEqual(claudeArgs)
-    expect(options).toEqual({
-      cwd: "/worktree",
-      env: given.env,
-      signal: given.signal,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-      detached,
-    })
-    expect(options.env).toBe(given.env)
+    if (detached) {
+      expect(command).toBe(process.execPath)
+      expect(args).toEqual(["-e", claudeKeeperSource])
+      expect(options).toEqual({
+        cwd: "/worktree",
+        env: {},
+        signal: given.signal,
+        stdio: ["pipe", "pipe", "pipe", "pipe"],
+        windowsHide: true,
+        detached,
+      })
+      expect(fake.commands).toEqual([{ spawn: { command: claudeCommand, args: claudeArgs, env: given.env } }])
+    } else {
+      expect(command).toBe(claudeCommand)
+      expect(args).toEqual(claudeArgs)
+      expect(options).toEqual({
+        cwd: "/worktree",
+        env: given.env,
+        signal: given.signal,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+        detached,
+      })
+      expect(options.env).toBe(given.env)
+      expect(fake.commands).toEqual([])
+    }
     expect(options.signal).toBe(given.signal)
     expect(calls[0]!.process?.stdin).toBe(fake.child.stdin)
     expect(calls[0]!.process?.stdout).toBe(fake.child.stdout)
@@ -1531,7 +1553,7 @@ describe("stopping the Claude process", () => {
     const fake = fakeClaudeChild()
     const { calls, factory } = spawningFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: () => fake.process, kill: vi.fn(), platform: "linux",
+      spawn: () => fake.process, platform: "linux",
     })
     const events: AgentEvent[] = []
     adapter.onEvent((event) => events.push(event))
@@ -1557,24 +1579,26 @@ describe("stopping the Claude process", () => {
 
   it("resolves a stop without killing Claude when it exits within the grace", async () => {
     const path = await script("process.stdin.resume()\nprocess.stdin.on('end', () => process.exit(0))\n")
-    const kill = vi.fn()
-    const { factory } = spawningFactory(process.execPath, [path])
-    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, { spawn: realSpawn, kill })
+    const { calls, factory } = spawningFactory(process.execPath, [path])
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, { spawn: realSpawn })
     const threadId = await adapter.startThread({ cwd: dirname(path), runtime: runtime("build") })
 
     await adapter.stopThread(threadId)
 
     expect(started).toHaveLength(1)
+    // The exit the SDK sees is Claude's.
+    const claude = calls[0]!.process!
+    await waitForDaemon(() => expect(claude.exitCode).not.toBeNull())
     if (process.platform === "win32") {
       // Q106: Windows has no grace. The tree kill comes before the input
       // closes, so Claude does not get to exit on its own.
-      expect(started[0]!.exitCode).not.toBe(0)
-      expect(kill).not.toHaveBeenCalled()
+      expect(claude.exitCode).not.toBe(0)
     } else {
-      expect(started[0]!.exitCode).toBe(0)
-      expect(started[0]!.killed).toBe(false)
-      // Q104: the group Claude leaves behind is killed as it exits, on POSIX.
-      expect(kill.mock.calls).toEqual([[-started[0]!.pid!, "SIGKILL"]])
+      expect(claude.exitCode).toBe(0)
+      expect(claude.killed).toBe(false)
+      // Q104: the group Claude leaves behind is killed as it exits, on POSIX,
+      // by its keeper, which is in that group.
+      expect(started[0]!.signalCode).toBe("SIGKILL")
     }
     await adapter.close()
   })
@@ -1629,16 +1653,17 @@ describe("stopping the Claude process", () => {
     const spawn = vi.fn<ClaudeSpawn>()
       .mockReturnValueOnce(stuck.process)
       .mockReturnValueOnce(next.process)
-    const kill = vi.fn()
     const { calls, factory } = spawningFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn, kill, platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+      spawn, platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
     })
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
 
     await expect(adapter.stopThread(threadId)).rejects.toThrow("did not exit")
-    // The whole process group, so the tools Claude started go with it.
-    expect(kill).toHaveBeenCalledWith(-fakeClaudePid, "SIGKILL")
+    // The whole process group, which the keeper kills, so the tools Claude
+    // started go with it.
+    expect(stuck.child.pid).toBe(fakeClaudePid)
+    expect(stuck.commands).toContainEqual({ kill: true })
 
     // A retry, a reopen and a shutdown all find the same live process.
     await expect(adapter.stopThread(threadId)).rejects.toThrow("did not exit")
@@ -1656,34 +1681,34 @@ describe("stopping the Claude process", () => {
 
   it("makes a retry during a stop wait for the same exit", async () => {
     const fake = fakeClaudeChild({ exitsOnEof: false })
-    const kill = vi.fn()
     const { factory } = spawningFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: () => fake.process, kill, platform: "linux",
+      spawn: () => fake.process, platform: "linux",
     })
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const kills = () => fake.commands.filter((command) => "kill" in command)
 
     const settled: string[] = []
     const first = adapter.stopThread(threadId).then(() => { settled.push("first") })
     const retry = adapter.stopThread(threadId).then(() => { settled.push("retry") })
     await new Promise((resolve) => { setTimeout(resolve, 50) })
     expect(settled).toEqual([])
-    expect(kill).not.toHaveBeenCalled()
+    expect(kills()).toEqual([])
 
     fake.exit()
     await Promise.all([first, retry])
     expect(settled.sort()).toEqual(["first", "retry"])
-    // Q104: one group kill, as Claude exits, and none before.
-    expect(kill.mock.calls).toEqual([[-fakeClaudePid, "SIGKILL"]])
+    // Q104: the group is killed as Claude exits, by its keeper, and Domovoi
+    // asks for no kill, then or before.
+    expect(kills()).toEqual([])
     await adapter.close()
   })
 
   it("waits two seconds before the kill and five more for the exit", async () => {
     const fake = fakeClaudeChild({ exitsOnEof: false })
-    const kill = vi.fn()
     const { factory } = spawningFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: () => fake.process, kill, platform: "linux",
+      spawn: () => fake.process, platform: "linux",
     })
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
 
@@ -1695,9 +1720,9 @@ describe("stopping the Claude process", () => {
         (error: unknown) => { outcome = error instanceof Error ? error.message : "rejected" },
       )
       await vi.advanceTimersByTimeAsync(1_999)
-      expect(kill).not.toHaveBeenCalled()
+      expect(fake.commands).not.toContainEqual({ kill: true })
       await vi.advanceTimersByTimeAsync(1)
-      expect(kill).toHaveBeenCalledWith(-fakeClaudePid, "SIGKILL")
+      expect(fake.commands).toContainEqual({ kill: true })
       await vi.advanceTimersByTimeAsync(4_999)
       expect(outcome).toBeUndefined()
       await vi.advanceTimersByTimeAsync(1)
@@ -1715,13 +1740,12 @@ describe("stopping the Claude process", () => {
       if (signal === "SIGKILL") setImmediate(() => fake.exit("SIGKILL"))
       return true
     })
-    const kill = vi.fn()
     // Q103: the tree kill comes first; this one reaches nothing, so the
     // kill of Claude itself still ends it.
     const killTree = vi.fn(async (_pid: number) => {})
     const { factory } = spawningFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: () => fake.process, kill, killTree, platform: "win32", shutdownGraceMs: 20,
+      spawn: () => fake.process, killTree, platform: "win32", shutdownGraceMs: 20,
     })
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
 
@@ -1729,7 +1753,8 @@ describe("stopping the Claude process", () => {
 
     expect(killTree).toHaveBeenCalledWith(fakeClaudePid)
     expect(fake.child.kill).toHaveBeenCalledWith("SIGKILL")
-    expect(kill).not.toHaveBeenCalled()
+    // No keeper and no group on Windows.
+    expect(fake.commands).toEqual([])
     await adapter.close()
   })
 
@@ -1752,7 +1777,7 @@ describe("stopping the Claude process", () => {
       return query
     }
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn, kill: vi.fn(), platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+      spawn, platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
     })
     const events: AgentEvent[] = []
     adapter.onEvent((event) => events.push(event))
@@ -1791,7 +1816,7 @@ describe("stopping the Claude process", () => {
     const spawn = vi.fn<ClaudeSpawn>(() => fakeClaudeChild().process)
     const { factory } = spawningFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, preflight, {
-      spawn, kill: vi.fn(), platform: "linux",
+      spawn, platform: "linux",
     })
     const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("build") }).then(
       () => "started",
@@ -1820,7 +1845,7 @@ describe("stopping the Claude process", () => {
     const spawn = vi.fn<ClaudeSpawn>(() => stuck.process)
     const { factory } = spawningFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn, kill: vi.fn(), platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+      spawn, platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
     })
 
     await expect(adapter.listModels()).resolves.toEqual([expect.objectContaining({ id: "sonnet" })])
@@ -1845,7 +1870,7 @@ describe("stopping the Claude process", () => {
       return query
     }
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn, kill: vi.fn(), platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+      spawn, platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
     })
 
     const listing = adapter.listModels(controller?.signal)

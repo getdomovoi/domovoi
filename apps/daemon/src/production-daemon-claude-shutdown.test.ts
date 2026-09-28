@@ -32,7 +32,7 @@ it("keeps the daemon and its profile lease after a signal while Claude will not 
   const stuck = fakeClaudeChild({ exitsOnEof: false })
   const { factory } = spawningClaudeFactory()
   const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-    spawn: () => stuck.process, kill: vi.fn(), platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+    spawn: () => stuck.process, platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
   })
   const lease = claimProfile(homeDirectory)
   const handle = await createProductionDaemonWithDependencies({ homeDirectory, environment: { DOMOVOI_PORT: "0" } }, {
@@ -87,12 +87,11 @@ it("keeps the daemon and its profile lease after a signal while a tool Claude st
   const { factory } = spawningClaudeFactory()
   const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
     spawn: () => claude.process,
-    kill: vi.fn(() => { throw refused("EPERM") }),
     probe: () => { throw refused(tool ? "EPERM" : "ESRCH") },
     platform: "linux",
     shutdownGraceMs: 20,
     killGraceMs: 20,
-  } as never)
+  })
   const lease = claimProfile(homeDirectory)
   const handle = await createProductionDaemonWithDependencies({ homeDirectory, environment: { DOMOVOI_PORT: "0" } }, {
     ...productionDaemonDependencies,

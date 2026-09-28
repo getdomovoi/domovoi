@@ -74,11 +74,12 @@ describe("the Windows process tree kill", () => {
     expect(settled).toBe(true)
   })
 
-  it("settles when taskkill cannot start", async () => {
+  // Review round 2 of #647, R2-F1: this used to settle as a success.
+  it("fails when taskkill cannot start", async () => {
     const taskkill = new EventEmitter()
     const killing = windowsTreeKill(4_242, () => taskkill as ChildProcess)
     taskkill.emit("error", new Error("spawn taskkill ENOENT"))
-    await expect(killing).resolves.toBeUndefined()
+    await expect(killing).rejects.toThrow("taskkill could not start")
   })
 
   // Q106: once Claude has exited on its own, taskkill /T can no longer find
@@ -94,10 +95,9 @@ describe("the Windows process tree kill", () => {
         inputOpen: !fake.child.stdin.writableEnded,
       })
     })
-    const kill = vi.fn()
     const { factory } = spawningClaudeFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: () => fake.process, kill, killTree, platform: "win32",
+      spawn: () => fake.process, killTree, platform: "win32",
     })
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
 
@@ -115,7 +115,8 @@ describe("the Windows process tree kill", () => {
       // Once taskkill has finished: Node's own handle, then the input.
       expect(fake.child.kill).toHaveBeenCalledWith("SIGKILL")
       expect(fake.child.stdin.writableEnded).toBe(true)
-      expect(kill).not.toHaveBeenCalled()
+      // Windows has no keeper and no group: nothing goes on a control pipe.
+      expect(fake.commands).toEqual([])
 
       await vi.advanceTimersByTimeAsync(3_000)
       expect(outcome).toBeUndefined()
@@ -138,10 +139,9 @@ describe("the Windows process tree kill", () => {
         resolve()
       }
     }))
-    const kill = vi.fn()
     const { factory } = spawningClaudeFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: () => fake.process, kill, killTree, platform: "win32", shutdownGraceMs: 20,
+      spawn: () => fake.process, killTree, platform: "win32", shutdownGraceMs: 20,
     })
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
 
@@ -149,7 +149,7 @@ describe("the Windows process tree kill", () => {
     const stopping = adapter.stopThread(threadId).then(() => { stopped = true })
     await waitForDaemon(() => expect(killTree).toHaveBeenCalledWith(fakeClaudePid))
     expect(stopped).toBe(false)
-    expect(kill).not.toHaveBeenCalled()
+    expect(fake.commands).toEqual([])
 
     finish!()
     await stopping
@@ -163,7 +163,7 @@ describe("the Windows process tree kill", () => {
     const killTree = vi.fn(async (_pid: number) => { inputOpen.push(!fake.child.stdin.writableEnded) })
     const { factory } = spawningClaudeFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: () => fake.process, kill: vi.fn(), killTree, platform: "win32",
+      spawn: () => fake.process, killTree, platform: "win32",
     })
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
 
@@ -178,10 +178,9 @@ describe("the Windows process tree kill", () => {
   it("sends no taskkill for a Claude that exited before the stop began, when its pid may name another process", async () => {
     const fake = fakeClaudeChild()
     const killTree = vi.fn(async (_pid: number) => {})
-    const kill = vi.fn()
     const { factory } = spawningClaudeFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: () => fake.process, kill, killTree, platform: "win32",
+      spawn: () => fake.process, killTree, platform: "win32",
     })
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
     fake.exit()
@@ -191,29 +190,30 @@ describe("the Windows process tree kill", () => {
     expect(fake.child.exitCode).toBe(0)
     expect(killTree).not.toHaveBeenCalled()
     expect(fake.child.kill).not.toHaveBeenCalled()
-    expect(kill).not.toHaveBeenCalled()
+    expect(fake.commands).toEqual([])
     await adapter.close()
   })
 })
 
 describe("the POSIX process group kill", () => {
-  it("kills Claude's process group when Claude exits on its own within the grace, and signals nothing after", async () => {
+  // The keeper kills the group as Claude exits (see claudeKeeperSource, and
+  // the real-process tests below): Domovoi sends it nothing then, or after.
+  it("leaves the group kill to the keeper when Claude exits on its own within the grace, and sends nothing after", async () => {
     const fake = fakeClaudeChild()
-    const kill = vi.fn()
     const { factory } = spawningClaudeFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: () => fake.process, kill, platform: "linux",
+      spawn: () => fake.process, platform: "linux",
     })
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
+    const spawned = [{ spawn: expect.objectContaining({ command: "/opt/claude/bin/claude" }) }]
 
     await adapter.stopThread(threadId)
 
     expect(fake.child.exitCode).toBe(0)
-    expect(kill).toHaveBeenCalledOnce()
-    expect(kill).toHaveBeenCalledWith(-fakeClaudePid, "SIGKILL")
+    expect(fake.commands).toEqual(spawned)
     await adapter.stopThread(threadId)
     await adapter.close()
-    expect(kill).toHaveBeenCalledOnce()
+    expect(fake.commands).toEqual(spawned)
   })
 })
 
@@ -228,7 +228,7 @@ it("leaves no tool running when Claude would exit on its own within the grace", 
     "process.stdin.on('end', () => process.exit(0))",
   ].join("\n"))
   const pidFile = join(dirname(path), "tool.pid")
-  const { factory } = spawningClaudeFactory(process.execPath, [path, pidFile])
+  const { calls, factory } = spawningClaudeFactory(process.execPath, [path, pidFile])
   const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, { spawn: realSpawn })
   const threadId = await adapter.startThread({ cwd: dirname(path), runtime })
   const toolPid = await waitForDaemon(async () => {
@@ -241,9 +241,10 @@ it("leaves no tool running when Claude would exit on its own within the grace", 
   await adapter.stopThread(threadId)
 
   // Q106: on Windows the tree kill comes before the input closes, so Claude
-  // does not get to exit on its own.
-  if (process.platform === "win32") expect(started[0]!.exitCode).not.toBe(0)
-  else expect(started[0]!.exitCode).toBe(0)
+  // does not get to exit on its own. The exit is the one the SDK sees.
+  await waitForDaemon(() => expect(calls[0]!.query.process?.exitCode).not.toBeNull())
+  if (process.platform === "win32") expect(calls[0]!.query.process?.exitCode).not.toBe(0)
+  else expect(calls[0]!.query.process?.exitCode).toBe(0)
   await waitForDaemon(() => expect(() => process.kill(toolPid, 0)).toThrow())
   await adapter.close()
 })
@@ -253,7 +254,7 @@ describe("the running Claude processes", () => {
     const stuck = fakeClaudeChild({ exitsOnEof: false })
     const { factory } = spawningClaudeFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn: () => stuck.process, kill: vi.fn(), platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+      spawn: () => stuck.process, platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
     })
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
     await expect(adapter.close()).rejects.toThrow("did not exit")
@@ -287,12 +288,11 @@ describe("a stop whose tools cannot be seen to exit", () => {
     const { factory } = spawningClaudeFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
       spawn: () => fake.process,
-      kill: vi.fn(() => { throw killError("EPERM") }),
       probe,
       platform: "linux",
       shutdownGraceMs: 20,
       killGraceMs: 20,
-    } as never)
+    })
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
 
     await expect(adapter.stopThread(threadId)).rejects.toThrow(unconfirmed)
@@ -316,17 +316,15 @@ describe("a stop whose tools cannot be seen to exit", () => {
     const { factory } = spawningClaudeFactory()
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
       spawn: () => fake.process,
-      kill: vi.fn((_pid: number, signal: NodeJS.Signals) => {
-        if (signal === "SIGKILL") setImmediate(() => fake.exit("SIGKILL"))
-      }),
       probe,
       platform: "linux",
       shutdownGraceMs: 20,
       killGraceMs: 20,
-    } as never)
+    })
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
 
     await expect(adapter.stopThread(threadId)).rejects.toThrow(unconfirmed)
+    expect(fake.commands).toContainEqual({ kill: true })
     expect(fake.child.signalCode).toBe("SIGKILL")
     expect(runningClaudeProcesses()).toEqual([expect.objectContaining({ pid: fakeClaudePid, session: threadId })])
     await expect(adapter.close()).rejects.toThrow(unconfirmed)
@@ -371,13 +369,13 @@ it("signals no process group by number, and still leaves no tool running when Cl
   })
   tools.push(toolPid)
   const signals = vi.spyOn(process, "kill")
-  let calls: Array<Parameters<typeof process.kill>> = []
+  const calls: Array<Parameters<typeof process.kill>> = []
 
   try {
     await adapter.stopThread(threadId)
     await waitForDaemon(() => expect(() => process.kill(toolPid, 0)).toThrow())
   } finally {
-    calls = [...signals.mock.calls]
+    calls.push(...signals.mock.calls)
     signals.mockRestore()
   }
   expect(calls.filter(([pid, signal]) => pid < 0 && signal !== 0 && signal !== undefined)).toEqual([])
@@ -503,8 +501,8 @@ it("stays closed after overlapping closes when one of them succeeded", async () 
   const spawn = vi.fn<ClaudeSpawn>(() => stuck.process)
   const { factory } = spawningClaudeFactory()
   const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-    spawn, kill: vi.fn(), platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
-  } as never)
+    spawn, platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+  })
   const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
   await expect(adapter.stopThread(threadId)).rejects.toThrow("did not exit")
 
@@ -533,8 +531,8 @@ describe("a model list that close overtakes", () => {
       return query
     }
     const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-      spawn, kill: vi.fn(), platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
-    } as never)
+      spawn, platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+    })
     const listing = adapter.listModels().then(() => "listed", () => "failed")
     // As the SDK does, a closed query's pending request fails.
     const failPending = () => fail?.(new Error("Claude Code query closed"))
@@ -594,8 +592,8 @@ it.each([
   const killTree = vi.fn((target: number) => windowsTreeKill(target, run))
   const { factory } = spawningClaudeFactory()
   const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-    spawn: () => fake.process, kill: vi.fn(), killTree, platform: "win32", shutdownGraceMs: 20, killGraceMs: 20,
-  } as never)
+    spawn: () => fake.process, killTree, platform: "win32", shutdownGraceMs: 20, killGraceMs: 20,
+  })
   const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
 
   await expect(adapter.stopThread(threadId)).rejects.toThrow(unconfirmed)

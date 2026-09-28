@@ -8,7 +8,7 @@ import type { Runtime } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { ClaudeAgentSdkAdapter } from "./claude.js"
-import type { ClaudeSpawn } from "./claude-process.js"
+import { claudeKeeperSource, type ClaudeSpawn } from "./claude-process.js"
 import { fakeClaudeChild } from "./test-claude-process.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForDaemon } from "./test-wait-for.js"
@@ -94,9 +94,8 @@ describe("the SDK spawn Domovoi copies", () => {
     vi.stubEnv("DOMOVOI_CLAUDE_SPAWN_MARKER", "inherited")
     const fake = fakeClaudeChild()
     const spawn = vi.fn<ClaudeSpawn>(() => fake.process)
-    const kill = vi.fn()
     const adapter = new ClaudeAgentSdkAdapter(undefined, undefined, async () => {}, {
-      spawn, kill, platform: "linux",
+      spawn, platform: "linux",
     })
 
     const starting = adapter.startThread({ cwd: directory, runtime }).then(
@@ -104,21 +103,29 @@ describe("the SDK spawn Domovoi copies", () => {
       (error: unknown) => error,
     )
     await waitForDaemon(() => expect(spawn).toHaveBeenCalledOnce())
+    // On POSIX Domovoi starts the keeper that leads Claude's process group,
+    // with Claude's directory and abort signal and an empty environment, and
+    // hands it the command, arguments and environment the SDK built.
     const [command, args, options] = spawn.mock.calls[0]!
-    expect(command).toBe(executable)
-    expect(args.slice(0, 5)).toEqual(["--output-format", "stream-json", "--verbose", "--input-format", "stream-json"])
+    expect(command).toBe(process.execPath)
+    expect(args).toEqual(["-e", claudeKeeperSource])
     expect(options.cwd).toBe(directory)
-    expect(options.env.DOMOVOI_CLAUDE_SPAWN_MARKER).toBe("inherited")
-    expect(options.env.CLAUDE_CODE_ENTRYPOINT).toBe("sdk-ts")
+    expect(options.env).toEqual({})
     expect(options.signal).toBeInstanceOf(AbortSignal)
-    expect(options).toMatchObject({ stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: true })
+    expect(options).toMatchObject({ stdio: ["pipe", "pipe", "pipe", "pipe"], windowsHide: true, detached: true })
+    const claude = fake.commands[0]?.spawn as { command: string; args: string[]; env: NodeJS.ProcessEnv }
+    expect(claude.command).toBe(executable)
+    expect(claude.args.slice(0, 5)).toEqual(["--output-format", "stream-json", "--verbose", "--input-format", "stream-json"])
+    expect(claude.env.DOMOVOI_CLAUDE_SPAWN_MARKER).toBe("inherited")
+    expect(claude.env.CLAUDE_CODE_ENTRYPOINT).toBe("sdk-ts")
 
-    // The SDK's close ends stdin and Claude exits on that. Q104: the process
-    // group it leaves is killed as it exits, and Claude itself is not.
+    // The SDK's close ends stdin and Claude exits on that. Q104: the keeper
+    // kills the process group it leaves as it exits, and nothing, no signal
+    // and no kill, is sent to Claude or its keeper.
     await adapter.close()
     expect(fake.child.exitCode).toBe(0)
     expect(fake.child.kill).not.toHaveBeenCalled()
-    expect(kill.mock.calls).toEqual([[-fake.child.pid, "SIGKILL"]])
+    expect(fake.commands.slice(1)).toEqual([])
     await starting
   })
 })

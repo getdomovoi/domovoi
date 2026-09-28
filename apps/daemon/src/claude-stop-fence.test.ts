@@ -52,10 +52,9 @@ async function fixture() {
     children.push(child)
     return child.process
   }
-  const kill = vi.fn()
   const { factory, sessions } = spawningClaudeFactory()
   const adapter = new ClaudeAgentSdkAdapter(factory, undefined, undefined, {
-    spawn, kill, platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
+    spawn, platform: "linux", shutdownGraceMs: 20, killGraceMs: 20,
   })
   const checkpoint = vi.fn(async (_path: string, _label: string) => ({ commit: "b".repeat(40), changedFiles: [] }))
   const workspaceService = {
@@ -135,19 +134,21 @@ async function fixture() {
     sessions()[0]!.interrupt.mockRejectedValue(new Error("Claude did not answer the interrupt"))
     return sessionId
   }
-  return { rpc, sessions, children, kill, checkpoint, hangInProjectOne, hangTurn }
+  return { rpc, sessions, children, checkpoint, hangInProjectOne, hangTurn }
 }
 
 describe("a Claude process that will not stop", () => {
   it("leaves its session failed and fenced across a project switch, with no second query", async () => {
-    const { rpc, sessions, children, kill, hangInProjectOne } = await fixture()
+    const { rpc, sessions, children, hangInProjectOne } = await fixture()
 
     const { sessionId, back } = await hangInProjectOne()
 
     expect(back.result?.sessions?.find(({ id }) => id === sessionId)).toMatchObject({ state: "failed" })
     expect(back.result?.thread?.filter((item) => item.sessionId === sessionId).map(({ body }) => body))
       .toContain(notStopped)
-    expect(kill).toHaveBeenCalledWith(-fakeClaudePid, "SIGKILL")
+    // The keeper was asked to kill the whole process group.
+    expect(children[0]!.child.pid).toBe(fakeClaudePid)
+    expect(children[0]!.commands).toContainEqual({ kill: true })
 
     const again = await rpc("session.send", { sessionId, prompt: "again", client: "desktop" })
     expect(again.error?.message).toBe(fence)
