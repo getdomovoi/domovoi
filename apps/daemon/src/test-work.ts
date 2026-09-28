@@ -127,6 +127,26 @@ export const adversarialCommands: ReadonlyArray<readonly [string, number, (size:
   ["percent encodings nested past the bound", 250, (size) => `echo ${`x%${"25".repeat(12)}41 `.repeat(size)}`],
 ]
 
+// TOML documents a parser has taken more than linear work on, each at a base
+// size whose four times still fits the reader's file limit. Each builds one
+// .codex/config.toml.
+export const adversarialTomlFiles: ReadonlyArray<readonly [string, number, (size: number) => string]> = [
+  ["server tables", 1_000, (size) => Array.from({ length: size }, (_, index) => `[mcp_servers.s${index}]\ncommand = "s"\n`).join("")],
+  ["keys in one inline table", 2_000, (size) => `[shell_environment_policy]\nset = { ${Array.from({ length: size }, (_, index) => `K${index} = "v"`).join(", ")} }\n`],
+  ["escapes in one basic string", 4_000, (size) => `[mcp_servers.x]\ncommand = "${"\\u0041\\n".repeat(size)}"\n`],
+  ["quote runs in a multi-line string", 8_000, (size) => `developer_instructions = """${"a\"\"".repeat(size)}"""\n`],
+  ["quote runs in a multi-line literal string", 8_000, (size) => `developer_instructions = '''${"a''".repeat(size)}'''\n`],
+  ["comment lines", 8_000, (size) => `${"# c\n".repeat(size)}sandbox_mode = "read-only"\n`],
+  ["dotted keys in one table", 2_000, (size) => `[features]\n${Array.from({ length: size }, (_, index) => `k${index}.v = true\n`).join("")}`],
+  ["dotted key parts in one key", 4_000, (size) => `${"a.".repeat(size)}b = 1\n`],
+  ["arrays of tables", 1_000, (size) => "[[hooks.Stop]]\nhooks = []\n".repeat(size)],
+  ["elements in one array", 8_000, (size) => `project_root_markers = [${"\"m\",".repeat(size)}]\n`],
+  ["table headers", 4_000, (size) => Array.from({ length: size }, (_, index) => `[t${index}]\n`).join("")],
+  ["inline arrays nested near the depth cap", 400, (size) => Array.from({ length: size }, (_, index) => `a${index} = ${"[".repeat(60)}${"]".repeat(60)}\n`).join("")],
+  ["hooks in one array", 1_000, (size) => `[[hooks.Stop]]\nhooks = [${"{ type = \"command\", command = \"x\" },".repeat(size)}]\n`],
+  ["servers with many arguments", 250, (size) => Array.from({ length: size }, (_, index) => `[mcp_servers.s${index}]\ncommand = "s"\nargs = [${"\"a\",".repeat(8)}]\n`).join("")],
+]
+
 // The scanning inside one regular expression search is the work the counter
 // cannot see, so it is timed instead. A pattern such as /[.,;:!?]+$/u starts
 // again at every character of a long run it fails on, and one search then
