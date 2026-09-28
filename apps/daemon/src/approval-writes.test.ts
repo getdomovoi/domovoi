@@ -275,10 +275,13 @@ function sources(directory: string): { file: string; text: string }[] {
 }
 
 describe("approval writes", () => {
+  // This scans every daemon source file, about 2.4 MB. Under coverage on a busy
+  // ubuntu runner it has taken 2.4 to 5.2 s, past the 5 s default, so it gets a
+  // longer limit. The assertion is unchanged.
   it("go through the settlement ledger in every daemon source", () => {
     const found = sources(sourceDirectory).flatMap(({ file, text }) => scanApprovalWrites(file, text))
     expect(found).toEqual([])
-  })
+  }, 20_000)
 
   it("finds the ledger's own writes, which it exempts", () => {
     const ledger = readFileSync(join(sourceDirectory, "approval-settlement.ts"), "utf8")
