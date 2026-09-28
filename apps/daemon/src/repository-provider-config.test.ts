@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { link, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { performance } from "node:perf_hooks"
 import { dirname, join, sep } from "node:path"
@@ -983,6 +983,31 @@ describe("readRepositoryProviderConfig: Codex input outside the root folder", ()
     await put(submodule, ".git", `gitdir: ${join(parent, ".git", "modules", "sub")}\n`)
     await put(parent, ".codex/hooks.json", "{}")
     expect(await refusals(submodule)).toEqual([])
+  })
+
+  // Codex trims only ASCII whitespace from git's metadata files ([u8]::trim_ascii
+  // in resolve_root_git_project_for_trust at rust-v0.156.1), and git keeps
+  // the rest of the line: a no-break space (U+00A0) starts a file name.
+  it("finds the main checkout a .git file names after a no-break space", async () => {
+    const worktree = await scratch("domovoi-provider-worktree-")
+    const nbsp = " "
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "init.defaultBranch=main", ...args], { cwd, encoding: "utf8" })
+    // The checkout Codex and git find, and the one a Unicode trim finds.
+    const actual = join(worktree, `${nbsp}main`)
+    const decoy = join(worktree, "main")
+    for (const main of [actual, decoy]) {
+      await mkdir(main)
+      git(main, "init", "-q")
+      await put(main, ".git/worktrees/session/HEAD", "ref: refs/heads/session\n")
+      await put(main, ".git/worktrees/session/gitdir", `${join(worktree, ".git")}\n`)
+      await put(main, ".git/worktrees/session/commondir", "../..\n")
+    }
+    await put(worktree, ".git", `gitdir: ${nbsp}main/.git/worktrees/session\n`)
+    await put(worktree, ".codex/config.toml", "sandbox_mode = \"read-only\"\n")
+    await put(actual, ".codex/hooks.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "main-hook" }] }] } }))
+    const commonDirectory = git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir").trim()
+    expect(await realpath(commonDirectory)).toBe(await realpath(join(actual, ".git")))
+    expect(await refusals(worktree)).toEqual([{ provider: "codex", reason: "main-checkout-hooks", path: join(actual, ".codex", "hooks.json") }])
   })
 
   it("finds the main checkout of a worktree git made", async () => {
