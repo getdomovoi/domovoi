@@ -115,6 +115,16 @@ export const adversarialCommands: ReadonlyArray<readonly [string, number, (size:
   ["double-quoted strings with no trigger", 1_000, (size) => `echo ${"\"a\" ".repeat(size)}`],
   ["percent-encoded characters", 1_000, (size) => `echo ${"%41".repeat(size)}`],
   ["\\u escapes of ordinary letters", 1_000, (size) => `echo '${"\\u0041".repeat(size)}'`],
+  // Text with many distinct views of its views: quotes the shell's words
+  // read two and three times, quotes percent decoding makes around them,
+  // escapes of escapes, and encodings nested past the bound on views read.
+  ["quotes the shell's words read twice, after percent-encoded quotes", 500, (size) => `echo ${"'%22' \"a'b'\" ".repeat(size)}`],
+  ["percent-encoded single quotes around quotes read twice", 500, (size) => `echo ${"'%27' \"a'b'\" %22 ".repeat(size)}`],
+  ["double-quoted strings nested three deep", 500, (size) => `echo ${"\"a'\\\"b\\\"'\" '%22' ".repeat(size)}`],
+  ["escaped backslashes before an escaped quote", 500, (size) => `echo ${"\\\\\\\\\\\" %5C%22 ".repeat(size)}`],
+  ["percent encodings nested three deep around quotes", 500, (size) => `echo ${"%252522a%252527 ".repeat(size)}`],
+  ["\\u escapes and percent-encoded quotes of escapes", 500, (size) => `echo '${"\\\\u0022%5C%22\\\\\" ".repeat(size)}'`],
+  ["percent encodings nested past the bound", 250, (size) => `echo ${`x%${"25".repeat(12)}41 `.repeat(size)}`],
 ]
 
 // The scanning inside one regular expression search is the work the counter

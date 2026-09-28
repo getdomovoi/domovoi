@@ -8,8 +8,9 @@ import { afterEach, describe, expect, it } from "vitest"
 import { inventoryShellWords } from "./inventory-redaction.js"
 import { maximumRepositoryConfigFileBytes, readRepositoryProviderConfig } from "./repository-provider-config.js"
 import {
-  escapedBlankTexts, hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, quotedStringTexts, sameWordCases, sameWordCredentials,
-  sameWordPlacements, sameWordWrappers, viewCases, viewCredential, viewPlacements, viewSpellings, viewTexts,
+  escapedBlankTexts, generatedShellReadingTexts, hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, quotedStringTexts, sameWordCases,
+  sameWordCredentials, sameWordPlacements, sameWordWrappers, shellReadingTexts, unsettledViewTexts, viewCases, viewCredential, viewPlacements,
+  viewSpellings, viewTexts,
 } from "./test-hidden-triggers.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { adversarialCommands, nearLinearGrowth, workGrowth } from "./test-work.js"
@@ -668,6 +669,32 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     const commands = claude.entries.flatMap((entry) => (entry.kind === "hook" ? [entry.command] : []))
     expect(commands).toHaveLength(hooks.length)
     for (const command of commands) expect(command).toMatch(/\[REDACTED\]$/u)
+  })
+
+  // A trigger only the shell's words read two or three times join, after a
+  // quote percent decoding makes, and text whose views do not settle, as a
+  // command, a command and its arguments, a prompt, and the script of sh -c,
+  // bash -lc, env MODE=x sh -c and env sh -c: every hook is listed, cut before
+  // the trigger or after its program name.
+  it("lists every hook of a trigger the shell's words read twice or more, cut before it", async () => {
+    const root = await scratch()
+    const texts = [...shellReadingTexts, ...generatedShellReadingTexts, ...unsettledViewTexts.map(([, text]) => text)]
+    const hooks = texts.flatMap((text) => {
+      const argv = inventoryShellWords(text)!
+      return [
+        { type: "command", command: text }, { type: "command", command: argv[0], args: argv.slice(1) }, { type: "prompt", prompt: text },
+        { type: "command", command: "sh", args: ["-c", text] }, { type: "command", command: "bash", args: ["-lc", text] },
+        { type: "command", command: "env", args: ["MODE=x", "sh", "-c", text] }, { type: "command", command: "env", args: ["sh", "-c", text] },
+      ]
+    })
+    await put(root, ".claude/settings.json", JSON.stringify({ hooks: { Stop: [{ hooks }] } }))
+    const claude = provider(await readRepositoryProviderConfig(root, { heldBack: true }), "claude-code")
+    expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+    expect(JSON.stringify(claude).toLowerCase()).not.toContain(viewCredential)
+    expect(claude.omittedEntries).toBe(0)
+    const commands = claude.entries.flatMap((entry) => (entry.kind === "hook" ? [entry.command] : []))
+    expect(commands).toHaveLength(hooks.length)
+    for (const command of commands) expect(command).toMatch(/\[REDACTED\]['"]?$/u)
   })
 
   // A hook whose command is adversarial input near the file limit is read in

@@ -208,3 +208,55 @@ export const escapedBlankTexts: readonly string[] = [
   `curl --password=\\ \\ ${viewCredential}\\ tail`,
   `curl -H Authorization:\\ Bearer\\ ${viewCredential}`,
 ]
+
+// A trigger split by quotes that only the shell's words read two or three
+// times join, after a quoted `%22` or `%27` that percent decoding turns into
+// a quote, so no view read in a fixed order of decodings holds it. The texts
+// a review found, then each kind of trigger: a scheme word, a sensitive flag,
+// a header flag long and short, a sensitive key, an environment-style key, an
+// assignment, and each credential shape the backstop knows. Each is the text
+// before the split, the text after it, and what follows the word. The
+// credential is `swordfish` in any case.
+export const shellReadingTexts: readonly string[] = [
+  `echo '%22' "To'ken'" ${viewCredential} tail "Token" y "z9"`,
+  `echo '%22' "To'ken'" ${viewCredential} tail`,
+  `echo '%22' "--to'ken'" ${viewCredential}`,
+  `curl '%22' "--hea'der'" 'X-Foo: ${viewCredential}'`,
+  `echo '%22' "ghp_'${viewCredential}00'"`,
+]
+const splitTriggers: ReadonlyArray<readonly [string, string, string]> = [
+  ["To", "ken", ` ${viewCredential} tail`],
+  ["Bea", "rer", ` ${viewCredential}`],
+  ["--to", "ken", ` ${viewCredential}`],
+  ["--he", "ader", ` 'X-Foo: ${viewCredential}'`],
+  ["-", "H", ` 'X-Foo: ${viewCredential}'`],
+  ["api_k", `ey=${viewCredential}`, ""],
+  ["MY_V", "AR:", ` ${viewCredential}`],
+  ["FO", `O=${viewCredential}`, ""],
+  ["ghp_", `${viewCredential}00`, ""],
+  ["AKIA", viewCredential.toUpperCase().padEnd(16, "0"), ""],
+  ["eyJ", `${viewCredential}.${viewCredential}.${viewCredential}`, ""],
+  ["https:/", `/user:${viewCredential}@host/`, ""],
+  ["-----BEGIN PRIVATE", " KEY-----", ` ${viewCredential}`],
+]
+// Two readings: `"a'b'"` is `a'b'`, then `ab`. Three: `"a'\"b\"'"` is
+// `a'"b"'`, then `a"b"`, then `ab`.
+const readings: ReadonlyArray<(before: string, after: string) => string> = [
+  (before, after) => `"${before}'${after}'"`,
+  (before, after) => `"${before}'\\"${after}\\"'"`,
+]
+export const generatedShellReadingTexts: readonly string[] = ["'%22'", "'%27'"].flatMap((injected) => readings.flatMap((read) => (
+  splitTriggers.map(([before, after, rest]) => `curl ${injected} ${read(before, after)}${rest}`)
+)))
+
+// Text whose views go on changing past the bound on how many are read: a
+// percent encoding nested twelve deep, a double-quoted string nested twelve
+// deep, each in the program's argument and in the program's own name. Each is
+// cut after its program name, or shown as the marker alone.
+const nestedPercent = `x%${"25".repeat(12)}41`
+const nestedQuotes = Array.from({ length: 12 }).reduce<string>((inner) => `"${inner.replace(/[\\"$`]/gu, "\\$&")}"`, "x")
+export const unsettledViewTexts: ReadonlyArray<readonly [string, string, string]> = [
+  ["a percent encoding nested in an argument", `curl ${nestedPercent} tail`, "curl [REDACTED]"],
+  ["a double-quoted string nested in an argument", `curl ${nestedQuotes} tail`, "curl [REDACTED]"],
+  ["a percent encoding nested in the program's name", `${nestedPercent} tail`, "[REDACTED]"],
+]

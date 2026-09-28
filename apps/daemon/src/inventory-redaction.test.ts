@@ -10,8 +10,9 @@ import {
   inventoryBackstopRefuses, inventoryFieldCaps, inventoryShellWords, redactInventoryArgv, redactInventoryCommand, redactInventoryText,
 } from "./inventory-redaction.js"
 import {
-  escapedBlankTexts, hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, quotedStringTexts, sameWordCases, sameWordCredentials,
-  sameWordPlacements, sameWordWrappers, viewCases, viewCredential, viewPlacements, viewSpellings, viewTexts,
+  escapedBlankTexts, generatedShellReadingTexts, hiddenTriggerCredential, hiddenTriggerPlacements, hiddenTriggerWords, quotedStringTexts, sameWordCases,
+  sameWordCredentials, sameWordPlacements, sameWordWrappers, shellReadingTexts, unsettledViewTexts, viewCases, viewCredential, viewPlacements,
+  viewSpellings, viewTexts,
 } from "./test-hidden-triggers.js"
 import { adversarialCommands, nearLinearGrowth, quadraticTimeGrowth, regexAdversaries, timeGrowth, workGrowth } from "./test-work.js"
 
@@ -530,6 +531,70 @@ describe("the first trigger in any view", () => {
         expect(redact(redacted), wrapped).toBe(redacted)
       }
     }
+  })
+})
+
+// A trigger only the shell's words read two or three times join, after a
+// quote percent decoding makes: every view of every view is read, and each is
+// cut before the trigger. Text whose views go on changing past the bound is
+// cut after its program name.
+describe("the first trigger in every view of every view", () => {
+  const leaks = (text: string) => text.toLowerCase().includes(viewCredential)
+  const singleQuoted = (script: string) => `'${script.replace(/'/gu, "'\\''")}'`
+  const doubleQuoted = (script: string) => `"${script.replace(/[\\"$`]/gu, "\\$&")}"`
+  const expectCut = (label: string, redacted: string, redo: (text: string) => string) => {
+    expect(leaks(redacted), `${label} -> ${redacted}`).toBe(false)
+    expect(redacted, label).toMatch(/\[REDACTED\]['"]?$/u)
+    expect(backstopAccepts(redacted), `${label} -> ${redacted}`).toBe(true)
+    expect(redo(redacted), label).toBe(redacted)
+  }
+  const redoneArgv = (command: string) => redactInventoryArgv(inventoryShellWords(command)!)
+
+  it.each([
+    [`echo '%22' "To'ken'" ${viewCredential} tail "Token" y "z9"`, "echo '%22' [REDACTED]", "echo %22 [REDACTED]"],
+    [`echo '%22' "To'ken'" ${viewCredential} tail`, "echo '%22' [REDACTED]", "echo %22 [REDACTED]"],
+    [`echo '%22' "--to'ken'" ${viewCredential}`, "echo '%22' [REDACTED]", "echo %22 [REDACTED]"],
+    [`curl '%22' "--hea'der'" 'X-Foo: ${viewCredential}'`, "curl '%22' [REDACTED]", "curl %22 [REDACTED]"],
+    [`echo '%22' "ghp_'${viewCredential}00'"`, "echo '%22' [REDACTED]", "echo %22 [REDACTED]"],
+  ])("cuts %s before the trigger the shell's words read twice", (text, expected, expectedArgv) => {
+    for (const redact of [redactInventoryText, redactInventoryCommand]) {
+      const redacted = redact(text)
+      expect(redacted, text).toBe(expected)
+      expectCut(text, redacted, redact)
+    }
+    const literal = redactInventoryArgv(inventoryShellWords(text)!)
+    expect(literal, text).toBe(expectedArgv)
+    expectCut(text, literal, redoneArgv)
+    expect(redactInventoryArgv(["sh", "-c", text])).toBe("sh -c [REDACTED]")
+    expect(redactInventoryArgv(["bash", "-lc", text])).toBe("bash -lc [REDACTED]")
+    expect(redactInventoryArgv(["env", "MODE=x", "sh", "-c", text])).toBe("env [REDACTED]")
+    expect(redactInventoryArgv(["env", "sh", "-c", text])).toBe("env sh -c [REDACTED]")
+  })
+
+  it.each([...shellReadingTexts, ...generatedShellReadingTexts])("hides the credential in %s at every entry point", (text) => {
+    for (const redact of [redactInventoryText, redactInventoryCommand]) expectCut(text, redact(text), redact)
+    const argv = inventoryShellWords(text)!
+    expectCut(JSON.stringify(argv), redactInventoryArgv(argv), redoneArgv)
+    for (const wrapped of [["sh", "-c", text], ["bash", "-lc", text], ["env", "MODE=x", "sh", "-c", text], ["env", "sh", "-c", text]]) {
+      expectCut(JSON.stringify(wrapped), redactInventoryArgv(wrapped), redoneArgv)
+    }
+    for (const wrapped of [`sh -c ${singleQuoted(text)}`, `bash -lc ${doubleQuoted(text)}`, `env MODE=x sh -c ${singleQuoted(text)}`, `env sh -c ${singleQuoted(text)}`]) {
+      for (const redact of [redactInventoryText, redactInventoryCommand]) expectCut(wrapped, redact(wrapped), redact)
+    }
+  })
+
+  it.each(unsettledViewTexts)("cuts text with %s after its program name when its views do not settle", (_label, text, expected) => {
+    for (const redact of [redactInventoryText, redactInventoryCommand]) {
+      expect(redact(text), text).toBe(expected)
+      expect(backstopAccepts(expected)).toBe(true)
+    }
+    expect(redactInventoryArgv(inventoryShellWords(text)!), text).toBe(expected)
+    // A script whose views do not settle cuts the whole entry after its
+    // program name.
+    expect(redactInventoryArgv(["sh", "-c", text])).toBe("sh [REDACTED]")
+    expect(redactInventoryArgv(["bash", "-lc", text])).toBe("bash [REDACTED]")
+    expect(redactInventoryArgv(["env", "sh", "-c", text])).toBe("env [REDACTED]")
+    for (const redact of [redactInventoryText, redactInventoryCommand]) expect(redact(`sh -c ${singleQuoted(text)}`)).toBe("sh [REDACTED]")
   })
 })
 
