@@ -2,11 +2,13 @@
 "@getdomovoi/daemon": patch
 ---
 
-The repository trust store now reads its table's columns and index keys from the main schema. Before,
-an index was looked up by name without a schema, so a temporary index sharing a name with one of
-the table's indexes was read in its place. A main index that compares project ids without regard to
-case was then accepted when a temporary index of the same name compared bytes, and a valid table was
-refused when a temporary index of the same name ignored case. Both now read the main index. Index
-keys are read with the `PRAGMA main.index_xinfo` statement rather than the `pragma_index_xinfo`
-function, which a table or virtual table of that name in any schema could answer for, and an index
-with no key column refuses the table.
+The repository trust store now accepts its table only when the table's indexes are exactly the two it
+creates: the primary key's index and `repository_trust_trusted_at` on `trusted_at`, each comparing
+its key as bytes, and each belonging to the table. Any other index refuses the table, even one that
+compares bytes. Before, the store looked each listed index up by name. An unqualified name found a
+temporary index of the same name first; a table or virtual table named `pragma_index_xinfo`, in any
+schema, answered for the lookup function; and an index name stored as invalid UTF-8 read back as
+U+FFFD, and looking that text up found a different index. Each let an index that compares project
+ids without regard to case pass. The store now reads keys only for its two fixed index names, from
+the main schema, with the `PRAGMA main.index_xinfo` statement, and an index with no key column
+refuses the table.

@@ -208,14 +208,43 @@ describe("SqliteRepositoryTrust", () => {
     })
   })
 
-  it("reads the keys of an index whose name holds a quote", () => {
+  it.each([
+    ["an extra index that compares bytes", "CREATE INDEX \"by client's time\" ON repository_trust (trusted_client, trusted_at)"],
+    ["an extra index that ignores case", "CREATE INDEX \"folded's key\" ON repository_trust (project_id COLLATE NOCASE)"],
+    ["its trusted_at index on another column", "DROP INDEX repository_trust_trusted_at; CREATE INDEX repository_trust_trusted_at ON repository_trust (trusted_client)"],
+    ["its trusted_at index ignoring case", "DROP INDEX repository_trust_trusted_at; CREATE INDEX repository_trust_trusted_at ON repository_trust (trusted_at COLLATE NOCASE)"],
+    ["its trusted_at index unique", "DROP INDEX repository_trust_trusted_at; CREATE UNIQUE INDEX repository_trust_trusted_at ON repository_trust (trusted_at)"],
+    ["its trusted_at index partial", "DROP INDEX repository_trust_trusted_at; CREATE INDEX repository_trust_trusted_at ON repository_trust (trusted_at) WHERE trusted_client = 'web'"],
+  ])("refuses its table with %s: its indexes are exactly the store's own", (_, change) => {
     const database = new DatabaseSync(":memory:")
-    const recorded = new SqliteRepositoryTrust(database).record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
-    database.exec("CREATE INDEX \"by client's time\" ON repository_trust (trusted_client, trusted_at)")
-    expect(new SqliteRepositoryTrust(database).find("project-acme")).toEqual(recorded)
+    new SqliteRepositoryTrust(database).record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
+    database.exec(change)
+    const trust = new SqliteRepositoryTrust(database)
 
-    database.exec("CREATE INDEX \"folded's key\" ON repository_trust (project_id COLLATE NOCASE)")
-    expect(new SqliteRepositoryTrust(database).find("project-acme")).toBeUndefined()
+    expect(trust.find("project-acme")).toBeUndefined()
+    expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+  })
+
+  it.each(["C080", "EDA080"])("refuses an index whose stored name is invalid UTF-8 (%s)", (bytes) => {
+    const database = new DatabaseSync(":memory:")
+    new SqliteRepositoryTrust(database).record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
+    // A NOCASE index renamed to bytes that read back as U+FFFD, beside an
+    // index that compares bytes, on an unrelated table, named with the
+    // replacement characters themselves. Looking the listed name up would
+    // read the unrelated index's keys.
+    database.exec("CREATE INDEX folded ON repository_trust (project_id COLLATE NOCASE); CREATE TABLE unrelated (value TEXT)");
+    (database as { enableDefensive?: (active: boolean) => void }).enableDefensive?.(false)
+    database.exec(`
+      PRAGMA writable_schema = ON;
+      UPDATE sqlite_master SET name = CAST(X'${bytes}' AS TEXT), sql = 'CREATE INDEX "' || CAST(X'${bytes}' AS TEXT) || '" ON repository_trust (project_id COLLATE NOCASE)' WHERE name = 'folded';
+      PRAGMA writable_schema = RESET;
+    `)
+    const decoded = (database.prepare("PRAGMA main.index_list(repository_trust)").all() as Array<{ name: string }>).find(({ name }) => name.includes("�"))!.name
+    database.exec(`CREATE INDEX "${decoded}" ON unrelated (value)`)
+    const trust = new SqliteRepositoryTrust(database)
+
+    expect(trust.find("project-acme")).toBeUndefined()
+    expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
   })
 
   it("accepts its table when only an unrelated temporary index of the same name ignores case", () => {
