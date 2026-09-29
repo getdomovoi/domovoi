@@ -31,6 +31,8 @@ export type AcpPermissionRequest = {
   toolCallId: string
   title: string
   command?: string
+  // The agent's own tool kind, when the call is not an execute tool call.
+  tool?: string
   cwd?: string
   reason?: string
   options: AcpPermissionOption[]
@@ -270,6 +272,7 @@ export class AcpAgentAdapter implements AgentAdapter {
         threadId: request.sessionId,
         itemId: request.toolCallId,
         ...(request.command ? { command: request.command } : {}),
+        ...(request.tool ? { tool: request.tool } : {}),
         ...(request.cwd ? { cwd: request.cwd } : {}),
         reason: request.reason ?? request.title,
       })
