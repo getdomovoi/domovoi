@@ -16,6 +16,14 @@ session is marked failed and fenced as an emergency stop fences a thread it coul
 of threads never refuses a revoke: every thread stops, the result lists the first 1,024, and
 `omittedThreads` counts the rest.
 
+A thread is tracked from the moment the provider call returns, before anything is saved, and
+stays tracked until its exit is confirmed. An unconfirmed thread stays tracked and fenced, and
+every later revoke tries to stop it again. So is a thread that a failed session start, fork,
+restart or handoff could not stop, and one that quarantine, a transfer or an ownership conflict
+dropped without confirming its exit. A revoke attempts every stop even when holding a queued send
+or clearing approvals fails, and reports those failures afterwards. Cleanup of a failed handoff
+thread is now bounded by the agent timeout.
+
 Nothing resumes a stopped thread: the next message resumes it, and that resume carries no grant. A
 queued send is held with "Repository trust was taken back before the queued send could release."
 Each stopped session gets a notice: "Repository trust was taken back, so the agent was stopped."

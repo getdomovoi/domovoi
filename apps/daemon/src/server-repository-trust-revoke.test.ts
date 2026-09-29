@@ -127,6 +127,10 @@ async function fixture(options: { agentTimeoutMs?: number; reportsTrust?: boolea
       session("session-restart", claude),
     ],
   }
+  snapshot.thread.push({
+    id: "checkpoint-fork", sessionId: "session-a", kind: "checkpoint", label: "88888888 · fork point",
+    commit: "8".repeat(40), createdAt: "2026-09-29T12:00:00.000Z",
+  })
   // Grants by project, as the store holds them.
   const grants = new Map<string, RepositoryTrustGrant>()
   const repositoryTrust: RepositoryTrustStore = {
@@ -147,10 +151,11 @@ async function fixture(options: { agentTimeoutMs?: number; reportsTrust?: boolea
   const reportsTrust = options.reportsTrust ?? true
   const agents = { "claude-code": agentFor(claude, reportsTrust), codex: agentFor(codex, reportsTrust) }
   const errorSink = vi.fn()
+  const store = new SqliteWorkspaceStore(":memory:", snapshot)
   const daemon = new DomovoiDaemon({
     port: 0,
     statePath: ":memory:",
-    store: new SqliteWorkspaceStore(":memory:", snapshot),
+    store,
     agents,
     workspaceService,
     repositoryTrust,
@@ -190,7 +195,7 @@ async function fixture(options: { agentTimeoutMs?: number; reportsTrust?: boolea
   const notices = async (id: string) => (await live()).thread
     .filter((item) => item.sessionId === id && item.kind === "system")
     .map((item) => (item as { body: string }).body)
-  return { agents, grants, rpc, ok, revoke, sessionNamed, notices, errorSink }
+  return { agents, grants, rpc, ok, revoke, sessionNamed, notices, errorSink, store, workspaceService }
 }
 
 const trustOf = (call: object | undefined) => (call as { repositoryTrust?: unknown } | undefined)?.repositoryTrust
@@ -334,8 +339,11 @@ describe("repository.revokeTrust stops the threads that opened under the grant",
     expect(agents["claude-code"].stopThread.mock.calls.map(([threadId]) => threadId).sort())
       .toEqual(["claude-code-started", "thread-a", "thread-b"])
     expect(agents.codex.stopThread.mock.calls).toEqual([["thread-codex"]])
-    // A result within the cap carries no count.
-    expect((await ok("repository.revokeTrust", { projectId })).result).toEqual({ repository: expect.anything(), threads: [] })
+    // A result within the cap carries no count. The Codex thread was
+    // unconfirmed, so it stays tracked and the next revoke tries it again.
+    expect((await ok("repository.revokeTrust", { projectId })).result).toEqual({
+      repository: expect.anything(), threads: [{ sessionId: "session-codex", outcome: "unconfirmed" }],
+    })
   })
 
   // A workspace holds the open project's sessions only, and opening another
@@ -380,6 +388,84 @@ describe("repository.revokeTrust stops the threads that opened under the grant",
     expect(revoked).toMatchObject({ result: { threads: [{ sessionId: "session-a", outcome: "restarted" }] } })
     expect(agents["claude-code"].stopThread.mock.calls).toEqual([["thread-a"]])
     expect((await sessionNamed("session-a")).activeTurnId).toBeUndefined()
+  })
+})
+
+// Security review round 1 of #669: a thread that loaded trusted input stays
+// tracked until its exit is confirmed, whatever fails around it, and every
+// revoke tries to stop it.
+describe("repository.revokeTrust when bookkeeping or cleanup fails", () => {
+  it("stops the thread when holding a queued send fails, and keeps an unconfirmed one for the next revoke", async () => {
+    const { agents, grants, ok, revoke, store, errorSink } = await fixture()
+    grants.set(projectId, grant(projectId))
+    await ok("session.send", { sessionId: "session-a", prompt: "work" })
+    await ok("session.send", { sessionId: "session-a", prompt: "queued", delivery: "next-turn-replace" })
+    vi.spyOn(store, "transitionQueuedSessionSend").mockImplementation(() => {
+      throw new Error("disk I/O error")
+    })
+    agents["claude-code"].stopThread.mockRejectedValueOnce(new Error("provider gone"))
+
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "unconfirmed" }])
+    expect(agents["claude-code"].interruptTurn.mock.calls).toEqual([["thread-a", "turn-thread-a"]])
+    expect(agents["claude-code"].stopThread.mock.calls).toEqual([["thread-a"]])
+    expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
+      context: "Domovoi could not record every change for a thread whose repository trust was taken back",
+    }))
+    // Still tracked: the next revoke tries the stop again.
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "restarted" }])
+    expect(agents["claude-code"].stopThread.mock.calls).toEqual([["thread-a"], ["thread-a"]])
+  })
+
+  it("stops, at the next revoke, a fork thread whose save and cleanup both failed", async () => {
+    const { agents, grants, rpc, revoke, store } = await fixture()
+    grants.set(projectId, grant(projectId))
+    const save = store.saveAsync.bind(store)
+    let failed = false
+    vi.spyOn(store, "saveAsync").mockImplementation(async (snapshot) => {
+      if (!failed && snapshot.sessions.length > 4) {
+        failed = true
+        throw new Error("disk full")
+      }
+      await save(snapshot)
+    })
+    agents["claude-code"].stopThread.mockRejectedValueOnce(new Error("provider gone"))
+    const forked = await rpc("session.fork", {
+      client: "desktop", sessionId: "session-a", checkpointId: "checkpoint-fork", requestId: "fork-save-fails", runtime: claude,
+    })
+    expect(forked).toHaveProperty("error")
+    expect(failed).toBe(true)
+    expect(agents["claude-code"].stopThread.mock.calls).toEqual([["claude-code-started"]])
+
+    expect(await revoke()).toEqual([{ sessionId: expect.any(String), outcome: "restarted" }])
+    expect(agents["claude-code"].stopThread.mock.calls).toEqual([["claude-code-started"], ["claude-code-started"]])
+  })
+
+  it("bounds a hung handoff cleanup, so a revoke still runs and stops the thread", async () => {
+    const { agents, grants, rpc, revoke, workspaceService } = await fixture({ agentTimeoutMs: 300 })
+    grants.set(projectId, grant(projectId))
+    workspaceService.checkpoint.mockRejectedValueOnce(new Error("checkpoint failed"))
+    agents["claude-code"].stopThread.mockImplementationOnce(() => new Promise<void>(() => {}))
+    const handoff = rpc("session.setRuntime", { client: "desktop", sessionId: "session-codex", runtime: claude })
+    await waitForDaemon(() => expect(agents["claude-code"].stopThread).toHaveBeenCalledOnce())
+
+    const revoking = revoke()
+    const outcome = await Promise.race([revoking, new Promise((resolve) => setTimeout(() => resolve("blocked"), 3_000))])
+    expect(outcome).toEqual([{ sessionId: "session-codex", outcome: "restarted" }])
+    expect(await handoff).toHaveProperty("error")
+    expect(agents["claude-code"].stopThread.mock.calls).toEqual([["claude-code-started"], ["claude-code-started"]])
+  })
+
+  it("stops a tracked thread that quarantine took out of the loaded set without confirming its exit", async () => {
+    const { agents, grants, rpc, revoke, sessionNamed } = await fixture({ agentTimeoutMs: 300 })
+    grants.set(projectId, grant(projectId))
+    agents["claude-code"].startTurn.mockImplementationOnce(() => new Promise<string>(() => {}))
+    agents["claude-code"].stopThread.mockRejectedValueOnce(new Error("provider gone"))
+    expect(await rpc("session.send", { client: "desktop", sessionId: "session-a", prompt: "work" })).toHaveProperty("error")
+    expect((await sessionNamed("session-a")).providerThreadId).toBeUndefined()
+    expect(agents["claude-code"].stopThread.mock.calls).toEqual([["thread-a"]])
+
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "restarted" }])
+    expect(agents["claude-code"].stopThread.mock.calls).toEqual([["thread-a"], ["thread-a"]])
   })
 })
 
