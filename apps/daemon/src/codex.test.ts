@@ -24,6 +24,7 @@ import {
   type CodexTransport,
   type JsonRpcMessage,
 } from "./codex.js"
+import type { AgentEvent } from "./agents.js"
 import { classifyProviderFailure } from "./provider-failures.js"
 
 class FakeChild extends EventEmitter {
@@ -1127,6 +1128,73 @@ describe("CodexAppServerAdapter", () => {
 
     adapter.resolveApproval(41, "always-project")
     expect(transport.sent.at(-1)).toEqual({ id: 41, result: { decision: "accept" } })
+    await adapter.close()
+  })
+
+  // Codex 0.157 asks before a tool server's tool runs with an MCP elicitation
+  // marked codex_approval_kind mcp_tool_call, after the call's mcpToolCall item
+  // has started. The card names the server; an answer never asks Codex to
+  // remember it (no persist), so Always stays Domovoi's to refuse.
+  it("raises an approval for a tool server call Codex asks about", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const events: AgentEvent[] = []
+    adapter.onEvent((next) => events.push(next))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+    const common = { threadId: "thread-1", turnId: "turn-1" }
+    const mcpItem = (method: string, id: string, server: string, status: string) => transport.receive({
+      method,
+      params: { ...common, item: { type: "mcpToolCall", id, server, tool: "create_issue", status, arguments: {} } },
+    })
+    const ask = (id: number, serverName: string, meta: Record<string, unknown> | undefined) => transport.receive({
+      id,
+      method: "mcpServer/elicitation/request",
+      params: {
+        ...common,
+        serverName,
+        mode: "form",
+        message: `Allow the ${serverName} MCP server to run tool "create_issue"?`,
+        requestedSchema: { type: "object", properties: {} },
+        ...(meta ? { _meta: meta } : {}),
+      },
+    })
+    const approvals = () => events.filter((candidate) => candidate.type === "approval-requested")
+
+    mcpItem("item/started", "mcp-1", "github", "inProgress")
+    ask(51, "github", { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"] })
+    expect(approvals().at(-1)).toEqual({
+      type: "approval-requested",
+      requestId: 51,
+      ...common,
+      itemId: "mcp-1",
+      command: "github.create_issue",
+      tool: "github.create_issue",
+      toolServer: { name: "github" },
+      reason: 'Allow the github MCP server to run tool "create_issue"?',
+    })
+    adapter.resolveApproval(51, "always-project")
+    expect(transport.sent.at(-1)).toEqual({ id: 51, result: { action: "accept", content: null } })
+
+    // Once the call ends, or when two calls to the server are running, the
+    // request cannot be tied to one call: it names the server alone.
+    mcpItem("item/completed", "mcp-1", "github", "completed")
+    ask(52, "github", { codex_approval_kind: "mcp_tool_call" })
+    mcpItem("item/started", "mcp-2", "linear", "inProgress")
+    mcpItem("item/started", "mcp-3", "linear", "inProgress")
+    ask(53, "linear", { codex_approval_kind: "mcp_tool_call" })
+    expect(approvals().slice(-2)).toEqual([
+      expect.objectContaining({ requestId: 52, command: "github", tool: "github", toolServer: { name: "github" } }),
+      expect.objectContaining({ requestId: 53, command: "linear", tool: "linear", toolServer: { name: "linear" } }),
+    ])
+    expect(approvals().slice(-2)).not.toContainEqual(expect.objectContaining({ itemId: expect.anything() }))
+    adapter.resolveApproval(52, "deny")
+    expect(transport.sent.at(-1)).toEqual({ id: 52, result: { action: "decline", content: null } })
+
+    // A server's own question is not an approval and gets no card.
+    ask(54, "github", undefined)
+    expect(approvals()).toHaveLength(3)
     await adapter.close()
   })
 

@@ -333,6 +333,11 @@ export class CodexAppServerAdapter implements AgentAdapter {
   #connectPromise: Promise<void> | undefined
   #collaborationModeAvailable = true
   #additionalContextAvailable = true
+  // Running mcpToolCall items by item id, so a tool server approval can name
+  // its call, and the approvals Codex asked for as MCP elicitations, which are
+  // answered in that shape. Both belong to the transport that sent them.
+  #toolServerCalls = new Map<string, ToolServerCall>()
+  #toolServerApprovals = new Set<number>()
 
   constructor(transportFactory: () => CodexTransport = () => new StdioCodexTransport()) {
     this.#transportFactory = transportFactory
@@ -541,6 +546,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const mapped = decision === "allow-once" || decision === "always-project"
       ? "accept"
       : "decline"
+    // An accepted elicitation with no persist in its _meta runs the call once;
+    // Codex is never asked to remember a tool server answer.
+    if (this.#toolServerApprovals.delete(requestId)) {
+      this.#transport?.send({ id: requestId, result: { action: mapped, content: null } })
+      return
+    }
     this.#transport?.send({ id: requestId, result: { decision: mapped } })
   }
 
@@ -634,6 +645,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
     this.#unsubscribeMessage = undefined
     this.#unsubscribeError = undefined
     this.#transport = undefined
+    this.#toolServerCalls.clear()
+    this.#toolServerApprovals.clear()
   }
 
   #receive(message: JsonRpcMessage): void {
@@ -688,7 +701,22 @@ export class CodexAppServerAdapter implements AgentAdapter {
         ...(typeof params.cwd === "string" ? { cwd: params.cwd } : {}),
         ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
       })
+    } else if (message.method === "mcpServer/elicitation/request" && message.id !== undefined) {
+      // A server's own question is not an approval and is left as before.
+      const request = toolServerApproval(params, this.#toolServerCalls)
+      if (!request) return
+      this.#toolServerApprovals.add(message.id)
+      this.#emit({ type: "approval-requested", requestId: message.id, ...common, ...request })
     } else if (message.method === "item/started" || message.method === "item/completed") {
+      const item = asRecord(params.item)
+      if (
+        item?.type === "mcpToolCall" && typeof item.id === "string" && typeof params.threadId === "string"
+        && typeof item.server === "string" && typeof item.tool === "string"
+      ) {
+        if (message.method === "item/started") {
+          this.#toolServerCalls.set(item.id, { threadId: params.threadId, server: item.server, tool: item.tool })
+        } else this.#toolServerCalls.delete(item.id)
+      }
       this.#emit({
         type: "item",
         phase: message.method === "item/started" ? "started" : "completed",
@@ -708,6 +736,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
         this.#emit({ type: "usage", threadId: params.threadId, turnId: params.turnId, usage })
       }
     } else if (message.method === "turn/completed") {
+      for (const [itemId, call] of this.#toolServerCalls) {
+        if (call.threadId === params.threadId) this.#toolServerCalls.delete(itemId)
+      }
       const usage = normalizeProviderUsage(params.turn ?? params)
       if (usage && typeof params.threadId === "string" && typeof params.turnId === "string") {
         this.#emit({ type: "usage", threadId: params.threadId, turnId: params.turnId, usage })
@@ -723,6 +754,32 @@ export class CodexAppServerAdapter implements AgentAdapter {
   #rejectPending(error: Error): void {
     for (const pending of this.#pending.values()) pending.reject(error)
     this.#pending.clear()
+  }
+}
+
+type ToolServerCall = { threadId: string; server: string; tool: string }
+
+// Codex asks before a tool server's tool runs with an MCP elicitation whose
+// _meta.codex_approval_kind is mcp_tool_call (codex-rs core mcp_tool_call.rs,
+// 0.157), after the call's mcpToolCall item has started. The request names
+// the server, not the call. The call is the one running mcpToolCall item for
+// that server on the thread; with none, or more than one, the request names
+// the server alone.
+function toolServerApproval(
+  params: Record<string, unknown>,
+  calls: ReadonlyMap<string, ToolServerCall>,
+): { itemId?: string; command: string; tool: string; toolServer: { name: string }; reason?: string } | undefined {
+  const server = params.serverName
+  if (asRecord(params._meta)?.codex_approval_kind !== "mcp_tool_call" || typeof server !== "string" || !server) return undefined
+  const running = [...calls].filter(([, call]) => call.threadId === params.threadId && call.server === server)
+  const [itemId, call] = running.length === 1 ? running[0]! : []
+  const command = call ? `${server}.${call.tool}` : server
+  return {
+    ...(itemId ? { itemId } : {}),
+    command,
+    tool: command,
+    toolServer: { name: server },
+    ...(typeof params.message === "string" ? { reason: params.message } : {}),
   }
 }
 
