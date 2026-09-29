@@ -507,7 +507,21 @@ const ownServers = (...names: string[]) => ({
     { name: { type: "project", dotCodexFolder: "/elsewhere/.codex" }, version: "1", config: { mcp_servers: { db: { command: "planted" } } } },
   ],
 })
-const trustedReply = (read: unknown = ownServers("github")): Reply => (method) => (method === "config/read" ? { result: read } : threadReply(method))
+// What mcpServerStatus/list gives: every server of Codex's effective catalog,
+// plugin servers included, a page at a time.
+const catalogPage = (servers: Array<[name: string, pluginId: string | null]>, nextCursor: string | null = null) => ({
+  data: servers.map(([name, pluginId]) => ({ name, pluginId, authStatus: "unsupported", tools: {}, resources: [], resourceTemplates: [] })),
+  nextCursor,
+})
+type Answer = Pick<JsonRpcMessage, "result" | "error">
+const trustedReply = (read: unknown = ownServers("github"), catalog: Answer[] = [{ result: catalogPage([["github", null]]) }]): Reply => {
+  let page = 0
+  return (method) => {
+    if (method === "config/read") return { result: read }
+    if (method === "mcpServerStatus/list") return catalog[Math.min(page++, catalog.length - 1)]!
+    return threadReply(method)
+  }
+}
 
 // The grant for the worktree's configuration as the session's verdict reads it.
 async function grantOf(cwd: string): Promise<RepositoryTrustGrant> {
@@ -523,6 +537,7 @@ describe("Codex under repository trust", () => {
     const threadId = await adapter.startThread({ cwd, runtime, repositoryTrust })
 
     expect(sentParams(transport, "config/read")).toEqual([{ cwd, includeLayers: true }])
+    expect(sentParams(transport, "mcpServerStatus/list")).toEqual([{ detail: "toolsAndAuthOnly" }])
     const config = sentParams(transport, "thread/start")[0]?.config as Record<string, unknown>
     expect(config).toEqual(trustedThreadConfig(cwd))
     for (const key of [
@@ -586,6 +601,47 @@ describe("Codex under repository trust", () => {
     expect(adapter.repositoryTrustApplied(threadId)).toBeUndefined()
   })
 
+  // Security review round 1: config servers win over plugin servers by name
+  // in Codex's catalog, so a repository server could stand in for a plugin's.
+  it("holds back a repository server named like a server of one of the person's plugins", async () => {
+    const cwd = repository(trustedFiles)
+    const { adapter, transport } = await connected(trustedReply(ownServers("github"), [{ result: catalogPage([["github", null], ["Db", "acme@market"]]) }]))
+
+    const threadId = await adapter.startThread({ cwd, runtime, repositoryTrust: await grantOf(cwd) })
+
+    expect(sentParams(transport, "thread/start")[0]?.config).toEqual(untrusted(cwd))
+    expect(adapter.repositoryTrustApplied(threadId)).toBeUndefined()
+  })
+
+  it("reads every page of the catalog before passing a server", async () => {
+    const cwd = repository(trustedFiles)
+    const { adapter, transport } = await connected(trustedReply(ownServers("github"), [
+      { result: catalogPage([["github", null]], "1") },
+      { result: catalogPage([["db", "acme@market"]]) },
+    ]))
+
+    await adapter.startThread({ cwd, runtime, repositoryTrust: await grantOf(cwd) })
+
+    expect(sentParams(transport, "mcpServerStatus/list")).toEqual([{ detail: "toolsAndAuthOnly" }, { detail: "toolsAndAuthOnly", cursor: "1" }])
+    expect(sentParams(transport, "thread/start")[0]?.config).toEqual(untrusted(cwd))
+  })
+
+  it.each<[string, Answer]>([
+    ["fails", { error: { message: "failed to reload config" } }],
+    ["gives no list", { result: { data: "planted" } }],
+    ["names a server without a name", { result: { data: [{ pluginId: "acme@market" }], nextCursor: null } }],
+  ])("passes no server when the catalog read %s", async (_, answer) => {
+    const cwd = repository(trustedFiles)
+    const { adapter, transport } = await connected(trustedReply(ownServers("github"), [answer]))
+
+    const threadId = await adapter.startThread({ cwd, runtime, repositoryTrust: await grantOf(cwd) })
+    await adapter.resumeThread({ threadId, cwd, runtime, repositoryTrust: await grantOf(cwd) })
+
+    expect(sentParams(transport, "thread/start")[0]?.config).toEqual(untrusted(cwd))
+    expect(sentParams(transport, "thread/resume")[0]?.config).toEqual(untrusted(cwd))
+    expect(adapter.repositoryTrustApplied(threadId)).toBeUndefined()
+  })
+
   it("passes no server when Codex does not say which servers are the person's own", async () => {
     const cwd = repository(trustedFiles)
     const { adapter, transport } = await connected(trustedReply({ config: { mcp_servers: {} } }))
@@ -603,6 +659,7 @@ describe("Codex under repository trust", () => {
     const threadId = await adapter.startThread({ cwd, runtime, repositoryTrust: await grantOf(cwd) })
 
     expect(sentParams(transport, "config/read")).toEqual([{ cwd }])
+    expect(sentParams(transport, "mcpServerStatus/list")).toEqual([])
     expect(sentParams(transport, "thread/start")[0]?.config).toEqual(untrusted(cwd))
     expect(adapter.repositoryTrustApplied(threadId)).toBeUndefined()
   })
@@ -635,6 +692,7 @@ describe("Codex under repository trust", () => {
     await adapter.resumeThread({ threadId: "thread-1", cwd, runtime, repositoryTrust })
 
     expect(sentParams(transport, "config/read")).toEqual([{ cwd, includeLayers: true }])
+    expect(sentParams(transport, "mcpServerStatus/list")).toEqual([{ detail: "toolsAndAuthOnly" }])
     expect(sentParams(transport, "thread/resume")).toEqual([{ threadId: "thread-1", config: trustedThreadConfig(cwd) }])
     expect(adapter.repositoryTrustApplied("thread-1")).toEqual({ digest: repositoryTrust.trustedDigest })
   })

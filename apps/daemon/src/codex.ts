@@ -23,6 +23,7 @@ import {
   codexRepositoryConfigRefusal,
 } from "./codex-repository-config.js"
 import {
+  codexCatalogPage,
   codexOwnServerNames,
   codexRepositoryLoad,
   codexTrustedThreadConfig,
@@ -169,6 +170,10 @@ function codexThreadConfig(cwd: string, servers: Readonly<Record<string, CodexRe
 // What a thread may take from a trusted worktree: the digest its verdict
 // compared, and the servers codex-repository-trust.ts lets pass.
 type RepositoryPlan = { digest: string; servers: Record<string, CodexRepositoryServer> }
+
+// The most mcpServerStatus/list pages read before a thread opens. Codex
+// answers in one page unless asked for a limit.
+const maximumCatalogPages = 50
 
 export function codexAppServerArguments(): string[] {
   const worktreeSecrets = `{${codexWorktreeSecretPatterns.map((pattern) => `${JSON.stringify(pattern)}="deny"`).join(",")}}`
@@ -416,7 +421,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const offered = plan !== undefined && Object.keys(plan.servers).length > 0
     const read = await this.#request("config/read", offered ? { cwd, includeLayers: true } : { cwd })
     const own = resolvedDeveloperInstructions(read)
-    const servers = plan === undefined ? {} : serversToPass(plan, read)
+    const servers = plan === undefined ? {} : await this.#serversToPass(plan, read)
     refuseRepositoryConfig(cwd, plan !== undefined)
     const result = await this.#request("thread/start", {
       cwd,
@@ -450,6 +455,47 @@ export class CodexAppServerAdapter implements AgentAdapter {
     return verdict.state === "trusted"
       ? { digest: verdict.configDigest, servers: codexRepositoryLoad(verdict.documents).mcpServers }
       : undefined
+  }
+
+  // The plan's servers less any named like one of the person's own (ruling
+  // Q150 A): those their config layers declare, from a config/read answer
+  // with its layers, and every server of Codex's effective catalog, plugin
+  // servers included. When either cannot be read, none pass.
+  async #serversToPass(plan: RepositoryPlan, configRead: unknown): Promise<Record<string, CodexRepositoryServer>> {
+    if (Object.keys(plan.servers).length === 0) return {}
+    const own = codexOwnServerNames(configRead)
+    const catalog = own === undefined ? undefined : await this.#catalogServerNames()
+    return own === undefined || catalog === undefined ? {} : withoutOwnServers(plan.servers, [...own, ...catalog])
+  }
+
+  // Every server name of Codex's effective catalog, page by page. Without a
+  // thread, Codex builds that catalog from the person's configuration and
+  // plugins and starts each server once to describe it (McpStartupPolicy
+  // Eager in collect_mcp_server_status_snapshot_with_detail at
+  // rust-v0.157.1); "toolsAndAuthOnly" is its smaller answer. A failed or
+  // unreadable page, or a cursor seen before, gives undefined.
+  async #catalogServerNames(): Promise<string[] | undefined> {
+    const names: string[] = []
+    const cursors = new Set<string>()
+    let cursor: string | undefined
+    for (let pages = 0; pages < maximumCatalogPages; pages += 1) {
+      let page: ReturnType<typeof codexCatalogPage>
+      try {
+        page = codexCatalogPage(await this.#request(
+          "mcpServerStatus/list",
+          cursor === undefined ? { detail: "toolsAndAuthOnly" } : { detail: "toolsAndAuthOnly", cursor },
+        ))
+      } catch {
+        return undefined
+      }
+      if (page === undefined) return undefined
+      names.push(...page.names)
+      if (page.nextCursor === undefined) return names
+      if (cursors.has(page.nextCursor)) return undefined
+      cursors.add(page.nextCursor)
+      cursor = page.nextCursor
+    }
+    return undefined
   }
 
   #opened(threadId: string, plan: RepositoryPlan | undefined, servers: Readonly<Record<string, CodexRepositoryServer>>): void {
@@ -529,7 +575,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     refuseRepositoryConfig(cwd, plan !== undefined)
     let servers: Record<string, CodexRepositoryServer> = {}
     if (plan !== undefined && Object.keys(plan.servers).length > 0) {
-      servers = serversToPass(plan, await this.#request("config/read", { cwd, includeLayers: true }))
+      servers = await this.#serversToPass(plan, await this.#request("config/read", { cwd, includeLayers: true }))
       refuseRepositoryConfig(cwd, true)
     }
     const result = await this.#request("thread/resume", { threadId, config: codexThreadConfig(cwd, servers) })
@@ -919,14 +965,6 @@ function refuseRepositoryConfig(cwd: string, trusted: boolean): void {
   if (trusted) return
   const main = codexMainCheckoutConfigFile(cwd)
   if (main !== undefined) throw new Error(codexMainCheckoutConfigRefusal(main.file, main.mainCheckout))
-}
-
-// The plan's servers less any named like one of the person's own (ruling
-// Q150 A), from a config/read answer with its layers. When the answer does
-// not say, none pass.
-function serversToPass(plan: RepositoryPlan, configRead: unknown): Record<string, CodexRepositoryServer> {
-  const own = codexOwnServerNames(configRead)
-  return own === undefined ? {} : withoutOwnServers(plan.servers, own)
 }
 
 function resolvedDeveloperInstructions(result: unknown): string | undefined {

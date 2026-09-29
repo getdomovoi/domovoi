@@ -184,6 +184,24 @@ export function codexOwnServerNames(configRead: unknown): string[] | undefined {
   return names
 }
 
+// A page of mcpServerStatus/list, the one app-server method that names every
+// server of Codex's effective catalog, plugin servers included (pluginId; the
+// catalog is McpManager::runtime_config at rust-v0.157.1). Config servers
+// win over plugin servers of the same name there (codex-mcp catalog.rs), so a
+// repository server named like a plugin's would stand in for it. Undefined
+// when the page cannot be read, and then no server passes.
+export function codexCatalogPage(page: unknown): { names: string[]; nextCursor?: string } | undefined {
+  if (!isRecord(page) || !Array.isArray(page.data)) return undefined
+  const names: string[] = []
+  for (const server of page.data as unknown[]) {
+    if (!isRecord(server) || typeof server.name !== "string") return undefined
+    names.push(server.name)
+  }
+  const cursor = page.nextCursor
+  if (cursor !== undefined && cursor !== null && typeof cursor !== "string") return undefined
+  return typeof cursor === "string" ? { names, nextCursor: cursor } : { names }
+}
+
 // Ruling Q150 A: Codex merges a thread's server into the person's one of the
 // same name, so a repository server named like one of the person's own is
 // held back. Names are compared in any case, as a person reading a card would.

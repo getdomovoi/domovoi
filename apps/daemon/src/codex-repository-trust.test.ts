@@ -2,6 +2,7 @@ import type { ToolInventoryEntry } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
 import {
+  codexCatalogPage,
   codexEntryHeldBack,
   codexOwnServerNames,
   codexRepositoryLoad,
@@ -177,6 +178,23 @@ describe("codexOwnServerNames", () => {
     expect(codexOwnServerNames({ config: {} })).toBeUndefined()
     expect(codexOwnServerNames(undefined)).toBeUndefined()
     expect(codexOwnServerNames({ layers: [{ name: "user", config: {} }] })).toBeUndefined()
+  })
+})
+
+describe("codexCatalogPage", () => {
+  // An mcpServerStatus/list page: every server of Codex's effective catalog,
+  // plugin servers included.
+  it("names every server on a page and the cursor of the next", () => {
+    const page = { data: [{ name: "github", pluginId: null }, { name: "db", pluginId: "acme@market" }], nextCursor: "2" }
+    expect(codexCatalogPage(page)).toEqual({ names: ["github", "db"], nextCursor: "2" })
+    expect(codexCatalogPage({ data: [], nextCursor: null })).toEqual({ names: [] })
+    expect(codexCatalogPage({ data: [] })).toEqual({ names: [] })
+  })
+
+  it("cannot tell from a page it cannot read", () => {
+    for (const page of [undefined, {}, { data: "db" }, { data: [{ pluginId: "acme@market" }] }, { data: [{ name: 3 }] }, { data: [], nextCursor: 2 }]) {
+      expect(codexCatalogPage(page), JSON.stringify(page)).toBeUndefined()
+    }
   })
 })
 
