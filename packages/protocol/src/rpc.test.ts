@@ -6,7 +6,13 @@ import {
   auditExportResultSchema,
   auditQueryPageSchema,
   auditQueryParamsSchema,
+  daemonAuthenticationErrorCode,
   daemonPersistenceUnavailableErrorCode,
+  daemonShuttingDownErrorCode,
+  devicePairingLimitErrorCode,
+  fleetSnapshotOverflowErrorCode,
+  localOwnerRequiredErrorCode,
+  machineCredentialMissingErrorCode,
   demoWorkspace,
   deviceLabelMismatchErrorCode,
   helloParamsSchema,
@@ -52,6 +58,33 @@ import {
 describe("audit RPC contracts", () => {
   it("reserves a structured error for refused turn skill selections", () => {
     expect(turnSkillSelectionErrorCode).toBe(-32015)
+  })
+
+  // A method only the loopback owner may call is a policy refusal, not a
+  // credential failure: a client that sees it keeps its connection.
+  it("reserves a non-authentication error for methods only the loopback owner may call", () => {
+    expect(localOwnerRequiredErrorCode).toBe(-32019)
+    const codes = [
+      daemonAuthenticationErrorCode,
+      daemonShuttingDownErrorCode,
+      projectSwitchConfirmationErrorCode,
+      machineCredentialMissingErrorCode,
+      protocolVersionMismatchErrorCode,
+      devicePairingLimitErrorCode,
+      daemonPersistenceUnavailableErrorCode,
+      turnSkillSelectionErrorCode,
+      fleetSnapshotOverflowErrorCode,
+      deviceLabelMismatchErrorCode,
+      skillInstallErrorCode,
+      localOwnerRequiredErrorCode,
+    ]
+    expect(new Set(codes).size).toBe(codes.length)
+    const refusal = {
+      jsonrpc: "2.0",
+      id: 7,
+      error: { code: localOwnerRequiredErrorCode, message: "Updates require a loopback local-owner connection" },
+    }
+    expect(rpcResponseSchema.parse(refusal)).toEqual(refusal)
   })
 
   it("carries the authenticated connection on client audit actors", () => {
