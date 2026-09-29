@@ -28,6 +28,7 @@ import { SqliteDeviceRegistry, storedDeviceRowIsValid, type DeviceRegistry } fro
 import { SqliteTransferReceipts, type TransferReceipts } from "./transfer-receipts.js"
 import { SqliteFleetRegistry, type FleetRegistry } from "./fleet-registry.js"
 import { SqliteSkillReviews, type SkillReviews } from "./skill-reviews.js"
+import { SqliteRepositoryTrust, type RepositoryTrustStore } from "./repository-trust-store.js"
 import {
   committedTransferOwnershipSchema,
   SqliteTransferOwnership,
@@ -131,6 +132,7 @@ export interface WorkspaceStore {
   readonly transferOwnership?: TransferOwnership
   readonly transferConflicts?: SqliteTransferConflicts
   readonly skillReviews?: SkillReviews
+  readonly repositoryTrust?: RepositoryTrustStore
   readonly sessionCreations?: SqliteSessionCreationIntents
   readonly emergencyStops?: SqliteEmergencyStopIntents
   readonly recovery?: WorkspaceStoreRecovery | undefined
@@ -678,6 +680,7 @@ type OpenedState = {
   transferOwnership: SqliteTransferOwnership
   transferConflicts: SqliteTransferConflicts
   skillReviews: SqliteSkillReviews
+  repositoryTrust: SqliteRepositoryTrust
   sessionCreations: SqliteSessionCreationIntents
   emergencyStops: SqliteEmergencyStopIntents
   existing: StoredWorkspace | undefined
@@ -714,6 +717,7 @@ function openState(path: string, integrityCheckMaximumBytes: number): OpenedStat
       transferOwnership: new SqliteTransferOwnership(database),
       transferConflicts: new SqliteTransferConflicts(database),
       skillReviews: new SqliteSkillReviews(database),
+      repositoryTrust: new SqliteRepositoryTrust(database),
       sessionCreations: new SqliteSessionCreationIntents(database),
       emergencyStops: new SqliteEmergencyStopIntents(database),
     }
@@ -919,6 +923,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly transferOwnership: SqliteTransferOwnership
   readonly transferConflicts: SqliteTransferConflicts
   readonly skillReviews: SqliteSkillReviews
+  readonly repositoryTrust: SqliteRepositoryTrust
   readonly sessionCreations: SqliteSessionCreationIntents
   readonly emergencyStops: SqliteEmergencyStopIntents
   readonly recovery: WorkspaceStoreRecovery | undefined
@@ -972,6 +977,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.transferOwnership = opened.transferOwnership
     this.transferConflicts = opened.transferConflicts
     this.skillReviews = opened.skillReviews
+    this.repositoryTrust = opened.repositoryTrust
     this.sessionCreations = opened.sessionCreations
     this.emergencyStops = opened.emergencyStops
 

@@ -1,7 +1,14 @@
-import { maximumToolInventoryBytes, toolInventorySchema, type ToolInventory } from "@getdomovoi/protocol"
+import {
+  maximumRepositoryTrustRefusals,
+  maximumToolInventoryBytes,
+  toolInventorySchema,
+  type RepositoryTrustState,
+  type ToolInventory,
+} from "@getdomovoi/protocol"
 
 import { redactInventoryPath } from "./inventory-redaction.js"
 import { readRepositoryProviderConfig, type RepositoryProviderConfig, type RepositoryProviderConfigOptions } from "./repository-provider-config.js"
+import type { RepositoryTrustGrant } from "./repository-trust-store.js"
 
 // The tool.inventory answer: what the open repository's own agent
 // configuration declares, read by repository-provider-config.ts, with the
@@ -18,9 +25,10 @@ import { readRepositoryProviderConfig, type RepositoryProviderConfig, type Repos
 // No entry is marked held back. The adapters keep most repository
 // configuration from the agent today, but not provably all of it (a skill a
 // repository brings, for one), so the inventory does not claim they do until
-// applying trust (P6 to P8) states what each one keeps back.
+// applying trust (P6 to P8) states what each one keeps back (ruling Q128 A).
 //
-// Until the trust store exists (P5), no repository is trusted.
+// Trust is this machine's grant for the repository (repository-trust-store.ts),
+// reported against the digest read now; it is recorded, not yet applied.
 
 export type RepositoryProviderConfigReader = (rootPath: string, options: RepositoryProviderConfigOptions) => Promise<RepositoryProviderConfig>
 
@@ -28,10 +36,12 @@ export type ToolInventoryInput = {
   machine: ToolInventory["machine"]
   // The open project, if any: its id and the repository root it names.
   project: { id: string; path: string } | undefined
+  // This machine's trust grant for the open project, if any.
+  grant?: RepositoryTrustGrant | undefined
   read?: RepositoryProviderConfigReader
 }
 
-export async function readToolInventory({ machine, project, read = readRepositoryProviderConfig }: ToolInventoryInput): Promise<ToolInventory> {
+export async function readToolInventory({ machine, project, grant, read = readRepositoryProviderConfig }: ToolInventoryInput): Promise<ToolInventory> {
   // The reader reads repository files only, so with no project open there is
   // nothing to list.
   if (project === undefined) return checked({ machine, providers: [] })
@@ -42,10 +52,35 @@ export async function readToolInventory({ machine, project, read = readRepositor
       projectId: project.id,
       root: redactInventoryPath(project.path),
       configDigest: config.configDigest,
-      trust: { state: "untrusted", reason: "not-trusted" },
+      trust: repositoryTrustState(config, grant),
     },
     providers: config.providers,
   }))
+}
+
+// A repository's trust against the configuration read now. A refusal wins over
+// any grant: the input it names is outside what the digest covers (ruling Q121
+// A). A grant counts only for the digest it names; for any other it is shown
+// as the earlier grant of a changed configuration. The reader already redacted
+// each refusal's path, and the protocol caps how many are listed.
+export function repositoryTrustState(
+  config: Pick<RepositoryProviderConfig, "configDigest" | "trustRefusals">,
+  grant: RepositoryTrustGrant | undefined,
+): RepositoryTrustState {
+  if (config.trustRefusals.length > 0) {
+    return {
+      state: "untrusted",
+      reason: "cannot-trust",
+      refusals: config.trustRefusals.slice(0, maximumRepositoryTrustRefusals)
+        .map(({ provider, reason, path }) => ({ provider, code: reason, path })),
+      omittedRefusals: Math.max(0, config.trustRefusals.length - maximumRepositoryTrustRefusals),
+    }
+  }
+  if (grant === undefined) return { state: "untrusted", reason: "not-trusted" }
+  const { trustedDigest, trustedAt, trustedBy } = grant
+  return trustedDigest === config.configDigest
+    ? { state: "trusted", trustedDigest, trustedAt, trustedBy }
+    : { state: "untrusted", reason: "config-changed", trustedDigest, trustedAt, trustedBy }
 }
 
 // Nothing is sent that the protocol refuses. The error names no path or value,

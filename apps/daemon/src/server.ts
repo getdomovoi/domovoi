@@ -33,6 +33,7 @@ import {
   daemonShuttingDownErrorCode,
   isRefusedWithoutPersistence,
   phoneAndTabletRpcMethods,
+  repositoryTrustClientSchema,
   repositoryTrustGrantClients,
   repositoryTrustRpcMethods,
   serviceHandoffRefusal,
@@ -226,7 +227,9 @@ import type { SkillReviews } from "./skill-reviews.js"
 import { skillTrustPath as defaultSkillTrustPath } from "./skill-signing.js"
 import { configuredProfileDirectory } from "./profile-directory.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
-import { readToolInventory, type RepositoryProviderConfigReader } from "./tool-inventory.js"
+import { readToolInventory, repositoryTrustState, type RepositoryProviderConfigReader } from "./tool-inventory.js"
+import { readRepositoryProviderConfig } from "./repository-provider-config.js"
+import type { RepositoryTrustGrant, RepositoryTrustStore } from "./repository-trust-store.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
 import {
@@ -341,6 +344,9 @@ export const serviceHandoffStopRefusal = "An emergency stop is still running."
 // who may mint a desktop credential.
 export const repositoryTrustCredentialRefusal =
   "Repository trust requires the daemon credential or a paired desktop or web credential with full access"
+// Trust is granted and taken back for the open project only. The refusal names
+// no path or value (ruling Q123).
+export const repositoryTrustProjectRefusal = "Repository trust applies only to the open project"
 export const desktopPairingRefusal = "A web, phone or tablet connection cannot pair a desktop credential"
 export const persistenceUnavailableMessage =
   "Daemon cannot persist state, so changes are refused"
@@ -1356,8 +1362,10 @@ export type DaemonServerOptions = {
   skillCatalog?: SkillCatalog
   skillReviews?: SkillReviews
   skillTrustPath?: string
-  // Tests may replace the repository configuration reader behind tool.inventory.
+  // Tests may replace the repository configuration reader behind
+  // tool.inventory and the trust methods.
   repositoryProviderConfig?: RepositoryProviderConfigReader
+  repositoryTrust?: RepositoryTrustStore
   profileDirectory?: string
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
@@ -1593,6 +1601,7 @@ export class DomovoiDaemon {
   #skillReviews: SkillReviews | undefined
   #skillTrustPath: string
   #repositoryProviderConfig: RepositoryProviderConfigReader | undefined
+  #repositoryTrust: RepositoryTrustStore | undefined
   #profileDirectory: string
   #fileSkillCatalog: { projectPath: string | undefined; catalog: FileSkillCatalog } | undefined
   #workspaceAbort = new AbortController()
@@ -1877,6 +1886,7 @@ export class DomovoiDaemon {
     this.#skillReviews = options.skillReviews ?? this.#store.skillReviews
     this.#skillTrustPath = options.skillTrustPath ?? defaultSkillTrustPath({ profileDirectory: this.#profileDirectory })
     this.#repositoryProviderConfig = options.repositoryProviderConfig
+    this.#repositoryTrust = options.repositoryTrust ?? this.#store.repositoryTrust
     this.#artifactWatcherFactory = options.artifactWatcherFactory
       ?? ((watcherOptions) => new ArtifactWatcher(watcherOptions))
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
@@ -1971,6 +1981,22 @@ export class DomovoiDaemon {
       && credential.binding.clientAccess === "full"
       && credential.binding.client === actor.client
       && actor.credential === "device"
+  }
+
+  // Who a trust grant names, from the credential rather than the request (ruling
+  // Q68 A). The owner's bearer counts as desktop whatever client it declared,
+  // and names no client id: any process running as the owner holds it, and an
+  // id it declares is its own claim. A paired credential names its binding's
+  // client and its device id. undefined refuses: the credential does not grant
+  // trust, or the request names a client other than the credential's.
+  #repositoryTrustGrantor(socket: RpcOutboundSocket, requested: RepositoryTrustGrant["trustedBy"]["client"]): RepositoryTrustGrant["trustedBy"] | undefined {
+    if (!this.#grantsRepositoryTrust(socket)) return undefined
+    const credential = this.#deviceCredentials.get(socket)?.verified
+    if (credential === undefined) return { client: "desktop" }
+    if (credential.binding.kind !== "client") return undefined
+    const client = repositoryTrustClientSchema.safeParse(credential.binding.client)
+    if (!client.success || client.data !== requested) return undefined
+    return { client: client.data, clientId: credential.device.id }
   }
 
   // The connection declared web, phone or tablet. Such a connection may hold a
@@ -6792,9 +6818,72 @@ export class DomovoiDaemon {
           result: await readToolInventory({
             machine: { id, name, platform, arch, version },
             project: project ? { id: project.id, path: project.path } : undefined,
+            grant: project ? this.#repositoryTrust?.find(project.id) : undefined,
             ...(this.#repositoryProviderConfig ? { read: this.#repositoryProviderConfig } : {}),
           }),
         })
+        return
+      }
+
+      // Trust is recorded here and reported by tool.inventory; nothing loads
+      // under it yet (applying it is P6 to P8). Both methods answer for the open
+      // project only, against its configuration read now. A reader failure
+      // reaches the catch below and the daemon's internal error, which names no
+      // path or value (rulings Q123, Q129 A).
+      if (method === "repository.trust" || method === "repository.revokeTrust") {
+        const params = paramsResult.data as RpcParams<"repository.trust"> | RpcParams<"repository.revokeTrust">
+        const store = this.#repositoryTrust
+        if (!store) {
+          this.#error(socket, request.id, invalidParams, "Repository trust is unavailable")
+          return
+        }
+        const project = this.#snapshot.project
+        if (!project || project.id !== params.projectId) {
+          this.#error(socket, request.id, invalidParams, repositoryTrustProjectRefusal)
+          return
+        }
+        const trustedBy = this.#repositoryTrustGrantor(socket, params.client)
+        if (!trustedBy) {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, repositoryTrustCredentialRefusal)
+          return
+        }
+        const read = this.#repositoryProviderConfig ?? readRepositoryProviderConfig
+        if (method === "repository.revokeTrust") {
+          // Taken back before the configuration is read, so a reader failure
+          // still leaves the repository untrusted.
+          store.revoke(project.id)
+          const config = await read(project.path, { heldBack: false })
+          // threads is empty: P5 records trust but nothing loads under it, so
+          // no agent thread holds anything to restart. P6 applies trust, and
+          // revoking then restarts the repository's threads (ruling Q4).
+          this.#sendResult(socket, method, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse({
+              repository: { projectId: project.id, configDigest: config.configDigest, trust: repositoryTrustState(config, undefined) },
+              threads: [],
+            }),
+          })
+          return
+        }
+        const { configDigest } = params as RpcParams<"repository.trust">
+        const config = await read(project.path, { heldBack: false })
+        // An emergency stop during the read cancelled this mutation: nothing is
+        // recorded, and the catch below answers it as a cancelled operation.
+        signal?.throwIfAborted()
+        const repository = (grant: RepositoryTrustGrant | undefined) => ({
+          projectId: project.id,
+          configDigest: config.configDigest,
+          trust: repositoryTrustState(config, grant),
+        })
+        // The person reviewed another configuration than the one there now, or
+        // one that holds input the digest does not cover: nothing is granted.
+        const outcome = configDigest !== config.configDigest
+          ? { outcome: "config-changed", repository: repository(store.find(project.id)) }
+          : config.trustRefusals.length > 0
+            ? { outcome: "cannot-trust", repository: repository(undefined) }
+            : { outcome: "trusted", repository: repository(store.record({ projectId: project.id, trustedDigest: config.configDigest, trustedBy })) }
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(outcome) })
         return
       }
 
