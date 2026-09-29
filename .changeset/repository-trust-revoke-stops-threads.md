@@ -39,7 +39,9 @@ thread again, and a confirmed stop lifts the fence. A thread a revoke is stoppin
 session from the moment it is claimed, and a stop on another path that finishes meanwhile does not
 release it. When a revoke or such a retry confirms a stop that an earlier revoke or emergency stop
 could not, that thread's fence is lifted, and a failed session that names a thread is usable again
-once no other thread holds it.
+once no other thread holds it. A Codex stop never lifts a fence this way, and a Codex thread whose
+earlier stop failed stays fenced after a later stop resolves. A fork of a session whose own thread
+an emergency stop could not stop is refused until the session is recovered, as a message is.
 
 Nothing resumes a stopped thread: the next message resumes it, and that resume carries no grant. A
 queued send is held with "Repository trust was taken back before the queued send could release."

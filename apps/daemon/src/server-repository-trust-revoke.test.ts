@@ -700,6 +700,42 @@ describe("a revoke that confirms a stop an earlier one could not", () => {
   })
 })
 
+// Security review round 5 of #669.
+describe("fences a retry or a fork cannot lift", () => {
+  const fenced = "Provider thread requires recovery after emergency stop"
+
+  it("keeps fencing a session whose detached Codex thread failed its cleanup, after a retried stop resolves", async () => {
+    const { agents, grants, ok, rpc, workspaceService } = await fixture()
+    grants.set(projectId, grant(projectId))
+    await ok("session.restartProviderThread", { sessionId: "session-restart" })
+    workspaceService.checkpoint.mockRejectedValueOnce(new Error("checkpoint failed"))
+    agents.codex.stopThread.mockRejectedValueOnce(new Error("provider gone"))
+    expect(await rpc("session.setRuntime", { client: "desktop", sessionId: "session-restart", runtime: codex })).toHaveProperty("error")
+
+    // The retried Codex stop resolves, which never confirms its tool servers exited.
+    expect(await rpc("session.send", { client: "desktop", sessionId: "session-restart", prompt: "go" }))
+      .toMatchObject({ error: { message: fenced } })
+    expect(agents.codex.stopThread.mock.calls).toEqual([["codex-started"], ["codex-started"]])
+    expect(agents["claude-code"].startTurn).not.toHaveBeenCalled()
+    expect(await rpc("session.send", { client: "desktop", sessionId: "session-restart", prompt: "again" }))
+      .toMatchObject({ error: { message: fenced } })
+  })
+
+  it("refuses to fork a session whose own thread an emergency stop could not stop", async () => {
+    const { agents, grants, ok, rpc } = await fixture()
+    grants.set(projectId, grant(projectId))
+    await ok("session.send", { sessionId: "session-a", prompt: "work" })
+    agents["claude-code"].interruptTurn.mockRejectedValueOnce(new Error("interrupt refused"))
+    agents["claude-code"].stopThread.mockRejectedValueOnce(new Error("provider gone"))
+    expect(await rpc("system.emergencyStop", { client: "desktop" })).toHaveProperty("result")
+
+    expect(await rpc("session.fork", {
+      client: "desktop", sessionId: "session-a", checkpointId: "checkpoint-fork", requestId: "fork-after-failed-stop", runtime: claude,
+    })).toMatchObject({ error: { message: fenced } })
+    expect(agents["claude-code"].startThread).not.toHaveBeenCalled()
+  })
+})
+
 describe("repository.revokeTrust and an emergency stop", () => {
   it("takes the grant back at once during a stop, then stops what the stop left, once", async () => {
     const { agents, grants, ok, rpc, sessionNamed } = await fixture()

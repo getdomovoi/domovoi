@@ -2138,7 +2138,10 @@ export class DomovoiDaemon {
       this.#revokedTrustThreads.delete(threadKey)
       return
     }
-    if (!trusted || revoked) return
+    // A Codex thread whose earlier stop failed stays tracked and fenced: a
+    // later resolved stop does not make it the unfenced residual entry of an
+    // ordinary stop (security review round 5 of #669).
+    if (!trusted || revoked || this.#failedEmergencyThreads.has(threadKey)) return
     this.#trustedThreads.delete(threadKey)
     this.#residualTrustedThreads.set(threadKey, trusted)
   }
@@ -2179,9 +2182,11 @@ export class DomovoiDaemon {
         this.#reportError("Domovoi could not stop a fenced provider thread", error)
         continue
       }
-      if (!this.#trustedThreads.has(threadKey) && !this.#revokedTrustThreads.has(threadKey)) {
-        this.#repositoryTrustStopConfirmed(threadKey, sessionId)
-      }
+      if (
+        !trustedStopUnconfirmedProviders.has(provider)
+        && !this.#trustedThreads.has(threadKey)
+        && !this.#revokedTrustThreads.has(threadKey)
+      ) this.#repositoryTrustStopConfirmed(threadKey, sessionId)
     }
     return held().length > 0
   }
@@ -2190,7 +2195,8 @@ export class DomovoiDaemon {
   // a thread stopped, so its failed-stop fence is lifted. The session is
   // usable again once it names a thread and nothing else holds it: no fenced
   // thread of its own and no trusted thread detached, revoked or claimed.
-  // A Codex thread never gets here, since its stop is never confirmed.
+  // Both callers pass only a provider-confirmed exit, so a Codex thread never
+  // gets here (security review round 5 of #669).
   #repositoryTrustStopConfirmed(threadKey: string, sessionId: string): void {
     this.#failedEmergencyThreads.delete(threadKey)
     this.#emergencyBlockedThreads.delete(threadKey)
@@ -2348,9 +2354,11 @@ export class DomovoiDaemon {
     // Once every claim is settled, so a session with another thread still
     // held stays fenced.
     for (const claim of claims) {
-      if (!this.#trustedThreads.has(claim.threadKey) && !this.#revokedTrustThreads.has(claim.threadKey)) {
-        this.#repositoryTrustStopConfirmed(claim.threadKey, claim.sessionId)
-      }
+      if (
+        !trustedStopUnconfirmedProviders.has(claim.provider)
+        && !this.#trustedThreads.has(claim.threadKey)
+        && !this.#revokedTrustThreads.has(claim.threadKey)
+      ) this.#repositoryTrustStopConfirmed(claim.threadKey, claim.sessionId)
     }
     if (bookkeeping.length > 0) {
       this.#reportError(
@@ -8882,7 +8890,13 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session is not ready to fork")
           return
         }
-        if (await this.#repositoryTrustFenced(source.id)) {
+        // A source whose own thread an emergency stop could not stop needs
+        // recovery first, as a send does (security review round 5 of #669).
+        if (
+          (source.providerThreadId
+            && this.#failedEmergencyThreads.has(providerThreadKey(source.runtime.provider, source.providerThreadId)))
+          || await this.#repositoryTrustFenced(source.id)
+        ) {
           this.#error(socket, request.id, invalidParams, providerThreadRecoveryRefusal)
           return
         }
