@@ -1,9 +1,11 @@
 import { z } from "zod"
 
-import { holdsCredential } from "./credential-backstop.js"
+import { inventoryText, toolInventoryPathSchema } from "./inventory-text.js"
 import { refineRepositoryTrustPin, repositoryTrustStateSchema } from "./repository-trust.js"
 import { skillContentDigestSchema, skillInventoryMachineSchema } from "./skills.js"
 import { utf16MaxLength, wireRule } from "./validation.js"
+
+export { toolInventoryPathSchema }
 
 // What each agent's own configuration files on one machine declare: tool
 // servers, hooks, permission rules, environment keys, helpers, plugins and
@@ -12,18 +14,9 @@ import { utf16MaxLength, wireRule } from "./validation.js"
 // key names only: a value is never read, so no field can hold one, and every
 // object is strict so a reader cannot attach one under another name.
 
-// Every free-text field below is what a provider's own file says, and a file
-// can hold a credential anywhere: in a command's arguments, a rule, even a
-// name. The daemon's reader (slice P2a) must redact every field before it
-// emits it; credential-backstop.ts states what that covers and refuses text
-// that still carries a value.
-// One line of plain text, checked as sent and never normalized: no control or
-// format characters and no line or paragraph separators, so a row cannot be
-// split or reordered on a card, and no padding.
-const text = (maximum: number) => z.string().min(1).check(utf16MaxLength(maximum))
-  .regex(/^(?!\s)[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]*(?<!\s)$/u)
-  // An overlength text is already refused by its cap; the backstop does not read it.
-  .refine((value) => value.length > maximum || !holdsCredential(value), "Text must not carry a credential; the reader redacts it first")
+// Every free-text field below is what a provider's own file says; see
+// inventory-text.ts for the rule each one is held to.
+const text = inventoryText
 
 // The cap on each free-text field of an inventory entry, in UTF-16 code
 // units. The daemon's reader fits every redacted text to its field's cap, so
@@ -43,7 +36,6 @@ export const maximumToolInventoryRuleLength = 128
 // A hook's event.
 export const maximumToolInventoryEventLength = 64
 
-export const toolInventoryPathSchema = text(1_024)
 // An environment variable identifier, never `NAME=value`.
 export const toolInventoryEnvKeySchema = z.string().check(utf16MaxLength(128)).regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
 

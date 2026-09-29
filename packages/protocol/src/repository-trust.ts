@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { clientIdentityIdSchema } from "./identifiers.js"
+import { inventoryText, toolInventoryPathSchema } from "./inventory-text.js"
 import { skillContentDigestSchema } from "./skills.js"
 import { offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
 
@@ -41,23 +42,68 @@ const grantFields = {
   }).strict(),
 }
 
+// Why a repository cannot be trusted whatever the person approves: input its
+// agent would load that the configuration digest does not cover (ruling Q121
+// A). Codes, not prose: a client words them.
+//   nested-config: a .codex folder or .agents/skills below the root, on the
+//     way down to a session folder, or a link on that way.
+//   main-checkout-hooks: in a linked worktree, the main checkout's .codex
+//     folder holds hooks, or a file there that could hold them is unreadable.
+//   main-checkout-unknown: the main checkout of a linked worktree cannot be
+//     found safely.
+//   instructions-outside: an instruction file outside the repository, or one
+//     reached through a link.
+// The path is relative to the root when inside it and absolute otherwise, and
+// the daemon redacts it as it does an inventory path.
+export const repositoryTrustRefusalCodes = ["nested-config", "main-checkout-hooks", "main-checkout-unknown", "instructions-outside"] as const
+export const repositoryTrustRefusalSchema = z.object({
+  provider: inventoryText(64),
+  code: z.enum(repositoryTrustRefusalCodes),
+  path: toolInventoryPathSchema,
+}).strict()
+export const maximumRepositoryTrustRefusals = 32
+
 // config-changed keeps the earlier grant so a client can show what was trusted
-// and when; the repository is not trusted.
-export const repositoryTrustStateSchema = z.discriminatedUnion("state", [
+// and when; the repository is not trusted. cannot-trust lists the refusals, at
+// most maximumRepositoryTrustRefusals, and counts the rest in omittedRefusals
+// so a client never presents a cut list as the whole of it. It pins to no
+// digest, since what it names is outside what a digest covers.
+const repositoryTrustStateUnion = z.discriminatedUnion("state", [
   z.discriminatedUnion("reason", [
     z.object({ state: z.literal("untrusted"), reason: z.literal("not-trusted") }).strict(),
     z.object({ state: z.literal("untrusted"), reason: z.literal("config-changed"), ...grantFields }).strict(),
+    z.object({
+      state: z.literal("untrusted"),
+      reason: z.literal("cannot-trust"),
+      refusals: z.array(repositoryTrustRefusalSchema).min(1).max(maximumRepositoryTrustRefusals),
+      omittedRefusals: z.number().int().nonnegative().max(1_000_000),
+    }).strict(),
   ]),
   z.object({ state: z.literal("trusted"), ...grantFields }).strict(),
 ])
 
-type RepositoryTrustStateValue = z.infer<typeof repositoryTrustStateSchema>
+// The schema is typed by this name so declaration output refers to it rather
+// than spelling the union out in every trust result and in the tool
+// inventory; spelled out, it takes rpcMethods past what the compiler will
+// serialize (TS7056). A name only survives on a type written out, not on an
+// inferred one. The annotation below checks that what the schema reads fits it.
+type RepositoryTrustGrant = {
+  trustedDigest: string
+  trustedAt: string
+  trustedBy: { client: RepositoryTrustGrantClient; clientId?: string | undefined }
+}
+export type RepositoryTrustState =
+  | { state: "untrusted"; reason: "not-trusted" }
+  | ({ state: "untrusted"; reason: "config-changed" } & RepositoryTrustGrant)
+  | { state: "untrusted"; reason: "cannot-trust"; refusals: RepositoryTrustRefusal[]; omittedRefusals: number }
+  | ({ state: "trusted" } & RepositoryTrustGrant)
+export const repositoryTrustStateSchema: z.ZodType<RepositoryTrustState, RepositoryTrustState> = repositoryTrustStateUnion
 
 // A grant counts only for the digest it covers: trusted means the current
 // digest is the trusted one, and config-changed means it is not.
 export function refineRepositoryTrustPin(
   configDigest: string,
-  trust: RepositoryTrustStateValue,
+  trust: RepositoryTrustState,
   context: z.RefinementCtx,
   path: PropertyKey[],
 ): void {
@@ -88,11 +134,17 @@ export const repositoryTrustParamsSchema = z.object({
 
 // config-changed: the configuration no longer matches the reviewed digest, so
 // nothing was granted. The repository's current digest and state come back for
-// a new review.
+// a new review. cannot-trust: the digest matched, but the repository holds
+// input the digest does not cover, so nothing was granted.
 export const repositoryTrustResultSchema = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("trusted"), repository: repositoryTrustSchema }).strict()
     .refine((result) => result.repository.trust.state === "trusted", { path: ["repository", "trust"], message: "A trusted outcome carries a trusted repository" }),
   z.object({ outcome: z.literal("config-changed"), repository: repositoryTrustSchema }).strict(),
+  z.object({ outcome: z.literal("cannot-trust"), repository: repositoryTrustSchema }).strict()
+    .refine((result) => result.repository.trust.state === "untrusted" && result.repository.trust.reason === "cannot-trust", {
+      path: ["repository", "trust"],
+      message: "A cannot-trust outcome carries the refusals",
+    }),
 ])
 
 export const repositoryRevokeTrustParamsSchema = z.object({
@@ -113,7 +165,8 @@ export const repositoryRevokeTrustResultSchema = z.object({
   threads: z.array(repositoryTrustThreadRestartSchema).max(1_024),
 }).strict().superRefine((result, context) => {
   const { trust } = result.repository
-  if (trust.state !== "untrusted" || trust.reason !== "not-trusted") {
+  // No grant is left, so the repository is not trusted, or cannot be.
+  if (trust.state !== "untrusted" || trust.reason === "config-changed") {
     context.addIssue({ code: "custom", path: ["repository", "trust"], message: "A revoked repository is not trusted" })
   }
   const seen = new Set<string>()
@@ -124,7 +177,7 @@ export const repositoryRevokeTrustResultSchema = z.object({
 })
 
 export type RepositoryTrustGrantClient = z.infer<typeof repositoryTrustClientSchema>
-export type RepositoryTrustState = z.infer<typeof repositoryTrustStateSchema>
+export type RepositoryTrustRefusal = z.infer<typeof repositoryTrustRefusalSchema>
 export type RepositoryTrust = z.infer<typeof repositoryTrustSchema>
 export type RepositoryTrustParams = z.infer<typeof repositoryTrustParamsSchema>
 export type RepositoryTrustResult = z.infer<typeof repositoryTrustResultSchema>
