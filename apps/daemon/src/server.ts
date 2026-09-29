@@ -349,6 +349,9 @@ export const repositoryTrustCredentialRefusal =
 // Trust is granted and taken back for the open project only. The refusal names
 // no path or value (ruling Q123).
 export const repositoryTrustProjectRefusal = "Repository trust applies only to the open project"
+// A session whose provider thread did not confirm its exit. It also answers a
+// session fenced for a thread that loaded trusted input (ruling Q172 A).
+const providerThreadRecoveryRefusal = "Provider thread requires recovery after emergency stop"
 // Ruling Q152 A: Codex runs every thread in one shared app-server, and
 // archiving a thread does not confirm that the tool servers it started have
 // exited. Taking trust back reports its threads unconfirmed rather than
@@ -2067,8 +2070,19 @@ export class DomovoiDaemon {
   // so this is a backstop for a call that lands outside that order: the thread
   // is stopped as the revoke would have stopped it.
   #recordRepositoryTrust(call: RepositoryTrustCall, sessionId: string, provider: string, threadId: string): void {
+    if (!this.#trackRepositoryTrust(call, sessionId, provider, threadId)) return
+    if (call.generation === this.#repositoryTrustGeneration(call.projectId)) return
+    const threadKey = providerThreadKey(provider, threadId)
+    void this.#restartRepositoryTrustThreads(call.projectId, threadKey)
+      .then(() => this.#saveAgentState())
+      .catch((error: unknown) => this.#reportError("Domovoi could not stop a thread whose repository trust was taken back", error))
+  }
+
+  // Tracks the thread when its adapter reports that it applied the grant the
+  // call carried, and says whether it did.
+  #trackRepositoryTrust(call: RepositoryTrustCall, sessionId: string, provider: string, threadId: string): boolean {
     const grant = call.input.repositoryTrust
-    if (grant === undefined) return
+    if (grant === undefined) return false
     let applied: { digest: string } | undefined
     try {
       applied = this.#agents.require(provider).repositoryTrustApplied?.(threadId)
@@ -2076,20 +2090,60 @@ export class DomovoiDaemon {
       this.#reportError("Domovoi could not read whether a thread loaded repository trust", error)
       applied = { digest: grant.trustedDigest }
     }
-    if (applied === undefined) return
+    if (applied === undefined) return false
     const threadKey = providerThreadKey(provider, threadId)
     this.#trustedThreads.set(threadKey, { projectId: call.projectId, sessionId, provider, threadId, trustedDigest: applied.digest })
-    if (call.generation === this.#repositoryTrustGeneration(call.projectId)) return
-    void this.#restartRepositoryTrustThreads(call.projectId, threadKey)
-      .then(() => this.#saveAgentState())
-      .catch((error: unknown) => this.#reportError("Domovoi could not stop a thread whose repository trust was taken back", error))
+    return true
   }
 
-  // A thread whose exit is confirmed: it is neither loaded nor tracked.
+  // A start that landed after its call timed out, so its operation already
+  // failed and nothing else will record it. Its thread is tracked first when
+  // it applied trust, then stopped: a stop that fails leaves it tracked and
+  // fenced for revoke (security review round 2 of #669).
+  async #stopLateStart(call: RepositoryTrustCall, sessionId: string, provider: string, threadId: string): Promise<void> {
+    this.#trackRepositoryTrust(call, sessionId, provider, threadId)
+    await this.#stopAbandonedThread(provider, threadId, "Late provider cleanup timed out")
+  }
+
+  // The one place a resolved stop counts as the thread's exit. It leaves the
+  // loaded set either way. A thread that loaded trusted input leaves tracking
+  // only when its provider can confirm that what it started exited. Codex
+  // cannot (ruling Q152 A), so a stopped Codex thread stays tracked and is
+  // fenced until the daemon restarts, which ends the app-server and its tool
+  // servers (security review round 2 of #669).
   #threadStopped(provider: string, threadId: string): void {
     const threadKey = providerThreadKey(provider, threadId)
     this.#loadedAgentThreads.delete(threadKey)
-    this.#trustedThreads.delete(threadKey)
+    if (!this.#trustedThreads.has(threadKey)) return
+    if (!trustedStopUnconfirmedProviders.has(provider)) {
+      this.#trustedThreads.delete(threadKey)
+      return
+    }
+    this.#failedEmergencyThreads.add(threadKey)
+    this.#emergencyBlockedThreads.add(threadKey)
+  }
+
+  // Security review round 2 of #669: whether a session's worktree may still
+  // hold an agent that loaded trusted input and whose exit is not confirmed:
+  // a tracked thread the session no longer names (an abandoned start, a
+  // quarantined or replaced thread), or a tracked thread that is fenced. Each
+  // such thread is stopped again first, and only a confirmed stop lifts the
+  // fence. No agent starts or takes a message in the session while it holds.
+  async #repositoryTrustFenced(sessionId: string): Promise<boolean> {
+    const held = () => [...this.#trustedThreads].filter(([threadKey, trusted]) => {
+      if (trusted.sessionId !== sessionId) return false
+      if (this.#failedEmergencyThreads.has(threadKey)) return true
+      const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
+      return session?.providerThreadId !== trusted.threadId || session.runtime.provider !== trusted.provider
+    })
+    for (const [, { provider, threadId }] of held()) {
+      try {
+        await this.#stopAbandonedThread(provider, threadId, "Fenced provider thread stop timed out")
+      } catch (error) {
+        this.#reportError("Domovoi could not stop a fenced provider thread", error)
+      }
+    }
+    return held().length > 0
   }
 
   // Stops a thread that a failed or cancelled operation started, within the
@@ -8177,6 +8231,17 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, invalidParams, "Session is not ready for provider handoff")
             return
           }
+          // No replacement starts beside a thread that loaded trusted input
+          // and has not confirmed its exit, nor beside one whose stop cannot
+          // confirm it (security review round 2 of #669).
+          const replaced = previousKey === undefined ? undefined : this.#trustedThreads.get(previousKey)
+          if (
+            await this.#repositoryTrustFenced(currentSession.id)
+            || (replaced !== undefined && trustedStopUnconfirmedProviders.has(replaced.provider))
+          ) {
+            this.#error(socket, request.id, invalidParams, providerThreadRecoveryRefusal)
+            return
+          }
           const previousRuntime = currentSession.runtime
           const previousThreadId = currentSession.providerThreadId
           const nextAgent = await this.#ensureAgentConnected(runtime.provider)
@@ -8187,7 +8252,7 @@ export class DomovoiDaemon {
               nextAgent.startThread({ cwd: currentSession.workspacePath!, runtime, ...trust.input }),
               this.#agentTimeoutMs,
               recoveringFailedThread ? "Provider recovery timed out" : "Provider handoff timed out",
-              (threadId) => nextAgent.stopThread(threadId),
+              (threadId) => this.#stopLateStart(trust, currentSession.id, runtime.provider, threadId),
               "Domovoi could not stop a late replacement provider thread",
               (context, error) => this.#reportError(context, error),
             )
@@ -8321,6 +8386,10 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session already has a live provider thread")
           return
         }
+        if (await this.#repositoryTrustFenced(session.id)) {
+          this.#error(socket, request.id, invalidParams, providerThreadRecoveryRefusal)
+          return
+        }
         let runtime: Runtime
         try {
           runtime = await this.#resolveRuntime(params.runtime ?? session.runtime)
@@ -8335,7 +8404,7 @@ export class DomovoiDaemon {
           agent.startThread({ cwd: session.workspacePath, runtime, ...trust.input }),
           this.#agentTimeoutMs,
           "Provider restart timed out",
-          (lateThreadId) => agent.stopThread(lateThreadId),
+          (lateThreadId) => this.#stopLateStart(trust, params.sessionId, runtime.provider, lateThreadId),
           "Domovoi could not stop a late restarted provider thread",
           (context, error) => this.#reportError(context, error),
         )
@@ -8610,7 +8679,7 @@ export class DomovoiDaemon {
             pendingThread,
             this.#agentTimeoutMs,
             "Agent setup timed out",
-            (threadId) => agent.stopThread(threadId),
+            (threadId) => this.#stopLateStart(trust, sessionId, runtime.provider, threadId),
             "Domovoi could not stop a late session thread",
             (context, error) => this.#reportError(context, error),
           )
@@ -8728,6 +8797,10 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session is not ready to fork")
           return
         }
+        if (await this.#repositoryTrustFenced(source.id)) {
+          this.#error(socket, request.id, invalidParams, providerThreadRecoveryRefusal)
+          return
+        }
         const checkpoint = this.#snapshot.thread.find(
           (candidate) => candidate.id === params.checkpointId
             && candidate.sessionId === source.id
@@ -8802,7 +8875,7 @@ export class DomovoiDaemon {
             agent.startThread({ cwd: workspace.path, runtime, ...trust.input }),
             this.#agentTimeoutMs,
             "Fork agent setup timed out",
-            (threadId) => agent.stopThread(threadId),
+            (threadId) => this.#stopLateStart(trust, sessionId, runtime.provider, threadId),
             "Domovoi could not stop a late fork thread",
             (context, error) => this.#reportError(context, error),
           )
@@ -9036,8 +9109,14 @@ export class DomovoiDaemon {
           session.providerThreadId,
         )
         const providerThreadId = session.providerThreadId
+        // Checked before the synchronous checks below, which then see the
+        // state after its stops.
+        if (await this.#repositoryTrustFenced(session.id)) {
+          this.#error(socket, request.id, invalidParams, providerThreadRecoveryRefusal)
+          return
+        }
         if (this.#failedEmergencyThreads.has(emergencyThread)) {
-          this.#error(socket, request.id, invalidParams, "Provider thread requires recovery after emergency stop")
+          this.#error(socket, request.id, invalidParams, providerThreadRecoveryRefusal)
           return
         }
         if (this.#emergencyStopInProgress) {

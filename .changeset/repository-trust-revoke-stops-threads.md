@@ -22,7 +22,16 @@ every later revoke tries to stop it again. So is a thread that a failed session 
 restart or handoff could not stop, and one that quarantine, a transfer or an ownership conflict
 dropped without confirming its exit. A revoke attempts every stop even when holding a queued send
 or clearing approvals fails, and reports those failures afterwards. Cleanup of a failed handoff
-thread is now bounded by the agent timeout.
+thread is now bounded by the agent timeout. A start that lands after its call timed out is
+tracked before its late cleanup stops it.
+
+A stopped Codex thread that loaded trusted configuration is never counted as exited, on any stop
+path, since archiving it cannot confirm that the tool servers it started exited; it stays tracked
+and fenced until the daemon restarts. While a session has such a thread that it no longer names,
+or one that is fenced, a message, a restart, a provider switch or a fork of that session is
+refused with "Provider thread requires recovery after emergency stop". Each attempt first tries
+to stop the thread again, and a confirmed stop lifts the fence. A provider switch away from a
+Codex thread that loaded trusted configuration is refused the same way.
 
 Nothing resumes a stopped thread: the next message resumes it, and that resume carries no grant. A
 queued send is held with "Repository trust was taken back before the queued send could release."
