@@ -160,9 +160,17 @@ export const repositoryTrustThreadRestartSchema = z.object({
   outcome: z.enum(["restarted", "unconfirmed"]),
 }).strict()
 
+// A revoke stops every such thread however many there are (ruling Q179 A). It
+// lists at most maximumRepositoryTrustThreadRestarts, and omittedThreads
+// counts the rest; it is present only when something was left out, so a
+// client never presents a cut list as the whole of it. A daemon may list
+// fewer than the maximum, so the count is not tied to a full list.
+export const maximumRepositoryTrustThreadRestarts = 1_024
+
 export const repositoryRevokeTrustResultSchema = z.object({
   repository: repositoryTrustSchema,
-  threads: z.array(repositoryTrustThreadRestartSchema).max(1_024),
+  threads: z.array(repositoryTrustThreadRestartSchema).max(maximumRepositoryTrustThreadRestarts),
+  omittedThreads: z.number().int().min(1).max(1_000_000).optional(),
 }).strict().superRefine((result, context) => {
   const { trust } = result.repository
   // No grant is left, so the repository is not trusted, or cannot be.
