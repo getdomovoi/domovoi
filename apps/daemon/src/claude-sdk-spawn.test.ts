@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { ClaudeAgentSdkAdapter } from "./claude.js"
 import { claudeKeeperSource, type ClaudeSpawn } from "./claude-process.js"
+import { readRepositoryProviderConfig } from "./repository-provider-config.js"
 import { fakeClaudeChild } from "./test-claude-process.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForDaemon } from "./test-wait-for.js"
@@ -128,5 +129,79 @@ describe("the SDK spawn Domovoi copies", () => {
     expect(fake.child.kill).not.toHaveBeenCalled()
     expect(fake.commands.slice(1)).toEqual([])
     await starting
+  })
+
+  // Slice P6b, through the installed SDK: a trusted repository's settings
+  // reach Claude as its --settings flag and its servers as an mcp_set_servers
+  // request once Claude has listed the person's own, each exactly as the plan
+  // took them from the digested documents.
+  it("hands Claude a trusted repository's loadable settings and servers as digested, and nothing held back", async () => {
+    const directory = await scratch()
+    const executable = join(directory, process.platform === "win32" ? "claude.exe" : "claude")
+    await writeFile(executable, "#!/bin/sh\nexit 1\n")
+    await chmod(executable, 0o755)
+    vi.stubEnv("PATH", directory)
+    const worktree = join(directory, "worktree")
+    await mkdir(join(worktree, ".claude"), { recursive: true })
+    const settings = {
+      hooks: {
+        SessionStart: [{ hooks: [{ type: "command", command: "./bootstrap.sh" }] }],
+        PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "./held-back-allow.sh" }] }],
+      },
+      env: { NODE_ENV: "development", NODE_OPTIONS: "--require ./held-back.js" },
+      permissions: { deny: ["Read(./.env)"], allow: ["Bash(held-back-allow)"] },
+      apiKeyHelper: "./held-back-key.sh",
+    }
+    const servers = { mcpServers: {
+      db: { command: "db-mcp", env: { DATABASE_URL: "postgres://db" } },
+      mine: { command: "held-back-shadow" },
+    } }
+    await writeFile(join(worktree, ".claude", "settings.json"), JSON.stringify(settings))
+    await writeFile(join(worktree, ".mcp.json"), JSON.stringify(servers))
+    const { configDigest } = await readRepositoryProviderConfig(worktree, { heldBack: true })
+    const repositoryTrust = { projectId: "project-acme", trustedDigest: configDigest, trustedAt: "2026-09-29T12:00:00.000Z", trustedBy: { client: "desktop" as const } }
+
+    // Claude's side of the SDK's control channel: each request is answered
+    // as Claude answers it, and the person already has a server named "mine".
+    const fake = fakeClaudeChild()
+    const requests: Array<Record<string, unknown>> = []
+    let buffered = ""
+    fake.child.stdin.on("data", (chunk: Buffer) => {
+      buffered += String(chunk)
+      for (let newline = buffered.indexOf("\n"); newline >= 0; newline = buffered.indexOf("\n")) {
+        const message = JSON.parse(buffered.slice(0, newline)) as { type?: string; request_id?: string; request?: Record<string, unknown> }
+        buffered = buffered.slice(newline + 1)
+        if (message.type !== "control_request" || !message.request) continue
+        requests.push(message.request)
+        const response = message.request.subtype === "mcp_status" ? { mcpServers: [{ name: "mine", status: "connected" }] }
+          : message.request.subtype === "mcp_set_servers" ? { added: ["db"], removed: [], errors: {} }
+            : {}
+        fake.child.stdout.write(`${JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response } })}\n`)
+      }
+    })
+    const spawn = vi.fn<ClaudeSpawn>(() => fake.process)
+    const adapter = new ClaudeAgentSdkAdapter(undefined, undefined, async () => {}, { spawn, platform: "linux" })
+
+    await adapter.startThread({ cwd: worktree, runtime, repositoryTrust })
+    await waitForDaemon(() => expect(requests.map(({ subtype }) => subtype)).toContain("mcp_set_servers"))
+
+    const loadedSettings = {
+      hooks: { SessionStart: settings.hooks.SessionStart },
+      env: { NODE_ENV: "development" },
+      permissions: { deny: settings.permissions.deny },
+    }
+    const claude = fake.commands[0]?.spawn as { args: string[] }
+    const flag = claude.args.indexOf("--settings")
+    expect(flag).toBeGreaterThan(-1)
+    expect(claude.args[flag + 1]).toBe(JSON.stringify(loadedSettings))
+    expect(claude.args).toContain("--setting-sources=user")
+    expect(claude.args).not.toContain("--mcp-config")
+    expect(claude.args).not.toContain("--strict-mcp-config")
+    expect(requests.map(({ subtype }) => subtype)).toEqual(["initialize", "mcp_status", "mcp_set_servers"])
+    expect(JSON.stringify(requests[2]!.servers)).toBe(JSON.stringify({ db: servers.mcpServers.db }))
+    const reached = JSON.stringify([claude.args, requests])
+    for (const text of ["held-back", "NODE_OPTIONS", "apiKeyHelper"]) expect(reached, text).not.toContain(text)
+
+    await adapter.close()
   })
 })

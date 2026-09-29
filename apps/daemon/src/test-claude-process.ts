@@ -155,6 +155,8 @@ export class FakeClaudeQuery implements ClaudeQuery {
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
   async applyFlagSettings(): Promise<void> {}
+  async mcpServerStatus(): Promise<Array<{ name: string }>> { return [] }
+  async setMcpServers(): Promise<unknown> { return { added: [], removed: [], errors: {} } }
 
   [Symbol.asyncIterator](): AsyncIterator<ClaudeSdkMessage> {
     return {

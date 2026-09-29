@@ -65,8 +65,8 @@ export type AgentVisualContext = {
 // This machine's trust grant for the session's repository, looked up by the
 // daemon at the call that carries it. An adapter decides what it may load
 // with repositoryTrustVerdict (repository-trust-apply.ts) against the worktree
-// it opens; absent, nothing the repository brings loads. Every adapter ignores
-// it until P6b (Claude Code) and P6c (Codex).
+// it opens; absent, nothing the repository brings loads. Claude Code uses it
+// (P6b); every other adapter ignores it until its own slice (Codex in P6c).
 export type AgentRepositoryTrust = RepositoryTrustGrant
 
 export interface AgentAdapter {
