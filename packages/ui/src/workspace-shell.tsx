@@ -56,6 +56,8 @@ import { collectFleetInventories } from "./fleet-inventories"
 import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
 import { type ProviderSecretStatus } from "./provider-settings"
 import type { LocalDaemonDescription } from "./settings-shell"
+import type { SkillsSurfaceTab } from "./skills-surface"
+import type { ToolInventoryLoad } from "./tool-inventory-view"
 import { lazySurface, prefetchWhenIdle, SurfaceCodeReload } from "./lazy-surface"
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
@@ -157,12 +159,12 @@ const watchingMutationCommands = new Set([
 // or at idle after the shell has painted, so a launch does not download, parse
 // and compile them first.
 const settingsSurface = lazySurface("Settings", async () => (await import("./settings-shell")).SettingsShell)
-const skillsSurface = lazySurface("Skills", async () => (await import("./skill-browser")).SkillBrowser)
+const skillsSurface = lazySurface("Skills", async () => (await import("./skills-surface")).SkillsSurface)
 const machinesSurface = lazySurface("Machines", async () => (await import("./fleet-view")).FleetView)
 const auditSurface = lazySurface("Audit log", async () => (await import("./audit-log-view")).AuditLogView)
 const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface]
 const SettingsShell = settingsSurface.Surface
-const SkillBrowser = skillsSurface.Surface
+const SkillsSurface = skillsSurface.Surface
 const FleetView = machinesSurface.Surface
 const AuditLogView = auditSurface.Surface
 
@@ -349,6 +351,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     endpointUrl,
     forkSession,
     getSkillInventory,
+    getToolInventory,
     createTerminal,
     listModels,
     revokeApprovalRule,
@@ -551,6 +554,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
+  const [skillsTab, setSkillsTab] = useState<SkillsSurfaceTab>("skills")
+  const [toolInventory, setToolInventory] = useState<ToolInventoryLoad>({ state: "loading" })
+  const [toolsRefresh, setToolsRefresh] = useState(0)
   const [activeSessionUsage, setActiveSessionUsage] = useState<SessionUsage | null>(null)
   const [dockTab, setDockTab] = useState<string>(clientKind === "desktop" ? "changes" : "preview")
   // Held above the pin and unpin swaps, each of which removes the control that
@@ -1099,7 +1105,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     : surface === "providers"
       ? "Settings"
       : surface === "skills"
-        ? "Skills"
+        ? skillsTab === "tools" ? "Tools" : "Skills"
         : surface === "fleet"
           ? "Machines"
           : surface === "audit"
@@ -1339,6 +1345,30 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     return () => refresh.abort()
   }, [surface, connected, localSkillInventory, fleet, homeMachineId, homeSkillInventory, accessSession, admittedMachines])
 
+  // The Tools tab reads the open machine's inventory while it is open, and
+  // again when the machine or its project changes. Reading starts nothing.
+  const toolsOpen = surface === "skills" && skillsTab === "tools"
+  useEffect(() => {
+    if (!toolsOpen) return
+    if (!connected) {
+      setToolInventory({ state: "error", message: "Reconnect to the execution machine to read its agents' files." })
+      return
+    }
+    let active = true
+    const refresh = new AbortController()
+    setToolInventory({ state: "loading" })
+    void getToolInventory({ signal: refresh.signal }).then(
+      (inventory) => { if (active) setToolInventory({ state: "loaded", inventory, readAt: new Date() }) },
+      (cause: unknown) => {
+        if (active) setToolInventory({ state: "error", message: cause instanceof Error ? cause.message : "The tools could not be read" })
+      },
+    )
+    return () => {
+      active = false
+      refresh.abort()
+    }
+  }, [toolsOpen, connected, getToolInventory, skillMachineKey, skillProjectKey, toolsRefresh])
+
   useEffect(() => {
     const shell = shellRef.current
     if (!shell) return
@@ -1483,30 +1513,35 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             } : {})}
           />
         ) : surface === "skills" ? (
-          <SkillBrowser
-            skills={skills}
-            inventorySources={skillInventories}
-            loading={skillsLoading}
-            error={skillsError}
-            readOnly={watching}
-            onOpenAudit={() => setSurface("audit")}
-            onReadSkill={readSkill}
-            requestedSkillId={requestedSkillId}
-            projectId={snapshot.project?.id}
-            enablements={snapshot.skillEnablements}
-            onSetSkillEnabled={setSkillEnabled}
-            onReviewSkill={async (input) => {
-              const reviewed = await reviewSkill(input)
-              setSkillsRefresh((current) => current + 1)
-              return reviewed
+          <SkillsSurface
+            tab={skillsTab}
+            onTabChange={setSkillsTab}
+            tools={{ inventory: toolInventory, onRetry: () => setToolsRefresh((current) => current + 1) }}
+            skills={{
+              skills,
+              inventorySources: skillInventories,
+              loading: skillsLoading,
+              error: skillsError,
+              readOnly: watching,
+              onOpenAudit: () => setSurface("audit"),
+              onReadSkill: readSkill,
+              requestedSkillId,
+              projectId: snapshot.project?.id,
+              enablements: snapshot.skillEnablements,
+              onSetSkillEnabled: setSkillEnabled,
+              onReviewSkill: async (input) => {
+                const reviewed = await reviewSkill(input)
+                setSkillsRefresh((current) => current + 1)
+                return reviewed
+              },
+              onPreviewSkillInstall: (source) => previewSkillInstall({ source }),
+              onInstallSkill: async (input) => {
+                const installed = await installSkill(input)
+                setSkillsRefresh((current) => current + 1)
+                return installed
+              },
+              onRetry: () => setSkillsRefresh((current) => current + 1),
             }}
-            onPreviewSkillInstall={(source) => previewSkillInstall({ source })}
-            onInstallSkill={async (input) => {
-              const installed = await installSkill(input)
-              setSkillsRefresh((current) => current + 1)
-              return installed
-            }}
-            onRetry={() => setSkillsRefresh((current) => current + 1)}
           />
         ) : surface === "fleet" ? (
           <FleetView

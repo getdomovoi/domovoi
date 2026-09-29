@@ -220,6 +220,20 @@ describe("AcpAgentAdapter", () => {
     adapter.resolveApproval(approval!.requestId, "always-project")
     await expect(permission).resolves.toEqual({ optionId: "once" })
 
+    // The agent's own tool reaches the approval named as a tool, never as a
+    // shell command.
+    void peer.handlers!.onPermission({
+      sessionId: "acp-session",
+      toolCallId: "tool-mcp",
+      title: "run_query",
+      command: "run_query",
+      tool: "other",
+      options: [{ id: "once", kind: "allow_once" }],
+    })
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "approval-requested", itemId: "tool-mcp", command: "run_query", tool: "other",
+    }))
+
     const cancelled = peer.handlers!.onPermission({
       sessionId: "acp-session",
       toolCallId: "tool-2",

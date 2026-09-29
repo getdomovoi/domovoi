@@ -1,6 +1,6 @@
 import { isAbsolute, join, relative, resolve, sep } from "node:path"
 
-import type { ExecutionResolution } from "@getdomovoi/protocol"
+import { approvalToolServerSchema, type ApprovalToolServer, type ExecutionResolution } from "@getdomovoi/protocol"
 
 import {
   canonicalPath,
@@ -21,6 +21,15 @@ import { redactDurableText } from "./secret-redaction.js"
 // the request is about one.
 
 export type ApprovalScope = Readonly<{ command: string; network: string }>
+
+// The tool server a card names, as the protocol accepts it. A provider's name
+// the protocol refuses (a credential shape, a control character, too long) is
+// hidden rather than dropped, so the card still says a tool server's tool is
+// called, and still never offers Always (ruling Q5, 2026-09-26).
+export function approvalToolServerFact(server: ApprovalToolServer): ApprovalToolServer {
+  const parsed = approvalToolServerSchema.safeParse(server)
+  return parsed.success ? parsed.data : { name: "[REDACTED]" }
+}
 
 // No sandbox around the command: Claude Code, OpenCode, Kilo and ACP agents run
 // it as the user, with the machine's network.

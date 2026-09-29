@@ -1105,6 +1105,36 @@ describe("the tool behind an approval request", () => {
     await adapter.close()
   })
 
+  // Claude names a tool server's tool mcp__<server>__<tool>, and splits it at
+  // the first separator after the server, as the card does.
+  it("names the tool server behind an MCP tool", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const ask = (toolName: string, input: Record<string, unknown>, id: string) => void calls[0]!.options.canUseTool!(toolName, input, {
+      signal: new AbortController().signal, toolUseID: id, requestId: id,
+    })
+
+    ask("mcp__github__create_issue", { title: "x" }, "mcp")
+    ask("mcp__postgres-dev__run__query", { sql: "select 1" }, "nested")
+    ask("mcp__", {}, "unnamed")
+    ask("WebFetch", { url: "https://docs.example.com/page", prompt: "Summarise" }, "fetch")
+    ask("Bash", { command: "pnpm test" }, "bash")
+
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(5))
+    const servers = Object.fromEntries(events.flatMap((event) => event.type === "approval-requested" ? [[event.itemId, event.toolServer]] : []))
+    expect(servers).toEqual({
+      mcp: { name: "github" },
+      nested: { name: "postgres-dev" },
+      unnamed: undefined,
+      fetch: undefined,
+      bash: undefined,
+    })
+    await adapter.close()
+  })
+
   it("takes the request's identity from the tool that runs, not from fields the tool input supplies", async () => {
     const { calls, factory } = factoryHarness()
     const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")

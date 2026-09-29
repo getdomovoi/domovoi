@@ -178,7 +178,7 @@ export class StdioAcpPeer implements AcpPeer {
   }
 
   async #requestPermission(request: RequestPermissionRequest): Promise<RequestPermissionResponse> {
-    const mapped = await this.#handlers.onPermission(mapPermissionRequest(request))
+    const mapped = await this.#handlers.onPermission(mapAcpPermissionRequest(request))
     return "cancelled" in mapped
       ? { outcome: { outcome: "cancelled" } }
       : { outcome: { outcome: "selected", optionId: mapped.optionId } }
@@ -256,17 +256,25 @@ function mapConfigOption(option: SessionConfigOption): AcpConfigOption[] {
   }]
 }
 
-function mapPermissionRequest(request: RequestPermissionRequest): AcpPermissionRequest {
+// Only an execute tool call is a shell command. Any other kind, or none, is the
+// agent's own tool (an MCP server's among them, which ACP does not tell apart),
+// named by its title and never resolved as a shell command, even when its
+// input has a command field.
+export function mapAcpPermissionRequest(request: RequestPermissionRequest): AcpPermissionRequest {
   const rawInput = request.toolCall.rawInput
-  const command = typeof rawInput === "object" && rawInput !== null && "command" in rawInput
-    && typeof rawInput.command === "string"
-    ? rawInput.command
-    : undefined
+  const title = request.toolCall.title ?? "Provider tool"
+  const shell = request.toolCall.kind === "execute"
+  const command = !shell
+    ? title
+    : typeof rawInput === "object" && rawInput !== null && "command" in rawInput && typeof rawInput.command === "string"
+      ? rawInput.command
+      : undefined
   return {
     sessionId: request.sessionId,
     toolCallId: request.toolCall.toolCallId,
-    title: request.toolCall.title ?? "Provider tool",
+    title,
     ...(command ? { command } : {}),
+    ...(shell ? {} : { tool: request.toolCall.kind || "other" }),
     options: request.options.map((option) => ({ id: option.optionId, kind: option.kind })),
   }
 }

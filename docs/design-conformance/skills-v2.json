@@ -104,17 +104,37 @@
         "key names only",
         "Project settings and repository files. Trusted here, so they run when a session starts.",
         "entries from this repository run when a session starts",
-        "acme-api · trusted 12 Sep 10:41 from desktop"
+        "acme-api · trusted 12 Sep 10:41 from desktop",
+        "Tools on",
+        "repository file",
+        "project settings",
+        "local settings",
+        "user settings",
+        "Tool server",
+        "tool servers",
+        "FROM THIS REPOSITORY",
+        "THIS MACHINE ONLY",
+        "User and local settings, not committed.",
+        "These can run when a session starts.",
+        "Nothing found.",
+        "not present:",
+        "not present",
+        "read, nothing declared",
+        "files read ·",
+        "not read"
       ],
-      "evidence": [
+      "presence": [
         "Domovoi reads these files and reports what they declare",
         "By source file",
         "Listed before any session opens"
       ],
-      "blocked": {
-        "since": "2026-09-23",
-        "needs": "protocol",
-        "reason": "no RPC reports the tool servers, hooks and permission rules an agent's own files declare; the daemon passes no tool servers to any agent today (mcpServers: [])"
+      "evidence": [
+        "Tools on your other machines",
+        "Each daemon reads its own files."
+      ],
+      "partial": {
+        "since": "2026-09-29",
+        "reason": "the Tools tab reads tool.inventory from the open machine only; the panel of tools on the other machines needs each machine's inventory, which the tab does not read yet"
       }
     },
     {
@@ -315,7 +335,15 @@
     "New session",
     "acme-api held back",
     "refused · acme-api",
-    "Agent refuses"
+    "Agent refuses",
+    "Tools by agent",
+    "Tools by source file",
+    "The same entries, one panel per file read. Repository files come first, before anyone starts a session.",
+    "None found",
+    "Nothing found is a result, so the panel lists every file it read to reach it.",
+    "An unreadable file is named with its reason. Its entries are not listed or guessed.",
+    "None passed",
+    "This agent starts with no tool servers passed, so it says none passed, not none found."
   ],
   "sample": [
     "codex",
@@ -342,38 +370,31 @@
     "claude-code · turn 4 running · postgres-dev, linear",
     "Backfill replay ids for March",
     "codex · idle",
-    "sops · .gitattributes · .git/config"
+    "sops · .gitattributes · .git/config",
+    "afplay /System/Library/Sounds/Glass.aiff",
+    "paplay /usr/share/sounds/freedesktop/stereo/complete.oga",
+    "powershell -c [console]::beep(880,200)",
+    "stdio · npx -y @acme/pg-mcp · environment values not read",
+    "http · https://mcp.linear.app/mcp",
+    "PreToolUse · Bash",
+    "Bash(pnpm test:*)",
+    "stdio · gh-mcp serve · environment values not read",
+    "EACCES · owned by root, mode 0600",
+    "queue-worker · ~/srv/queue-worker",
+    "acme-api ·",
+    "read 14:02:31 ·"
   ],
-  "humanRead": [],
+  "humanRead": [
+    {
+      "id": "tools.tab",
+      "since": "2026-09-29",
+      "note": "The Skills and Tools tabs sit in a strip at the top of the surface, not in the window bar, and an agent is named without its harness mark. Whether an entry runs at session start follows each entry's heldBack, so an untrusted repository whose entries the daemon does not hold back reads as running, and a trusted one never says trust made it so unless no entry is held back. An entry the daemon holds back from a trusted repository, or from one that cannot be trusted, reads Held back, without until you trust this repository. A cannot-trust repository lists its refusal codes in a card the design does not draw."
+    }
+  ],
   "scriptBacklog": {
     "since": "2026-09-26",
     "reason": "Copy the design builds in its data script, collected by the gate since audit G23 and not yet read against the implementation. Classify each string as an element's copy, sample or annotations, and remove it here.",
     "strings": [
-      "repository file",
-      "project settings",
-      "local settings",
-      "user settings",
-      "Tool server",
-      "afplay /System/Library/Sounds/Glass.aiff",
-      "paplay /usr/share/sounds/freedesktop/stereo/complete.oga",
-      "powershell -c [console]::beep(880,200)",
-      "stdio · npx -y @acme/pg-mcp · environment values not read",
-      "http · https://mcp.linear.app/mcp",
-      "PreToolUse · Bash",
-      "Bash(pnpm test:*)",
-      "stdio · gh-mcp serve · environment values not read",
-      "EACCES · owned by root, mode 0600",
-      "Nothing found.",
-      "not present:",
-      "files read ·",
-      "read, nothing declared",
-      "not present",
-      "FROM THIS REPOSITORY",
-      "THIS MACHINE ONLY",
-      "User and local settings, not committed.",
-      "These can run when a session starts.",
-      "not read",
-      "tool servers",
       "macos · arm64 · 0.9.4",
       "read 14:02, 12 entries, 3 can run when a session starts",
       "linux · x64 · 0.9.4",
@@ -387,10 +408,6 @@
       "STARTED WITH",
       "npx -y @acme/pg-mcp",
       "dev database acme_dev",
-      "Tools on",
-      "queue-worker · ~/srv/queue-worker",
-      "acme-api ·",
-      "read 14:02:31 ·",
       "Grouped by scope and source, with the real trust states: untrusted, trusted, blocked.",
       "A path is the only source in the protocol. No bundle, no registry, no installer command, so nothing executes to install.",
       "Skill and review",
@@ -398,15 +415,7 @@
       "Review changed",
       "This turn's skills",
       "Eight at most, and every omission carries one of four reasons: not-enabled, unavailable, review-changed, policy.",
-      "Tools by agent",
-      "Tools by source file",
-      "The same entries, one panel per file read. Repository files come first, before anyone starts a session.",
       "Tool at the gate",
-      "None found",
-      "Nothing found is a result, so the panel lists every file it read to reach it.",
-      "An unreadable file is named with its reason. Its entries are not listed or guessed.",
-      "None passed",
-      "This agent starts with no tool servers passed, so it says none passed, not none found.",
       "sha256:4b91…e7c · manifest v1",
       "sha256:0aa2…31d · manifest v1",
       "sha256:77c8…9f2 · manifest v1",

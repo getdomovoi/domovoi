@@ -1,5 +1,6 @@
 import type {
   ApprovalDecision,
+  ApprovalToolServer,
   ProviderModel,
   ProviderUsageLimits,
   Runtime,
@@ -36,6 +37,8 @@ export type AgentEvent =
       reason?: string
       /** The provider tool, when the request is neither a shell command nor a file tool. */
       tool?: string
+      /** The tool server whose tool is called, as the provider names it. */
+      toolServer?: ApprovalToolServer
     }
   | {
       type: "policy-refused"
