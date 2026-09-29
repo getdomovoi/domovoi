@@ -1173,6 +1173,42 @@ describe("subagents and current permission events", () => {
     await adapter.close()
   })
 
+  // Only bash with its command is a shell command. An edit of one file is the
+  // Edit file tool on that file, so its Always stays a file rule. Every other
+  // permission (webfetch, external_directory, a tool server's tool, whose
+  // permission is its own name) is the provider's tool and is never resolved
+  // as a shell command.
+  it("names each permission as a shell command, a file edit or a provider tool", async () => {
+    const { adapter, events, stream, threadId } = await buildTurn()
+    const ask = (id: string, permission: string, patterns: string[], metadata: Record<string, unknown>) => stream.emit({
+      type: "permission.asked",
+      properties: { id, sessionID: threadId, permission, patterns, metadata, always: ["*"], tool: { messageID: "msg_1", callID: `call_${id}` } },
+    })
+    ask("per_edit", "edit", ["src/a.ts"], { filepath: "/worktree/src/a.ts", diff: "-a\n+b" })
+    ask("per_fetch", "webfetch", ["https://example.test"], { url: "https://example.test" })
+    ask("per_outside", "external_directory", ["/etc/*"], { filepath: "/etc/hosts", parentDir: "/etc" })
+    ask("per_mcp", "github_create_issue", ["*"], {})
+    ask("per_bash", "bash", ["pnpm test"], {})
+    ask("per_patch", "edit", ["src/a.ts", "src/b.ts"], { filepath: "src/a.ts, src/b.ts", diff: "" })
+    stream.emit({
+      type: "permission.updated",
+      properties: { id: "per_legacy", sessionID: threadId, callID: "call_legacy", type: "edit", title: "Edit this file: /worktree/src/c.ts", metadata: { filePath: "/worktree/src/c.ts" } },
+    })
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(7))
+    const approval = (itemId: string) => events.find((event) => event.type === "approval-requested" && event.itemId === itemId)
+    expect(approval("call_per_edit")).toMatchObject({ command: "Edit", path: "/worktree/src/a.ts" })
+    expect(approval("call_per_edit")).not.toHaveProperty("tool")
+    expect(approval("call_legacy")).toMatchObject({ command: "Edit", path: "/worktree/src/c.ts" })
+    expect(approval("call_legacy")).not.toHaveProperty("tool")
+    expect(approval("call_per_fetch")).toMatchObject({ tool: "webfetch" })
+    expect(approval("call_per_outside")).toMatchObject({ tool: "external_directory" })
+    expect(approval("call_per_mcp")).toMatchObject({ tool: "github_create_issue" })
+    expect(approval("call_per_bash")).toMatchObject({ tool: "bash" })
+    expect(approval("call_per_patch")).toMatchObject({ tool: "edit" })
+    expect(approval("call_per_patch")).not.toHaveProperty("path")
+    await adapter.close()
+  })
+
   it("routes a subagent's approvals and commands to the parent thread and answers the child session", async () => {
     const { adapter, client, events, stream, threadId } = await buildTurn()
     const child = "ses_child"
