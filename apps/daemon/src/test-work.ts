@@ -170,23 +170,42 @@ export const adversarialTomlFiles: ReadonlyArray<readonly [string, number, (size
 // leaves its growth.
 export const quadraticTimeGrowth = 7
 
-function leastTime(run: () => unknown, runs: number): number {
+function elapsed(run: () => unknown): number {
+  const start = performance.now()
   run()
-  let least = Number.POSITIVE_INFINITY
+  return performance.now() - start
+}
+
+// How much longer the large input takes, from the least time of each size
+// over runs taken in turn. Timed one size after the other, every run of the
+// small input could fall inside one slow stretch of a loaded machine while
+// the large input, timed over a longer span, still found a quick run. The
+// growth then read low: a quadratic search measured 6.9 on CI, and as low
+// as 5.0 on a loaded desktop. Taken in turn, both sizes' runs span the same
+// stretch of time, so a slow stretch falls on runs of both sizes rather than
+// on every run of one. That keeps the check honest both ways: a quadratic
+// search no longer reads under the limit because only its small runs were
+// slowed, and the linear redactors are judged by the same function, limit and
+// retry rule as before.
+function measuredGrowth(small: () => unknown, large: () => unknown, runs: number): number {
+  small()
+  large()
+  let leastSmall = Number.POSITIVE_INFINITY
+  let leastLarge = Number.POSITIVE_INFINITY
   for (let index = 0; index < runs; index += 1) {
-    const start = performance.now()
-    run()
-    least = Math.min(least, performance.now() - start)
+    leastSmall = Math.min(leastSmall, elapsed(small))
+    leastLarge = Math.min(leastLarge, elapsed(large))
   }
-  return least
+  return leastLarge / leastSmall
 }
 
 // How much longer four times the input takes: the least of up to three
-// measurements, stopping at the first under the limit.
-export function timeGrowth(small: () => unknown, large: () => unknown, runs = 5): number {
+// measurements, stopping at the first under the limit. Seven runs a size
+// rather than five narrow the spread on a loaded machine in both directions.
+export function timeGrowth(small: () => unknown, large: () => unknown, runs = 7): number {
   let least = Number.POSITIVE_INFINITY
   for (let attempt = 0; attempt < 3 && least >= quadraticTimeGrowth; attempt += 1) {
-    least = Math.min(least, leastTime(large, runs) / leastTime(small, runs))
+    least = Math.min(least, measuredGrowth(small, large, runs))
   }
   return least
 }
