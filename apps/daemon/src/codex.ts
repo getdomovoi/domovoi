@@ -358,7 +358,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
     await transport?.close()
   }
 
-  async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
+  // repositoryTrust is accepted and not used: a worktree holding .codex
+  // configuration is refused until P6c, and codex-repository-config.test.ts
+  // pins that.
+  async startThread({ cwd, runtime }: Parameters<AgentAdapter["startThread"]>[0]): Promise<string> {
     refuseRepositoryConfig(cwd)
     const policy = codexPolicyFor(runtime)
     const sandbox = policy.permissions === "domovoi-read" ? "read-only" : "workspace-write"
@@ -442,11 +445,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     await this.#request("thread/archive", { threadId })
   }
 
-  async resumeThread({ threadId, cwd }: {
-    threadId: string
-    cwd: string
-    runtime: Runtime
-  }): Promise<void> {
+  async resumeThread({ threadId, cwd }: Parameters<AgentAdapter["resumeThread"]>[0]): Promise<void> {
     refuseRepositoryConfig(cwd)
     const result = await this.#request("thread/resume", { threadId, config: codexThreadConfig(cwd) })
     if (nestedId(result, "thread") !== threadId) {
@@ -467,17 +466,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     if (asRecord(result)?.turnId !== turnId) throw new Error("Codex steered a different turn")
   }
 
-  async startTurn({
-    threadId,
-    cwd,
-    prompt,
-    runtime,
-  }: {
-    threadId: string
-    cwd: string
-    prompt: string
-    runtime: Runtime
-  }): Promise<string> {
+  async startTurn({ threadId, cwd, prompt, runtime }: Parameters<AgentAdapter["startTurn"]>[0]): Promise<string> {
     const policy = codexPolicyFor(runtime)
     const params = {
       threadId,

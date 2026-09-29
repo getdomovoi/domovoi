@@ -1,13 +1,8 @@
-import {
-  maximumRepositoryTrustRefusals,
-  maximumToolInventoryBytes,
-  toolInventorySchema,
-  type RepositoryTrustState,
-  type ToolInventory,
-} from "@getdomovoi/protocol"
+import { maximumToolInventoryBytes, toolInventorySchema, type ToolInventory } from "@getdomovoi/protocol"
 
 import { redactInventoryPath } from "./inventory-redaction.js"
 import { readRepositoryProviderConfig, type RepositoryProviderConfig, type RepositoryProviderConfigOptions } from "./repository-provider-config.js"
+import { projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant } from "./repository-trust-store.js"
 
 // The tool.inventory answer: what the open repository's own agent
@@ -22,13 +17,13 @@ import type { RepositoryTrustGrant } from "./repository-trust-store.js"
 // kilo-runtime.ts). The ACP agents are given no servers, but they load their
 // own from the repository and the reader has no scope for them.
 //
-// No entry is marked held back. The adapters keep most repository
-// configuration from the agent today, but not provably all of it (a skill a
-// repository brings, for one), so the inventory does not claim they do until
-// applying trust (P6 to P8) states what each one keeps back (ruling Q128 A).
+// An entry is marked held back only where its adapter provably keeps it from
+// the agent (ruling Q128 A); repository-trust-apply.ts owns that policy, and
+// the trust decision beside it.
 //
 // Trust is this machine's grant for the repository (repository-trust-store.ts),
-// reported against the digest read now; it is recorded, not yet applied.
+// reported against the digest read now. The root is read as its session
+// worktrees read it (ruling Q145 A).
 
 export type RepositoryProviderConfigReader = (rootPath: string, options: RepositoryProviderConfigOptions) => Promise<RepositoryProviderConfig>
 
@@ -45,7 +40,7 @@ export async function readToolInventory({ machine, project, grant, read = readRe
   // The reader reads repository files only, so with no project open there is
   // nothing to list.
   if (project === undefined) return checked({ machine, providers: [] })
-  const config = await read(project.path, { heldBack: false })
+  const config = await read(project.path, projectRootRead)
   return checked(fitToolInventory({
     machine,
     repository: {
@@ -56,31 +51,6 @@ export async function readToolInventory({ machine, project, grant, read = readRe
     },
     providers: config.providers,
   }))
-}
-
-// A repository's trust against the configuration read now. A refusal wins over
-// any grant: the input it names is outside what the digest covers (ruling Q121
-// A). A grant counts only for the digest it names; for any other it is shown
-// as the earlier grant of a changed configuration. The reader already redacted
-// each refusal's path, and the protocol caps how many are listed.
-export function repositoryTrustState(
-  config: Pick<RepositoryProviderConfig, "configDigest" | "trustRefusals">,
-  grant: RepositoryTrustGrant | undefined,
-): RepositoryTrustState {
-  if (config.trustRefusals.length > 0) {
-    return {
-      state: "untrusted",
-      reason: "cannot-trust",
-      refusals: config.trustRefusals.slice(0, maximumRepositoryTrustRefusals)
-        .map(({ provider, reason, path }) => ({ provider, code: reason, path })),
-      omittedRefusals: Math.max(0, config.trustRefusals.length - maximumRepositoryTrustRefusals),
-    }
-  }
-  if (grant === undefined) return { state: "untrusted", reason: "not-trusted" }
-  const { trustedDigest, trustedAt, trustedBy } = grant
-  return trustedDigest === config.configDigest
-    ? { state: "trusted", trustedDigest, trustedAt, trustedBy }
-    : { state: "untrusted", reason: "config-changed", trustedDigest, trustedAt, trustedBy }
 }
 
 // Nothing is sent that the protocol refuses. The error names no path or value,
