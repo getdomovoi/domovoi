@@ -1,4 +1,4 @@
-import { loginServiceHomePaths, loginServiceTaskName, type ApprovalRule, type ClientKind, type PairedDeviceSummary, type ProviderRuntime, type UpdateStatus } from "@getdomovoi/protocol"
+import { localOwnerRequiredErrorCode, loginServiceHomePaths, loginServiceTaskName, type ApprovalRule, type ClientKind, type PairedDeviceSummary, type ProviderRuntime, type UpdateStatus } from "@getdomovoi/protocol"
 import { ChevronRightIcon, ExternalLinkIcon, TerminalIcon } from "lucide-react"
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react"
 
@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { AppearanceSettings, ExternalEditorSettings, ProviderSettings, type ProviderSecretStatus } from "./provider-settings.js"
 import type { WorkspaceTheme } from "./appearance.js"
+import { DaemonRpcError } from "./client.js"
 import type { DaemonServiceOutcome, DaemonServiceStatusReport, DesktopExternalEditor, WorkspaceWindowDecoration } from "./desktop-platform.js"
 import { NotificationSettings } from "./notification-settings.js"
 import type { NotificationPreferences } from "./notification-preferences.js"
@@ -439,12 +440,20 @@ function pendingUpdateLine(status: UpdateStatus): string | undefined {
 // row, set off by a rule, as the design draws it.
 function AboutBuildSection({ about, inCard = false }: { about: AboutBuild; inCard?: boolean }) {
   const [status, setStatus] = useState<UpdateStatus | undefined>(undefined)
+  // Q169: the daemon answers update status only to its owner on a direct
+  // loopback connection. A paired tab gets a policy refusal, keeps its
+  // connection, and says why it has no status instead of going quiet.
+  const [ownerOnly, setOwnerOnly] = useState(false)
   const { onUpdateStatus } = about
   useEffect(() => {
     let active = true
     onUpdateStatus().then(
-      (next) => { if (active) setStatus(next) },
-      () => { if (active) setStatus(undefined) },
+      (next) => { if (active) { setStatus(next); setOwnerOnly(false) } },
+      (cause: unknown) => {
+        if (!active) return
+        setStatus(undefined)
+        setOwnerOnly(cause instanceof DaemonRpcError && cause.code === localOwnerRequiredErrorCode)
+      },
     )
     return () => { active = false }
   }, [onUpdateStatus])
@@ -486,6 +495,9 @@ function AboutBuildSection({ about, inCard = false }: { about: AboutBuild; inCar
         ) : (
           <p className="m-0 text-[11.5px] leading-[1.5] text-muted-foreground">This build is not signed and does not update itself. Get new versions from the release page.</p>
         )}
+        {ownerOnly ? (
+          <p className="m-0 text-[11.5px] leading-[1.5] text-muted-foreground">No update status: the daemon answers it only over loopback, to its owner's credential.</p>
+        ) : null}
         {openReleasePage ? (
           // Mounted empty before any click so a screen reader announces the
           // line when it appears; the negative margin cancels the column gap
