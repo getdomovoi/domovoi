@@ -1,0 +1,164 @@
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+
+import type { ToolInventoryEntry } from "@getdomovoi/protocol"
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+import { readRepositoryProviderConfig, type RepositoryProviderConfig } from "./repository-provider-config.js"
+import {
+  projectRootRead,
+  repositoryEntryHeldBack,
+  repositoryTrustVerdict,
+  trustedRepositoryConfig,
+} from "./repository-trust-apply.js"
+import type { RepositoryTrustGrant } from "./repository-trust-store.js"
+import { removeScratchDirectories } from "./test-scratch.js"
+
+// Slice P6a: one place decides, per session worktree, whether a repository's
+// configuration is trusted. Nothing loads under the answer yet.
+
+const scratchDirectories: string[] = []
+afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
+
+async function scratch(prefix: string): Promise<string> {
+  const path = await mkdtemp(join(tmpdir(), prefix))
+  scratchDirectories.push(path)
+  return path
+}
+
+async function put(root: string, path: string, content: string): Promise<void> {
+  await mkdir(dirname(join(root, path)), { recursive: true })
+  await writeFile(join(root, path), content)
+}
+
+// A main checkout and a linked worktree of it, laid out as git lays them out,
+// each holding the same repository configuration.
+async function checkouts(files: Record<string, string>): Promise<{ main: string; worktree: string }> {
+  const main = await scratch("domovoi-trust-main-")
+  const worktree = await scratch("domovoi-trust-worktree-")
+  await put(main, ".git/HEAD", "ref: refs/heads/main\n")
+  await put(main, ".git/worktrees/session/HEAD", "ref: refs/heads/session\n")
+  await put(main, ".git/worktrees/session/gitdir", `${join(worktree, ".git")}\n`)
+  await put(main, ".git/worktrees/session/commondir", "../..\n")
+  await put(worktree, ".git", `gitdir: ${join(main, ".git", "worktrees", "session")}\n`)
+  for (const [path, content] of Object.entries(files)) {
+    await put(main, path, content)
+    await put(worktree, path, content)
+  }
+  return { main, worktree }
+}
+
+const settings = { hooks: { SessionStart: [{ hooks: [{ type: "command", command: "./bootstrap.sh" }] }] } }
+const servers = { mcpServers: { db: { command: "db-mcp" } } }
+const configured = {
+  ".claude/settings.json": JSON.stringify(settings),
+  ".mcp.json": JSON.stringify(servers),
+  ".codex/config.toml": "sandbox_mode = \"read-only\"\n",
+}
+
+const grantFor = (trustedDigest: string): RepositoryTrustGrant => ({
+  projectId: "project-acme", trustedDigest, trustedAt: "2026-09-29T12:00:00.000Z", trustedBy: { client: "desktop" },
+})
+
+// The grant the person gives in the trust step, which reads the project root.
+async function rootGrant(main: string): Promise<RepositoryTrustGrant> {
+  return grantFor((await readRepositoryProviderConfig(main, projectRootRead)).configDigest)
+}
+
+describe("repositoryTrustVerdict", () => {
+  it("gives a session worktree's documents when its configuration is the one trusted at the root", async () => {
+    const { main, worktree } = await checkouts(configured)
+    const verdict = await repositoryTrustVerdict(worktree, await rootGrant(main))
+    expect(verdict).toEqual({
+      state: "trusted",
+      configDigest: (await rootGrant(main)).trustedDigest,
+      documents: {
+        ".claude/settings.json": settings,
+        ".mcp.json": servers,
+        ".codex/config.toml": { sandbox_mode: "read-only" },
+      },
+    })
+    expect(await trustedRepositoryConfig(worktree, await rootGrant(main))).toEqual(verdict.state === "trusted" ? verdict.documents : undefined)
+  })
+
+  it("holds a repository with no grant back without reading it", async () => {
+    const read = vi.fn(readRepositoryProviderConfig)
+    expect(await repositoryTrustVerdict("/nowhere", undefined, read)).toEqual({ state: "held-back", reason: "not-trusted" })
+    expect(await trustedRepositoryConfig("/nowhere", undefined, read)).toBeUndefined()
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  // Ruling Q144 A: the session opens held back, with a reason later slices show.
+  it("holds a worktree back when its configuration is not the one trusted", async () => {
+    const { main, worktree } = await checkouts(configured)
+    const grant = await rootGrant(main)
+    await put(worktree, ".mcp.json", JSON.stringify({ mcpServers: { planted: { command: "planted-server" } } }))
+    expect(await repositoryTrustVerdict(worktree, grant)).toEqual({ state: "held-back", reason: "config-changed" })
+    expect(await trustedRepositoryConfig(worktree, grant)).toBeUndefined()
+  })
+
+  it("reads the session worktree, not the project root", async () => {
+    const { main, worktree } = await checkouts(configured)
+    const grant = await rootGrant(main)
+    const read = vi.fn(readRepositoryProviderConfig)
+    await repositoryTrustVerdict(worktree, grant, read)
+    expect(read).toHaveBeenCalledOnce()
+    expect(read.mock.calls[0]![0]).toBe(worktree)
+    // The root changing after the grant does not hold back a worktree that
+    // still holds the trusted configuration.
+    await put(main, ".mcp.json", JSON.stringify({ mcpServers: {} }))
+    expect(await repositoryTrustVerdict(worktree, grant)).toMatchObject({ state: "trusted" })
+  })
+
+  it("holds a worktree back while its repository cannot be trusted, even under a grant for its digest", async () => {
+    const { main, worktree } = await checkouts(configured)
+    await put(main, ".codex/hooks.json", "{}")
+    const hooked = await readRepositoryProviderConfig(worktree, { heldBack: false })
+    expect(hooked.trustRefusals).toEqual([expect.objectContaining({ reason: "main-checkout-hooks" })])
+    expect(await repositoryTrustVerdict(worktree, grantFor(hooked.configDigest))).toEqual({ state: "held-back", reason: "cannot-trust" })
+    expect(await trustedRepositoryConfig(worktree, grantFor(hooked.configDigest))).toBeUndefined()
+  })
+
+  it("holds a worktree back when its configuration cannot be read, naming no path or value", async () => {
+    const read = vi.fn(async (): Promise<RepositoryProviderConfig> => {
+      throw new Error("The codex repository inventory does not fit the protocol")
+    })
+    const verdict = await repositoryTrustVerdict("/worktrees/session", grantFor(`sha256:${"a".repeat(64)}`), read)
+    expect(verdict).toEqual({ state: "held-back", reason: "unreadable" })
+  })
+})
+
+describe("repositoryEntryHeldBack", () => {
+  const entry = (file: string, kind: ToolInventoryEntry["kind"] = "hook"): ToolInventoryEntry => (kind === "skill"
+    ? { kind, name: "deploy", file, startsAtSessionStart: false, heldBack: false }
+    : { kind: "hook", event: "SessionStart", command: "./bootstrap.sh", file, startsAtSessionStart: true, heldBack: false })
+
+  // Each claim is pinned by a test of the adapter: claude.test.ts and
+  // codex-repository-config.test.ts.
+  it("holds back what Claude Code and Codex keep from the agent today", () => {
+    expect(repositoryEntryHeldBack("claude-code", entry(".claude/settings.json"))).toBe(true)
+    expect(repositoryEntryHeldBack("claude-code", entry(".mcp.json"))).toBe(true)
+    expect(repositoryEntryHeldBack("codex", entry(".codex/config.toml"))).toBe(true)
+    expect(repositoryEntryHeldBack("codex", entry(".codex/hooks.json"))).toBe(true)
+  })
+
+  // Domovoi's own skill catalog reads these folders and can put a skill in a
+  // prompt, so no adapter provably keeps them back (ruling Q128).
+  it("claims nothing for skills", () => {
+    for (const [provider, file] of [["claude-code", ".claude/skills"], ["codex", ".codex/skills"], ["codex", ".agents/skills"]] as const) {
+      expect(repositoryEntryHeldBack(provider, entry(file, "skill")), `${provider} ${file}`).toBe(false)
+    }
+  })
+
+  // P7 states what OpenCode, Kilo and the ACP agents keep back.
+  it("claims nothing for another provider, even for a file of the same name", () => {
+    for (const provider of ["opencode", "kilo", "cursor-agent", "grok"]) {
+      expect(repositoryEntryHeldBack(provider, entry("opencode.json")), provider).toBe(false)
+      expect(repositoryEntryHeldBack(provider, entry(".mcp.json")), provider).toBe(false)
+      expect(repositoryEntryHeldBack(provider, entry(".codex/config.toml")), provider).toBe(false)
+    }
+    expect(repositoryEntryHeldBack("codex", entry(".mcp.json"))).toBe(false)
+    expect(repositoryEntryHeldBack("claude-code", entry(".codex/config.toml"))).toBe(false)
+  })
+})

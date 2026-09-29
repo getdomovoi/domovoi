@@ -136,10 +136,9 @@ describe("repository.trust", () => {
 
     const after = await inventory(call)
     expect(after.repository?.trust).toEqual(result.repository.trust)
-    // Trust is recorded, not applied (ruling Q128 A): nothing is held back.
-    for (const provider of after.providers) {
-      for (const entry of provider.entries) expect(entry.heldBack, provider.provider).toBe(false)
-    }
+    // Nothing loads under a grant yet (P6b and P6c load it), so what is held
+    // back does not change with trust (ruling Q128 A).
+    expect(after.providers).toEqual(before.providers)
   })
 
   it("names the owner's bearer as desktop whatever client it declared (ruling Q68)", async () => {
@@ -303,6 +302,21 @@ describe("a repository that cannot be trusted (ruling Q121 A)", () => {
 
     const result = await trust(call, listed.repository!.configDigest)
     expect(result).toEqual({ outcome: "cannot-trust", repository: { projectId, configDigest: listed.repository!.configDigest, trust: refused } })
+    expect(store.repositoryTrust.find(projectId)).toBeUndefined()
+  })
+
+  // Ruling Q145 A: the trust step reads the root as a session's linked
+  // worktree does, where Codex takes hooks from this checkout (ruling Q113 B).
+  it("is refused when the checkout's Codex hooks would reach every session", async () => {
+    const root = await repository({ ...configured, ".git/HEAD": "ref: refs/heads/main\n", ".codex/config.toml": "[[hooks.Stop]]\nhooks = [{ type = \"command\", command = \"stop-hook\" }]\n" })
+    const { daemon, store } = await fixture(root)
+    const call = await hello(daemon, "desktop", daemon.authToken)
+    const listed = await inventory(call)
+    const refusedHere = { state: "untrusted", reason: "cannot-trust", refusals: [{ provider: "codex", code: "main-checkout-hooks", path: join(root, ".codex", "config.toml") }], omittedRefusals: 0 }
+    expect(listed.repository?.trust).toEqual(refusedHere)
+
+    const result = await trust(call, listed.repository!.configDigest)
+    expect(result).toEqual({ outcome: "cannot-trust", repository: { projectId, configDigest: listed.repository!.configDigest, trust: refusedHere } })
     expect(store.repositoryTrust.find(projectId)).toBeUndefined()
   })
 

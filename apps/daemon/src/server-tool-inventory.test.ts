@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { DeviceCredentialBinding as DeviceBinding } from "./device-registry.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
+import { projectRootRead } from "./repository-trust-apply.js"
 import { type DaemonServerOptions as DomovoiDaemonOptions, DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 
@@ -141,6 +142,44 @@ describe("tool.inventory", () => {
     expect(JSON.stringify(inventory)).not.toContain("postgres://db")
   })
 
+  // heldBack is true only where the adapter provably keeps the entry from its
+  // agent today (ruling Q128 A): Claude Code's settingSources ["user"], and
+  // Codex's refusal of a worktree holding .codex configuration. OpenCode and
+  // Kilo are stated in P7.
+  it("marks an entry held back only where its adapter keeps it from the agent", async () => {
+    const root = await repository({ ...configured, ".claude/skills/deploy/SKILL.md": "---\nname: deploy\n---\nDeploy." })
+    const { daemon } = await fixture(root)
+    const call = await hello(daemon, "desktop", daemon.authToken)
+    const inventory = inventoryOf(await call("tool.inventory", {}))
+
+    const heldBack = (name: string) => provider(inventory, name)!.entries.map((entry) => [entry.kind, entry.file, entry.heldBack])
+    expect(heldBack("claude-code")).toEqual(expect.arrayContaining([
+      ["tool-server", ".mcp.json", true],
+      ["hook", ".claude/settings.json", true],
+      ["permission-rule", ".claude/settings.json", true],
+      ["skill", ".claude/skills", false],
+    ]))
+    expect(heldBack("codex")).toEqual([["tool-server", ".codex/config.toml", true], ["permission-rule", ".codex/config.toml", true]])
+    for (const name of ["opencode", "kilo"]) {
+      for (const [, file, held] of heldBack(name)) expect(held, `${name} ${String(file)}`).toBe(false)
+    }
+  })
+
+  // Ruling Q145 A: every session is a linked worktree of the open repository,
+  // and Codex there takes hooks from this checkout, so the refusal shows here.
+  it("reports a repository whose Codex hooks every session would refuse as one that cannot be trusted", async () => {
+    const root = await repository({ ...configured, ".git/HEAD": "ref: refs/heads/main\n", ".codex/hooks.json": "{}" })
+    const { daemon } = await fixture(root)
+    const call = await hello(daemon, "desktop", daemon.authToken)
+    const inventory = inventoryOf(await call("tool.inventory", {}))
+    expect(inventory.repository?.trust).toEqual({
+      state: "untrusted",
+      reason: "cannot-trust",
+      refusals: [{ provider: "codex", code: "main-checkout-hooks", path: join(root, ".codex", "hooks.json") }],
+      omittedRefusals: 0,
+    })
+  })
+
   it("keeps the digest the reader computes, and a changed file changes it", async () => {
     const root = await repository(configured)
     const { daemon } = await fixture(root)
@@ -217,6 +256,7 @@ describe("tool.inventory", () => {
         configDigest: "not-a-digest",
         providers: [],
         trustRefusals: [],
+        documents: {},
       }),
     })
     const call = await hello(daemon, "desktop", daemon.authToken)
@@ -235,7 +275,8 @@ describe("tool.inventory", () => {
       ".mcp.json": JSON.stringify({ mcpServers: servers }),
       "opencode.json": JSON.stringify({ formatter: agents }),
     })
-    const read = await readRepositoryProviderConfig(root, { heldBack: false })
+    // Read as tool.inventory reads it, so each entry is marked the same way.
+    const read = await readRepositoryProviderConfig(root, projectRootRead)
     const readEntries = read.providers.reduce((total, entry) => total + entry.entries.length, 0)
     expect(new TextEncoder().encode(JSON.stringify(read.providers)).byteLength).toBeGreaterThan(maximumToolInventoryBytes)
 

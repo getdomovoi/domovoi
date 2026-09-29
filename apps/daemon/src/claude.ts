@@ -304,17 +304,15 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     }
   }
 
-  async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
+  // repositoryTrust is accepted and not used: nothing the repository brings
+  // loads until P6b, and claude.test.ts pins that.
+  async startThread({ cwd, runtime }: Parameters<AgentAdapter["startThread"]>[0]): Promise<string> {
     const threadId = this.#id()
     await this.#openSession(threadId, cwd, runtime, false)
     return threadId
   }
 
-  async resumeThread({ threadId, cwd, runtime }: {
-    threadId: string
-    cwd: string
-    runtime: Runtime
-  }): Promise<void> {
+  async resumeThread({ threadId, cwd, runtime }: Parameters<AgentAdapter["resumeThread"]>[0]): Promise<void> {
     // A conversation whose last process still runs is not reopened beside
     // it, and a loaded one is not reported ready while it does.
     await this.#stopped(threadId)
@@ -322,13 +320,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     await this.#openSession(threadId, cwd, runtime, true)
   }
 
-  async startTurn({ threadId, prompt, runtime, visualContexts }: {
-    threadId: string
-    cwd: string
-    prompt: string
-    runtime: Runtime
-    visualContexts?: AgentVisualContext[]
-  }): Promise<string> {
+  async startTurn({ threadId, prompt, runtime, visualContexts }: Parameters<AgentAdapter["startTurn"]>[0]): Promise<string> {
     let session = this.#requireSession(threadId)
     // A mode change no longer restarts anything: the tool boundary moved to
     // #requestApproval, and Claude's own mode is applied live by #applyRuntime
