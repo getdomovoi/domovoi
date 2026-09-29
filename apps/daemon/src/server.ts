@@ -1642,7 +1642,11 @@ export class DomovoiDaemon {
   #residualTrustedThreads = new Map<string, TrustedThread>()
   // Threads a revoke could not confirm stopped. Each fences its session until
   // a stop is confirmed; a Codex one never is, so until the daemon restarts.
-  #revokedTrustThreads = new Set<string>()
+  #revokedTrustThreads = new Map<string, TrustedThread>()
+  // Threads a revoke has claimed and is still stopping. The revoke alone
+  // settles them: a stop on another path that finishes meanwhile changes
+  // nothing, and each fences its session (security review round 3 of #669).
+  #claimedTrustThreads = new Map<string, TrustedThread>()
   // Counts the revokes of each project's trust. A provider call records the
   // count it looked its grant up under, so a call that lands after a revoke
   // is known to carry a grant that is gone.
@@ -2121,36 +2125,54 @@ export class DomovoiDaemon {
   // (ruling Q152 A): a stopped Codex thread that a revoke already reported
   // stays tracked and fenced until the daemon restarts, which ends the
   // app-server and its tool servers; any other one moves to the residual
-  // entries, which fence nothing while the grant holds (ruling Q186 A).
+  // entries, which fence nothing while the grant holds (ruling Q186 A). A
+  // thread a revoke is still stopping is left to that revoke.
   #threadStopped(provider: string, threadId: string): void {
     const threadKey = providerThreadKey(provider, threadId)
     this.#loadedAgentThreads.delete(threadKey)
+    if (this.#claimedTrustThreads.has(threadKey)) return
     const trusted = this.#trustedThreads.get(threadKey)
-    if (!trusted) return
+    const revoked = this.#revokedTrustThreads.get(threadKey)
     if (!trustedStopUnconfirmedProviders.has(provider)) {
       this.#trustedThreads.delete(threadKey)
       this.#revokedTrustThreads.delete(threadKey)
       return
     }
-    if (this.#revokedTrustThreads.has(threadKey)) return
+    if (!trusted || revoked) return
     this.#trustedThreads.delete(threadKey)
     this.#residualTrustedThreads.set(threadKey, trusted)
   }
 
-  // Security review round 2 of #669: whether a session's worktree may still
-  // hold an agent that loaded trusted input and whose exit is not confirmed:
-  // a tracked thread the session no longer names (an abandoned start, a
-  // quarantined or replaced thread), or a tracked thread that is fenced. Each
-  // such thread is stopped again first, and only a confirmed stop lifts the
-  // fence. No agent starts or takes a message in the session while it holds.
+  // Security review rounds 2 and 3 of #669: whether a session's worktree may
+  // still hold an agent that loaded trusted input and whose exit is not
+  // confirmed: a tracked thread the session no longer names (an abandoned
+  // start, a quarantined or replaced thread), a tracked thread that is
+  // fenced, a thread a revoke is stopping, or one a revoke could not confirm.
+  // Each such thread is stopped again first, and only a confirmed stop lifts
+  // the fence. No agent starts or takes a message in the session while it
+  // holds.
   async #repositoryTrustFenced(sessionId: string): Promise<boolean> {
-    const held = () => [...this.#trustedThreads].filter(([threadKey, trusted]) => {
-      if (trusted.sessionId !== sessionId) return false
-      if (this.#failedEmergencyThreads.has(threadKey)) return true
-      const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
-      return session?.providerThreadId !== trusted.threadId || session.runtime.provider !== trusted.provider
-    })
-    for (const [, { provider, threadId }] of held()) {
+    const held = () => {
+      const threads = new Map<string, TrustedThread>()
+      for (const [threadKey, trusted] of this.#trustedThreads) {
+        if (trusted.sessionId !== sessionId) continue
+        const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
+        if (
+          this.#failedEmergencyThreads.has(threadKey)
+          || session?.providerThreadId !== trusted.threadId
+          || session.runtime.provider !== trusted.provider
+        ) threads.set(threadKey, trusted)
+      }
+      for (const holds of [this.#revokedTrustThreads, this.#claimedTrustThreads]) {
+        for (const [threadKey, trusted] of holds) {
+          if (trusted.sessionId === sessionId) threads.set(threadKey, trusted)
+        }
+      }
+      return [...threads]
+    }
+    for (const [threadKey, { provider, threadId }] of held()) {
+      // A claimed thread is being stopped by its revoke already.
+      if (this.#claimedTrustThreads.has(threadKey)) continue
       try {
         await this.#stopAbandonedThread(provider, threadId, "Fenced provider thread stop timed out")
       } catch (error) {
@@ -2205,7 +2227,7 @@ export class DomovoiDaemon {
         bookkeeping.push(error)
       }
     }
-    const claims: { sessionId: string; provider: string; threadId: string; threadKey: string; turnId: string | undefined; fenced: boolean }[] = []
+    const claims: { trusted: TrustedThread; sessionId: string; provider: string; threadId: string; threadKey: string; turnId: string | undefined; fenced: boolean }[] = []
     // Stopped Codex threads of the project whose tool servers may still run
     // (ruling Q186 A) are claimed with the rest: each is stopped again, and
     // reported unconfirmed as a Codex stop always is.
@@ -2219,6 +2241,9 @@ export class DomovoiDaemon {
     for (const [threadKey, trusted] of this.#trustedThreads) {
       if (trusted.projectId !== projectId || (onlyThreadKey !== undefined && threadKey !== onlyThreadKey)) continue
       const { provider, threadId, sessionId } = trusted
+      // Claimed before any await, so its session is fenced from here on and
+      // no other stop that finishes meanwhile can move or forget it.
+      this.#claimedTrustThreads.set(threadKey, trusted)
       this.#loadedAgentThreads.delete(threadKey)
       this.#emergencyBlockedThreads.add(threadKey)
       // The session's own turn, when the session still names this thread.
@@ -2233,7 +2258,7 @@ export class DomovoiDaemon {
         current.updatedAt = claimedAt
         record(() => this.#holdQueuedSessionSend(current.id, "Repository trust was taken back before the queued send could release."))
       }
-      claims.push({ sessionId, provider, threadId, threadKey, turnId, fenced: this.#failedEmergencyThreads.has(threadKey) })
+      claims.push({ trusted, sessionId, provider, threadId, threadKey, turnId, fenced: this.#failedEmergencyThreads.has(threadKey) })
     }
     if (claims.length === 0) return []
     const claimed = new Set(claims.map(({ sessionId }) => sessionId))
@@ -2260,9 +2285,15 @@ export class DomovoiDaemon {
       const outcome = stop.status === "fulfilled" && !trustedStopUnconfirmedProviders.has(claim.provider)
         ? "restarted" as const
         : "unconfirmed" as const
-      if (outcome === "restarted") this.#trustedThreads.delete(claim.threadKey)
-      else {
-        this.#revokedTrustThreads.add(claim.threadKey)
+      this.#claimedTrustThreads.delete(claim.threadKey)
+      if (outcome === "restarted") {
+        this.#trustedThreads.delete(claim.threadKey)
+        this.#revokedTrustThreads.delete(claim.threadKey)
+      } else {
+        // Tracked again in case any path dropped the entry while it was
+        // claimed: a revoked thread stays tracked, revoked and fenced.
+        this.#trustedThreads.set(claim.threadKey, claim.trusted)
+        this.#revokedTrustThreads.set(claim.threadKey, claim.trusted)
         this.#failedEmergencyThreads.add(claim.threadKey)
         this.#emergencyBlockedThreads.add(claim.threadKey)
       }

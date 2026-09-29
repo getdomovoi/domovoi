@@ -35,7 +35,9 @@ restarts; a new grant does not lift that.
 While a session has a thread that loaded trusted configuration and that it no longer names, or one
 that is fenced, a message, a restart, a provider switch or a fork of that session is refused with
 "Provider thread requires recovery after emergency stop". Each attempt first tries to stop the
-thread again, and a confirmed stop lifts the fence.
+thread again, and a confirmed stop lifts the fence. A thread a revoke is stopping fences its
+session from the moment it is claimed, and a stop on another path that finishes meanwhile does not
+release it.
 
 Nothing resumes a stopped thread: the next message resumes it, and that resume carries no grant. A
 queued send is held with "Repository trust was taken back before the queued send could release."

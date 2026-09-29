@@ -594,6 +594,56 @@ describe("a stopped Codex thread while the grant holds", () => {
   })
 })
 
+// Security review round 3 of #669: a stop that finishes while a revoke is
+// stopping the same Codex thread must not move it out of the revoke's hold.
+describe("a revoke racing another stop of the same Codex thread", () => {
+  const fenced = "Provider thread requires recovery after emergency stop"
+
+  for (const first of ["cleanup", "revoke"] as const) {
+    it(`fences the session when the ${first} stop finishes first`, async () => {
+      const { agents, grants, rpc, revoke } = await fixture({ agentTimeoutMs: 1_000 })
+      grants.set(projectId, grant(projectId))
+      const landing = deferred()
+      const start = agents.codex.startThread.getMockImplementation()!
+      agents.codex.startThread.mockImplementationOnce(async (input) => {
+        await landing.promise
+        return start(input)
+      })
+      const cleanupStop = deferred()
+      const revokeStop = deferred()
+      agents.codex.stopThread
+        .mockImplementationOnce(() => cleanupStop.promise)
+        .mockImplementationOnce(() => revokeStop.promise)
+
+      // The handoff to Codex times out; its thread lands late, loaded with
+      // trusted configuration, and its cleanup stop waits.
+      expect(await rpc("session.setRuntime", { client: "desktop", sessionId: "session-a", runtime: codex })).toHaveProperty("error")
+      landing.resolve()
+      await waitForDaemon(() => expect(agents.codex.stopThread).toHaveBeenCalledOnce())
+      const revoking = revoke()
+      await waitForDaemon(() => expect(agents.codex.stopThread).toHaveBeenCalledTimes(2))
+      const [earlier, later] = first === "cleanup" ? [cleanupStop, revokeStop] : [revokeStop, cleanupStop]
+      earlier.resolve()
+      await settle()
+      later.resolve()
+      expect(await revoking).toEqual([{ sessionId: "session-a", outcome: "unconfirmed" }])
+
+      expect(await rpc("session.send", { client: "desktop", sessionId: "session-a", prompt: "after" }))
+        .toMatchObject({ error: { message: fenced } })
+      expect(await rpc("session.setRuntime", { client: "desktop", sessionId: "session-a", runtime: codex }))
+        .toMatchObject({ error: { message: fenced } })
+      expect(await rpc("session.fork", {
+        client: "desktop", sessionId: "session-a", checkpointId: "checkpoint-fork", requestId: `fork-after-${first}`, runtime: claude,
+      })).toMatchObject({ error: { message: fenced } })
+      // The session still names its own thread, so a restart is refused too.
+      expect(await rpc("session.restartProviderThread", { client: "desktop", sessionId: "session-a" })).toHaveProperty("error")
+      expect(agents["claude-code"].resumeThread).not.toHaveBeenCalled()
+      expect(agents["claude-code"].startThread).not.toHaveBeenCalled()
+      expect(agents.codex.startThread).toHaveBeenCalledOnce()
+    })
+  }
+})
+
 describe("repository.revokeTrust and an emergency stop", () => {
   it("takes the grant back at once during a stop, then stops what the stop left, once", async () => {
     const { agents, grants, ok, rpc, sessionNamed } = await fixture()
