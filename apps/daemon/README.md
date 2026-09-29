@@ -567,13 +567,18 @@ code or settings the repository brings:
     `approvals_reviewer = "user"` and turns on `tool_call_mcp_elicitation`, so the question comes
     to Domovoi as an approval card, without Always. In Plan, and in Build with Auto, Codex refuses
     the call instead.
-  - a server with the same name as one of yours, a server named `codex_apps`, `codex_app`,
-    `notes`, `node_repl` or `cua_repl`, a disabled server, a remote server whose address or
-    headers contain `$` or that sets `bearer_token_env_var`, `env_http_headers` or
-    `http_headers_helper`, and a server whose name is not letters, digits, `-` and `_` are held
-    back.
+  - a server with the same name as one of yours, in any case, a server of one of your plugins
+    included, a server named `codex_apps`, `codex_app`, `notes`, `node_repl` or `cua_repl`, a
+    disabled server, a remote server whose address or headers contain `$` or that sets
+    `bearer_token_env_var`, `env_http_headers` or `http_headers_helper`, and a server whose name
+    is not letters, digits, `-` and `_` are held back. Your servers are the ones your Codex
+    configuration layers declare and every server Codex's `mcpServerStatus/list` names, which
+    starts each of them once to describe it. When either cannot be read, no repository server
+    passes.
 
-  Approval, sandbox, permission, network, shell environment, profile, model provider and
+  A trusted repository's tool servers start as programs with your own access when a session
+  opens, before any tool call is asked about. Approval, sandbox, permission, network, shell
+  environment, profile, model provider and
   `experimental_*` settings, hooks, plugins and rules stay held back. A main checkout that holds
   hooks keeps the repository untrusted and still refuses every Codex thread. A running thread keeps
   what it was given; a changed configuration or a new grant applies at its next open. A session
