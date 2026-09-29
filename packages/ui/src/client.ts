@@ -51,6 +51,7 @@ import {
   type SkillDocument,
   type SkillInstallPreview,
   type SkillInventory,
+  type ToolInventory,
   type SkillSummary,
   type SystemEmergencyStopResult,
   type TerminalSession,
@@ -852,6 +853,12 @@ export class DomovoiClient extends EventTarget {
 
   getSkillInventory(options?: DomovoiRequestOptions): Promise<SkillInventory> {
     return this.request("skill.inventory", {}, options)
+  }
+
+  // What the open repository's agent configuration files declare on this
+  // daemon's machine. The daemon refuses it on a phone or tablet binding.
+  getToolInventory(options?: DomovoiRequestOptions): Promise<ToolInventory> {
+    return this.request("tool.inventory", {}, options)
   }
 
   readSkill(id: string): Promise<SkillDocument> {
