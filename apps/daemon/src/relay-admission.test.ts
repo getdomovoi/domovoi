@@ -149,6 +149,17 @@ describe("daemon relay admission", () => {
     expect(relay.client.closed).toBe(false)
   })
 
+  it("refuses the service handoff fence over a relay channel with the local-owner code, even from a desktop credential", async () => {
+    const { daemon, store } = await fixture()
+    const desktop = store.devices.pair({ label: "desktop", binding: { kind: "client", client: "desktop", clientAccess: "full" }, channelPublicKey: relayPublicKeyFromPrivateKey(otherKey) })
+    const relay = connect(daemon, desktop.token, otherKey)
+    expect(await relay.hello({ client: "desktop" })).toHaveProperty("result")
+    expect(await relay.rpc("system.serviceHandoffFence")).toMatchObject({
+      error: { code: localOwnerRequiredErrorCode, message: "The service handoff fence requires a loopback local-owner connection" },
+    })
+    expect(relay.client.closed).toBe(false)
+  })
+
   it("does not accept a second bearer in hello", async () => {
     const { daemon, paired } = await fixture()
     const relay = connect(daemon, paired.token)
