@@ -584,6 +584,60 @@ describe("CodexAppServerAdapter", () => {
     await adapter.close()
   })
 
+  // Slice P6c: a trusted repository's server reaches Codex made to ask before
+  // each tool, its call raises a card like any tool server's, and the thread
+  // is reported as given trusted servers until the app-server that holds it
+  // is gone.
+  it("passes a trusted repository's server, raises a card for its call, and forgets the thread with its transport", async () => {
+    const transport = new FakeTransport()
+    const digest = `sha256:${"e".repeat(64)}`
+    const read = vi.fn(async () => ({
+      configDigest: digest, providers: [], trustRefusals: [],
+      documents: { ".codex/config.toml": { approval_policy: "never", mcp_servers: { db: { command: "db-mcp", default_tools_approval_mode: "approve" } } } },
+    }))
+    const adapter = new CodexAppServerAdapter(() => transport, read)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const starting = adapter.startThread({
+      cwd: "/worktree",
+      runtime: runtime("build", false),
+      repositoryTrust: { projectId: "project-acme", trustedDigest: digest, trustedAt: "2026-09-29T12:00:00.000Z", trustedBy: { client: "desktop" } },
+    })
+    await vi.waitFor(() => expect(transport.sent.at(-1)).toMatchObject({ method: "config/read", params: { cwd: "/worktree", includeLayers: true } }))
+    transport.receive({ id: transport.sent.at(-1)!.id!, result: { config: {}, layers: [{ name: { type: "user", file: "/home/person/.codex/config.toml" }, version: "1", config: {} }] } })
+    await vi.waitFor(() => expect(transport.sent.at(-1)?.method).toBe("thread/start"))
+    expect(transport.sent.at(-1)?.params?.config).toMatchObject({
+      mcp_servers: { db: { command: "db-mcp", default_tools_approval_mode: "prompt" } },
+      approvals_reviewer: "user",
+      features: { tool_call_mcp_elicitation: true },
+    })
+    expect(transport.sent.at(-1)?.params?.config).not.toHaveProperty("approval_policy")
+    transport.receive({ id: transport.sent.at(-1)!.id!, result: { thread: { id: "thread-1" } } })
+    expect(await starting).toBe("thread-1")
+    expect(adapter.repositoryTrustApplied("thread-1")).toEqual({ digest })
+
+    transport.receive({
+      method: "item/started",
+      params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "call-1", server: "db", tool: "query", arguments: {} } },
+    })
+    transport.receive({
+      id: 90,
+      method: "mcpServer/elicitation/request",
+      params: {
+        threadId: "thread-1", turnId: "turn-1", serverName: "db", mode: "form", message: "Allow query?",
+        requestedSchema: { type: "object", properties: {} }, _meta: { codex_approval_kind: "mcp_tool_call" },
+      },
+    })
+    expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", requestId: 90, toolServer: { name: "db" }, tool: "db.query" }))
+
+    transport.fail(new Error("Codex app-server exited with code 1"))
+    expect(adapter.repositoryTrustApplied("thread-1")).toBeUndefined()
+  })
+
   it("shares initialization across concurrent connect calls", async () => {
     const transport = new FakeTransport()
     const adapter = new CodexAppServerAdapter(() => transport)

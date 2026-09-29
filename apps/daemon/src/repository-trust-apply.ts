@@ -1,5 +1,11 @@
-import { maximumRepositoryTrustRefusals, type RepositoryTrustState, type ToolInventoryEntry } from "@getdomovoi/protocol"
+import {
+  maximumRepositoryTrustRefusals,
+  type RepositoryTrustState,
+  type ToolInventoryEntry,
+  type ToolInventoryProvider,
+} from "@getdomovoi/protocol"
 
+import { codexEntryHeldBack, codexRepositoryFiles, codexRepositoryLoad } from "./codex-repository-trust.js"
 import {
   readRepositoryProviderConfig,
   type RepositoryConfigDocuments,
@@ -18,8 +24,9 @@ import type { RepositoryProviderConfigReader } from "./tool-inventory.js"
 // of it, whose configuration can differ. A session's verdict reads its own
 // worktree, at the call that opens its thread or starts its turn, and never
 // relies on an earlier trust answer (#662 round 1): the documents it gives are
-// the ones the digest it compared was computed from. Nothing loads under a
-// trusted verdict yet: P6b (Claude Code) and P6c (Codex) load it.
+// the ones the digest it compared was computed from. Codex loads parts of a
+// trusted verdict's documents (P6c, codex-repository-trust.ts); Claude Code
+// loads nothing from it until P6b.
 
 // Why a session's repository configuration is held back. Codes, not prose:
 // the notice that words them comes with the later slices (ruling Q153 A).
@@ -93,15 +100,17 @@ export async function trustedRepositoryConfig(
   return verdict.state === "trusted" ? verdict.documents : undefined
 }
 
-// The files whose every entry an adapter keeps from its agent today, whatever
-// the grant. Each claim is pinned by a test of the adapter's real behaviour:
-// Claude Code starts with settingSources ["user"], so the repository's
-// settings and .mcp.json are never read (claude.test.ts); Codex refuses a
-// worktree holding a .codex config.toml or hooks.json, and marks every path it
-// consults for trust untrusted (codex-repository-config.test.ts). Nothing else
-// is claimed (ruling Q128 A): Domovoi's own skill catalog reads the skill
+// The files whose every entry an adapter keeps from its agent unless the
+// repository is trusted. Each claim is pinned by a test of the adapter's real
+// behaviour: Claude Code starts with settingSources ["user"], so the
+// repository's settings and .mcp.json are never read (claude.test.ts); Codex
+// marks every path it consults for trust untrusted, so it loads nothing from
+// .codex itself, refuses a worktree holding a config.toml or hooks.json there
+// unless it is trusted, and is given only the servers trustedEntryHeldBack
+// reports under a trusted verdict (codex-repository-config.test.ts). Nothing
+// else is claimed (ruling Q128 A): Domovoi's own skill catalog reads the skill
 // folders into prompts, and OpenCode, Kilo and the ACP agents are stated in
-// P7. P6b and P6c narrow these as trusted entries start to load.
+// P7. P6b narrows Claude Code's as its trusted entries start to load.
 const heldBackFiles: Readonly<Record<string, ReadonlySet<string>>> = {
   "claude-code": new Set([".claude/settings.json", ".mcp.json"]),
   codex: new Set([".codex/config.toml", ".codex/hooks.json"]),
@@ -110,6 +119,31 @@ const heldBackFiles: Readonly<Record<string, ReadonlySet<string>>> = {
 export const repositoryEntryHeldBack: RepositoryEntryHeldBack = (provider: string, entry: ToolInventoryEntry) => (
   Object.hasOwn(heldBackFiles, provider) && heldBackFiles[provider]!.has(entry.file)
 )
+
+// The policy under a trusted verdict whose documents are `documents`: Codex's
+// entries are held back unless the plan its adapter passes loads them
+// (codex-repository-trust.ts, slice P6c); every other provider's are marked
+// as when untrusted until its own slice loads them (Claude Code in P6b).
+export function trustedEntryHeldBack(documents: RepositoryConfigDocuments): RepositoryEntryHeldBack {
+  const codex = codexRepositoryLoad(documents)
+  return (provider, entry) => (provider === "codex" && codexRepositoryFiles.has(entry.file)
+    ? codexEntryHeldBack(entry, codex)
+    : repositoryEntryHeldBack(provider, entry))
+}
+
+// The providers as the inventory reports them under `trust`. The reader
+// marked them with repositoryEntryHeldBack; a trusted repository's are marked
+// again from the documents the same read returned, so what is reported as
+// loading is what an adapter would load from that digest. The documents never
+// leave this function.
+export function heldBackUnder(config: RepositoryProviderConfig, trust: RepositoryTrustState): ToolInventoryProvider[] {
+  if (trust.state !== "trusted") return config.providers
+  const heldBack = trustedEntryHeldBack(config.documents)
+  return config.providers.map((provider) => ({
+    ...provider,
+    entries: provider.entries.map((entry) => ({ ...entry, heldBack: heldBack(provider.provider, entry) })),
+  }))
+}
 
 // How tool.inventory and the trust step read the project root: entries marked
 // by the policy above, and the root read as its session worktrees read it, so

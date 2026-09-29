@@ -11,19 +11,30 @@ import {
   type Runtime,
 } from "@getdomovoi/protocol"
 
-import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep, ApprovalScope } from "./agents.js"
+import type { AgentAdapter, AgentEvent, AgentRepositoryTrust, AgentWorkingPlanStep, ApprovalScope } from "./agents.js"
 import { codexSandboxReach } from "./approval-facts.js"
 import {
   codexMainCheckoutConfigFile,
   codexMainCheckoutConfigRefusal,
+  codexMainCheckoutHooksFile,
+  codexMainCheckoutHooksRefusal,
   codexProjectTrustKeys,
   codexRepositoryConfigFile,
   codexRepositoryConfigRefusal,
 } from "./codex-repository-config.js"
+import {
+  codexOwnServerNames,
+  codexRepositoryLoad,
+  codexTrustedThreadConfig,
+  withoutOwnServers,
+  type CodexRepositoryServer,
+} from "./codex-repository-trust.js"
 import { credentialStores } from "./credential-stores.js"
 import { redactInventoryText } from "./inventory-redaction.js"
 import { projectInstructions } from "./project-instructions.js"
+import { repositoryTrustVerdict } from "./repository-trust-apply.js"
 import { redactDurableText } from "./secret-redaction.js"
+import type { RepositoryProviderConfigReader } from "./tool-inventory.js"
 import { normalizeProviderUsage } from "./usage.js"
 import { onProcessEnd } from "./process-end.js"
 
@@ -148,12 +159,16 @@ function utf8Parts(text: string, limit: number): string[] {
 // Marking every path Codex consults for trust as untrusted keeps Codex from
 // loading repository configuration and from recording trust of its own when a
 // writable thread starts. It also stops Codex reading the repository's
-// AGENTS.md, which Domovoi sends with each turn instead.
-function codexThreadConfig(cwd: string): { projects: Record<string, { trust_level: "untrusted" }> } {
-  return {
-    projects: Object.fromEntries(codexProjectTrustKeys(cwd).map((key) => [key, { trust_level: "untrusted" as const }])),
-  }
+// AGENTS.md, which Domovoi sends with each turn instead. A trusted
+// repository's servers that pass are added beside it (codex-repository-trust.ts).
+function codexThreadConfig(cwd: string, servers: Readonly<Record<string, CodexRepositoryServer>> = {}): Record<string, unknown> {
+  const projects = Object.fromEntries(codexProjectTrustKeys(cwd).map((key) => [key, { trust_level: "untrusted" as const }]))
+  return Object.keys(servers).length === 0 ? { projects } : { projects, ...codexTrustedThreadConfig(servers) }
 }
+
+// What a thread may take from a trusted worktree: the digest its verdict
+// compared, and the servers codex-repository-trust.ts lets pass.
+type RepositoryPlan = { digest: string; servers: Record<string, CodexRepositoryServer> }
 
 export function codexAppServerArguments(): string[] {
   const worktreeSecrets = `{${codexWorktreeSecretPatterns.map((pattern) => `${JSON.stringify(pattern)}="deny"`).join(",")}}`
@@ -346,9 +361,23 @@ export class CodexAppServerAdapter implements AgentAdapter {
   // answered in that shape. Both belong to the transport that sent them.
   #toolServerCalls = new Map<string, ToolServerCall>()
   #toolServerApprovals = new Set<number>()
+  // Threads opened on this transport under a trusted verdict, by thread id,
+  // with the digest it compared: their turns skip the worktree refusal
+  // (ruling Q143 A). And threads given a trusted repository's servers: Codex
+  // ignores a resume's config for a thread it still holds, so one stays here
+  // until it is archived or the transport ends.
+  #trustedThreads = new Map<string, string>()
+  #trustApplied = new Map<string, { digest: string }>()
+  readonly #readRepositoryConfig: RepositoryProviderConfigReader | undefined
 
-  constructor(transportFactory: () => CodexTransport = () => new StdioCodexTransport()) {
+  constructor(
+    transportFactory: () => CodexTransport = () => new StdioCodexTransport(),
+    // How a session's worktree configuration is read for its trust verdict;
+    // the repository reader unless a test gives another.
+    readRepositoryConfig?: RepositoryProviderConfigReader,
+  ) {
     this.#transportFactory = transportFactory
+    this.#readRepositoryConfig = readRepositoryConfig
   }
 
   async connect(): Promise<void> {
@@ -371,18 +400,24 @@ export class CodexAppServerAdapter implements AgentAdapter {
     await transport?.close()
   }
 
-  // repositoryTrust is accepted and not used: a worktree holding .codex
-  // configuration is refused until P6c, and codex-repository-config.test.ts
-  // pins that.
-  async startThread({ cwd, runtime }: Parameters<AgentAdapter["startThread"]>[0]): Promise<string> {
-    refuseRepositoryConfig(cwd)
+  // Each open, a start or a resume, decides from the grant it is given what
+  // the worktree may bring (#repositoryPlan). With no grant, as for an
+  // archive resume (ruling Q149 A), the check runs before Codex is asked
+  // anything, as it always has.
+  async startThread({ cwd, runtime, repositoryTrust }: Parameters<AgentAdapter["startThread"]>[0]): Promise<string> {
+    const plan = repositoryTrust === undefined ? undefined : await this.#repositoryPlan(cwd, repositoryTrust)
+    refuseRepositoryConfig(cwd, plan !== undefined)
     const policy = codexPolicyFor(runtime)
     const sandbox = policy.permissions === "domovoi-read" ? "read-only" : "workspace-write"
     // thread/start developerInstructions replaces the person's own
     // developer_instructions rather than adding to them, so Domovoi reads the
-    // value Codex resolved for this worktree and sends both.
-    const own = resolvedDeveloperInstructions(await this.#request("config/read", { cwd }))
-    refuseRepositoryConfig(cwd)
+    // value Codex resolved for this worktree and sends both. With servers to
+    // pass, the same read names the person's own servers, layer by layer.
+    const offered = plan !== undefined && Object.keys(plan.servers).length > 0
+    const read = await this.#request("config/read", offered ? { cwd, includeLayers: true } : { cwd })
+    const own = resolvedDeveloperInstructions(read)
+    const servers = plan === undefined ? {} : serversToPass(plan, read)
+    refuseRepositoryConfig(cwd, plan !== undefined)
     const result = await this.#request("thread/start", {
       cwd,
       model: runtime.model,
@@ -390,11 +425,37 @@ export class CodexAppServerAdapter implements AgentAdapter {
       sandbox,
       serviceName: "domovoi",
       developerInstructions: own ? `${own}\n\n${codexDeveloperInstructions}` : codexDeveloperInstructions,
-      config: codexThreadConfig(cwd),
+      config: codexThreadConfig(cwd, servers),
     })
     const threadId = nestedId(result, "thread")
     if (!threadId) throw new Error("Codex did not return a thread id")
+    this.#opened(threadId, plan, servers)
     return threadId
+  }
+
+  // The digest of the trusted configuration whose servers this thread was
+  // given, or undefined when it was given none: held back, or trusted with
+  // no server that passes. Codex cannot confirm a server's process stopped
+  // with the thread (ruling Q152 A), so a thread stays reported until it is
+  // archived or this transport ends.
+  repositoryTrustApplied(threadId: string): { digest: string } | undefined {
+    return this.#trustApplied.get(threadId)
+  }
+
+  // The worktree's verdict under the grant, read just before Codex is asked
+  // to open the thread: only a trusted one brings anything, and it brings the
+  // documents its digest was computed from.
+  async #repositoryPlan(cwd: string, grant: AgentRepositoryTrust): Promise<RepositoryPlan | undefined> {
+    const verdict = await repositoryTrustVerdict(cwd, grant, this.#readRepositoryConfig)
+    return verdict.state === "trusted"
+      ? { digest: verdict.configDigest, servers: codexRepositoryLoad(verdict.documents).mcpServers }
+      : undefined
+  }
+
+  #opened(threadId: string, plan: RepositoryPlan | undefined, servers: Readonly<Record<string, CodexRepositoryServer>>): void {
+    if (plan === undefined) this.#trustedThreads.delete(threadId)
+    else this.#trustedThreads.set(threadId, plan.digest)
+    if (plan !== undefined && Object.keys(servers).length > 0) this.#trustApplied.set(threadId, { digest: plan.digest })
   }
 
   async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
@@ -456,14 +517,26 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
   async stopThread(threadId: string): Promise<void> {
     await this.#request("thread/archive", { threadId })
+    this.#trustedThreads.delete(threadId)
+    this.#trustApplied.delete(threadId)
   }
 
-  async resumeThread({ threadId, cwd }: Parameters<AgentAdapter["resumeThread"]>[0]): Promise<void> {
-    refuseRepositoryConfig(cwd)
-    const result = await this.#request("thread/resume", { threadId, config: codexThreadConfig(cwd) })
+  async resumeThread({ threadId, cwd, repositoryTrust }: Parameters<AgentAdapter["resumeThread"]>[0]): Promise<void> {
+    // This open decides again: until it succeeds under a trusted verdict, the
+    // thread's turns meet the worktree refusal (ruling Q144 A).
+    this.#trustedThreads.delete(threadId)
+    const plan = repositoryTrust === undefined ? undefined : await this.#repositoryPlan(cwd, repositoryTrust)
+    refuseRepositoryConfig(cwd, plan !== undefined)
+    let servers: Record<string, CodexRepositoryServer> = {}
+    if (plan !== undefined && Object.keys(plan.servers).length > 0) {
+      servers = serversToPass(plan, await this.#request("config/read", { cwd, includeLayers: true }))
+      refuseRepositoryConfig(cwd, true)
+    }
+    const result = await this.#request("thread/resume", { threadId, config: codexThreadConfig(cwd, servers) })
     if (nestedId(result, "thread") !== threadId) {
       throw new Error("Codex did not resume the requested thread")
     }
+    this.#opened(threadId, plan, servers)
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
@@ -479,6 +552,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
     if (asRecord(result)?.turnId !== turnId) throw new Error("Codex steered a different turn")
   }
 
+  // A turn's grant is not read: a running thread keeps what it was opened
+  // with, checked again at its next open (rulings Q143 A and Q144 A).
   async startTurn({ threadId, cwd, prompt, runtime }: Parameters<AgentAdapter["startTurn"]>[0]): Promise<string> {
     const policy = codexPolicyFor(runtime)
     const params = {
@@ -511,7 +586,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     for (;;) {
       const withCollaboration = this.#collaborationModeAvailable
       const withContext = this.#additionalContextAvailable
-      refuseRepositoryConfig(cwd)
+      refuseRepositoryConfig(cwd, this.#trustedThreads.has(threadId))
       try {
         result = await this.#request("turn/start", {
           ...params,
@@ -644,6 +719,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
     this.#transport = undefined
     this.#toolServerCalls.clear()
     this.#toolServerApprovals.clear()
+    // The app-server that held these threads is gone; each is opened again,
+    // and checked again, on the next transport.
+    this.#trustedThreads.clear()
+    this.#trustApplied.clear()
   }
 
   #receive(message: JsonRpcMessage): void {
@@ -821,17 +900,33 @@ function toolServerApproval(
   }
 }
 
-// A trusted project's own Codex configuration can start programs and change
-// permissions. Until a trust gate ships, a session is refused before Codex is
-// asked anything about a worktree that holds it, or whose main checkout holds
-// hook configuration Codex takes from there. Callers check again after every
+// A project's own Codex configuration can start programs and change
+// permissions. A session is refused before Codex is asked anything about a
+// worktree that holds it, or whose main checkout holds configuration Codex
+// takes hooks from, unless the thread is opened, or was opened, under a
+// trusted verdict: Codex still loads none of it, and Domovoi passes what may
+// load in the thread config. A trusted thread is still refused while the main
+// checkout holds hooks (ruling Q113 B). Callers check again after every
 // await, so each thread/start, thread/resume and turn/start goes out in the
 // same tick as a check that passed.
-function refuseRepositoryConfig(cwd: string): void {
-  const file = codexRepositoryConfigFile(cwd)
-  if (file !== undefined) throw new Error(codexRepositoryConfigRefusal(file))
+function refuseRepositoryConfig(cwd: string, trusted: boolean): void {
+  if (!trusted) {
+    const file = codexRepositoryConfigFile(cwd)
+    if (file !== undefined) throw new Error(codexRepositoryConfigRefusal(file))
+  }
+  const hooks = codexMainCheckoutHooksFile(cwd)
+  if (hooks !== undefined) throw new Error(codexMainCheckoutHooksRefusal(hooks.file, hooks.mainCheckout))
+  if (trusted) return
   const main = codexMainCheckoutConfigFile(cwd)
   if (main !== undefined) throw new Error(codexMainCheckoutConfigRefusal(main.file, main.mainCheckout))
+}
+
+// The plan's servers less any named like one of the person's own (ruling
+// Q150 A), from a config/read answer with its layers. When the answer does
+// not say, none pass.
+function serversToPass(plan: RepositoryPlan, configRead: unknown): Record<string, CodexRepositoryServer> {
+  const own = codexOwnServerNames(configRead)
+  return own === undefined ? {} : withoutOwnServers(plan.servers, own)
 }
 
 function resolvedDeveloperInstructions(result: unknown): string | undefined {

@@ -10,6 +10,7 @@ import {
   projectRootRead,
   repositoryEntryHeldBack,
   repositoryTrustVerdict,
+  trustedEntryHeldBack,
   trustedRepositoryConfig,
 } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant } from "./repository-trust-store.js"
@@ -149,6 +150,21 @@ describe("repositoryEntryHeldBack", () => {
     for (const [provider, file] of [["claude-code", ".claude/skills"], ["codex", ".codex/skills"], ["codex", ".agents/skills"]] as const) {
       expect(repositoryEntryHeldBack(provider, entry(file, "skill")), `${provider} ${file}`).toBe(false)
     }
+  })
+
+  // Slice P6c: under a trusted verdict a Codex server that passes loads, and
+  // the policy reports it so from the same documents.
+  it("reports a trusted repository's Codex servers that pass as loading, and nothing else", () => {
+    const heldBack = trustedEntryHeldBack({ ".codex/config.toml": { mcp_servers: { db: { command: "db-mcp" }, notes: { command: "notes-mcp" } } } })
+    const server = (name: string): ToolInventoryEntry => ({
+      kind: "tool-server", name, transport: "stdio", command: "db-mcp", envKeys: [], file: ".codex/config.toml", startsAtSessionStart: true, heldBack: true,
+    })
+    expect(heldBack("codex", server("db"))).toBe(false)
+    expect(heldBack("codex", server("notes"))).toBe(true)
+    expect(heldBack("codex", entry(".codex/config.toml"))).toBe(true)
+    expect(heldBack("codex", entry(".codex/hooks.json"))).toBe(true)
+    expect(heldBack("codex", entry(".agents/skills", "skill"))).toBe(false)
+    expect(heldBack("claude-code", entry(".mcp.json"))).toBe(true)
   })
 
   // P7 states what OpenCode, Kilo and the ACP agents keep back.
