@@ -108,8 +108,11 @@ function loadedPermissions(permissions: unknown): ClaudeRepositorySettings["perm
 // A name the inventory shows as written, so an entry names the server that
 // loads. Claude makes tool names from it (mcp__<server>__<tool>) and turns
 // other characters into underscores, which could make two servers look alike.
+// A name holding the separator `__` could pass for another server's name and
+// tool (security review round 1 of #671: github__repo beside github).
 const serverName = /^[A-Za-z0-9_-]{1,64}$/u
-const listedAsWritten = (name: string) => serverName.test(name) && redactInventoryText(name, inventoryFieldCaps.name) === name
+const listedAsWritten = (name: string) => serverName.test(name) && !name.includes("__")
+  && redactInventoryText(name, inventoryFieldCaps.name) === name
 
 // The fields the SDK's own server types name, other than a remote server's
 // tool policy, which would answer for the person. A server with any other
@@ -154,15 +157,34 @@ export function claudeRepositoryLoad(documents: RepositoryConfigDocuments): Clau
   }
 }
 
+// A server's name as its tools carry it: the SDK documents that Claude turns
+// every character outside [a-zA-Z0-9_-] into _ (mcp__<server>__<tool>).
+export const claudeToolPrefixName = (name: string): string => name.replace(/[^a-zA-Z0-9_-]/gu, "_")
+
 // Ruling Q150 A: Claude replaces a server with an added one of the same name,
 // so a repository server named like one of the person's own is held back.
-// Names are compared in any case, as a person reading a card would.
+// Names are compared as their tools carry them and in any case, as a person
+// reading a card would, so two names whose tools read alike collide. A
+// repository name that begins one of the person's names up to a separator
+// (docs beside docs__v2) is held back too: their tools could not be told apart.
 export function withoutOwnServers(
   servers: Readonly<Record<string, ClaudeRepositoryServer>>,
   own: Iterable<string>,
 ): Record<string, ClaudeRepositoryServer> {
-  const taken = new Set([...own].map((name) => name.toLowerCase()))
-  return Object.fromEntries(Object.entries(servers).filter(([name]) => !taken.has(name.toLowerCase())))
+  const taken = [...own].map((name) => claudeToolPrefixName(name).toLowerCase())
+  return Object.fromEntries(Object.entries(servers).filter(([name]) => {
+    const prefix = claudeToolPrefixName(name).toLowerCase()
+    return !taken.some((ownName) => ownName === prefix || ownName.startsWith(`${prefix}__`) || prefix.startsWith(`${ownName}__`))
+  }))
+}
+
+// The server a tool belongs to, among the servers a session knows, named as
+// its tools carry it: the one known server whose mcp__<server>__ prefix the
+// tool name has. None when no known server matches, or more than one does,
+// so a card never names a server the call may not reach.
+export function claudeToolServerName(toolName: string, known: Iterable<string>): string | undefined {
+  const matches = new Set([...known].map(claudeToolPrefixName).filter((name) => toolName.startsWith(`mcp__${name}__`)))
+  return matches.size === 1 ? [...matches][0] : undefined
 }
 
 // The files whose entries this plan decides.

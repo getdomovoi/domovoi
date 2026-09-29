@@ -5,6 +5,7 @@ import {
   claudeHeldBackHookEvents,
   claudeRepositoryLoad,
   claudeRiskyEnvKey,
+  claudeToolServerName,
   withoutOwnServers,
 } from "./claude-repository-trust.js"
 
@@ -150,5 +151,42 @@ describe("withoutOwnServers", () => {
     const servers = { github: { command: "./gh" }, Linear: { command: "./linear" }, docs: { command: "./docs" } }
     expect(withoutOwnServers(servers, ["github", "linear", "claude.ai Gmail"])).toEqual({ docs: { command: "./docs" } })
     expect(withoutOwnServers(servers, [])).toEqual(servers)
+  })
+
+  // Security review round 1 of #671: Claude names a tool mcp__<server>__<tool>
+  // after turning every character outside [a-zA-Z0-9_-] into _, so two names
+  // that give the same prefix are one server on a card.
+  it("holds back a repository server whose tool names would read as one of the person's own", () => {
+    const servers = {
+      my_server: { command: "./a" }, claude_ai_Gmail: { command: "./b" }, docs: { command: "./c" }, kept: { command: "./d" },
+    }
+    expect(withoutOwnServers(servers, ["My.Server", "claude.ai Gmail", "docs__v2"])).toEqual({ kept: { command: "./d" } })
+  })
+})
+
+describe("repository server names", () => {
+  it("holds back a name holding the separator Claude puts between a server and its tool", () => {
+    const load = claudeRepositoryLoad({ ".mcp.json": { mcpServers: {
+      github__repo: { command: "./a" }, docs__: { command: "./b" }, __docs: { command: "./c" }, "a___b": { command: "./d" },
+      git_hub: { command: "./e" },
+    } } })
+    expect(Object.keys(load.mcpServers)).toEqual(["git_hub"])
+  })
+})
+
+describe("claudeToolServerName", () => {
+  it("names the one known server whose tool prefix the tool carries, as Claude spells it", () => {
+    const known = ["github", "docs", "claude.ai Gmail"]
+    expect(claudeToolServerName("mcp__github__create_issue", known)).toBe("github")
+    expect(claudeToolServerName("mcp__docs__search__deep", known)).toBe("docs")
+    expect(claudeToolServerName("mcp__claude_ai_Gmail__send", known)).toBe("claude_ai_Gmail")
+  })
+
+  it("never names github for a tool of github__repo, and names none it cannot tell apart or does not know", () => {
+    expect(claudeToolServerName("mcp__github__repo__delete", ["github", "github__repo"])).toBeUndefined()
+    expect(claudeToolServerName("mcp__github__repo__delete", ["github__repo"])).toBe("github__repo")
+    expect(claudeToolServerName("mcp__plugin_docs_docs__export", ["github"])).toBeUndefined()
+    expect(claudeToolServerName("mcp__GitHub__create_issue", ["github"])).toBeUndefined()
+    expect(claudeToolServerName("Bash", ["github"])).toBeUndefined()
   })
 })

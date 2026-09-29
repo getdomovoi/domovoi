@@ -22,6 +22,7 @@ import type {
 } from "./agents.js"
 import {
   claudeRepositoryLoad,
+  claudeToolServerName,
   withoutOwnServers,
   type ClaudeRepositoryLoad,
   type ClaudeRepositoryServer,
@@ -192,6 +193,10 @@ type Session = {
   // The digest of the trusted configuration this session's Claude was given
   // part of, set only when some of it reached Claude.
   repositoryTrustApplied?: { digest: string }
+  // Every server Claude runs for this session, the person's own and the
+  // repository's it was given, set only when it was given some: a card names
+  // a tool's server from these (claudeToolServerName).
+  toolServers?: readonly string[]
 }
 
 // A query Domovoi started Claude for: a session's, or a model list's, which
@@ -637,8 +642,10 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     }
     // Close stopped this session while it started.
     this.#refuseWhenClosing()
-    if (repository && await this.#addRepositoryServers(query, repository.mcpServers)) {
+    const toolServers = repository ? await this.#addRepositoryServers(query, repository.mcpServers) : undefined
+    if (repository && toolServers) {
       session.repositoryTrustApplied = { digest: repository.digest }
+      session.toolServers = toolServers
     }
   }
 
@@ -655,20 +662,21 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   // loaded, and a repository server named like one of them is held back
   // (Q150 A). A list that cannot be had adds none. Claude connects the rest
   // as it connects its own, without holding the open: the request is sent
-  // before any turn, and a server that fails to connect fails alone. Says
-  // whether any server was handed to Claude.
-  async #addRepositoryServers(query: ClaudeQuery, servers: ClaudeRepositoryLoad["mcpServers"]): Promise<boolean> {
-    if (Object.keys(servers).length === 0) return false
-    let own: Array<{ name: string }>
+  // before any turn, and a server that fails to connect fails alone. Gives
+  // every server the session then runs, the person's and the added, or
+  // undefined when none was handed to Claude.
+  async #addRepositoryServers(query: ClaudeQuery, servers: ClaudeRepositoryLoad["mcpServers"]): Promise<string[] | undefined> {
+    if (Object.keys(servers).length === 0) return undefined
+    let own: string[]
     try {
-      own = await query.mcpServerStatus()
+      own = (await query.mcpServerStatus()).map(({ name }) => name)
     } catch {
-      return false
+      return undefined
     }
-    const added = withoutOwnServers(servers, own.map(({ name }) => name))
-    if (Object.keys(added).length === 0) return false
+    const added = withoutOwnServers(servers, own)
+    if (Object.keys(added).length === 0) return undefined
     query.setMcpServers(added).catch(() => {})
-    return true
+    return [...own, ...Object.keys(added)]
   }
 
   async #applyRuntime(session: Session, runtime: Runtime): Promise<void> {
@@ -771,8 +779,14 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         : typeof input.notebook_path === "string" ? input.notebook_path : screened?.path
     // Claude names a tool server's tool mcp__<server>__<tool> and splits it at
     // the first separator after the server. The server is named as Claude
-    // names it: Claude, not Domovoi, read the file that declared it.
-    const [prefix, server] = toolName.split("__")
+    // names it: Claude, not Domovoi, read the file that declared it. A
+    // session given repository servers names only a server it knows the tool
+    // belongs to, so a repository server can never pass for one of the
+    // person's (security review round 1 of #671); the card still names the
+    // provider tool when it names no server.
+    const [prefix, split] = toolName.split("__")
+    const server = prefix !== "mcp" ? undefined
+      : session.toolServers ? claudeToolServerName(toolName, session.toolServers) : split
     this.#emit({
       type: "approval-requested",
       requestId,
@@ -787,7 +801,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
       ...(reason ? { reason } : {}),
       ...(toolName !== "Bash" && !claudeFileTools.has(toolName) ? { tool: toolName } : {}),
-      ...(prefix === "mcp" && server ? { toolServer: { name: server } } : {}),
+      ...(server ? { toolServer: { name: server } } : {}),
     })
     return new Promise((resolve) => {
       this.#pendingApprovals.set(requestId, {

@@ -537,10 +537,12 @@ code or settings the repository brings:
     `CLAUDE_*`, `*_BASE_URL`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`,
     `NODE_OPTIONS`, `LD_*`, `DYLD_*` and `PATH`, in any case; and `permissions.deny` and
     `permissions.ask`;
-  - `.mcp.json` servers, added once Claude has listed your own. A server with the same name as one
-    of yours, a remote server whose address or headers contain `$`, and a server with a field
-    other than its command, arguments, environment, address, headers, `timeout` and `alwaysLoad`
-    are held back.
+  - `.mcp.json` servers, added once Claude has listed your own. A server whose name contains
+    `__`, one whose tool names would read as one of yours (the same name in any case once Claude
+    turns punctuation into `_`), a remote server whose address or headers contain `$`, and a
+    server with a field other than its command, arguments, environment, address, headers,
+    `timeout` and `alwaysLoad` are held back. In such a session a card names a tool's server only
+    when the tool belongs to exactly one server the session knows.
 
   Allow rules, `defaultMode`, `additionalDirectories`, plugins, helper commands and every other
   setting stay held back. A call to a repository server's tool still asks for approval, without
