@@ -188,14 +188,20 @@ export const toolInventorySchema = wireRule(z.object({
   "The inventory must fit its byte budget",
 ), { rule: "tool-inventory-serialized-utf8-bytes", maximumBytes: maximumToolInventoryBytes })
 
-// The approval card's fact for a call to a tool server's tool: the server and
-// the file that declared it.
+// The approval card's fact for a call to a tool server's tool: the server and,
+// when the daemon knows them, how it connects and the file that declared it. A
+// server the agent loaded from its own configuration is named as the agent
+// names it, with no transport, source or file: the daemon did not read where it
+// came from, and an absent file means exactly that, never "declared nowhere".
 export const approvalToolServerSchema = z.object({
   name: text(256),
-  transport: toolServerTransportSchema,
-  source: toolInventorySourceSchema,
-  file: toolInventoryPathSchema,
-}).strict()
+  transport: toolServerTransportSchema.optional(),
+  source: toolInventorySourceSchema.optional(),
+  file: toolInventoryPathSchema.optional(),
+}).strict().refine(
+  (server) => (server.source === undefined) === (server.file === undefined),
+  { path: ["file"], message: "A declaring file is named with its source" },
+)
 
 export type ToolInventory = z.infer<typeof toolInventorySchema>
 export type ToolInventoryProvider = z.infer<typeof toolInventoryProviderSchema>
