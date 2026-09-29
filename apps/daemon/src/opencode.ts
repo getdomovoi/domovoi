@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto"
 import { lstat } from "node:fs/promises"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 
 import {
   createOpencodeClient,
@@ -841,7 +841,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // and an approval it asks for is refused at once, with no card.
     if (subagentTurn && session.activeTurnId !== subagentTurn.turnId) {
       if (event.type !== "permission.updated" && event.type !== "permission.asked") return
-      const request = permissionRequest(properties, this.#identity.providerName)
+      const request = permissionRequest(event.type, properties, this.#identity.providerName)
       if (request) {
         this.#respond(
           { providerSessionId: sessionId, cwd, permissionId: request.permissionId, subagentTurn, generation: session.generation },
@@ -908,7 +908,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       return
     }
     if (event.type === "permission.updated" || event.type === "permission.asked") {
-      const request = permissionRequest(properties, this.#identity.providerName)
+      const request = permissionRequest(event.type, properties, this.#identity.providerName)
       if (!request) return
       const requestId = ++this.#nextApprovalId
       this.#pendingApprovals.set(requestId, {
@@ -925,6 +925,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         ...(request.itemId ? { itemId: request.itemId } : {}),
         command: request.command,
         cwd,
+        ...(request.path ? { path: request.path } : {}),
+        ...(request.tool !== undefined ? { tool: request.tool } : {}),
         ...(request.reason ? { reason: request.reason } : {}),
       })
       return
@@ -1055,15 +1057,25 @@ function openCodeModel(id: string): { providerID: string; modelID: string } | un
 // `permission.updated` is the shape older servers send; `permission.asked`
 // (opencode 1.18, kilo 7.7) names the permission and its patterns instead of a
 // title and type, and nests the call id under `tool`.
+//
+// Only bash with its command is a shell command. An edit of one file named by
+// its absolute path is the Edit file tool on that file (edit and write send
+// one; a patch of several files does not), so its Always stays a rule for that
+// file. Every other permission is the provider's own tool, named by the
+// permission: webfetch, external_directory, and a tool server's tool, whose
+// permission is its own name. None of those is resolved as a shell command.
+// The permission is read from the field its event names it in, and only
+// there: a permission.asked event without a string `permission` has no name,
+// whatever a `type` field beside it says.
 function permissionRequest(
+  event: "permission.asked" | "permission.updated",
   properties: Record<string, unknown>,
   providerName: string,
-): { permissionId: string; command: string; reason?: string; itemId?: string } | undefined {
+): { permissionId: string; command: string; reason?: string; itemId?: string; path?: string; tool?: string } | undefined {
   if (typeof properties.id !== "string") return undefined
   const metadata = asRecord(properties.metadata)
-  const kind = typeof properties.permission === "string"
-    ? properties.permission
-    : typeof properties.type === "string" ? properties.type : undefined
+  const named = event === "permission.asked" ? properties.permission : properties.type
+  const kind = typeof named === "string" ? named : undefined
   const patterns = Array.isArray(properties.patterns)
     ? properties.patterns.filter((pattern): pattern is string => typeof pattern === "string")
     : []
@@ -1072,15 +1084,25 @@ function permissionRequest(
     ? metadata.command
     : title ?? (kind ? [kind, ...patterns].join(" ") : `${providerName} tool`)
   const reason = title ?? (kind && patterns.length > 0 ? `${kind}: ${patterns.join(", ")}` : kind)
-  const tool = asRecord(properties.tool)
+  const call = asRecord(properties.tool)
   const itemId = typeof properties.callID === "string"
     ? properties.callID
-    : typeof tool?.callID === "string" ? tool.callID : undefined
+    : typeof call?.callID === "string" ? call.callID : undefined
+  const editedFile = typeof metadata?.filepath === "string"
+    ? metadata.filepath
+    : typeof metadata?.filePath === "string" ? metadata.filePath : undefined
+  const edit = kind === "edit" && patterns.length <= 1 && editedFile !== undefined && isAbsolute(editedFile)
+    ? editedFile
+    : undefined
+  const shell = kind === "bash" && typeof metadata?.command === "string"
   return {
     permissionId: properties.id,
-    command,
+    command: edit === undefined ? command : "Edit",
     ...(reason ? { reason } : {}),
     ...(itemId ? { itemId } : {}),
+    ...(edit === undefined ? {} : { path: edit }),
+    // A permission with no name is still a provider tool, never shell text.
+    ...(shell || edit !== undefined ? {} : { tool: kind || "unknown" }),
   }
 }
 

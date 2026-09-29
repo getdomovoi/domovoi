@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import { AcpAgentAdapter } from "./acp.js"
 import { CURSOR_ACP_PROVIDER } from "./acp-providers.js"
-import { mapAcpSessionSetup, mapAcpUpdate, StdioAcpPeer } from "./acp-stdio.js"
+import { mapAcpPermissionRequest, mapAcpSessionSetup, mapAcpUpdate, StdioAcpPeer } from "./acp-stdio.js"
 import { classifyProviderFailure } from "./provider-failures.js"
 
 vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
@@ -465,5 +465,32 @@ describe("ACP stdio mapping", () => {
       size: 10_000,
       cost: { amount: 0.03, currency: "USD" },
     }])
+  })
+
+  // Only an execute tool call is a shell command. Any other kind, or none, is
+  // the agent's own tool, even when its input has a command field (an MCP
+  // tool's argument, for one), so it is never resolved as a shell command.
+  it("maps only an execute tool call to a shell command", () => {
+    const options = [{ optionId: "once", name: "Allow", kind: "allow_once" as const }]
+    expect(mapAcpPermissionRequest({
+      sessionId: "s",
+      toolCall: { toolCallId: "t1", title: "Run tests", kind: "execute", rawInput: { command: "pnpm test" } },
+      options,
+    })).toEqual({ sessionId: "s", toolCallId: "t1", title: "Run tests", command: "pnpm test", options: [{ id: "once", kind: "allow_once" }] })
+    expect(mapAcpPermissionRequest({
+      sessionId: "s",
+      toolCall: { toolCallId: "t2", title: "run_query (postgres)", kind: "other", rawInput: { command: "DROP TABLE users" } },
+      options,
+    })).toEqual({ sessionId: "s", toolCallId: "t2", title: "run_query (postgres)", command: "run_query (postgres)", tool: "other", options: [{ id: "once", kind: "allow_once" }] })
+    expect(mapAcpPermissionRequest({
+      sessionId: "s",
+      toolCall: { toolCallId: "t3", title: "Fetch", rawInput: { command: "curl example.com" } },
+      options,
+    })).toMatchObject({ command: "Fetch", tool: "other" })
+    expect(mapAcpPermissionRequest({
+      sessionId: "s",
+      toolCall: { toolCallId: "t4", kind: "edit" },
+      options,
+    })).toMatchObject({ command: "Provider tool", tool: "edit" })
   })
 })
