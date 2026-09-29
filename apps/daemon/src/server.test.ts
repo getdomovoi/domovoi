@@ -12506,6 +12506,112 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  // Ruled 2026-09-26 (Q5): a call to a tool server's tool gets Allow once and
+  // Deny, never Always. The card names the server, and approval.resolve
+  // refuses Always for it before anything about its execution is read.
+  it("names the tool server on its card and refuses Always for it", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-tool-server-"))
+    scratchDirectories.push(workspacePath)
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = { provider: "claude-code", model: "sonnet", reasoning: "high", permissionMode: "build", auto: false }
+    session.state = "idle"
+    session.workspacePath = workspacePath
+    session.providerThreadId = "thread-tool-server"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{ ...codexModels()[0]!, provider: "claude-code", id: "sonnet" }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-tool-server"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = { load: () => snapshot, save: vi.fn(), close: vi.fn() } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent }, workspaceService: checkpointingWorkspace() })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+
+    await rpc("session.send", { sessionId: session.id, prompt: "Open an issue", client: "desktop" })
+    listener!({
+      type: "approval-requested",
+      requestId: 31,
+      threadId: session.providerThreadId,
+      turnId: "turn-tool-server",
+      command: "mcp__github__create_issue",
+      tool: "mcp__github__create_issue",
+      toolServer: { name: "github" },
+      reason: "Create an issue",
+    })
+    // A server name the protocol would refuse is hidden, not dropped: the card
+    // still says a tool server is being called. A fact with no tool still gets
+    // no execution record.
+    listener!({
+      type: "approval-requested",
+      requestId: 32,
+      threadId: session.providerThreadId,
+      turnId: "turn-tool-server",
+      command: "ls",
+      toolServer: { name: "TOKEN=abc123" },
+      reason: "List files",
+    })
+    await vi.waitFor(async () => {
+      const pending = await rpc("workspace.get", {})
+      expect((pending.result as { approvals: unknown[] }).approvals).toHaveLength(2)
+    }, { timeout: 3_000 })
+    const cards = ((await rpc("workspace.get", {})).result as {
+      approvals: Array<{ id: string; providerRequestId?: number; toolServer?: unknown; execution: { state: string } }>
+    }).approvals
+    const byRequest = (providerRequestId: number) => cards.find((approval) => approval.providerRequestId === providerRequestId)!
+    expect(byRequest(31)).toMatchObject({ toolServer: { name: "github" }, execution: { state: "unresolved" } })
+    expect(byRequest(32)).toMatchObject({ toolServer: { name: "[REDACTED]" }, execution: { state: "unresolved" } })
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+
+    for (const providerRequestId of [31, 32]) {
+      const approvalId = byRequest(providerRequestId).id
+      await expect(rpc("approval.resolve", { approvalId, decision: "always-project", revision: 0, client: "desktop" }))
+        .resolves.toMatchObject({ error: { message: "Tool server calls cannot create standing rules" } })
+      await expect(rpc("approval.resolve", { approvalId, decision: "allow-once", revision: 0, client: "desktop" }))
+        .resolves.not.toHaveProperty("error")
+      expect(agent.resolveApproval).toHaveBeenLastCalledWith(providerRequestId, "allow-once")
+    }
+    expect(((await rpc("workspace.get", {})).result as { approvalRules: unknown[] }).approvalRules).toHaveLength(0)
+    socket.close()
+  })
+
   // The link is a directory junction so the swap runs on Windows too (ruled
   // 2026-09-24).
   it("reads a file target again when its card is answered, and holds the edit if the target moved", async () => {
