@@ -25,7 +25,9 @@ import { ScrollArea } from "./components/ui/scroll-area"
 import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { cn } from "./lib/utils"
 import {
+  allHeldBackText,
   fromRepository,
+  heldBackLabel,
   incompleteReason,
   kindCounts,
   plural,
@@ -136,7 +138,7 @@ export function ToolInventoryView({ inventory, onRetry }: { inventory: ToolInven
               ? inventory.inventory.providers.map((provider) => (
                   <AgentPanel key={provider.provider} provider={provider} trust={repository?.trust} />
                 ))
-              : <SourceFilePanels providers={inventory.inventory.providers} />}
+              : <SourceFilePanels providers={inventory.inventory.providers} trust={repository?.trust} />}
           </>
         ) : null}
       </main>
@@ -224,17 +226,17 @@ function TrustRefusals({ trust, name }: { trust: RepositoryTrustState; name: str
   )
 }
 
-function StartChip({ start }: { start: ToolRow["start"] }) {
+function StartChip({ start, trust }: { start: ToolRow["start"]; trust: RepositoryTrustState | undefined }) {
   if (start === "runs") {
     return <Badge variant="outline" className="h-auto rounded-full border-info-border bg-info-background px-2 py-0.5 text-[10.5px] font-normal text-info-foreground">Runs when a session starts</Badge>
   }
   if (start === "held") {
-    return <Badge variant="outline" className="h-auto rounded-full border-border bg-accent px-2 py-0.5 text-[10.5px] font-normal text-muted-foreground">Held back until you trust this repository</Badge>
+    return <Badge variant="outline" className="h-auto rounded-full border-border bg-accent px-2 py-0.5 text-[10.5px] font-normal text-muted-foreground">{heldBackLabel(trust)}</Badge>
   }
   return null
 }
 
-function EntryRow({ row, showSource }: { row: ToolRow; showSource: boolean }) {
+function EntryRow({ row, showSource, trust }: { row: ToolRow; showSource: boolean; trust: RepositoryTrustState | undefined }) {
   const Icon = kindIcon[row.kind]
   return (
     <li className="flex flex-wrap items-start gap-x-3 gap-y-1.5 border-t px-3.5 py-[11px]">
@@ -243,7 +245,7 @@ function EntryRow({ row, showSource }: { row: ToolRow; showSource: boolean }) {
       <div className="flex min-w-0 flex-1 basis-64 flex-col gap-1">
         <div className="flex flex-wrap items-center gap-2">
           <span className={cn(mono, "text-[11.5px] break-all text-strong")}>{row.name}</span>
-          <StartChip start={row.start} />
+          <StartChip start={row.start} trust={trust} />
         </div>
         {row.detail ? <span className={cn(mono, "text-[10.5px] leading-normal break-all text-faint")}>{row.detail}</span> : null}
       </div>
@@ -328,7 +330,7 @@ function AgentPanel({ provider, trust }: { provider: ToolInventoryProvider; trus
     if (groupRows.length === 0 && unread.length === 0) return <NoteRow text="Nothing found." files={notPresent(files)} />
     return (
       <>
-        {groupRows.map((row) => <EntryRow key={row.key} row={row} showSource />)}
+        {groupRows.map((row) => <EntryRow key={row.key} row={row} showSource trust={trust} />)}
         {unread.map((file) => <UnreadRow key={file.path} file={file} />)}
       </>
     )
@@ -379,7 +381,7 @@ function AgentPanel({ provider, trust }: { provider: ToolInventoryProvider; trus
   )
 }
 
-function SourceFilePanels({ providers }: { providers: readonly ToolInventoryProvider[] }) {
+function SourceFilePanels({ providers, trust }: { providers: readonly ToolInventoryProvider[]; trust: RepositoryTrustState | undefined }) {
   const panels = providers.flatMap((provider) => {
     const rows = providerRows(provider)
     return provider.files
@@ -391,7 +393,7 @@ function SourceFilePanels({ providers }: { providers: readonly ToolInventoryProv
   const repositoryRows = ordered.filter((panel) => fromRepository(panel.file.source)).flatMap((panel) => panel.rows)
   // The lead says "can run" unless the daemon holds back every row it covers.
   const repositoryLead = repositoryRows.length > 0 && repositoryRows.every((row) => row.start === "held")
-    ? "Held back until you trust this repository."
+    ? allHeldBackText(trust)
     : "These can run when a session starts."
   let seenRepository = false
   let seenMachine = false
@@ -427,7 +429,7 @@ function SourceFilePanels({ providers }: { providers: readonly ToolInventoryProv
               <ul className="m-0 list-none p-0">
                 {panel.file.state === "unreadable" ? <UnreadRow file={panel.file} /> : null}
                 {!unread && panel.rows.length === 0 ? <NoteRow text="Nothing found." /> : null}
-                {panel.rows.map((row) => <EntryRow key={row.key} row={row} showSource={false} />)}
+                {panel.rows.map((row) => <EntryRow key={row.key} row={row} showSource={false} trust={trust} />)}
               </ul>
             </section>
           </div>

@@ -193,6 +193,24 @@ export function trustSummary(trust: RepositoryTrustState): string {
   }
 }
 
+// "Until you trust this repository" holds only where trusting it is still to
+// do. The daemon can hold an entry back from a trusted repository (an adapter
+// that does not load that file yet) and from one that cannot be trusted, so
+// there the chip says only what is true: it is held back.
+export function awaitsTrust(trust: RepositoryTrustState | undefined): boolean {
+  return trust?.state === "untrusted" && (trust.reason === "not-trusted" || trust.reason === "config-changed")
+}
+
+export function heldBackLabel(trust: RepositoryTrustState | undefined): string {
+  return awaitsTrust(trust) ? "Held back until you trust this repository" : "Held back"
+}
+
+// Held back, said of every repository row, as a sentence.
+export function allHeldBackText(trust: RepositoryTrustState | undefined): string {
+  if (awaitsTrust(trust)) return "Held back until you trust this repository."
+  return trust?.state === "trusted" ? "Held back, although this repository is trusted." : "Held back."
+}
+
 // The note beside a repository group. Each clause follows the rows' own
 // heldBack: "held back" only for rows the daemon holds back, and "so they
 // run" only when none is held back. Trust is named only as a fact beside it.
@@ -200,8 +218,8 @@ export function repositoryGroupNote(rows: readonly ToolRow[], trust: RepositoryT
   const lead = "Project settings and repository files."
   if (rows.length === 0) return lead
   const held = rows.filter((row) => row.start === "held").length
-  if (held === rows.length) return `${lead} Held back until you trust this repository.`
-  if (held > 0) return `${lead} ${held} of ${rows.length} held back until you trust this repository.`
+  if (held === rows.length) return `${lead} ${allHeldBackText(trust)}`
+  if (held > 0) return `${lead} ${held} of ${rows.length} held back${awaitsTrust(trust) ? " until you trust this repository" : ""}.`
   return trust?.state === "trusted"
     ? `${lead} Trusted here, so they run when a session starts.`
     : `${lead} Not held back, so they run when a session starts.`

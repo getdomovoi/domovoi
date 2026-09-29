@@ -262,6 +262,36 @@ describe("trust states", () => {
     expect(screen.getByRole("region", { name: "3 entries from this repository run when a session starts" })).toBeTruthy()
   })
 
+  it("does not tell a trusted repository to trust itself when the daemon still holds its entries back", async () => {
+    const user = userEvent.setup()
+    show(inventory([claude({}, { heldBack: true })]))
+
+    const agent = panel("claude-code")
+    expect(within(agent).getAllByText("Held back")).toHaveLength(7)
+    expect(within(agent).getByText("Project settings and repository files. Held back, although this repository is trusted.")).toBeTruthy()
+    expect(screen.queryByText(/until you trust this repository/)).toBeNull()
+    expect(screen.queryByText(/Trusted here/)).toBeNull()
+    expect(screen.getByText("Nothing from this repository can run when a session starts.")).toBeTruthy()
+
+    await user.click(screen.getByRole("radio", { name: "By source file" }))
+    expect(screen.getByText("Held back, although this repository is trusted.")).toBeTruthy()
+    expect(screen.queryByText(/until you trust this repository/)).toBeNull()
+  })
+
+  it("does not promise trust to a repository that cannot be trusted", () => {
+    show(inventory([claude({}, { heldBack: true })], {
+      state: "untrusted",
+      reason: "cannot-trust",
+      refusals: [{ provider: "codex", code: "nested-config", path: "packages/api/.codex" }],
+      omittedRefusals: 0,
+    }))
+
+    const agent = panel("claude-code")
+    expect(within(agent).getAllByText("Held back")).toHaveLength(7)
+    expect(within(agent).getByText("Project settings and repository files. Held back.")).toBeTruthy()
+    expect(screen.queryByText(/until you trust this repository/)).toBeNull()
+  })
+
   it("shows an earlier grant that no longer applies", () => {
     show(inventory([claude({}, { heldBack: true })], { state: "untrusted", reason: "config-changed", ...grant }))
 
