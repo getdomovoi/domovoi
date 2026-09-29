@@ -189,6 +189,35 @@ describe("SqliteRepositoryTrust", () => {
     expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
   })
 
+  describe.each(["fts3", "fts4"])("with a %s table named pragma_index_xinfo", (module) => {
+    it.each([
+      ["a temporary", "CREATE VIRTUAL TABLE temp.pragma_index_xinfo USING MODULE(coll, key)"],
+      ["an attached", "ATTACH DATABASE ':memory:' AS other; CREATE VIRTUAL TABLE other.pragma_index_xinfo USING MODULE(coll, key)"],
+      // Even the qualified name finds this one, so its empty answer must not
+      // read as an index whose keys all compare as bytes.
+      ["a main", "CREATE VIRTUAL TABLE main.pragma_index_xinfo USING MODULE(coll, key)"],
+    ])("in %s schema, refuses a key that ignores case", (_, shadow) => {
+      const database = new DatabaseSync(":memory:")
+      database.exec("CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY COLLATE NOCASE, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT)")
+      database.prepare("INSERT INTO repository_trust VALUES ('project-acme', ?, '2026-09-28T10:00:00.000Z', 'desktop', NULL)").run(digest("a"))
+      database.exec(shadow.replace("MODULE", module))
+      const trust = new SqliteRepositoryTrust(database)
+
+      expect(trust.find("project-acme")).toBeUndefined()
+      expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+    })
+  })
+
+  it("reads the keys of an index whose name holds a quote", () => {
+    const database = new DatabaseSync(":memory:")
+    const recorded = new SqliteRepositoryTrust(database).record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
+    database.exec("CREATE INDEX \"by client's time\" ON repository_trust (trusted_client, trusted_at)")
+    expect(new SqliteRepositoryTrust(database).find("project-acme")).toEqual(recorded)
+
+    database.exec("CREATE INDEX \"folded's key\" ON repository_trust (project_id COLLATE NOCASE)")
+    expect(new SqliteRepositoryTrust(database).find("project-acme")).toBeUndefined()
+  })
+
   it("accepts its table when only an unrelated temporary index of the same name ignores case", () => {
     const database = new DatabaseSync(":memory:")
     const recorded = new SqliteRepositoryTrust(database).record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })

@@ -118,11 +118,20 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
     // Every index on the table, the primary key's included, compares its key
     // columns as bytes: a key declared COLLATE NOCASE would let one project's
     // grant answer for another project id that differs only in case.
+    //
+    // The PRAGMA statement, not the pragma_index_xinfo table-valued function:
+    // SQLite resolves that function's name like a table, so a table or virtual
+    // table named pragma_index_xinfo, in main, temp or an attached schema,
+    // answers in its place, even when the name is qualified. A PRAGMA
+    // statement cannot be shadowed. It takes no bound parameter, so the index
+    // name is written as a quoted string. An index with no key column is not
+    // one this store creates, and an empty answer never reads as all BINARY.
     const indexes = this.#database.prepare("PRAGMA main.index_list(repository_trust)").all() as Array<{ name: string }>
     for (const { name } of indexes) {
-      const keys = (this.#database.prepare("SELECT coll, key FROM pragma_index_xinfo(?, 'main')").all(name) as Array<{ coll: string | null; key: number }>)
+      const quoted = `'${name.replaceAll("'", "''")}'`
+      const keys = (this.#database.prepare(`PRAGMA main.index_xinfo(${quoted})`).all() as Array<{ coll: string | null; key: number }>)
         .filter(({ key }) => key === 1)
-      if (keys.some(({ coll }) => coll !== "BINARY")) return false
+      if (keys.length === 0 || keys.some(({ coll }) => coll !== "BINARY")) return false
     }
     const triggers = this.#database.prepare(`
       SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'repository_trust' COLLATE NOCASE
