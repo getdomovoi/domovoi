@@ -262,7 +262,9 @@ describe("repository.revokeTrust stops the threads that opened under the grant",
     expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "unconfirmed" }])
     expect((await sessionNamed("session-a")).state).toBe("failed")
     expect(await notices("session-a")).toContain("Repository trust was taken back, and Domovoi could not confirm that the agent stopped.")
-    // Fenced: no second agent starts in the same worktree until it is recovered.
+    // Fenced: no second agent starts in the same worktree while its stop
+    // stays unconfirmed. The send tries the stop again first, and it fails.
+    agents["claude-code"].stopThread.mockRejectedValueOnce(new Error("provider gone"))
     const refused = await rpc("session.send", { client: "desktop", sessionId: "session-a", prompt: "again" })
     expect(refused).toMatchObject({ error: { message: "Provider thread requires recovery after emergency stop" } })
     expect(agents["claude-code"].resumeThread).toHaveBeenCalledOnce()
@@ -642,6 +644,60 @@ describe("a revoke racing another stop of the same Codex thread", () => {
       expect(agents.codex.startThread).toHaveBeenCalledOnce()
     })
   }
+})
+
+// Security review round 4 of #669: a revoke that confirms a stop an earlier
+// stop could not lifts that thread's fence, and the session is usable again
+// once no other thread holds it.
+describe("a revoke that confirms a stop an earlier one could not", () => {
+  const fenced = "Provider thread requires recovery after emergency stop"
+
+  it("lets a message through once a later revoke confirms what an earlier one could not", async () => {
+    const { agents, grants, ok, revoke, sessionNamed } = await fixture()
+    grants.set(projectId, grant(projectId))
+    await ok("session.send", { sessionId: "session-a", prompt: "work" })
+    agents["claude-code"].stopThread.mockRejectedValueOnce(new Error("provider gone"))
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "unconfirmed" }])
+    expect((await sessionNamed("session-a")).state).toBe("failed")
+
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "restarted" }])
+    expect((await sessionNamed("session-a")).state).toBe("idle")
+    await ok("session.send", { sessionId: "session-a", prompt: "go on" })
+    expect(agents["claude-code"].resumeThread.mock.calls.at(-1)![0]).toMatchObject({ threadId: "thread-a" })
+  })
+
+  it("lets a message through once a revoke confirms what a failed emergency stop could not", async () => {
+    const { agents, grants, ok, rpc, revoke, sessionNamed } = await fixture()
+    grants.set(projectId, grant(projectId))
+    await ok("session.send", { sessionId: "session-a", prompt: "work" })
+    agents["claude-code"].interruptTurn.mockRejectedValueOnce(new Error("interrupt refused"))
+    agents["claude-code"].stopThread.mockRejectedValueOnce(new Error("provider gone"))
+    expect(await rpc("system.emergencyStop", { client: "desktop" })).toHaveProperty("result")
+    expect(await rpc("session.send", { client: "desktop", sessionId: "session-a", prompt: "blocked" }))
+      .toMatchObject({ error: { message: fenced } })
+
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "restarted" }])
+    expect((await sessionNamed("session-a")).state).toBe("idle")
+    await ok("session.send", { sessionId: "session-a", prompt: "go on" })
+  })
+
+  it("keeps refusing a session while another of its threads is still unconfirmed", async () => {
+    const { agents, grants, ok, rpc, revoke, workspaceService } = await fixture()
+    grants.set(projectId, grant(projectId))
+    await ok("session.restartProviderThread", { sessionId: "session-restart" })
+    // A handoff to Codex fails and its thread cannot be stopped.
+    workspaceService.checkpoint.mockRejectedValueOnce(new Error("checkpoint failed"))
+    agents.codex.stopThread.mockRejectedValue(new Error("provider gone"))
+    expect(await rpc("session.setRuntime", { client: "desktop", sessionId: "session-restart", runtime: codex })).toHaveProperty("error")
+
+    agents["claude-code"].stopThread.mockRejectedValueOnce(new Error("provider gone"))
+    expect(await revoke()).toEqual([{ sessionId: "session-restart", outcome: "unconfirmed" }])
+    // The Claude thread is confirmed now; the Codex one is not.
+    expect(await revoke()).toEqual([{ sessionId: "session-restart", outcome: "unconfirmed" }])
+    expect(agents["claude-code"].stopThread.mock.calls).toEqual([["claude-code-started"], ["claude-code-started"]])
+    expect(await rpc("session.send", { client: "desktop", sessionId: "session-restart", prompt: "blocked" }))
+      .toMatchObject({ error: { message: fenced } })
+  })
 })
 
 describe("repository.revokeTrust and an emergency stop", () => {

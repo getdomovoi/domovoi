@@ -2154,14 +2154,14 @@ export class DomovoiDaemon {
   async #repositoryTrustFenced(sessionId: string): Promise<boolean> {
     const held = () => {
       const threads = new Map<string, TrustedThread>()
+      // The session's own thread fenced by an emergency stop is not one of
+      // these: the send guard refuses it, and recovery or a revoke settles it.
       for (const [threadKey, trusted] of this.#trustedThreads) {
         if (trusted.sessionId !== sessionId) continue
         const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
-        if (
-          this.#failedEmergencyThreads.has(threadKey)
-          || session?.providerThreadId !== trusted.threadId
-          || session.runtime.provider !== trusted.provider
-        ) threads.set(threadKey, trusted)
+        if (session?.providerThreadId !== trusted.threadId || session.runtime.provider !== trusted.provider) {
+          threads.set(threadKey, trusted)
+        }
       }
       for (const holds of [this.#revokedTrustThreads, this.#claimedTrustThreads]) {
         for (const [threadKey, trusted] of holds) {
@@ -2177,9 +2177,33 @@ export class DomovoiDaemon {
         await this.#stopAbandonedThread(provider, threadId, "Fenced provider thread stop timed out")
       } catch (error) {
         this.#reportError("Domovoi could not stop a fenced provider thread", error)
+        continue
+      }
+      if (!this.#trustedThreads.has(threadKey) && !this.#revokedTrustThreads.has(threadKey)) {
+        this.#repositoryTrustStopConfirmed(threadKey, sessionId)
       }
     }
     return held().length > 0
+  }
+
+  // Security review round 4 of #669: a revoke or a fence retry confirmed that
+  // a thread stopped, so its failed-stop fence is lifted. The session is
+  // usable again once it names a thread and nothing else holds it: no fenced
+  // thread of its own and no trusted thread detached, revoked or claimed.
+  // A Codex thread never gets here, since its stop is never confirmed.
+  #repositoryTrustStopConfirmed(threadKey: string, sessionId: string): void {
+    this.#failedEmergencyThreads.delete(threadKey)
+    this.#emergencyBlockedThreads.delete(threadKey)
+    const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
+    if (!session?.providerThreadId || session.state !== "failed" || sessionIsReadOnly(session)) return
+    if (this.#failedEmergencyThreads.has(providerThreadKey(session.runtime.provider, session.providerThreadId))) return
+    const holdsSession = (trusted: TrustedThread) => trusted.sessionId === sessionId
+    if ([...this.#revokedTrustThreads.values(), ...this.#claimedTrustThreads.values()].some(holdsSession)) return
+    const detached = [...this.#trustedThreads.values()].some((trusted) => holdsSession(trusted)
+      && (trusted.threadId !== session.providerThreadId || trusted.provider !== session.runtime.provider))
+    if (detached) return
+    session.state = "idle"
+    session.updatedAt = new Date().toISOString()
   }
 
   // Stops a thread that a failed or cancelled operation started, within the
@@ -2320,6 +2344,13 @@ export class DomovoiDaemon {
             }),
         createdAt: stoppedAt,
       })
+    }
+    // Once every claim is settled, so a session with another thread still
+    // held stays fenced.
+    for (const claim of claims) {
+      if (!this.#trustedThreads.has(claim.threadKey) && !this.#revokedTrustThreads.has(claim.threadKey)) {
+        this.#repositoryTrustStopConfirmed(claim.threadKey, claim.sessionId)
+      }
     }
     if (bookkeeping.length > 0) {
       this.#reportError(

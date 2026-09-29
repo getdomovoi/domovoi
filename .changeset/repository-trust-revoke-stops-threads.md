@@ -37,7 +37,9 @@ that is fenced, a message, a restart, a provider switch or a fork of that sessio
 "Provider thread requires recovery after emergency stop". Each attempt first tries to stop the
 thread again, and a confirmed stop lifts the fence. A thread a revoke is stopping fences its
 session from the moment it is claimed, and a stop on another path that finishes meanwhile does not
-release it.
+release it. When a revoke or such a retry confirms a stop that an earlier revoke or emergency stop
+could not, that thread's fence is lifted, and a failed session that names a thread is usable again
+once no other thread holds it.
 
 Nothing resumes a stopped thread: the next message resumes it, and that resume carries no grant. A
 queued send is held with "Repository trust was taken back before the queued send could release."
