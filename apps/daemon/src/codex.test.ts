@@ -607,9 +607,12 @@ describe("CodexAppServerAdapter", () => {
       runtime: runtime("build", false),
       repositoryTrust: { projectId: "project-acme", trustedDigest: digest, trustedAt: "2026-09-29T12:00:00.000Z", trustedBy: { client: "desktop" } },
     })
-    await vi.waitFor(() => expect(transport.sent.at(-1)).toMatchObject({ method: "config/read", params: { cwd: "/worktree", includeLayers: true } }))
+    await vi.waitFor(
+      () => expect(transport.sent.at(-1)).toMatchObject({ method: "config/read", params: { cwd: "/worktree", includeLayers: true } }),
+      { timeout: 5_000 },
+    )
     transport.receive({ id: transport.sent.at(-1)!.id!, result: { config: {}, layers: [{ name: { type: "user", file: "/home/person/.codex/config.toml" }, version: "1", config: {} }] } })
-    await vi.waitFor(() => expect(transport.sent.at(-1)?.method).toBe("thread/start"))
+    await vi.waitFor(() => expect(transport.sent.at(-1)?.method).toBe("thread/start"), { timeout: 5_000 })
     expect(transport.sent.at(-1)?.params?.config).toMatchObject({
       mcp_servers: { db: { command: "db-mcp", default_tools_approval_mode: "prompt" } },
       approvals_reviewer: "user",
