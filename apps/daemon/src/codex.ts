@@ -1,4 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { createInterface } from "node:readline"
 import type { Readable } from "node:stream"
 
@@ -24,6 +26,7 @@ import {
 } from "./codex-repository-config.js"
 import {
   codexCatalogPage,
+  codexEnvironmentIsLocalOnly,
   codexOwnServerNames,
   codexRepositoryLoad,
   codexTrustedThreadConfig,
@@ -374,15 +377,20 @@ export class CodexAppServerAdapter implements AgentAdapter {
   #trustedThreads = new Map<string, string>()
   #trustApplied = new Map<string, { digest: string }>()
   readonly #readRepositoryConfig: RepositoryProviderConfigReader | undefined
+  readonly #environmentIsLocalOnly: () => boolean
 
   constructor(
     transportFactory: () => CodexTransport = () => new StdioCodexTransport(),
     // How a session's worktree configuration is read for its trust verdict;
     // the repository reader unless a test gives another.
     readRepositoryConfig?: RepositoryProviderConfigReader,
+    // Whether the app-server's threads get its local environment alone: read
+    // from the environment and Codex home the app-server is started with.
+    environmentIsLocalOnly: () => boolean = () => codexEnvironmentIsLocalOnly(process.env, process.env.CODEX_HOME || join(homedir(), ".codex")),
   ) {
     this.#transportFactory = transportFactory
     this.#readRepositoryConfig = readRepositoryConfig
+    this.#environmentIsLocalOnly = environmentIsLocalOnly
   }
 
   async connect(): Promise<void> {
@@ -460,12 +468,22 @@ export class CodexAppServerAdapter implements AgentAdapter {
   // The plan's servers less any named like one of the person's own (ruling
   // Q150 A): those their config layers declare, from a config/read answer
   // with its layers, and every server of Codex's effective catalog, plugin
-  // servers included. When either cannot be read, none pass.
+  // servers included. When either cannot be read, none pass. None pass either
+  // when the thread may get an environment that brings plugin servers the
+  // catalog does not list (codexEnvironmentIsLocalOnly).
   async #serversToPass(plan: RepositoryPlan, configRead: unknown): Promise<Record<string, CodexRepositoryServer>> {
-    if (Object.keys(plan.servers).length === 0) return {}
+    if (Object.keys(plan.servers).length === 0 || !this.#localOnly()) return {}
     const own = codexOwnServerNames(configRead)
     const catalog = own === undefined ? undefined : await this.#catalogServerNames()
     return own === undefined || catalog === undefined ? {} : withoutOwnServers(plan.servers, [...own, ...catalog])
+  }
+
+  #localOnly(): boolean {
+    try {
+      return this.#environmentIsLocalOnly()
+    } catch {
+      return false
+    }
   }
 
   // Every server name of Codex's effective catalog, page by page. Without a

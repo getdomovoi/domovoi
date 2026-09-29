@@ -1,3 +1,6 @@
+import { lstatSync } from "node:fs"
+import { join } from "node:path"
+
 import { toolInventoryEnvKeySchema, type ToolInventoryEntry } from "@getdomovoi/protocol"
 
 import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
@@ -200,6 +203,28 @@ export function codexCatalogPage(page: unknown): { names: string[]; nextCursor?:
   const cursor = page.nextCursor
   if (cursor !== undefined && cursor !== null && typeof cursor !== "string") return undefined
   return typeof cursor === "string" ? { names, nextCursor: cursor } : { names }
+}
+
+// Whether a new Codex thread gets the local environment alone, and so no
+// plugin servers beyond the catalog mcpServerStatus/list names. A thread takes
+// every registered environment by default (default_environment_ids,
+// exec-server environment.rs, and thread_processor.rs at rust-v0.157.1), and
+// an environment can bring plugins through the capability roots it reports
+// ready (Environment::selected_capability_roots). The threadless catalog has
+// no thread, so it lists none of them. Environments other than the local one
+// come only from CODEX_HOME/environments.toml or CODEX_EXEC_SERVER_*
+// variables (from_codex_home, environment_toml.rs, environment_provider.rs);
+// the local environment reports no roots (Environment::local). Anything else,
+// or a Codex home this cannot read, counts as an environment that may bring
+// plugins: the answer is false, and no repository server passes.
+export function codexEnvironmentIsLocalOnly(env: NodeJS.ProcessEnv, codexHome: string): boolean {
+  if (Object.entries(env).some(([name, value]) => name.startsWith("CODEX_EXEC_SERVER_") && value !== undefined && value !== "")) return false
+  try {
+    lstatSync(join(codexHome, "environments.toml"))
+    return false
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT"
+  }
 }
 
 // Ruling Q150 A: Codex merges a thread's server into the person's one of the

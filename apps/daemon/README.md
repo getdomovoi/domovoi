@@ -574,7 +574,9 @@ code or settings the repository brings:
     is not letters, digits, `-` and `_` are held back. Your servers are the ones your Codex
     configuration layers declare and every server Codex's `mcpServerStatus/list` names, which
     starts each of them once to describe it. When either cannot be read, no repository server
-    passes.
+    passes. None passes either unless the thread gets Codex's local environment alone: an
+    `environments.toml` in your Codex home or any `CODEX_EXEC_SERVER_*` variable can add an
+    environment that brings plugin servers of its own, which that list does not name.
 
   A trusted repository's tool servers start as programs with your own access when a session
   opens, before any tool call is asked about. Approval, sandbox, permission, network, shell

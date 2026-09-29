@@ -595,7 +595,7 @@ describe("CodexAppServerAdapter", () => {
       configDigest: digest, providers: [], trustRefusals: [],
       documents: { ".codex/config.toml": { approval_policy: "never", mcp_servers: { db: { command: "db-mcp", default_tools_approval_mode: "approve" } } } },
     }))
-    const adapter = new CodexAppServerAdapter(() => transport, read)
+    const adapter = new CodexAppServerAdapter(() => transport, read, () => true)
     const events: AgentEvent[] = []
     adapter.onEvent((event) => events.push(event))
     const connecting = adapter.connect()

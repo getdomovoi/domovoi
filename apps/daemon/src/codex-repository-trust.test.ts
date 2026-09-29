@@ -1,9 +1,14 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
 import type { ToolInventoryEntry } from "@getdomovoi/protocol"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 
 import {
   codexCatalogPage,
   codexEntryHeldBack,
+  codexEnvironmentIsLocalOnly,
   codexOwnServerNames,
   codexRepositoryLoad,
   codexRiskyEnvKey,
@@ -195,6 +200,43 @@ describe("codexCatalogPage", () => {
     for (const page of [undefined, {}, { data: "db" }, { data: [{ pluginId: "acme@market" }] }, { data: [{ name: 3 }] }, { data: [], nextCursor: 2 }]) {
       expect(codexCatalogPage(page), JSON.stringify(page)).toBeUndefined()
     }
+  })
+})
+
+// Security review round 2: an environment Codex selects for a new thread can
+// bring plugins of its own (selected capability roots), which the threadless
+// catalog does not list. Only a thread that gets the local environment alone
+// is known to bring none.
+describe("codexEnvironmentIsLocalOnly", () => {
+  const homes: string[] = []
+  afterEach(() => {
+    for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true })
+  })
+  const home = (files: Record<string, string> = {}) => {
+    const path = mkdtempSync(join(tmpdir(), "domovoi-codex-home-"))
+    homes.push(path)
+    for (const [name, text] of Object.entries(files)) writeFileSync(join(path, name), text)
+    return path
+  }
+
+  it("is local only with no environments file and no exec server variable", () => {
+    expect(codexEnvironmentIsLocalOnly({ PATH: "/usr/bin", CODEX_HOME: "ignored" }, home({ "config.toml": "" }))).toBe(true)
+  })
+
+  it("cannot tell once an environments file names environments", () => {
+    expect(codexEnvironmentIsLocalOnly({}, home({ "environments.toml": 'default = "build"\n' }))).toBe(false)
+  })
+
+  it.each([
+    "CODEX_EXEC_SERVER_URL", "CODEX_EXEC_SERVER_NOISE_REGISTRY_URL", "CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID",
+    "CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN", "CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID", "CODEX_EXEC_SERVER_ANYTHING_NEW",
+  ])("cannot tell once %s is set", (name) => {
+    expect(codexEnvironmentIsLocalOnly({ [name]: " " }, home())).toBe(false)
+  })
+
+  it("cannot tell when the Codex home cannot be read", () => {
+    const file = join(home({ "not-a-folder": "" }), "not-a-folder")
+    expect(codexEnvironmentIsLocalOnly({}, file)).toBe(false)
   })
 })
 

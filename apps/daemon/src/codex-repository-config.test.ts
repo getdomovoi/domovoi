@@ -62,9 +62,12 @@ function repository(files: Record<string, string>): string {
 async function connected(
   reply?: Reply,
   readRepositoryConfig?: (root: string, options: Parameters<typeof readRepositoryProviderConfig>[1]) => Promise<RepositoryProviderConfig>,
+  // Whether the thread gets Codex's local environment alone; these tests read
+  // no Codex home of their own unless they say so.
+  environmentIsLocalOnly: () => boolean = () => true,
 ): Promise<{ adapter: CodexAppServerAdapter, transport: RecordingTransport }> {
   const transport = new RecordingTransport(reply)
-  const adapter = new CodexAppServerAdapter(() => transport, readRepositoryConfig)
+  const adapter = new CodexAppServerAdapter(() => transport, readRepositoryConfig, environmentIsLocalOnly)
   await adapter.connect()
   return { adapter, transport }
 }
@@ -639,6 +642,26 @@ describe("Codex under repository trust", () => {
 
     expect(sentParams(transport, "thread/start")[0]?.config).toEqual(untrusted(cwd))
     expect(sentParams(transport, "thread/resume")[0]?.config).toEqual(untrusted(cwd))
+    expect(adapter.repositoryTrustApplied(threadId)).toBeUndefined()
+  })
+
+  // Security review round 2: an environment a new thread selects can bring
+  // plugin servers (selected capability roots) that the threadless catalog
+  // does not list, and the repository's `db` would stand in for a plugin `db`.
+  it.each<[string, () => boolean]>([
+    ["can bring plugins of its own", () => false],
+    ["cannot be told", () => { throw new Error("EACCES") }],
+  ])("passes no server when the environment the thread gets %s", async (_, environmentIsLocalOnly) => {
+    const cwd = repository(trustedFiles)
+    const repositoryTrust = await grantOf(cwd)
+    const { adapter, transport } = await connected(trustedReply(), undefined, environmentIsLocalOnly)
+
+    const threadId = await adapter.startThread({ cwd, runtime, repositoryTrust })
+    await adapter.resumeThread({ threadId, cwd, runtime, repositoryTrust })
+
+    expect(sentParams(transport, "thread/start")[0]?.config).toEqual(untrusted(cwd))
+    expect(sentParams(transport, "thread/resume")[0]?.config).toEqual(untrusted(cwd))
+    expect(sentParams(transport, "mcpServerStatus/list")).toEqual([])
     expect(adapter.repositoryTrustApplied(threadId)).toBeUndefined()
   })
 
