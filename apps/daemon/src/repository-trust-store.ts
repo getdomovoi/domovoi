@@ -59,19 +59,23 @@ function checkedGrant(grant: RepositoryTrustGrant): RepositoryTrustGrant {
 
 // The table this store creates, column by column, with project_id its only
 // key. Anything else under the name was not made here, so it yields no grant.
+// hidden 0 is an ordinary column; generated and hidden columns, which
+// table_info leaves out, are refused.
 const expectedColumns = [
-  { name: "project_id", pk: 1 },
-  { name: "trusted_digest", pk: 0 },
-  { name: "trusted_at", pk: 0 },
-  { name: "trusted_client", pk: 0 },
-  { name: "trusted_client_id", pk: 0 },
+  { name: "project_id", pk: 1, hidden: 0 },
+  { name: "trusted_digest", pk: 0, hidden: 0 },
+  { name: "trusted_at", pk: 0, hidden: 0 },
+  { name: "trusted_client", pk: 0, hidden: 0 },
+  { name: "trusted_client_id", pk: 0, hidden: 0 },
 ]
 
 export class SqliteRepositoryTrust implements RepositoryTrustStore {
   #database: DatabaseSync
-  // False when the table under this name is not the one this store creates:
-  // no grant is read from it or written to it.
-  readonly #compatible: boolean
+  // False when the table under this name is not the one this store creates,
+  // or when a failed record could not be rolled back: no grant is read from
+  // the table or written to it for the rest of this instance's life. Revoke
+  // still deletes and checks, since removing a grant only fails closed.
+  #usable: boolean
 
   constructor(database: DatabaseSync) {
     this.#database = database
@@ -86,22 +90,28 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
       CREATE INDEX IF NOT EXISTS repository_trust_trusted_at
         ON repository_trust (trusted_at);
     `)
-    this.#compatible = this.#tableIsOurs()
+    this.#usable = this.#tableIsOurs()
   }
 
-  // One rowid table in the main schema with exactly the expected columns and
-  // key, and no trigger on it: a trigger could rewrite, keep or drop a grant
-  // behind a statement that reports success.
+  // One rowid table in the main schema, stored under exactly this name, with
+  // exactly the expected ordinary columns and key, and no trigger on it: a
+  // trigger could rewrite, keep or drop a grant behind a statement that
+  // reports success. SQLite matches names without regard to case, so a table
+  // named Repository_Trust answers to every statement here; it is refused, and
+  // triggers are looked up the same way. table_xinfo and ncol include the
+  // generated and hidden columns table_info leaves out, such as one named
+  // rowid that would shadow the rowid the trim reads.
   #tableIsOurs(): boolean {
-    const tables = this.#database.prepare("PRAGMA table_list(repository_trust)").all() as Array<{ schema: string; type: string; wr: number }>
-    if (tables.length !== 1 || tables[0]?.schema !== "main" || tables[0].type !== "table" || tables[0].wr !== 0) return false
-    const columns = (this.#database.prepare("PRAGMA table_info(repository_trust)").all() as Array<{ name: string; pk: number }>)
-      .map(({ name, pk }) => ({ name, pk }))
+    const tables = this.#database.prepare("PRAGMA table_list(repository_trust)").all() as Array<{ schema: string; name: string; type: string; ncol: number; wr: number }>
+    const [table] = tables
+    if (tables.length !== 1 || table?.schema !== "main" || table.name !== "repository_trust" || table.type !== "table" || table.ncol !== expectedColumns.length || table.wr !== 0) return false
+    const columns = (this.#database.prepare("PRAGMA table_xinfo(repository_trust)").all() as Array<{ name: string; pk: number; hidden: number }>)
+      .map(({ name, pk, hidden }) => ({ name, pk, hidden }))
     if (JSON.stringify(columns) !== JSON.stringify(expectedColumns)) return false
     const triggers = this.#database.prepare(`
-      SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'repository_trust'
+      SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'repository_trust' COLLATE NOCASE
       UNION ALL
-      SELECT name FROM sqlite_temp_master WHERE type = 'trigger' AND tbl_name = 'repository_trust'
+      SELECT name FROM sqlite_temp_master WHERE type = 'trigger' AND tbl_name = 'repository_trust' COLLATE NOCASE
     `).all()
     return triggers.length === 0
   }
@@ -109,7 +119,7 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
   // A row the protocol refuses reads as no grant, so the repository is
   // reported not trusted.
   find(projectId: string): RepositoryTrustGrant | undefined {
-    if (!this.#compatible) return undefined
+    if (!this.#usable) return undefined
     return this.#read(projectId)
   }
 
@@ -138,8 +148,12 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
   // under the caller's transaction when one is open; otherwise RELEASE
   // commits. The read back refuses a grant that is not stored as written.
   record(input: RepositoryTrustGrantInput): RepositoryTrustGrant {
-    if (!this.#compatible) throw new Error("The repository trust table is not the one this daemon creates")
+    if (!this.#usable) throw new Error("The repository trust table is not usable by this daemon")
     const grant = checkedGrant({ ...input, trustedAt: new Date().toISOString() })
+    // false: no transaction is open, so the savepoint below opens one and this
+    // store owns it. isTransaction is absent before Node 22.16; unknown is
+    // treated as the caller's, so the caller's work is never rolled back here.
+    const callerTransaction = (this.#database as { isTransaction?: boolean }).isTransaction !== false
     this.#database.exec("SAVEPOINT repository_trust_record")
     try {
       this.#database
@@ -165,7 +179,22 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
         rollbackFailure = { error: rollbackError }
       }
       if (rollbackFailure) {
-        throw new AggregateError([error, rollbackFailure.error], "Could not record repository trust or restore its transaction", { cause: error })
+        // The failed grant may still be written, so this store stops reading
+        // and recording grants before the error leaves. When it opened the
+        // transaction it rolls all of it back, so nothing is left to commit.
+        // A caller's transaction is the caller's: it must roll it back, since
+        // committing it could make the failed grant durable for a store opened
+        // later. This instance reads no grant either way.
+        this.#usable = false
+        const failures = [error, rollbackFailure.error]
+        if (!callerTransaction) {
+          try {
+            this.#database.exec("ROLLBACK")
+          } catch (rollbackError) {
+            failures.push(rollbackError)
+          }
+        }
+        throw new AggregateError(failures, "Could not record repository trust or restore its transaction", { cause: error })
       }
       throw error
     }

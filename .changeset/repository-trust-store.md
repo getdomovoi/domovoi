@@ -11,7 +11,9 @@ id. At most 512 grants are kept; the oldest beyond that are dropped, which leave
 repositories not trusted. A stored grant the protocol would refuse reads as no grant. A grant, the
 trim to the cap and a read back of the grant commit together or not at all. A table under the
 store's name that is not the one it creates, or that has a trigger on it, yields no grant and
-takes none. A revocation that leaves the grant stored fails with the internal error rather than
+takes none; that includes a table named in another case, a trigger naming the table in another
+case, and a generated or hidden column. When a failed grant cannot be rolled back, the store reads
+and records no grant for the rest of the daemon's run, and rolls back the transaction it opened. A revocation that leaves the grant stored fails with the internal error rather than
 reporting the repository not trusted. An emergency stop during a trust request's configuration
 read cancels it: nothing is recorded, and it is answered like any cancelled operation.
 

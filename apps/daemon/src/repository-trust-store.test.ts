@@ -1,4 +1,4 @@
-import { DatabaseSync } from "node:sqlite"
+import { constants, DatabaseSync } from "node:sqlite"
 
 import { describe, expect, it } from "vitest"
 
@@ -119,6 +119,9 @@ describe("SqliteRepositoryTrust", () => {
     ["a table without rowids", "CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT) WITHOUT ROWID"],
     ["a table keyed otherwise", "CREATE TABLE repository_trust (project_id TEXT, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT)"],
     ["a table with other columns", "CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL)"],
+    // table_info does not list a generated column; this one shadows the rowid the trim reads.
+    ["a table with a generated rowid column", "CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT, rowid TEXT GENERATED ALWAYS AS ('same') VIRTUAL)"],
+    ["a table named in another case", "CREATE TABLE Repository_Trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT)"],
   ])("yields no grant from %s", (_, table) => {
     const database = new DatabaseSync(":memory:")
     database.exec(table)
@@ -139,6 +142,99 @@ describe("SqliteRepositoryTrust", () => {
 
     expect(trust.find("project-acme")).toBeUndefined()
     expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+  })
+
+  it.each([
+    ["a trigger", "CREATE TRIGGER mint_grant AFTER INSERT ON Repository_Trust BEGIN SELECT 1; END"],
+    ["a temporary trigger", "CREATE TEMP TRIGGER mint_grant AFTER INSERT ON Repository_Trust BEGIN SELECT 1; END"],
+  ])("yields no grant when %s is on its table named in another case", (_, trigger) => {
+    const database = new DatabaseSync(":memory:")
+    database.exec("CREATE TABLE Repository_Trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT)")
+    database.prepare("INSERT INTO repository_trust VALUES ('project-acme', ?, '2026-09-28T10:00:00.000Z', 'desktop', NULL)").run(digest("a"))
+    database.exec(trigger)
+    const trust = new SqliteRepositoryTrust(database)
+
+    expect(trust.find("project-acme")).toBeUndefined()
+    expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+  })
+
+  it.each([
+    ["a trigger", "CREATE TRIGGER mint_grant AFTER INSERT ON REPOSITORY_TRUST BEGIN SELECT 1; END"],
+    ["a temporary trigger", "CREATE TEMP TRIGGER mint_grant AFTER INSERT ON REPOSITORY_TRUST BEGIN SELECT 1; END"],
+  ])("yields no grant when %s names its table in another case", (_, trigger) => {
+    const database = new DatabaseSync(":memory:")
+    new SqliteRepositoryTrust(database).record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
+    database.exec(trigger)
+    const trust = new SqliteRepositoryTrust(database)
+
+    expect(trust.find("project-acme")).toBeUndefined()
+    expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+  })
+
+  it("stops reading and recording grants when a failed record cannot be rolled back", () => {
+    const database = new DatabaseSync(":memory:")
+    const trust = new SqliteRepositoryTrust(database)
+    for (let index = 0; index < maximumRepositoryTrustRecords; index += 1) {
+      trust.record({ projectId: `project-${index}`, trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
+    }
+    // RAISE(ROLLBACK) ends the whole transaction, so the savepoint the store
+    // would roll back to is gone and the rollback cannot be confirmed.
+    database.exec("CREATE TRIGGER end_transaction BEFORE DELETE ON repository_trust BEGIN SELECT RAISE(ROLLBACK, 'ended'); END")
+
+    expect(() => trust.record({ projectId: "project-new", trustedDigest: digest("b"), trustedBy: { client: "web" } })).toThrow()
+    expect(trust.find("project-new")).toBeUndefined()
+    expect(trust.find("project-0")).toBeUndefined()
+    expect(() => trust.record({ projectId: "project-other", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+  })
+
+  describe.skipIf(typeof (DatabaseSync.prototype as { setAuthorizer?: unknown }).setAuthorizer !== "function")("when ROLLBACK TO itself is refused", () => {
+    // The trim's DELETE and the savepoint rollback are refused, so the new
+    // grant is written and cannot be undone by the savepoint.
+    function refusingRollback() {
+      const database = new DatabaseSync(":memory:")
+      const trust = new SqliteRepositoryTrust(database)
+      for (let index = 0; index < maximumRepositoryTrustRecords; index += 1) {
+        trust.record({ projectId: `project-${index}`, trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
+      }
+      let refusing = false
+      database.setAuthorizer((action, operation) => refusing && (action === constants.SQLITE_DELETE || (action === constants.SQLITE_SAVEPOINT && operation === "ROLLBACK"))
+        ? constants.SQLITE_DENY
+        : constants.SQLITE_OK)
+      const failRecord = () => {
+        refusing = true
+        try {
+          expect(() => trust.record({ projectId: "project-new", trustedDigest: digest("b"), trustedBy: { client: "web" } })).toThrow()
+        } finally {
+          refusing = false
+        }
+      }
+      return { database, trust, failRecord }
+    }
+    const rows = (database: DatabaseSync) => database.prepare("SELECT COUNT(*) AS count FROM repository_trust").get()
+
+    it("leaves no readable grant and undoes the transaction it opened", () => {
+      const { database, trust, failRecord } = refusingRollback()
+      failRecord()
+
+      expect(trust.find("project-new")).toBeUndefined()
+      expect(trust.find("project-1")).toBeUndefined()
+      expect(() => trust.record({ projectId: "project-other", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+      // The store opened the transaction, so it rolled all of it back.
+      expect(database.prepare("SELECT 1 AS present FROM repository_trust WHERE project_id = 'project-new'").get()).toBeUndefined()
+      expect(rows(database)).toEqual({ count: maximumRepositoryTrustRecords })
+    })
+
+    it("yields no trusted grant through the store after the caller commits its transaction", () => {
+      const { database, trust, failRecord } = refusingRollback()
+      database.exec("BEGIN")
+      failRecord()
+      expect(trust.find("project-new")).toBeUndefined()
+      database.exec("COMMIT")
+
+      expect(trust.find("project-new")).toBeUndefined()
+      expect(trust.find("project-1")).toBeUndefined()
+      expect(() => trust.record({ projectId: "project-other", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+    })
   })
 
   it("keeps at most the most recent grants", () => {

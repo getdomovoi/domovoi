@@ -2,7 +2,7 @@ import { once } from "node:events"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { DatabaseSync } from "node:sqlite"
+import { constants, DatabaseSync } from "node:sqlite"
 
 import {
   createEmptyWorkspace,
@@ -19,7 +19,7 @@ import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
-import { SqliteRepositoryTrust } from "./repository-trust-store.js"
+import { SqliteRepositoryTrust, maximumRepositoryTrustRecords } from "./repository-trust-store.js"
 import { type DaemonServerOptions as DomovoiDaemonOptions, DomovoiDaemon, repositoryTrustProjectRefusal } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 
@@ -256,6 +256,28 @@ describe("repository.trust", () => {
     expect(await pending).toMatchObject({ error: { code: -32603, message: "Operation cancelled by emergency stop" } })
     expect(store.repositoryTrust.find(projectId)).toBeUndefined()
   })
+
+  it.skipIf(typeof (DatabaseSync.prototype as { setAuthorizer?: unknown }).setAuthorizer !== "function")(
+    "reports the repository untrusted at once when a failed grant cannot be rolled back",
+    async () => {
+      const root = await repository(configured)
+      const database = new DatabaseSync(":memory:")
+      const repositoryTrust = new SqliteRepositoryTrust(database)
+      for (let index = 0; index < maximumRepositoryTrustRecords; index += 1) {
+        repositoryTrust.record({ projectId: `project-${index}`, trustedDigest: `sha256:${"a".repeat(64)}`, trustedBy: { client: "desktop" } })
+      }
+      // The trim's DELETE and the savepoint rollback are refused.
+      database.setAuthorizer((action, operation) => action === constants.SQLITE_DELETE || (action === constants.SQLITE_SAVEPOINT && operation === "ROLLBACK")
+        ? constants.SQLITE_DENY
+        : constants.SQLITE_OK)
+      const { daemon } = await fixture(root, { repositoryTrust })
+      const call = await hello(daemon, "desktop", daemon.authToken)
+
+      expect(await call("repository.trust", { projectId, configDigest: await digestOf(root), client: "desktop" }))
+        .toMatchObject({ error: { code: -32603, message: "Internal daemon error" } })
+      expect((await inventory(call)).repository?.trust).toEqual({ state: "untrusted", reason: "not-trusted" })
+    },
+  )
 
   it("uses the trust store it is given", async () => {
     const root = await repository(configured)
