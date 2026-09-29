@@ -21,8 +21,8 @@ import { type DaemonServerOptions as DomovoiDaemonOptions, DomovoiDaemon } from 
 import { SqliteWorkspaceStore } from "./store.js"
 
 // tool.inventory answers what the open repository's own agent configuration
-// declares (slice P3). Until the trust store exists (P5), no repository is
-// trusted.
+// declares (slice P3). A repository nobody trusted is reported not trusted;
+// server-repository-trust.test.ts covers the trust it reports (P5).
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []

@@ -4,7 +4,7 @@ import { createEmptyWorkspace, demoWorkspace, protocolVersion } from "@getdomovo
 import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { DomovoiDaemon } from "./server.js"
+import { DomovoiDaemon, repositoryTrustProjectRefusal } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 
 // Ruling Q68 A (2026-09-27): the trust methods are for the owner's bearer
@@ -67,9 +67,10 @@ async function hello(daemon: DomovoiDaemon, client: string, authToken: string) {
 const trust = (client: string) => ["repository.trust", { projectId: "project-acme", configDigest: digest, client }] as const
 const revoke = (client: string) => ["repository.revokeTrust", { projectId: "project-acme", client }] as const
 
-// No handler answers the trust methods yet (slice P5), so a call the credential
-// check admits ends in the daemon's internal error rather than a refusal.
-const reachesHandler = { error: { code: -32603, message: "Internal daemon error" } }
+// The fixture opens no project, so a call the credential check admits reaches
+// the handler and ends in its project refusal rather than a credential refusal.
+// server-repository-trust.test.ts covers what the handler records.
+const reachesHandler = { error: { code: -32602, message: repositoryTrustProjectRefusal } }
 
 describe("repository trust credentials", () => {
   it.each(["desktop", "web"])("admits the owner's bearer declared as %s", async (client) => {
