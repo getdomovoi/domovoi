@@ -75,7 +75,7 @@ function judgedLocalOnly(launch: CodexLaunch): boolean {
 // What the app-server is started with, read once per transport.
 function currentCodexLaunch(): CodexLaunch {
   const env = { ...process.env }
-  return { env, cwd: process.cwd(), homeCandidates: codexHomeCandidates(env) }
+  return { env, cwd: process.cwd(), homeCandidates: codexHomeCandidates(env), platform: process.platform }
 }
 
 export type CodexPermissionProfile = "domovoi-read" | "domovoi-build"

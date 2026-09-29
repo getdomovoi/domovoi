@@ -229,16 +229,23 @@ export type CodexLaunch = {
   env: Readonly<Record<string, string | undefined>>
   cwd: string
   homeCandidates: readonly string[]
+  // The app-server's platform: Windows reads variable names in any case,
+  // other platforms only as written.
+  platform: NodeJS.Platform
 }
 
 const set = (value: string | undefined): value is string => value !== undefined && value !== ""
 
 export function codexLaunchIsLocalOnly(launch: CodexLaunch): boolean {
   const variables = Object.entries(launch.env)
-  // Windows reads variable names in any case, so names match in any case on
-  // every platform.
+  // Windows reads variable names in any case. An exec server variable in any
+  // case counts on every platform, which can only hold servers back.
   if (variables.some(([name, value]) => name.toUpperCase().startsWith("CODEX_EXEC_SERVER_") && set(value))) return false
-  const codexHomes = [...new Set(variables.filter(([name, value]) => name.toUpperCase() === "CODEX_HOME" && set(value)).map(([, value]) => value!))]
+  // CODEX_HOME is read as the platform reads it: in any case on Windows, where
+  // two spellings cannot be told apart, and only as written elsewhere, where a
+  // lowercase codex_home leaves Codex on its default home.
+  const namesCodexHome = launch.platform === "win32" ? (name: string) => name.toUpperCase() === "CODEX_HOME" : (name: string) => name === "CODEX_HOME"
+  const codexHomes = [...new Set(variables.filter(([name, value]) => namesCodexHome(name) && set(value)).map(([, value]) => value!))]
   if (codexHomes.length > 1) return false
   // A set CODEX_HOME is canonicalized, and Codex refuses to start without it
   // (find_codex_home, utils/home-dir at rust-v0.157.1).

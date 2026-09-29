@@ -222,7 +222,9 @@ describe("codexLaunchIsLocalOnly", () => {
     }
     return path
   }
-  const launch = (env: Record<string, string>, homeCandidates: string[] = [], cwd = tmpdir()) => ({ env, cwd, homeCandidates })
+  const launch = (env: Record<string, string>, homeCandidates: string[] = [], cwd = tmpdir(), platform: NodeJS.Platform = "linux") => (
+    { env, cwd, homeCandidates, platform }
+  )
   const environments = { "environments.toml": 'default = "build"\n' }
 
   it("is local only with no environments file and no exec server variable", () => {
@@ -242,11 +244,27 @@ describe("codexLaunchIsLocalOnly", () => {
     expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: home(), [name]: " " }))).toBe(false)
   })
 
-  it("reads CODEX_HOME in any case, and resolves a relative one from the launch directory", () => {
+  it("resolves a relative CODEX_HOME from the launch directory", () => {
     const parent = home({ "codex/environments.toml": environments["environments.toml"] })
-    expect(codexLaunchIsLocalOnly(launch({ codex_home: join(parent, "codex") }))).toBe(false)
     expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: "codex" }, [], parent))).toBe(false)
-    expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: "a", Codex_Home: "b" }, [], home()))).toBe(false)
+  })
+
+  // Security review round 4: Windows reads CODEX_HOME in any case; Unix only
+  // as written, so a lowercase codex_home there leaves Codex on its default
+  // home.
+  it("reads CODEX_HOME in any case on Windows, and cannot tell between two spellings", () => {
+    const parent = home({ "codex/environments.toml": environments["environments.toml"] })
+    expect(codexLaunchIsLocalOnly(launch({ codex_home: join(parent, "codex") }, [home()], tmpdir(), "win32"))).toBe(false)
+    expect(codexLaunchIsLocalOnly(launch({ codex_home: home() }, [home(environments)], tmpdir(), "win32"))).toBe(true)
+    expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: home(), Codex_Home: home() }, [home()], tmpdir(), "win32"))).toBe(false)
+  })
+
+  it("reads only CODEX_HOME as written on Unix, checking the default homes otherwise", () => {
+    const withEnvironments = home({ ".codex/environments.toml": environments["environments.toml"] })
+    for (const platform of ["linux", "darwin"] as const) {
+      expect(codexLaunchIsLocalOnly(launch({ codex_home: home() }, [withEnvironments], tmpdir(), platform)), platform).toBe(false)
+      expect(codexLaunchIsLocalOnly(launch({ codex_home: home(environments), CODEX_HOME: home() }, [withEnvironments], tmpdir(), platform)), platform).toBe(true)
+    }
   })
 
   it.runIf(process.platform !== "win32")("reads the folder a linked CODEX_HOME names", () => {

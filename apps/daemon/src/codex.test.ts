@@ -199,7 +199,7 @@ describe("StdioCodexTransport", () => {
       const child = new FakeChild()
       const env = { CODEX_HOME: cleanHome(), PATH: "/usr/bin" }
       const factory = vi.fn((_env: NodeJS.ProcessEnv) => child as unknown as ChildProcessWithoutNullStreams)
-      const transport = new StdioCodexTransport(factory, 2_000, { env, cwd: tmpdir(), homeCandidates: [] })
+      const transport = new StdioCodexTransport(factory, 2_000, { env, cwd: tmpdir(), homeCandidates: [], platform: process.platform })
       expect(factory).toHaveBeenCalledWith(env)
       expect(transport.environmentIsLocalOnly()).toBe(true)
     })
@@ -210,7 +210,7 @@ describe("StdioCodexTransport", () => {
       const transport = new StdioCodexTransport(() => {
         rmSync(join(home, "environments.toml"))
         return new FakeChild() as unknown as ChildProcessWithoutNullStreams
-      }, 2_000, { env: { CODEX_HOME: home }, cwd: tmpdir(), homeCandidates: [] })
+      }, 2_000, { env: { CODEX_HOME: home }, cwd: tmpdir(), homeCandidates: [], platform: process.platform })
       expect(transport.environmentIsLocalOnly()).toBe(false)
     })
 
@@ -219,7 +219,7 @@ describe("StdioCodexTransport", () => {
       const transport = new StdioCodexTransport(
         () => new FakeChild() as unknown as ChildProcessWithoutNullStreams,
         2_000,
-        { env: { CODEX_HOME: home }, cwd: tmpdir(), homeCandidates: [] },
+        { env: { CODEX_HOME: home }, cwd: tmpdir(), homeCandidates: [], platform: process.platform },
       )
       expect(transport.environmentIsLocalOnly()).toBe(true)
       writeFileSync(join(home, "environments.toml"), 'default = "build"\n')
