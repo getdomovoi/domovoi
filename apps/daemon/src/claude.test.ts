@@ -1310,12 +1310,55 @@ describe("trusted repository configuration", () => {
 
     const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build"), repositoryTrust: grant })
     expectLoaded(calls[0]!)
+    expect(adapter.repositoryTrustApplied(threadId)).toEqual({ digest: grant.trustedDigest })
     await adapter.resumeThread({ threadId: "thread-resumed", cwd: worktree, runtime: runtime("build"), repositoryTrust: grant })
     expectLoaded(calls[1]!)
+    expect(adapter.repositoryTrustApplied("thread-resumed")).toEqual({ digest: grant.trustedDigest })
     await endSession(adapter, calls[0]!.query, threadId, worktree)
     await adapter.startTurn({ threadId, cwd: worktree, prompt: "again", runtime: runtime("build"), repositoryTrust: grant })
     expect(calls).toHaveLength(3)
     expectLoaded(calls[2]!)
+    expect(adapter.repositoryTrustApplied(threadId)).toEqual({ digest: grant.trustedDigest })
+    await adapter.close()
+  })
+
+  // What revoke (P6d) stops: a session is reported as having loaded trusted
+  // configuration only when some of it reached Claude.
+  it("reports a session as trust-applied only when trusted content reached Claude", async () => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-claude-trust-"))
+    scratchDirectories.push(worktree)
+    await mkdir(join(worktree, ".claude"), { recursive: true })
+    const grantFor = async () => ({
+      projectId: "project-acme", trustedAt: "2026-09-29T12:00:00.000Z", trustedBy: { client: "desktop" as const },
+      trustedDigest: (await readRepositoryProviderConfig(worktree, { heldBack: true })).configDigest,
+    })
+    const { calls, factory } = factoryHarness((query) => query.mcpServerStatus.mockResolvedValue([{ name: "db" }]))
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+
+    // Trusted, but everything in it is held back.
+    await writeFile(join(worktree, ".claude", "settings.json"), JSON.stringify({ permissions: { allow: ["Bash(*)"] } }))
+    const heldBackOnly = await adapter.startThread({ cwd: worktree, runtime: runtime("build"), repositoryTrust: await grantFor() })
+    expect(calls[0]!.options).not.toHaveProperty("settings")
+    expect(adapter.repositoryTrustApplied(heldBackOnly)).toBeUndefined()
+
+    // Trusted, and its only server is named like one of the person's own.
+    await writeFile(join(worktree, ".claude", "settings.json"), "{}")
+    await writeFile(join(worktree, ".mcp.json"), JSON.stringify({ mcpServers: { db: { command: "db-mcp" } } }))
+    const shadowed = await adapter.startThread({ cwd: worktree, runtime: runtime("build"), repositoryTrust: await grantFor() })
+    expect(calls[1]!.query.setMcpServers).not.toHaveBeenCalled()
+    expect(adapter.repositoryTrustApplied(shadowed)).toBeUndefined()
+
+    // Trusted, and a server is added: only the server reached Claude.
+    await writeFile(join(worktree, ".mcp.json"), JSON.stringify({ mcpServers: { docs: { command: "docs-mcp" } } }))
+    const grant = await grantFor()
+    const served = await adapter.startThread({ cwd: worktree, runtime: runtime("build"), repositoryTrust: grant })
+    expect(calls[2]!.options).not.toHaveProperty("settings")
+    expect(adapter.repositoryTrustApplied(served)).toEqual({ digest: grant.trustedDigest })
+
+    // Held back: nothing is reported, and nothing is for a thread not open.
+    const untrusted = await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+    expect(adapter.repositoryTrustApplied(untrusted)).toBeUndefined()
+    expect(adapter.repositoryTrustApplied("thread-unknown")).toBeUndefined()
     await adapter.close()
   })
 
@@ -1344,6 +1387,8 @@ describe("trusted repository configuration", () => {
 
     expect(calls).toHaveLength(3)
     for (const call of calls) expectNothing(call)
+    expect(adapter.repositoryTrustApplied(threadId)).toBeUndefined()
+    expect(adapter.repositoryTrustApplied("thread-resumed")).toBeUndefined()
     expect(read).toHaveBeenCalledTimes(verdict === "none" ? 0 : 3)
     await adapter.close()
   })

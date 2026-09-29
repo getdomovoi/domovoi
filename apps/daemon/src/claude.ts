@@ -189,6 +189,9 @@ type Session = {
   // is complete only when every one of them has exited.
   processes: ClaudeProcess[]
   stop?: Promise<void>
+  // The digest of the trusted configuration this session's Claude was given
+  // part of, set only when some of it reached Claude.
+  repositoryTrustApplied?: { digest: string }
 }
 
 // A query Domovoi started Claude for: a session's, or a model list's, which
@@ -564,8 +567,12 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       // trusted one brings anything, and it brings the documents its digest
       // was computed from. An archive resume is given no grant (Q149 A).
       const verdict = await repositoryTrustVerdict(cwd, repositoryTrust, this.#readRepositoryConfig)
-      return { instructions, repository: verdict.state === "trusted" ? claudeRepositoryLoad(verdict.documents) : undefined }
+      return {
+        instructions,
+        repository: verdict.state === "trusted" ? { digest: verdict.configDigest, ...claudeRepositoryLoad(verdict.documents) } : undefined,
+      }
     })())
+    const settings = repository && Object.keys(repository.settings).length > 0 ? repository.settings : undefined
     this.#refuseWhenClosing()
     const input = new PushStream<ClaudeUserMessage>()
     const stderr = new ClaudeStderrTail()
@@ -579,7 +586,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         ? { systemPrompt: { type: "preset", preset: "claude_code", append: instructions } }
         : {}),
       cwd,
-      ...(repository && Object.keys(repository.settings).length > 0 ? { settings: repository.settings } : {}),
+      ...(settings ? { settings } : {}),
       ...(resume ? { resume: threadId } : { sessionId: threadId }),
       model: runtime.model,
       effort: claudeEffortFor(runtime.reasoning),
@@ -606,6 +613,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       interruptedMessageIds: new Set(),
       stderr,
       processes,
+      ...(repository && settings ? { repositoryTrustApplied: { digest: repository.digest } } : {}),
     }
     this.#sessions.set(threadId, session)
     void this.#consume(session).then(
@@ -629,7 +637,16 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     }
     // Close stopped this session while it started.
     this.#refuseWhenClosing()
-    if (repository) await this.#addRepositoryServers(query, repository.mcpServers)
+    if (repository && await this.#addRepositoryServers(query, repository.mcpServers)) {
+      session.repositoryTrustApplied = { digest: repository.digest }
+    }
+  }
+
+  // The digest of the trusted configuration an open session's Claude was
+  // given part of, or undefined when it was given none: held back, or trusted
+  // with nothing that loads. A session keeps it while it runs (Q143 A).
+  repositoryTrustApplied(threadId: string): { digest: string } | undefined {
+    return this.#sessions.get(threadId)?.repositoryTrustApplied
   }
 
   // A trusted repository's servers start with its session (ruling Q140 A).
@@ -638,18 +655,20 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   // loaded, and a repository server named like one of them is held back
   // (Q150 A). A list that cannot be had adds none. Claude connects the rest
   // as it connects its own, without holding the open: the request is sent
-  // before any turn, and a server that fails to connect fails alone.
-  async #addRepositoryServers(query: ClaudeQuery, servers: ClaudeRepositoryLoad["mcpServers"]): Promise<void> {
-    if (Object.keys(servers).length === 0) return
+  // before any turn, and a server that fails to connect fails alone. Says
+  // whether any server was handed to Claude.
+  async #addRepositoryServers(query: ClaudeQuery, servers: ClaudeRepositoryLoad["mcpServers"]): Promise<boolean> {
+    if (Object.keys(servers).length === 0) return false
     let own: Array<{ name: string }>
     try {
       own = await query.mcpServerStatus()
     } catch {
-      return
+      return false
     }
     const added = withoutOwnServers(servers, own.map(({ name }) => name))
-    if (Object.keys(added).length === 0) return
+    if (Object.keys(added).length === 0) return false
     query.setMcpServers(added).catch(() => {})
+    return true
   }
 
   async #applyRuntime(session: Session, runtime: Runtime): Promise<void> {
