@@ -225,7 +225,7 @@ describe("SqliteRepositoryTrust", () => {
     expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
   })
 
-  it.each(["C080", "EDA080"])("refuses an index whose stored name is invalid UTF-8 (%s)", (bytes) => {
+  it.each(["80", "C080", "EDA080"])("refuses an index whose stored name is invalid UTF-8 (%s)", (bytes) => {
     const database = new DatabaseSync(":memory:")
     new SqliteRepositoryTrust(database).record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
     // A NOCASE index renamed to bytes that read back as U+FFFD, beside an
