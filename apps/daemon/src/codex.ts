@@ -1,6 +1,4 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
-import { homedir } from "node:os"
-import { join } from "node:path"
 import { createInterface } from "node:readline"
 import type { Readable } from "node:stream"
 
@@ -26,11 +24,13 @@ import {
 } from "./codex-repository-config.js"
 import {
   codexCatalogPage,
-  codexEnvironmentIsLocalOnly,
+  codexHomeCandidates,
+  codexLaunchIsLocalOnly,
   codexOwnServerNames,
   codexRepositoryLoad,
   codexTrustedThreadConfig,
   withoutOwnServers,
+  type CodexLaunch,
   type CodexRepositoryServer,
 } from "./codex-repository-trust.js"
 import { credentialStores } from "./credential-stores.js"
@@ -57,6 +57,25 @@ export interface CodexTransport {
   onMessage(listener: (message: JsonRpcMessage) => void): () => void
   onError?(listener: (error: Error) => void): () => void
   close(): Promise<void>
+  // Whether the app-server behind this transport gets Codex's local
+  // environment alone, so its threads bring no plugin servers beyond the
+  // catalog mcpServerStatus/list names (codexLaunchIsLocalOnly). Once false,
+  // false for the transport's life. Absent: no repository server passes.
+  environmentIsLocalOnly?(): boolean
+}
+
+function judgedLocalOnly(launch: CodexLaunch): boolean {
+  try {
+    return codexLaunchIsLocalOnly(launch)
+  } catch {
+    return false
+  }
+}
+
+// What the app-server is started with, read once per transport.
+function currentCodexLaunch(): CodexLaunch {
+  const env = { ...process.env }
+  return { env, cwd: process.cwd(), homeCandidates: codexHomeCandidates(env) }
 }
 
 export type CodexPermissionProfile = "domovoi-read" | "domovoi-build"
@@ -225,13 +244,19 @@ export class StdioCodexTransport implements CodexTransport {
   #failed = false
   #closePromise: Promise<void> | undefined
   #shutdownGraceMs: number
+  readonly #launch: CodexLaunch
+  #localOnly: boolean
 
-  constructor(childFactory: () => ChildProcessWithoutNullStreams = () => spawn(
+  // The app-server is started with exactly the variables in `launch`, judged
+  // before the start; environmentIsLocalOnly judges them again later.
+  constructor(childFactory: (env: NodeJS.ProcessEnv) => ChildProcessWithoutNullStreams = (env) => spawn(
     "codex",
     codexAppServerArguments(),
-    { stdio: ["pipe", "pipe", "pipe"] },
-  ), shutdownGraceMs = 2_000) {
-    this.#child = childFactory()
+    { stdio: ["pipe", "pipe", "pipe"], env },
+  ), shutdownGraceMs = 2_000, launch: CodexLaunch = currentCodexLaunch()) {
+    this.#launch = launch
+    this.#localOnly = judgedLocalOnly(launch)
+    this.#child = childFactory({ ...launch.env })
     this.#shutdownGraceMs = shutdownGraceMs
     const stderrTail = captureStderrTail(this.#child.stderr)
     // Once the process has exited, or its stdout has ended, an unparseable line
@@ -290,6 +315,14 @@ export class StdioCodexTransport implements CodexTransport {
   onError(listener: (error: Error) => void): () => void {
     this.#errorListeners.add(listener)
     return () => this.#errorListeners.delete(listener)
+  }
+
+  // Judged again on each call, and ANDed with every earlier answer: a file
+  // removed or a link repointed after the app-server read its environments
+  // cannot turn the answer back to local while that app-server runs.
+  environmentIsLocalOnly(): boolean {
+    if (this.#localOnly) this.#localOnly = judgedLocalOnly(this.#launch)
+    return this.#localOnly
   }
 
   async close(): Promise<void> {
@@ -377,20 +410,15 @@ export class CodexAppServerAdapter implements AgentAdapter {
   #trustedThreads = new Map<string, string>()
   #trustApplied = new Map<string, { digest: string }>()
   readonly #readRepositoryConfig: RepositoryProviderConfigReader | undefined
-  readonly #environmentIsLocalOnly: () => boolean
 
   constructor(
     transportFactory: () => CodexTransport = () => new StdioCodexTransport(),
     // How a session's worktree configuration is read for its trust verdict;
     // the repository reader unless a test gives another.
     readRepositoryConfig?: RepositoryProviderConfigReader,
-    // Whether the app-server's threads get its local environment alone: read
-    // from the environment and Codex home the app-server is started with.
-    environmentIsLocalOnly: () => boolean = () => codexEnvironmentIsLocalOnly(process.env, process.env.CODEX_HOME || join(homedir(), ".codex")),
   ) {
     this.#transportFactory = transportFactory
     this.#readRepositoryConfig = readRepositoryConfig
-    this.#environmentIsLocalOnly = environmentIsLocalOnly
   }
 
   async connect(): Promise<void> {
@@ -470,7 +498,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
   // with its layers, and every server of Codex's effective catalog, plugin
   // servers included. When either cannot be read, none pass. None pass either
   // when the thread may get an environment that brings plugin servers the
-  // catalog does not list (codexEnvironmentIsLocalOnly).
+  // catalog does not list (codexLaunchIsLocalOnly, judged by the transport).
   async #serversToPass(plan: RepositoryPlan, configRead: unknown): Promise<Record<string, CodexRepositoryServer>> {
     if (Object.keys(plan.servers).length === 0 || !this.#localOnly()) return {}
     const own = codexOwnServerNames(configRead)
@@ -478,9 +506,11 @@ export class CodexAppServerAdapter implements AgentAdapter {
     return own === undefined || catalog === undefined ? {} : withoutOwnServers(plan.servers, [...own, ...catalog])
   }
 
+  // The current transport's verdict (CodexTransport.environmentIsLocalOnly);
+  // a transport without one, or one that throws, cannot tell.
   #localOnly(): boolean {
     try {
-      return this.#environmentIsLocalOnly()
+      return this.#transport?.environmentIsLocalOnly?.() ?? false
     } catch {
       return false
     }
@@ -756,6 +786,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
         throw new Error("Codex transport disconnected during initialization")
       }
       transport.send({ method: "initialized", params: {} })
+      // The app-server has read its environments by now: judge the launch
+      // again, so a change made while it started counts against it.
+      this.#localOnly()
     } catch (error) {
       if (this.#transport === transport) {
         this.#detachTransport(transport)

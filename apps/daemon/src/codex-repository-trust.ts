@@ -1,5 +1,6 @@
-import { lstatSync } from "node:fs"
-import { join } from "node:path"
+import { lstatSync, realpathSync } from "node:fs"
+import { homedir, userInfo } from "node:os"
+import { join, resolve } from "node:path"
 
 import { toolInventoryEnvKeySchema, type ToolInventoryEntry } from "@getdomovoi/protocol"
 
@@ -217,14 +218,75 @@ export function codexCatalogPage(page: unknown): { names: string[]; nextCursor?:
 // the local environment reports no roots (Environment::local). Anything else,
 // or a Codex home this cannot read, counts as an environment that may bring
 // plugins: the answer is false, and no repository server passes.
-export function codexEnvironmentIsLocalOnly(env: NodeJS.ProcessEnv, codexHome: string): boolean {
-  if (Object.entries(env).some(([name, value]) => name.startsWith("CODEX_EXEC_SERVER_") && value !== undefined && value !== "")) return false
+//
+// Codex builds its environments once, as the app-server starts (app-server
+// lib.rs), so the launch judged is the one the app-server is started with:
+// its variables, the directory it starts in, and, with CODEX_HOME unset, the
+// homes Codex may take (codexHomeCandidates). StdioCodexTransport judges it
+// before the start and again once the app-server has initialized, and keeps
+// a false answer for the app-server's life.
+export type CodexLaunch = {
+  env: Readonly<Record<string, string | undefined>>
+  cwd: string
+  homeCandidates: readonly string[]
+}
+
+const set = (value: string | undefined): value is string => value !== undefined && value !== ""
+
+export function codexLaunchIsLocalOnly(launch: CodexLaunch): boolean {
+  const variables = Object.entries(launch.env)
+  // Windows reads variable names in any case, so names match in any case on
+  // every platform.
+  if (variables.some(([name, value]) => name.toUpperCase().startsWith("CODEX_EXEC_SERVER_") && set(value))) return false
+  const codexHomes = [...new Set(variables.filter(([name, value]) => name.toUpperCase() === "CODEX_HOME" && set(value)).map(([, value]) => value!))]
+  if (codexHomes.length > 1) return false
+  // A set CODEX_HOME is canonicalized, and Codex refuses to start without it
+  // (find_codex_home, utils/home-dir at rust-v0.157.1).
+  if (codexHomes[0] !== undefined) return holdsNoEnvironments(resolve(launch.cwd, codexHomes[0]), true)
+  const homes = launch.homeCandidates
+  if (homes.length === 0 || homes.some((home) => !set(home))) return false
+  return homes.every((home) => holdsNoEnvironments(join(home, ".codex"), false))
+}
+
+// Whether a Codex home, read through any link to the folder it names, holds
+// no environments.toml. A home that cannot be read cannot be told.
+function holdsNoEnvironments(home: string, mustExist: boolean): boolean {
+  let folder: string
   try {
-    lstatSync(join(codexHome, "environments.toml"))
+    folder = realpathSync.native(home)
+  } catch (error) {
+    return !mustExist && (error as NodeJS.ErrnoException).code === "ENOENT"
+  }
+  try {
+    lstatSync(join(folder, "environments.toml"))
     return false
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT"
   }
+}
+
+// The homes Codex may take when CODEX_HOME is unset: on Windows it asks the
+// OS for the profile folder (dirs::home_dir), which can differ from Node's
+// homedir() (USERPROFILE first), so every candidate is checked: Node's home,
+// the account's home, and USERPROFILE in any case. One that cannot be looked
+// up is left out; with none left, nothing can be told.
+export function codexHomeCandidates(
+  env: Readonly<Record<string, string | undefined>>,
+  nodeHome: () => string = homedir,
+  accountHome: () => string = () => userInfo().homedir,
+): string[] {
+  const candidates: string[] = []
+  for (const lookup of [nodeHome, accountHome]) {
+    try {
+      candidates.push(lookup())
+    } catch {
+      // Left out: a lookup that fails names no home.
+    }
+  }
+  for (const [name, value] of Object.entries(env)) {
+    if (name.toUpperCase() === "USERPROFILE" && set(value)) candidates.push(value)
+  }
+  return candidates
 }
 
 // Ruling Q150 A: Codex merges a thread's server into the person's one of the

@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 import type { ToolInventoryEntry } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it } from "vitest"
@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it } from "vitest"
 import {
   codexCatalogPage,
   codexEntryHeldBack,
-  codexEnvironmentIsLocalOnly,
+  codexHomeCandidates,
+  codexLaunchIsLocalOnly,
   codexOwnServerNames,
   codexRepositoryLoad,
   codexRiskyEnvKey,
@@ -207,36 +208,88 @@ describe("codexCatalogPage", () => {
 // bring plugins of its own (selected capability roots), which the threadless
 // catalog does not list. Only a thread that gets the local environment alone
 // is known to bring none.
-describe("codexEnvironmentIsLocalOnly", () => {
+describe("codexLaunchIsLocalOnly", () => {
   const homes: string[] = []
   afterEach(() => {
     for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true })
   })
   const home = (files: Record<string, string> = {}) => {
-    const path = mkdtempSync(join(tmpdir(), "domovoi-codex-home-"))
+    const path = realpathSync.native(mkdtempSync(join(tmpdir(), "domovoi-codex-home-")))
     homes.push(path)
-    for (const [name, text] of Object.entries(files)) writeFileSync(join(path, name), text)
+    for (const [name, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(path, name)), { recursive: true })
+      writeFileSync(join(path, name), text)
+    }
     return path
   }
+  const launch = (env: Record<string, string>, homeCandidates: string[] = [], cwd = tmpdir()) => ({ env, cwd, homeCandidates })
+  const environments = { "environments.toml": 'default = "build"\n' }
 
   it("is local only with no environments file and no exec server variable", () => {
-    expect(codexEnvironmentIsLocalOnly({ PATH: "/usr/bin", CODEX_HOME: "ignored" }, home({ "config.toml": "" }))).toBe(true)
+    expect(codexLaunchIsLocalOnly(launch({ PATH: "/usr/bin", CODEX_HOME: home({ "config.toml": "" }) }))).toBe(true)
   })
 
   it("cannot tell once an environments file names environments", () => {
-    expect(codexEnvironmentIsLocalOnly({}, home({ "environments.toml": 'default = "build"\n' }))).toBe(false)
+    expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: home(environments) }))).toBe(false)
   })
 
+  // Security review round 3: Windows reads variable names in any case.
   it.each([
     "CODEX_EXEC_SERVER_URL", "CODEX_EXEC_SERVER_NOISE_REGISTRY_URL", "CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID",
     "CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN", "CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID", "CODEX_EXEC_SERVER_ANYTHING_NEW",
+    "codex_exec_server_url", "Codex_Exec_Server_Url",
   ])("cannot tell once %s is set", (name) => {
-    expect(codexEnvironmentIsLocalOnly({ [name]: " " }, home())).toBe(false)
+    expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: home(), [name]: " " }))).toBe(false)
   })
 
-  it("cannot tell when the Codex home cannot be read", () => {
+  it("reads CODEX_HOME in any case, and resolves a relative one from the launch directory", () => {
+    const parent = home({ "codex/environments.toml": environments["environments.toml"] })
+    expect(codexLaunchIsLocalOnly(launch({ codex_home: join(parent, "codex") }))).toBe(false)
+    expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: "codex" }, [], parent))).toBe(false)
+    expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: "a", Codex_Home: "b" }, [], home()))).toBe(false)
+  })
+
+  it.runIf(process.platform !== "win32")("reads the folder a linked CODEX_HOME names", () => {
+    const target = home(environments)
+    const link = join(home(), "codex")
+    symlinkSync(target, link)
+    expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: link }))).toBe(false)
+  })
+
+  it("cannot tell when a set Codex home cannot be read", () => {
     const file = join(home({ "not-a-folder": "" }), "not-a-folder")
-    expect(codexEnvironmentIsLocalOnly({}, file)).toBe(false)
+    expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: file }))).toBe(false)
+    expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: join(home(), "missing") }))).toBe(false)
+  })
+
+  // Security review round 3: with CODEX_HOME unset, Codex on Windows takes the
+  // profile folder, which can differ from the one Node reports.
+  describe("with CODEX_HOME unset", () => {
+    it("is local only when no candidate home holds .codex/environments.toml", () => {
+      expect(codexLaunchIsLocalOnly(launch({}, [home(), home({ ".codex/config.toml": "" })]))).toBe(true)
+    })
+
+    it("cannot tell when any candidate home holds one", () => {
+      expect(codexLaunchIsLocalOnly(launch({}, [home(), home({ ".codex/environments.toml": "" })]))).toBe(false)
+    })
+
+    it("cannot tell when a candidate home cannot be read, or none is known", () => {
+      const file = join(home({ "not-a-folder": "" }), "not-a-folder")
+      expect(codexLaunchIsLocalOnly(launch({}, [home(), file]))).toBe(false)
+      expect(codexLaunchIsLocalOnly(launch({}, []))).toBe(false)
+      expect(codexLaunchIsLocalOnly(launch({}, [""]))).toBe(false)
+    })
+  })
+})
+
+describe("codexHomeCandidates", () => {
+  it("names Node's home, the account's home and USERPROFILE in any case", () => {
+    expect(codexHomeCandidates({ userprofile: "C:\\Users\\profile" }, () => "C:\\Users\\node", () => "C:\\Users\\account"))
+      .toEqual(["C:\\Users\\node", "C:\\Users\\account", "C:\\Users\\profile"])
+  })
+
+  it("leaves out a home that cannot be looked up", () => {
+    expect(codexHomeCandidates({}, () => "/home/person", () => { throw new Error("no passwd entry") })).toEqual(["/home/person"])
   })
 })
 

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
@@ -39,6 +39,10 @@ class RecordingTransport implements CodexTransport {
   }
 
   async close(): Promise<void> {}
+
+  // Whether the app-server this transport started gets Codex's local
+  // environment alone. Absent: the adapter cannot tell.
+  environmentIsLocalOnly?(): boolean
 }
 
 const runtime: Runtime = { provider: "codex", model: "gpt-5.3-codex", reasoning: "high", permissionMode: "build", auto: false }
@@ -62,12 +66,13 @@ function repository(files: Record<string, string>): string {
 async function connected(
   reply?: Reply,
   readRepositoryConfig?: (root: string, options: Parameters<typeof readRepositoryProviderConfig>[1]) => Promise<RepositoryProviderConfig>,
-  // Whether the thread gets Codex's local environment alone; these tests read
-  // no Codex home of their own unless they say so.
-  environmentIsLocalOnly: () => boolean = () => true,
+  // The transport's local environment verdict; these tests read no Codex
+  // home of their own unless they say so. "none": the transport has none.
+  environmentIsLocalOnly: (() => boolean) | "none" = () => true,
 ): Promise<{ adapter: CodexAppServerAdapter, transport: RecordingTransport }> {
   const transport = new RecordingTransport(reply)
-  const adapter = new CodexAppServerAdapter(() => transport, readRepositoryConfig, environmentIsLocalOnly)
+  if (environmentIsLocalOnly !== "none") transport.environmentIsLocalOnly = environmentIsLocalOnly
+  const adapter = new CodexAppServerAdapter(() => transport, readRepositoryConfig)
   await adapter.connect()
   return { adapter, transport }
 }
@@ -648,9 +653,10 @@ describe("Codex under repository trust", () => {
   // Security review round 2: an environment a new thread selects can bring
   // plugin servers (selected capability roots) that the threadless catalog
   // does not list, and the repository's `db` would stand in for a plugin `db`.
-  it.each<[string, () => boolean]>([
+  it.each<[string, (() => boolean) | "none"]>([
     ["can bring plugins of its own", () => false],
     ["cannot be told", () => { throw new Error("EACCES") }],
+    ["is not judged by the transport", "none"],
   ])("passes no server when the environment the thread gets %s", async (_, environmentIsLocalOnly) => {
     const cwd = repository(trustedFiles)
     const repositoryTrust = await grantOf(cwd)
@@ -663,6 +669,18 @@ describe("Codex under repository trust", () => {
     expect(sentParams(transport, "thread/resume")[0]?.config).toEqual(untrusted(cwd))
     expect(sentParams(transport, "mcpServerStatus/list")).toEqual([])
     expect(adapter.repositoryTrustApplied(threadId)).toBeUndefined()
+  })
+
+  // Security review round 3: the verdict is taken again once the app-server
+  // has started, and the thread's servers follow the transport's verdict.
+  it("asks the transport again once the app-server has initialized", async () => {
+    const checks = vi.fn(() => true)
+    const transport = new RecordingTransport(threadReply)
+    transport.environmentIsLocalOnly = checks
+    const adapter = new CodexAppServerAdapter(() => transport)
+    await adapter.connect()
+    expect(checks).toHaveBeenCalledTimes(1)
+    expect(sentMethods(transport)).toEqual(["initialize", "initialized"])
   })
 
   it("passes no server when Codex does not say which servers are the person's own", async () => {

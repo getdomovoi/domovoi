@@ -575,8 +575,13 @@ code or settings the repository brings:
     configuration layers declare and every server Codex's `mcpServerStatus/list` names, which
     starts each of them once to describe it. When either cannot be read, no repository server
     passes. None passes either unless the thread gets Codex's local environment alone: an
-    `environments.toml` in your Codex home or any `CODEX_EXEC_SERVER_*` variable can add an
-    environment that brings plugin servers of its own, which that list does not name.
+    `environments.toml` in your Codex home or any `CODEX_EXEC_SERVER_*` variable, in any case,
+    can add an environment that brings plugin servers of its own, which that list does not name.
+    Codex reads its environments once, when its app-server starts, so the daemon judges the
+    variables and Codex home that app-server is started with, before the start and again once it
+    has started, and a "not local" answer stands until that app-server ends. With `CODEX_HOME`
+    unset, every home Codex could take is checked: Node's home directory, the account's home and
+    `USERPROFILE`.
 
   A trusted repository's tool servers start as programs with your own access when a session
   opens, before any tool call is asked about. Approval, sandbox, permission, network, shell
