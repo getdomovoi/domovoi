@@ -230,7 +230,7 @@ import { configuredProfileDirectory } from "./profile-directory.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
 import { readToolInventory, type RepositoryProviderConfigReader } from "./tool-inventory.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
-import { projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
+import { maximumRevokedTrustThreads, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant, RepositoryTrustStore } from "./repository-trust-store.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
@@ -7036,6 +7036,13 @@ export class DomovoiDaemon {
         }
         const read = this.#repositoryProviderConfig ?? readRepositoryProviderConfig
         if (method === "repository.revokeTrust") {
+          // The result lists every thread it stops and has no count of the
+          // rest, so a revoke that would stop more than it can list is
+          // refused before it changes anything.
+          if (this.#repositoryTrustThreads(project.id).length > maximumRevokedTrustThreads) {
+            this.#error(socket, request.id, invalidParams, `Repository trust cannot be taken back while more than ${maximumRevokedTrustThreads} agent threads run under it. Stop some of them and try again.`)
+            return
+          }
           // Taken back before the configuration is read, so a reader failure
           // still leaves the repository untrusted.
           store.revoke(project.id)
