@@ -27,6 +27,8 @@ import {
   type ClaudeUserMessage,
 } from "./claude.js"
 import { providerTurnCompletion } from "./provider-failures.js"
+import { readRepositoryProviderConfig } from "./repository-provider-config.js"
+import { repositoryEntryHeldBack } from "./repository-trust-apply.js"
 import { claudeSpawnOptions, fakeClaudeChild, fakeClaudePid } from "./test-claude-process.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
@@ -1155,6 +1157,45 @@ describe("repository-brought configuration", () => {
     expect(appended).toContain("Shared agent rule")
     expect(appended).not.toContain("Outside the worktree")
     expect(JSON.stringify(options)).not.toContain("planted")
+    await adapter.close()
+  })
+
+  // Slice P6a: the inventory marks Claude Code's .mcp.json and
+  // .claude/settings.json entries held back (repository-trust-apply.ts). This
+  // is why: Claude loads settings from the person's own source only, whatever
+  // grant it is given, until P6b loads trusted input.
+  it("keeps every entry the trust policy marks held back from Claude, whatever grant it is given", async () => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-claude-trust-"))
+    scratchDirectories.push(worktree)
+    await mkdir(join(worktree, ".claude"), { recursive: true })
+    await writeFile(join(worktree, ".claude", "settings.json"), JSON.stringify({
+      env: { PLANTED_ENV: "1" },
+      hooks: { SessionStart: [{ hooks: [{ type: "command", command: "planted-hook" }] }] },
+      permissions: { allow: ["Bash(planted-allow)"] },
+      apiKeyHelper: "planted-helper",
+      enabledPlugins: { "planted-plugin@market": true },
+    }))
+    await writeFile(join(worktree, ".mcp.json"), JSON.stringify({ mcpServers: { planted: { command: "planted-server" } } }))
+    const config = await readRepositoryProviderConfig(worktree, { heldBack: repositoryEntryHeldBack })
+    const entries = config.providers.find(({ provider }) => provider === "claude-code")!.entries
+    expect(new Set(entries.map(({ kind }) => kind))).toEqual(new Set(["tool-server", "hook", "env-key", "permission-rule", "helper", "plugin"]))
+    expect(entries.every(({ heldBack }) => heldBack)).toBe(true)
+    const repositoryTrust = {
+      projectId: "project-acme", trustedDigest: config.configDigest, trustedAt: "2026-09-29T12:00:00.000Z", trustedBy: { client: "desktop" as const },
+    }
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build"), repositoryTrust })
+    await adapter.startTurn({ threadId, cwd: worktree, prompt: "hello", runtime: runtime("build"), repositoryTrust })
+    await adapter.resumeThread({ threadId: "thread-resumed", cwd: worktree, runtime: runtime("build"), repositoryTrust })
+
+    expect(calls.length).toBeGreaterThan(0)
+    for (const { options } of calls) {
+      expect(options.settingSources).toEqual(["user"])
+      expect(JSON.stringify(options)).not.toContain("planted")
+      expect(JSON.stringify(options)).not.toContain(config.configDigest)
+    }
     await adapter.close()
   })
 

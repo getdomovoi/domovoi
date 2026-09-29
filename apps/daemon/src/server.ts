@@ -227,8 +227,9 @@ import type { SkillReviews } from "./skill-reviews.js"
 import { skillTrustPath as defaultSkillTrustPath } from "./skill-signing.js"
 import { configuredProfileDirectory } from "./profile-directory.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
-import { readToolInventory, repositoryTrustState, type RepositoryProviderConfigReader } from "./tool-inventory.js"
+import { readToolInventory, type RepositoryProviderConfigReader } from "./tool-inventory.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
+import { projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant, RepositoryTrustStore } from "./repository-trust-store.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
@@ -6826,8 +6827,9 @@ export class DomovoiDaemon {
       }
 
       // Trust is recorded here and reported by tool.inventory; nothing loads
-      // under it yet (applying it is P6 to P8). Both methods answer for the open
-      // project only, against its configuration read now. A reader failure
+      // under it yet (P6b to P8). Both methods answer for the open project only,
+      // against its configuration read now, as its worktrees read it (ruling
+      // Q145 A). A reader failure
       // reaches the catch below and the daemon's internal error, which names no
       // path or value (rulings Q123, Q129 A).
       if (method === "repository.trust" || method === "repository.revokeTrust") {
@@ -6852,10 +6854,11 @@ export class DomovoiDaemon {
           // Taken back before the configuration is read, so a reader failure
           // still leaves the repository untrusted.
           store.revoke(project.id)
-          const config = await read(project.path, { heldBack: false })
-          // threads is empty: P5 records trust but nothing loads under it, so
-          // no agent thread holds anything to restart. P6 applies trust, and
-          // revoking then restarts the repository's threads (ruling Q4).
+          const config = await read(project.path, projectRootRead)
+          // threads is empty: nothing loads under a grant yet, so no agent
+          // thread holds anything to restart. Once P6b and P6c load trusted
+          // input, P6d restarts the repository's threads on revoke (rulings
+          // Q4, Q146).
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
@@ -6867,7 +6870,7 @@ export class DomovoiDaemon {
           return
         }
         const { configDigest } = params as RpcParams<"repository.trust">
-        const config = await read(project.path, { heldBack: false })
+        const config = await read(project.path, projectRootRead)
         // An emergency stop during the read cancelled this mutation: nothing is
         // recorded, and the catch below answers it as a cancelled operation.
         signal?.throwIfAborted()

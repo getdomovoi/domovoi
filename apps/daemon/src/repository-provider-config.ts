@@ -838,9 +838,9 @@ function parseFile(parser: Parser, bytes: Buffer): Parsed {
   switch (parser) {
     case "claude-mcp":
     case "kilo-mcp":
-      return { state: "read", candidates: recordEntries(document.mcpServers).flatMap(([name, server]) => [mcpJsonServer(name, server), ...alwaysAllowed(name, server)]) }
+      return { state: "read", candidates: recordEntries(document.mcpServers).flatMap(([name, server]) => [mcpJsonServer(name, server), ...alwaysAllowed(name, server)]), document }
     case "claude-settings":
-      return { state: "read", candidates: claudeSettings(document) }
+      return { state: "read", candidates: claudeSettings(document), document }
     case "opencode-config":
       return { state: "read", candidates: openCodeConfig(document) }
     case "tui-config":
@@ -887,12 +887,23 @@ function directoryCandidates(directory: ScopedDirectory, members: readonly strin
 export type RepositoryTrustRefusalReason = "nested-config" | "main-checkout-hooks" | "main-checkout-unknown" | "instructions-outside"
 export type RepositoryTrustRefusal = { provider: string; reason: RepositoryTrustRefusalReason; path: string }
 
+// The files a trusted session can load (slices P6b and P6c), each parsed from
+// the bytes this read hashed into configDigest, so what loads is what the
+// digest pins. A file absent, empty, refused or not parseable has none. They
+// are the files as written, secrets included, so a read returns them only
+// when asked (`documents`); an inventory read never holds them.
+export const repositoryConfigDocumentPaths = [".claude/settings.json", ".mcp.json", ".codex/config.toml"] as const
+export type RepositoryConfigDocuments = Partial<Record<typeof repositoryConfigDocumentPaths[number], Record<string, unknown>>>
+const documentPaths: ReadonlySet<string> = new Set(repositoryConfigDocumentPaths)
+
 export type RepositoryProviderConfig = {
   // sha256 over every provider's paths in scope; see the header comment.
   configDigest: string
   providers: ToolInventoryProvider[]
   // Empty unless the repository must stay untrusted; see above.
   trustRefusals: RepositoryTrustRefusal[]
+  // Empty unless the read asked for them; see above.
+  documents: RepositoryConfigDocuments
 }
 
 // Codex's home as written: CODEX_HOME when set and not empty, else ~/.codex
@@ -1091,9 +1102,12 @@ async function gitDirectoryNamedBy(marker: string): Promise<string | undefined> 
 // .codex folder for each directory on the session's way down: hooks.json,
 // and the [hooks] table of config.toml in place of the worktree's
 // (merge_root_checkout_project_hooks at rust-v0.156.1). Any of them there, or
-// one that cannot be read, a link included, refuses trust.
-async function mainCheckoutHooks(root: RepositoryRoot, segments: readonly string[]): Promise<RepositoryTrustRefusal[]> {
-  const main = await mainCheckoutOf(root)
+// one that cannot be read, a link included, refuses trust. `asLinkedWorktree`
+// reads a root that is not a linked worktree as the main checkout of one,
+// which every session worktree Domovoi makes from it is (ruling Q145 A).
+async function mainCheckoutHooks(root: RepositoryRoot, segments: readonly string[], asLinkedWorktree: boolean): Promise<RepositoryTrustRefusal[]> {
+  const found = await mainCheckoutOf(root)
+  const main: MainCheckout = found.state === "none" && asLinkedWorktree ? { state: "found", path: root.path } : found
   if (main.state === "none") return []
   if (main.state === "unknown") return [{ provider: "codex", reason: "main-checkout-unknown", path: ".git" }]
   const mainRoot = await anchorRoot(main.path)
@@ -1133,10 +1147,21 @@ async function mainCheckoutHooks(root: RepositoryRoot, segments: readonly string
   return refusals
 }
 
+// Whether the daemon keeps an entry from the provider's agent.
+export type RepositoryEntryHeldBack = (provider: string, entry: ToolInventoryEntry) => boolean
+
 export type RepositoryProviderConfigOptions = {
-  // Whether the daemon keeps the repository's configuration from the agent;
-  // it marks every entry and does not change the digest.
-  heldBack: boolean
+  // Whether the daemon keeps each entry from the agent: one answer for every
+  // entry, or a per-entry policy (repository-trust-apply.ts owns the
+  // daemon's). It does not change the digest.
+  heldBack: boolean | RepositoryEntryHeldBack
+  // Read the root as a session's linked worktree of it reads, so hooks Codex
+  // would take from this checkout into every session refuse trust here too
+  // (ruling Q145 A). A root that is itself a linked worktree reads the same
+  // either way. It changes the digest only by the refusals it adds.
+  asLinkedWorktree?: boolean
+  // Return the loadable documents, unredacted (RepositoryConfigDocuments).
+  documents?: boolean
   // Codex's home, when not the one its environment names: the CODEX_HOME
   // value Codex is given, read as Codex reads a set CODEX_HOME.
   codexHome?: string
@@ -1151,8 +1176,11 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
   // A root that is itself a link is refused like any other link: every path
   // under it reads as refused, and the digest records the link's target text.
   const root = await anchorRoot(rootPath)
+  const { heldBack } = options
+  const heldBackOf: RepositoryEntryHeldBack = typeof heldBack === "boolean" ? () => heldBack : heldBack
   const digestRecords: string[] = [digestVersion]
   const providers: ToolInventoryProvider[] = []
+  const documents: RepositoryConfigDocuments = {}
   const outsideInstructions: RepositoryTrustRefusal[] = []
   for (const scope of repositoryProviderScopes) {
     const files: ToolInventoryFile[] = []
@@ -1168,8 +1196,8 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
       for (const candidate of candidates) {
         const checked = "omitted" in candidate || !listed || entries.length >= maximumProviderEntries
           ? undefined
-          : toolInventoryEntrySchema.safeParse({ ...candidate, file: path, heldBack: options.heldBack })
-        if (checked?.success) entries.push(checked.data)
+          : toolInventoryEntrySchema.safeParse({ ...candidate, file: path, heldBack: false })
+        if (checked?.success) entries.push({ ...checked.data, heldBack: heldBackOf(scope.provider, checked.data) })
         else omittedEntries += 1
       }
     }
@@ -1196,6 +1224,9 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
       }
       list({ ...base, state: parsed.state })
       take(scoped.path, parsed.candidates)
+      if (options.documents === true && parsed.document !== undefined && documentPaths.has(scoped.path)) {
+        documents[scoped.path as keyof RepositoryConfigDocuments] = parsed.document
+      }
       if (scoped.parser !== "codex-config" || parsed.document === undefined) continue
       const instructions = await codexInstructionsFile(root, parsed.document.model_instructions_file)
       if (instructions === undefined) continue
@@ -1231,8 +1262,12 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
     providers.push(provider)
   }
   // Refusals are pinned by their paths as read and shown redacted.
-  const refused = [...outsideInstructions, ...await nestedCodexInput(root, segments, codexHome), ...await mainCheckoutHooks(root, segments)]
+  const refused = [
+    ...outsideInstructions,
+    ...await nestedCodexInput(root, segments, codexHome),
+    ...await mainCheckoutHooks(root, segments, options.asLinkedWorktree === true),
+  ]
   for (const refusal of refused) digestRecords.push(`${refusal.provider}:refused:${refusal.reason}:${refusal.path}`)
   const trustRefusals = refused.map((refusal) => ({ ...refusal, path: redactInventoryPath(refusal.path) }))
-  return { configDigest: `sha256:${sha256(digestRecords.join("\n"))}`, providers, trustRefusals }
+  return { configDigest: `sha256:${sha256(digestRecords.join("\n"))}`, providers, trustRefusals, documents }
 }

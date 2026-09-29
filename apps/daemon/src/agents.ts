@@ -7,6 +7,7 @@ import type {
 } from "@getdomovoi/protocol"
 import type { NormalizedUsage, UsageSource } from "./usage.js"
 import type { ApprovalScope } from "./approval-facts.js"
+import type { RepositoryTrustGrant } from "./repository-trust-store.js"
 
 export type ProviderApprovalDecision = Exclude<ApprovalDecision, "always-project">
 
@@ -61,6 +62,13 @@ export type AgentVisualContext = {
   bytes: Uint8Array
 } & ({ annotationId: string; attachmentIndex?: never } | { attachmentIndex: number; annotationId?: never })
 
+// This machine's trust grant for the session's repository, looked up by the
+// daemon at the call that carries it. An adapter decides what it may load
+// with repositoryTrustVerdict (repository-trust-apply.ts) against the worktree
+// it opens; absent, nothing the repository brings loads. Every adapter ignores
+// it until P6b (Claude Code) and P6c (Codex).
+export type AgentRepositoryTrust = RepositoryTrustGrant
+
 export interface AgentAdapter {
   readonly permissionCapabilities?: AgentPermissionCapabilities
   readonly capabilities?: AgentCapabilities
@@ -71,8 +79,8 @@ export interface AgentAdapter {
   resetConnection?(): Promise<void>
   listModels(signal?: AbortSignal): Promise<ProviderModel[]>
   usageLimits?(signal?: AbortSignal): Promise<ProviderUsageLimits | undefined>
-  startThread(input: { cwd: string; runtime: Runtime }): Promise<string>
-  resumeThread(input: { threadId: string; cwd: string; runtime: Runtime }): Promise<void>
+  startThread(input: { cwd: string; runtime: Runtime; repositoryTrust?: AgentRepositoryTrust }): Promise<string>
+  resumeThread(input: { threadId: string; cwd: string; runtime: Runtime; repositoryTrust?: AgentRepositoryTrust }): Promise<void>
   stopThread(threadId: string): Promise<void>
   interruptTurn(threadId: string, turnId: string): Promise<void>
   startTurn(input: {
@@ -81,6 +89,7 @@ export interface AgentAdapter {
     prompt: string
     runtime: Runtime
     visualContexts?: AgentVisualContext[]
+    repositoryTrust?: AgentRepositoryTrust
   }): Promise<string>
   steerTurn(
     threadId: string,

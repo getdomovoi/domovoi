@@ -979,10 +979,39 @@ async function linkedWorktree(mainName?: string): Promise<{ main: string; worktr
 // input anywhere else it would read keeps the repository untrusted, named by
 // a reason code.
 describe("readRepositoryProviderConfig: Codex input outside the root folder", () => {
-  const read = (root: string, options: { sessionFolder?: string; codexHome?: string } = {}) => (
+  type Options = { sessionFolder?: string; codexHome?: string; asLinkedWorktree?: boolean }
+  const read = (root: string, options: Options = {}) => (
     readRepositoryProviderConfig(root, { heldBack: true, ...options })
   )
-  const refusals = async (root: string, options: { sessionFolder?: string; codexHome?: string } = {}) => (await read(root, options)).trustRefusals
+  const refusals = async (root: string, options: Options = {}) => (await read(root, options)).trustRefusals
+
+  // A session always runs in a linked worktree of the opened repository, and
+  // Codex there takes hooks from the main checkout (ruling Q113 B). Reading the
+  // repository root as its worktrees would shows that refusal where trust is
+  // asked for (ruling Q145 A).
+  it("refuses trust at a main checkout whose own .codex folder holds hooks, when read as its worktrees would", async () => {
+    const { main, worktree } = await linkedWorktree()
+    await put(main, ".codex/hooks.json", "{}")
+    const hooksFile = [{ provider: "codex", reason: "main-checkout-hooks", path: join(main, ".codex", "hooks.json") }]
+    expect(await refusals(main)).toEqual([])
+    expect(await refusals(main, { asLinkedWorktree: true })).toEqual(hooksFile)
+    expect(await refusals(worktree)).toEqual(hooksFile)
+    // A linked worktree keeps its own main checkout's answer.
+    expect(await refusals(worktree, { asLinkedWorktree: true })).toEqual(hooksFile)
+
+    await rm(join(main, ".codex", "hooks.json"))
+    await put(main, ".codex/config.toml", "sandbox_mode = \"read-only\"\n")
+    expect(await refusals(main, { asLinkedWorktree: true })).toEqual([])
+    await put(main, ".codex/config.toml", "[[hooks.Stop]]\nhooks = [{ type = \"command\", command = \"main-hook\" }]\n")
+    expect(await refusals(main, { asLinkedWorktree: true })).toEqual([
+      { provider: "codex", reason: "main-checkout-hooks", path: join(main, ".codex", "config.toml") },
+    ])
+    // With nothing refused, the root reads to the digest its worktrees read.
+    const plain = await scratch()
+    await put(plain, ".git/HEAD", "ref: refs/heads/main\n")
+    await put(plain, ".mcp.json", JSON.stringify({ mcpServers: { db: { command: "db-mcp" } } }))
+    expect((await read(plain, { asLinkedWorktree: true })).configDigest).toBe((await read(plain)).configDigest)
+  })
 
   it("refuses trust while a linked worktree's main checkout holds Codex hooks", async () => {
     const { main, worktree } = await linkedWorktree()
@@ -1658,6 +1687,86 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
     // 600 servers and one good hook fill 512 places; the rest, the two refused
     // hooks and the malformed env key are counted.
     expect(claude.omittedEntries).toBe(600 + 1 - 512 + 2 + 1)
+  })
+})
+
+// The documents a trusted session will load come from the same read, and the
+// same bytes, as the digest trust pins to. Entries are marked by the policy
+// the caller gives.
+describe("readRepositoryProviderConfig: documents and held-back entries", () => {
+  it("returns the Claude Code and Codex documents parsed from the bytes it hashed", async () => {
+    const root = await scratch()
+    const settings = { hooks: { SessionStart: [{ hooks: [{ type: "command", command: "./bootstrap.sh" }] }] }, env: { REGION: "eu" } }
+    const servers = { mcpServers: { db: { command: "db-mcp", args: ["--port", "5432"] } } }
+    // A byte order mark and JSONC comments are read as the parser reads them.
+    await put(root, ".claude/settings.json", `\u{feff}${JSON.stringify(settings)}`)
+    await put(root, ".mcp.json", `// servers\n${JSON.stringify(servers)}`)
+    await put(root, ".codex/config.toml", "sandbox_mode = \"read-only\"\n\n[mcp_servers.docs]\nurl = \"https://mcp.example.com/mcp\"\n")
+    await put(root, "opencode.json", JSON.stringify({ mcp: { x: { type: "local", command: ["x"] } } }))
+
+    const result = await readRepositoryProviderConfig(root, { heldBack: false, documents: true })
+
+    expect(result.documents).toEqual({
+      ".claude/settings.json": settings,
+      ".mcp.json": servers,
+      ".codex/config.toml": { sandbox_mode: "read-only", mcp_servers: { docs: { url: "https://mcp.example.com/mcp" } } },
+    })
+    await put(root, ".mcp.json", JSON.stringify({ mcpServers: {} }))
+    const changed = await readRepositoryProviderConfig(root, { heldBack: false, documents: true })
+    expect(changed.documents[".mcp.json"]).toEqual({ mcpServers: {} })
+    expect(changed.configDigest).not.toBe(result.configDigest)
+  })
+
+  // The documents are the files as written, secrets included, so a read that
+  // does not ask for them (every inventory read) holds none of their text.
+  it("returns no documents unless asked, and the same digest either way", async () => {
+    const root = await scratch()
+    await put(root, ".mcp.json", JSON.stringify({ mcpServers: { db: { command: "db-mcp", env: { DB_PASSWORD: "s3cr3t-value" } } } }))
+    await put(root, ".claude/settings.json", JSON.stringify({ env: { API_TOKEN: "hunter2" } }))
+    const plain = await readRepositoryProviderConfig(root, { heldBack: false })
+    expect(plain.documents).toEqual({})
+    expectNoSecret(plain)
+    expect((await readRepositoryProviderConfig(root, { heldBack: false, documents: true })).configDigest).toBe(plain.configDigest)
+  })
+
+  it("returns no document for a file it refused, found empty or could not parse", async () => {
+    const root = await scratch()
+    const outside = await scratch("domovoi-provider-outside-")
+    await put(outside, "settings.json", JSON.stringify({ env: { OUTSIDE: "1" } }))
+    await mkdir(join(root, ".claude"))
+    await symlink(join(outside, "settings.json"), join(root, ".claude", "settings.json"))
+    await put(root, ".mcp.json", "  \n")
+    await put(root, ".codex/config.toml", "[unterminated\n")
+
+    const result = await readRepositoryProviderConfig(root, { heldBack: false, documents: true })
+
+    expect(result.documents).toEqual({})
+    expect(JSON.stringify(result)).not.toContain("OUTSIDE")
+  })
+
+  it("marks each entry by the per-entry policy it is given", async () => {
+    const root = await scratch()
+    await put(root, ".mcp.json", JSON.stringify({ mcpServers: { db: { command: "db-mcp" } } }))
+    await put(root, ".claude/skills/deploy/SKILL.md", "---\nname: deploy\n---\nDeploy.")
+    const seen: string[] = []
+    const result = await readRepositoryProviderConfig(root, {
+      heldBack: (id, entry) => {
+        seen.push(`${id} ${entry.kind} ${entry.file}`)
+        return id === "claude-code" && entry.file === ".mcp.json"
+      },
+    })
+    expect(provider(result, "claude-code").entries).toEqual([
+      expect.objectContaining({ kind: "tool-server", name: "db", heldBack: true }),
+      expect.objectContaining({ kind: "skill", name: "deploy", heldBack: false }),
+    ])
+    expect(seen).toEqual(expect.arrayContaining(["claude-code tool-server .mcp.json", "claude-code skill .claude/skills", "opencode skill .claude/skills"]))
+  })
+
+  it("returns no Codex document from the folder that is Codex's own home", async () => {
+    const root = await scratch()
+    await put(root, ".codex/config.toml", "sandbox_mode = \"read-only\"\n")
+    const result = await readRepositoryProviderConfig(root, { heldBack: false, documents: true, codexHome: join(root, ".codex") })
+    expect(result.documents).toEqual({})
   })
 })
 

@@ -1,7 +1,9 @@
 import { demoWorkspace, toolInventorySchema, type ToolInventory, type ToolInventoryEntry } from "@getdomovoi/protocol"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
-import { fitToolInventory } from "./tool-inventory.js"
+import type { RepositoryProviderConfigOptions } from "./repository-provider-config.js"
+import { repositoryEntryHeldBack } from "./repository-trust-apply.js"
+import { fitToolInventory, readToolInventory } from "./tool-inventory.js"
 
 const { id, name, platform, arch, version } = demoWorkspace.machine
 const machine = { id, name, platform, arch, version }
@@ -22,6 +24,19 @@ function inventory(counts: Record<string, number>, omittedEntries = 0): ToolInve
     })),
   }
 }
+
+describe("readToolInventory", () => {
+  // What is reported held back comes from the same policy the trust decision
+  // owns, and the root is read as a session's linked worktree reads it
+  // (ruling Q145 A), so a refusal every session meets shows at the root.
+  it("reads the project root as its worktrees would, marking entries by the trust policy", async () => {
+    const read = vi.fn(async (_root: string, _options: RepositoryProviderConfigOptions) => ({
+      configDigest: `sha256:${"a".repeat(64)}`, providers: [], trustRefusals: [], documents: {},
+    }))
+    await readToolInventory({ machine, project: { id: "project-acme", path: "/code/acme" }, read })
+    expect(read).toHaveBeenCalledWith("/code/acme", { heldBack: repositoryEntryHeldBack, asLinkedWorktree: true })
+  })
+})
 
 const listed = (value: ToolInventory) => value.providers.map((provider) => provider.entries.length)
 const omitted = (value: ToolInventory) => value.providers.map((provider) => provider.omittedEntries)
