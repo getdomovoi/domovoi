@@ -2000,6 +2000,22 @@ export class DomovoiDaemon {
     return { client: client.data, clientId: credential.device.id }
   }
 
+  // This machine's grant for a session's repository, for a call that opens a
+  // provider thread or starts a turn. It is looked up at every such call, never
+  // kept from an earlier trust answer (#662 round 1), and the adapter checks it
+  // against the worktree it opens (repository-trust-apply.ts). A store that
+  // fails is reported and gives no grant, so the session opens held back.
+  // Archive resume asks for none (ruling Q149 A).
+  #repositoryTrustFor(projectId: string): { repositoryTrust?: RepositoryTrustGrant } {
+    let grant: RepositoryTrustGrant | undefined
+    try {
+      grant = this.#repositoryTrust?.find(projectId)
+    } catch (error) {
+      this.#reportError("Domovoi could not read repository trust", error)
+    }
+    return grant === undefined ? {} : { repositoryTrust: grant }
+  }
+
   // The connection declared web, phone or tablet. Such a connection may hold a
   // pasted bearer, so it must not mint a desktop credential (rulings Q68 A, Q72 A).
   #declaredWebOrHandheld(socket: RpcOutboundSocket): boolean {
@@ -6826,8 +6842,9 @@ export class DomovoiDaemon {
         return
       }
 
-      // Trust is recorded here and reported by tool.inventory; nothing loads
-      // under it yet (P6b to P8). Both methods answer for the open project only,
+      // Trust is recorded here and reported by tool.inventory; each provider
+      // call carries the grant (#repositoryTrustFor), and nothing loads under
+      // it yet (P6b to P8). Both methods answer for the open project only,
       // against its configuration read now, as its worktrees read it (ruling
       // Q145 A). A reader failure
       // reaches the catch below and the daemon's internal error, which names no
@@ -7936,7 +7953,7 @@ export class DomovoiDaemon {
           const startNextThread = async () => {
             signal?.throwIfAborted()
             const nextThreadId = await withLateCleanup(
-              nextAgent.startThread({ cwd: currentSession.workspacePath!, runtime }),
+              nextAgent.startThread({ cwd: currentSession.workspacePath!, runtime, ...this.#repositoryTrustFor(currentSession.projectId) }),
               this.#agentTimeoutMs,
               recoveringFailedThread ? "Provider recovery timed out" : "Provider handoff timed out",
               (threadId) => nextAgent.stopThread(threadId),
@@ -8082,7 +8099,7 @@ export class DomovoiDaemon {
         }
         const agent = await this.#ensureAgentConnected(runtime.provider)
         const threadId = await withLateCleanup(
-          agent.startThread({ cwd: session.workspacePath, runtime }),
+          agent.startThread({ cwd: session.workspacePath, runtime, ...this.#repositoryTrustFor(session.projectId) }),
           this.#agentTimeoutMs,
           "Provider restart timed out",
           (lateThreadId) => agent.stopThread(lateThreadId),
@@ -8361,7 +8378,7 @@ export class DomovoiDaemon {
         let providerThreadId: string
         try {
           const agent = this.#agents.require(runtime.provider)
-          const pendingThread = agent.startThread({ cwd: workspace.path, runtime })
+          const pendingThread = agent.startThread({ cwd: workspace.path, runtime, ...this.#repositoryTrustFor(project.id) })
           providerThreadId = await withLateCleanup(
             pendingThread,
             this.#agentTimeoutMs,
@@ -8557,7 +8574,7 @@ export class DomovoiDaemon {
         let providerThreadId: string
         try {
           providerThreadId = await withLateCleanup(
-            agent.startThread({ cwd: workspace.path, runtime }),
+            agent.startThread({ cwd: workspace.path, runtime, ...this.#repositoryTrustFor(source.projectId) }),
             this.#agentTimeoutMs,
             "Fork agent setup timed out",
             (threadId) => agent.stopThread(threadId),
@@ -8853,6 +8870,7 @@ export class DomovoiDaemon {
                 threadId: providerThreadId,
                 cwd: session.workspacePath,
                 runtime: session.runtime,
+                ...this.#repositoryTrustFor(session.projectId),
               }),
               this.#agentTimeoutMs,
               "Agent thread resume timed out",
@@ -8894,6 +8912,7 @@ export class DomovoiDaemon {
                 ...(preparedTurn.visualContexts.length > 0
                   ? { visualContexts: preparedTurn.visualContexts }
                   : {}),
+                ...this.#repositoryTrustFor(session.projectId),
               }),
               this.#agentTimeoutMs,
               "Agent turn timed out",
@@ -11233,6 +11252,8 @@ export class DomovoiDaemon {
     if (this.#loadedAgentThreads.has(key)) return
     if (!session.workspacePath) throw new Error("Archived provider thread has no resumable worktree")
     const agent = await this.#ensureAgentConnected(session.runtime.provider)
+    // Loaded only to be interrupted and stopped: no repository trust applies
+    // (ruling Q149 A).
     await withTimeout(
       agent.resumeThread({
         threadId: session.providerThreadId,
