@@ -232,6 +232,31 @@ describe("repository.trust", () => {
     expect(store.repositoryTrust.find(projectId)).toBeUndefined()
   })
 
+  it("records nothing when an emergency stop cancels it during the configuration read", async () => {
+    const root = await repository(configured)
+    const digest = await digestOf(root)
+    let started!: () => void
+    const reading = new Promise<void>((resolve) => { started = resolve })
+    let release!: () => void
+    const released = new Promise<void>((resolve) => { release = resolve })
+    const { daemon, store } = await fixture(root, {
+      repositoryProviderConfig: async (path, options) => {
+        started()
+        await released
+        return readRepositoryProviderConfig(path, options)
+      },
+    })
+    const call = await hello(daemon, "desktop", daemon.authToken)
+    const pending = call("repository.trust", { projectId, configDigest: digest, client: "desktop" })
+    await reading
+    const stop = await call("system.emergencyStop", { client: "desktop" })
+    expect(stop).toMatchObject({ result: { outcomes: { mutationsCancelled: 1 } } })
+    release()
+
+    expect(await pending).toMatchObject({ error: { code: -32603, message: "Operation cancelled by emergency stop" } })
+    expect(store.repositoryTrust.find(projectId)).toBeUndefined()
+  })
+
   it("uses the trust store it is given", async () => {
     const root = await repository(configured)
     const repositoryTrust = new SqliteRepositoryTrust(new DatabaseSync(":memory:"))
@@ -302,6 +327,20 @@ describe("repository.revokeTrust", () => {
     expect((await inventory(call)).repository?.trust).toEqual({ state: "untrusted", reason: "not-trusted" })
     // Revoking what is not trusted is not an error.
     expect(await revoke(call, "desktop")).toEqual({ repository: expected, threads: [] })
+  })
+
+  it("answers the internal error, not not-trusted, when the grant survives the delete", async () => {
+    const root = await repository(configured)
+    const database = new DatabaseSync(":memory:")
+    const repositoryTrust = new SqliteRepositoryTrust(database)
+    repositoryTrust.record({ projectId, trustedDigest: await digestOf(root), trustedBy: { client: "desktop" } })
+    database.exec("CREATE TRIGGER keep_grant BEFORE DELETE ON repository_trust BEGIN SELECT RAISE(IGNORE); END")
+    const { daemon } = await fixture(root, { repositoryTrust })
+    const call = await hello(daemon, "desktop", daemon.authToken)
+
+    expect(await call("repository.revokeTrust", { projectId, client: "desktop" }))
+      .toEqual({ jsonrpc: "2.0", id: 2, error: { code: -32603, message: "Internal daemon error" } })
+    expect(repositoryTrust.find(projectId)).toBeDefined()
   })
 
   it("takes the grant back even when the configuration cannot be read", async () => {

@@ -8,7 +8,12 @@ with the configuration digest the grant covers, when it was granted, and which c
 The client comes from the connection's credential: the owner's bearer credential is recorded as
 desktop with no client id, and a paired desktop or web credential as its own client with its device
 id. At most 512 grants are kept; the oldest beyond that are dropped, which leaves those
-repositories not trusted. A stored grant the protocol would refuse reads as no grant.
+repositories not trusted. A stored grant the protocol would refuse reads as no grant. A grant, the
+trim to the cap and a read back of the grant commit together or not at all. A table under the
+store's name that is not the one it creates, or that has a trigger on it, yields no grant and
+takes none. A revocation that leaves the grant stored fails with the internal error rather than
+reporting the repository not trusted. An emergency stop during a trust request's configuration
+read cancels it: nothing is recorded, and it is answered like any cancelled operation.
 
 `repository.trust` reads the open repository's configuration now. When the digest the client sent
 is not the current one it records nothing and answers `config-changed` with the current digest and

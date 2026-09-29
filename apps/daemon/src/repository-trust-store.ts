@@ -57,8 +57,21 @@ function checkedGrant(grant: RepositoryTrustGrant): RepositoryTrustGrant {
   }
 }
 
+// The table this store creates, column by column, with project_id its only
+// key. Anything else under the name was not made here, so it yields no grant.
+const expectedColumns = [
+  { name: "project_id", pk: 1 },
+  { name: "trusted_digest", pk: 0 },
+  { name: "trusted_at", pk: 0 },
+  { name: "trusted_client", pk: 0 },
+  { name: "trusted_client_id", pk: 0 },
+]
+
 export class SqliteRepositoryTrust implements RepositoryTrustStore {
   #database: DatabaseSync
+  // False when the table under this name is not the one this store creates:
+  // no grant is read from it or written to it.
+  readonly #compatible: boolean
 
   constructor(database: DatabaseSync) {
     this.#database = database
@@ -73,11 +86,34 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
       CREATE INDEX IF NOT EXISTS repository_trust_trusted_at
         ON repository_trust (trusted_at);
     `)
+    this.#compatible = this.#tableIsOurs()
+  }
+
+  // One rowid table in the main schema with exactly the expected columns and
+  // key, and no trigger on it: a trigger could rewrite, keep or drop a grant
+  // behind a statement that reports success.
+  #tableIsOurs(): boolean {
+    const tables = this.#database.prepare("PRAGMA table_list(repository_trust)").all() as Array<{ schema: string; type: string; wr: number }>
+    if (tables.length !== 1 || tables[0]?.schema !== "main" || tables[0].type !== "table" || tables[0].wr !== 0) return false
+    const columns = (this.#database.prepare("PRAGMA table_info(repository_trust)").all() as Array<{ name: string; pk: number }>)
+      .map(({ name, pk }) => ({ name, pk }))
+    if (JSON.stringify(columns) !== JSON.stringify(expectedColumns)) return false
+    const triggers = this.#database.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'repository_trust'
+      UNION ALL
+      SELECT name FROM sqlite_temp_master WHERE type = 'trigger' AND tbl_name = 'repository_trust'
+    `).all()
+    return triggers.length === 0
   }
 
   // A row the protocol refuses reads as no grant, so the repository is
   // reported not trusted.
   find(projectId: string): RepositoryTrustGrant | undefined {
+    if (!this.#compatible) return undefined
+    return this.#read(projectId)
+  }
+
+  #read(projectId: string): RepositoryTrustGrant | undefined {
     const row = this.#database
       .prepare("SELECT * FROM repository_trust WHERE project_id = ?")
       .get(projectId) as StoredRepositoryTrust | undefined
@@ -97,27 +133,52 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
     }
   }
 
-  // A repository's new grant replaces its earlier one.
+  // A repository's new grant replaces its earlier one. The write, the trim to
+  // the cap and a read back commit together or not at all. A savepoint nests
+  // under the caller's transaction when one is open; otherwise RELEASE
+  // commits. The read back refuses a grant that is not stored as written.
   record(input: RepositoryTrustGrantInput): RepositoryTrustGrant {
+    if (!this.#compatible) throw new Error("The repository trust table is not the one this daemon creates")
     const grant = checkedGrant({ ...input, trustedAt: new Date().toISOString() })
-    this.#database
-      .prepare(`
-        INSERT INTO repository_trust (
-          project_id, trusted_digest, trusted_at, trusted_client, trusted_client_id
-        ) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(project_id) DO UPDATE SET
-          trusted_digest = excluded.trusted_digest,
-          trusted_at = excluded.trusted_at,
-          trusted_client = excluded.trusted_client,
-          trusted_client_id = excluded.trusted_client_id
-      `)
-      .run(grant.projectId, grant.trustedDigest, grant.trustedAt, grant.trustedBy.client, grant.trustedBy.clientId ?? null)
-    this.#trim()
+    this.#database.exec("SAVEPOINT repository_trust_record")
+    try {
+      this.#database
+        .prepare(`
+          INSERT INTO repository_trust (
+            project_id, trusted_digest, trusted_at, trusted_client, trusted_client_id
+          ) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(project_id) DO UPDATE SET
+            trusted_digest = excluded.trusted_digest,
+            trusted_at = excluded.trusted_at,
+            trusted_client = excluded.trusted_client,
+            trusted_client_id = excluded.trusted_client_id
+        `)
+        .run(grant.projectId, grant.trustedDigest, grant.trustedAt, grant.trustedBy.client, grant.trustedBy.clientId ?? null)
+      this.#trim()
+      if (JSON.stringify(this.#read(grant.projectId)) !== JSON.stringify(grant)) throw new Error("The repository trust grant was not stored as written")
+      this.#database.exec("RELEASE repository_trust_record")
+    } catch (error) {
+      let rollbackFailure: { error: unknown } | undefined
+      try {
+        this.#database.exec("ROLLBACK TO repository_trust_record; RELEASE repository_trust_record")
+      } catch (rollbackError) {
+        rollbackFailure = { error: rollbackError }
+      }
+      if (rollbackFailure) {
+        throw new AggregateError([error, rollbackFailure.error], "Could not record repository trust or restore its transaction", { cause: error })
+      }
+      throw error
+    }
     return grant
   }
 
+  // Revoked only when no row is left for the repository: a delete that
+  // reports success but leaves the grant fails, so the caller never reports a
+  // repository untrusted while its grant remains. Nothing to revoke succeeds.
   revoke(projectId: string): void {
     this.#database.prepare("DELETE FROM repository_trust WHERE project_id = ?").run(projectId)
+    const left = this.#database.prepare("SELECT 1 AS present FROM repository_trust WHERE project_id = ?").get(projectId)
+    if (left !== undefined) throw new Error("The repository trust grant is still stored after revocation")
   }
 
   // The oldest grants beyond the cap are dropped, which leaves those

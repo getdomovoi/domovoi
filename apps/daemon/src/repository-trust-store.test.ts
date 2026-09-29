@@ -67,6 +67,80 @@ describe("SqliteRepositoryTrust", () => {
     expect(trust.find("project-acme")).toBeUndefined()
   })
 
+  it("records a grant and trims to the cap together, or not at all", () => {
+    const database = new DatabaseSync(":memory:")
+    const trust = new SqliteRepositoryTrust(database)
+    for (let index = 0; index < maximumRepositoryTrustRecords; index += 1) {
+      trust.record({ projectId: `project-${index}`, trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
+    }
+    // Added after the store checked its table, so only the trim fails.
+    database.exec("CREATE TRIGGER refuse_trim BEFORE DELETE ON repository_trust BEGIN SELECT RAISE(ABORT, 'trim refused'); END")
+
+    expect(() => trust.record({ projectId: "project-new", trustedDigest: digest("b"), trustedBy: { client: "web" } })).toThrow()
+    expect(trust.find("project-new")).toBeUndefined()
+    expect(trust.find("project-0")).toMatchObject({ trustedDigest: digest("a") })
+    expect(database.prepare("SELECT COUNT(*) AS count FROM repository_trust").get()).toEqual({ count: maximumRepositoryTrustRecords })
+  })
+
+  it("rolls back only its own work inside a caller's transaction", () => {
+    const database = new DatabaseSync(":memory:")
+    const trust = new SqliteRepositoryTrust(database)
+    database.exec("CREATE TABLE outer_work (value TEXT)")
+    database.exec("BEGIN")
+    database.exec("INSERT INTO outer_work VALUES ('kept')")
+    database.exec("CREATE TRIGGER refuse_insert BEFORE INSERT ON repository_trust BEGIN SELECT RAISE(ABORT, 'insert refused'); END")
+    expect(() => trust.record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+    // COMMIT throws if the store ended the caller's transaction.
+    database.exec("COMMIT")
+    expect(database.prepare("SELECT value FROM outer_work").all()).toEqual([{ value: "kept" }])
+  })
+
+  it("refuses a grant a statement reported written but did not store", () => {
+    const database = new DatabaseSync(":memory:")
+    const trust = new SqliteRepositoryTrust(database)
+    database.exec("CREATE TRIGGER drop_grant BEFORE INSERT ON repository_trust BEGIN SELECT RAISE(IGNORE); END")
+
+    expect(() => trust.record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+    expect(trust.find("project-acme")).toBeUndefined()
+  })
+
+  it("fails the revocation when the grant is still there after the delete", () => {
+    const database = new DatabaseSync(":memory:")
+    const trust = new SqliteRepositoryTrust(database)
+    trust.record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
+    database.exec("CREATE TRIGGER keep_grant BEFORE DELETE ON repository_trust BEGIN SELECT RAISE(IGNORE); END")
+
+    expect(() => trust.revoke("project-acme")).toThrow()
+    // Revoking what is not there still succeeds.
+    expect(() => trust.revoke("project-missing")).not.toThrow()
+  })
+
+  it.each([
+    ["a table without rowids", "CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT) WITHOUT ROWID"],
+    ["a table keyed otherwise", "CREATE TABLE repository_trust (project_id TEXT, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT)"],
+    ["a table with other columns", "CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL)"],
+  ])("yields no grant from %s", (_, table) => {
+    const database = new DatabaseSync(":memory:")
+    database.exec(table)
+    const columns = table.includes("trusted_client_id") ? "project_id, trusted_digest, trusted_at, trusted_client, trusted_client_id" : "project_id, trusted_digest, trusted_at, trusted_client"
+    const values = table.includes("trusted_client_id") ? "'project-acme', ?, '2026-09-28T10:00:00.000Z', 'desktop', NULL" : "'project-acme', ?, '2026-09-28T10:00:00.000Z', 'desktop'"
+    database.prepare(`INSERT INTO repository_trust (${columns}) VALUES (${values})`).run(digest("a"))
+    const trust = new SqliteRepositoryTrust(database)
+
+    expect(trust.find("project-acme")).toBeUndefined()
+    expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+  })
+
+  it("yields no grant when a trigger it did not create is on its table", () => {
+    const database = new DatabaseSync(":memory:")
+    new SqliteRepositoryTrust(database).record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
+    database.exec("CREATE TRIGGER rewrite_grant AFTER INSERT ON repository_trust BEGIN SELECT 1; END")
+    const trust = new SqliteRepositoryTrust(database)
+
+    expect(trust.find("project-acme")).toBeUndefined()
+    expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+  })
+
   it("keeps at most the most recent grants", () => {
     const trust = new SqliteRepositoryTrust(new DatabaseSync(":memory:"))
     for (let index = 0; index <= maximumRepositoryTrustRecords; index += 1) {

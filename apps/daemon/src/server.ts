@@ -6868,6 +6868,9 @@ export class DomovoiDaemon {
         }
         const { configDigest } = params as RpcParams<"repository.trust">
         const config = await read(project.path, { heldBack: false })
+        // An emergency stop during the read cancelled this mutation: nothing is
+        // recorded, and the catch below answers it as a cancelled operation.
+        signal?.throwIfAborted()
         const repository = (grant: RepositoryTrustGrant | undefined) => ({
           projectId: project.id,
           configDigest: config.configDigest,
