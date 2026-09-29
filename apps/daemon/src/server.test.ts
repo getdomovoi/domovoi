@@ -12613,10 +12613,14 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
-  // Security review round 1 of #665: an OpenCode permission with an empty
-  // name and a command field is not bash. From the provider's event to the
-  // daemon's policy, Build Auto never answers it: it gets a card.
-  it("never lets Build Auto answer an OpenCode permission that is not bash", async () => {
+  // Security review rounds 1 and 2 of #665: an OpenCode permission.asked
+  // event with an empty or non-string permission and a command field is not
+  // bash, whatever a legacy `type` field says. From the provider's event to
+  // the daemon's policy, Build Auto never answers it: it gets a card.
+  it.each([
+    ["an empty permission name", { permission: "" }],
+    ["a non-string permission beside a legacy bash type", { permission: 7, type: "bash" }],
+  ])("never lets Build Auto answer an OpenCode permission that is not bash: %s", async (_label, naming) => {
     const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-opencode-permission-"))
     scratchDirectories.push(workspacePath)
     const snapshot = structuredClone(demoWorkspace)
@@ -12704,13 +12708,13 @@ describe("DomovoiDaemon", () => {
       properties: {
         id: "per_empty",
         sessionID: "open-session",
-        permission: "",
+        ...naming,
         patterns: ["pwd"],
         metadata: { command: "pwd" },
         always: [],
         tool: { messageID: "msg_1", callID: "call_empty" },
       },
-    })
+    } as unknown as OpenCodeEvent)
     // Either answer ends the wait: an automatic allow sent to OpenCode, or a
     // card. Only the card is right.
     const approvals = async () => ((await rpc("workspace.get", {})).result as { approvals: unknown[] }).approvals

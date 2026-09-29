@@ -1195,15 +1195,28 @@ describe("subagents and current permission events", () => {
       type: "permission.asked",
       properties: { id: "per_nameless", sessionID: threadId, permission: 7, patterns: [], metadata: { command: "pwd" }, always: [], tool: { messageID: "msg_1", callID: "call_nameless" } },
     } as unknown as OpenCodeEvent)
+    // Security review round 2 of #665: a current event names its permission;
+    // the legacy `type` is read only from permission.updated.
+    stream.emit({
+      type: "permission.updated",
+      properties: { id: "per_legacy_bash", sessionID: threadId, callID: "call_legacy_bash", type: "bash", title: "Run pwd", metadata: { command: "pwd" } },
+    })
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "per_typed", sessionID: threadId, permission: 7, type: "bash", patterns: [], metadata: { command: "pwd" }, always: [], tool: { messageID: "msg_1", callID: "call_typed" } },
+    } as unknown as OpenCodeEvent)
     stream.emit({
       type: "permission.updated",
       properties: { id: "per_legacy", sessionID: threadId, callID: "call_legacy", type: "edit", title: "Edit this file: /worktree/src/c.ts", metadata: { filePath: "/worktree/src/c.ts" } },
     })
-    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(9))
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(11))
     const approval = (itemId: string) => events.find((event) => event.type === "approval-requested" && event.itemId === itemId)
     // A permission with no name is still a provider tool, never shell text.
     expect(approval("call_per_empty")).toMatchObject({ command: "pwd", tool: "unknown" })
     expect(approval("call_nameless")).toMatchObject({ command: "pwd", tool: "unknown" })
+    expect(approval("call_typed")).toMatchObject({ command: "pwd", tool: "unknown" })
+    expect(approval("call_legacy_bash")).toMatchObject({ command: "pwd" })
+    expect(approval("call_legacy_bash")).not.toHaveProperty("tool")
     expect(approval("call_per_edit")).toMatchObject({ command: "Edit", path: "/worktree/src/a.ts" })
     expect(approval("call_per_edit")).not.toHaveProperty("tool")
     expect(approval("call_legacy")).toMatchObject({ command: "Edit", path: "/worktree/src/c.ts" })

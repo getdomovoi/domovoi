@@ -841,7 +841,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // and an approval it asks for is refused at once, with no card.
     if (subagentTurn && session.activeTurnId !== subagentTurn.turnId) {
       if (event.type !== "permission.updated" && event.type !== "permission.asked") return
-      const request = permissionRequest(properties, this.#identity.providerName)
+      const request = permissionRequest(event.type, properties, this.#identity.providerName)
       if (request) {
         this.#respond(
           { providerSessionId: sessionId, cwd, permissionId: request.permissionId, subagentTurn, generation: session.generation },
@@ -908,7 +908,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       return
     }
     if (event.type === "permission.updated" || event.type === "permission.asked") {
-      const request = permissionRequest(properties, this.#identity.providerName)
+      const request = permissionRequest(event.type, properties, this.#identity.providerName)
       if (!request) return
       const requestId = ++this.#nextApprovalId
       this.#pendingApprovals.set(requestId, {
@@ -1064,15 +1064,18 @@ function openCodeModel(id: string): { providerID: string; modelID: string } | un
 // file. Every other permission is the provider's own tool, named by the
 // permission: webfetch, external_directory, and a tool server's tool, whose
 // permission is its own name. None of those is resolved as a shell command.
+// The permission is read from the field its event names it in, and only
+// there: a permission.asked event without a string `permission` has no name,
+// whatever a `type` field beside it says.
 function permissionRequest(
+  event: "permission.asked" | "permission.updated",
   properties: Record<string, unknown>,
   providerName: string,
 ): { permissionId: string; command: string; reason?: string; itemId?: string; path?: string; tool?: string } | undefined {
   if (typeof properties.id !== "string") return undefined
   const metadata = asRecord(properties.metadata)
-  const kind = typeof properties.permission === "string"
-    ? properties.permission
-    : typeof properties.type === "string" ? properties.type : undefined
+  const named = event === "permission.asked" ? properties.permission : properties.type
+  const kind = typeof named === "string" ? named : undefined
   const patterns = Array.isArray(properties.patterns)
     ? properties.patterns.filter((pattern): pattern is string => typeof pattern === "string")
     : []
