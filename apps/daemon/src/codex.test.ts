@@ -1144,11 +1144,16 @@ describe("CodexAppServerAdapter", () => {
     transport.receive({ id: 1, result: {} })
     await connecting
     const common = { threadId: "thread-1", turnId: "turn-1" }
-    const mcpItem = (method: string, id: string, server: string, status: string) => transport.receive({
+    const mcpItem = (method: string, id: string, server: string, turnId: string, args?: unknown) => transport.receive({
       method,
-      params: { ...common, item: { type: "mcpToolCall", id, server, tool: "create_issue", status, arguments: {} } },
+      params: {
+        threadId: "thread-1",
+        turnId,
+        item: { type: "mcpToolCall", id, server, tool: "create_issue", status: method === "item/started" ? "inProgress" : "completed", ...(args === undefined ? {} : { arguments: args }) },
+      },
     })
-    const ask = (id: number, serverName: string, meta: Record<string, unknown> | undefined) => transport.receive({
+    const marked = { codex_approval_kind: "mcp_tool_call" }
+    const ask = (id: number, serverName: string, meta: Record<string, unknown> | undefined, shape: Record<string, unknown> = {}) => transport.receive({
       id,
       method: "mcpServer/elicitation/request",
       params: {
@@ -1158,12 +1163,17 @@ describe("CodexAppServerAdapter", () => {
         message: `Allow the ${serverName} MCP server to run tool "create_issue"?`,
         requestedSchema: { type: "object", properties: {} },
         ...(meta ? { _meta: meta } : {}),
+        ...shape,
       },
     })
     const approvals = () => events.filter((candidate) => candidate.type === "approval-requested")
+    const declined = (id: number) => expect(transport.sent.at(-1)).toEqual({ id, result: { action: "decline", content: null } })
 
-    mcpItem("item/started", "mcp-1", "github", "inProgress")
-    ask(51, "github", { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"] })
+    // The card's first line is what Domovoi checked: the running call's tool,
+    // its server and its arguments. The request's own message follows,
+    // labelled as unchecked.
+    mcpItem("item/started", "mcp-1", "github", "turn-1", { title: "Fix login bug" })
+    ask(51, "github", { ...marked, persist: ["session", "always"] })
     expect(approvals().at(-1)).toEqual({
       type: "approval-requested",
       requestId: 51,
@@ -1172,29 +1182,86 @@ describe("CodexAppServerAdapter", () => {
       command: "github.create_issue",
       tool: "github.create_issue",
       toolServer: { name: "github" },
-      reason: 'Allow the github MCP server to run tool "create_issue"?',
+      reason: 'Call create_issue on the github tool server. Arguments: {"title":"Fix login bug"}. '
+        + 'Message sent with the request, not checked by Domovoi: Allow the github MCP server to run tool "create_issue"?',
     })
     adapter.resolveApproval(51, "always-project")
     expect(transport.sent.at(-1)).toEqual({ id: 51, result: { action: "accept", content: null } })
 
-    // Once the call ends, or when two calls to the server are running, the
-    // request cannot be tied to one call: it names the server alone.
-    mcpItem("item/completed", "mcp-1", "github", "completed")
-    ask(52, "github", { codex_approval_kind: "mcp_tool_call" })
-    mcpItem("item/started", "mcp-2", "linear", "inProgress")
-    mcpItem("item/started", "mcp-3", "linear", "inProgress")
-    ask(53, "linear", { codex_approval_kind: "mcp_tool_call" })
-    expect(approvals().slice(-2)).toEqual([
-      expect.objectContaining({ requestId: 52, command: "github", tool: "github", toolServer: { name: "github" } }),
-      expect.objectContaining({ requestId: 53, command: "linear", tool: "linear", toolServer: { name: "linear" } }),
-    ])
-    expect(approvals().slice(-2)).not.toContainEqual(expect.objectContaining({ itemId: expect.anything() }))
-    adapter.resolveApproval(52, "deny")
-    expect(transport.sent.at(-1)).toEqual({ id: 52, result: { action: "decline", content: null } })
+    // A call whose arguments did not arrive says so.
+    mcpItem("item/completed", "mcp-1", "github", "turn-1")
+    mcpItem("item/started", "mcp-5", "github", "turn-1")
+    ask(57, "github", marked)
+    expect(approvals().at(-1)).toMatchObject({
+      requestId: 57,
+      itemId: "mcp-5",
+      reason: "Call create_issue on the github tool server. Arguments are not available. "
+        + 'Message sent with the request, not checked by Domovoi: Allow the github MCP server to run tool "create_issue"?',
+    })
+    adapter.resolveApproval(57, "deny")
+    declined(57)
 
-    // A server's own question is not an approval and gets no card.
-    ask(54, "github", undefined)
-    expect(approvals()).toHaveLength(3)
+    // A server's own question is not an approval: no card and, until the
+    // follow-up that declines it (ruling Q156), no answer.
+    const sent = transport.sent.length
+    ask(58, "github", undefined)
+    expect(approvals()).toHaveLength(2)
+    expect(transport.sent).toHaveLength(sent)
+    await adapter.close()
+  })
+
+  // Security review round 1 of #665: Codex passes an MCP server's own
+  // elicitation _meta through to the client, so the marker alone proves
+  // nothing. A marked request Domovoi cannot tie to exactly one running call
+  // of that server on the same thread and turn, or that is not the empty form
+  // Codex sends, is declined at once and gets no card.
+  it("declines a marked tool server request it cannot tie to one running call", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const events: AgentEvent[] = []
+    adapter.onEvent((next) => events.push(next))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+    const started = (id: string, server: string, turnId: string) => transport.receive({
+      method: "item/started",
+      params: { threadId: "thread-1", turnId, item: { type: "mcpToolCall", id, server, tool: "create_issue", status: "inProgress", arguments: {} } },
+    })
+    const ask = (id: number, serverName: string, shape: Record<string, unknown> = {}) => transport.receive({
+      id,
+      method: "mcpServer/elicitation/request",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        serverName,
+        mode: "form",
+        message: "Allow this?",
+        requestedSchema: { type: "object", properties: {} },
+        _meta: { codex_approval_kind: "mcp_tool_call" },
+        ...shape,
+      },
+    })
+    const declined = (id: number) => expect(transport.sent.at(-1)).toEqual({ id, result: { action: "decline", content: null } })
+
+    // No running call at all, for a URL request.
+    ask(61, "docs", { mode: "url", url: "https://docs.example.test/consent", elicitationId: "e-1" })
+    declined(61)
+    // A call from another turn is never borrowed.
+    started("mcp-a", "linear", "turn-1")
+    ask(62, "linear", { turnId: "turn-2" })
+    declined(62)
+    // Two running calls of the server: which one is asked about is unknown.
+    started("mcp-b", "jira", "turn-1")
+    started("mcp-c", "jira", "turn-1")
+    ask(63, "jira")
+    declined(63)
+    // One matching call, but not the empty form Codex sends.
+    started("mcp-d", "github", "turn-1")
+    ask(64, "github", { requestedSchema: { type: "object", properties: { reason: { type: "string" } } } })
+    declined(64)
+    ask(65, "github", { mode: "url", url: "https://example.test", elicitationId: "e-2" })
+    declined(65)
+    expect(events.filter((candidate) => candidate.type === "approval-requested")).toHaveLength(0)
     await adapter.close()
   })
 
