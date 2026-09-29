@@ -445,6 +445,20 @@ describe("approval tool server fact", () => {
     expect(approvalRequestSchema.safeParse({ ...approval, toolServer: { ...approval.toolServer, file: "TOKEN=abc123" } }).success).toBe(false)
   })
 
+  // An agent's own server is named as the agent names it: the daemon did not
+  // read the file that declared it, so it states no file, source or transport.
+  it("names a server whose declaring file the daemon did not read", () => {
+    const named = { ...approval, toolServer: { name: "github" } }
+    expect(approvalRequestSchema.parse(named)).toEqual(named)
+    const connected = { ...approval, toolServer: { name: "github", transport: "http" } }
+    expect(approvalRequestSchema.parse(connected)).toEqual(connected)
+  })
+
+  it("names a declaring file only with its source", () => {
+    expect(approvalRequestSchema.safeParse({ ...approval, toolServer: { name: "github", file: ".mcp.json" } }).success).toBe(false)
+    expect(approvalRequestSchema.safeParse({ ...approval, toolServer: { name: "github", source: "repository-file" } }).success).toBe(false)
+  })
+
   it("never pairs a tool server call with a resolved record, so no Always rule can stand", () => {
     const resolved = {
       state: "resolved",

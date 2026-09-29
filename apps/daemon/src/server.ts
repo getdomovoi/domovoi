@@ -103,7 +103,7 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
-import { type ApprovalScope } from "./approval-facts.js"
+import { approvalToolServerFact, type ApprovalScope } from "./approval-facts.js"
 import {
   ApprovalLedger,
   heldSettlementInput,
@@ -7589,6 +7589,12 @@ export class DomovoiDaemon {
           )
           return
         }
+        // Ruled 2026-09-26 (Q5): a tool server's tool gets Allow once and
+        // Deny only, whatever its execution record says.
+        if (approval.toolServer !== undefined && params.decision === "always-project") {
+          this.#error(socket, request.id, invalidParams, "Tool server calls cannot create standing rules")
+          return
+        }
         // A standing rule, like an Allow, answers only a card that came out of
         // settlement just now, and never a hard gate.
         let targetHasOtherNames = false
@@ -9572,6 +9578,9 @@ export class DomovoiDaemon {
           ? [rule.id]
           : []
       ))
+      // A tool server's tool is a provider tool whatever its name, so it is
+      // never resolved to an execution record.
+      const toolServer = event.toolServer === undefined ? undefined : approvalToolServerFact(event.toolServer)
       const request: ApprovalRequest = {
         workspace: session.workspacePath ?? project.path,
         cwd: requestCwd,
@@ -9579,7 +9588,7 @@ export class DomovoiDaemon {
         command,
         reason: event.reason,
         blockedPath: event.blockedPath,
-        tool: event.tool,
+        tool: event.tool ?? (toolServer === undefined ? undefined : command ?? toolServer.name),
       }
       // A file tool's card is held with what was at its file, read before the
       // request is resolved, so a swap after this reading shows as a change
@@ -9612,6 +9621,7 @@ export class DomovoiDaemon {
           ...(inactiveRuleIds.length === 0 ? {} : {
             reapproval: { reason: "legacy-text-only" as const, inactiveRuleIds },
           }),
+          ...(toolServer === undefined ? {} : { toolServer }),
         },
         request,
         scope: this.#approvalScope(session.runtime),

@@ -2,7 +2,14 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { createInterface } from "node:readline"
 import type { Readable } from "node:stream"
 
-import { buildVersion, type ApprovalDecision, type ProviderModel, type ProviderUsageLimits, type Runtime } from "@getdomovoi/protocol"
+import {
+  buildVersion,
+  maximumToolInventoryNameLength,
+  type ApprovalDecision,
+  type ProviderModel,
+  type ProviderUsageLimits,
+  type Runtime,
+} from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep, ApprovalScope } from "./agents.js"
 import { codexSandboxReach } from "./approval-facts.js"
@@ -14,6 +21,7 @@ import {
   codexRepositoryConfigRefusal,
 } from "./codex-repository-config.js"
 import { credentialStores } from "./credential-stores.js"
+import { redactInventoryText } from "./inventory-redaction.js"
 import { projectInstructions } from "./project-instructions.js"
 import { redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
@@ -333,6 +341,11 @@ export class CodexAppServerAdapter implements AgentAdapter {
   #connectPromise: Promise<void> | undefined
   #collaborationModeAvailable = true
   #additionalContextAvailable = true
+  // Running mcpToolCall items by item id, so a tool server approval can name
+  // its call, and the approvals Codex asked for as MCP elicitations, which are
+  // answered in that shape. Both belong to the transport that sent them.
+  #toolServerCalls = new Map<string, ToolServerCall>()
+  #toolServerApprovals = new Set<number>()
 
   constructor(transportFactory: () => CodexTransport = () => new StdioCodexTransport()) {
     this.#transportFactory = transportFactory
@@ -530,6 +543,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const mapped = decision === "allow-once" || decision === "always-project"
       ? "accept"
       : "decline"
+    // An accepted elicitation with no persist in its _meta runs the call once;
+    // Codex is never asked to remember a tool server answer.
+    if (this.#toolServerApprovals.delete(requestId)) {
+      this.#transport?.send({ id: requestId, result: { action: mapped, content: null } })
+      return
+    }
     this.#transport?.send({ id: requestId, result: { decision: mapped } })
   }
 
@@ -623,6 +642,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
     this.#unsubscribeMessage = undefined
     this.#unsubscribeError = undefined
     this.#transport = undefined
+    this.#toolServerCalls.clear()
+    this.#toolServerApprovals.clear()
   }
 
   #receive(message: JsonRpcMessage): void {
@@ -677,7 +698,33 @@ export class CodexAppServerAdapter implements AgentAdapter {
         ...(typeof params.cwd === "string" ? { cwd: params.cwd } : {}),
         ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
       })
+    } else if (message.method === "mcpServer/elicitation/request" && message.id !== undefined) {
+      // A server's own question is not an approval and is left as before; a
+      // marked request that is not tied to one running call is declined.
+      const request = toolServerApproval(params, this.#toolServerCalls)
+      if (request === "not-approval") return
+      if (request === "decline") {
+        this.#transport?.send({ id: message.id, result: { action: "decline", content: null } })
+        return
+      }
+      this.#toolServerApprovals.add(message.id)
+      this.#emit({ type: "approval-requested", requestId: message.id, ...common, ...request })
     } else if (message.method === "item/started" || message.method === "item/completed") {
+      const item = asRecord(params.item)
+      if (
+        item?.type === "mcpToolCall" && typeof item.id === "string" && typeof params.threadId === "string"
+        && typeof params.turnId === "string" && typeof item.server === "string" && typeof item.tool === "string"
+      ) {
+        if (message.method === "item/started") {
+          this.#toolServerCalls.set(item.id, {
+            threadId: params.threadId,
+            turnId: params.turnId,
+            server: item.server,
+            tool: item.tool,
+            arguments: item.arguments,
+          })
+        } else this.#toolServerCalls.delete(item.id)
+      }
       this.#emit({
         type: "item",
         phase: message.method === "item/started" ? "started" : "completed",
@@ -697,6 +744,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
         this.#emit({ type: "usage", threadId: params.threadId, turnId: params.turnId, usage })
       }
     } else if (message.method === "turn/completed") {
+      for (const [itemId, call] of this.#toolServerCalls) {
+        if (call.threadId === params.threadId) this.#toolServerCalls.delete(itemId)
+      }
       const usage = normalizeProviderUsage(params.turn ?? params)
       if (usage && typeof params.threadId === "string" && typeof params.turnId === "string") {
         this.#emit({ type: "usage", threadId: params.threadId, turnId: params.turnId, usage })
@@ -712,6 +762,62 @@ export class CodexAppServerAdapter implements AgentAdapter {
   #rejectPending(error: Error): void {
     for (const pending of this.#pending.values()) pending.reject(error)
     this.#pending.clear()
+  }
+}
+
+type ToolServerCall = { threadId: string; turnId: string; server: string; tool: string; arguments: unknown }
+
+type ToolServerApproval = { itemId: string; command: string; tool: string; toolServer: { name: string }; reason: string }
+
+// Bounds for what a card quotes from a tool server call, after the inventory
+// redaction cuts each text at its first secret-looking word.
+const toolServerArgumentsLength = 1_024
+const toolServerMessageLength = 512
+
+// Codex asks before a tool server's tool runs with an MCP elicitation whose
+// _meta.codex_approval_kind is mcp_tool_call and whose form is empty (codex-rs
+// core mcp_tool_call.rs, 0.157), after the call's mcpToolCall item started.
+// Codex also passes an MCP server's own elicitation, _meta included, through
+// to the client (codex-mcp elicitation.rs), so the marker proves nothing. A
+// marked request is an approval only when it is the empty form and exactly
+// one running mcpToolCall item of that server is on the same thread and turn;
+// any other marked request is declined. Unmarked requests are not approvals
+// ("not-approval") and are left as before.
+function toolServerApproval(
+  params: Record<string, unknown>,
+  calls: ReadonlyMap<string, ToolServerCall>,
+): ToolServerApproval | "decline" | "not-approval" {
+  if (asRecord(params._meta)?.codex_approval_kind !== "mcp_tool_call") return "not-approval"
+  const server = params.serverName
+  const schema = asRecord(params.requestedSchema)
+  const properties = asRecord(schema?.properties)
+  if (
+    typeof server !== "string" || !server || typeof params.threadId !== "string" || typeof params.turnId !== "string"
+    || params.mode !== "form" || !properties || Object.keys(properties).length > 0
+  ) return "decline"
+  const running = [...calls].filter(([, call]) => (
+    call.threadId === params.threadId && call.turnId === params.turnId && call.server === server
+  ))
+  if (running.length !== 1) return "decline"
+  const [itemId, call] = running[0]!
+  const command = `${server}.${call.tool}`
+  // What Domovoi checked comes first: the running call's tool, server and
+  // arguments. The request's own message follows, labelled as unchecked.
+  const argumentsLine = call.arguments === undefined || call.arguments === null
+    ? "Arguments are not available."
+    : typeof call.arguments === "object" && Object.keys(call.arguments).length === 0
+      ? "Arguments: none."
+      : `Arguments: ${redactInventoryText(JSON.stringify(call.arguments).slice(0, 8 * toolServerArgumentsLength), toolServerArgumentsLength)}.`
+  const message = typeof params.message === "string" && params.message.trim()
+    ? ` Message sent with the request, not checked by Domovoi: ${redactInventoryText(params.message.slice(0, 8 * toolServerMessageLength), toolServerMessageLength)}`
+    : ""
+  const name = (text: string) => redactInventoryText(text, maximumToolInventoryNameLength)
+  return {
+    itemId,
+    command,
+    tool: command,
+    toolServer: { name: server },
+    reason: `Call ${name(call.tool)} on the ${name(server)} tool server. ${argumentsLine}${message}`,
   }
 }
 
