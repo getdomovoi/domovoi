@@ -1,4 +1,6 @@
-import { maximumRepositoryTrustRefusals, type RepositoryTrustState, type ToolInventoryEntry } from "@getdomovoi/protocol"
+import {
+  maximumRepositoryTrustRefusals, maximumRepositoryTrustThreadRestarts, type RepositoryTrustState, type ToolInventoryEntry,
+} from "@getdomovoi/protocol"
 
 import {
   readRepositoryProviderConfig,
@@ -118,7 +120,6 @@ export const repositoryEntryHeldBack: RepositoryEntryHeldBack = (provider: strin
 export const projectRootRead: RepositoryProviderConfigOptions = { heldBack: repositoryEntryHeldBack, asLinkedWorktree: true }
 
 // The most threads one repository.revokeTrust result lists: the protocol's
-// cap on its threads array, which has no count of the rest. A revoke that
-// would stop more is refused before it changes anything, so no thread is
-// stopped without being reported.
-export const maximumRevokedTrustThreads = 1_024
+// cap on its threads array. A revoke still stops every thread, however many
+// (ruling Q179 A); the result counts the rest in omittedThreads.
+export const maximumRevokedTrustThreads: number = maximumRepositoryTrustThreadRestarts

@@ -12,10 +12,9 @@ interrupts its active turn and stops the thread, each within the agent timeout, 
 session in `threads`. It is `restarted` when the stop resolved and `unconfirmed` when the stop timed
 out or failed. A Codex thread is `unconfirmed` either way, since Codex runs every thread in one
 app-server and cannot confirm that the tool servers a thread started have exited. An unconfirmed
-session is marked failed and fenced as an emergency stop fences a thread it could not stop. A
-revoke that would stop more threads than the result can list (1,024) is refused before it changes
-anything, with "Repository trust cannot be taken back while more than 1024 agent threads run under
-it. Stop some of them and try again."
+session is marked failed and fenced as an emergency stop fences a thread it could not stop. The number
+of threads never refuses a revoke: every thread stops, the result lists the first 1,024, and
+`omittedThreads` counts the rest.
 
 Nothing resumes a stopped thread: the next message resumes it, and that resume carries no grant. A
 queued send is held with "Repository trust was taken back before the queued send could release."

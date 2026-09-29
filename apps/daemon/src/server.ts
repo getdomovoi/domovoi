@@ -7036,13 +7036,6 @@ export class DomovoiDaemon {
         }
         const read = this.#repositoryProviderConfig ?? readRepositoryProviderConfig
         if (method === "repository.revokeTrust") {
-          // The result lists every thread it stops and has no count of the
-          // rest, so a revoke that would stop more than it can list is
-          // refused before it changes anything.
-          if (this.#repositoryTrustThreads(project.id).length > maximumRevokedTrustThreads) {
-            this.#error(socket, request.id, invalidParams, `Repository trust cannot be taken back while more than ${maximumRevokedTrustThreads} agent threads run under it. Stop some of them and try again.`)
-            return
-          }
           // Taken back before the configuration is read, so a reader failure
           // still leaves the repository untrusted.
           store.revoke(project.id)
@@ -7069,7 +7062,12 @@ export class DomovoiDaemon {
             id: request.id,
             result: rpcMethods[method].result.parse({
               repository: { projectId: project.id, configDigest: config.configDigest, trust: repositoryTrustState(config, undefined) },
-              threads,
+              // Every thread stopped; the result lists up to the cap and
+              // counts the rest (ruling Q179 A).
+              threads: threads.slice(0, maximumRevokedTrustThreads),
+              ...(threads.length > maximumRevokedTrustThreads
+                ? { omittedThreads: threads.length - maximumRevokedTrustThreads }
+                : {}),
             }),
           })
           return

@@ -4,8 +4,8 @@ import { once } from "node:events"
 import {
   createEmptyWorkspace,
   demoWorkspace,
+  maximumRepositoryTrustThreadRestarts,
   protocolVersion,
-  rpcMethods,
   workspaceSnapshotSchema,
   type Runtime,
   type WorkspaceSnapshot,
@@ -28,9 +28,9 @@ import type { WorkspaceService } from "./workspace.js"
 // as an emergency stop fences one. Nothing resumes on its own: the next
 // message resumes the thread without the repository's configuration.
 
-// The revoke limit is the protocol's cap of 1,024 threads; this file lowers it
-// to 3 so one test can pass it with four threads. That test checks the real
-// value against the protocol.
+// A revoke result lists at most the protocol's cap of 1,024 threads; this
+// file lowers the daemon's report cap to 3 so one test can pass it with four
+// threads. That test checks the real value against the protocol.
 vi.mock("./repository-trust-apply.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("./repository-trust-apply.js")>(),
   maximumRevokedTrustThreads: 3,
@@ -313,35 +313,29 @@ describe("repository.revokeTrust stops the threads that opened under the grant",
     expect(await sessionNamed("session-codex")).toMatchObject({ state: "active", activeTurnId: "turn-thread-codex" })
   })
 
-  // The result lists at most 1,024 threads and has no count of the rest, so a
-  // revoke that would stop more is refused before anything changes. This file
-  // lowers the limit to 3 (vi.mock above); the real one is the protocol's cap.
-  it("refuses, keeping the grant and every thread, when more threads run under it than a result can list", async () => {
+  // Ruling Q179 A: the number of threads never stops a revoke, since refusing
+  // would leave the grant in place. Every thread stops; the result lists up
+  // to the report cap and counts the rest. This file lowers the cap to 3
+  // (vi.mock above); the real one is the protocol's.
+  it("deletes the grant and stops every thread past the report cap, counting the ones it does not list", async () => {
     const actual = await vi.importActual<typeof import("./repository-trust-apply.js")>("./repository-trust-apply.js")
-    expect(actual.maximumRevokedTrustThreads).toBe(1_024)
-    const result = (count: number) => rpcMethods["repository.revokeTrust"].result.safeParse({
-      repository: { projectId, configDigest: digest, trust: { state: "untrusted", reason: "not-trusted" } },
-      threads: Array.from({ length: count }, (_, index) => ({ sessionId: `session-${index}`, outcome: "restarted" })),
-    }).success
-    expect([result(actual.maximumRevokedTrustThreads), result(actual.maximumRevokedTrustThreads + 1)]).toEqual([true, false])
+    expect(actual.maximumRevokedTrustThreads).toBe(maximumRepositoryTrustThreadRestarts)
 
-    const { agents, grants, ok, rpc, sessionNamed } = await fixture()
+    const { agents, grants, ok, rpc } = await fixture()
     grants.set(projectId, grant(projectId))
-    for (const sessionId of ["session-a", "session-b", "session-codex", "session-restart"]) {
-      if (sessionId === "session-restart") await ok("session.restartProviderThread", { sessionId })
-      else await ok("session.send", { sessionId, prompt: "work" })
-    }
+    for (const sessionId of ["session-a", "session-b", "session-codex"]) await ok("session.send", { sessionId, prompt: "work" })
+    await ok("session.restartProviderThread", { sessionId: "session-restart" })
 
     const reply = await rpc("repository.revokeTrust", { client: "desktop", projectId })
-    expect(reply).toMatchObject({
-      error: { code: -32602, message: "Repository trust cannot be taken back while more than 3 agent threads run under it. Stop some of them and try again." },
-    })
-    expect(grants.has(projectId)).toBe(true)
-    for (const agent of [agents["claude-code"], agents.codex]) {
-      expect(agent.interruptTurn).not.toHaveBeenCalled()
-      expect(agent.stopThread).not.toHaveBeenCalled()
-    }
-    expect((await sessionNamed("session-a")).activeTurnId).toBe("turn-thread-a")
+    const result = (reply as { result: { threads: { sessionId: string }[]; omittedThreads?: number } }).result
+    expect(result.threads).toHaveLength(3)
+    expect(result.omittedThreads).toBe(1)
+    expect(grants.has(projectId)).toBe(false)
+    expect(agents["claude-code"].stopThread.mock.calls.map(([threadId]) => threadId).sort())
+      .toEqual(["claude-code-started", "thread-a", "thread-b"])
+    expect(agents.codex.stopThread.mock.calls).toEqual([["thread-codex"]])
+    // A result within the cap carries no count.
+    expect((await ok("repository.revokeTrust", { projectId })).result).toEqual({ repository: expect.anything(), threads: [] })
   })
 
   // A workspace holds the open project's sessions only, and opening another
