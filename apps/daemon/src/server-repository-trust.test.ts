@@ -303,4 +303,20 @@ describe("repository.revokeTrust", () => {
     // Revoking what is not trusted is not an error.
     expect(await revoke(call, "desktop")).toEqual({ repository: expected, threads: [] })
   })
+
+  it("takes the grant back even when the configuration cannot be read", async () => {
+    const root = await repository(configured)
+    const repositoryTrust = new SqliteRepositoryTrust(new DatabaseSync(":memory:"))
+    repositoryTrust.record({ projectId, trustedDigest: await digestOf(root), trustedBy: { client: "desktop" } })
+    const { daemon } = await fixture(root, {
+      repositoryTrust,
+      repositoryProviderConfig: async () => {
+        throw new Error("The codex repository inventory does not fit the protocol")
+      },
+    })
+    const call = await hello(daemon, "desktop", daemon.authToken)
+    const reply = await call("repository.revokeTrust", { projectId, client: "desktop" })
+    expect(reply).toEqual({ jsonrpc: "2.0", id: 2, error: { code: -32603, message: "Internal daemon error" } })
+    expect(repositoryTrust.find(projectId)).toBeUndefined()
+  })
 })
