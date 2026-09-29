@@ -537,7 +537,7 @@ describe("threads whose exit is not confirmed", () => {
     expect(agents["claude-code"].startThread).toHaveBeenCalledTimes(2)
   })
 
-  it("keeps a Codex thread tracked after an archive stops it, and a later revoke reports it unconfirmed", async () => {
+  it("remembers a Codex thread an archive stopped, and a later revoke reports it unconfirmed", async () => {
     const { agents, grants, ok, revoke } = await fixture()
     grants.set(projectId, grant(projectId))
     await ok("session.restartProviderThread", { sessionId: "session-restart", runtime: codex })
@@ -546,6 +546,51 @@ describe("threads whose exit is not confirmed", () => {
 
     expect(await revoke()).toEqual([{ sessionId: "session-restart", outcome: "unconfirmed" }])
     expect(agents.codex.stopThread.mock.calls).toEqual([["codex-started"], ["codex-started"]])
+  })
+})
+
+// Ruling Q186 A: tool servers a stopped Codex thread may have left run under
+// consent while the grant holds. They fence nothing until trust is taken
+// back; then each is reported unconfirmed and fences its session until the
+// daemon restarts.
+describe("a stopped Codex thread while the grant holds", () => {
+  const fenced = "Provider thread requires recovery after emergency stop"
+
+  it("leaves the session usable after an emergency stop resets it, and a later revoke fences it", async () => {
+    const { agents, grants, ok, rpc, revoke } = await fixture()
+    grants.set(projectId, grant(projectId))
+    await ok("session.send", { sessionId: "session-codex", prompt: "work" })
+    // The interrupt fails, so the stop resets the provider thread instead.
+    agents.codex.interruptTurn.mockRejectedValueOnce(new Error("interrupt refused"))
+    expect(await rpc("system.emergencyStop", { client: "desktop" })).toHaveProperty("result")
+    expect(agents.codex.stopThread.mock.calls).toEqual([["thread-codex"]])
+
+    await ok("session.restartProviderThread", { sessionId: "session-codex", runtime: codex })
+    await ok("session.send", { sessionId: "session-codex", prompt: "again" })
+    expect(agents.codex.startTurn).toHaveBeenCalledTimes(2)
+
+    expect(await revoke()).toEqual([{ sessionId: "session-codex", outcome: "unconfirmed" }])
+    expect(agents.codex.stopThread.mock.calls.map(([threadId]) => threadId).sort())
+      .toEqual(["codex-started", "thread-codex", "thread-codex"])
+    expect(await rpc("session.send", { client: "desktop", sessionId: "session-codex", prompt: "after" }))
+      .toMatchObject({ error: { message: fenced } })
+  })
+
+  it("allows a handoff away from a trusted Codex thread, and a later revoke fences the session", async () => {
+    const { agents, grants, ok, rpc, revoke } = await fixture()
+    grants.set(projectId, grant(projectId))
+    await ok("session.restartProviderThread", { sessionId: "session-restart", runtime: codex })
+    await ok("session.setRuntime", { sessionId: "session-restart", runtime: claude })
+    expect(agents.codex.stopThread.mock.calls).toEqual([["codex-started"]])
+    await ok("session.send", { sessionId: "session-restart", prompt: "on claude" })
+
+    expect(await revoke()).toEqual([{ sessionId: "session-restart", outcome: "unconfirmed" }])
+    expect(await rpc("session.send", { client: "desktop", sessionId: "session-restart", prompt: "after" }))
+      .toMatchObject({ error: { message: fenced } })
+    // A new grant does not lift it.
+    grants.set(projectId, grant(projectId))
+    expect(await rpc("session.send", { client: "desktop", sessionId: "session-restart", prompt: "regranted" }))
+      .toMatchObject({ error: { message: fenced } })
   })
 })
 

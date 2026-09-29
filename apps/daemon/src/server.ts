@@ -359,6 +359,8 @@ const providerThreadRecoveryRefusal = "Provider thread requires recovery after e
 // trust, and P6c reports that for a Codex thread only when repository tool
 // servers loaded (rulings Q148, Q170 A).
 const trustedStopUnconfirmedProviders: ReadonlySet<string> = new Set(["codex"])
+// A thread that loaded a repository's trusted configuration (#trustedThreads).
+type TrustedThread = { projectId: string; sessionId: string; provider: string; threadId: string; trustedDigest: string }
 // A provider call's repository trust grant and the count of its project's
 // revokes it was looked up under (#repositoryTrustCall).
 type RepositoryTrustCall = { projectId: string; generation: number; input: { repositoryTrust?: RepositoryTrustGrant } }
@@ -1632,7 +1634,15 @@ export class DomovoiDaemon {
   // still here. An entry leaves only when the thread's exit is confirmed
   // (#threadStopped): a path that drops a thread from the loaded set without
   // confirming it leaves the entry, and the next revoke stops the thread.
-  #trustedThreads = new Map<string, { projectId: string; sessionId: string; provider: string; threadId: string; trustedDigest: string }>()
+  #trustedThreads = new Map<string, TrustedThread>()
+  // Ruling Q186 A: Codex threads stopped while their grant held, whose tool
+  // servers may still run. They fence nothing while the grant holds, since
+  // those run under consent. A revoke of the project reports each as
+  // unconfirmed and fences its session; a new grant does not clear them.
+  #residualTrustedThreads = new Map<string, TrustedThread>()
+  // Threads a revoke could not confirm stopped. Each fences its session until
+  // a stop is confirmed; a Codex one never is, so until the daemon restarts.
+  #revokedTrustThreads = new Set<string>()
   // Counts the revokes of each project's trust. A provider call records the
   // count it looked its grant up under, so a call that lands after a revoke
   // is known to carry a grant that is gone.
@@ -2107,20 +2117,24 @@ export class DomovoiDaemon {
 
   // The one place a resolved stop counts as the thread's exit. It leaves the
   // loaded set either way. A thread that loaded trusted input leaves tracking
-  // only when its provider can confirm that what it started exited. Codex
-  // cannot (ruling Q152 A), so a stopped Codex thread stays tracked and is
-  // fenced until the daemon restarts, which ends the app-server and its tool
-  // servers (security review round 2 of #669).
+  // when its provider can confirm that what it started exited. Codex cannot
+  // (ruling Q152 A): a stopped Codex thread that a revoke already reported
+  // stays tracked and fenced until the daemon restarts, which ends the
+  // app-server and its tool servers; any other one moves to the residual
+  // entries, which fence nothing while the grant holds (ruling Q186 A).
   #threadStopped(provider: string, threadId: string): void {
     const threadKey = providerThreadKey(provider, threadId)
     this.#loadedAgentThreads.delete(threadKey)
-    if (!this.#trustedThreads.has(threadKey)) return
+    const trusted = this.#trustedThreads.get(threadKey)
+    if (!trusted) return
     if (!trustedStopUnconfirmedProviders.has(provider)) {
       this.#trustedThreads.delete(threadKey)
+      this.#revokedTrustThreads.delete(threadKey)
       return
     }
-    this.#failedEmergencyThreads.add(threadKey)
-    this.#emergencyBlockedThreads.add(threadKey)
+    if (this.#revokedTrustThreads.has(threadKey)) return
+    this.#trustedThreads.delete(threadKey)
+    this.#residualTrustedThreads.set(threadKey, trusted)
   }
 
   // Security review round 2 of #669: whether a session's worktree may still
@@ -2192,6 +2206,16 @@ export class DomovoiDaemon {
       }
     }
     const claims: { sessionId: string; provider: string; threadId: string; threadKey: string; turnId: string | undefined; fenced: boolean }[] = []
+    // Stopped Codex threads of the project whose tool servers may still run
+    // (ruling Q186 A) are claimed with the rest: each is stopped again, and
+    // reported unconfirmed as a Codex stop always is.
+    if (onlyThreadKey === undefined) {
+      for (const [threadKey, residual] of [...this.#residualTrustedThreads]) {
+        if (residual.projectId !== projectId) continue
+        this.#residualTrustedThreads.delete(threadKey)
+        if (!this.#trustedThreads.has(threadKey)) this.#trustedThreads.set(threadKey, residual)
+      }
+    }
     for (const [threadKey, trusted] of this.#trustedThreads) {
       if (trusted.projectId !== projectId || (onlyThreadKey !== undefined && threadKey !== onlyThreadKey)) continue
       const { provider, threadId, sessionId } = trusted
@@ -2238,6 +2262,7 @@ export class DomovoiDaemon {
         : "unconfirmed" as const
       if (outcome === "restarted") this.#trustedThreads.delete(claim.threadKey)
       else {
+        this.#revokedTrustThreads.add(claim.threadKey)
         this.#failedEmergencyThreads.add(claim.threadKey)
         this.#emergencyBlockedThreads.add(claim.threadKey)
       }
@@ -8232,13 +8257,11 @@ export class DomovoiDaemon {
             return
           }
           // No replacement starts beside a thread that loaded trusted input
-          // and has not confirmed its exit, nor beside one whose stop cannot
-          // confirm it (security review round 2 of #669).
-          const replaced = previousKey === undefined ? undefined : this.#trustedThreads.get(previousKey)
-          if (
-            await this.#repositoryTrustFenced(currentSession.id)
-            || (replaced !== undefined && trustedStopUnconfirmedProviders.has(replaced.provider))
-          ) {
+          // and has not confirmed its exit (security review round 2 of #669).
+          // A Codex thread replaced while the grant holds becomes a residual
+          // entry in #threadStopped, which fences nothing until a revoke
+          // (ruling Q186 A).
+          if (await this.#repositoryTrustFenced(currentSession.id)) {
             this.#error(socket, request.id, invalidParams, providerThreadRecoveryRefusal)
             return
           }
