@@ -121,7 +121,9 @@ describe("SqliteRepositoryTrust", () => {
     ["a table with other columns", "CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL)"],
     // table_info does not list a generated column; this one shadows the rowid the trim reads.
     ["a table with a generated rowid column", "CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT, rowid TEXT GENERATED ALWAYS AS ('same') VIRTUAL)"],
-    ["a table named in another case", "CREATE TABLE Repository_Trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT)"],
+    ["a table whose key ignores case", "CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY COLLATE NOCASE, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT)"],
+    ["a table with a key index that ignores case", "CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT); CREATE UNIQUE INDEX repository_trust_folded ON repository_trust (project_id COLLATE NOCASE)"],
+    ["a table named in another case","CREATE TABLE Repository_Trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT)"],
   ])("yields no grant from %s", (_, table) => {
     const database = new DatabaseSync(":memory:")
     database.exec(table)
@@ -171,6 +173,23 @@ describe("SqliteRepositoryTrust", () => {
     expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
   })
 
+  it("reads and revokes only the exact project id, even from a table swapped in after its check", () => {
+    const database = new DatabaseSync(":memory:")
+    const trust = new SqliteRepositoryTrust(database)
+    // The table passed the check at construction; this one, made afterwards,
+    // compares project ids without regard to case.
+    database.exec(`
+      DROP TABLE repository_trust;
+      CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY COLLATE NOCASE, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT);
+    `)
+    database.prepare("INSERT INTO repository_trust VALUES ('project-alpha', ?, '2026-09-28T10:00:00.000Z', 'desktop', NULL)").run(digest("a"))
+
+    expect(trust.find("project-ALPHA")).toBeUndefined()
+    expect(trust.find("project-alpha")).toMatchObject({ projectId: "project-alpha" })
+    trust.revoke("project-ALPHA")
+    expect(trust.find("project-alpha")).toMatchObject({ projectId: "project-alpha" })
+  })
+
   it("stops reading and recording grants when a failed record cannot be rolled back", () => {
     const database = new DatabaseSync(":memory:")
     const trust = new SqliteRepositoryTrust(database)
@@ -187,6 +206,10 @@ describe("SqliteRepositoryTrust", () => {
     expect(() => trust.record({ projectId: "project-other", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
   })
 
+  // DatabaseSync.setAuthorizer arrived in Node 24.10; Node 22.13 lacks it, so
+  // these skip there (as does the authorizer test in
+  // server-repository-trust.test.ts), and the RAISE(ROLLBACK) test above is
+  // the disabled store's coverage on every Node.
   describe.skipIf(typeof (DatabaseSync.prototype as { setAuthorizer?: unknown }).setAuthorizer !== "function")("when ROLLBACK TO itself is refused", () => {
     // The trim's DELETE and the savepoint rollback are refused, so the new
     // grant is written and cannot be undone by the savepoint.

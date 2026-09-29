@@ -108,6 +108,15 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
     const columns = (this.#database.prepare("PRAGMA table_xinfo(repository_trust)").all() as Array<{ name: string; pk: number; hidden: number }>)
       .map(({ name, pk, hidden }) => ({ name, pk, hidden }))
     if (JSON.stringify(columns) !== JSON.stringify(expectedColumns)) return false
+    // Every index on the table, the primary key's included, compares its key
+    // columns as bytes: a key declared COLLATE NOCASE would let one project's
+    // grant answer for another project id that differs only in case.
+    const indexes = this.#database.prepare("PRAGMA index_list(repository_trust)").all() as Array<{ name: string }>
+    for (const { name } of indexes) {
+      const keys = (this.#database.prepare("SELECT coll, key FROM pragma_index_xinfo(?)").all(name) as Array<{ coll: string | null; key: number }>)
+        .filter(({ key }) => key === 1)
+      if (keys.some(({ coll }) => coll !== "BINARY")) return false
+    }
     const triggers = this.#database.prepare(`
       SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'repository_trust' COLLATE NOCASE
       UNION ALL
@@ -123,11 +132,13 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
     return this.#read(projectId)
   }
 
+  // Project ids match exactly, whatever collation the table declares: the
+  // lookup compares bytes, and a row for another id is not this project's.
   #read(projectId: string): RepositoryTrustGrant | undefined {
     const row = this.#database
-      .prepare("SELECT * FROM repository_trust WHERE project_id = ?")
+      .prepare("SELECT * FROM repository_trust WHERE project_id = ? COLLATE BINARY")
       .get(projectId) as StoredRepositoryTrust | undefined
-    if (!row) return undefined
+    if (!row || row.project_id !== projectId) return undefined
     try {
       return checkedGrant({
         projectId: row.project_id,
@@ -205,8 +216,8 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
   // reports success but leaves the grant fails, so the caller never reports a
   // repository untrusted while its grant remains. Nothing to revoke succeeds.
   revoke(projectId: string): void {
-    this.#database.prepare("DELETE FROM repository_trust WHERE project_id = ?").run(projectId)
-    const left = this.#database.prepare("SELECT 1 AS present FROM repository_trust WHERE project_id = ?").get(projectId)
+    this.#database.prepare("DELETE FROM repository_trust WHERE project_id = ? COLLATE BINARY").run(projectId)
+    const left = this.#database.prepare("SELECT 1 AS present FROM repository_trust WHERE project_id = ? COLLATE BINARY").get(projectId)
     if (left !== undefined) throw new Error("The repository trust grant is still stored after revocation")
   }
 
