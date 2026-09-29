@@ -30,8 +30,91 @@ export function executionContainsSecret(
   ))
 }
 
+type ThreadItem = WorkspaceSnapshot["thread"][number]
+
 export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
-  const sanitized = structuredClone(snapshot)
+  const sanitized = redactWorkspaceRecords(snapshot)
+  sanitized.thread = snapshot.thread.map((item) => redactThreadItem(structuredClone(item)))
+  return sanitized
+}
+
+export type WorkspaceRedactor = (snapshot: WorkspaceSnapshot) => WorkspaceSnapshot
+
+// Redacts as redactWorkspaceCopies does, for a writer that is handed the whole
+// snapshot again and again while a provider streams into one item of it.
+// Redacting a thread item reads that item and nothing else, so an item equal
+// to the one the previous call redacted under its id gets the same copy back,
+// and a write redacts the items that changed rather than the project's whole
+// history. What keeps that sound:
+// - an item is reused only when every field equals, by value, the item its
+//   copy was made from, so text appended in place under the same id is
+//   redacted again;
+// - that source is a private copy, so a caller that goes on editing its live
+//   item cannot make an old copy look current;
+// - reused copies are frozen, so a caller that edits a returned snapshot
+//   cannot change what a later write carries;
+// - approvals and rules read the sessions and project around them, so they
+//   are redacted whole on every call; and
+// - only the latest snapshot's items are kept, so the cache is at most one
+//   thread (two where redaction changed an item, since the source is kept).
+export function createWorkspaceRedactor(): WorkspaceRedactor {
+  let redacted = new Map<string, { source: ThreadItem; copy: ThreadItem }>()
+  return (snapshot) => {
+    const sanitized = redactWorkspaceRecords(snapshot)
+    const kept = new Map<string, { source: ThreadItem; copy: ThreadItem }>()
+    sanitized.thread = snapshot.thread.map((item) => {
+      let entry = redacted.get(item.id)
+      if (entry === undefined || !sameValue(entry.source, item)) {
+        const copy = deepFreeze(redactThreadItem(structuredClone(item)))
+        // Most items hold nothing to redact, and one frozen copy then serves
+        // as both the source and the copy.
+        entry = { source: sameValue(copy, item) ? copy : structuredClone(item), copy }
+      }
+      kept.set(item.id, entry)
+      return entry.copy
+    })
+    redacted = kept
+    return sanitized
+  }
+}
+
+// Equality by value over the JSON values a snapshot holds.
+function sameValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) return false
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
+    for (let index = 0; index < left.length; index += 1) {
+      if (!sameValue(left[index], right[index])) return false
+    }
+    return true
+  }
+  const leftRecord = left as Record<string, unknown>
+  const rightRecord = right as Record<string, unknown>
+  let keys = 0
+  for (const key in leftRecord) {
+    if (!Object.hasOwn(leftRecord, key)) continue
+    keys += 1
+    if (!Object.hasOwn(rightRecord, key) || !sameValue(leftRecord[key], rightRecord[key])) return false
+  }
+  for (const key in rightRecord) {
+    if (Object.hasOwn(rightRecord, key)) keys -= 1
+  }
+  return keys === 0
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value)
+    for (const child of Object.values(value)) deepFreeze(child)
+  }
+  return value
+}
+
+// A copy of everything but the thread, with approvals and rules redacted. The
+// thread is left empty for the caller to fill.
+function redactWorkspaceRecords(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
+  const sanitized = structuredClone({ ...snapshot, thread: [] })
   sanitized.approvals = sanitized.approvals.map((approval) => {
     const command = redactDurableCommand(approval.command)
     const operation = redactDurableText(approval.operation)
@@ -85,52 +168,55 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
     ) return []
     return [{ ...rule, command: command.value, operation: operation.value }]
   })
-  sanitized.thread = sanitized.thread.map((item) => {
-    if (item.kind === "tool") {
-      return {
-        ...item,
-        title: redactDurableCommand(item.title).value,
-        ...(item.output === undefined
-          ? {}
-          : { output: redactDurableOutput(item.output).value }),
-      }
-    }
-    if (item.kind === "receipt") {
-      // The receipt keeps the card's operation line, so a secret file that
-      // line names is replaced here too.
-      const operation = redactDurableText(item.operation).value
-      return {
-        ...item,
-        operation: pathHider(textOperands(operation, namesSecretPath).filter(namesSecretPath)).hide(operation),
-        ...(item.explanation === undefined
-          ? {}
-          : { explanation: redactDurableText(item.explanation).value }),
-      }
-    }
-    if (item.kind === "policy-refusal") {
-      return {
-        ...item,
-        operation: redactDurableText(item.operation).value,
-        command: redactDurableCommand(item.command).value,
-        rule: redactDurableText(item.rule).value,
-        setBy: redactDurableText(item.setBy).value,
-        scope: redactDurableText(item.scope).value,
-        remedy: redactDurableText(item.remedy).value,
-      }
-    }
-    if (item.kind === "checkpoint") {
-      return { ...item, label: redactDurableText(item.label).value }
-    }
-    if (item.kind === "system") {
-      return {
-        ...item,
-        body: redactDurableText(item.body).value,
-        ...(item.detail === undefined
-          ? {}
-          : { detail: redactDurableText(item.detail).value }),
-      }
-    }
-    return { ...item, body: redactDurableText(item.body).value }
-  })
   return sanitized
+}
+
+// Reads the item and nothing else, which is what lets createWorkspaceRedactor
+// reuse a copy. The item is the caller's own copy.
+function redactThreadItem(item: ThreadItem): ThreadItem {
+  if (item.kind === "tool") {
+    return {
+      ...item,
+      title: redactDurableCommand(item.title).value,
+      ...(item.output === undefined
+        ? {}
+        : { output: redactDurableOutput(item.output).value }),
+    }
+  }
+  if (item.kind === "receipt") {
+    // The receipt keeps the card's operation line, so a secret file that
+    // line names is replaced here too.
+    const operation = redactDurableText(item.operation).value
+    return {
+      ...item,
+      operation: pathHider(textOperands(operation, namesSecretPath).filter(namesSecretPath)).hide(operation),
+      ...(item.explanation === undefined
+        ? {}
+        : { explanation: redactDurableText(item.explanation).value }),
+    }
+  }
+  if (item.kind === "policy-refusal") {
+    return {
+      ...item,
+      operation: redactDurableText(item.operation).value,
+      command: redactDurableCommand(item.command).value,
+      rule: redactDurableText(item.rule).value,
+      setBy: redactDurableText(item.setBy).value,
+      scope: redactDurableText(item.scope).value,
+      remedy: redactDurableText(item.remedy).value,
+    }
+  }
+  if (item.kind === "checkpoint") {
+    return { ...item, label: redactDurableText(item.label).value }
+  }
+  if (item.kind === "system") {
+    return {
+      ...item,
+      body: redactDurableText(item.body).value,
+      ...(item.detail === undefined
+        ? {}
+        : { detail: redactDurableText(item.detail).value }),
+    }
+  }
+  return { ...item, body: redactDurableText(item.body).value }
 }

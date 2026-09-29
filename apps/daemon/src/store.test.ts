@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
-import { createEmptyWorkspace, demoWorkspace, machineIdSchema, protocolVersion, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { createEmptyWorkspace, demoWorkspace, machineIdSchema, protocolVersion, workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { resolveCommandExecution } from "./execution-resolution.js"
@@ -424,6 +424,88 @@ describe("SqliteWorkspaceStore", () => {
     expect(JSON.stringify(raw)).not.toMatch(
       /async-command-secret|async-reason-secret|async-rule-secret|async-title-secret|async-output-secret/,
     )
+    await store.close()
+  })
+
+  it.each(["saveAsync", "save"] as const)(
+    "redacts and validates an item a stream changes in place between writes through %s",
+    async (method) => {
+      const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-stream-redaction-"))
+      scratchDirectories.push(scratch)
+      const databasePath = join(scratch, "state.sqlite")
+      const store = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+      const write = async (snapshot: WorkspaceSnapshot) => {
+        if (method === "saveAsync") await store.saveAsync(snapshot)
+        else store.save(snapshot)
+      }
+      const stored = () => {
+        const database = new DatabaseSync(databasePath)
+        const row = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as { snapshot: string }
+        database.close()
+        return { raw: row.snapshot, snapshot: workspaceSnapshotSchema.parse(JSON.parse(row.snapshot)) }
+      }
+      const reply = (snapshot: WorkspaceSnapshot) => snapshot.thread.find((item) => item.id === "streaming-reply")
+      const live = structuredClone(demoWorkspace)
+      live.thread.push({
+        id: "streaming-reply",
+        sessionId: live.sessions[0]!.id,
+        kind: "assistant",
+        body: "Checking the key",
+        createdAt: "2026-09-29T12:00:00.000Z",
+      })
+      await write(live)
+      const streaming = live.thread.at(-1) as { body: string }
+
+      // The daemon appends each delta to the live item, under the same id.
+      streaming.body += " with export API_KEY=streamed-secret-1"
+      await write(live)
+      expect(stored().raw).not.toContain("streamed-secret-1")
+      expect(reply(stored().snapshot)).toMatchObject({ body: expect.stringMatching(/^Checking the key with export API_KEY=\S*REDACTED/u) })
+
+      streaming.body += " and done."
+      await write(live)
+      expect(stored().raw).not.toContain("streamed-secret-1")
+      expect(reply(stored().snapshot)).toMatchObject({ body: expect.stringMatching(/ and done\.$/u) })
+
+      // An item changed in place to name a session that does not exist is
+      // refused whole, and the last valid write stays on disk.
+      Object.assign(live.thread.at(-1)!, { sessionId: "session-missing" })
+      if (method === "saveAsync") await expect(store.saveAsync(live)).rejects.toThrow()
+      else expect(() => store.save(live)).toThrow()
+      expect(reply(stored().snapshot)).toMatchObject({ sessionId: live.sessions[0]!.id, body: expect.stringMatching(/ and done\.$/u) })
+      await store.close()
+    },
+  )
+
+  it("hands a custom writer a redacted copy of an item a stream changes in place", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-stream-writer-"))
+    scratchDirectories.push(scratch)
+    const written: string[] = []
+    const store = new SqliteWorkspaceStore(join(scratch, "state.sqlite"), demoWorkspace, {
+      writerFactory: () => ({
+        failed: false,
+        write: async (snapshot) => { written.push(JSON.stringify(snapshot)) },
+        close: async () => {},
+      }),
+    })
+    const live = structuredClone(demoWorkspace)
+    live.thread.push({
+      id: "streaming-reply",
+      sessionId: live.sessions[0]!.id,
+      kind: "assistant",
+      body: "Checking the key",
+      createdAt: "2026-09-29T12:00:00.000Z",
+    })
+    await store.saveAsync(live)
+    const streaming = live.thread.at(-1) as { body: string }
+    streaming.body += " with export API_KEY=streamed-secret-2"
+    await store.saveAsync(live)
+    streaming.body += " and done."
+    await store.saveAsync(live)
+
+    expect(written).toHaveLength(3)
+    expect(written.join("\n")).not.toContain("streamed-secret-2")
+    expect(JSON.parse(written[2]!).thread.at(-1).body).toMatch(/^Checking the key with export API_KEY=\S*REDACTED\S* and done\.$/u)
     await store.close()
   })
 
