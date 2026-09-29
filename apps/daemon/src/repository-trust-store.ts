@@ -69,6 +69,28 @@ const expectedColumns = [
   { name: "trusted_client_id", pk: 0, hidden: 0 },
 ]
 
+// The table's only indexes, sorted by name as the check compares them. Each
+// key query is a fixed literal: no name from the catalog is written into SQL.
+// Every key column compares as bytes.
+const expectedIndexes = [
+  {
+    name: "repository_trust_trusted_at",
+    unique: 0,
+    origin: "c",
+    partial: 0,
+    keysQuery: "PRAGMA main.index_xinfo(repository_trust_trusted_at)",
+    keys: [{ name: "trusted_at", coll: "BINARY" }],
+  },
+  {
+    name: "sqlite_autoindex_repository_trust_1",
+    unique: 1,
+    origin: "pk",
+    partial: 0,
+    keysQuery: "PRAGMA main.index_xinfo(sqlite_autoindex_repository_trust_1)",
+    keys: [{ name: "project_id", coll: "BINARY" }],
+  },
+]
+
 export class SqliteRepositoryTrust implements RepositoryTrustStore {
   #database: DatabaseSync
   // False when the table under this name is not the one this store creates,
@@ -101,21 +123,48 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
   // triggers are looked up the same way. table_xinfo and ncol include the
   // generated and hidden columns table_info leaves out, such as one named
   // rowid that would shadow the rowid the trim reads.
+  //
+  // table_list is read across every schema, so a temporary table of the same
+  // name, which would answer to this store's statements, is refused. The
+  // other lookups name main: an index is found by name, and an unqualified
+  // name finds a temporary index first. The trigger lookup reads both
+  // catalogs, since a temporary trigger can fire on the main table; neither
+  // catalog's name can be taken by another object.
   #tableIsOurs(): boolean {
     const tables = this.#database.prepare("PRAGMA table_list(repository_trust)").all() as Array<{ schema: string; name: string; type: string; ncol: number; wr: number }>
     const [table] = tables
     if (tables.length !== 1 || table?.schema !== "main" || table.name !== "repository_trust" || table.type !== "table" || table.ncol !== expectedColumns.length || table.wr !== 0) return false
-    const columns = (this.#database.prepare("PRAGMA table_xinfo(repository_trust)").all() as Array<{ name: string; pk: number; hidden: number }>)
+    const columns = (this.#database.prepare("PRAGMA main.table_xinfo(repository_trust)").all() as Array<{ name: string; pk: number; hidden: number }>)
       .map(({ name, pk, hidden }) => ({ name, pk, hidden }))
     if (JSON.stringify(columns) !== JSON.stringify(expectedColumns)) return false
     // Every index on the table, the primary key's included, compares its key
     // columns as bytes: a key declared COLLATE NOCASE would let one project's
     // grant answer for another project id that differs only in case.
-    const indexes = this.#database.prepare("PRAGMA index_list(repository_trust)").all() as Array<{ name: string }>
-    for (const { name } of indexes) {
-      const keys = (this.#database.prepare("SELECT coll, key FROM pragma_index_xinfo(?)").all(name) as Array<{ coll: string | null; key: number }>)
+    //
+    // The table's indexes must be exactly the two this store has: the primary
+    // key's and repository_trust_trusted_at. Any other index, whatever it
+    // compares, refuses the table. A name the catalog lists is never looked
+    // up: one stored as invalid UTF-8 reads back as U+FFFD, and looking that
+    // text up finds a different index. Only the two fixed names below are
+    // read, and each must belong to this table.
+    //
+    // The PRAGMA statement, not the pragma_index_xinfo table-valued function:
+    // SQLite resolves that function's name like a table, so a table or virtual
+    // table named pragma_index_xinfo, in main, temp or an attached schema,
+    // answers in its place, even when the name is qualified. A PRAGMA
+    // statement cannot be shadowed. An index with no key column is not one
+    // this store creates, and an empty answer never reads as all BINARY.
+    const indexes = (this.#database.prepare("PRAGMA main.index_list(repository_trust)").all() as Array<{ name: string; unique: number; origin: string; partial: number }>)
+      .map(({ name, unique, origin, partial }) => ({ name, unique, origin, partial }))
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+    if (JSON.stringify(indexes) !== JSON.stringify(expectedIndexes.map(({ name, unique, origin, partial }) => ({ name, unique, origin, partial })))) return false
+    for (const index of expectedIndexes) {
+      const owners = this.#database.prepare("SELECT tbl_name FROM main.sqlite_master WHERE type = 'index' AND name = ?").all(index.name) as Array<{ tbl_name: string }>
+      if (owners.length !== 1 || owners[0]?.tbl_name !== "repository_trust") return false
+      const keys = (this.#database.prepare(index.keysQuery).all() as Array<{ name: string | null; coll: string | null; key: number }>)
         .filter(({ key }) => key === 1)
-      if (keys.some(({ coll }) => coll !== "BINARY")) return false
+        .map(({ name, coll }) => ({ name, coll }))
+      if (keys.length === 0 || JSON.stringify(keys) !== JSON.stringify(index.keys)) return false
     }
     const triggers = this.#database.prepare(`
       SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'repository_trust' COLLATE NOCASE
