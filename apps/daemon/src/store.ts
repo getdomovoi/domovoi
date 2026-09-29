@@ -38,7 +38,7 @@ import {
 import {
   SqliteTransferConflicts,
 } from "./transfer-conflicts.js"
-import { redactWorkspaceCopies } from "./workspace-redaction.js"
+import { createWorkspaceRedactor, redactWorkspaceCopies } from "./workspace-redaction.js"
 import { SqliteEmergencyStopIntents } from "./emergency-stop-intents.js"
 import { SqliteSessionCreationIntents } from "./session-creation-intents.js"
 
@@ -783,8 +783,12 @@ const { parentPort, workerData } = require("node:worker_threads")
 
 async function start() {
   const { workspaceSnapshotSchema } = await import(workerData.protocolUrl)
-  const redact = workerData.redactionUrl
-    ? (await import(workerData.redactionUrl)).redactWorkspaceCopies
+  // One redactor for the worker's life, so a write while a provider streams
+  // redacts the thread items that changed since the last one. A module built
+  // before the redactor existed still redacts the whole snapshot.
+  const redaction = workerData.redactionUrl ? await import(workerData.redactionUrl) : undefined
+  const redact = redaction
+    ? (redaction.createWorkspaceRedactor?.() ?? redaction.redactWorkspaceCopies)
     : (snapshot) => snapshot
   const database = new DatabaseSync(workerData.path)
   database.exec("PRAGMA journal_mode = WAL;")
@@ -936,6 +940,12 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   // first load hands that copy over instead of reading it all again. Any
   // write drops it, and every later load reads the row.
   #migratedAtOpen: WorkspaceSnapshot | undefined
+  // The asynchronous writes that redact on this thread (an in-memory store, a
+  // custom writer, or a worker without the redaction module) share one
+  // redactor, so a write while a provider streams redacts only the thread
+  // items that changed. The persistence worker keeps its own. The rare
+  // synchronous save redacts whole, so it does not hold a thread copy here.
+  readonly #redact = createWorkspaceRedactor()
 
   constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
     this.path = path
@@ -1073,7 +1083,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.#migratedAtOpen = undefined
     if (this.path === ":memory:") {
       await new Promise<void>((resolve) => setImmediate(resolve))
-      this.#writeValidated(workspaceSnapshotSchema.parse(redactWorkspaceCopies(snapshot)))
+      this.#writeValidated(workspaceSnapshotSchema.parse(this.#redact(snapshot)))
       return
     }
     if (this.#writer?.failed && !this.#writerClosed) this.#writer = undefined
@@ -1084,7 +1094,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     await this.#writer.write(
       workspaceRedactionModule && !this.#writerFactory
         ? snapshot
-        : redactWorkspaceCopies(snapshot),
+        : this.#redact(snapshot),
     )
   }
 
