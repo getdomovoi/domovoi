@@ -272,7 +272,7 @@ export class AcpAgentAdapter implements AgentAdapter {
         threadId: request.sessionId,
         itemId: request.toolCallId,
         ...(request.command ? { command: request.command } : {}),
-        ...(request.tool ? { tool: request.tool } : {}),
+        ...(request.tool !== undefined ? { tool: request.tool } : {}),
         ...(request.cwd ? { cwd: request.cwd } : {}),
         reason: request.reason ?? request.title,
       })

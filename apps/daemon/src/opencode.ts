@@ -926,7 +926,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         command: request.command,
         cwd,
         ...(request.path ? { path: request.path } : {}),
-        ...(request.tool ? { tool: request.tool } : {}),
+        ...(request.tool !== undefined ? { tool: request.tool } : {}),
         ...(request.reason ? { reason: request.reason } : {}),
       })
       return
@@ -1098,7 +1098,8 @@ function permissionRequest(
     ...(reason ? { reason } : {}),
     ...(itemId ? { itemId } : {}),
     ...(edit === undefined ? {} : { path: edit }),
-    ...(shell || edit !== undefined ? {} : { tool: kind ?? command }),
+    // A permission with no name is still a provider tool, never shell text.
+    ...(shell || edit !== undefined ? {} : { tool: kind || "unknown" }),
   }
 }
 

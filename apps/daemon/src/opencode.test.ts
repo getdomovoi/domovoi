@@ -1190,12 +1190,20 @@ describe("subagents and current permission events", () => {
     ask("per_mcp", "github_create_issue", ["*"], {})
     ask("per_bash", "bash", ["pnpm test"], {})
     ask("per_patch", "edit", ["src/a.ts", "src/b.ts"], { filepath: "src/a.ts, src/b.ts", diff: "" })
+    ask("per_empty", "", ["pwd"], { command: "pwd" })
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "per_nameless", sessionID: threadId, permission: 7, patterns: [], metadata: { command: "pwd" }, always: [], tool: { messageID: "msg_1", callID: "call_nameless" } },
+    } as unknown as OpenCodeEvent)
     stream.emit({
       type: "permission.updated",
       properties: { id: "per_legacy", sessionID: threadId, callID: "call_legacy", type: "edit", title: "Edit this file: /worktree/src/c.ts", metadata: { filePath: "/worktree/src/c.ts" } },
     })
-    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(7))
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(9))
     const approval = (itemId: string) => events.find((event) => event.type === "approval-requested" && event.itemId === itemId)
+    // A permission with no name is still a provider tool, never shell text.
+    expect(approval("call_per_empty")).toMatchObject({ command: "pwd", tool: "unknown" })
+    expect(approval("call_nameless")).toMatchObject({ command: "pwd", tool: "unknown" })
     expect(approval("call_per_edit")).toMatchObject({ command: "Edit", path: "/worktree/src/a.ts" })
     expect(approval("call_per_edit")).not.toHaveProperty("tool")
     expect(approval("call_legacy")).toMatchObject({ command: "Edit", path: "/worktree/src/c.ts" })

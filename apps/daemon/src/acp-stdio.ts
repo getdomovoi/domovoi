@@ -274,7 +274,7 @@ export function mapAcpPermissionRequest(request: RequestPermissionRequest): AcpP
     toolCallId: request.toolCall.toolCallId,
     title,
     ...(command ? { command } : {}),
-    ...(shell ? {} : { tool: request.toolCall.kind ?? "other" }),
+    ...(shell ? {} : { tool: request.toolCall.kind || "other" }),
     options: request.options.map((option) => ({ id: option.optionId, kind: option.kind })),
   }
 }

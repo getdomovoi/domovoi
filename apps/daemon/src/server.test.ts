@@ -97,6 +97,7 @@ import type { ArtifactWatcherOptions } from "./artifact-watcher.js"
 import { maximumPrintableArtifactDepth } from "./print-artifact.js"
 import { savedSettlementInput, settleApproval } from "./approval-settlement.js"
 import { resolveExecution } from "./execution-resolution.js"
+import { OpenCodeSdkAdapter, type OpenCodeClient, type OpenCodeEvent } from "./opencode.js"
 import {
   createSessionTransferPackage,
   prepareSessionTransferIntent,
@@ -12610,6 +12611,116 @@ describe("DomovoiDaemon", () => {
     }
     expect(((await rpc("workspace.get", {})).result as { approvalRules: unknown[] }).approvalRules).toHaveLength(0)
     socket.close()
+  })
+
+  // Security review round 1 of #665: an OpenCode permission with an empty
+  // name and a command field is not bash. From the provider's event to the
+  // daemon's policy, Build Auto never answers it: it gets a card.
+  it("never lets Build Auto answer an OpenCode permission that is not bash", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-opencode-permission-"))
+    scratchDirectories.push(workspacePath)
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = { provider: "opencode", model: "anthropic/sonnet", reasoning: "medium", permissionMode: "build", auto: true }
+    session.state = "idle"
+    session.workspacePath = workspacePath
+    session.providerThreadId = "open-session"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    const queued: OpenCodeEvent[] = []
+    const waiting: Array<(result: IteratorResult<OpenCodeEvent>) => void> = []
+    const stream: AsyncIterable<OpenCodeEvent> = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          const event = queued.shift()
+          if (event) return { value: event, done: false }
+          return new Promise<IteratorResult<OpenCodeEvent>>((resolve) => waiting.push(resolve))
+        },
+      }),
+    }
+    const emit = (event: OpenCodeEvent) => {
+      const waiter = waiting.shift()
+      if (waiter) waiter({ value: event, done: false })
+      else queued.push(event)
+    }
+    const client = {
+      config: {
+        get: vi.fn(async () => ({ data: { model: "anthropic/sonnet" } })),
+        providers: vi.fn(async () => ({
+          data: {
+            default: { anthropic: "sonnet" },
+            providers: [{
+              id: "anthropic",
+              name: "Anthropic",
+              models: { sonnet: { id: "sonnet", providerID: "anthropic", name: "Sonnet", capabilities: { reasoning: true }, status: "active" } },
+            }],
+          },
+        })),
+      },
+      session: {
+        create: vi.fn(async () => ({ data: { id: "open-session" } })),
+        get: vi.fn(async () => ({ data: { id: "open-session" } })),
+        delete: vi.fn(async () => ({ data: true })),
+        abort: vi.fn(async () => ({ data: true })),
+        promptAsync: vi.fn(async () => ({ data: undefined })),
+        messages: vi.fn(async (_options?: unknown): Promise<{ data: unknown; response?: Response }> => ({ data: [] })),
+      },
+      event: { subscribe: vi.fn(async () => ({ stream })) },
+      postSessionIdPermissionsPermissionId: vi.fn(async () => ({ data: true })),
+    } satisfies OpenCodeClient
+    const adapter = new OpenCodeSdkAdapter(async () => ({ client, server: { close: vi.fn() } }), () => "turn-opencode")
+    const store = { load: () => snapshot, save: vi.fn(), close: vi.fn() } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { opencode: adapter }, workspaceService: checkpointingWorkspace() })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+
+    await expect(rpc("session.send", { sessionId: session.id, prompt: "Look around", client: "desktop" }))
+      .resolves.not.toHaveProperty("error")
+    await vi.waitFor(() => expect(client.session.promptAsync).toHaveBeenCalled(), { timeout: 3_000 })
+    emit({
+      type: "permission.asked",
+      properties: {
+        id: "per_empty",
+        sessionID: "open-session",
+        permission: "",
+        patterns: ["pwd"],
+        metadata: { command: "pwd" },
+        always: [],
+        tool: { messageID: "msg_1", callID: "call_empty" },
+      },
+    })
+    // Either answer ends the wait: an automatic allow sent to OpenCode, or a
+    // card. Only the card is right.
+    const approvals = async () => ((await rpc("workspace.get", {})).result as { approvals: unknown[] }).approvals
+    await vi.waitFor(async () => {
+      expect(client.postSessionIdPermissionsPermissionId.mock.calls.length + (await approvals()).length).toBeGreaterThan(0)
+    }, { timeout: 3_000 })
+    expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalled()
+    expect(await approvals()).toHaveLength(1)
+    socket.close()
+    await adapter.close()
   })
 
   // The link is a directory junction so the swap runs on Windows too (ruled
