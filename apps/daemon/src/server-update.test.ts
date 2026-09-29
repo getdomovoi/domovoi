@@ -1,7 +1,8 @@
 import { once } from "node:events"
+import { networkInterfaces } from "node:os"
 import { afterEach, describe, expect, it } from "vitest"
 import { WebSocket } from "ws"
-import { daemonAuthenticationErrorCode, protocolVersion, updateStatusSchema } from "@getdomovoi/protocol"
+import { daemonAuthenticationErrorCode, localOwnerRequiredErrorCode, protocolVersion, updateStatusSchema } from "@getdomovoi/protocol"
 
 import { DomovoiDaemon } from "./server.js"
 
@@ -52,15 +53,27 @@ describe("daemon update dispatch", () => {
     }
   })
 
-  it("refuses paired clients on every update method", async () => {
+  // The refusal is a policy line, not a credential failure. A client that
+  // reads the authentication code drops the connection and marks the machine
+  // as no longer accepting it (Q169), so the refusal carries its own code and
+  // the connection stays usable.
+  const refusal = { code: localOwnerRequiredErrorCode, message: "Updates require a loopback local-owner connection" }
+
+  it("refuses paired clients on every update method without an authentication error", async () => {
     const { socket, connect } = await start()
     const paired = (await call(socket, "device.pair", { label: "paired cli", client: "cli" })).result as { token: string }
     const client = await connect(paired.token)
     for (const method of ["update.status", "update.check", "update.activate"]) {
-      expect((await call(client, method)).error?.code).toBe(daemonAuthenticationErrorCode)
+      const { error } = await call(client, method)
+      expect(error).toEqual(refusal)
+      expect(error?.code).not.toBe(daemonAuthenticationErrorCode)
     }
+    expect((await call(client, "workspace.get")).error).toBeUndefined()
+    expect(client.readyState).toBe(WebSocket.OPEN)
   })
 
+  // Machine connections meet the machine lifecycle boundary before the update
+  // check, and that boundary is out of this refusal's scope.
   it("refuses paired machine callers on every update method", async () => {
     const { daemon, socket, connect } = await start()
     const machineId = `machine-${"e".repeat(32)}`
@@ -72,5 +85,23 @@ describe("daemon update dispatch", () => {
     for (const method of ["update.status", "update.check", "update.activate"]) {
       expect((await call(machine, method)).error?.code).toBe(daemonAuthenticationErrorCode)
     }
+  })
+
+  // The daemon bearer itself, from an address that is not loopback: only the
+  // peer address fails the check.
+  const remoteAddress = Object.values(networkInterfaces()).flat()
+    .find((entry) => entry?.family === "IPv4" && !entry.internal)?.address
+  it.skipIf(remoteAddress === undefined)("refuses the daemon credential from a non-loopback peer without an authentication error", async () => {
+    const daemon = new DomovoiDaemon({ port: 0, host: "0.0.0.0", allowRemoteTransport: true, statePath: ":memory:" })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const socket = new WebSocket(`ws://${remoteAddress}:${port}/rpc`)
+    sockets.push(socket)
+    await once(socket, "open")
+    expect((await call(socket, "system.hello", { client: "cli", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken })).error).toBeUndefined()
+    for (const method of ["update.status", "update.check", "update.activate"]) {
+      expect((await call(socket, method)).error).toEqual(refusal)
+    }
+    expect(socket.readyState).toBe(WebSocket.OPEN)
   })
 })
