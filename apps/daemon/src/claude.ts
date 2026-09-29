@@ -709,6 +709,10 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       : typeof input.file_path === "string"
         ? input.file_path
         : typeof input.notebook_path === "string" ? input.notebook_path : screened?.path
+    // Claude names a tool server's tool mcp__<server>__<tool> and splits it at
+    // the first separator after the server. The server is named as Claude
+    // names it: Claude, not Domovoi, read the file that declared it.
+    const [prefix, server] = toolName.split("__")
     this.#emit({
       type: "approval-requested",
       requestId,
@@ -723,6 +727,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
       ...(reason ? { reason } : {}),
       ...(toolName !== "Bash" && !claudeFileTools.has(toolName) ? { tool: toolName } : {}),
+      ...(prefix === "mcp" && server ? { toolServer: { name: server } } : {}),
     })
     return new Promise((resolve) => {
       this.#pendingApprovals.set(requestId, {
