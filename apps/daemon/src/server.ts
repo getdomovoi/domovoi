@@ -352,8 +352,9 @@ export const repositoryTrustProjectRefusal = "Repository trust applies only to t
 // Ruling Q152 A: Codex runs every thread in one shared app-server, and
 // archiving a thread does not confirm that the tool servers it started have
 // exited. Taking trust back reports its threads unconfirmed rather than
-// resetting the app-server. P6c can narrow this to threads that loaded a
-// repository tool server (ruling Q148 A holds them back for now).
+// resetting the app-server. It applies only to threads that reported applied
+// trust, and P6c reports that for a Codex thread only when repository tool
+// servers loaded (rulings Q148, Q170 A).
 const trustedStopUnconfirmedProviders: ReadonlySet<string> = new Set(["codex"])
 // A provider call's repository trust grant and the count of its project's
 // revokes it was looked up under (#repositoryTrustCall).
@@ -2045,11 +2046,14 @@ export class DomovoiDaemon {
     return this.#repositoryTrustGenerations.get(projectId) ?? 0
   }
 
-  // Records that a call carrying a grant opened or resumed a thread, or
-  // started a turn on it, once the thread is loaded and its session names it.
-  // The adapters still ignore the grant in this slice, so a thread counts once
-  // a grant was passed to it; P6b and P6c can narrow this to the threads whose
-  // verdict loaded trusted input. A call without a grant clears nothing: a
+  // Records a thread that loaded the repository's trusted configuration, once
+  // a call carrying a grant opened or resumed it, or started a turn on it, and
+  // the thread is loaded and its session names it. Only the adapter's own
+  // report counts (AgentAdapter.repositoryTrustApplied, ruling Q170 A): a
+  // grant that was passed and not applied loaded nothing, so taking trust back
+  // leaves that thread running. No adapter reports it in this slice; P6b and
+  // P6c add it. A report that throws is taken as applied, so the thread is
+  // stopped rather than missed. A call without a grant clears nothing: a
   // thread that loaded trusted input earlier still holds it.
   // A call that lands after a revoke of its project carried a grant that is
   // gone. A revoke waits in the mutation queue for every call already running,
@@ -2058,20 +2062,45 @@ export class DomovoiDaemon {
   #recordRepositoryTrust(call: RepositoryTrustCall, sessionId: string, provider: string, threadId: string): void {
     const grant = call.input.repositoryTrust
     if (grant === undefined) return
+    let applied: { digest: string } | undefined
+    try {
+      applied = this.#agents.require(provider).repositoryTrustApplied?.(threadId)
+    } catch (error) {
+      this.#reportError("Domovoi could not read whether a thread loaded repository trust", error)
+      applied = { digest: grant.trustedDigest }
+    }
+    if (applied === undefined) return
     const threadKey = providerThreadKey(provider, threadId)
-    this.#trustedThreads.set(threadKey, { projectId: call.projectId, sessionId, trustedDigest: grant.trustedDigest })
+    this.#trustedThreads.set(threadKey, { projectId: call.projectId, sessionId, trustedDigest: applied.digest })
     if (call.generation === this.#repositoryTrustGeneration(call.projectId)) return
     void this.#restartRepositoryTrustThreads(call.projectId, threadKey)
       .then(() => this.#saveAgentState())
       .catch((error: unknown) => this.#reportError("Domovoi could not stop a thread whose repository trust was taken back", error))
   }
 
-  // Rulings Q4, Q146 and Q152 A: taking trust back stops, now, every loaded
-  // thread of the project that a grant was passed to (or the one named). Each
-  // is claimed before the first await: it leaves the loaded set, its events
-  // are dropped, and its turn stops counting as active, so an emergency stop
-  // that begins meanwhile leaves it to this one. An active turn is
-  // interrupted, then the thread is stopped, each within the agent timeout.
+  // The loaded threads of a project that reported applied trust (or the one
+  // named), each with its session. Tracked entries for threads that are no
+  // longer loaded were stopped on another path; they are skipped here and
+  // dropped when the threads are claimed.
+  #repositoryTrustThreads(projectId: string, onlyThreadKey?: string) {
+    const threads: { threadKey: string; threadId: string; session: WorkspaceSnapshot["sessions"][number] }[] = []
+    for (const [threadKey, trusted] of this.#trustedThreads) {
+      if (trusted.projectId !== projectId || (onlyThreadKey !== undefined && threadKey !== onlyThreadKey)) continue
+      if (!this.#loadedAgentThreads.has(threadKey)) continue
+      const session = this.#snapshot.sessions.find(({ id }) => id === trusted.sessionId)
+      const threadId = session?.providerThreadId
+      if (!session || !threadId || providerThreadKey(session.runtime.provider, threadId) !== threadKey) continue
+      threads.push({ threadKey, threadId, session })
+    }
+    return threads
+  }
+
+  // Rulings Q4, Q146, Q152 and Q170 A: taking trust back stops, now, every
+  // loaded thread of the project that reported applied trust (or the one
+  // named). Each is claimed before the first await: it leaves the loaded set,
+  // its events are dropped, and its turn stops counting as active, so an
+  // emergency stop that begins meanwhile leaves it to this one. An active turn
+  // is interrupted, then the thread is stopped, each within the agent timeout.
   // restarted: the stop resolved. unconfirmed: it timed out or failed, or the
   // provider cannot confirm that the tool servers the thread started have
   // exited; the session is failed and fenced as an emergency stop fences a
@@ -2080,14 +2109,13 @@ export class DomovoiDaemon {
   async #restartRepositoryTrustThreads(projectId: string, onlyThreadKey?: string): Promise<RepositoryTrustThreadRestart[]> {
     const claimedAt = new Date().toISOString()
     const claims: { sessionId: string; provider: string; threadId: string; threadKey: string; turnId: string | undefined; fenced: boolean }[] = []
+    const threads = this.#repositoryTrustThreads(projectId, onlyThreadKey)
     for (const [threadKey, trusted] of [...this.#trustedThreads]) {
-      if (trusted.projectId !== projectId || (onlyThreadKey !== undefined && threadKey !== onlyThreadKey)) continue
-      this.#trustedThreads.delete(threadKey)
-      // A thread that is no longer loaded was stopped on another path.
-      if (!this.#loadedAgentThreads.has(threadKey)) continue
-      const session = this.#snapshot.sessions.find(({ id }) => id === trusted.sessionId)
-      const threadId = session?.providerThreadId
-      if (!session || !threadId || providerThreadKey(session.runtime.provider, threadId) !== threadKey) continue
+      if (trusted.projectId === projectId && (onlyThreadKey === undefined || threadKey === onlyThreadKey)) {
+        this.#trustedThreads.delete(threadKey)
+      }
+    }
+    for (const { threadKey, threadId, session } of threads) {
       this.#loadedAgentThreads.delete(threadKey)
       this.#emergencyBlockedThreads.add(threadKey)
       const turnId = session.activeTurnId

@@ -21,12 +21,11 @@ import { waitForDaemon } from "./test-wait-for.js"
 import type { WorkspaceService } from "./workspace.js"
 
 // Slice P6d: taking repository trust back stops, at once, every provider
-// thread that opened under the grant (rulings Q4, Q146 A). Each is reported
-// restarted when its stop resolved and unconfirmed otherwise (Q152 A); an
-// unconfirmed session is failed and fenced as an emergency stop fences one.
-// Nothing resumes on its own: the next message resumes the thread without the
-// repository's configuration.
-
+// thread whose adapter reported that it loaded trusted configuration (rulings
+// Q4, Q146, Q170 A). Each is reported restarted when its stop resolved and
+// unconfirmed otherwise (Q152 A); an unconfirmed session is failed and fenced
+// as an emergency stop fences one. Nothing resumes on its own: the next
+// message resumes the thread without the repository's configuration.
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
 
@@ -51,18 +50,36 @@ function deferred(): Deferred {
   return { promise, resolve }
 }
 
-function agentFor(runtime: Runtime) {
+// A stub that reports applied trust (as P6b and P6c will) loads trusted
+// configuration on every thread a grant reaches. One that does not report has
+// no repositoryTrustApplied at all, like every adapter in this slice.
+function agentFor(runtime: Runtime, reportsTrust: boolean) {
   const listeners = new Set<(event: AgentEvent) => void>()
-  return {
+  const applied = new Map<string, string>()
+  const apply = (threadId: string, trust: RepositoryTrustGrant | undefined) => {
+    if (trust) applied.set(threadId, trust.trustedDigest)
+  }
+  const adapter = {
     connect: vi.fn(async () => {}),
     listModels: vi.fn(async () => [{
       provider: runtime.provider, id: runtime.model, displayName: runtime.model, description: "",
       supportedReasoningEfforts: ["medium", "high"], defaultReasoningEffort: "high", isDefault: true,
     }]),
-    startThread: vi.fn(async (_input: Parameters<AgentAdapter["startThread"]>[0]) => `${runtime.provider}-started`),
-    resumeThread: vi.fn(async (_input: Parameters<AgentAdapter["resumeThread"]>[0]) => {}),
-    stopThread: vi.fn(async (_threadId: string) => {}),
-    startTurn: vi.fn(async (input: Parameters<AgentAdapter["startTurn"]>[0]) => `turn-${input.threadId}`),
+    startThread: vi.fn(async (input: Parameters<AgentAdapter["startThread"]>[0]) => {
+      const threadId = `${runtime.provider}-started`
+      apply(threadId, input.repositoryTrust)
+      return threadId
+    }),
+    resumeThread: vi.fn(async (input: Parameters<AgentAdapter["resumeThread"]>[0]) => {
+      apply(input.threadId, input.repositoryTrust)
+    }),
+    stopThread: vi.fn(async (threadId: string) => {
+      applied.delete(threadId)
+    }),
+    startTurn: vi.fn(async (input: Parameters<AgentAdapter["startTurn"]>[0]) => {
+      apply(input.threadId, input.repositoryTrust)
+      return `turn-${input.threadId}`
+    }),
     steerTurn: vi.fn(async () => {}),
     interruptTurn: vi.fn(async (_threadId: string, _turnId: string) => {}),
     resolveApproval: vi.fn(),
@@ -71,6 +88,14 @@ function agentFor(runtime: Runtime) {
       return () => { listeners.delete(listener) }
     }),
     close: vi.fn(async () => {}),
+  } satisfies AgentAdapter
+  if (!reportsTrust) return adapter
+  return {
+    ...adapter,
+    repositoryTrustApplied: vi.fn((threadId: string) => {
+      const digest = applied.get(threadId)
+      return digest === undefined ? undefined : { digest }
+    }),
   } satisfies AgentAdapter
 }
 
@@ -81,7 +106,7 @@ function session(id: string, runtime: Runtime, thread?: string): WorkspaceSnapsh
   }
 }
 
-async function fixture(options: { agentTimeoutMs?: number } = {}) {
+async function fixture(options: { agentTimeoutMs?: number; reportsTrust?: boolean } = {}) {
   const snapshot: WorkspaceSnapshot = {
     ...createEmptyWorkspace(demoWorkspace.machine),
     project: { id: projectId, machineId: demoWorkspace.machine.id, name: "acme", path: "/code/acme", branch: "main" },
@@ -109,7 +134,8 @@ async function fixture(options: { agentTimeoutMs?: number } = {}) {
     checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
     restore: vi.fn(),
   } satisfies WorkspaceService
-  const agents = { "claude-code": agentFor(claude), codex: agentFor(codex) }
+  const reportsTrust = options.reportsTrust ?? true
+  const agents = { "claude-code": agentFor(claude, reportsTrust), codex: agentFor(codex, reportsTrust) }
   const errorSink = vi.fn()
   const daemon = new DomovoiDaemon({
     port: 0,
@@ -255,6 +281,26 @@ describe("repository.revokeTrust stops the threads that opened under the grant",
     expect(agents["claude-code"].interruptTurn).not.toHaveBeenCalled()
     expect(agents["claude-code"].stopThread).not.toHaveBeenCalled()
     expect((await sessionNamed("session-a")).activeTurnId).toBe("turn-thread-a")
+  })
+
+  // Ruling Q170 A: only a thread whose adapter reports that it loaded trusted
+  // configuration is stopped. A grant that was passed and not applied leaves
+  // the thread running, whatever the provider.
+  it("leaves threads alone whose adapter does not report applied trust", async () => {
+    const { agents, grants, ok, revoke, sessionNamed } = await fixture({ reportsTrust: false })
+    grants.set(projectId, grant(projectId))
+    await ok("session.send", { sessionId: "session-a", prompt: "claude" })
+    await ok("session.send", { sessionId: "session-codex", prompt: "codex" })
+    expect(trustOf(agents["claude-code"].startTurn.mock.calls[0]![0])).toEqual(grant(projectId))
+    expect(trustOf(agents.codex.startTurn.mock.calls[0]![0])).toEqual(grant(projectId))
+
+    expect(await revoke()).toEqual([])
+    for (const agent of [agents["claude-code"], agents.codex]) {
+      expect(agent.interruptTurn).not.toHaveBeenCalled()
+      expect(agent.stopThread).not.toHaveBeenCalled()
+    }
+    expect(await sessionNamed("session-a")).toMatchObject({ state: "active", activeTurnId: "turn-thread-a" })
+    expect(await sessionNamed("session-codex")).toMatchObject({ state: "active", activeTurnId: "turn-thread-codex" })
   })
 
   // A workspace holds the open project's sessions only, and opening another
