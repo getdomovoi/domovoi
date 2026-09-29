@@ -173,6 +173,34 @@ describe("SqliteRepositoryTrust", () => {
     expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
   })
 
+  it("reads its table's index keys from main, not from a temporary index of the same name", () => {
+    const database = new DatabaseSync(":memory:")
+    new SqliteRepositoryTrust(database).record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
+    // The main index ignores case; an unrelated temporary index shares its name
+    // and compares as bytes.
+    database.exec(`
+      CREATE INDEX folded ON repository_trust (project_id COLLATE NOCASE);
+      CREATE TEMP TABLE unrelated (value TEXT);
+      CREATE INDEX temp.folded ON unrelated (value);
+    `)
+    const trust = new SqliteRepositoryTrust(database)
+
+    expect(trust.find("project-acme")).toBeUndefined()
+    expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+  })
+
+  it("accepts its table when only an unrelated temporary index of the same name ignores case", () => {
+    const database = new DatabaseSync(":memory:")
+    const recorded = new SqliteRepositoryTrust(database).record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
+    database.exec(`
+      CREATE TEMP TABLE unrelated (value TEXT);
+      CREATE INDEX temp.repository_trust_trusted_at ON unrelated (value COLLATE NOCASE);
+    `)
+    const trust = new SqliteRepositoryTrust(database)
+
+    expect(trust.find("project-acme")).toEqual(recorded)
+  })
+
   it("reads and revokes only the exact project id, even from a table swapped in after its check", () => {
     const database = new DatabaseSync(":memory:")
     const trust = new SqliteRepositoryTrust(database)
