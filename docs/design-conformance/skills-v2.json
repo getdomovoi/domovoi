@@ -1,7 +1,7 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 Skills.dc.html",
-  "sha256": "794a6547da2a95f479f836feb2a3cc1d69bf43095824c3b76ba5fb8dfffb1576",
-  "derivedOn": "2026-09-26",
+  "sha256": "49ace239d0cbf7933b124ebdcb06531634e6e7399d20cc26f8de7653688fe6d0",
+  "derivedOn": "2026-09-30",
   "sources": [
     "packages/ui/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts"
@@ -164,7 +164,7 @@
     {
       "id": "trust.held-back",
       "name": "Repository held back until trusted",
-      "where": "Tools tab (step 12): a card naming the repository held back on this machine for all agents, Review what it would run, what does not load and what still loads, one row per config file with its counts; repository rows tagged held back",
+      "where": "Tools tab (step 12): a card naming the repository held back on this machine for all agents, Review and trust, what does not load and what still loads, one row per config file with its counts; repository rows tagged held back",
       "copy": [
         "all agents · this machine",
         "Review and trust",
@@ -189,7 +189,7 @@
     {
       "id": "trust.sheet",
       "name": "Trust review sheet",
-      "where": "sheet over the Tools tab (step 13), desktop and web only: every file the repository brings with its digest and entries (tool servers, env key names, hooks, plugins, rules, git filter and filter driver), instruction files load either way, the three limits of trust, Trust for this machine and Keep held back",
+      "where": "the one review surface, a sheet over the Tools tab (step 13), desktop and web only, also opened by Review and trust on a refusal: every file the repository brings with its entries (tool servers, env key names, hooks, plugins, rules, git filter and filter driver) and one config digest over those files, commands cut at a credential, instruction files load either way, the rules of trust led by what trust runs as the person, the reload line when files change while it is open, Trust for this machine and Keep held back",
       "copy": [
         "Everything this repository would run for any agent here. None of it has run.",
         "Instruction files load either way:",
@@ -254,7 +254,7 @@
     {
       "id": "trust.refusal",
       "name": "Session refused for an untrusted repository",
-      "where": "new session thread (step 15): a refusal card naming the agent or Domovoi, the reason code, the file or the filter it names, Review what it would run and Open Tools; the session does not start by itself",
+      "where": "new session thread (step 15): a refusal card naming the agent or Domovoi, the reason code, the file or the filter it names, Review and trust (opens the one sheet) and Open Tools; after trust the card shows Trusted on the machine and Start the session again, and the session does not start by itself",
       "copy": [
         "Open Tools",
         "Nothing from the repository ran.",
@@ -303,7 +303,7 @@
     {
       "id": "trust.phone",
       "name": "Held back on the phone",
-      "where": "phone Tools screen (step 18): held back with every entry grouped by file, and a footer saying trust is granted from desktop or web; the phone cannot trust",
+      "where": "phone Tools screen (step 18): held back with every entry grouped by file, and a footer saying trust is granted from desktop or web; phone refusal (step 16): names the file or filter, See what is held back opens the phone Tools screen, and the same Trust from desktop or web bar; the phone cannot trust",
       "copy": [
         "None of it loads for any agent.",
         "Trust from desktop or web",
