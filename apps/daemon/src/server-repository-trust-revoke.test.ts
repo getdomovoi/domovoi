@@ -60,9 +60,10 @@ function deferred(): Deferred {
   return { promise, resolve }
 }
 
-// A stub that reports applied trust (as P6b and P6c will) loads trusted
-// configuration on every thread a grant reaches. One that does not report has
-// no repositoryTrustApplied at all, like every adapter in this slice.
+// A stub that reports applied trust (as the Claude Code and Codex adapters
+// do) loads trusted configuration on every thread a grant reaches. One that
+// does not report has no repositoryTrustApplied at all, like every other
+// adapter.
 function agentFor(runtime: Runtime, reportsTrust: boolean) {
   const listeners = new Set<(event: AgentEvent) => void>()
   const applied = new Map<string, string>()

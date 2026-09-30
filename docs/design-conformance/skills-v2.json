@@ -1,7 +1,7 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 Skills.dc.html",
-  "sha256": "794a6547da2a95f479f836feb2a3cc1d69bf43095824c3b76ba5fb8dfffb1576",
-  "derivedOn": "2026-09-26",
+  "sha256": "49ace239d0cbf7933b124ebdcb06531634e6e7399d20cc26f8de7653688fe6d0",
+  "derivedOn": "2026-09-30",
   "sources": [
     "packages/ui/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts",
@@ -165,10 +165,10 @@
     {
       "id": "trust.held-back",
       "name": "Repository held back until trusted",
-      "where": "Tools tab (step 12): a card naming the repository held back on this machine for all agents, Review what it would run, what does not load and what still loads, one row per config file with its counts; repository rows tagged held back",
+      "where": "Tools tab (step 12): a card naming the repository held back on this machine for all agents, Review and trust, what does not load and what still loads, one row per config file with its counts; repository rows tagged held back",
       "copy": [
         "all agents · this machine",
-        "Review what it would run",
+        "Review and trust",
         "Its hooks, tool servers, plugins, env, rules and git filter do not load for any agent.",
         "CLAUDE.md",
         "and",
@@ -179,24 +179,27 @@
         "acme-api is held back on"
       ],
       "evidence": [
-        "Held back until you trust this repository"
-      ],
-      "blocked": {
-        "since": "2026-09-26",
-        "needs": "protocol",
-        "reason": "no RPC reports what a repository's config would load or that it is held back, and no trust step lifts the hold (changeset repository-provider-config-held-back): Claude Code, OpenCode and Kilo sessions start without repository settings, and a Kilo or Codex session is refused instead when the worktree holds config the provider would load anyway, so no client can draw this state"
-      }
+        "Held back until you trust this repository",
+        "is held back on",
+        "all agents · this machine",
+        "Its hooks, tool servers, plugins, env, rules and git filter do not load for any agent.",
+        "Review and trust"
+      ]
     },
     {
       "id": "trust.sheet",
       "name": "Trust review sheet",
-      "where": "sheet over the Tools tab (step 13), desktop and web only: every file the repository brings with its digest and entries (tool servers, env key names, hooks, plugins, rules, git filter and filter driver), instruction files load either way, the three limits of trust, Trust for this machine and Keep held back",
+      "where": "the one review surface, a sheet over the Tools tab (step 13), desktop and web only, also opened by Review and trust on a refusal: every file the repository brings with its entries (tool servers, env key names, hooks, plugins, rules, git filter and filter driver) and one config digest over those files, commands cut at a credential, instruction files load either way, the rules of trust led by what trust runs as the person, the reload line when files change while it is open, Trust for this machine and Keep held back",
       "copy": [
         "Everything this repository would run for any agent here. None of it has run.",
         "Instruction files load either way:",
         "CLAUDE.md · AGENTS.md",
+        "Trusted, its hooks run and its tool servers start as you, with your file and network access, when a session opens and before any tool call asks.",
         "Trust is for this machine and this repository only.",
-        "It is pinned to these four files. Any change, an agent's edit included, holds it back again.",
+        "It is pinned to one digest of these four files. Any change, an agent's edit included, holds it back again.",
+        "If they change while this is open, nothing is trusted and the review reloads.",
+        "Config digest",
+        "Cut at a credential. Domovoi shows no secret.",
         "Trust does not skip a gate, and its allow rules cannot either. Reads outside the worktree and gated actions still ask.",
         "Trust for this machine",
         "Keep held back",
@@ -216,13 +219,18 @@
         "env key",
         "env keys"
       ],
-      "evidence": [
-        "Trust for this machine"
+      "presence": [
+        "Trust for this machine",
+        "Config digest",
+        "If they change while this is open, nothing is trusted and the review reloads."
       ],
-      "blocked": {
-        "since": "2026-09-26",
-        "needs": "protocol",
-        "reason": "no protocol method records trust per machine and repository pinned to file digests, and none lists what a repository would run, its env key names or its git filter drivers"
+      "evidence": [
+        "Trust for this machine",
+        "Filter driver"
+      ],
+      "partial": {
+        "since": "2026-09-30",
+        "reason": "the sheet opens from the Tools tab and lists every tool server, hook, plugin, env key name, rule, helper and skill tool.inventory reports, grouped by file, with the one config digest; tool.inventory reports no git filter or filter driver, so the sheet lists none, and no refusal opens it yet (trust.refusal is blocked)"
       }
     },
     {
@@ -239,27 +247,34 @@
         "New since you trusted it",
         "Changed since you trusted it"
       ],
-      "evidence": [
-        "Review and trust again"
+      "presence": [
+        "Review and trust again",
+        "changed since you trusted it"
       ],
-      "blocked": {
-        "since": "2026-09-26",
-        "needs": "protocol",
-        "reason": "no trust record exists, so no digest comparison, no change report and no attribution of the change to a session turn"
+      "evidence": [
+        "Review and trust again",
+        "Unchanged:",
+        "Changed by"
+      ],
+      "partial": {
+        "since": "2026-09-30",
+        "reason": "the card names the earlier grant, says it no longer applies and opens the sheet again; the daemon keeps one digest over all the files and no copy of what was trusted, so the tab cannot say which file changed, what was added, who changed it, or tag entries new or changed since trust"
       }
     },
     {
       "id": "trust.refusal",
       "name": "Session refused for an untrusted repository",
-      "where": "new session thread (step 15): a refusal card naming the agent or Domovoi, the reason code, the file or the filter it names, Review what it would run and Open Tools; the session does not start by itself",
+      "where": "new session thread (step 15): a refusal card naming the agent or Domovoi, the reason code, the file or the filter it names, Review and trust (opens the one sheet) and Open Tools; after trust the card shows Trusted on the machine and Start the session again, and the session does not start by itself",
       "copy": [
         "Open Tools",
         "Nothing from the repository ran.",
-        "claude-code did not start",
+        "codex did not start",
         "Domovoi did not start this session",
         "refused · untrusted repository file",
         "refused · untrusted git filter",
-        "claude-code will not start in acme-api until the repository is trusted on",
+        "codex would load .codex/config.toml from this worktree, and that file can start programs or change agent permissions.",
+        "Trusted on",
+        "Start the session again",
         "Checking out acme-api would run the sops filter driver, which is not trusted on",
         "It names"
       ],
@@ -267,9 +282,9 @@
         "refused · untrusted repository file"
       ],
       "blocked": {
-        "since": "2026-09-26",
+        "since": "2026-09-30",
         "needs": "protocol",
-        "reason": "session refusals carry no untrusted-repository or untrusted-git-filter reason; the daemon refuses a Kilo session over legacy repository config, and a Codex thread/start, thread/resume or turn/start over a repository .codex config, hooks or rules file, and names the file, but with no review path and not as drawn. The phone refusal (step 16), which names the file or filter and opens the phone Tools screen, waits on the same reason: as of 2026-09-30 a refused session reaches the phone as the daemon's prose with no refusal code, so there is no refusal card to attach the pointer to"
+        "reason": "a refused session reaches the client as prose, with no reason code and no file or filter field to name; and no grant lifts a refusal yet: Codex refuses a worktree holding .codex config whatever the grant until P6c, and a filter the repository's own Git config sets is refused whatever the grant (RepositoryFilterRefusedError), so Start the session again would be refused again. The phone refusal (step 16), which names the file or filter and opens the phone Tools screen, waits on the same reason: as of 2026-09-30 a refused session reaches the phone as the daemon's prose with no refusal code, so there is no refusal card to attach the pointer to"
       }
     },
     {
@@ -283,22 +298,29 @@
         "They come back without its hooks, tool servers, plugins, env, rules and git filter.",
         "Take back trust and restart 2 threads",
         "Cancel",
-        "Turn stops, restarts"
+        "Turn stops, restarts",
+        "If Domovoi cannot confirm an old thread stopped, it says so for that session."
       ],
       "evidence": [
         "Take back trust"
       ],
       "blocked": {
-        "since": "2026-09-26",
+        "since": "2026-09-30",
         "needs": "protocol",
-        "reason": "no trust to take back, and no RPC restarts a repository's running threads without its config"
+        "reason": "the confirmation names how many running threads it restarts, and no RPC gives a client that count before the decision: repository.revokeTrust lists the threads only in its result, after they were stopped"
       }
     },
     {
       "id": "trust.phone",
       "name": "Held back on the phone",
-      "where": "phone Tools screen (step 18): held back with every entry grouped by file, and a footer saying trust is granted from desktop or web; the phone cannot trust. Built 2026-09-30 (ruling Q211) in apps/mobile/src/screens/tools.tsx over tool.inventory, now on the phone and tablet allow-list; opened from the connected machine's card on Machines",
+      "where": "phone Tools screen (step 18): held back with every entry grouped by file, and a footer saying trust is granted from desktop or web; phone refusal (step 16): names the file or filter, See what is held back opens the phone Tools screen, and the same Trust from desktop or web bar; the phone cannot trust. The step 18 screen is built (2026-09-30, ruling Q211) in apps/mobile/src/screens/tools.tsx over tool.inventory, now on the phone and tablet allow-list, and opens from the connected machine's card on Machines; the step 16 refusal pointer is not built",
       "copy": [
+        "None of it loads for any agent.",
+        "Trust from desktop or web",
+        "A phone shows this but cannot trust it.",
+        "See what is held back"
+      ],
+      "presence": [
         "None of it loads for any agent.",
         "Trust from desktop or web",
         "A phone shows this but cannot trust it."
@@ -306,8 +328,13 @@
       "evidence": [
         "None of it loads for any agent.",
         "Trust from desktop or web",
-        "A phone shows this but cannot trust it."
-      ]
+        "A phone shows this but cannot trust it.",
+        "See what is held back"
+      ],
+      "partial": {
+        "since": "2026-09-30",
+        "reason": "the step 18 Tools screen is built; the step 16 phone refusal, whose See what is held back opens it, waits on the refusal reason code trust.refusal is blocked on, since a refused session reaches the phone as prose with no card to attach the pointer to"
+      }
     }
   ],
   "annotations": [
@@ -321,13 +348,13 @@
     "Held back",
     "Held back is a state, not a gate. Untrusted, a repository's hooks, tool servers, plugins, env, rules and git filter load for no agent.",
     "Trust review",
-    "The one review surface, on desktop and web. Per machine and per repository, pinned to four file digests.",
+    "The one review surface, on desktop and web. Per machine and per repository, pinned to one config digest. Commands are cut at a credential.",
     "Changed since trust",
     "Any change to a trusted config file, an agent's own edit included, holds the repository back and asks again.",
     "Session refused",
-    "A refusing agent names the file; a git filter refusal names the filter. Review opens the same sheet, and the session does not start by itself.",
-    "Inline review, not built",
-    "Not built. One review surface: the sheet in step 13.",
+    "A refusing agent names the file; a git filter refusal names the filter. Review and trust opens the one sheet. After trust, the session does not start by itself.",
+    "Refused on the phone",
+    "The phone shows the refusal with the file or filter it names. It cannot trust, so it points to desktop or web.",
     "Taking trust back restarts the repository's running threads now. A running turn and its tool servers stop.",
     "The phone shows what is held back and why, with every entry. It cannot trust: that is desktop or web.",
     "New session",
@@ -359,11 +386,11 @@
     "ACME_ENV · DATABASE_URL",
     "PGHOST · PGUSER · PGPASSWORD",
     "stdio · npx -y @acme/pg-mcp",
-    "http · mcp.linear.app",
+    "http · mcp.linear.app:443",
+    "PostToolUse · Edit",
     "for postgres-dev",
     "smudge sops -d --ignore-mac · clean sops -e",
     "smudge sops -d · clean sops -e",
-    "tool server s3-sync · stdio · ./bin/s3-sync --bucket acme-dev-assets",
     "claude-code · turn 6 · session s_7f24 · 14:18",
     "claude-code · turn 4 running · postgres-dev, linear",
     "Backfill replay ids for March",
@@ -373,7 +400,6 @@
     "paplay /usr/share/sounds/freedesktop/stereo/complete.oga",
     "powershell -c [console]::beep(880,200)",
     "stdio · npx -y @acme/pg-mcp · environment values not read",
-    "http · https://mcp.linear.app/mcp",
     "PreToolUse · Bash",
     "Bash(pnpm test:*)",
     "stdio · gh-mcp serve · environment values not read",
@@ -392,6 +418,21 @@
       "id": "trust.phone",
       "since": "2026-09-30",
       "note": "Built from this inventory, not read against the design's step 18 frame. How the screen is reached is not drawn here: it opens from Open Tools on the connected machine's card on Machines. Each file card says the held-back reason once, since every entry shares it. The footer drops Trust from desktop or web where trust cannot lift the hold (a trusted repository, or one that cannot be trusted) and keeps A phone shows this but cannot trust it. Unreadable repository files, entries left out and cannot-trust reasons are listed in cards the design may draw differently."
+    },
+    {
+      "id": "trust.held-back",
+      "since": "2026-09-30",
+      "note": "The card shows while the repository is untrusted and not yet reviewed and brings at least one config file the inventory lists, decided from the files and not from entries, since a file such as .codex/rules/*.rules or an empty .codex/config.toml can make an agent refuse without declaring an entry; such a file reads no entries, in the card and in the sheet. When the daemon holds back only some entries, it says how many of how many are held back and that the rest load, instead of the design's for-any-agent line, which would be false then; when it holds none back while some load, the card is titled not trusted rather than held back. Where this client cannot grant trust (a watching client), the card says Granted from desktop or web only in place of Review and trust."
+    },
+    {
+      "id": "trust.sheet",
+      "since": "2026-09-30",
+      "note": "Built as a dialog over the Tools tab. A file two agents read is one group naming both agents, with each entry once. When the daemon answers config-changed, the sheet says The files changed while this was open and Nothing was trusted, which the design does not draw, and the tab reads the files again; the new digest is sent only by the next click. A cannot-trust answer lists the refusals in the sheet and removes the trust button. Env keys are counted one by one in a file's counts. When the daemon holds back only some of the repository's entries, the sheet's lead says how many of how many are held back and that the rest already load, instead of the design's None of it has run, which would be false then. When the daemon left entries out of the list, the sheet says This list is not complete, how many entries are not shown, and offers no trust until every entry can be listed, since the grant covers the whole configuration; a repository config file that could not be read blocks trust the same way, naming the file, until it can be read (ruling Q219 A). The design does not draw this state."
+    },
+    {
+      "id": "trust.changed",
+      "since": "2026-09-30",
+      "note": "The card carries Review and trust again only; Keep held back is the sheet's button, since on the tab nothing is decided by keeping the hold."
     }
   ],
   "scriptBacklog": {

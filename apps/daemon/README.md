@@ -566,6 +566,47 @@ code or settings the repository brings:
   worktree and conversation are kept, and it can be switched to another provider, which starts a
   new thread there; the daemon holds no Cursor or Grok thread to stop. The switch is `acpProvidersTurnedOff` in
   `src/acp-providers.ts`.
+- Codex threads mark every path Codex consults for project trust as untrusted, so Codex loads
+  nothing from the repository's `.codex` folder itself: no `config.toml`, `hooks.json` or
+  `rules/*.rules`. The daemon refuses to open or continue a Codex session in a worktree that holds
+  any of them, or whose main checkout holds a `.codex/config.toml` or `.codex/hooks.json`, and says
+  which file. When this machine has trusted the repository and the session worktree's
+  configuration still has the trusted digest, the thread opens without that refusal, and the
+  daemon passes the `mcp_servers` entries of the `.codex/config.toml` it hashed in the thread
+  config of `thread/start` and `thread/resume`:
+  - a passed server keeps only `command`, `args`, `env`, `cwd`, `url`, `http_headers`, `enabled`,
+    `startup_timeout_sec`, `startup_timeout_ms`, `tool_timeout_sec`, `enabled_tools` and
+    `disabled_tools`, as written. Its `env` loses `ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`,
+    `CODEX_*`, `*_BASE_URL`, any key containing `PROXY`, `NODE_OPTIONS`, `LD_*`, `DYLD_*` and
+    `PATH`, in any case.
+  - a passed server gets `default_tools_approval_mode = "prompt"`, so Codex asks before every
+    tool call whatever the server says of its tools, and the thread config sets
+    `approvals_reviewer = "user"` and turns on `tool_call_mcp_elicitation`, so the question comes
+    to Domovoi as an approval card, without Always. In Plan, and in Build with Auto, Codex refuses
+    the call instead.
+  - a server with the same name as one of yours, in any case, a server of one of your plugins
+    included, a server named `codex_apps`, `codex_app`, `notes`, `node_repl` or `cua_repl`, a
+    disabled server, a remote server whose address or headers contain `$` or that sets
+    `bearer_token_env_var`, `env_http_headers` or `http_headers_helper`, and a server whose name
+    is not letters, digits, `-` and `_` are held back. Your servers are the ones your Codex
+    configuration layers declare and every server Codex's `mcpServerStatus/list` names, which
+    starts each of them once to describe it. When either cannot be read, no repository server
+    passes. None passes either unless the thread gets Codex's local environment alone: an
+    `environments.toml` in your Codex home or any `CODEX_EXEC_SERVER_*` variable, in any case,
+    can add an environment that brings plugin servers of its own, which that list does not name.
+    Codex reads its environments once, when its app-server starts, so the daemon judges the
+    variables and Codex home that app-server is started with, before the start and again once it
+    has started, and a "not local" answer stands until that app-server ends. With `CODEX_HOME`
+    unset, every home Codex could take is checked: Node's home directory, the account's home and
+    `USERPROFILE`.
+
+  A trusted repository's tool servers start as programs with your own access when a session
+  opens, before any tool call is asked about. Approval, sandbox, permission, network, shell
+  environment, profile, model provider and
+  `experimental_*` settings, hooks, plugins and rules stay held back. A main checkout that holds
+  hooks keeps the repository untrusted and still refuses every Codex thread. A running thread keeps
+  what it was given; a changed configuration or a new grant applies at its next open. A session
+  loaded only to be archived gets nothing.
 
 Instruction files still reach the agent, because the daemon reads them itself as text. For Claude
 Code it reads `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` at the worktree root and

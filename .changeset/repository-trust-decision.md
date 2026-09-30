@@ -9,12 +9,14 @@ machine's grant names. Otherwise it is held back, with a reason code: `not-trust
 configuration is not the one trusted, and `unreadable` when it cannot be read. A trusted verdict
 gives the worktree's `.claude/settings.json`, `.mcp.json` and `.codex/config.toml` parsed from the
 same bytes the digest covers. The reader returns those documents only when asked, so an inventory
-read still holds no configuration text. Nothing loads under a trusted verdict yet.
+read still holds no configuration text. What each adapter loads under a trusted verdict is in its
+own entry below.
 
 Every call that opens a provider thread or starts a turn now carries the grant, looked up in the
 trust store at that call: session creation, fork, provider restart, provider handoff, resume and
 each turn. Resuming a thread only to archive it carries none. A trust store that fails is reported
-and gives no grant. Every adapter ignores the grant for now.
+and gives no grant. Claude Code and Codex apply the grant; OpenCode, Kilo and the ACP agents
+ignore it.
 
 `tool.inventory` now marks an entry held back where its adapter provably keeps it from the agent:
 every entry from `.claude/settings.json` and `.mcp.json` for Claude Code, which starts with the
