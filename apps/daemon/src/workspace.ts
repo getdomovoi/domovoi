@@ -313,6 +313,9 @@ export class RepositoryGitFilterRefusedError extends RepositoryFilterRefusedErro
   readonly drivers: readonly { name: string; scope: RepositoryGitFilterScope }[]
   readonly worktreeRemoved: boolean
   readonly branchRemoved: boolean | undefined
+  // The filter settings as the refused checkout read them, commands
+  // included: for the refusal's digest, never sent, stored or logged.
+  readonly settings: readonly RepositoryGitFilter[]
 
   constructor(filters: readonly RepositoryGitFilter[], cleanup: NewWorktreeCleanup) {
     // The base class names each driver from a filter.<driver>.<op> key; an lfs
@@ -326,6 +329,7 @@ export class RepositoryGitFilterRefusedError extends RepositoryFilterRefusedErro
       + "Filters from your global or system Git config still run."
     this.worktreeRemoved = cleanup.worktreeRemoved
     this.branchRemoved = cleanup.branchRemoved
+    this.settings = filters
     this.name = "RepositoryGitFilterRefusedError"
     const seen = new Set<string>()
     this.drivers = filters.flatMap(({ driver, scope }) => {

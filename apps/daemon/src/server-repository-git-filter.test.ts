@@ -154,7 +154,8 @@ describe("a session refused over a repository git filter", () => {
       omittedDrivers: 0,
     })
     expect(repositoryGitFilterRefusalSchema.safeParse(reply.error.data).success).toBe(true)
-    expect(repositoryProviderConfig).toHaveBeenCalledWith(projectPath, projectRootRead)
+    // The root as its sessions read it, with the refused checkout's filters.
+    expect(repositoryProviderConfig).toHaveBeenCalledWith(projectPath, { ...projectRootRead, gitFilters: [filter("sops"), filter("sops", "clean")] })
     expect(agents["claude-code"].startThread).not.toHaveBeenCalled()
     expect(await sessionIds()).toEqual(["session-source"])
     expect(store.sessionCreations?.pending(projectId)).toEqual([])

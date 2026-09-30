@@ -40,7 +40,11 @@ export async function repositoryGitFilterRpcError(input: {
   const read = input.read ?? readRepositoryProviderConfig
   let config: Awaited<ReturnType<RepositoryProviderConfigReader>>
   try {
-    config = await read(input.project.path, projectRootRead)
+    // The root as its sessions read it, with the filters the refused checkout
+    // read in place of the root's own, so the digest and trust describe the
+    // configuration that was refused (an onbranch include or a fork's
+    // config.worktree can make the two differ).
+    config = await read(input.project.path, { ...projectRootRead, gitFilters: input.error.settings })
   } catch {
     return undefined
   }

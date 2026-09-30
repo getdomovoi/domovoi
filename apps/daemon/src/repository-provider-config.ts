@@ -1206,6 +1206,10 @@ export type RepositoryProviderConfigOptions = {
   // The folder below the root a session starts in, `/`-separated; the root
   // when not given, where Domovoi starts every session.
   sessionFolder?: string
+  // The repository filter settings to record instead of the root's own: the
+  // ones a refused session checkout read, which an onbranch include or a
+  // fork's config.worktree can make differ from the root's.
+  gitFilters?: readonly RepositoryGitFilter[]
 }
 
 export async function readRepositoryProviderConfig(rootPath: string, options: RepositoryProviderConfigOptions): Promise<RepositoryProviderConfig> {
@@ -1313,10 +1317,10 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
   // unreadable, never read as setting none, so a grant made over a config
   // this read could see does not carry over to one it cannot. What would run
   // a filter reads the config again and refuses when it cannot.
-  let gitFilters: RepositoryGitFilter[] = []
+  let gitFilters: readonly RepositoryGitFilter[] = []
   let unreadable: RepositoryGitConfigUnreadableReason | undefined
   try {
-    gitFilters = await readRepositoryGitFilters(rootPath)
+    gitFilters = options.gitFilters ?? await readRepositoryGitFilters(rootPath)
   } catch (error) {
     unreadable = error instanceof RepositoryGitConfigUnreadableError ? error.reason : "git-failed"
     digestRecords.push(`git:filters:unreadable:${unreadable}`)
