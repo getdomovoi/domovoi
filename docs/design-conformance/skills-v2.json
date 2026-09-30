@@ -4,7 +4,8 @@
   "derivedOn": "2026-09-26",
   "sources": [
     "packages/ui/src/**/*.{ts,tsx}",
-    "packages/protocol/src/**/*.ts"
+    "packages/protocol/src/**/*.ts",
+    "apps/mobile/src/**/*.{ts,tsx}"
   ],
   "note": "Inventory re-derived from the current v2 design. Statuses record current implementation evidence and platform blockers; layout, visual state and interaction fidelity remain human-read checks.",
   "elements": [
@@ -268,7 +269,7 @@
       "blocked": {
         "since": "2026-09-26",
         "needs": "protocol",
-        "reason": "session refusals carry no untrusted-repository or untrusted-git-filter reason; the daemon refuses a Kilo session over legacy repository config, and a Codex thread/start, thread/resume or turn/start over a repository .codex config, hooks or rules file, and names the file, but with no review path and not as drawn"
+        "reason": "session refusals carry no untrusted-repository or untrusted-git-filter reason; the daemon refuses a Kilo session over legacy repository config, and a Codex thread/start, thread/resume or turn/start over a repository .codex config, hooks or rules file, and names the file, but with no review path and not as drawn. The phone refusal (step 16), which names the file or filter and opens the phone Tools screen, waits on the same reason: as of 2026-09-30 a refused session reaches the phone as the daemon's prose with no refusal code, so there is no refusal card to attach the pointer to"
       }
     },
     {
@@ -296,20 +297,17 @@
     {
       "id": "trust.phone",
       "name": "Held back on the phone",
-      "where": "phone Tools screen (step 18): held back with every entry grouped by file, and a footer saying trust is granted from desktop or web; the phone cannot trust",
+      "where": "phone Tools screen (step 18): held back with every entry grouped by file, and a footer saying trust is granted from desktop or web; the phone cannot trust. Built 2026-09-30 (ruling Q211) in apps/mobile/src/screens/tools.tsx over tool.inventory, now on the phone and tablet allow-list; opened from the connected machine's card on Machines",
       "copy": [
         "None of it loads for any agent.",
         "Trust from desktop or web",
         "A phone shows this but cannot trust it."
       ],
       "evidence": [
-        "Trust from desktop or web"
-      ],
-      "blocked": {
-        "since": "2026-09-26",
-        "needs": "protocol",
-        "reason": "no RPC reports held-back repository entries to any client, a paired phone included"
-      }
+        "None of it loads for any agent.",
+        "Trust from desktop or web",
+        "A phone shows this but cannot trust it."
+      ]
     }
   ],
   "annotations": [
@@ -389,6 +387,11 @@
       "id": "tools.tab",
       "since": "2026-09-29",
       "note": "The Skills and Tools tabs sit in a strip at the top of the surface, not in the window bar, and an agent is named without its harness mark. Whether an entry runs at session start follows each entry's heldBack, so an untrusted repository whose entries the daemon does not hold back reads as running, and a trusted one never says trust made it so unless no entry is held back. An entry the daemon holds back from a trusted repository, or from one that cannot be trusted, reads Held back, without until you trust this repository. A cannot-trust repository lists its refusal codes in a card the design does not draw."
+    },
+    {
+      "id": "trust.phone",
+      "since": "2026-09-30",
+      "note": "Built from this inventory, not read against the design's step 18 frame. How the screen is reached is not drawn here: it opens from Open Tools on the connected machine's card on Machines. Each file card says the held-back reason once, since every entry shares it. The footer drops Trust from desktop or web where trust cannot lift the hold (a trusted repository, or one that cannot be trusted) and keeps A phone shows this but cannot trust it. Unreadable repository files, entries left out and cannot-trust reasons are listed in cards the design may draw differently."
     }
   ],
   "scriptBacklog": {
