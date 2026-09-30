@@ -55,6 +55,7 @@ async function draw(overrides: Partial<Parameters<typeof MachinesScreen>[0]> = {
     now,
     onRefresh: jest.fn<() => void>(),
     onOpen: jest.fn<() => void>(),
+    onOpenTools: jest.fn<() => void>(),
     onScanPairingCode: jest.fn<() => void>(),
     onTypePairingCode: jest.fn<() => void>(),
     bottomInset: 0,
@@ -96,6 +97,15 @@ describe("MachinesScreen", () => {
     expect(screen.getByText("1 approval")).toBeOnTheScreen()
   })
 
+  // Ruling Q211: the Tools screen reads the connected daemon's open
+  // repository, so it opens from that machine's card and from no other.
+  it("opens Tools from the connected machine only", async () => {
+    const { onOpenTools } = await draw()
+    expect(buttons().filter((name) => name.startsWith("Tools on "))).toEqual(["Tools on macbook-pro-m3"])
+    await fireEvent.press(screen.getByRole("button", { name: "Tools on macbook-pro-m3" }))
+    expect(onOpenTools).toHaveBeenCalledTimes(1)
+  })
+
   it("withholds the counts until a snapshot has named a machine", async () => {
     await draw({ activity: undefined })
 
@@ -107,7 +117,7 @@ describe("MachinesScreen", () => {
   it("opens only the daemon this phone is connected to", async () => {
     const { onOpen } = await draw()
 
-    expect(buttons()).toEqual(["Refresh", "Open macbook-pro-m3", "Scan a code", "Type it"])
+    expect(buttons()).toEqual(["Refresh", "Tools on macbook-pro-m3", "Open macbook-pro-m3", "Scan a code", "Type it"])
 
     await fireEvent.press(screen.getByRole("button", { name: "Open macbook-pro-m3" }))
     expect(onOpen).toHaveBeenCalledTimes(1)

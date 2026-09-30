@@ -41,7 +41,7 @@ function PairingCard({ onScan, onType }: { onScan: () => void, onType: () => voi
   )
 }
 
-function MachineCard({ row, onOpen }: { row: MachineRow, onOpen: () => void }) {
+function MachineCard({ row, onOpen, onOpenTools }: { row: MachineRow, onOpen: () => void, onOpenTools: () => void }) {
   return (
     // The handoff fades a machine that has stopped answering, so the eye lands
     // on the ones that can still be worked on.
@@ -70,11 +70,22 @@ function MachineCard({ row, onOpen }: { row: MachineRow, onOpen: () => void }) {
               </Text>
             </View>
           ))}
+          {/* The Tools screen reads the connected daemon's open repository,
+              so it opens from this machine's card and from no other. */}
+          {row.action === "open" ? (
+            <Button
+              title="Open Tools"
+              variant="ghost"
+              className="ml-auto px-0"
+              accessibilityLabel={`Tools on ${row.label}`}
+              onPress={onOpenTools}
+            />
+          ) : null}
           {row.action === "open" ? (
             <Button
               title="Open"
               variant="ghost"
-              className="ml-auto px-0"
+              className="px-0"
               accessibilityLabel={`Open ${row.label}`}
               onPress={onOpen}
             />
@@ -95,6 +106,7 @@ export function MachinesScreen({
   now,
   onRefresh,
   onOpen,
+  onOpenTools,
   onScanPairingCode,
   onTypePairingCode,
   bottomInset,
@@ -112,6 +124,8 @@ export function MachinesScreen({
   now: number
   onRefresh: () => void
   onOpen: () => void
+  // What the connected machine's repository holds back (ruling Q211).
+  onOpenTools: () => void
   onScanPairingCode: () => void
   onTypePairingCode: () => void
   // What the floating tab bar covers, so the list can pad by exactly that.
@@ -156,7 +170,7 @@ export function MachinesScreen({
           ? <Text variant="meta">Last read while connected.</Text>
           : null}
 
-        {rows.map((row) => <MachineCard key={row.id} row={row} onOpen={onOpen} />)}
+        {rows.map((row) => <MachineCard key={row.id} row={row} onOpen={onOpen} onOpenTools={onOpenTools} />)}
 
         {fleet && !empty ? <PairingCard onScan={onScanPairingCode} onType={onTypePairingCode} /> : null}
       </PageScroller>

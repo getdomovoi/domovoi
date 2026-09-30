@@ -6,6 +6,7 @@ import {
   enabledSkillsMissingFromCatalog,
   selectableTurnSkills,
   skillSummariesSchema,
+  toolInventorySchema,
   turnSkillRefusalFrom,
   turnSkillSelectionFor,
   workspaceSnapshotSchema,
@@ -50,6 +51,7 @@ import { SessionScreen } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
 import { PairScanScreen, usePairCameraPermission } from "./screens/pair-scan"
 import { SettingsScreen } from "./screens/settings"
+import { ToolsScreen, type ToolsLoad } from "./screens/tools"
 import { UnpairedScreen } from "./screens/unpaired"
 import { promptProblem, sendReadinessOverSocket, sessionDetail } from "./session-detail"
 import { queuedCancelParams, sendDelivery } from "./session-delivery"
@@ -351,6 +353,38 @@ export function App() {
   }, [call])
 
   const loadFleet = useCallback(() => fleetLoads.load(call), [call, fleetLoads])
+
+  // Ruling Q211: the Tools screen reads what the connected daemon's open
+  // repository holds back. It is asked for when the screen opens, again when
+  // the connection comes back, and on request, because a trust granted on
+  // desktop or web is not pushed to the phone. Each read retires the one
+  // before it, so a late answer cannot replace a newer one or reach a screen
+  // that has closed.
+  const [toolsOpen, setToolsOpen] = useState(false)
+  const [toolsLoad, setToolsLoad] = useState<ToolsLoad>({ state: "loading" })
+  const toolsRead = useRef(0)
+  const loadTools = useCallback(async () => {
+    const read = ++toolsRead.current
+    setToolsLoad({ state: "loading" })
+    try {
+      const answer = toolInventorySchema.safeParse(await call("tool.inventory", {}))
+      if (read !== toolsRead.current) return
+      setToolsLoad(answer.success
+        ? { state: "loaded", inventory: answer.data }
+        : { state: "error", message: "The daemon answered with an inventory this app cannot read." })
+    } catch (cause) {
+      if (read !== toolsRead.current) return
+      setToolsLoad({ state: "error", message: cause instanceof Error ? cause.message : "The daemon did not answer." })
+    }
+  }, [call])
+  const closeTools = useCallback(() => {
+    toolsRead.current += 1
+    setToolsOpen(false)
+  }, [])
+
+  useEffect(() => {
+    if (toolsOpen && status === "open") void loadTools()
+  }, [loadTools, status, toolsOpen])
 
   // Enablements ride the snapshot, so the phone is told the moment one changes
   // and never has to poll. What it cannot learn that way is the name of a skill
@@ -659,6 +693,25 @@ export function App() {
     )
   }
 
+  // Opened from the connected machine's card, and read only: it holds no
+  // control that changes trust.
+  if (toolsOpen) {
+    return (
+      <SafeAreaProvider>
+        <SafeAreaView className="flex-1 bg-background">
+          <ToolsScreen
+            load={toolsLoad}
+            machine={snapshot?.machine.name ?? "the machine"}
+            notice={notice}
+            connected={status === "open"}
+            onBack={closeTools}
+            onRefresh={() => void loadTools()}
+          />
+        </SafeAreaView>
+      </SafeAreaProvider>
+    )
+  }
+
   if (tablet && snapshot && tab === "sessions") {
     return (
       <SafeAreaProvider>
@@ -912,6 +965,7 @@ export function App() {
               now={now}
               onRefresh={() => void loadFleet()}
               onOpen={() => selectTab("sessions")}
+              onOpenTools={() => setToolsOpen(true)}
               onScanPairingCode={() => setPairingMode("scan")}
               onTypePairingCode={() => setPairingMode("type")}
               bottomInset={tabFootprint}
