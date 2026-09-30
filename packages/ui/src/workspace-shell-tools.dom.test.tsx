@@ -98,6 +98,34 @@ it("names a failed read and reads again on Try again", async () => {
   expect(screen.queryByText("Tools could not be read")).toBeNull()
 })
 
+it("trusts the reviewed digest as this client and reads the tools again", async () => {
+  const { socket, snapshot, user } = await openTools()
+  const inventory = toolInventory(snapshot)
+  await act(async () => { respond(socket, "tool.inventory", inventory) })
+  await settle()
+
+  await user.click(screen.getByRole("button", { name: "Review and trust" }))
+  await user.click(await screen.findByRole("button", { name: "Trust for this machine" }))
+  await settle()
+
+  const [request] = sentRequests(socket, "repository.trust")
+  expect(request?.params).toEqual({ projectId: snapshot.project!.id, configDigest: inventory.repository!.configDigest, client: "web" })
+  await act(async () => {
+    respond(socket, "repository.trust", {
+      outcome: "trusted",
+      repository: {
+        projectId: snapshot.project!.id,
+        configDigest: inventory.repository!.configDigest,
+        trust: { state: "trusted", trustedDigest: inventory.repository!.configDigest, trustedAt: "2026-09-30T10:41:00.000Z", trustedBy: { client: "web" } },
+      },
+    })
+  })
+  await settle()
+
+  expect(sentRequests(socket, "tool.inventory")).toHaveLength(2)
+  expect(screen.queryByRole("dialog")).toBeNull()
+})
+
 it("returns to the skills list from the Skills tab", async () => {
   const { user } = await openTools()
 

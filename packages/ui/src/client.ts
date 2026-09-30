@@ -861,6 +861,13 @@ export class DomovoiClient extends EventTarget {
     return this.request("tool.inventory", {}, options)
   }
 
+  // Trust the open repository on this machine, pinned to the configuration
+  // digest the person reviewed. The daemon grants it only when that digest is
+  // still current, and only to a desktop or web credential.
+  trustRepository(params: RpcParams<"repository.trust">): Promise<RpcResult<"repository.trust">> {
+    return this.request("repository.trust", params)
+  }
+
   readSkill(id: string): Promise<SkillDocument> {
     return this.request("skill.read", { id })
   }
