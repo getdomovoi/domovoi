@@ -5393,7 +5393,9 @@ export class DomovoiDaemon {
         const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1"
         if (!loopback || socket instanceof DaemonRelaySocket || authenticatedActor?.kind !== "client"
           || this.#deviceCredentials.has(socket)) {
-          this.#error(socket, request.id, daemonAuthenticationErrorCode, "The service handoff fence requires a loopback local-owner connection")
+          // A policy refusal, not a credential failure, as for the update
+          // methods: every caller here has already passed authentication.
+          this.#error(socket, request.id, localOwnerRequiredErrorCode, "The service handoff fence requires a loopback local-owner connection")
           return
         }
         if (this.#serviceHandoffFence) {
