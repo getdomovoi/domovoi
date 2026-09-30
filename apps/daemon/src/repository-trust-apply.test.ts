@@ -242,7 +242,8 @@ describe("heldBackUnder", () => {
       ["claude-code", "skill", "deploy", false],
       ["opencode", "skill", "deploy", false],
       ["kilo", "skill", "deploy", false],
-      // Codex loads nothing from a trusted repository until P6c.
+      // Codex is given only a trusted repository's servers that pass (P6c),
+      // so its other settings stay held back.
       ["codex", "permission-rule", "sandbox_mode read-only", true],
     ])
     // The plan the adapter passes is the one the marks come from.

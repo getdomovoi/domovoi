@@ -89,9 +89,9 @@ export interface AgentAdapter {
    * under which configuration digest (ruling Q170 A). The daemon asks right
    * after a startThread, resumeThread or startTurn that carried a grant lands,
    * and taking trust back stops only the threads that answered. Absent or
-   * undefined: nothing trusted loaded. No adapter reports it yet: P6b adds it
-   * for Claude Code, and P6c for Codex, which reports it only when repository
-   * tool servers loaded.
+   * undefined: nothing trusted loaded. Claude Code (P6b) reports it when the
+   * session was given any trusted configuration, and Codex (P6c) only when
+   * repository tool servers loaded; no other adapter reports it.
    */
   repositoryTrustApplied?(threadId: string): { digest: string } | undefined
   stopThread(threadId: string): Promise<void>
