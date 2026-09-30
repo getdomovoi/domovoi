@@ -529,6 +529,14 @@ export function useWorkspace(
     return client.getToolInventory(options)
   }, [])
 
+  const trustRepository = useCallback(async (
+    params: RpcParams<"repository.trust">,
+  ): Promise<RpcResult<"repository.trust">> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.trustRepository(params)
+  }, [])
+
   const searchSessions = useCallback(async (
     params: RpcParams<"session.search">,
     options?: DomovoiRequestOptions,
@@ -886,6 +894,7 @@ export function useWorkspace(
     forkSession,
     getSkillInventory,
     getToolInventory,
+    trustRepository,
     searchSessions,
     listSkills,
     loadSessionHistory,
