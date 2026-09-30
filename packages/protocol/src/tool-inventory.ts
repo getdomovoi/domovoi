@@ -162,16 +162,18 @@ export const maximumToolInventoryGitFilters = 64
 export const maximumToolInventoryGitFilterFiles = 32
 export const repositoryGitFilterOperations = ["clean", "smudge", "process"] as const
 
+export const toolInventoryGitFilterEntrySchema = z.object({
+  driver: repositoryGitFilterDriverNameSchema,
+  operation: z.enum(repositoryGitFilterOperations),
+  command: text(maximumToolInventoryCommandLength),
+  file: toolInventoryPathSchema,
+  heldBack: z.boolean(),
+}).strict()
+
 export const toolInventoryGitFiltersSchema = z.object({
   files: z.array(z.object({ path: toolInventoryPathSchema, scope: repositoryGitFilterScopeSchema }).strict())
     .max(maximumToolInventoryGitFilterFiles),
-  entries: z.array(z.object({
-    driver: repositoryGitFilterDriverNameSchema,
-    operation: z.enum(repositoryGitFilterOperations),
-    command: text(maximumToolInventoryCommandLength),
-    file: toolInventoryPathSchema,
-    heldBack: z.boolean(),
-  }).strict()).max(maximumToolInventoryGitFilters),
+  entries: z.array(toolInventoryGitFilterEntrySchema).max(maximumToolInventoryGitFilters),
   // Entries the daemon left out: past the cap, set somewhere other than a
   // file, or whose redacted text the protocol still refuses.
   omittedEntries: z.number().int().nonnegative().max(1_000_000),
@@ -247,3 +249,4 @@ export type ToolInventoryFile = z.infer<typeof toolInventoryFileSchema>
 export type ToolInventorySource = z.infer<typeof toolInventorySourceSchema>
 export type ApprovalToolServer = z.infer<typeof approvalToolServerSchema>
 export type ToolInventoryGitFilters = z.infer<typeof toolInventoryGitFiltersSchema>
+export type ToolInventoryGitFilterEntry = z.infer<typeof toolInventoryGitFilterEntrySchema>
