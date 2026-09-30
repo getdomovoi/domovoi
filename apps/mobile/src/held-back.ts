@@ -205,6 +205,8 @@ export function heldBackView(inventory: ToolInventory): HeldBackView {
       }
       if (!group.providers.includes(provider.provider)) group.providers.push(provider.provider)
       if (entry.kind === "env-key") {
+        // Every key counts in the file's summary, the ones that share a row too.
+        group.kinds.push("env-key")
         const envKey = `${file.path}\u0000${provider.provider}`
         const existing = envRows.get(envKey)
         if (existing) {
@@ -214,7 +216,6 @@ export function heldBackView(inventory: ToolInventory): HeldBackView {
         const row: HeldBackRow = { key: `${provider.provider}:${index}`, provider: provider.provider, kind: kindLabel["env-key"], name: entry.key, detail: "key names only" }
         envRows.set(envKey, row)
         group.rows.push(row)
-        group.kinds.push("env-key")
         continue
       }
       group.rows.push({ key: `${provider.provider}:${index}`, provider: provider.provider, kind: kindLabel[entry.kind], ...entryText(entry) })

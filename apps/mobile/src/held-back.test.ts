@@ -81,7 +81,8 @@ describe("heldBackView", () => {
       // Keys one file declares are one row, and every key is on it.
       ["Env keys", "ACME_ENV · DATABASE_URL", "key names only"],
     ])
-    expect(settings.counts).toBe("1 hook · 1 env entry · 1 rule")
+    // Two keys on one row are two entries in the count, as the daemon lists them.
+    expect(settings.counts).toBe("1 hook · 2 env entries · 1 rule")
 
     // The person's own files are not the repository's, so they are not here,
     // and neither is a local file that could not be read.
