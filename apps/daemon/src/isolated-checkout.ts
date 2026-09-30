@@ -97,6 +97,12 @@ async function carriedValues(worktree: string, signal?: AbortSignal): Promise<Ma
   return values
 }
 
+// A path rev-parse printed, made absolute; the object format stays a word.
+function resolveLine(worktree: string, line: string): string {
+  const text = line.trim()
+  return text === "" || !/[\\/]/u.test(text) ? text : resolve(worktree, text)
+}
+
 async function copyIfPresent(from: string, to: string): Promise<void> {
   try {
     await fs.copyFile(from, to)
@@ -114,11 +120,13 @@ export async function checkOutIsolated(input: {
   signal?: AbortSignal | undefined
 }): Promise<void> {
   const { worktree, commit, settings, signal } = input
-  const gitPath = async (path: string) => resolve(worktree, (await worktreeGit(worktree, ["rev-parse", "--path-format=absolute", "--git-path", path], signal)).trim())
-  const commonDirectory = (await worktreeGit(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal)).trim()
-  const objectFormat = (await worktreeGit(worktree, ["rev-parse", "--show-object-format"], signal).catch(() => "sha1")).trim() || "sha1"
+  // One rev-parse answers each on its own line, in the order asked.
+  const [commonDirectory, infoAttributes, sparseCheckout, index, objectFormat] = (await worktreeGit(worktree, [
+    "rev-parse", "--path-format=absolute", "--git-common-dir",
+    "--git-path", "info/attributes", "--git-path", "info/sparse-checkout", "--git-path", "index", "--show-object-format",
+  ], signal)).split("\n").map((line) => resolveLine(worktree, line))
+  if (!commonDirectory || !infoAttributes || !sparseCheckout || !index || !objectFormat) throw new Error("Git did not name the new worktree's directories")
   const carried = await carriedValues(worktree, signal)
-  const [infoAttributes, sparseCheckout, index] = await Promise.all([gitPath("info/attributes"), gitPath("info/sparse-checkout"), gitPath("index")])
 
   const pins = new Map<string, string>()
   for (const [key, value] of carried) {
