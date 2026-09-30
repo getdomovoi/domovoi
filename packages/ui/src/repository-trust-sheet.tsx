@@ -64,11 +64,14 @@ export function RepositoryTrustSheet({
   // them already.
   const held = loaded ? repositoryHeldBack(loaded) : { held: 0, total: 0 }
   const omitted = loaded?.providers.filter((provider) => provider.omittedEntries > 0 && provider.files.some((file) => groups.some((group) => group.file.path === file.path))) ?? []
-  // Entries the daemon left out to fit its answer are still covered by the
-  // digest, so a grant would approve entries nobody saw: no trust is offered
-  // until every entry can be listed.
+  // Entries the daemon left out to fit its answer, and files it could not
+  // read, are still covered by the digest, so a grant would approve what
+  // nobody saw: no trust is offered until every entry can be listed and every
+  // file read (ruling Q219 A).
   const notShown = omitted.reduce((total, provider) => total + provider.omittedEntries, 0)
-  const offerTrust = repository !== undefined && refused === undefined && inventory.state === "loaded" && notShown === 0
+  const unreadable = groups.filter((group) => group.file.state === "unreadable").map((group) => group.file.path)
+  const incomplete = notShown > 0 || unreadable.length > 0
+  const offerTrust = repository !== undefined && refused === undefined && inventory.state === "loaded" && !incomplete
   const canTrust = offerTrust && !pending
 
   const change = (next: boolean) => {
@@ -128,11 +131,14 @@ export function RepositoryTrustSheet({
             </Alert>
           ) : null}
           {refused ? <TrustRefusals trust={refused} name={name} /> : null}
-          {repository && notShown > 0 ? (
+          {repository && incomplete ? (
             <Alert>
               <FileTextIcon />
               <AlertTitle>This list is not complete</AlertTitle>
-              <AlertDescription>{`${notShown} ${notShown === 1 ? "entry is" : "entries are"} not shown. Trust is not offered until every entry can be listed.`}</AlertDescription>
+              <AlertDescription>
+                {unreadable.map((path) => <p key={path} className="m-0">{`${path} could not be read. Trust is not offered until it can be read.`}</p>)}
+                {notShown > 0 ? <p className="m-0">{`${notShown} ${notShown === 1 ? "entry is" : "entries are"} not shown. Trust is not offered until every entry can be listed.`}</p> : null}
+              </AlertDescription>
             </Alert>
           ) : null}
 

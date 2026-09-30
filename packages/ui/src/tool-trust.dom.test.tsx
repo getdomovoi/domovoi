@@ -267,6 +267,26 @@ describe("trust review sheet", () => {
     expect(within(sheet).getByText("2 of 7 entries from this repository are held back. The rest already load.")).toBeTruthy()
   })
 
+  it("offers no trust while a repository config file could not be read", async () => {
+    const onTrust = vi.fn<Trust>()
+    const provider = claude({
+      files: [
+        { path: ".mcp.json", source: "repository-file", state: "read" },
+        { path: ".claude/settings.json", source: "project-settings", state: "unreadable", reason: "invalid-json" },
+      ],
+      entries: entries().filter((entry) => entry.file === ".mcp.json"),
+    })
+    show(inventory(notTrusted, [provider]), { onTrust })
+    const { sheet } = await openSheet()
+
+    // The digest covers the file, so a grant would approve what nobody could read.
+    expect(within(sheet).queryByRole("button", { name: "Trust for this machine" })).toBeNull()
+    expect(within(sheet).getByText("This list is not complete")).toBeTruthy()
+    expect(within(sheet).getByText(".claude/settings.json could not be read. Trust is not offered until it can be read.")).toBeTruthy()
+    expect(within(sheet).getByRole("button", { name: "Keep held back" })).toBeTruthy()
+    expect(onTrust).not.toHaveBeenCalled()
+  })
+
   it("offers no trust while entries the digest covers are left out of the list", async () => {
     const onTrust = vi.fn<Trust>()
     show(inventory(notTrusted, [claude({ omittedEntries: 3 })]), { onTrust })
