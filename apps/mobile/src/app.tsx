@@ -382,9 +382,13 @@ export function App() {
     setToolsOpen(false)
   }, [])
 
+  // The open project decides what the daemon reads. A project opened on any
+  // client while the screen is up is read again, so the screen never shows
+  // the last project's entries and trust as the open one's.
+  const openProjectId = snapshot?.project?.id
   useEffect(() => {
     if (toolsOpen && status === "open") void loadTools()
-  }, [loadTools, status, toolsOpen])
+  }, [loadTools, openProjectId, status, toolsOpen])
 
   // Enablements ride the snapshot, so the phone is told the moment one changes
   // and never has to poll. What it cannot learn that way is the name of a skill

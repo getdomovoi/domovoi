@@ -319,4 +319,52 @@ describe("App", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Try again" }))
     expect(socket.requests("tool.inventory")).toHaveLength(2)
   })
+
+  // A project opened on any client while Tools is up changes what the daemon
+  // reads, so the screen reads again rather than showing the last project.
+  it("reads Tools again when the open project changes", async () => {
+    const { socket } = await openApp(workspace())
+    await fireEvent.press(screen.getByRole("tab", { name: "Machines" }))
+    await settle()
+    const self = demoWorkspace.machine
+    await act(async () => {
+      socket.answer("fleet.list", {
+        entries: [{
+          kind: "machine",
+          machine: {
+            id: self.id, label: self.name, platform: "darwin", arch: "arm64", version: "0.0.1", connection: "local",
+            capabilities: ["sessions"], protocolVersion: "0.2.0", transports: [],
+            heartbeat: { state: "online", lastSeenAt: new Date().toISOString() }, health: "healthy", self: true,
+          },
+        }],
+      })
+    })
+    await settle()
+    await fireEvent.press(screen.getByRole("button", { name: `Tools on ${self.name}` }))
+    await settle()
+    await act(async () => {
+      socket.answer("tool.inventory", {
+        machine: { id: self.id, name: self.name, platform: "darwin", arch: "arm64", version: "0.0.1" },
+        repository: { projectId: "project-acme-api", root: "/Users/dev/src/acme-api", configDigest: `sha256:${"a".repeat(64)}`, trust: { state: "untrusted", reason: "not-trusted" } },
+        providers: [],
+      })
+    })
+    await settle()
+    expect(screen.getByText(`acme-api on ${self.name}`)).toBeOnTheScreen()
+
+    // The same project again reads nothing new.
+    await act(async () => { socket.push("workspace.changed", workspace()) })
+    await settle()
+    expect(socket.requests("tool.inventory")).toHaveLength(1)
+
+    const moved = workspace()
+    moved.project = { ...moved.project!, id: "project-billing", name: "billing", path: "/Users/dev/src/billing" }
+    // A snapshot's sessions belong to its open project.
+    moved.sessions = moved.sessions.map((session) => ({ ...session, projectId: "project-billing" }))
+    await act(async () => { socket.push("workspace.changed", moved) })
+    await settle()
+    expect(socket.requests("tool.inventory")).toHaveLength(2)
+    expect(screen.queryByText(`acme-api on ${self.name}`)).toBeNull()
+    expect(screen.getByText(`Reading the agents' files on ${self.name}.`)).toBeOnTheScreen()
+  })
 })
