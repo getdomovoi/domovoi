@@ -2,7 +2,7 @@ import { maximumToolInventoryBytes, toolInventorySchema, type ToolInventory } fr
 
 import { redactInventoryPath } from "./inventory-redaction.js"
 import { readRepositoryProviderConfig, type RepositoryProviderConfig, type RepositoryProviderConfigOptions } from "./repository-provider-config.js"
-import { projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
+import { heldBackUnder, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant } from "./repository-trust-store.js"
 
 // The tool.inventory answer: what the open repository's own agent
@@ -11,15 +11,17 @@ import type { RepositoryTrustGrant } from "./repository-trust-store.js"
 //
 // toolServers stays "read-from-files", as the reader reports it, for every
 // provider: Domovoi starts none of them with tool servers stripped. Claude Code
-// loads the person's own servers (settingSources ["user"], claude.ts), Codex
+// loads the person's own servers (settingSources ["user"], claude.ts), and a
+// trusted repository's that its plan passes (claude-repository-trust.ts), Codex
 // its home's config.toml (no MCP override, codex.ts), and OpenCode and Kilo
 // their global config (the embedded config sets no `mcp`, opencode.ts and
 // kilo-runtime.ts). The ACP agents are given no servers, but they load their
 // own from the repository and the reader has no scope for them.
 //
 // An entry is marked held back only where its adapter provably keeps it from
-// the agent (ruling Q128 A); repository-trust-apply.ts owns that policy, and
-// the trust decision beside it.
+// the agent (ruling Q128 A), and under a trusted grant only where it keeps it
+// from the agent still; repository-trust-apply.ts owns that policy, and the
+// trust decision beside it.
 //
 // Trust is this machine's grant for the repository (repository-trust-store.ts),
 // reported against the digest read now. The root is read as its session
@@ -40,16 +42,20 @@ export async function readToolInventory({ machine, project, grant, read = readRe
   // The reader reads repository files only, so with no project open there is
   // nothing to list.
   if (project === undefined) return checked({ machine, providers: [] })
-  const config = await read(project.path, projectRootRead)
+  // Under a grant the documents come back too, so a trusted repository's
+  // entries are marked by what would load from this digest (heldBackUnder).
+  // They stay in this function: the answer holds none of their values.
+  const config = await read(project.path, grant === undefined ? projectRootRead : { ...projectRootRead, documents: true })
+  const trust = repositoryTrustState(config, grant)
   return checked(fitToolInventory({
     machine,
     repository: {
       projectId: project.id,
       root: redactInventoryPath(project.path),
       configDigest: config.configDigest,
-      trust: repositoryTrustState(config, grant),
+      trust,
     },
-    providers: config.providers,
+    providers: heldBackUnder(config, trust),
   }))
 }
 

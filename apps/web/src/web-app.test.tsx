@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { BrowserPlatformEnvironment } from "./browser-platform"
-import type { PairingClient, PairingClientFactory } from "./daemon-pairing"
+import type { BearerPairingClient, CodePairingClient, PairingClientFactory } from "./daemon-pairing"
 import { WebApp, type WebAppProps } from "./web-app"
 
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true)
@@ -54,14 +54,14 @@ afterEach(async () => {
   container.remove()
 })
 
-function draw(storage: Storage, createClient: PairingClientFactory, extra: Partial<Pick<WebAppProps, "rpcUrl" | "memory" | "codeFromUrl">> = {}) {
+function draw(storage: Storage, createClient: PairingClientFactory, extra: Partial<Pick<WebAppProps, "rpcUrl" | "memory" | "codeFromUrl" | "clientKind">> = {}) {
   return act(async () => {
     root.render(
       <WebApp
         rpcUrl={extra.rpcUrl ?? rpcUrl}
         {...(extra.memory ? { memory: extra.memory } : {})}
         {...(extra.codeFromUrl ? { codeFromUrl: extra.codeFromUrl } : {})}
-        clientKind="web"
+        clientKind={extra.clientKind ?? "web"}
         environment={environment}
         storage={storage}
         createClient={createClient}
@@ -119,7 +119,7 @@ async function submitCode(value: string) {
   })
 }
 
-function pairingClient(outcome: "pairs" | "refuses"): PairingClient {
+function pairingClient(outcome: "pairs" | "refuses"): BearerPairingClient & CodePairingClient {
   return {
     connect: vi.fn(async () => undefined),
     request: vi.fn(async () => {
@@ -155,6 +155,47 @@ describe("WebApp", () => {
     expect(storage.getItem("domovoi.daemon-session")).toContain(deviceToken)
     await act(async () => { button("Open sessions").click() })
     expect(text()).toContain("Continue to the session")
+  })
+
+  // Q196, 2026-09-29: a phone browser handed a web code would store a
+  // credential it can never greet with. It keeps nothing and says which code
+  // it needs instead of saying it paired.
+  it("keeps nothing when a phone browser redeems a web code, and says which code it needs", async () => {
+    const storage = memoryStorage()
+    await draw(storage, vi.fn(() => pairingClient("pairs")), { clientKind: "phone" })
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("This code is for a web browser")
+    expect(text()).toContain("This browser counts as a phone. On 127.0.0.1:47831, show a phone code under Settings, Phone and tablet. The code was used, so unpair the extra device under Machines.")
+    expect(text()).not.toContain("This browser is paired with")
+    expect(storage.getItem("domovoi.daemon-session")).toBeNull()
+  })
+
+  // Q197, 2026-09-29: the prompt names the code this browser greets with.
+  it("asks a phone browser for the phone code and a desktop browser for the web code", async () => {
+    await draw(memoryStorage(), vi.fn(), { clientKind: "phone" })
+    expect(text()).toContain("Type the phone code shown on the machine, in Settings under Phone and tablet.")
+    expect(container.querySelector("label[for='web-code']")?.textContent).toBe("Phone code")
+    await act(async () => { root.unmount() })
+    root = createRoot(container)
+    await draw(memoryStorage(), vi.fn(), { clientKind: "tablet" })
+    expect(text()).toContain("Type the tablet code shown on the machine, in Settings under Phone and tablet.")
+    expect(container.querySelector("label[for='web-code']")?.textContent).toBe("Tablet code")
+    await act(async () => { root.unmount() })
+    root = createRoot(container)
+    await draw(memoryStorage(), vi.fn())
+    expect(text()).toContain("Type the web code shown on the machine, in Settings under Phone and tablet.")
+    expect(container.querySelector("label[for='web-code']")?.textContent).toBe("Web code")
+  })
+
+  it("pairs a phone browser with a phone code", async () => {
+    const storage = memoryStorage()
+    const phone = pairedResult()
+    phone.device.binding.client = "phone"
+    const client = { ...pairingClient("pairs"), request: vi.fn(async () => phone) }
+    await draw(storage, vi.fn(() => client), { clientKind: "phone" })
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("This browser is paired with 127.0.0.1:47831")
+    expect(storage.getItem("domovoi.daemon-session")).toContain(deviceToken)
   })
 
   it("draws the daemon's uniform refusal and lets the person type again", async () => {

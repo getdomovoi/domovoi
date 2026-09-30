@@ -906,7 +906,8 @@ export type RepositoryTrustRefusal = { provider: string; reason: RepositoryTrust
 // the bytes this read hashed into configDigest, so what loads is what the
 // digest pins. A file absent, empty, refused or not parseable has none. They
 // are the files as written, secrets included, so a read returns them only
-// when asked (`documents`); an inventory read never holds them.
+// when asked (`documents`); an inventory answer never holds them, though an
+// inventory read under a grant asks for them to mark what loads.
 export const repositoryConfigDocumentPaths = [".claude/settings.json", ".mcp.json", ".codex/config.toml"] as const
 export type RepositoryConfigDocuments = Partial<Record<typeof repositoryConfigDocumentPaths[number], Record<string, unknown>>>
 const documentPaths: ReadonlySet<string> = new Set(repositoryConfigDocumentPaths)
