@@ -178,13 +178,12 @@
         "acme-api is held back on"
       ],
       "evidence": [
-        "Held back until you trust this repository"
-      ],
-      "blocked": {
-        "since": "2026-09-26",
-        "needs": "protocol",
-        "reason": "no RPC reports what a repository's config would load or that it is held back, and no trust step lifts the hold (changeset repository-provider-config-held-back): Claude Code, OpenCode and Kilo sessions start without repository settings, and a Kilo or Codex session is refused instead when the worktree holds config the provider would load anyway, so no client can draw this state"
-      }
+        "Held back until you trust this repository",
+        "is held back on",
+        "all agents · this machine",
+        "Its hooks, tool servers, plugins, env, rules and git filter do not load for any agent.",
+        "Review and trust"
+      ]
     },
     {
       "id": "trust.sheet",
@@ -219,13 +218,18 @@
         "env key",
         "env keys"
       ],
-      "evidence": [
-        "Trust for this machine"
+      "presence": [
+        "Trust for this machine",
+        "Config digest",
+        "If they change while this is open, nothing is trusted and the review reloads."
       ],
-      "blocked": {
-        "since": "2026-09-26",
-        "needs": "protocol",
-        "reason": "no protocol method records trust per machine and repository pinned to file digests, and none lists what a repository would run, its env key names or its git filter drivers"
+      "evidence": [
+        "Trust for this machine",
+        "Filter driver"
+      ],
+      "partial": {
+        "since": "2026-09-30",
+        "reason": "the sheet opens from the Tools tab and lists every tool server, hook, plugin, env key name, rule, helper and skill tool.inventory reports, grouped by file, with the one config digest; tool.inventory reports no git filter or filter driver, so the sheet lists none, and no refusal opens it yet (trust.refusal is blocked)"
       }
     },
     {
@@ -242,13 +246,18 @@
         "New since you trusted it",
         "Changed since you trusted it"
       ],
-      "evidence": [
-        "Review and trust again"
+      "presence": [
+        "Review and trust again",
+        "changed since you trusted it"
       ],
-      "blocked": {
-        "since": "2026-09-26",
-        "needs": "protocol",
-        "reason": "no trust record exists, so no digest comparison, no change report and no attribution of the change to a session turn"
+      "evidence": [
+        "Review and trust again",
+        "Unchanged:",
+        "Changed by"
+      ],
+      "partial": {
+        "since": "2026-09-30",
+        "reason": "the card names the earlier grant, says it no longer applies and opens the sheet again; the daemon keeps one digest over all the files and no copy of what was trusted, so the tab cannot say which file changed, what was added, who changed it, or tag entries new or changed since trust"
       }
     },
     {
@@ -272,9 +281,9 @@
         "refused · untrusted repository file"
       ],
       "blocked": {
-        "since": "2026-09-26",
+        "since": "2026-09-30",
         "needs": "protocol",
-        "reason": "session refusals carry no untrusted-repository or untrusted-git-filter reason; the daemon refuses a Kilo session over legacy repository config, and a Codex thread/start, thread/resume or turn/start over a repository .codex config, hooks or rules file, and names the file, but with no review path and not as drawn"
+        "reason": "a refused session reaches the client as prose, with no reason code and no file or filter field to name; and no grant lifts a refusal yet: Codex refuses a worktree holding .codex config whatever the grant until P6c, and a filter the repository's own Git config sets is refused whatever the grant (RepositoryFilterRefusedError), so Start the session again would be refused again"
       }
     },
     {
@@ -295,9 +304,9 @@
         "Take back trust"
       ],
       "blocked": {
-        "since": "2026-09-26",
+        "since": "2026-09-30",
         "needs": "protocol",
-        "reason": "no trust to take back, and no RPC restarts a repository's running threads without its config"
+        "reason": "the confirmation names how many running threads it restarts, and no RPC gives a client that count before the decision: repository.revokeTrust lists the threads only in its result, after they were stopped"
       }
     },
     {
@@ -314,9 +323,9 @@
         "Trust from desktop or web"
       ],
       "blocked": {
-        "since": "2026-09-26",
+        "since": "2026-09-30",
         "needs": "protocol",
-        "reason": "no RPC reports held-back repository entries to any client, a paired phone included"
+        "reason": "tool.inventory is not in phoneAndTabletRpcMethods, so a phone cannot read what is held back, and the phone app has no Tools screen for See what is held back to open; the phone refusal also needs the refusal reason code trust.refusal is blocked on"
       }
     }
   ],
@@ -396,6 +405,21 @@
       "id": "tools.tab",
       "since": "2026-09-29",
       "note": "The Skills and Tools tabs sit in a strip at the top of the surface, not in the window bar, and an agent is named without its harness mark. Whether an entry runs at session start follows each entry's heldBack, so an untrusted repository whose entries the daemon does not hold back reads as running, and a trusted one never says trust made it so unless no entry is held back. An entry the daemon holds back from a trusted repository, or from one that cannot be trusted, reads Held back, without until you trust this repository. A cannot-trust repository lists its refusal codes in a card the design does not draw."
+    },
+    {
+      "id": "trust.held-back",
+      "since": "2026-09-30",
+      "note": "The card shows only while the repository is untrusted and not yet reviewed and the daemon holds at least one of its entries back. When the daemon holds back only some, it says how many of how many are held back and that the rest load, instead of the design's for-any-agent line, which would be false then. Where this client cannot grant trust (a watching client), the card says Granted from desktop or web only in place of Review and trust."
+    },
+    {
+      "id": "trust.sheet",
+      "since": "2026-09-30",
+      "note": "Built as a dialog over the Tools tab. A file two agents read is one group naming both agents, with each entry once. When the daemon answers config-changed, the sheet says The files changed while this was open and Nothing was trusted, which the design does not draw, and the tab reads the files again; the new digest is sent only by the next click. A cannot-trust answer lists the refusals in the sheet and removes the trust button. Env keys are counted one by one in a file's counts."
+    },
+    {
+      "id": "trust.changed",
+      "since": "2026-09-30",
+      "note": "The card carries Review and trust again only; Keep held back is the sheet's button, since on the tab nothing is decided by keeping the hold."
     }
   ],
   "scriptBacklog": {
