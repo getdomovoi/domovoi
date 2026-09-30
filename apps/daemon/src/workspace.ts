@@ -281,42 +281,54 @@ export class RepositoryFilterRefusedError extends RepositoryConfigRefusedError {
 // A new session worktree (session.create, session.fork or a transfer arriving)
 // was not checked out: Git, reading config as that worktree reads it, would
 // run a filter the repository's own config sets. drivers names each driver
-// once per scope. worktreeRemoved: nothing of the new worktree is left, its
-// branch included when this operation made it; false when taking it away
-// failed, so the caller keeps its record of the attempt.
+// once per scope.
+//
+// The cleanup state, each part as it was reached: worktreeRemoved, the new
+// worktree is gone (true when none was made); false when taking it away
+// failed, so the caller keeps its record of the attempt. branchRemoved, the
+// branch this operation made is deleted; false when deleting it failed and it
+// remains; undefined when there was none to delete or the worktree stayed, so
+// deleting it was not tried.
 //
 // changedDuringCheckout: the scan passed, but a filter setting, info/attributes
 // or core.attributesFile changed while the worktree was checked out, so a
 // command the scan never saw may have run once (ruling Q221 A). filters are
 // then the repository's filter settings as read after the checkout.
+export type NewWorktreeCleanup = { worktreeRemoved: boolean; branchRemoved: boolean | undefined }
+
+function cleanupText(cleanup: NewWorktreeCleanup): string {
+  if (!cleanup.worktreeRemoved) {
+    return "Domovoi could not take the new worktree away: it stays unchecked-out where it was added, with its "
+      + "branch, and the record of this session's creation is kept for recovery. "
+  }
+  if (cleanup.branchRemoved === false) return "The new worktree was taken away, but its branch could not be deleted and remains. "
+  return "No worktree was left. "
+}
+
 export class RepositoryGitFilterRefusedError extends RepositoryFilterRefusedError {
   readonly drivers: readonly { name: string; scope: RepositoryGitFilterScope }[]
   readonly worktreeRemoved: boolean
+  readonly branchRemoved: boolean | undefined
   readonly changedDuringCheckout: boolean
 
-  constructor(filters: readonly RepositoryGitFilter[], worktreeRemoved: boolean, changedDuringCheckout = false) {
+  constructor(filters: readonly RepositoryGitFilter[], cleanup: NewWorktreeCleanup, changedDuringCheckout = false) {
     // The base class names each driver from a filter.<driver>.<op> key; an lfs
     // setting's driver is its agent or extension name. The message is replaced below.
     super(filters.map(({ scope, driver, operation }) => ({ scope, key: `filter.${driver}.${operation}` })))
     const names = [...new Set(filters.map(({ driver }) => driver))]
     const settings = filters.map(({ scope, key }) => `${key} in ${scope} Git config`).join(", ")
-    const cleanup = worktreeRemoved
-      ? "no worktree was left. "
-      : "Domovoi could not take the new worktree away: it stays where it was added, and the record of this "
-        + "session's creation is kept for recovery. "
     this.message = changedDuringCheckout
       ? "A Git filter setting of this repository changed while Domovoi checked the new session out"
         + (filters.length > 0 ? ` (it now sets ${settings})` : " (info/attributes or core.attributesFile)")
-        + ". Its command may have run once before Domovoi noticed. Domovoi refused the session, and "
-        + cleanup
+        + ". Its command may have run once before Domovoi noticed. Domovoi refused the session. "
+        + cleanupText(cleanup)
       : `This repository's own Git config sets the filter ${names.map((name) => `"${name}"`).join(", ")} (${settings}). `
         + "Checking it out for this session would run its command, and Domovoi does not run a filter a repository's "
-        + "own Git config sets. "
-        + (worktreeRemoved
-          ? "Nothing ran, and no worktree was left. "
-          : "Nothing ran, but Domovoi could not take the new worktree away: it stays unchecked-out where it was "
-            + "added, and the record of this session's creation is kept for recovery. ")
+        + "own Git config sets. Nothing ran. "
+        + cleanupText(cleanup)
         + "Filters from your global or system Git config still run."
+    this.worktreeRemoved = cleanup.worktreeRemoved
+    this.branchRemoved = cleanup.branchRemoved
     this.changedDuringCheckout = changedDuringCheckout
     this.name = "RepositoryGitFilterRefusedError"
     const seen = new Set<string>()
@@ -326,7 +338,6 @@ export class RepositoryGitFilterRefusedError extends RepositoryFilterRefusedErro
       seen.add(id)
       return [{ name: driver, scope }]
     })
-    this.worktreeRemoved = worktreeRemoved
   }
 }
 
@@ -429,19 +440,26 @@ async function refuseRepositoryFilters(repositoryPath: string, signal?: AbortSig
 // checkout it is added from already reads a repository filter.
 async function refuseRepositoryGitFilters(directory: string, signal?: AbortSignal): Promise<void> {
   const filters = await readRepositoryGitFilters(directory, signal)
-  if (filters.length > 0) throw new RepositoryGitFilterRefusedError(filters, true)
+  if (filters.length > 0) throw new RepositoryGitFilterRefusedError(filters, { worktreeRemoved: true, branchRemoved: undefined })
 }
 
-// Whether the new worktree and the branch this operation made are gone. It
-// takes no signal: a cancelled operation still takes away what it made.
-// `worktree remove --force` skips the clean check, so it runs no filter.
-async function discardNewWorktree(repositoryPath: string, path: string, madeBranch: string | undefined): Promise<boolean> {
+// Takes away the new worktree, then the branch this operation made, and says
+// which of the two it reached. It takes no signal: a cancelled operation still
+// takes away what it made. `worktree remove --force` skips the clean check,
+// so it runs no filter. A worktree that stays keeps its branch checked out,
+// so deleting the branch is not tried.
+async function discardNewWorktree(repositoryPath: string, path: string, madeBranch: string | undefined): Promise<NewWorktreeCleanup> {
   try {
     await git(repositoryPath, ["worktree", "remove", "--force", path])
-    if (madeBranch !== undefined) await git(repositoryPath, ["branch", "-D", madeBranch])
-    return true
   } catch {
-    return false
+    return { worktreeRemoved: false, branchRemoved: undefined }
+  }
+  if (madeBranch === undefined) return { worktreeRemoved: true, branchRemoved: undefined }
+  try {
+    await git(repositoryPath, ["branch", "-D", madeBranch])
+    return { worktreeRemoved: true, branchRemoved: true }
+  } catch {
+    return { worktreeRemoved: true, branchRemoved: false }
   }
 }
 

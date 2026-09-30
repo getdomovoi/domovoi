@@ -2622,6 +2622,28 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await branches()).toBe("domovoi/session-kept")
   })
 
+  it("says the branch remains, and not the worktree, when only the branch could not be deleted", async () => {
+    const { repositoryPath, filterFile, worktrees, git, ran, branches } = await filteredRepository("domovoi-create-branch-kept-")
+    await git("config", "includeIf.onbranch:domovoi/**.path", filterFile)
+    // A lock file on the branch ref makes `branch -D` fail after the worktree is gone.
+    const service = new GitWorkspaceService(worktrees, {
+      afterNewWorktreeScan: async () => {
+        await writeFile(join(repositoryPath, ".git", "refs", "heads", "domovoi", "session-branch-kept.lock"), "")
+      },
+    })
+
+    const refused = service.createSessionWorkspace(repositoryPath, "session-branch-kept")
+
+    await expect(refused).rejects.toMatchObject({ name: "RepositoryGitFilterRefusedError", worktreeRemoved: true, branchRemoved: false })
+    const message = await refused.catch((error: Error) => error.message)
+    expect(message).not.toContain("no worktree was left")
+    expect(message).not.toContain("stays unchecked-out")
+    expect(message).toContain("The new worktree was taken away, but its branch could not be deleted")
+    expect(await ran()).toBe(false)
+    await expect(lstat(join(worktrees, "session-branch-kept"))).rejects.toThrow()
+    expect(await branches()).toBe("domovoi/session-branch-kept")
+  })
+
   it("refuses a fork whose source worktree's own config sets a filter the fork would copy", async () => {
     const { repositoryPath, payload, worktrees, git, ran, branches } = await filteredRepository("domovoi-fork-filter-")
     const service = new GitWorkspaceService(worktrees)

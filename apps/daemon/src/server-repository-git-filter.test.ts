@@ -40,6 +40,9 @@ const projectId = "project-acme"
 const projectPath = "/code/acme"
 const claude: Runtime = { provider: "claude-code", model: "sonnet", reasoning: "high", permissionMode: "build", auto: false }
 const digest = (digit: string) => `sha256:${digit.repeat(64)}`
+// The new worktree and its branch are gone, or the worktree stayed.
+const removed = { worktreeRemoved: true, branchRemoved: true }
+const stayed = { worktreeRemoved: false, branchRemoved: undefined }
 const grant = (digit: string): RepositoryTrustGrant => ({
   projectId, trustedDigest: digest(digit), trustedAt: "2026-09-30T12:00:00.000Z", trustedBy: { client: "desktop" },
 })
@@ -135,7 +138,7 @@ describe("a session refused over a repository git filter", () => {
   it("answers session.create with the git filter code, the drivers and the trust read now, and keeps nothing", async () => {
     const { agents, repositoryProviderConfig, workspaceService, store, create, sessionIds } = await fixture()
     workspaceService.createSessionWorkspace.mockRejectedValueOnce(
-      new RepositoryGitFilterRefusedError([filter("sops"), filter("sops", "clean")], true),
+      new RepositoryGitFilterRefusedError([filter("sops"), filter("sops", "clean")], removed),
     )
 
     const reply = await create() as Refusal
@@ -160,7 +163,7 @@ describe("a session refused over a repository git filter", () => {
   it("reports a grant for an earlier digest as changed since it was trusted", async () => {
     const { trust, workspaceService, create } = await fixture()
     trust.current = grant("b")
-    workspaceService.createSessionWorkspace.mockRejectedValueOnce(new RepositoryGitFilterRefusedError([filter("sops")], true))
+    workspaceService.createSessionWorkspace.mockRejectedValueOnce(new RepositoryGitFilterRefusedError([filter("sops")], removed))
 
     const reply = await create() as Refusal
 
@@ -175,7 +178,7 @@ describe("a session refused over a repository git filter", () => {
   it("still refuses under a grant for the current digest, and says it is trusted", async () => {
     const { trust, workspaceService, create } = await fixture()
     trust.current = grant("a")
-    workspaceService.createSessionWorkspace.mockRejectedValueOnce(new RepositoryGitFilterRefusedError([filter("sops")], true))
+    workspaceService.createSessionWorkspace.mockRejectedValueOnce(new RepositoryGitFilterRefusedError([filter("sops")], removed))
 
     const reply = await create() as Refusal
 
@@ -186,7 +189,7 @@ describe("a session refused over a repository git filter", () => {
   it("answers session.fork the same way", async () => {
     const { agents, workspaceService, store, fork, sessionIds } = await fixture()
     workspaceService.createSessionWorkspaceFromCheckpoint.mockRejectedValueOnce(
-      new RepositoryGitFilterRefusedError([{ ...filter("crypt"), scope: "worktree" }], true),
+      new RepositoryGitFilterRefusedError([{ ...filter("crypt"), scope: "worktree" }], removed),
     )
 
     const reply = await fork() as Refusal
@@ -201,7 +204,7 @@ describe("a session refused over a repository git filter", () => {
   it("names at most the protocol's cap of drivers and counts the rest", async () => {
     const { workspaceService, create } = await fixture()
     const many = Array.from({ length: maximumRepositoryGitFilterDrivers + 3 }, (_, index) => filter(`driver-${index}`))
-    workspaceService.createSessionWorkspace.mockRejectedValueOnce(new RepositoryGitFilterRefusedError(many, true))
+    workspaceService.createSessionWorkspace.mockRejectedValueOnce(new RepositoryGitFilterRefusedError(many, removed))
 
     const reply = await create() as Refusal
 
@@ -213,7 +216,7 @@ describe("a session refused over a repository git filter", () => {
   it("keeps the refusal, without data, when the trust read fails", async () => {
     const { config, workspaceService, create } = await fixture()
     config.fails = true
-    workspaceService.createSessionWorkspace.mockRejectedValueOnce(new RepositoryGitFilterRefusedError([filter("sops")], true))
+    workspaceService.createSessionWorkspace.mockRejectedValueOnce(new RepositoryGitFilterRefusedError([filter("sops")], removed))
 
     const reply = await create() as Refusal
 
@@ -224,7 +227,7 @@ describe("a session refused over a repository git filter", () => {
 
   it("keeps its record of the attempt when the new worktree could not be taken away", async () => {
     const { workspaceService, store, create } = await fixture()
-    workspaceService.createSessionWorkspace.mockRejectedValueOnce(new RepositoryGitFilterRefusedError([filter("sops")], false))
+    workspaceService.createSessionWorkspace.mockRejectedValueOnce(new RepositoryGitFilterRefusedError([filter("sops")], stayed))
 
     const reply = await create() as Refusal
 
