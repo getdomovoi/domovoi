@@ -37,6 +37,13 @@ overrides:
   # because the advisory also names 3.15.2 as patched, and the 3.x consumer must not
   # be dragged across a major. Remove once the lockfile resolves 4.3.2 on its own.
   js-yaml@4: ^4.3.2
+  # GHSA-6j4f-fj2g-mc7p and GHSA-qhr7-859c-m2p7, high: brace-expansion recurses without a
+  # bound on crafted patterns. Reached through minimatch in eslint, electron-builder and the
+  # mobile Expo toolchain. Scoped per major so no consumer crosses a major. Remove once the
+  # lockfile resolves the patched versions on its own.
+  brace-expansion@1: ^1.1.21
+  brace-expansion@2: ^2.1.7
+  brace-expansion@5: ^5.0.12
 
 catalog:
   "@vitest/coverage-v8": ^5.0.0
