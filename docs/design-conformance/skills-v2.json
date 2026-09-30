@@ -409,7 +409,7 @@
     {
       "id": "trust.held-back",
       "since": "2026-09-30",
-      "note": "The card shows only while the repository is untrusted and not yet reviewed and the daemon holds at least one of its entries back. When the daemon holds back only some, it says how many of how many are held back and that the rest load, instead of the design's for-any-agent line, which would be false then. Where this client cannot grant trust (a watching client), the card says Granted from desktop or web only in place of Review and trust."
+      "note": "The card shows while the repository is untrusted and not yet reviewed and brings at least one config file the inventory lists, decided from the files and not from entries, since a file such as .codex/rules/*.rules or an empty .codex/config.toml can make an agent refuse without declaring an entry; such a file reads no entries, in the card and in the sheet. When the daemon holds back only some entries, it says how many of how many are held back and that the rest load, instead of the design's for-any-agent line, which would be false then; when it holds none back while some load, the card is titled not trusted rather than held back. Where this client cannot grant trust (a watching client), the card says Granted from desktop or web only in place of Review and trust."
     },
     {
       "id": "trust.sheet",

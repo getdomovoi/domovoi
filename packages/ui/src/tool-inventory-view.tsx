@@ -141,21 +141,27 @@ export function ToolInventoryView({ inventory, onRetry, onTrust }: {
   )
 }
 
-// Awaiting trust, and the daemon holds some of the repository's entries back
-// (design step 12). "For any agent" is said only when it holds back every
-// one: an agent whose files the daemon does not hold back loads them anyway.
+// The way to trust a repository not yet reviewed (design step 12). It shows
+// whenever the repository brings a config file the digest covers, decided
+// from the trust state and the files, never from rows: a file can hold what
+// an agent refuses or loads without declaring an entry the inventory lists
+// (Codex and .codex/rules, or an empty config.toml). "Held back" is said only
+// when the daemon holds something back, and "for any agent" only when it
+// holds back every entry: an agent whose files it does not hold back loads
+// them anyway.
 function HeldBackCard({ inventory, name, onReview }: { inventory: ToolInventory; name: string; onReview: (() => void) | undefined }) {
   const titleId = useId()
   const trust = inventory.repository?.trust
   if (trust?.state !== "untrusted" || trust.reason !== "not-trusted") return null
-  const { held, total } = repositoryHeldBack(inventory)
-  if (held === 0) return null
   const files = repositoryFileGroups(inventory)
+  if (files.length === 0) return null
+  const { held, total } = repositoryHeldBack(inventory)
+  const heldBack = held > 0 || total === 0
   return (
     <section aria-labelledby={titleId} className="overflow-hidden rounded-xl border bg-card">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-[15px] pt-3 pb-1">
         <span className="size-2 shrink-0 rounded-full bg-faint" aria-hidden />
-        <h2 id={titleId} className="m-0 text-[13px] font-medium">{name} is held back on {inventory.machine.name}</h2>
+        <h2 id={titleId} className="m-0 text-[13px] font-medium">{heldBack ? `${name} is held back on ${inventory.machine.name}` : `${name} is not trusted on ${inventory.machine.name}`}</h2>
         <span className="flex-1" />
         <span className={cn(mono, "text-[10.5px] text-faint")}>all agents · this machine</span>
       </div>
@@ -169,7 +175,7 @@ function HeldBackCard({ inventory, name, onReview }: { inventory: ToolInventory;
         {files.map((group) => (
           <li key={group.file.path} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t px-[15px] py-[9px]">
             <span className={cn(mono, "min-w-0 flex-1 basis-48 text-[11px] break-all text-strong")}>{group.file.path}</span>
-            <span className="text-[11.5px] text-muted-foreground">{group.file.state === "unreadable" ? "not read" : kindCounts(group.rows) || "nothing declared"}</span>
+            <span className="text-[11.5px] text-muted-foreground">{group.file.state === "unreadable" ? "not read" : kindCounts(group.rows) || "no entries"}</span>
           </li>
         ))}
       </ul>

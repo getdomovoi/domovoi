@@ -127,7 +127,7 @@ describe("held back until trusted", () => {
     expect(within(card).getByText("2 of 7 entries from this repository are held back. The rest load.")).toBeTruthy()
   })
 
-  it("draws no held-back card when the repository is trusted, cannot be trusted, or holds nothing back", () => {
+  it("draws no trust card when the repository is trusted, cannot be trusted, or brings no config file", () => {
     show(inventory({ state: "trusted", ...grant }), { onTrust: vi.fn() })
     expect(screen.queryByRole("region", { name: /is held back on/ })).toBeNull()
     cleanup()
@@ -137,8 +137,54 @@ describe("held back until trusted", () => {
     expect(screen.queryByRole("button", { name: /Review and trust/ })).toBeNull()
     cleanup()
 
+    const none = claude({ files: [{ path: ".mcp.json", source: "repository-file", state: "absent" }], entries: [] })
+    show(inventory(notTrusted, [none]), { onTrust: vi.fn() })
+    expect(screen.queryByRole("region", { name: /on mac-mini-m4$/ })).toBeNull()
+    expect(screen.queryByRole("button", { name: /Review and trust/ })).toBeNull()
+  })
+
+  it("still offers trust when the daemon holds none of the repository's entries back, without calling them held back", async () => {
     show(inventory(notTrusted, [claude({}, false)]), { onTrust: vi.fn() })
+
     expect(screen.queryByRole("region", { name: /is held back on/ })).toBeNull()
+    const card = screen.getByRole("region", { name: "acme-api is not trusted on mac-mini-m4" })
+    expect(within(card).getByText("0 of 7 entries from this repository are held back. The rest load.")).toBeTruthy()
+    const { sheet } = await openSheet()
+    expect(within(sheet).getByRole("button", { name: "Trust for this machine" })).toBeTruthy()
+  })
+
+  it("offers trust for config files that declare no entries, and shows each file", async () => {
+    // Codex refuses a repository holding only .codex rules or an empty
+    // config.toml; the inventory lists and digests those files without a row.
+    const codex: ToolInventoryProvider = {
+      provider: "codex",
+      toolServers: "none-passed",
+      omittedEntries: 0,
+      files: [
+        { path: ".codex/config.toml", source: "project-settings", state: "empty" },
+        { path: ".codex/rules/default.rules", source: "project-settings", state: "read" },
+      ],
+      entries: [],
+    }
+    const onTrust = vi.fn<Trust>().mockResolvedValue(trustResult({
+      outcome: "trusted",
+      repository: { projectId: "project-acme", configDigest: digest, trust: { state: "trusted", ...grant } },
+    }))
+    show(inventory(notTrusted, [codex]), { onTrust })
+
+    const card = heldCard()
+    expect(within(card).getAllByRole("listitem").map((file) => file.textContent)).toEqual([
+      ".codex/config.tomlno entries",
+      ".codex/rules/default.rulesno entries",
+    ])
+    const { user, sheet } = await openSheet()
+    for (const path of [".codex/config.toml", ".codex/rules/default.rules"]) {
+      expect(within(within(sheet).getByRole("group", { name: path })).getByText("no entries")).toBeTruthy()
+    }
+    expect(within(sheet).getByText("It is pinned to one digest of these two files. Any change, an agent's edit included, holds it back again.")).toBeTruthy()
+
+    await user.click(within(sheet).getByRole("button", { name: "Trust for this machine" }))
+    expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest })
   })
 
   it("offers no trust where this client cannot grant it", () => {

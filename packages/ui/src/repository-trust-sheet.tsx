@@ -208,7 +208,7 @@ function FileGroup({ group }: { group: RepositoryFileGroup }) {
           </span>
         ))}
         <span className="flex-1" />
-        <span className="text-[11px] text-faint">{file.state === "unreadable" ? "not read" : reviewCounts(group) || "nothing declared"}</span>
+        <span className="text-[11px] text-faint">{file.state === "unreadable" ? "not read" : reviewCounts(group) || "no entries"}</span>
       </div>
       {file.state === "unreadable" ? (
         <div className="flex flex-col gap-1 border-t border-danger-border bg-danger-background px-3.5 py-3 text-danger-foreground">
