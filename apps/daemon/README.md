@@ -526,11 +526,28 @@ A session worktree is a checkout of the opened repository, so anything the repos
 it. Until a one-time trust step for a repository exists, the daemon does not let a provider load
 code or settings the repository brings:
 
-- Claude Code sessions start with `settingSources: ["user"]`. The worktree's
-  `.claude/settings.json`, `.claude/settings.local.json` and `.mcp.json` are not read, so their
-  hooks, `env` block, helper commands, permission rules and MCP servers do not apply. Project
-  skills, subagents and commands under `.claude/` are not loaded either. Your own
-  `~/.claude/settings.json` still applies.
+- Claude Code sessions start with `settingSources: ["user"]`, so Claude never reads the worktree's
+  `.claude/settings.json`, `.claude/settings.local.json` or `.mcp.json` itself. Project skills,
+  subagents and commands under `.claude/` are not loaded. Your own `~/.claude/settings.json` still
+  applies. When this machine has trusted the repository and the session worktree's configuration
+  still has the trusted digest, the daemon passes part of it each time the session opens (a start,
+  a resume, or a reopen after Claude's connection ended), taken from the same bytes it hashed:
+  - through the SDK `settings` option: hooks of every event except `PermissionRequest`,
+    `PreToolUse`, `Elicitation` and `ElicitationResult`; the `env` block without `ANTHROPIC_*`,
+    `CLAUDE_*`, `*_BASE_URL`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`,
+    `NODE_OPTIONS`, `LD_*`, `DYLD_*` and `PATH`, in any case; and `permissions.deny` and
+    `permissions.ask`;
+  - `.mcp.json` servers, added once Claude has listed your own. A server whose name contains
+    `__`, one whose tool names would read as one of yours (the same name in any case once Claude
+    turns punctuation into `_`), a remote server whose address or headers contain `$`, and a
+    server with a field other than its command, arguments, environment, address, headers,
+    `timeout` and `alwaysLoad` are held back. In such a session a card names a tool's server only
+    when the tool belongs to exactly one server the session knows.
+
+  Allow rules, `defaultMode`, `additionalDirectories`, plugins, helper commands and every other
+  setting stay held back. A call to a repository server's tool still asks for approval, without
+  Always. A running session keeps what it loaded; a changed configuration or a new grant applies
+  at its next open. A session loaded only to be archived gets nothing.
 - OpenCode and Kilo servers start with `OPENCODE_DISABLE_PROJECT_CONFIG=1` and
   `KILO_DISABLE_PROJECT_CONFIG=1`. Project `opencode.json`, `kilo.json`, `.opencode/`, `.kilo/`
   and `.kilocode/` configuration, plugins and MCP entries are not loaded, and no package install

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   demoWorkspace,
   maximumRepositoryTrustRefusals,
+  maximumRepositoryTrustThreadRestarts,
   phoneAndTabletRpcMethods,
   repositoryTrustGrantClients,
   repositoryTrustRefusalCodes,
@@ -189,6 +190,23 @@ describe("repository.revokeTrust", () => {
 
   it("reports a repository that cannot be trusted as such after revocation", () => {
     expect(revokeMethod.result.safeParse({ repository: record(cannotTrust), threads: [] }).success).toBe(true)
+  })
+
+  // Ruling Q179 A: a revoke stops every thread however many there are, lists
+  // the first ones up to the cap, and counts the rest.
+  it("counts the threads past the cap it stopped and does not list", () => {
+    const full = Array.from({ length: maximumRepositoryTrustThreadRestarts }, (_, index) => ({
+      sessionId: `session-${index}`, outcome: "restarted" as const,
+    }))
+    const result = (fields: Record<string, unknown>) => revokeMethod.result.safeParse({ repository: record(notTrusted), ...fields }).success
+    expect(maximumRepositoryTrustThreadRestarts).toBe(1_024)
+    expect(result({ threads: full, omittedThreads: 3 })).toBe(true)
+    expect(result({ threads: [...full, { sessionId: "session-extra", outcome: "restarted" }] })).toBe(false)
+    // Present only when something was left out.
+    expect(result({ threads: full, omittedThreads: 0 })).toBe(false)
+    for (const omittedThreads of [-1, 1.5, "3", 1_000_001]) {
+      expect(result({ threads: full, omittedThreads }), String(omittedThreads)).toBe(false)
+    }
   })
 })
 

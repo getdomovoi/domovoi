@@ -136,9 +136,13 @@ describe("repository.trust", () => {
 
     const after = await inventory(call)
     expect(after.repository?.trust).toEqual(result.repository.trust)
-    // Nothing loads under a grant yet (P6b and P6c load it), so what is held
-    // back does not change with trust (ruling Q128 A).
-    expect(after.providers).toEqual(before.providers)
+    // Under the grant Claude Code loads this server and hook (slice P6b), so
+    // they are no longer reported held back; nothing else changes.
+    const loading = (entries: ToolInventory["providers"]) => entries.map((provider) => provider.provider !== "claude-code" ? provider : {
+      ...provider, entries: provider.entries.map((entry) => ({ ...entry, heldBack: false })),
+    })
+    expect(before.providers.find(({ provider }) => provider === "claude-code")!.entries.map(({ heldBack }) => heldBack)).toEqual([true, true])
+    expect(after.providers).toEqual(loading(before.providers))
   })
 
   it("names the owner's bearer as desktop whatever client it declared (ruling Q68)", async () => {

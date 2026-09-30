@@ -68,8 +68,8 @@ export type AgentVisualContext = {
 // This machine's trust grant for the session's repository, looked up by the
 // daemon at the call that carries it. An adapter decides what it may load
 // with repositoryTrustVerdict (repository-trust-apply.ts) against the worktree
-// it opens; absent, nothing the repository brings loads. Codex uses it (P6c);
-// every other adapter ignores it until its own slice (Claude Code in P6b).
+// it opens; absent, nothing the repository brings loads. Claude Code (P6b)
+// and Codex (P6c) use it; every other adapter ignores it until its own slice.
 export type AgentRepositoryTrust = RepositoryTrustGrant
 
 export interface AgentAdapter {
@@ -84,6 +84,16 @@ export interface AgentAdapter {
   usageLimits?(signal?: AbortSignal): Promise<ProviderUsageLimits | undefined>
   startThread(input: { cwd: string; runtime: Runtime; repositoryTrust?: AgentRepositoryTrust }): Promise<string>
   resumeThread(input: { threadId: string; cwd: string; runtime: Runtime; repositoryTrust?: AgentRepositoryTrust }): Promise<void>
+  /**
+   * Whether this thread loaded the repository's trusted configuration, and
+   * under which configuration digest (ruling Q170 A). The daemon asks right
+   * after a startThread, resumeThread or startTurn that carried a grant lands,
+   * and taking trust back stops only the threads that answered. Absent or
+   * undefined: nothing trusted loaded. No adapter reports it yet: P6b adds it
+   * for Claude Code, and P6c for Codex, which reports it only when repository
+   * tool servers loaded.
+   */
+  repositoryTrustApplied?(threadId: string): { digest: string } | undefined
   stopThread(threadId: string): Promise<void>
   interruptTurn(threadId: string, turnId: string): Promise<void>
   startTurn(input: {

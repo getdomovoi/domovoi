@@ -1,8 +1,9 @@
-import type { ApprovalRule } from "@getdomovoi/protocol"
+import { localOwnerRequiredErrorCode, type ApprovalRule } from "@getdomovoi/protocol"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
+import { DaemonRpcError } from "./client.js"
 import { defaultNotificationPreferences } from "./notification-preferences.js"
 import { SettingsShell } from "./settings-shell.js"
 
@@ -245,6 +246,27 @@ it("links the release page directly where there is no desktop to open it", () =>
   const section = screen.getByRole("region", { name: "About this build" })
   expect(within(section).getByText("domovoid 0.9.4")).toBeTruthy()
   expect(within(section).getByRole("link", { name: "Release page" }).getAttribute("href")).toBe("https://github.com/getdomovoi/domovoi/releases")
+})
+
+// Q169: a paired tab asks for update status and the daemon refuses it to all
+// but its loopback owner. Settings says so in one line; any other failure adds
+// nothing.
+const localOwnerLine = "No update status: the daemon answers it only over loopback, to its owner's credential."
+it("says update status is for the loopback owner when the daemon refuses it by policy", async () => {
+  const refused = new DaemonRpcError(localOwnerRequiredErrorCode, "Updates require a loopback local-owner connection")
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => { throw refused }) }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  expect(await within(section).findByText(localOwnerLine)).toBeTruthy()
+  expect(within(section).getByText("domovoid 0.9.4")).toBeTruthy()
+  expect(within(section).getByText("This build is not signed and does not update itself. Get new versions from the release page.")).toBeTruthy()
+})
+
+it("adds no line when update status fails for another reason", async () => {
+  const onUpdateStatus = vi.fn(async () => { throw new DaemonRpcError(-32603, "Internal error") })
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  await act(async () => { await onUpdateStatus.mock.results[0]?.value.catch(() => undefined) })
+  expect(section.textContent).not.toContain(localOwnerLine)
 })
 
 // A daemon that reports a pending target is updating itself; the body stops

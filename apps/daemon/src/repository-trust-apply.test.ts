@@ -5,8 +5,10 @@ import { dirname, join } from "node:path"
 import type { ToolInventoryEntry } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { claudeRepositoryLoad } from "./claude-repository-trust.js"
 import { readRepositoryProviderConfig, type RepositoryProviderConfig } from "./repository-provider-config.js"
 import {
+  heldBackUnder,
   projectRootRead,
   repositoryEntryHeldBack,
   repositoryTrustVerdict,
@@ -176,5 +178,86 @@ describe("repositoryEntryHeldBack", () => {
     }
     expect(repositoryEntryHeldBack("codex", entry(".mcp.json"))).toBe(false)
     expect(repositoryEntryHeldBack("claude-code", entry(".codex/config.toml"))).toBe(false)
+  })
+})
+
+// Slice P6b: under a trusted verdict the inventory reports as loading exactly
+// what the Claude adapter passes, from the same plan (claude-repository-trust.ts).
+describe("heldBackUnder", () => {
+  const trustedSettings = {
+    hooks: {
+      SessionStart: [{ hooks: [{ type: "command", command: "./bootstrap.sh" }] }],
+      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "./allow.sh" }] }],
+      PermissionRequest: [{ hooks: [{ type: "command", command: "./approve.sh" }] }],
+    },
+    env: { DATABASE_URL: "postgres://db", ANTHROPIC_BASE_URL: "https://proxy.example.com" },
+    permissions: {
+      allow: ["Bash(*)"], deny: ["Read(./.env)"], ask: ["Bash(git push:*)"], defaultMode: "acceptEdits", additionalDirectories: ["../other"],
+    },
+    apiKeyHelper: "./key.sh",
+    statusLine: { type: "command", command: "./status.sh" },
+    enabledPlugins: { "formatter@market": true },
+    enableAllProjectMcpServers: true,
+    enabledMcpjsonServers: ["db"],
+  }
+  const trustedServers = { mcpServers: {
+    db: { command: "db-mcp" },
+    remote: { type: "http", url: "https://mcp.example.com/${TEAM}" },
+  } }
+
+  async function trustedRead() {
+    const { main } = await checkouts({
+      ".claude/settings.json": JSON.stringify(trustedSettings),
+      ".mcp.json": JSON.stringify(trustedServers),
+      ".codex/config.toml": "sandbox_mode = \"read-only\"\n",
+      ".claude/skills/deploy/SKILL.md": "---\nname: deploy\n---\nDeploy.",
+    })
+    return readRepositoryProviderConfig(main, { ...projectRootRead, documents: true })
+  }
+
+  const marks = (config: RepositoryProviderConfig, trust: Parameters<typeof heldBackUnder>[1]) => heldBackUnder(config, trust)
+    .flatMap(({ provider, entries }) => entries.map((entry) => [provider, entry.kind, "event" in entry ? entry.event
+      : "key" in entry ? entry.key : "rule" in entry ? `${entry.rule} ${entry.detail}` : entry.name, entry.heldBack]))
+
+  it("reports a trusted Claude Code entry as loading exactly when the adapter passes it", async () => {
+    const config = await trustedRead()
+    expect(marks(config, { state: "trusted", trustedDigest: config.configDigest, trustedAt: "2026-09-29T12:00:00.000Z", trustedBy: { client: "desktop" } })).toEqual([
+      ["claude-code", "tool-server", "db", false],
+      ["claude-code", "tool-server", "remote", true],
+      ["claude-code", "hook", "SessionStart", false],
+      ["claude-code", "hook", "PreToolUse", true],
+      ["claude-code", "hook", "PermissionRequest", true],
+      ["claude-code", "env-key", "DATABASE_URL", false],
+      ["claude-code", "env-key", "ANTHROPIC_BASE_URL", true],
+      ["claude-code", "permission-rule", "allow Bash(*)", true],
+      ["claude-code", "permission-rule", "deny Read(./.env)", false],
+      ["claude-code", "permission-rule", "ask Bash(git push:*)", false],
+      ["claude-code", "permission-rule", "additionalDirectories ../other", true],
+      ["claude-code", "permission-rule", "defaultMode acceptEdits", true],
+      ["claude-code", "permission-rule", "enableAllProjectMcpServers true", true],
+      ["claude-code", "permission-rule", "enabledMcpjsonServers db", true],
+      ["claude-code", "helper", "apiKeyHelper", true],
+      ["claude-code", "helper", "statusLine", true],
+      ["claude-code", "plugin", "formatter@market", true],
+      ["claude-code", "skill", "deploy", false],
+      ["opencode", "skill", "deploy", false],
+      ["kilo", "skill", "deploy", false],
+      // Codex loads nothing from a trusted repository until P6c.
+      ["codex", "permission-rule", "sandbox_mode read-only", true],
+    ])
+    // The plan the adapter passes is the one the marks come from.
+    const load = claudeRepositoryLoad(config.documents)
+    expect(Object.keys(load.mcpServers)).toEqual(["db"])
+    expect(Object.keys(load.settings.hooks ?? {})).toEqual(["SessionStart"])
+  })
+
+  it("keeps the held-back marks for a repository that is not trusted", async () => {
+    const config = await trustedRead()
+    for (const trust of [
+      { state: "untrusted", reason: "not-trusted" },
+      { state: "untrusted", reason: "config-changed", trustedDigest: `sha256:${"b".repeat(64)}`, trustedAt: "2026-09-29T12:00:00.000Z", trustedBy: { client: "desktop" } },
+    ] as const) {
+      expect(heldBackUnder(config, trust)).toEqual(config.providers)
+    }
   })
 })

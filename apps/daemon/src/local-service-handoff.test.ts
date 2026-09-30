@@ -1,8 +1,10 @@
-import { demoWorkspace, protocolVersion, serviceHandoffRefusal, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import {
+  daemonAuthenticationErrorCode, demoWorkspace, localOwnerRequiredErrorCode, protocolVersion, serviceHandoffRefusal, type WorkspaceSnapshot,
+} from "@getdomovoi/protocol"
 import { execFileSync } from "node:child_process"
 import { DatabaseSync } from "node:sqlite"
 import { mkdtemp } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { networkInterfaces, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import WebSocket from "ws"
@@ -167,8 +169,16 @@ async function desktopConnection(endpoint: { url: string; token: string }) {
   }
   const hello = await rpc("system.hello", { client: "desktop", clientId: "desktop-fence-test", clientVersion: "0.0.1", protocolVersion })
   expect(hello.error).toBeUndefined()
-  return rpc
+  return Object.assign(rpc, { socket })
 }
+
+const fenceOwnerRefusal = {
+  code: localOwnerRequiredErrorCode,
+  message: "The service handoff fence requires a loopback local-owner connection",
+}
+
+const remoteAddress = Object.values(networkInterfaces()).flat()
+  .find((entry) => entry?.family === "IPv4" && !entry.internal)?.address
 
 function quiet(): WorkspaceSnapshot {
   const next = structuredClone(demoWorkspace)
@@ -254,6 +264,44 @@ describe("the service handoff fence", () => {
     const endpoint = await daemonWith(quiet())
     await expect(holdServiceHandoffFence({ endpoint: { ...endpoint, token: "x".repeat(43) }, timeoutMs: 5_000 })).rejects.toThrow()
     await expect(holdServiceHandoffFence({ endpoint: { url: "http://127.0.0.1:1/rpc", token: endpoint.token }, timeoutMs: 5_000 })).rejects.toThrow()
+  })
+
+  // A policy refusal, not a credential failure: a client that reads the
+  // authentication code drops the connection and marks the machine as no
+  // longer accepting it (Q169), so the refusal carries the local-owner code
+  // and the connection stays usable.
+  it("refuses a paired device credential with the local-owner code and keeps its connection", async () => {
+    const endpoint = await daemonWith(quiet())
+    const owner = await desktopConnection(endpoint)
+    const paired = (await owner("device.pair", { label: "paired desktop", client: "desktop" })).result as { token: string }
+    const device = await desktopConnection({ ...endpoint, token: paired.token })
+    const refused = await device("system.serviceHandoffFence", {})
+    expect(refused.error).toEqual(fenceOwnerRefusal)
+    expect(refused.error?.code).not.toBe(daemonAuthenticationErrorCode)
+    expect((await device("workspace.get", {})).error).toBeUndefined()
+    expect(device.socket.readyState).toBe(WebSocket.OPEN)
+    // The refusal took no fence: the owner still can.
+    const held = await holdServiceHandoffFence({ endpoint, timeoutMs: 5_000 })
+    expect(held).toEqual({ release: expect.any(Function) })
+    if ("release" in held) held.release()
+  })
+
+  // The daemon bearer itself, from an address that is not loopback: only the
+  // peer address fails the check.
+  it.skipIf(remoteAddress === undefined)("refuses the daemon credential from a non-loopback peer with the local-owner code", async () => {
+    const profileDirectory = await mkdtemp(join(tmpdir(), "domovoi-fence-"))
+    scratchDirectories.push(profileDirectory)
+    const daemon = new DomovoiDaemon({
+      port: 0, host: "0.0.0.0", allowRemoteTransport: true, profileDirectory, agents: {},
+      store: new SqliteWorkspaceStore(":memory:", quiet()),
+      skillCatalog: { list: async () => [], read: async () => { throw new Error("No skills here") } },
+    })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const remote = await desktopConnection({ url: `ws://${remoteAddress}:${port}/rpc`, token: daemon.authToken })
+    expect((await remote("system.serviceHandoffFence", {})).error).toEqual(fenceOwnerRefusal)
+    expect((await remote("workspace.get", {})).error).toBeUndefined()
+    expect(remote.socket.readyState).toBe(WebSocket.OPEN)
   })
 
   // The owner rule: the switch waits while a gate waits, and interrupts

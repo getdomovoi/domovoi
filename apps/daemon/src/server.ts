@@ -32,6 +32,7 @@ import {
   type TransferReceipt,
   daemonShuttingDownErrorCode,
   isRefusedWithoutPersistence,
+  localOwnerRequiredErrorCode,
   phoneAndTabletRpcMethods,
   repositoryTrustClientSchema,
   repositoryTrustGrantClients,
@@ -94,6 +95,7 @@ import {
   type PairingAddress,
   type ToolFileEntry,
   type SkillInstallRefusal,
+  type RepositoryTrustThreadRestart,
   type StateRecovery,
   type TurnSkillSelectionRefusal,
   type WorkspaceSnapshot,
@@ -229,7 +231,7 @@ import { configuredProfileDirectory } from "./profile-directory.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
 import { readToolInventory, type RepositoryProviderConfigReader } from "./tool-inventory.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
-import { projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
+import { maximumRevokedTrustThreads, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant, RepositoryTrustStore } from "./repository-trust-store.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
@@ -334,6 +336,8 @@ export const maximumAuthenticationPayloadBytes = 4 * 1_024
 // so it stops accepting work that would deepen the gap.
 export const persistenceFailureThreshold = 3
 export const persistenceUnavailableContext = "Domovoi can no longer persist state"
+// Longest a stream with no pause in its deltas stays in memory before a save.
+export const streamPersistMaxWaitMilliseconds = 1_000
 // Security review round 1 of #576, approved by fetzy on 2026-09-25: the
 // answer to a turn asked for while the desktop holds the service handoff fence.
 export const serviceHandoffFencedMessage =
@@ -348,6 +352,21 @@ export const repositoryTrustCredentialRefusal =
 // Trust is granted and taken back for the open project only. The refusal names
 // no path or value (ruling Q123).
 export const repositoryTrustProjectRefusal = "Repository trust applies only to the open project"
+// A session whose provider thread did not confirm its exit. It also answers a
+// session fenced for a thread that loaded trusted input (ruling Q172 A).
+const providerThreadRecoveryRefusal = "Provider thread requires recovery after emergency stop"
+// Ruling Q152 A: Codex runs every thread in one shared app-server, and
+// archiving a thread does not confirm that the tool servers it started have
+// exited. Taking trust back reports its threads unconfirmed rather than
+// resetting the app-server. It applies only to threads that reported applied
+// trust, and P6c reports that for a Codex thread only when repository tool
+// servers loaded (rulings Q148, Q170 A).
+const trustedStopUnconfirmedProviders: ReadonlySet<string> = new Set(["codex"])
+// A thread that loaded a repository's trusted configuration (#trustedThreads).
+type TrustedThread = { projectId: string; sessionId: string; provider: string; threadId: string; trustedDigest: string }
+// A provider call's repository trust grant and the count of its project's
+// revokes it was looked up under (#repositoryTrustCall).
+type RepositoryTrustCall = { projectId: string; generation: number; input: { repositoryTrust?: RepositoryTrustGrant } }
 export const desktopPairingRefusal = "A web, phone or tablet connection cannot pair a desktop credential"
 export const persistenceUnavailableMessage =
   "Daemon cannot persist state, so changes are refused"
@@ -1538,6 +1557,9 @@ export class DomovoiDaemon {
   })
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
   #persistFlush: ReturnType<typeof setTimeout> | undefined
+  // Armed when a stream first defers a save and not reset by later deltas, so
+  // a stream that never pauses still reaches disk.
+  #persistDeadline: ReturnType<typeof setTimeout> | undefined
   #pendingWorkspaceDeltas: WorkspaceDelta[] = []
   #activeAssistantItems = new ActiveAssistantItemCache()
   #providerPlanTurns = new Set<string>()
@@ -1609,6 +1631,41 @@ export class DomovoiDaemon {
   #emergencyBlockedThreads = new Set<string>()
   #failedEmergencyThreads = new Set<string>()
   #inFlightProviderThreads = new Map<string, string>()
+  // Slice P6d: the provider threads that loaded a repository's trusted
+  // configuration, by thread key, with the project and session they belong
+  // to, the thread itself, and the digest the adapter reported. Taking trust
+  // back stops them (rulings Q4, Q146, Q170 A). #recordRepositoryTrust is the
+  // one place that adds an entry, as soon as the provider call returns and
+  // before anything is saved, so a thread whose session never commits is
+  // still here. An entry leaves only when the thread's exit is confirmed
+  // (#threadStopped): a path that drops a thread from the loaded set without
+  // confirming it leaves the entry, and the next revoke stops the thread.
+  #trustedThreads = new Map<string, TrustedThread>()
+  // Ruling Q186 A: Codex threads stopped while their grant held, whose tool
+  // servers may still run. They fence nothing while the grant holds, since
+  // those run under consent. A revoke of the project reports each as
+  // unconfirmed and fences its session; a new grant does not clear them.
+  #residualTrustedThreads = new Map<string, TrustedThread>()
+  // Threads a revoke could not confirm stopped. Each fences its session until
+  // a stop is confirmed; a Codex one never is, so until the daemon restarts.
+  #revokedTrustThreads = new Map<string, TrustedThread>()
+  // Threads a revoke has claimed and is still stopping. The revoke alone
+  // settles them: a stop on another path that finishes meanwhile changes
+  // nothing, and each fences its session (security review round 3 of #669).
+  #claimedTrustThreads = new Map<string, TrustedThread>()
+  // Security review rounds 8 and 9 of #669. A count of the daemon's own trust
+  // events (#nextTrustEpoch) and, per thread: the grant-carrying calls and the
+  // late or abandoned stops in flight, the latest point by which a grant may
+  // have been applied, and the start of the latest stop that resolved. A
+  // tracked thread leaves only through #releaseTrustedThread, which reads them.
+  #trustEpoch = 0
+  #trustInFlight = new Map<string, number>()
+  #trustAppliedAt = new Map<string, number>()
+  #trustStopResolvedAt = new Map<string, number>()
+  // Counts the revokes of each project's trust. A provider call records the
+  // count it looked its grant up under, so a call that lands after a revoke
+  // is known to carry a grant that is gone.
+  #repositoryTrustGenerations = new Map<string, number>()
   #emergencyStopTail: Promise<unknown> = Promise.resolve()
   #emergencyStopInProgress = false
   // J24 (security review round 1 of #576): the loopback daemon-credential
@@ -2016,6 +2073,476 @@ export class DomovoiDaemon {
     return grant === undefined ? {} : { repositoryTrust: grant }
   }
 
+  // The grant for one provider call, with the count of the project's revokes
+  // it was looked up under. `input` is what the adapter call carries.
+  #repositoryTrustCall(projectId: string): RepositoryTrustCall {
+    return { projectId, generation: this.#repositoryTrustGeneration(projectId), input: this.#repositoryTrustFor(projectId) }
+  }
+
+  #repositoryTrustGeneration(projectId: string): number {
+    return this.#repositoryTrustGenerations.get(projectId) ?? 0
+  }
+
+  // Records a thread that loaded the repository's trusted configuration, as
+  // soon as a call carrying a grant that opened or resumed it, or started a
+  // turn on it, returns: before the session is saved or names the thread, so
+  // a start whose operation then fails is still tracked until its stop is
+  // confirmed. Only the adapter's own
+  // report counts (AgentAdapter.repositoryTrustApplied, ruling Q170 A): a
+  // grant that was passed and not applied loaded nothing, so taking trust back
+  // leaves that thread running. No adapter reports it in this slice; P6b and
+  // P6c add it. A report that throws is taken as applied, so the thread is
+  // stopped rather than missed. A call without a grant clears nothing: a
+  // thread that loaded trusted input earlier still holds it.
+  // A call that lands after a revoke of its project carried a grant that is
+  // gone. A revoke waits in the mutation queue for every call already running,
+  // so this is a backstop for a call that lands outside that order: the thread
+  // is stopped as the revoke would have stopped it.
+  #recordRepositoryTrust(call: RepositoryTrustCall, sessionId: string, provider: string, threadId: string): void {
+    if (!this.#trackRepositoryTrust(call, sessionId, provider, threadId)) return
+    if (call.generation === this.#repositoryTrustGeneration(call.projectId)) return
+    const threadKey = providerThreadKey(provider, threadId)
+    void this.#restartRepositoryTrustThreads(call.projectId, threadKey)
+      .then(() => this.#saveAgentState())
+      .catch((error: unknown) => this.#reportError("Domovoi could not stop a thread whose repository trust was taken back", error))
+  }
+
+  // Tracks the thread when its adapter reports that it applied the grant the
+  // call carried, and says whether it did.
+  #trackRepositoryTrust(call: RepositoryTrustCall, sessionId: string, provider: string, threadId: string): boolean {
+    const grant = call.input.repositoryTrust
+    if (grant === undefined) return false
+    let applied: { digest: string } | undefined
+    try {
+      applied = this.#agents.require(provider).repositoryTrustApplied?.(threadId)
+    } catch (error) {
+      this.#reportError("Domovoi could not read whether a thread loaded repository trust", error)
+      applied = { digest: grant.trustedDigest }
+    }
+    if (applied === undefined) return false
+    const threadKey = providerThreadKey(provider, threadId)
+    this.#trustedThreads.set(threadKey, { projectId: call.projectId, sessionId, provider, threadId, trustedDigest: applied.digest })
+    this.#trustApplied(threadKey)
+    return true
+  }
+
+  // GPT review of #669 (ruling Q198 A): a resume or turn start that carried a
+  // grant and then timed out or failed may still load trusted input in the
+  // provider, so the thread is tracked as applied, with the grant's digest,
+  // before any quarantine or cleanup, as a report that throws is. It stays
+  // tracked until a provider-confirmed stop. An adapter with no report never
+  // applies trust, so its thread is not tracked. A call that lands after its
+  // timeout is stopped as a late start is (#stopLateStart).
+  #trackUnsettledRepositoryTrust(call: RepositoryTrustCall, sessionId: string, provider: string, threadId: string): void {
+    const grant = call.input.repositoryTrust
+    if (grant === undefined) return
+    const threadKey = providerThreadKey(provider, threadId)
+    if (this.#trustedThreads.has(threadKey)) return
+    let reports = true
+    try {
+      reports = this.#agents.require(provider).repositoryTrustApplied !== undefined
+    } catch {
+      // No adapter to ask: tracked, so a revoke still tries to stop it.
+    }
+    if (!reports) return
+    this.#trustedThreads.set(threadKey, { projectId: call.projectId, sessionId, provider, threadId, trustedDigest: grant.trustedDigest })
+    this.#trustApplied(threadKey)
+  }
+
+  #nextTrustEpoch(): number {
+    this.#trustEpoch += 1
+    return this.#trustEpoch
+  }
+
+  // A grant may have been applied to the thread by now.
+  #trustApplied(threadKey: string): void {
+    this.#trustAppliedAt.set(threadKey, this.#nextTrustEpoch())
+  }
+
+  #trustWorkBegan(threadKey: string): void {
+    this.#trustInFlight.set(threadKey, (this.#trustInFlight.get(threadKey) ?? 0) + 1)
+  }
+
+  #trustWorkEnded(provider: string, threadId: string): void {
+    const threadKey = providerThreadKey(provider, threadId)
+    const left = (this.#trustInFlight.get(threadKey) ?? 1) - 1
+    if (left > 0) this.#trustInFlight.set(threadKey, left)
+    else this.#trustInFlight.delete(threadKey)
+    this.#releaseTrustedThread(provider, threadId)
+  }
+
+  // Security review rounds 8 and 9 of #669: a grant-carrying resume or turn
+  // start counts as in flight on its thread from the moment it is sent until
+  // it settles, resolved or rejected, and may apply the grant at any point
+  // until then. Once it has timed out, its operation has failed and nothing
+  // else will record it: when it settles, a thread whose adapter reports the
+  // grant applied (or whose report throws) is stopped as a late start is. That
+  // stop begins before the call's own count ends, so the thread is never idle
+  // in between. Returns the hook the caller marks a timeout with. Security
+  // review round 11 of #669: the call's count ends even when its bookkeeping
+  // throws, and that failure is reported.
+  #watchTrustedCall(
+    pending: Promise<unknown>,
+    call: RepositoryTrustCall,
+    sessionId: string,
+    provider: string,
+    threadId: string,
+  ): { timedOut: () => void } | undefined {
+    if (call.input.repositoryTrust === undefined) return undefined
+    const threadKey = providerThreadKey(provider, threadId)
+    let timedOut = false
+    this.#trustWorkBegan(threadKey)
+    const settled = () => {
+      try {
+        this.#trustApplied(threadKey)
+        if (timedOut && this.#trackRepositoryTrust(call, sessionId, provider, threadId)) {
+          void this.#stopAbandonedThread(provider, threadId, "Late provider cleanup timed out").catch((error: unknown) => {
+            this.#reportError("Domovoi could not stop a provider thread whose call landed late", error)
+          })
+        }
+      } catch (error) {
+        // The grant may have been applied with no epoch on record, so no stop
+        // that resolved before now counts as the thread's exit.
+        this.#trustStopResolvedAt.delete(threadKey)
+        throw error
+      } finally {
+        this.#trustWorkEnded(provider, threadId)
+      }
+    }
+    void pending.then(settled, settled).catch((error: unknown) => {
+      this.#reportError("Domovoi could not record a provider call that carried repository trust", error)
+    })
+    return { timedOut: () => { timedOut = true } }
+  }
+
+  // Security review round 9 of #669: the one place a thread leaves tracking.
+  // It leaves only when no grant-carrying call or late or abandoned stop on
+  // it is in flight, no revoke holds it claimed, and a stop that began after
+  // the last point a grant may have been applied has resolved. Then a thread
+  // whose provider confirms exit is forgotten. Codex cannot confirm it
+  // (ruling Q152 A): a Codex thread a revoke already reported, or whose
+  // earlier stop failed, stays tracked and fenced until the daemon restarts;
+  // any other becomes a residual entry, which fences nothing while the grant
+  // holds (ruling Q186 A). Called whenever one of those conditions may have
+  // changed; it does nothing until they all hold.
+  #releaseTrustedThread(provider: string, threadId: string): void {
+    const threadKey = providerThreadKey(provider, threadId)
+    const trusted = this.#trustedThreads.get(threadKey)
+    const revoked = this.#revokedTrustThreads.get(threadKey)
+    if (!trusted && !revoked) {
+      // Nothing tracked: drop what was kept for it once nothing is in flight.
+      if (!this.#trustInFlight.has(threadKey) && !this.#residualTrustedThreads.has(threadKey)) {
+        this.#trustAppliedAt.delete(threadKey)
+        this.#trustStopResolvedAt.delete(threadKey)
+      }
+      return
+    }
+    if (this.#claimedTrustThreads.has(threadKey) || this.#trustInFlight.has(threadKey)) return
+    const stoppedAt = this.#trustStopResolvedAt.get(threadKey)
+    if (stoppedAt === undefined || stoppedAt <= (this.#trustAppliedAt.get(threadKey) ?? 0)) return
+    if (!trustedStopUnconfirmedProviders.has(provider)) {
+      this.#trustedThreads.delete(threadKey)
+      this.#revokedTrustThreads.delete(threadKey)
+      this.#trustAppliedAt.delete(threadKey)
+      this.#trustStopResolvedAt.delete(threadKey)
+      return
+    }
+    if (!trusted || revoked || this.#failedEmergencyThreads.has(threadKey)) return
+    this.#trustedThreads.delete(threadKey)
+    this.#residualTrustedThreads.set(threadKey, trusted)
+  }
+
+  // A start that landed after its call timed out, so its operation already
+  // failed and nothing else will record it. Its thread is tracked first when
+  // it applied trust, then stopped: a stop that fails leaves it tracked and
+  // fenced for revoke (security review round 2 of #669).
+  async #stopLateStart(call: RepositoryTrustCall, sessionId: string, provider: string, threadId: string): Promise<void> {
+    this.#trackRepositoryTrust(call, sessionId, provider, threadId)
+    await this.#stopAbandonedThread(provider, threadId, "Late provider cleanup timed out")
+  }
+
+  // A stop of the thread that began at `startedAt` resolved. The thread leaves
+  // the loaded set, and tracking once #releaseTrustedThread allows it.
+  // Callers take `startedAt` from #nextTrustEpoch before they begin the stop.
+  #threadStopped(provider: string, threadId: string, startedAt: number): void {
+    const threadKey = providerThreadKey(provider, threadId)
+    this.#loadedAgentThreads.delete(threadKey)
+    this.#trustStopResolved(threadKey, startedAt)
+    this.#releaseTrustedThread(provider, threadId)
+  }
+
+  #trustStopResolved(threadKey: string, startedAt: number): void {
+    this.#trustStopResolvedAt.set(threadKey, Math.max(startedAt, this.#trustStopResolvedAt.get(threadKey) ?? 0))
+  }
+
+  // Security review rounds 2 and 3 of #669: whether a session's worktree may
+  // still hold an agent that loaded trusted input and whose exit is not
+  // confirmed: a tracked thread the session no longer names (an abandoned
+  // start, a quarantined or replaced thread), a tracked thread that is
+  // fenced, a thread a revoke is stopping, or one a revoke could not confirm.
+  // Each such thread is stopped again first, and only a confirmed stop lifts
+  // the fence. No agent starts or takes a message in the session while it
+  // holds.
+  async #repositoryTrustFenced(sessionId: string): Promise<boolean> {
+    const held = () => {
+      const threads = new Map<string, TrustedThread>()
+      // The session's own thread fenced by an emergency stop is not one of
+      // these: the send guard refuses it, and recovery or a revoke settles it.
+      for (const [threadKey, trusted] of this.#trustedThreads) {
+        if (trusted.sessionId !== sessionId) continue
+        const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
+        if (session?.providerThreadId !== trusted.threadId || session.runtime.provider !== trusted.provider) {
+          threads.set(threadKey, trusted)
+        }
+      }
+      for (const holds of [this.#revokedTrustThreads, this.#claimedTrustThreads]) {
+        for (const [threadKey, trusted] of holds) {
+          if (trusted.sessionId === sessionId) threads.set(threadKey, trusted)
+        }
+      }
+      return [...threads]
+    }
+    for (const [threadKey, { provider, threadId }] of held()) {
+      // A claimed thread is being stopped by its revoke already.
+      if (this.#claimedTrustThreads.has(threadKey)) continue
+      try {
+        await this.#stopAbandonedThread(provider, threadId, "Fenced provider thread stop timed out")
+      } catch (error) {
+        this.#reportError("Domovoi could not stop a fenced provider thread", error)
+        continue
+      }
+      if (
+        !trustedStopUnconfirmedProviders.has(provider)
+        && !this.#trustedThreads.has(threadKey)
+        && !this.#revokedTrustThreads.has(threadKey)
+      ) this.#repositoryTrustStopConfirmed(threadKey, sessionId)
+    }
+    return held().length > 0
+  }
+
+  // Security review round 4 of #669: a revoke or a fence retry confirmed that
+  // a thread stopped, so its failed-stop fence is lifted. The session is
+  // usable again once it names a thread and nothing else holds it: no fenced
+  // thread of its own and no trusted thread detached, revoked or claimed.
+  // Both callers pass only a provider-confirmed exit, so a Codex thread never
+  // gets here (security review round 5 of #669).
+  #repositoryTrustStopConfirmed(threadKey: string, sessionId: string): void {
+    this.#failedEmergencyThreads.delete(threadKey)
+    this.#emergencyBlockedThreads.delete(threadKey)
+    const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
+    if (!session?.providerThreadId || session.state !== "failed" || sessionIsReadOnly(session)) return
+    if (this.#failedEmergencyThreads.has(providerThreadKey(session.runtime.provider, session.providerThreadId))) return
+    const holdsSession = (trusted: TrustedThread) => trusted.sessionId === sessionId
+    if ([...this.#revokedTrustThreads.values(), ...this.#claimedTrustThreads.values()].some(holdsSession)) return
+    const detached = [...this.#trustedThreads.values()].some((trusted) => holdsSession(trusted)
+      && (trusted.threadId !== session.providerThreadId || trusted.provider !== session.runtime.provider))
+    if (detached) return
+    session.state = "idle"
+    session.updatedAt = new Date().toISOString()
+  }
+
+  // Stops a thread that a failed or cancelled operation started, within the
+  // agent timeout. A confirmed stop forgets it. A stop that fails leaves a
+  // thread that loaded trusted input tracked and fenced, so a revoke or
+  // recovery still finds it (security review round 1 of #669), and throws.
+  // The stop counts as in flight on the thread until the provider's stop
+  // itself settles, not until the timeout (security review round 10 of
+  // #669): a stop that resolves after its timeout still counts as the
+  // thread's exit then. The timeout is only what the caller waits: a stop
+  // that times out or fails is unconfirmed, fences a tracked thread and
+  // throws, as before. Security review round 11 of #669: the stop's count
+  // ends however its bookkeeping goes. Bookkeeping that throws before the
+  // timeout fails the stop, fence included; after it, it is reported.
+  async #stopAbandonedThread(provider: string, threadId: string, timeoutMessage: string): Promise<void> {
+    const threadKey = providerThreadKey(provider, threadId)
+    const startedAt = this.#nextTrustEpoch()
+    this.#trustWorkBegan(threadKey)
+    let settled: Promise<void> | undefined
+    let waited = false
+    try {
+      const stopping = this.#agents.require(provider).stopThread(threadId)
+      settled = stopping.then(
+        () => {
+          try {
+            this.#threadStopped(provider, threadId, startedAt)
+          } finally {
+            this.#trustWorkEnded(provider, threadId)
+          }
+        },
+        () => this.#trustWorkEnded(provider, threadId),
+      )
+      await withTimeout(stopping, this.#agentTimeoutMs, timeoutMessage)
+      waited = true
+      await settled
+    } catch (error) {
+      if (this.#trustedThreads.has(threadKey)) {
+        this.#failedEmergencyThreads.add(threadKey)
+        this.#emergencyBlockedThreads.add(threadKey)
+      }
+      // A stop that threw before it began settles nothing later.
+      if (settled === undefined) this.#trustWorkEnded(provider, threadId)
+      // A stop this call no longer waits for records itself when it settles,
+      // and nothing else would see that fail.
+      else if (!waited) {
+        void settled.catch((late: unknown) => this.#reportError("Domovoi could not record a provider thread stop", late))
+      }
+      throw error
+    }
+  }
+
+  // Rulings Q4, Q146, Q152 and Q170 A: taking trust back stops, now, every
+  // tracked thread of the project (or the one named), loaded or not: a thread
+  // another path dropped from the loaded set without confirming its exit is
+  // stopped too. Each is claimed before the first await: it leaves the loaded
+  // set, its events are dropped, and its turn stops counting as active, so an
+  // emergency stop that begins meanwhile leaves it to this one. An active turn
+  // is interrupted, then the thread is stopped, each within the agent timeout.
+  // Every claimed stop is attempted whatever the bookkeeping around it does:
+  // a queued send that cannot be held or approvals that cannot be cleared are
+  // reported after the stops (security review round 1 of #669).
+  // restarted: the stop resolved, and the thread is no longer tracked.
+  // unconfirmed: it timed out or failed, or the provider cannot confirm that
+  // the tool servers the thread started have exited; the thread stays tracked
+  // for the next revoke, and the session is failed and fenced as an emergency
+  // stop fences a thread it could not stop. A session with more than one such
+  // thread is listed once, unconfirmed if any of its threads is. Nothing
+  // resumes a thread: the next message does, and it carries no grant.
+  async #restartRepositoryTrustThreads(projectId: string, onlyThreadKey?: string): Promise<RepositoryTrustThreadRestart[]> {
+    const claimedAt = new Date().toISOString()
+    const bookkeeping: unknown[] = []
+    const record = (change: () => void) => {
+      try {
+        change()
+      } catch (error) {
+        bookkeeping.push(error)
+      }
+    }
+    const claims: {
+      trusted: TrustedThread; sessionId: string; provider: string; threadId: string; threadKey: string
+      turnId: string | undefined; fenced: boolean; claimedAt: number
+    }[] = []
+    // Stopped Codex threads of the project whose tool servers may still run
+    // (ruling Q186 A) are claimed with the rest: each is stopped again, and
+    // reported unconfirmed as a Codex stop always is.
+    if (onlyThreadKey === undefined) {
+      for (const [threadKey, residual] of [...this.#residualTrustedThreads]) {
+        if (residual.projectId !== projectId) continue
+        this.#residualTrustedThreads.delete(threadKey)
+        if (!this.#trustedThreads.has(threadKey)) this.#trustedThreads.set(threadKey, residual)
+      }
+    }
+    for (const [threadKey, trusted] of this.#trustedThreads) {
+      if (trusted.projectId !== projectId || (onlyThreadKey !== undefined && threadKey !== onlyThreadKey)) continue
+      const { provider, threadId, sessionId } = trusted
+      // Claimed before any await, so its session is fenced from here on and
+      // no other stop that finishes meanwhile can move or forget it.
+      this.#claimedTrustThreads.set(threadKey, trusted)
+      this.#loadedAgentThreads.delete(threadKey)
+      this.#emergencyBlockedThreads.add(threadKey)
+      // The session's own turn, when the session still names this thread.
+      const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
+      const current = session?.providerThreadId === threadId && session.runtime.provider === provider ? session : undefined
+      const turnId = current?.activeTurnId
+      if (current && turnId !== undefined) {
+        delete current.activeTurnId
+        record(() => this.#flushCommandOutputStreams(current.id))
+      }
+      if (current) {
+        current.updatedAt = claimedAt
+        record(() => this.#holdQueuedSessionSend(current.id, "Repository trust was taken back before the queued send could release."))
+      }
+      claims.push({
+        trusted, sessionId, provider, threadId, threadKey, turnId,
+        fenced: this.#failedEmergencyThreads.has(threadKey),
+        // Before its stop begins, so a grant applied during the stop is later.
+        claimedAt: this.#nextTrustEpoch(),
+      })
+    }
+    if (claims.length === 0) return []
+    const claimed = new Set(claims.map(({ sessionId }) => sessionId))
+    record(() => this.#removeApprovals((approval) => claimed.has(approval.sessionId), claimedAt))
+    const stops = await Promise.allSettled(claims.map(async ({ provider, threadId, turnId }) => {
+      const agent = this.#agents.require(provider)
+      if (turnId !== undefined) {
+        try {
+          await withTimeout(agent.interruptTurn(threadId, turnId), this.#agentTimeoutMs, "Repository trust turn interrupt timed out")
+        } catch (error) {
+          // The stop that follows ends the turn with its thread.
+          this.#reportError("Domovoi could not interrupt a turn whose repository trust was taken back", error)
+        }
+      }
+      await withTimeout(agent.stopThread(threadId), this.#agentTimeoutMs, "Repository trust thread stop timed out")
+    }))
+    const stoppedAt = new Date().toISOString()
+    const outcomes = new Map<string, RepositoryTrustThreadRestart["outcome"]>()
+    for (const [index, claim] of claims.entries()) {
+      const stop = stops[index]!
+      if (stop.status === "rejected") {
+        this.#reportError("Domovoi could not stop a thread whose repository trust was taken back", stop.reason)
+      }
+      const outcome = stop.status === "fulfilled" && !trustedStopUnconfirmedProviders.has(claim.provider)
+        ? "restarted" as const
+        : "unconfirmed" as const
+      this.#claimedTrustThreads.delete(claim.threadKey)
+      if (outcome === "restarted") {
+        // It leaves tracking only as #releaseTrustedThread allows: not while
+        // a call or stop on it is in flight, nor if a grant may have been
+        // applied after this stop began.
+        this.#trustStopResolved(claim.threadKey, claim.claimedAt)
+        this.#releaseTrustedThread(claim.provider, claim.threadId)
+      } else {
+        // Tracked again in case any path dropped the entry while it was
+        // claimed: a revoked thread stays tracked, revoked and fenced.
+        this.#trustedThreads.set(claim.threadKey, claim.trusted)
+        this.#revokedTrustThreads.set(claim.threadKey, claim.trusted)
+        this.#failedEmergencyThreads.add(claim.threadKey)
+        this.#emergencyBlockedThreads.add(claim.threadKey)
+      }
+      if (outcomes.get(claim.sessionId) !== "unconfirmed") outcomes.set(claim.sessionId, outcome)
+      const session = this.#snapshot.sessions.find(({ id }) => id === claim.sessionId)
+      if (!session || sessionIsReadOnly(session)) continue
+      if (session.providerThreadId === claim.threadId && session.runtime.provider === claim.provider) {
+        if (outcome === "unconfirmed") session.state = "failed"
+        // A turn waiting on an approval ended with its thread, and the
+        // approval was removed at the claim (GPT review of #669). A fenced
+        // claim keeps its state: that is not lifted here.
+        else if (!claim.fenced && (session.state === "active" || session.state === "waiting")) session.state = "idle"
+      }
+      session.updatedAt = stoppedAt
+      this.#snapshot.thread.push({
+        id: `system-${randomUUID()}`,
+        sessionId: session.id,
+        kind: "system",
+        ...(outcome === "restarted"
+          ? {
+              body: "Repository trust was taken back, so the agent was stopped.",
+              detail: "The next message resumes it without this repository's configuration.",
+            }
+          : {
+              body: "Repository trust was taken back, and Domovoi could not confirm that the agent stopped.",
+              detail: "It may still be running with this repository's configuration, so Domovoi will not start another agent here. Restart Domovoi to clear it, or archive the session.",
+            }),
+        createdAt: stoppedAt,
+      })
+    }
+    // Once every claim is settled, so a session with another thread still
+    // held stays fenced.
+    for (const claim of claims) {
+      if (
+        !trustedStopUnconfirmedProviders.has(claim.provider)
+        && !this.#trustedThreads.has(claim.threadKey)
+        && !this.#revokedTrustThreads.has(claim.threadKey)
+      ) this.#repositoryTrustStopConfirmed(claim.threadKey, claim.sessionId)
+    }
+    if (bookkeeping.length > 0) {
+      this.#reportError(
+        "Domovoi could not record every change for a thread whose repository trust was taken back",
+        new AggregateError(bookkeeping, `${bookkeeping.length} changes failed`),
+      )
+    }
+    return [...outcomes].map(([sessionId, outcome]) => ({ sessionId, outcome }))
+  }
+
   // The connection declared web, phone or tablet. Such a connection may hold a
   // pasted bearer, so it must not mint a desktop credential (rulings Q68 A, Q72 A).
   #declaredWebOrHandheld(socket: RpcOutboundSocket): boolean {
@@ -2312,7 +2839,7 @@ export class DomovoiDaemon {
         this.#mutations.cancelAll(error)
         failures.push(error)
       }
-      if (this.#deltaFlush || this.#persistFlush) await this.#saveAgentState(false)
+      if (this.#deltaFlush || this.#persistFlush || this.#persistDeadline) await this.#saveAgentState(false)
     } catch (error) {
       failures.push(error)
     }
@@ -3516,9 +4043,11 @@ export class DomovoiDaemon {
     // A turned-off provider is never run, so it has no thread to stop.
     if (providerThread && !this.#agents.isUnavailable(provider)) {
       this.#loadedAgentThreads.delete(providerThreadKey(provider, providerThread))
-      void this.#agents.require(provider).stopThread(providerThread).catch((error) => {
-        this.#reportError("Domovoi could not stop a transferred provider thread", error)
-      })
+      const stopStartedAt = this.#nextTrustEpoch()
+      void this.#agents.require(provider).stopThread(providerThread).then(
+        () => this.#threadStopped(provider, providerThread, stopStartedAt),
+        (error: unknown) => this.#reportError("Domovoi could not stop a transferred provider thread", error),
+      )
     }
   }
 
@@ -3660,11 +4189,12 @@ export class DomovoiDaemon {
     // A turned-off provider is never run, so it has no thread to stop.
     if (providerThread && !this.#agents.isUnavailable(provider)) {
       this.#loadedAgentThreads.delete(providerThreadKey(provider, providerThread))
+      const stopStartedAt = this.#nextTrustEpoch()
       void withTimeout(
         this.#agents.require(provider).stopThread(providerThread),
         this.#agentTimeoutMs,
         "Target ownership conflict provider shutdown timed out",
-      ).catch((error) => this.#reportError(
+      ).then(() => this.#threadStopped(provider, providerThread, stopStartedAt)).catch((error) => this.#reportError(
         "Domovoi could not stop a provider after detecting target ownership",
         error,
       ))
@@ -4093,11 +4623,12 @@ export class DomovoiDaemon {
     // A turned-off provider is never run, so it has no thread to stop.
     if (providerThread && !this.#agents.isUnavailable(provider)) {
       this.#loadedAgentThreads.delete(providerThreadKey(provider, providerThread))
+      const stopStartedAt = this.#nextTrustEpoch()
       void withTimeout(
         this.#agents.require(provider).stopThread(providerThread),
         this.#agentTimeoutMs,
         "Ownership conflict provider shutdown timed out",
-      ).catch((error) => this.#reportError(
+      ).then(() => this.#threadStopped(provider, providerThread, stopStartedAt)).catch((error) => this.#reportError(
         "Domovoi could not stop a provider after detecting duplicate ownership",
         error,
       ))
@@ -5321,7 +5852,9 @@ export class DomovoiDaemon {
         const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1"
         if (!loopback || socket instanceof DaemonRelaySocket || authenticatedActor?.kind !== "client"
           || this.#deviceCredentials.has(socket)) {
-          this.#error(socket, request.id, daemonAuthenticationErrorCode, "Updates require a loopback local-owner connection")
+          // A policy refusal, not a credential failure: clients read the
+          // authentication code as a revoked credential and drop the machine.
+          this.#error(socket, request.id, localOwnerRequiredErrorCode, "Updates require a loopback local-owner connection")
           return
         }
         const result = method === "update.status" ? this.#updates.status()
@@ -5385,7 +5918,9 @@ export class DomovoiDaemon {
         const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1"
         if (!loopback || socket instanceof DaemonRelaySocket || authenticatedActor?.kind !== "client"
           || this.#deviceCredentials.has(socket)) {
-          this.#error(socket, request.id, daemonAuthenticationErrorCode, "The service handoff fence requires a loopback local-owner connection")
+          // A policy refusal, not a credential failure, as for the update
+          // methods: every caller here has already passed authentication.
+          this.#error(socket, request.id, localOwnerRequiredErrorCode, "The service handoff fence requires a loopback local-owner connection")
           return
         }
         if (this.#serviceHandoffFence) {
@@ -6843,8 +7378,9 @@ export class DomovoiDaemon {
       }
 
       // Trust is recorded here and reported by tool.inventory; each provider
-      // call carries the grant (#repositoryTrustFor), and nothing loads under
-      // it yet (P6b to P8). Both methods answer for the open project only,
+      // call carries the grant (#repositoryTrustCall), and nothing loads under
+      // it yet (P6b to P8); taking it back stops the threads it was passed to
+      // (#restartRepositoryTrustThreads). Both methods answer for the open project only,
       // against its configuration read now, as its worktrees read it (ruling
       // Q145 A). A reader failure
       // reaches the catch below and the daemon's internal error, which names no
@@ -6871,17 +7407,35 @@ export class DomovoiDaemon {
           // Taken back before the configuration is read, so a reader failure
           // still leaves the repository untrusted.
           store.revoke(project.id)
+          this.#repositoryTrustGenerations.set(project.id, this.#repositoryTrustGeneration(project.id) + 1)
+          // Then the threads that opened under the grant stop (rulings Q4,
+          // Q146 A), before the configuration is read, so a reader failure
+          // leaves none of them running. An emergency stop that is running
+          // finishes first, and this one stops what it left. One that begins
+          // meanwhile cancels this request's signal, which is not checked
+          // from here on: the grant is gone, and stopping the threads is what
+          // the emergency stop would do.
+          await this.#settleEmergencyStops()
+          const threads = await this.#restartRepositoryTrustThreads(project.id)
+          if (threads.length > 0) {
+            try {
+              await this.#saveAgentState()
+            } catch (error) {
+              this.#reportError("Domovoi could not save the sessions whose repository trust was taken back", error)
+            }
+          }
           const config = await read(project.path, projectRootRead)
-          // threads is empty: nothing loads under a grant yet, so no agent
-          // thread holds anything to restart. Once P6b and P6c load trusted
-          // input, P6d restarts the repository's threads on revoke (rulings
-          // Q4, Q146).
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse({
               repository: { projectId: project.id, configDigest: config.configDigest, trust: repositoryTrustState(config, undefined) },
-              threads: [],
+              // Every thread stopped; the result lists up to the cap and
+              // counts the rest (ruling Q179 A).
+              threads: threads.slice(0, maximumRevokedTrustThreads),
+              ...(threads.length > maximumRevokedTrustThreads
+                ? { omittedThreads: threads.length - maximumRevokedTrustThreads }
+                : {}),
             }),
           })
           return
@@ -7953,30 +8507,50 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, invalidParams, "Session is not ready for provider handoff")
             return
           }
+          // No replacement starts beside a thread that loaded trusted input
+          // and has not confirmed its exit (security review round 2 of #669).
+          // A Codex thread replaced while the grant holds becomes a residual
+          // entry in #threadStopped, which fences nothing until a revoke
+          // (ruling Q186 A).
+          // Security review round 6 of #669 (ruling Q188 A): recovery cannot
+          // confirm that a trusted Codex thread's tool servers exited, so its
+          // failed thread stays tracked and fenced until the daemon restarts.
+          // An untrusted thread, or one whose provider confirms exit, is
+          // recovered as before.
+          const failedTrusted = recoveringFailedThread && previousKey !== undefined
+            ? this.#trustedThreads.get(previousKey)
+            : undefined
+          if (
+            (failedTrusted !== undefined && trustedStopUnconfirmedProviders.has(failedTrusted.provider))
+            || await this.#repositoryTrustFenced(currentSession.id)
+          ) {
+            this.#error(socket, request.id, invalidParams, providerThreadRecoveryRefusal)
+            return
+          }
           const previousRuntime = currentSession.runtime
           const previousThreadId = currentSession.providerThreadId
           const nextAgent = await this.#ensureAgentConnected(runtime.provider)
           const startNextThread = async () => {
             signal?.throwIfAborted()
+            const trust = this.#repositoryTrustCall(currentSession.projectId)
             const nextThreadId = await withLateCleanup(
-              nextAgent.startThread({ cwd: currentSession.workspacePath!, runtime, ...this.#repositoryTrustFor(currentSession.projectId) }),
+              nextAgent.startThread({ cwd: currentSession.workspacePath!, runtime, ...trust.input }),
               this.#agentTimeoutMs,
               recoveringFailedThread ? "Provider recovery timed out" : "Provider handoff timed out",
-              (threadId) => nextAgent.stopThread(threadId),
+              (threadId) => this.#stopLateStart(trust, currentSession.id, runtime.provider, threadId),
               "Domovoi could not stop a late replacement provider thread",
               (context, error) => this.#reportError(context, error),
             )
+            this.#recordRepositoryTrust(trust, currentSession.id, runtime.provider, nextThreadId)
             if (signal?.aborted) {
-              await withTimeout(
-                nextAgent.stopThread(nextThreadId),
-                this.#agentTimeoutMs,
-                "Cancelled provider replacement cleanup timed out",
-              )
+              await this.#stopAbandonedThread(runtime.provider, nextThreadId, "Cancelled provider replacement cleanup timed out")
               signal.throwIfAborted()
             }
             return nextThreadId
           }
           let checkpoint: Awaited<ReturnType<WorkspaceService["checkpoint"]>>
+          // Taken before either stop of the previous thread below begins.
+          const previousStopStartedAt = this.#nextTrustEpoch()
           // Recovery establishes that the failed thread has exited before it
           // starts or checkpoints a replacement. A stop that fails again
           // throws here, and the session stays failed and fenced (security
@@ -8012,8 +8586,10 @@ export class DomovoiDaemon {
               )
             }
           } catch (error) {
+            // Bounded, so a hung stop cannot hold the mutation queue, and a
+            // revoke behind it, forever (security review round 1 of #669).
             try {
-              await nextAgent.stopThread(nextThreadId)
+              await this.#stopAbandonedThread(runtime.provider, nextThreadId, "Failed handoff thread cleanup timed out")
             } catch (cleanupError) {
               this.#reportError("Domovoi could not stop a failed handoff thread", cleanupError)
             }
@@ -8029,7 +8605,9 @@ export class DomovoiDaemon {
           currentSession.state = "idle"
           currentSession.updatedAt = createdAt
           delete currentSession.providerFailure
-          this.#loadedAgentThreads.delete(providerThreadKey(previousRuntime.provider, previousThreadId))
+          // The previous thread was stopped above, or its provider is turned
+          // off and never runs.
+          this.#threadStopped(previousRuntime.provider, previousThreadId, previousStopStartedAt)
           this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, nextThreadId))
           if (recoveringFailedThread && previousKey) {
             this.#failedEmergencyThreads.delete(previousKey)
@@ -8095,6 +8673,10 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session already has a live provider thread")
           return
         }
+        if (await this.#repositoryTrustFenced(session.id)) {
+          this.#error(socket, request.id, invalidParams, providerThreadRecoveryRefusal)
+          return
+        }
         let runtime: Runtime
         try {
           runtime = await this.#resolveRuntime(params.runtime ?? session.runtime)
@@ -8104,21 +8686,19 @@ export class DomovoiDaemon {
           return
         }
         const agent = await this.#ensureAgentConnected(runtime.provider)
+        const trust = this.#repositoryTrustCall(session.projectId)
         const threadId = await withLateCleanup(
-          agent.startThread({ cwd: session.workspacePath, runtime, ...this.#repositoryTrustFor(session.projectId) }),
+          agent.startThread({ cwd: session.workspacePath, runtime, ...trust.input }),
           this.#agentTimeoutMs,
           "Provider restart timed out",
-          (lateThreadId) => agent.stopThread(lateThreadId),
+          (lateThreadId) => this.#stopLateStart(trust, params.sessionId, runtime.provider, lateThreadId),
           "Domovoi could not stop a late restarted provider thread",
           (context, error) => this.#reportError(context, error),
         )
+        this.#recordRepositoryTrust(trust, params.sessionId, runtime.provider, threadId)
         try {
           if (signal?.aborted) {
-            await withTimeout(
-              agent.stopThread(threadId),
-              this.#agentTimeoutMs,
-              "Cancelled provider restart cleanup timed out",
-            )
+            await this.#stopAbandonedThread(runtime.provider, threadId, "Cancelled provider restart cleanup timed out")
             signal.throwIfAborted()
           }
           // The synchronous write joins the persistence serializer, so a
@@ -8162,11 +8742,7 @@ export class DomovoiDaemon {
           alreadyPersisted = true
         } catch (error) {
           try {
-            await withTimeout(
-              agent.stopThread(threadId),
-              this.#agentTimeoutMs,
-              "Failed provider restart cleanup timed out",
-            )
+            await this.#stopAbandonedThread(runtime.provider, threadId, "Failed provider restart cleanup timed out")
           } catch (cleanupError) {
             this.#reportError("Domovoi could not stop a failed restarted provider thread", cleanupError)
           }
@@ -8384,21 +8960,19 @@ export class DomovoiDaemon {
         let providerThreadId: string
         try {
           const agent = this.#agents.require(runtime.provider)
-          const pendingThread = agent.startThread({ cwd: workspace.path, runtime, ...this.#repositoryTrustFor(project.id) })
+          const trust = this.#repositoryTrustCall(project.id)
+          const pendingThread = agent.startThread({ cwd: workspace.path, runtime, ...trust.input })
           providerThreadId = await withLateCleanup(
             pendingThread,
             this.#agentTimeoutMs,
             "Agent setup timed out",
-            (threadId) => agent.stopThread(threadId),
+            (threadId) => this.#stopLateStart(trust, sessionId, runtime.provider, threadId),
             "Domovoi could not stop a late session thread",
             (context, error) => this.#reportError(context, error),
           )
+          this.#recordRepositoryTrust(trust, sessionId, runtime.provider, providerThreadId)
           if (signal?.aborted) {
-            await withTimeout(
-              agent.stopThread(providerThreadId),
-              this.#agentTimeoutMs,
-              "Cancelled session thread cleanup timed out",
-            )
+            await this.#stopAbandonedThread(runtime.provider, providerThreadId, "Cancelled session thread cleanup timed out")
             signal.throwIfAborted()
           }
         } catch (error) {
@@ -8510,6 +9084,16 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session is not ready to fork")
           return
         }
+        // A source whose own thread an emergency stop could not stop needs
+        // recovery first, as a send does (security review round 5 of #669).
+        if (
+          (source.providerThreadId
+            && this.#failedEmergencyThreads.has(providerThreadKey(source.runtime.provider, source.providerThreadId)))
+          || await this.#repositoryTrustFenced(source.id)
+        ) {
+          this.#error(socket, request.id, invalidParams, providerThreadRecoveryRefusal)
+          return
+        }
         const checkpoint = this.#snapshot.thread.find(
           (candidate) => candidate.id === params.checkpointId
             && candidate.sessionId === source.id
@@ -8578,21 +9162,19 @@ export class DomovoiDaemon {
         })
         const agent = this.#agents.require(runtime.provider)
         let providerThreadId: string
+        const trust = this.#repositoryTrustCall(source.projectId)
         try {
           providerThreadId = await withLateCleanup(
-            agent.startThread({ cwd: workspace.path, runtime, ...this.#repositoryTrustFor(source.projectId) }),
+            agent.startThread({ cwd: workspace.path, runtime, ...trust.input }),
             this.#agentTimeoutMs,
             "Fork agent setup timed out",
-            (threadId) => agent.stopThread(threadId),
+            (threadId) => this.#stopLateStart(trust, sessionId, runtime.provider, threadId),
             "Domovoi could not stop a late fork thread",
             (context, error) => this.#reportError(context, error),
           )
+          this.#recordRepositoryTrust(trust, sessionId, runtime.provider, providerThreadId)
           if (signal?.aborted) {
-            await withTimeout(
-              agent.stopThread(providerThreadId),
-              this.#agentTimeoutMs,
-              "Cancelled fork thread cleanup timed out",
-            )
+            await this.#stopAbandonedThread(runtime.provider, providerThreadId, "Cancelled fork thread cleanup timed out")
             signal.throwIfAborted()
           }
         } catch (error) {
@@ -8655,11 +9237,7 @@ export class DomovoiDaemon {
         } catch (error) {
           this.#persistenceFailed(error)
           try {
-            await withTimeout(
-              agent.stopThread(providerThreadId),
-              this.#agentTimeoutMs,
-              "Failed fork provider cleanup timed out",
-            )
+            await this.#stopAbandonedThread(runtime.provider, providerThreadId, "Failed fork provider cleanup timed out")
           } catch (cleanupError) {
             this.#reportError("Domovoi could not stop a failed fork thread", cleanupError)
           }
@@ -8824,8 +9402,14 @@ export class DomovoiDaemon {
           session.providerThreadId,
         )
         const providerThreadId = session.providerThreadId
+        // Checked before the synchronous checks below, which then see the
+        // state after its stops.
+        if (await this.#repositoryTrustFenced(session.id)) {
+          this.#error(socket, request.id, invalidParams, providerThreadRecoveryRefusal)
+          return
+        }
         if (this.#failedEmergencyThreads.has(emergencyThread)) {
-          this.#error(socket, request.id, invalidParams, "Provider thread requires recovery after emergency stop")
+          this.#error(socket, request.id, invalidParams, providerThreadRecoveryRefusal)
           return
         }
         if (this.#emergencyStopInProgress) {
@@ -8870,24 +9454,30 @@ export class DomovoiDaemon {
         }
         const loadedThread = providerThreadKey(session.runtime.provider, providerThreadId)
         if (!this.#loadedAgentThreads.has(loadedThread)) {
+          const resumeTrust = this.#repositoryTrustCall(session.projectId)
+          let resuming: Promise<void> | undefined
+          let resumeWatch: { timedOut: () => void } | undefined
           try {
-            await withTimeout(
-              agent.resumeThread({
-                threadId: providerThreadId,
-                cwd: session.workspacePath,
-                runtime: session.runtime,
-                ...this.#repositoryTrustFor(session.projectId),
-              }),
-              this.#agentTimeoutMs,
-              "Agent thread resume timed out",
-            )
+            resuming = agent.resumeThread({
+              threadId: providerThreadId,
+              cwd: session.workspacePath,
+              runtime: session.runtime,
+              ...resumeTrust.input,
+            })
+            // In flight on the thread from the moment it is sent (round 9).
+            resumeWatch = this.#watchTrustedCall(resuming, resumeTrust, session.id, session.runtime.provider, providerThreadId)
+            await withTimeout(resuming, this.#agentTimeoutMs, "Agent thread resume timed out")
           } catch (error) {
             this.#inFlightProviderThreads.delete(emergencyThread)
+            // Tracked before the quarantine below stops it (Q198 A).
+            if (resuming) this.#trackUnsettledRepositoryTrust(resumeTrust, session.id, session.runtime.provider, providerThreadId)
             if (error instanceof OperationTimeoutError) {
+              resumeWatch?.timedOut()
               await this.#quarantineProviderThread(session.id, error.message)
             }
             return await providerRefusal(error)
           }
+          this.#recordRepositoryTrust(resumeTrust, session.id, session.runtime.provider, providerThreadId)
           if (signal?.aborted) {
             this.#inFlightProviderThreads.delete(emergencyThread)
             signal.throwIfAborted()
@@ -8897,6 +9487,9 @@ export class DomovoiDaemon {
         let turnId = session.activeTurnId
         const steering = turnId !== undefined
         let providerMessageId: string | undefined
+        let turnTrust: RepositoryTrustCall | undefined
+        let startingTurn: Promise<string> | undefined
+        let turnWatch: { timedOut: () => void } | undefined
         try {
           signal?.throwIfAborted()
           if (turnId) {
@@ -8909,20 +9502,21 @@ export class DomovoiDaemon {
             )
             providerMessageId = steering?.providerMessageId
           } else {
-            turnId = await withTimeout(
-              agent.startTurn({
-                threadId: providerThreadId,
-                cwd: session.workspacePath,
-                prompt,
-                runtime: dispatchRuntime,
-                ...(preparedTurn.visualContexts.length > 0
-                  ? { visualContexts: preparedTurn.visualContexts }
-                  : {}),
-                ...this.#repositoryTrustFor(session.projectId),
-              }),
-              this.#agentTimeoutMs,
-              "Agent turn timed out",
-            )
+            turnTrust = this.#repositoryTrustCall(session.projectId)
+            startingTurn = agent.startTurn({
+              threadId: providerThreadId,
+              cwd: session.workspacePath,
+              prompt,
+              runtime: dispatchRuntime,
+              ...(preparedTurn.visualContexts.length > 0
+                ? { visualContexts: preparedTurn.visualContexts }
+                : {}),
+              ...turnTrust.input,
+            })
+            // In flight on the thread from the moment it is sent (round 9).
+            turnWatch = this.#watchTrustedCall(startingTurn, turnTrust, session.id, dispatchRuntime.provider, providerThreadId)
+            turnId = await withTimeout(startingTurn, this.#agentTimeoutMs, "Agent turn timed out")
+            this.#recordRepositoryTrust(turnTrust, session.id, dispatchRuntime.provider, providerThreadId)
             const dispatchedTurnId = turnId
             this.#updateUsageAccounting(() => this.#usageLedger.begin?.({
               sessionId: session.id, provider: dispatchRuntime.provider, model: dispatchRuntime.model,
@@ -8932,6 +9526,11 @@ export class DomovoiDaemon {
           }
         } catch (error) {
           this.#inFlightProviderThreads.delete(emergencyThread)
+          // Tracked before the quarantine below stops it (Q198 A).
+          if (turnTrust && startingTurn) {
+            this.#trackUnsettledRepositoryTrust(turnTrust, session.id, dispatchRuntime.provider, providerThreadId)
+            if (error instanceof OperationTimeoutError) turnWatch?.timedOut()
+          }
           if (error instanceof OperationTimeoutError) {
             await this.#quarantineProviderThread(session.id, error.message)
           }
@@ -10382,6 +10981,7 @@ export class DomovoiDaemon {
         continue
       }
       let fallbackStopped = false
+      const fallbackStartedAt = this.#nextTrustEpoch()
       try {
         await withTimeout(
           this.#agents.require(session.runtime.provider).stopThread(session.providerThreadId!),
@@ -10400,9 +11000,7 @@ export class DomovoiDaemon {
       }
       session.state = "failed"
       if (fallbackStopped) {
-        this.#loadedAgentThreads.delete(
-          providerThreadKey(session.runtime.provider, session.providerThreadId!),
-        )
+        this.#threadStopped(session.runtime.provider, session.providerThreadId!, fallbackStartedAt)
         delete session.providerThreadId
       } else {
         this.#failedEmergencyThreads.add(
@@ -10415,6 +11013,7 @@ export class DomovoiDaemon {
       .filter(([threadKey, sessionId]) => !activeThreadKeys.has(threadKey) && !this.#agents.isUnavailable(
         this.#snapshot.sessions.find(({ id }) => id === sessionId)?.runtime.provider ?? "",
       ))
+    const inFlightStartedAt = this.#nextTrustEpoch()
     const inFlightResults = await Promise.allSettled(inFlight.map(([threadKey, sessionId]) => {
       const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
       if (!session?.providerThreadId) return Promise.resolve()
@@ -10438,7 +11037,11 @@ export class DomovoiDaemon {
         if (
           session.providerThreadId
           && providerThreadKey(session.runtime.provider, session.providerThreadId) === threadKey
-        ) delete session.providerThreadId
+        ) {
+          // The stop above ran for this thread, so its exit is confirmed.
+          this.#threadStopped(session.runtime.provider, session.providerThreadId, inFlightStartedAt)
+          delete session.providerThreadId
+        }
       } else {
         this.#failedEmergencyThreads.add(threadKey)
         failures.push({
@@ -10599,13 +11202,14 @@ export class DomovoiDaemon {
         "Cancelled provider turn interrupt timed out",
       )
     } catch {
+      const stopStartedAt = this.#nextTrustEpoch()
       try {
         await withTimeout(
           this.#agents.require(session.runtime.provider).stopThread(threadId),
           this.#agentTimeoutMs,
           "Cancelled provider reset timed out",
         )
-        this.#loadedAgentThreads.delete(key)
+        this.#threadStopped(session.runtime.provider, threadId, stopStartedAt)
         delete session.providerThreadId
       } catch {
         this.#failedEmergencyThreads.add(key)
@@ -11134,6 +11738,7 @@ export class DomovoiDaemon {
 
     if (session.providerThreadId) {
       const threadId = session.providerThreadId
+      const stopStartedAt = this.#nextTrustEpoch()
       // A turned-off provider is never run, so it has no thread to stop.
       if (!this.#agents.isUnavailable(session.runtime.provider)) {
         await this.#loadProviderThreadForArchive(session)
@@ -11143,7 +11748,7 @@ export class DomovoiDaemon {
           "Archive provider cleanup timed out",
         )
       }
-      this.#loadedAgentThreads.delete(providerThreadKey(session.runtime.provider, threadId))
+      this.#threadStopped(session.runtime.provider, threadId, stopStartedAt)
       delete session.providerThreadId
       delete session.activeTurnId
       await this.#saveAgentState(false)
@@ -11525,6 +12130,10 @@ export class DomovoiDaemon {
       this.#persistFlush = undefined
       void this.#flushAgentState(false)
     }, workspaceDeltaBatchDelayMilliseconds)
+    this.#persistDeadline ??= setTimeout(() => {
+      this.#persistDeadline = undefined
+      void this.#flushAgentState(false)
+    }, streamPersistMaxWaitMilliseconds)
     if (this.#deltaFlush) return
     this.#deltaFlush = setTimeout(() => {
       this.#deltaFlush = undefined
@@ -11636,6 +12245,10 @@ export class DomovoiDaemon {
       clearTimeout(this.#persistFlush)
       this.#persistFlush = undefined
     }
+    if (this.#persistDeadline) {
+      clearTimeout(this.#persistDeadline)
+      this.#persistDeadline = undefined
+    }
     await this.#persistSnapshot()
     if (broadcast) this.#broadcastSnapshot()
   }
@@ -11672,13 +12285,17 @@ export class DomovoiDaemon {
       await this.#persistSnapshot()
       this.#broadcastSnapshot()
     } finally {
+      const stopStartedAt = this.#nextTrustEpoch()
       try {
         await withTimeout(
           this.#agents.require(provider).stopThread(threadId),
           this.#agentTimeoutMs,
           "Provider quarantine cleanup timed out",
         )
+        this.#threadStopped(provider, threadId, stopStartedAt)
       } catch (error) {
+        // A thread that loaded trusted input stays tracked, so taking trust
+        // back still stops it (security review round 1 of #669).
         this.#reportError("Domovoi could not stop a quarantined provider thread", error)
       }
     }
@@ -11721,13 +12338,14 @@ export class DomovoiDaemon {
         })
       }
       if (!threadId || !runsProvider) continue
+      const stopStartedAt = this.#nextTrustEpoch()
       try {
         await withTimeout(
           this.#agents.require(session.runtime.provider).stopThread(threadId),
           this.#agentTimeoutMs,
           "Project switch provider cleanup timed out",
         )
-        this.#loadedAgentThreads.delete(providerThreadKey(session.runtime.provider, threadId))
+        this.#threadStopped(session.runtime.provider, threadId, stopStartedAt)
       } catch (error) {
         this.#reportError("Domovoi could not stop a provider thread before switching projects", error)
         const threadKey = providerThreadKey(session.runtime.provider, threadId)

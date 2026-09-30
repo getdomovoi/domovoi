@@ -1,10 +1,12 @@
 import {
   maximumRepositoryTrustRefusals,
+  maximumRepositoryTrustThreadRestarts,
   type RepositoryTrustState,
   type ToolInventoryEntry,
   type ToolInventoryProvider,
 } from "@getdomovoi/protocol"
 
+import { claudeEntryHeldBack, claudeRepositoryFiles, claudeRepositoryLoad } from "./claude-repository-trust.js"
 import { codexEntryHeldBack, codexRepositoryFiles, codexRepositoryLoad } from "./codex-repository-trust.js"
 import {
   readRepositoryProviderConfig,
@@ -24,9 +26,9 @@ import type { RepositoryProviderConfigReader } from "./tool-inventory.js"
 // of it, whose configuration can differ. A session's verdict reads its own
 // worktree, at the call that opens its thread or starts its turn, and never
 // relies on an earlier trust answer (#662 round 1): the documents it gives are
-// the ones the digest it compared was computed from. Codex loads parts of a
-// trusted verdict's documents (P6c, codex-repository-trust.ts); Claude Code
-// loads nothing from it until P6b.
+// the ones the digest it compared was computed from. Claude Code (P6b,
+// claude-repository-trust.ts) and Codex (P6c, codex-repository-trust.ts) each
+// load parts of a trusted verdict's documents.
 
 // Why a session's repository configuration is held back. Codes, not prose:
 // the notice that words them comes with the later slices (ruling Q153 A).
@@ -102,33 +104,36 @@ export async function trustedRepositoryConfig(
 
 // The files whose every entry an adapter keeps from its agent unless the
 // repository is trusted. Each claim is pinned by a test of the adapter's real
-// behaviour: Claude Code starts with settingSources ["user"], so the
-// repository's settings and .mcp.json are never read (claude.test.ts); Codex
-// marks every path it consults for trust untrusted, so it loads nothing from
-// .codex itself, refuses a worktree holding a config.toml or hooks.json there
-// unless it is trusted, and is given only the servers trustedEntryHeldBack
-// reports under a trusted verdict (codex-repository-config.test.ts). Nothing
-// else is claimed (ruling Q128 A): Domovoi's own skill catalog reads the skill
-// folders into prompts, and OpenCode, Kilo and the ACP agents are stated in
-// P7. P6b narrows Claude Code's as its trusted entries start to load.
+// behaviour: Claude Code starts with settingSources ["user"], so it never
+// reads the repository's settings or .mcp.json, and is given parts of them
+// only under a trusted verdict (claude.test.ts); Codex marks every path it
+// consults for trust untrusted, so it loads nothing from .codex itself,
+// refuses a worktree holding a config.toml or hooks.json there unless it is
+// trusted, and is given only the servers trustedEntryHeldBack reports under a
+// trusted verdict (codex-repository-config.test.ts). Nothing else is claimed
+// (ruling Q128 A): Domovoi's own skill catalog reads the skill folders into
+// prompts, and OpenCode, Kilo and the ACP agents are stated in P7.
 const heldBackFiles: Readonly<Record<string, ReadonlySet<string>>> = {
-  "claude-code": new Set([".claude/settings.json", ".mcp.json"]),
-  codex: new Set([".codex/config.toml", ".codex/hooks.json"]),
+  "claude-code": claudeRepositoryFiles,
+  codex: codexRepositoryFiles,
 }
 
 export const repositoryEntryHeldBack: RepositoryEntryHeldBack = (provider: string, entry: ToolInventoryEntry) => (
   Object.hasOwn(heldBackFiles, provider) && heldBackFiles[provider]!.has(entry.file)
 )
 
-// The policy under a trusted verdict whose documents are `documents`: Codex's
-// entries are held back unless the plan its adapter passes loads them
-// (codex-repository-trust.ts, slice P6c); every other provider's are marked
-// as when untrusted until its own slice loads them (Claude Code in P6b).
+// The policy under a trusted verdict whose documents are `documents`: Claude
+// Code's and Codex's entries are held back unless the plan its adapter passes
+// loads them (claude-repository-trust.ts, slice P6b; codex-repository-trust.ts,
+// slice P6c); every other provider's are marked as when untrusted.
 export function trustedEntryHeldBack(documents: RepositoryConfigDocuments): RepositoryEntryHeldBack {
+  const claude = claudeRepositoryLoad(documents)
   const codex = codexRepositoryLoad(documents)
-  return (provider, entry) => (provider === "codex" && codexRepositoryFiles.has(entry.file)
-    ? codexEntryHeldBack(entry, codex)
-    : repositoryEntryHeldBack(provider, entry))
+  return (provider, entry) => {
+    if (provider === "claude-code" && claudeRepositoryFiles.has(entry.file)) return claudeEntryHeldBack(entry, claude)
+    if (provider === "codex" && codexRepositoryFiles.has(entry.file)) return codexEntryHeldBack(entry, codex)
+    return repositoryEntryHeldBack(provider, entry)
+  }
 }
 
 // The providers as the inventory reports them under `trust`. The reader
@@ -150,3 +155,8 @@ export function heldBackUnder(config: RepositoryProviderConfig, trust: Repositor
 // a refusal every session would meet shows where trust is asked for (ruling
 // Q145 A).
 export const projectRootRead: RepositoryProviderConfigOptions = { heldBack: repositoryEntryHeldBack, asLinkedWorktree: true }
+
+// The most threads one repository.revokeTrust result lists: the protocol's
+// cap on its threads array. A revoke still stops every thread, however many
+// (ruling Q179 A); the result counts the rest in omittedThreads.
+export const maximumRevokedTrustThreads: number = maximumRepositoryTrustThreadRestarts

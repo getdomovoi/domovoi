@@ -11,7 +11,8 @@ import type { RepositoryTrustGrant } from "./repository-trust-store.js"
 //
 // toolServers stays "read-from-files", as the reader reports it, for every
 // provider: Domovoi starts none of them with tool servers stripped. Claude Code
-// loads the person's own servers (settingSources ["user"], claude.ts), Codex
+// loads the person's own servers (settingSources ["user"], claude.ts), and a
+// trusted repository's that its plan passes (claude-repository-trust.ts), Codex
 // its home's config.toml, and a trusted repository's that its plan passes
 // (codex-repository-trust.ts), and OpenCode and Kilo their global config (the
 // embedded config sets no `mcp`, opencode.ts and kilo-runtime.ts). The ACP

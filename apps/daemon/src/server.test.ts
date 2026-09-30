@@ -59,6 +59,7 @@ import {
   sessionHistoryEntries,
   sessionHistoryPage,
   signArtifactAccess,
+  streamPersistMaxWaitMilliseconds,
   workspaceSnapshotForClient,
   coalesceWorkspaceDeltas,
   validWorkspaceDeltaBatches,
@@ -832,6 +833,30 @@ describe("DomovoiDaemon", () => {
       expect(deltasBeforeStreamEnded).toBeGreaterThanOrEqual(2)
       expect(savesDuringStream).toBeLessThanOrEqual(3)
       await waitForDaemon(() => expect(saves.mock.calls.length).toBeGreaterThan(0))
+      socket.close()
+    })
+
+    it("persists a stream that never pauses within the maximum wait", async () => {
+      const { socket, emit, store } = await streamingDaemon()
+      const saves = vi.spyOn(store, "saveAsync")
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+      onTestFinished(() => { vi.useRealTimers() })
+      let streamed = 0
+      const stepMilliseconds = 10
+      for (let elapsed = 0; elapsed <= streamPersistMaxWaitMilliseconds; elapsed += stepMilliseconds) {
+        emit({
+          type: "text-delta",
+          threadId: "thread-long",
+          turnId: "turn-long",
+          delta: `chunk ${streamed} `,
+        })
+        streamed += 1
+        await vi.advanceTimersByTimeAsync(stepMilliseconds)
+      }
+
+      expect(saves).toHaveBeenCalled()
+      expect(JSON.stringify(saves.mock.calls.at(-1)![0])).toContain("chunk 0 ")
+      vi.useRealTimers()
       socket.close()
     })
 

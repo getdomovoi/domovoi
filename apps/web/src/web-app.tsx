@@ -7,7 +7,7 @@ import { browserLimits } from "./browser-limits"
 import { browserLimitsSeen, markBrowserLimitsSeen } from "./browser-limits-seen"
 import type { BrowserPlatformEnvironment } from "./browser-platform"
 import { browserDeviceLabel, clearDaemonSession, loadDaemonSession, saveDaemonSession, type DaemonSession } from "./credential"
-import { pairBrowserDevice, pairingOutcomeFor, redeemBrowserCode, type PairingClientFactory } from "./daemon-pairing"
+import { codeNameFor, pairBrowserDevice, pairingOutcomeFor, redeemBrowserCode, type PairingClientFactory } from "./daemon-pairing"
 
 export type WebAppProps = {
   rpcUrl: string
@@ -92,6 +92,7 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
     }
     return <WebConnectPage
       host={host}
+      codeName={codeNameFor(clientKind)}
       secure={secure}
       reached={reached}
       reopened={reopened}
