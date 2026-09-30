@@ -1179,8 +1179,16 @@ export class GitWorkspaceService implements WorkspaceService {
       if (!(error instanceof RepositoryGitFilterRefusedError)) await discardNewWorktree(repositoryPath, path, madeBranch)
       throw error
     }
-    await checkOutIsolated({ worktree: path, commit, settings, signal })
-    await git(path, ["update-ref", "HEAD", commit], signal)
+    // A checkout that fails (a required filter of the person's own that
+    // fails, a missing object, a cancel) leaves no worktree or branch behind:
+    // the caller's creation promise rejects and never names one to remove.
+    try {
+      await checkOutIsolated({ worktree: path, commit, settings, signal })
+      await git(path, ["update-ref", "HEAD", commit], signal)
+    } catch (error) {
+      await discardNewWorktree(repositoryPath, path, madeBranch)
+      throw error
+    }
   }
 
   async inspect(repositoryPath: string, signal?: AbortSignal): Promise<RepositoryInfo> {

@@ -2432,6 +2432,29 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     return { scratch, repositoryPath, payload, filterFile, worktrees, git, ran, branches, worktreeList }
   }
 
+  // A checkout the person's own required filter fails (git-lfs missing, say)
+  // leaves no worktree or branch behind.
+  it("takes the new worktree and its branch away when the checkout itself fails", async () => {
+    const { scratch, repositoryPath, worktrees, branches, worktreeList } = await filteredRepository("domovoi-create-checkout-fails-")
+    const home = join(scratch, "home")
+    await mkdir(home)
+    await writeFile(join(home, ".gitconfig"), "[filter \"agent\"]\n\tsmudge = false\n\trequired = true\n")
+    const previous = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
+    process.env.HOME = home
+    process.env.XDG_CONFIG_HOME = join(home, ".config")
+    try {
+      await expect(new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, "session-checkout-fails")).rejects.toThrow()
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+    await expect(lstat(join(worktrees, "session-checkout-fails"))).rejects.toThrow()
+    expect(await branches()).toBe("")
+    expect(await worktreeList()).toHaveLength(1)
+  })
+
   // A driver's name is the repository's text and can hold a credential; the
   // refusal's message reaches clients, so it shows names as the inventory does.
   it("shows a filter's name and key redacted in a refusal's message", async () => {
