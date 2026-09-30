@@ -8,7 +8,7 @@ import {
   WorkspaceShell,
 } from "@getdomovoi/ui"
 import "@getdomovoi/ui/styles.css"
-import { DomovoiClient } from "@/client"
+import { createBrowserPairingClient } from "@/browser-pairing-client"
 
 applyStoredAppearanceTheme()
 
@@ -54,10 +54,7 @@ createRoot(document.getElementById("root")!).render(
         storage={sessionStorage}
         memory={localStorage}
         codeFromUrl={codeFromUrl}
-        createClient={(input) => new DomovoiClient(input.url, input.client, {
-          budgets: { connectMs: 30_000, requestMs: 30_000 },
-          ...(input.bearer ? { authToken: input.bearer } : {}),
-        })}
+        createClient={createBrowserPairingClient}
         labelSuffix={() => crypto.randomUUID().slice(0, 8)}
         workspace={({ token, onChangeCredential }) => (
           <WorkspaceShell
