@@ -84,6 +84,18 @@ describe("ToolsScreen", () => {
     expect(screen.queryByText(/^Trust for this machine$/)).toBeNull()
   })
 
+  // Before a trust state is known, or after a read failed, trusting is not
+  // the remedy, so the bar does not offer it.
+  it("does not point at desktop or web while reading or after a failed read", async () => {
+    await draw({ state: "loading" })
+    expect(screen.queryByText("Trust from desktop or web")).toBeNull()
+    expect(screen.getByText("A phone shows this but cannot trust it.")).toBeOnTheScreen()
+    await draw({ state: "error", message: "The daemon did not answer" })
+    expect(screen.queryByText("Trust from desktop or web")).toBeNull()
+    await draw({ state: "loaded", inventory: toolInventorySchema.parse({ machine: inventory().machine, providers: [] }) })
+    expect(screen.queryByText("Trust from desktop or web")).toBeNull()
+  })
+
   it("does not point at desktop or web when trust cannot lift the hold", async () => {
     const refused = inventory()
     refused.repository!.trust = { state: "untrusted", reason: "cannot-trust", refusals: [{ provider: "codex", code: "nested-config", path: "services/api/.codex" }], omittedRefusals: 0 }

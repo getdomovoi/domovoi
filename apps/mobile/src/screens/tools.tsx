@@ -41,8 +41,9 @@ export function ToolsScreen({
   const view = load.state === "loaded" ? heldBackView(load.inventory) : undefined
   // Trusting on desktop or web lifts the hold only where trust is still to
   // do. A trusted repository, or one that cannot be trusted, is not pointed
-  // there.
-  const pointsToTrust = view === undefined || (view.kind === "repository" && view.awaitsTrust)
+  // there, and neither is a screen still reading or one whose read failed:
+  // no trust state is known, and trust would not fix a failed read.
+  const pointsToTrust = view?.kind === "repository" && view.awaitsTrust
 
   return (
     <View className="flex-1 bg-background">
