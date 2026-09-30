@@ -5,7 +5,7 @@
 Taking repository trust back now stops the agent threads that loaded the repository's trusted
 configuration. An adapter reports that through the optional `repositoryTrustApplied`, which the
 daemon asks after each call that carried a grant; a grant that was passed and not applied leaves
-the thread alone. No adapter reports it yet, so in this release a revoke stops no thread.
+the thread alone. The Claude adapter reports it.
 
 `repository.revokeTrust` deletes the grant first, then, for every such thread of the project,
 interrupts its active turn and stops the thread, each within the agent timeout, and lists the

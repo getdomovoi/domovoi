@@ -16,9 +16,20 @@ import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/proto
 import type {
   AgentAdapter,
   AgentEvent,
+  AgentRepositoryTrust,
   AgentVisualContext,
   AgentWorkingPlanStep,
 } from "./agents.js"
+import {
+  claudeRepositoryLoad,
+  claudeToolServerName,
+  withoutOwnServers,
+  type ClaudeRepositoryLoad,
+  type ClaudeRepositoryServer,
+  type ClaudeRepositorySettings,
+} from "./claude-repository-trust.js"
+import { repositoryTrustVerdict } from "./repository-trust-apply.js"
+import type { RepositoryProviderConfigReader } from "./tool-inventory.js"
 import { projectInstructions } from "./project-instructions.js"
 import { claudeReadOutsideWorktree, claudeShellReadIsListed, isClaudeReadTool } from "./claude-read-scope.js"
 import { gitReadCanRunProgram } from "./git-read-config.js"
@@ -99,6 +110,8 @@ export type ClaudeQueryOptions = {
   includePartialMessages?: boolean
   forwardSubagentText?: boolean
   settingSources?: Array<"user" | "project" | "local">
+  // Claude's flag layer: only a trusted repository's loadable settings.
+  settings?: ClaudeRepositorySettings
   tools?: string[]
   disallowedTools?: string[]
   systemPrompt?: { type: "preset"; preset: "claude_code"; append?: string }
@@ -137,6 +150,9 @@ export interface ClaudeQuery extends AsyncIterable<ClaudeSdkMessage> {
   setModel(model?: string): Promise<void>
   setPermissionMode(mode: ClaudePermissionMode): Promise<void>
   applyFlagSettings(settings: { effortLevel?: typeof claudeEfforts[number] | null }): Promise<void>
+  // Every server Claude loaded, in each scope, and adding servers of its own.
+  mcpServerStatus(): Promise<Array<{ name: string }>>
+  setMcpServers(servers: Record<string, ClaudeRepositoryServer>): Promise<unknown>
   interrupt(): Promise<unknown>
   close(): void
 }
@@ -174,6 +190,13 @@ type Session = {
   // is complete only when every one of them has exited.
   processes: ClaudeProcess[]
   stop?: Promise<void>
+  // The digest of the trusted configuration this session's Claude was given
+  // part of, set only when some of it reached Claude.
+  repositoryTrustApplied?: { digest: string }
+  // Every server Claude runs for this session, the person's own and the
+  // repository's it was given, set only when it was given some: a card names
+  // a tool's server from these (claudeToolServerName).
+  toolServers?: readonly string[]
 }
 
 // A query Domovoi started Claude for: a session's, or a model list's, which
@@ -205,6 +228,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   readonly #id: () => ClaudeMessageId
   readonly #preflight: (() => Promise<void>) | undefined
   readonly #processOptions: ClaudeProcessOptions
+  readonly #readRepositoryConfig: RepositoryProviderConfigReader | undefined
   #sessions = new Map<string, Session>()
   // Stopped queries whose Claude process has not exited yet. A retried stop,
   // a reopen and a shutdown wait on these instead of finding nothing to stop.
@@ -239,11 +263,15 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       ? () => checkClaudeInstall(process.env.PATH ?? "", process.platform)
       : undefined,
     processOptions: ClaudeProcessOptions = {},
+    // How a session's worktree configuration is read for its trust verdict;
+    // the repository reader unless a test gives another.
+    readRepositoryConfig?: RepositoryProviderConfigReader,
   ) {
     this.#factory = factory
     this.#id = id
     this.#preflight = preflight
     this.#processOptions = processOptions
+    this.#readRepositoryConfig = readRepositoryConfig
   }
 
   async connect(): Promise<void> {}
@@ -304,23 +332,24 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     }
   }
 
-  // repositoryTrust is accepted and not used: nothing the repository brings
-  // loads until P6b, and claude.test.ts pins that.
-  async startThread({ cwd, runtime }: Parameters<AgentAdapter["startThread"]>[0]): Promise<string> {
+  // Each open, whether a start, a resume or a reopen, decides from the grant
+  // it is given what the repository may load (#openSession). A session
+  // already open keeps what it loaded (ruling Q143 A).
+  async startThread({ cwd, runtime, repositoryTrust }: Parameters<AgentAdapter["startThread"]>[0]): Promise<string> {
     const threadId = this.#id()
-    await this.#openSession(threadId, cwd, runtime, false)
+    await this.#openSession(threadId, cwd, runtime, false, repositoryTrust)
     return threadId
   }
 
-  async resumeThread({ threadId, cwd, runtime }: Parameters<AgentAdapter["resumeThread"]>[0]): Promise<void> {
+  async resumeThread({ threadId, cwd, runtime, repositoryTrust }: Parameters<AgentAdapter["resumeThread"]>[0]): Promise<void> {
     // A conversation whose last process still runs is not reopened beside
     // it, and a loaded one is not reported ready while it does.
     await this.#stopped(threadId)
     if (this.#sessions.has(threadId)) return
-    await this.#openSession(threadId, cwd, runtime, true)
+    await this.#openSession(threadId, cwd, runtime, true, repositoryTrust)
   }
 
-  async startTurn({ threadId, prompt, runtime, visualContexts }: Parameters<AgentAdapter["startTurn"]>[0]): Promise<string> {
+  async startTurn({ threadId, prompt, runtime, visualContexts, repositoryTrust }: Parameters<AgentAdapter["startTurn"]>[0]): Promise<string> {
     let session = this.#requireSession(threadId)
     // A mode change no longer restarts anything: the tool boundary moved to
     // #requestApproval, and Claude's own mode is applied live by #applyRuntime
@@ -337,7 +366,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         // Resume only a conversation that exists. Moving the mode before the
         // first turn used to ask Claude to resume a session it had never
         // opened, which failed with "No conversation found".
-        await this.#openSession(threadId, previous.cwd, runtime, previous.started === true)
+        await this.#openSession(threadId, previous.cwd, runtime, previous.started === true, repositoryTrust)
       } catch (error) {
         // Put back the ended session, so a later send reopens the
         // conversation instead of finding nothing loaded, which hid the real
@@ -531,14 +560,24 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     cwd: string,
     runtime: Runtime,
     resume: boolean,
+    repositoryTrust: AgentRepositoryTrust | undefined,
   ): Promise<void> {
     // A start that close overtook while it prepared starts no Claude.
     this.#refuseWhenClosing()
     const preflight = this.#preflight
-    const instructions = await this.#prepared((async () => {
+    const { instructions, repository } = await this.#prepared((async () => {
       if (preflight) await preflight()
-      return projectInstructions(cwd, "claude")
+      const instructions = await projectInstructions(cwd, "claude")
+      // The worktree's verdict, read just before Claude starts: only a
+      // trusted one brings anything, and it brings the documents its digest
+      // was computed from. An archive resume is given no grant (Q149 A).
+      const verdict = await repositoryTrustVerdict(cwd, repositoryTrust, this.#readRepositoryConfig)
+      return {
+        instructions,
+        repository: verdict.state === "trusted" ? { digest: verdict.configDigest, ...claudeRepositoryLoad(verdict.documents) } : undefined,
+      }
     })())
+    const settings = repository && Object.keys(repository.settings).length > 0 ? repository.settings : undefined
     this.#refuseWhenClosing()
     const input = new PushStream<ClaudeUserMessage>()
     const stderr = new ClaudeStderrTail()
@@ -552,6 +591,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         ? { systemPrompt: { type: "preset", preset: "claude_code", append: instructions } }
         : {}),
       cwd,
+      ...(settings ? { settings } : {}),
       ...(resume ? { resume: threadId } : { sessionId: threadId }),
       model: runtime.model,
       effort: claudeEffortFor(runtime.reasoning),
@@ -578,6 +618,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       interruptedMessageIds: new Set(),
       stderr,
       processes,
+      ...(repository && settings ? { repositoryTrustApplied: { digest: repository.digest } } : {}),
     }
     this.#sessions.set(threadId, session)
     void this.#consume(session).then(
@@ -601,6 +642,41 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     }
     // Close stopped this session while it started.
     this.#refuseWhenClosing()
+    const toolServers = repository ? await this.#addRepositoryServers(query, repository.mcpServers) : undefined
+    if (repository && toolServers) {
+      session.repositoryTrustApplied = { digest: repository.digest }
+      session.toolServers = toolServers
+    }
+  }
+
+  // The digest of the trusted configuration an open session's Claude was
+  // given part of, or undefined when it was given none: held back, or trusted
+  // with nothing that loads. A session keeps it while it runs (Q143 A).
+  repositoryTrustApplied(threadId: string): { digest: string } | undefined {
+    return this.#sessions.get(threadId)?.repositoryTrustApplied
+  }
+
+  // A trusted repository's servers start with its session (ruling Q140 A).
+  // Claude replaces a server with an added one of the same name, so the
+  // person's own are listed first, from Claude, which knows every scope it
+  // loaded, and a repository server named like one of them is held back
+  // (Q150 A). A list that cannot be had adds none. Claude connects the rest
+  // as it connects its own, without holding the open: the request is sent
+  // before any turn, and a server that fails to connect fails alone. Gives
+  // every server the session then runs, the person's and the added, or
+  // undefined when none was handed to Claude.
+  async #addRepositoryServers(query: ClaudeQuery, servers: ClaudeRepositoryLoad["mcpServers"]): Promise<string[] | undefined> {
+    if (Object.keys(servers).length === 0) return undefined
+    let own: string[]
+    try {
+      own = (await query.mcpServerStatus()).map(({ name }) => name)
+    } catch {
+      return undefined
+    }
+    const added = withoutOwnServers(servers, own)
+    if (Object.keys(added).length === 0) return undefined
+    query.setMcpServers(added).catch(() => {})
+    return [...own, ...Object.keys(added)]
   }
 
   async #applyRuntime(session: Session, runtime: Runtime): Promise<void> {
@@ -703,8 +779,14 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         : typeof input.notebook_path === "string" ? input.notebook_path : screened?.path
     // Claude names a tool server's tool mcp__<server>__<tool> and splits it at
     // the first separator after the server. The server is named as Claude
-    // names it: Claude, not Domovoi, read the file that declared it.
-    const [prefix, server] = toolName.split("__")
+    // names it: Claude, not Domovoi, read the file that declared it. A
+    // session given repository servers names only a server it knows the tool
+    // belongs to, so a repository server can never pass for one of the
+    // person's (security review round 1 of #671); the card still names the
+    // provider tool when it names no server.
+    const [prefix, split] = toolName.split("__")
+    const server = prefix !== "mcp" ? undefined
+      : session.toolServers ? claudeToolServerName(toolName, session.toolServers) : split
     this.#emit({
       type: "approval-requested",
       requestId,
@@ -719,7 +801,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
       ...(reason ? { reason } : {}),
       ...(toolName !== "Bash" && !claudeFileTools.has(toolName) ? { tool: toolName } : {}),
-      ...(prefix === "mcp" && server ? { toolServer: { name: server } } : {}),
+      ...(server ? { toolServer: { name: server } } : {}),
     })
     return new Promise((resolve) => {
       this.#pendingApprovals.set(requestId, {
