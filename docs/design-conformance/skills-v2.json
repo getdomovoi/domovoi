@@ -167,7 +167,7 @@
       "where": "Tools tab (step 12): a card naming the repository held back on this machine for all agents, Review what it would run, what does not load and what still loads, one row per config file with its counts; repository rows tagged held back",
       "copy": [
         "all agents · this machine",
-        "Review what it would run",
+        "Review and trust",
         "Its hooks, tool servers, plugins, env, rules and git filter do not load for any agent.",
         "CLAUDE.md",
         "and",
@@ -194,8 +194,12 @@
         "Everything this repository would run for any agent here. None of it has run.",
         "Instruction files load either way:",
         "CLAUDE.md · AGENTS.md",
+        "Trusted, its hooks run and its tool servers start as you, with your file and network access, when a session opens and before any tool call asks.",
         "Trust is for this machine and this repository only.",
-        "It is pinned to these four files. Any change, an agent's edit included, holds it back again.",
+        "It is pinned to one digest of these four files. Any change, an agent's edit included, holds it back again.",
+        "If they change while this is open, nothing is trusted and the review reloads.",
+        "Config digest",
+        "Cut at a credential. Domovoi shows no secret.",
         "Trust does not skip a gate, and its allow rules cannot either. Reads outside the worktree and gated actions still ask.",
         "Trust for this machine",
         "Keep held back",
@@ -254,11 +258,13 @@
       "copy": [
         "Open Tools",
         "Nothing from the repository ran.",
-        "claude-code did not start",
+        "codex did not start",
         "Domovoi did not start this session",
         "refused · untrusted repository file",
         "refused · untrusted git filter",
-        "claude-code will not start in acme-api until the repository is trusted on",
+        "codex would load .codex/config.toml from this worktree, and that file can start programs or change agent permissions.",
+        "Trusted on",
+        "Start the session again",
         "Checking out acme-api would run the sops filter driver, which is not trusted on",
         "It names"
       ],
@@ -282,7 +288,8 @@
         "They come back without its hooks, tool servers, plugins, env, rules and git filter.",
         "Take back trust and restart 2 threads",
         "Cancel",
-        "Turn stops, restarts"
+        "Turn stops, restarts",
+        "If Domovoi cannot confirm an old thread stopped, it says so for that session."
       ],
       "evidence": [
         "Take back trust"
@@ -300,7 +307,8 @@
       "copy": [
         "None of it loads for any agent.",
         "Trust from desktop or web",
-        "A phone shows this but cannot trust it."
+        "A phone shows this but cannot trust it.",
+        "See what is held back"
       ],
       "evidence": [
         "Trust from desktop or web"
@@ -323,13 +331,13 @@
     "Held back",
     "Held back is a state, not a gate. Untrusted, a repository's hooks, tool servers, plugins, env, rules and git filter load for no agent.",
     "Trust review",
-    "The one review surface, on desktop and web. Per machine and per repository, pinned to four file digests.",
+    "The one review surface, on desktop and web. Per machine and per repository, pinned to one config digest. Commands are cut at a credential.",
     "Changed since trust",
     "Any change to a trusted config file, an agent's own edit included, holds the repository back and asks again.",
     "Session refused",
-    "A refusing agent names the file; a git filter refusal names the filter. Review opens the same sheet, and the session does not start by itself.",
-    "Inline review, not built",
-    "Not built. One review surface: the sheet in step 13.",
+    "A refusing agent names the file; a git filter refusal names the filter. Review and trust opens the one sheet. After trust, the session does not start by itself.",
+    "Refused on the phone",
+    "The phone shows the refusal with the file or filter it names. It cannot trust, so it points to desktop or web.",
     "Taking trust back restarts the repository's running threads now. A running turn and its tool servers stop.",
     "The phone shows what is held back and why, with every entry. It cannot trust: that is desktop or web.",
     "New session",
@@ -361,11 +369,11 @@
     "ACME_ENV · DATABASE_URL",
     "PGHOST · PGUSER · PGPASSWORD",
     "stdio · npx -y @acme/pg-mcp",
-    "http · mcp.linear.app",
+    "http · mcp.linear.app:443",
+    "PostToolUse · Edit",
     "for postgres-dev",
     "smudge sops -d --ignore-mac · clean sops -e",
     "smudge sops -d · clean sops -e",
-    "tool server s3-sync · stdio · ./bin/s3-sync --bucket acme-dev-assets",
     "claude-code · turn 6 · session s_7f24 · 14:18",
     "claude-code · turn 4 running · postgres-dev, linear",
     "Backfill replay ids for March",
@@ -375,7 +383,6 @@
     "paplay /usr/share/sounds/freedesktop/stereo/complete.oga",
     "powershell -c [console]::beep(880,200)",
     "stdio · npx -y @acme/pg-mcp · environment values not read",
-    "http · https://mcp.linear.app/mcp",
     "PreToolUse · Bash",
     "Bash(pnpm test:*)",
     "stdio · gh-mcp serve · environment values not read",
