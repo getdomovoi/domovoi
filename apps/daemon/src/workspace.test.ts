@@ -2473,18 +2473,107 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
   // Another session's agent can write the shared config between the scan and
   // the checkout. The checkout pins every driver its attributes can select to
   // what the scan approved, so a driver defined after the scan runs nothing.
+  // Ruling Q223: the checkout runs in an isolated Git directory whose config
+  // is the person's global and system config and what the daemon carries, so
+  // nothing a filter or git-lfs reads from Git config comes from the
+  // repository. A fake git-lfs stands in for the real one (none on this
+  // machine): like git-lfs 3.8.0 it reads core.sshCommand, core.askPass and
+  // the credential helper from `git config` and starts them.
+  it.each(["core.sshCommand", "core.askPass", "credential.helper"])(
+    "runs no program the repository's %s names through the exempt Git LFS lines",
+    async (key) => {
+      const { scratch, repositoryPath, payload, worktrees, git, ran } = await filteredRepository("domovoi-create-lfs-delegate-")
+      await writeFile(join(repositoryPath, ".gitattributes"), "victim.txt filter=agent\n*.bin filter=lfs\n")
+      await writeFile(join(repositoryPath, "object.bin"), "object\n")
+      await git("add", ".")
+      await git("-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "lfs")
+      const bin = join(scratch, "bin")
+      await mkdir(bin)
+      const storage = join(scratch, "lfs-storage-seen")
+      await writeFile(join(bin, "git-lfs"), [
+        "#!/bin/sh",
+        `git config --get lfs.storage > "${storage.replaceAll("\\", "/")}"`,
+        "for key in core.sshcommand core.askpass credential.helper; do",
+        "  value=$(git config --get \"$key\")",
+        "  case \"$value\" in *payload*) sh -c \"$value\" ;; esac",
+        "done",
+        "cat",
+        "",
+      ].join("\n"), { mode: 0o755 })
+      await git("config", "filter.lfs.smudge", "git-lfs smudge -- %f")
+      await git("config", "filter.lfs.required", "true")
+      await git("config", key, `sh ${payload}`)
+      // An empty home, so a git-lfs the machine installed globally (its
+      // filter.lfs.process line) does not take the place of the fake.
+      const home = join(scratch, "home")
+      await mkdir(home)
+      const previous = { PATH: process.env.PATH, HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
+      process.env.PATH = `${bin}${process.platform === "win32" ? ";" : ":"}${previous.PATH ?? ""}`
+      process.env.HOME = home
+      process.env.XDG_CONFIG_HOME = join(home, ".config")
+      try {
+        const workspace = await new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, `session-lfs-${key.replace(".", "-").toLowerCase()}`)
+        expect(await readFile(join(workspace.path, "object.bin"), "utf8")).toBe("object\n")
+      } finally {
+        for (const [name, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[name]
+          else process.env[name] = value
+        }
+      }
+      expect(await ran()).toBe(false)
+      // git-lfs keeps finding the repository's own object store.
+      expect((await readFile(storage, "utf8")).trim()).toBe(join(await realpath(join(repositoryPath, ".git")), "lfs"))
+    },
+  )
+
+  it("runs no repository core.fsmonitor command while it checks a session out", async () => {
+    const { repositoryPath, payload, worktrees, git, ran } = await filteredRepository("domovoi-create-fsmonitor-")
+    await git("config", "core.fsmonitor", `sh ${payload}`)
+    await new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, "session-fsmonitor")
+    expect(await ran()).toBe(false)
+  })
+
+  // Settings that decide what the checkout writes are carried from the
+  // repository's config into the isolated checkout.
+  it("still applies the repository's core.autocrlf and core.symlinks to the files it checks out", async () => {
+    const { repositoryPath, worktrees, git } = await filteredRepository("domovoi-create-core-settings-")
+    await symlink("victim.txt", join(repositoryPath, "link.txt"))
+    await git("add", ".")
+    await git("-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "link")
+    await git("config", "core.autocrlf", "true")
+    await git("config", "core.symlinks", "false")
+
+    const workspace = await new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, "session-core-settings")
+
+    expect(await readFile(join(workspace.path, "victim.txt"), "utf8")).toBe("base\r\n")
+    expect((await lstat(join(workspace.path, "link.txt"))).isSymbolicLink()).toBe(false)
+    expect(await readFile(join(workspace.path, "link.txt"), "utf8")).toBe("victim.txt")
+    expect((await run("-C", workspace.path, "status", "--porcelain")).stdout).toBe("")
+  })
+
+  it("checks out only what the repository's sparse checkout patterns name", async () => {
+    const { repositoryPath, worktrees, git } = await filteredRepository("domovoi-create-sparse-")
+    await git("sparse-checkout", "set", "--no-cone", "/victim.txt")
+
+    const workspace = await new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, "session-sparse")
+
+    expect(await readFile(join(workspace.path, "victim.txt"), "utf8")).toBe("base\n")
+    await expect(lstat(join(workspace.path, ".gitattributes"))).rejects.toThrow()
+    expect((await run("-C", workspace.path, "status", "--porcelain")).stdout).toBe("")
+  })
+
   it("runs no filter the shared config defines after the scan, for a driver the commit's attributes select", async () => {
     const { repositoryPath, payload, worktrees, git, ran } = await filteredRepository("domovoi-create-race-")
     const service = new GitWorkspaceService(worktrees, {
       afterNewWorktreeScan: async () => { await git("config", "filter.agent.smudge", `sh ${payload}`) },
     })
 
-    // The pin keeps the new command from running; the changed setting still
-    // refuses the session afterwards (ruling Q221 A).
-    await expect(service.createSessionWorkspace(repositoryPath, "session-race"))
-      .rejects.toMatchObject({ name: "RepositoryGitFilterRefusedError", changedDuringCheckout: true, worktreeRemoved: true })
+    // The isolated checkout never reads the repository's config, so a driver
+    // defined there after the scan runs nothing (ruling Q223).
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-race")
 
     expect(await ran()).toBe(false)
+    expect(await readFile(join(workspace.path, "victim.txt"), "utf8")).toBe("base\n")
   })
 
   it("runs no filter defined after the scan for a driver info/attributes selected at the scan", async () => {
@@ -2496,8 +2585,7 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
       afterNewWorktreeScan: async () => { await git("config", "filter.late.smudge", `sh ${payload}`) },
     })
 
-    await expect(service.createSessionWorkspace(repositoryPath, "session-race-info"))
-      .rejects.toMatchObject({ name: "RepositoryGitFilterRefusedError", changedDuringCheckout: true })
+    await service.createSessionWorkspace(repositoryPath, "session-race-info")
 
     expect(await ran()).toBe(false)
   })
@@ -2516,53 +2604,31 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
       },
     })
 
-    await expect(service.createSessionWorkspace(repositoryPath, "session-race-planted"))
-      .rejects.toMatchObject({ name: "RepositoryGitFilterRefusedError", changedDuringCheckout: true })
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-race-planted")
 
     expect(await ran()).toBe(false)
+    expect(await readFile(join(workspace.path, "sub", "note.txt"), "utf8")).toBe("note\n")
   })
 
-  // Ruling Q221 A: what the pins cannot hold (info/attributes rewritten to
-  // select a fresh driver) can run once; the checkout then notices the change
-  // and refuses the session, taking the worktree away.
-  it("refuses the session when info/attributes and the config change during the checkout, saying a command may have run", async () => {
-    const { repositoryPath, payload, worktrees, git, branches, worktreeList } = await filteredRepository("domovoi-create-changed-")
+  // What ruling Q221 A could only notice after the fact (info/attributes
+  // rewritten to select a fresh driver the config then defines) no longer
+  // runs at all: the isolated checkout reads neither.
+  it("runs nothing when info/attributes and the config select and define a fresh driver during the checkout", async () => {
+    const { scratch, repositoryPath, payload, worktrees, git, ran } = await filteredRepository("domovoi-create-changed-")
     const service = new GitWorkspaceService(worktrees, {
       afterNewWorktreeScan: async () => {
         await mkdir(join(repositoryPath, ".git", "info"), { recursive: true })
         await writeFile(join(repositoryPath, ".git", "info", "attributes"), "victim.txt filter=fresh\n")
+        await writeFile(join(scratch, "planted-attributes"), "victim.txt filter=fresh\n")
+        await git("config", "core.attributesFile", join(scratch, "planted-attributes"))
         await git("config", "filter.fresh.smudge", `sh ${payload}`)
       },
     })
 
-    const refused = service.createSessionWorkspace(repositoryPath, "session-changed")
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-changed")
 
-    await expect(refused).rejects.toMatchObject({
-      name: "RepositoryGitFilterRefusedError",
-      drivers: [{ name: "fresh", scope: "local" }],
-      worktreeRemoved: true,
-    })
-    const message = await refused.catch((error: Error) => error.message)
-    expect(message).toContain("changed while Domovoi checked the new session out")
-    expect(message).toContain("may have run once")
-    await expect(lstat(join(worktrees, "session-changed"))).rejects.toThrow()
-    expect(await branches()).toBe("")
-    expect(await worktreeList()).toHaveLength(1)
-  })
-
-  it("refuses the session when the repository points core.attributesFile elsewhere during the checkout", async () => {
-    const { scratch, repositoryPath, worktrees, git, branches } = await filteredRepository("domovoi-create-changed-attributes-")
-    const service = new GitWorkspaceService(worktrees, {
-      afterNewWorktreeScan: async () => { await git("config", "core.attributesFile", join(scratch, "planted-attributes")) },
-    })
-
-    await expect(service.createSessionWorkspace(repositoryPath, "session-changed-attributes")).rejects.toMatchObject({
-      name: "RepositoryGitFilterRefusedError",
-      message: expect.stringContaining("may have run once"),
-      worktreeRemoved: true,
-    })
-    await expect(lstat(join(worktrees, "session-changed-attributes"))).rejects.toThrow()
-    expect(await branches()).toBe("")
+    expect(await ran()).toBe(false)
+    expect(await readFile(join(workspace.path, "victim.txt"), "utf8")).toBe("base\n")
   })
 
   it("checks out the commit it scanned even when the session branch moves after the scan", async () => {
