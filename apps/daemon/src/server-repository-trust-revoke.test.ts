@@ -736,6 +736,58 @@ describe("fences a retry or a fork cannot lift", () => {
   })
 })
 
+// Security review round 6 of #669 (ruling Q188 A): recovery through a
+// provider switch cannot confirm that a trusted Codex thread's tool servers
+// exited, so it is refused; recovery of any thread whose stop confirms exit,
+// or of an untrusted one, is unchanged.
+describe("recovering a session whose own thread an emergency stop could not stop", () => {
+  const fenced = "Provider thread requires recovery after emergency stop"
+
+  const failEmergencyStop = async (
+    agent: ReturnType<typeof agentFor>,
+    rpc: (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  ) => {
+    agent.interruptTurn.mockRejectedValueOnce(new Error("interrupt refused"))
+    agent.stopThread.mockRejectedValueOnce(new Error("provider gone"))
+    expect(await rpc("system.emergencyStop", { client: "desktop" })).toHaveProperty("result")
+  }
+
+  it("refuses to recover a trusted Codex thread, keeping it tracked for a later revoke", async () => {
+    const { agents, grants, ok, rpc, revoke } = await fixture()
+    grants.set(projectId, grant(projectId))
+    await ok("session.send", { sessionId: "session-codex", prompt: "work" })
+    await failEmergencyStop(agents.codex, rpc)
+
+    expect(await rpc("session.setRuntime", { client: "desktop", sessionId: "session-codex", runtime: claude }))
+      .toMatchObject({ error: { message: fenced } })
+    expect(agents["claude-code"].startThread).not.toHaveBeenCalled()
+    expect(await rpc("session.send", { client: "desktop", sessionId: "session-codex", prompt: "again" }))
+      .toMatchObject({ error: { message: fenced } })
+    expect(await revoke()).toEqual([{ sessionId: "session-codex", outcome: "unconfirmed" }])
+  })
+
+  it("still recovers a trusted Claude thread through a provider switch", async () => {
+    const { agents, grants, ok, rpc, sessionNamed } = await fixture()
+    grants.set(projectId, grant(projectId))
+    await ok("session.send", { sessionId: "session-a", prompt: "work" })
+    await failEmergencyStop(agents["claude-code"], rpc)
+
+    await ok("session.setRuntime", { sessionId: "session-a", runtime: claude })
+    expect(agents["claude-code"].startThread).toHaveBeenCalledOnce()
+    expect(await sessionNamed("session-a")).toMatchObject({ state: "idle", providerThreadId: "claude-code-started" })
+  })
+
+  it("still recovers an untrusted Codex thread through a provider switch", async () => {
+    const { agents, ok, rpc, sessionNamed } = await fixture()
+    await ok("session.send", { sessionId: "session-codex", prompt: "work" })
+    await failEmergencyStop(agents.codex, rpc)
+
+    await ok("session.setRuntime", { sessionId: "session-codex", runtime: claude })
+    expect(agents["claude-code"].startThread).toHaveBeenCalledOnce()
+    expect(await sessionNamed("session-codex")).toMatchObject({ state: "idle", providerThreadId: "claude-code-started" })
+  })
+})
+
 describe("repository.revokeTrust and an emergency stop", () => {
   it("takes the grant back at once during a stop, then stops what the stop left, once", async () => {
     const { agents, grants, ok, rpc, sessionNamed } = await fixture()

@@ -42,6 +42,9 @@ could not, that thread's fence is lifted, and a failed session that names a thre
 once no other thread holds it. A Codex stop never lifts a fence this way, and a Codex thread whose
 earlier stop failed stays fenced after a later stop resolves. A fork of a session whose own thread
 an emergency stop could not stop is refused until the session is recovered, as a message is.
+Recovering such a session by switching its provider is refused when that thread is a Codex thread
+that loaded trusted configuration, since no stop can confirm its tool servers exited; it stays
+fenced until the daemon restarts. Recovery of any other thread is unchanged.
 
 Nothing resumes a stopped thread: the next message resumes it, and that resume carries no grant. A
 queued send is held with "Repository trust was taken back before the queued send could release."

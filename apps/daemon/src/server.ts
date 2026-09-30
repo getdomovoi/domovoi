@@ -8331,7 +8331,18 @@ export class DomovoiDaemon {
           // A Codex thread replaced while the grant holds becomes a residual
           // entry in #threadStopped, which fences nothing until a revoke
           // (ruling Q186 A).
-          if (await this.#repositoryTrustFenced(currentSession.id)) {
+          // Security review round 6 of #669 (ruling Q188 A): recovery cannot
+          // confirm that a trusted Codex thread's tool servers exited, so its
+          // failed thread stays tracked and fenced until the daemon restarts.
+          // An untrusted thread, or one whose provider confirms exit, is
+          // recovered as before.
+          const failedTrusted = recoveringFailedThread && previousKey !== undefined
+            ? this.#trustedThreads.get(previousKey)
+            : undefined
+          if (
+            (failedTrusted !== undefined && trustedStopUnconfirmedProviders.has(failedTrusted.provider))
+            || await this.#repositoryTrustFenced(currentSession.id)
+          ) {
             this.#error(socket, request.id, invalidParams, providerThreadRecoveryRefusal)
             return
           }
