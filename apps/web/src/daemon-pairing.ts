@@ -1,4 +1,4 @@
-import { daemonAuthenticationErrorCode, devicePairingLimitErrorCode, pairingCodeSchema, protocolVersion, protocolVersionMismatchErrorCode, type ClientKind } from "@getdomovoi/protocol"
+import { daemonAuthenticationErrorCode, devicePairingLimitErrorCode, devicePairResultSchema, pairingCodeSchema, protocolVersion, protocolVersionMismatchErrorCode, type ClientKind } from "@getdomovoi/protocol"
 import type { PairingOutcome } from "@getdomovoi/ui"
 
 import { DaemonRpcError } from "@/client"
@@ -34,8 +34,8 @@ const codeRefusalMessage = "Pairing was refused"
 export const webCodeShapeMessage = "A web code is the daemon's word code, like hearth-quiet-ember-42, shown on the machine in Settings under Phone and tablet."
 
 // The code the machine shows is spent once, here, to enrol this browser as
-// its own paired device. The daemon decides the kind from the code, so a code
-// shown for a phone cannot mint a browser credential.
+// its own paired device. The daemon decides the kind from the code, and a
+// credential for a kind this tab does not greet as is not kept.
 export async function redeemBrowserCode(input: {
   url: string
   client: ClientKind
@@ -51,11 +51,51 @@ export async function redeemBrowserCode(input: {
   try {
     await client.connect()
     input.onConnected?.()
-    return daemonSessionFrom(
-      await client.request("device.redeemCode", { code: code.data, label: input.label, protocolVersion }),
-    )
+    const redeemed = await client.request("device.redeemCode", { code: code.data, label: input.label, protocolVersion })
+    const session = daemonSessionFrom(redeemed)
+    // The daemon refuses a greeting whose kind is not the credential's, and
+    // this tab greets as input.client. A credential bound to another kind
+    // would report paired here and then fail at the session, so it is not
+    // kept. The daemon already spent the code and enrolled the device.
+    const { binding } = devicePairResultSchema.parse(redeemed).device
+    const bound = binding.kind === "client" ? binding.client : undefined
+    if (bound !== input.client) throw new DeviceKindMismatchError(bound, input.client)
+    return session
   } finally {
     client.disconnect()
+  }
+}
+
+export class DeviceKindMismatchError extends Error {
+  readonly bound: ClientKind | undefined
+  readonly expected: ClientKind
+
+  constructor(bound: ClientKind | undefined, expected: ClientKind) {
+    super(`The code paired ${bound ?? "a device that is not a client"}, and this browser greets as ${expected}`)
+    this.name = "DeviceKindMismatchError"
+    this.bound = bound
+    this.expected = expected
+  }
+}
+
+// How the mismatch card names a kind: what the device is, and the code the
+// machine shows for it.
+const kindNames: Record<ClientKind, { device: string; code: string }> = {
+  web: { device: "a web browser", code: "a web code" },
+  phone: { device: "a phone", code: "a phone code" },
+  tablet: { device: "a tablet", code: "a tablet code" },
+  desktop: { device: "the desktop app", code: "a desktop code" },
+  cli: { device: "the command line", code: "a command line code" },
+}
+
+function kindMismatchOutcome(cause: DeviceKindMismatchError, host: string): Omit<PairingOutcome, "action"> {
+  const expected = kindNames[cause.expected]
+  return {
+    tone: "danger",
+    pill: "not kept",
+    title: cause.bound ? `This code is for ${kindNames[cause.bound].device}` : "This code is not for a browser",
+    mono: `pair.refused · kind_mismatch · code ${cause.bound ?? "none"}, browser ${cause.expected}`,
+    body: `This browser counts as ${expected.device}. On ${host}, show ${expected.code} under Settings, Phone and tablet. The code was used, so unpair the extra device under Machines.`,
   }
 }
 
@@ -63,6 +103,7 @@ export async function redeemBrowserCode(input: {
 // refusal from the daemon on purpose, so the page cannot say whether a code
 // expired, was spent, or came from another machine, and does not guess.
 export function pairingOutcomeFor(cause: unknown, host: string): Omit<PairingOutcome, "action"> {
+  if (cause instanceof DeviceKindMismatchError) return kindMismatchOutcome(cause, host)
   if (cause instanceof DaemonRpcError) {
     if (cause.code === protocolVersionMismatchErrorCode) {
       const data = (typeof cause.data === "object" && cause.data !== null ? cause.data : {}) as { daemonProtocolVersion?: unknown; clientProtocolVersion?: unknown }
