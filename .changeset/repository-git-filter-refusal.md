@@ -10,7 +10,9 @@ out only when no such filter would run. Otherwise the worktree and the branch it
 away and nothing runs. The checkout is of the scanned commit itself, reads in-tree attributes from
 that commit on Git 2.40 and later, and runs with every filter driver its attributes can select
 pinned to the value the scan approved, so config written between the scan and the checkout runs
-nothing. `session.create` and `session.fork` answer with
+nothing. Afterwards the filter settings, info/attributes and core.attributesFile are read again;
+if any changed, the session is refused and its worktree taken away, and the refusal says a
+command may have run once. `session.create` and `session.fork` answer with
 `repositoryGitFilterErrorCode` and the drivers, the configuration digest and the repository's
 trust read at that moment; a transfer keeps its existing refusal. Filters from the person's global
 or system Git config, and the exact lines `git lfs install` writes, still run. The Git LFS

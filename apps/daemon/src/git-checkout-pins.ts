@@ -30,8 +30,28 @@ const readBytes = promisify(readFile)
 // person gave only clean or smudge (see below); a Git LFS custom transfer or
 // extension named only after this read; and on Git older than 2.40, a
 // .gitattributes planted in the new worktree.
+//
+// Ruling Q221 A: the checkout reads what it cannot pin again afterwards
+// (checkoutObservation) and refuses the session when it changed, so such a
+// change can run its command once, is noticed, and the worktree is taken
+// away. A checkout through an isolated Git directory with pinned config
+// (option B) is the planned follow-up slice that closes the window.
 
-export type CheckoutPins = { env: NodeJS.ProcessEnv; globalOptions: string[] }
+// What the pins rest on besides the filter settings themselves: info/attributes
+// and the core.attributesFile settings from every scope. `observation` is that
+// state as read before the pins, for comparison after the checkout.
+export type CheckoutPins = { env: NodeJS.ProcessEnv; globalOptions: string[]; observation: string }
+
+export async function checkoutObservation(directory: string, signal?: AbortSignal): Promise<string> {
+  const infoAttributes = resolve(directory, (await gitOutput(directory, ["rev-parse", "--git-path", "info/attributes"], signal)).trim())
+  let attributesFileConfig = ""
+  try {
+    attributesFileConfig = await gitOutput(directory, ["config", "--show-scope", "--show-origin", "-z", "--get-all", "core.attributesfile"], signal)
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== 1) throw error
+  }
+  return JSON.stringify([infoAttributes, await readIfPresent(infoAttributes), attributesFileConfig])
+}
 
 const maximumAttributesBytes = 16 * 1024 * 1024
 const filterOperations = ["clean", "smudge", "process"] as const
@@ -147,6 +167,9 @@ export async function gitCheckoutPins(
   signal?: AbortSignal,
 ): Promise<CheckoutPins> {
   const env: NodeJS.ProcessEnv = {}
+  // Read first: a change between this and the reads below also differs from
+  // what the checkout reads afterwards.
+  const observation = await checkoutObservation(directory, signal)
   const texts = await commitAttributes(directory, commit, signal)
   const infoAttributes = resolve(directory, (await gitOutput(directory, ["rev-parse", "--git-path", "info/attributes"], signal)).trim())
   texts.push(await readIfPresent(infoAttributes))
@@ -204,5 +227,5 @@ export async function gitCheckoutPins(
 
   const version = await installedGitVersion()
   const attributeSource = version !== undefined && (version[0] > 2 || (version[0] === 2 && version[1] >= 40))
-  return { env, globalOptions: attributeSource ? [`--attr-source=${commit}`] : [] }
+  return { env, globalOptions: attributeSource ? [`--attr-source=${commit}`] : [], observation }
 }

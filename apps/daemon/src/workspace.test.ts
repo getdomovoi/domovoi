@@ -2479,10 +2479,12 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
       afterNewWorktreeScan: async () => { await git("config", "filter.agent.smudge", `sh ${payload}`) },
     })
 
-    const workspace = await service.createSessionWorkspace(repositoryPath, "session-race")
+    // The pin keeps the new command from running; the changed setting still
+    // refuses the session afterwards (ruling Q221 A).
+    await expect(service.createSessionWorkspace(repositoryPath, "session-race"))
+      .rejects.toMatchObject({ name: "RepositoryGitFilterRefusedError", changedDuringCheckout: true, worktreeRemoved: true })
 
     expect(await ran()).toBe(false)
-    expect(await readFile(join(workspace.path, "victim.txt"), "utf8")).toBe("base\n")
   })
 
   it("runs no filter defined after the scan for a driver info/attributes selected at the scan", async () => {
@@ -2494,7 +2496,8 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
       afterNewWorktreeScan: async () => { await git("config", "filter.late.smudge", `sh ${payload}`) },
     })
 
-    await service.createSessionWorkspace(repositoryPath, "session-race-info")
+    await expect(service.createSessionWorkspace(repositoryPath, "session-race-info"))
+      .rejects.toMatchObject({ name: "RepositoryGitFilterRefusedError", changedDuringCheckout: true })
 
     expect(await ran()).toBe(false)
   })
@@ -2513,10 +2516,53 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
       },
     })
 
-    const workspace = await service.createSessionWorkspace(repositoryPath, "session-race-planted")
+    await expect(service.createSessionWorkspace(repositoryPath, "session-race-planted"))
+      .rejects.toMatchObject({ name: "RepositoryGitFilterRefusedError", changedDuringCheckout: true })
 
     expect(await ran()).toBe(false)
-    expect(await readFile(join(workspace.path, "sub", "note.txt"), "utf8")).toBe("note\n")
+  })
+
+  // Ruling Q221 A: what the pins cannot hold (info/attributes rewritten to
+  // select a fresh driver) can run once; the checkout then notices the change
+  // and refuses the session, taking the worktree away.
+  it("refuses the session when info/attributes and the config change during the checkout, saying a command may have run", async () => {
+    const { repositoryPath, payload, worktrees, git, branches, worktreeList } = await filteredRepository("domovoi-create-changed-")
+    const service = new GitWorkspaceService(worktrees, {
+      afterNewWorktreeScan: async () => {
+        await mkdir(join(repositoryPath, ".git", "info"), { recursive: true })
+        await writeFile(join(repositoryPath, ".git", "info", "attributes"), "victim.txt filter=fresh\n")
+        await git("config", "filter.fresh.smudge", `sh ${payload}`)
+      },
+    })
+
+    const refused = service.createSessionWorkspace(repositoryPath, "session-changed")
+
+    await expect(refused).rejects.toMatchObject({
+      name: "RepositoryGitFilterRefusedError",
+      drivers: [{ name: "fresh", scope: "local" }],
+      worktreeRemoved: true,
+    })
+    const message = await refused.catch((error: Error) => error.message)
+    expect(message).toContain("changed while Domovoi checked the new session out")
+    expect(message).toContain("may have run once")
+    await expect(lstat(join(worktrees, "session-changed"))).rejects.toThrow()
+    expect(await branches()).toBe("")
+    expect(await worktreeList()).toHaveLength(1)
+  })
+
+  it("refuses the session when the repository points core.attributesFile elsewhere during the checkout", async () => {
+    const { scratch, repositoryPath, worktrees, git, branches } = await filteredRepository("domovoi-create-changed-attributes-")
+    const service = new GitWorkspaceService(worktrees, {
+      afterNewWorktreeScan: async () => { await git("config", "core.attributesFile", join(scratch, "planted-attributes")) },
+    })
+
+    await expect(service.createSessionWorkspace(repositoryPath, "session-changed-attributes")).rejects.toMatchObject({
+      name: "RepositoryGitFilterRefusedError",
+      message: expect.stringContaining("may have run once"),
+      worktreeRemoved: true,
+    })
+    await expect(lstat(join(worktrees, "session-changed-attributes"))).rejects.toThrow()
+    expect(await branches()).toBe("")
   })
 
   it("checks out the commit it scanned even when the session branch moves after the scan", async () => {

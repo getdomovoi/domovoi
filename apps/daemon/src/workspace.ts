@@ -10,8 +10,10 @@ import { maximumPreviewSourceBytes, type RepositoryGitFilterScope } from "@getdo
 
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
-import { gitCheckoutPins, type CheckoutPins } from "./git-checkout-pins.js"
-import { readGitFilterSettings, readRepositoryGitFilters, repositoryGitFilters, type RepositoryGitFilter } from "./repository-git-filters.js"
+import { checkoutObservation, gitCheckoutPins, type CheckoutPins } from "./git-checkout-pins.js"
+import {
+  readGitFilterSettings, readRepositoryGitFilters, repositoryGitFilters, type GitFilterSetting, type RepositoryGitFilter,
+} from "./repository-git-filters.js"
 import { RestoreOperationLease, trackRestoreCommand } from "./workspace-restore-lease.js"
 
 const execute = promisify(execFile)
@@ -282,24 +284,40 @@ export class RepositoryFilterRefusedError extends RepositoryConfigRefusedError {
 // once per scope. worktreeRemoved: nothing of the new worktree is left, its
 // branch included when this operation made it; false when taking it away
 // failed, so the caller keeps its record of the attempt.
+//
+// changedDuringCheckout: the scan passed, but a filter setting, info/attributes
+// or core.attributesFile changed while the worktree was checked out, so a
+// command the scan never saw may have run once (ruling Q221 A). filters are
+// then the repository's filter settings as read after the checkout.
 export class RepositoryGitFilterRefusedError extends RepositoryFilterRefusedError {
   readonly drivers: readonly { name: string; scope: RepositoryGitFilterScope }[]
   readonly worktreeRemoved: boolean
+  readonly changedDuringCheckout: boolean
 
-  constructor(filters: readonly RepositoryGitFilter[], worktreeRemoved: boolean) {
+  constructor(filters: readonly RepositoryGitFilter[], worktreeRemoved: boolean, changedDuringCheckout = false) {
     // The base class names each driver from a filter.<driver>.<op> key; an lfs
     // setting's driver is its agent or extension name. The message is replaced below.
     super(filters.map(({ scope, driver, operation }) => ({ scope, key: `filter.${driver}.${operation}` })))
     const names = [...new Set(filters.map(({ driver }) => driver))]
     const settings = filters.map(({ scope, key }) => `${key} in ${scope} Git config`).join(", ")
-    this.message = `This repository's own Git config sets the filter ${names.map((name) => `"${name}"`).join(", ")} (${settings}). `
-      + "Checking it out for this session would run its command, and Domovoi does not run a filter a repository's "
-      + "own Git config sets. "
-      + (worktreeRemoved
-        ? "Nothing ran, and no worktree was left. "
-        : "Nothing ran, but Domovoi could not take the new worktree away: it stays unchecked-out where it was "
-          + "added, and the record of this session's creation is kept for recovery. ")
-      + "Filters from your global or system Git config still run."
+    const cleanup = worktreeRemoved
+      ? "no worktree was left. "
+      : "Domovoi could not take the new worktree away: it stays where it was added, and the record of this "
+        + "session's creation is kept for recovery. "
+    this.message = changedDuringCheckout
+      ? "A Git filter setting of this repository changed while Domovoi checked the new session out"
+        + (filters.length > 0 ? ` (it now sets ${settings})` : " (info/attributes or core.attributesFile)")
+        + ". Its command may have run once before Domovoi noticed. Domovoi refused the session, and "
+        + cleanup
+      : `This repository's own Git config sets the filter ${names.map((name) => `"${name}"`).join(", ")} (${settings}). `
+        + "Checking it out for this session would run its command, and Domovoi does not run a filter a repository's "
+        + "own Git config sets. "
+        + (worktreeRemoved
+          ? "Nothing ran, and no worktree was left. "
+          : "Nothing ran, but Domovoi could not take the new worktree away: it stays unchecked-out where it was "
+            + "added, and the record of this session's creation is kept for recovery. ")
+        + "Filters from your global or system Git config still run."
+    this.changedDuringCheckout = changedDuringCheckout
     this.name = "RepositoryGitFilterRefusedError"
     const seen = new Set<string>()
     this.drivers = filters.flatMap(({ driver, scope }) => {
@@ -1121,6 +1139,14 @@ export class GitWorkspaceService implements WorkspaceService {
   // by then, and runs with every driver its attributes can select pinned to
   // what this scan approved (git-checkout-pins.ts), so config written after
   // the scan runs nothing.
+  //
+  // What the pins cannot hold (info/attributes rewritten to select a fresh
+  // driver, a process command added for a driver with only clean or smudge, an
+  // LFS program named only then) can still run once during the checkout. So
+  // the filter settings, info/attributes and core.attributesFile are read
+  // again afterwards, and any change refuses the session and takes the
+  // worktree away (ruling Q221 A). An isolated Git directory checkout (option
+  // B) is the planned follow-up slice that closes that one-run window.
   async #checkOutNewWorktree(
     repositoryPath: string,
     path: string,
@@ -1129,8 +1155,9 @@ export class GitWorkspaceService implements WorkspaceService {
     signal?: AbortSignal,
   ): Promise<void> {
     let pins: CheckoutPins
+    let settings: GitFilterSetting[]
     try {
-      const settings = await readGitFilterSettings(path, signal)
+      settings = await readGitFilterSettings(path, signal)
       const filters = repositoryGitFilters(settings)
       if (filters.length > 0) {
         await this.#afterNewWorktreeScan?.(path)
@@ -1148,6 +1175,20 @@ export class GitWorkspaceService implements WorkspaceService {
       "-C", path, ...inertRepositoryConfig, ...pins.globalOptions,
       "reset", "--hard", "--quiet", "--no-recurse-submodules", commit,
     ], { env: { ...gitEnvironment(), ...pins.env }, encoding: "utf8", maxBuffer: maximumGitOutputBytes, signal }))
+    // No signal: a cancelled checkout is still checked, and taken away when
+    // this read fails or finds a change.
+    let after: GitFilterSetting[]
+    let changed: boolean
+    try {
+      after = await readGitFilterSettings(path)
+      changed = JSON.stringify(after) !== JSON.stringify(settings) || await checkoutObservation(path) !== pins.observation
+    } catch (error) {
+      await discardNewWorktree(repositoryPath, path, madeBranch)
+      throw error
+    }
+    if (changed) {
+      throw new RepositoryGitFilterRefusedError(repositoryGitFilters(after), await discardNewWorktree(repositoryPath, path, madeBranch), true)
+    }
   }
 
   async inspect(repositoryPath: string, signal?: AbortSignal): Promise<RepositoryInfo> {
