@@ -1,5 +1,6 @@
 import {
   maximumRepositoryTrustRefusals,
+  maximumRepositoryTrustThreadRestarts,
   type RepositoryTrustState,
   type ToolInventoryEntry,
   type ToolInventoryProvider,
@@ -148,3 +149,8 @@ export function heldBackUnder(config: RepositoryProviderConfig, trust: Repositor
 // a refusal every session would meet shows where trust is asked for (ruling
 // Q145 A).
 export const projectRootRead: RepositoryProviderConfigOptions = { heldBack: repositoryEntryHeldBack, asLinkedWorktree: true }
+
+// The most threads one repository.revokeTrust result lists: the protocol's
+// cap on its threads array. A revoke still stops every thread, however many
+// (ruling Q179 A); the result counts the rest in omittedThreads.
+export const maximumRevokedTrustThreads: number = maximumRepositoryTrustThreadRestarts

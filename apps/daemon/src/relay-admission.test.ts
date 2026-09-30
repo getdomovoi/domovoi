@@ -1,6 +1,6 @@
 import { once } from "node:events"
 import { generateKeyPairSync } from "node:crypto"
-import { createEmptyWorkspace, demoWorkspace, protocolVersion } from "@getdomovoi/protocol"
+import { createEmptyWorkspace, demoWorkspace, localOwnerRequiredErrorCode, protocolVersion } from "@getdomovoi/protocol"
 import { createRelayClient, relayPublicKeyFromPrivateKey, type RelayClient } from "@getdomovoi/protocol/relay-admission"
 import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -133,6 +133,31 @@ describe("daemon relay admission", () => {
       .toMatchObject({ error: { message: "This method requires a direct connection" } })
     expect(await relay.rpc("repository.revokeTrust", { projectId: "project-acme", client: "desktop" }))
       .toMatchObject({ error: { message: "This method requires a direct connection" } })
+  })
+
+  // A policy refusal, not a credential failure: the client keeps the channel.
+  it("refuses updates over a relay channel with the local-owner code, even from a desktop credential", async () => {
+    const { daemon, store } = await fixture()
+    const desktop = store.devices.pair({ label: "desktop", binding: { kind: "client", client: "desktop", clientAccess: "full" }, channelPublicKey: relayPublicKeyFromPrivateKey(otherKey) })
+    const relay = connect(daemon, desktop.token, otherKey)
+    expect(await relay.hello({ client: "desktop" })).toHaveProperty("result")
+    for (const method of ["update.status", "update.check", "update.activate"]) {
+      expect(await relay.rpc(method)).toMatchObject({
+        error: { code: localOwnerRequiredErrorCode, message: "Updates require a loopback local-owner connection" },
+      })
+    }
+    expect(relay.client.closed).toBe(false)
+  })
+
+  it("refuses the service handoff fence over a relay channel with the local-owner code, even from a desktop credential", async () => {
+    const { daemon, store } = await fixture()
+    const desktop = store.devices.pair({ label: "desktop", binding: { kind: "client", client: "desktop", clientAccess: "full" }, channelPublicKey: relayPublicKeyFromPrivateKey(otherKey) })
+    const relay = connect(daemon, desktop.token, otherKey)
+    expect(await relay.hello({ client: "desktop" })).toHaveProperty("result")
+    expect(await relay.rpc("system.serviceHandoffFence")).toMatchObject({
+      error: { code: localOwnerRequiredErrorCode, message: "The service handoff fence requires a loopback local-owner connection" },
+    })
+    expect(relay.client.closed).toBe(false)
   })
 
   it("does not accept a second bearer in hello", async () => {

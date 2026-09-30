@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace, fleetSnapshotOverflowErrorCode, maximumFleetEntries, protocolVersion, sessionTransferContractVersion, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, fleetSnapshotOverflowErrorCode, localOwnerRequiredErrorCode, maximumFleetEntries, protocolVersion, sessionTransferContractVersion, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DaemonRpcError, DomovoiClient, DomovoiConnectTimeoutError, DomovoiRpcTimeoutError, ProjectSwitchConfirmationError } from "./client"
 import { Deadline } from "./deadline"
@@ -1083,6 +1083,39 @@ describe("DomovoiClient", () => {
     expect(authenticationRequired).toHaveBeenCalledOnce()
     expect(socket.readyState).toBe(FakeWebSocket.CLOSED)
     expect(scheduler.callbacks).toHaveLength(0)
+  })
+
+  // Q169: a paired tab that opens Settings asks for update status, and the
+  // daemon refuses it by policy. That refusal is not a credential failure, so
+  // the tab keeps its connection and the machine stays reachable.
+  it("keeps the connection when the daemon refuses a method to all but the loopback owner", async () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets, authToken: "paired-web-token", scheduler })
+    const authenticationRequired = vi.fn()
+    client.addEventListener("authentication-required", authenticationRequired)
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+
+    const status = client.updateStatus()
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      error: { code: localOwnerRequiredErrorCode, message: "Updates require a loopback local-owner connection" },
+    })
+    const refusal = await status.then(() => undefined, (error: unknown) => error)
+    expect(refusal).toBeInstanceOf(DaemonRpcError)
+    expect(refusal).toMatchObject({ code: localOwnerRequiredErrorCode, message: "Updates require a loopback local-owner connection" })
+    await Promise.resolve()
+
+    expect(authenticationRequired).not.toHaveBeenCalled()
+    expect(socket.readyState).toBe(FakeWebSocket.OPEN)
+    const next = client.updateStatus()
+    socket.receive({ jsonrpc: "2.0", id: 3, result: { channel: "stable", currentVersion: "0.9.4", state: "idle" } })
+    await expect(next).resolves.toMatchObject({ state: "idle" })
+    expect(FakeWebSocket.instances).toHaveLength(1)
   })
 
   it("does not let stale socket callbacks create or revive a connection", async () => {
