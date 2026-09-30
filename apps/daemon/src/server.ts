@@ -2333,23 +2333,37 @@ export class DomovoiDaemon {
   // agent timeout. A confirmed stop forgets it. A stop that fails leaves a
   // thread that loaded trusted input tracked and fenced, so a revoke or
   // recovery still finds it (security review round 1 of #669), and throws.
-  // The stop counts as in flight on the thread until it settles.
+  // The stop counts as in flight on the thread until the provider's stop
+  // itself settles, not until the timeout (security review round 10 of
+  // #669): a stop that resolves after its timeout still counts as the
+  // thread's exit then. The timeout is only what the caller waits: a stop
+  // that times out or fails is unconfirmed, fences a tracked thread and
+  // throws, as before.
   async #stopAbandonedThread(provider: string, threadId: string, timeoutMessage: string): Promise<void> {
     const threadKey = providerThreadKey(provider, threadId)
     const startedAt = this.#nextTrustEpoch()
     this.#trustWorkBegan(threadKey)
+    let settled: Promise<void> | undefined
     try {
-      await withTimeout(this.#agents.require(provider).stopThread(threadId), this.#agentTimeoutMs, timeoutMessage)
+      const stopping = this.#agents.require(provider).stopThread(threadId)
+      settled = stopping.then(
+        () => {
+          this.#threadStopped(provider, threadId, startedAt)
+          this.#trustWorkEnded(provider, threadId)
+        },
+        () => this.#trustWorkEnded(provider, threadId),
+      )
+      await withTimeout(stopping, this.#agentTimeoutMs, timeoutMessage)
     } catch (error) {
       if (this.#trustedThreads.has(threadKey)) {
         this.#failedEmergencyThreads.add(threadKey)
         this.#emergencyBlockedThreads.add(threadKey)
       }
-      this.#trustWorkEnded(provider, threadId)
+      // A stop that threw before it began settles nothing later.
+      if (settled === undefined) this.#trustWorkEnded(provider, threadId)
       throw error
     }
-    this.#threadStopped(provider, threadId, startedAt)
-    this.#trustWorkEnded(provider, threadId)
+    await settled
   }
 
   // Rulings Q4, Q146, Q152 and Q170 A: taking trust back stops, now, every

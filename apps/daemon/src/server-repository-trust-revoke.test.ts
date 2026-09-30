@@ -945,6 +945,48 @@ describe("a revoke held open while a timed-out resume applies the grant", () => 
   }
 })
 
+// Security review round 10 of #669: a late stop counts as in flight until the
+// provider's stop itself settles, not until its timeout.
+describe("a late stop that outlives its timeout", () => {
+  const lateStopHung = async () => {
+    const context = await fixture({ agentTimeoutMs: 300 })
+    const { agents, grants, rpc } = context
+    grants.set(projectId, grant(projectId))
+    const agent = agents["claude-code"]
+    const resume = agent.resumeThread.getMockImplementation()!
+    const landing = deferred()
+    agent.resumeThread.mockImplementationOnce(async (input) => {
+      await landing.promise
+      await resume(input)
+    })
+    expect(await rpc("session.send", { client: "desktop", sessionId: "session-a", prompt: "work" })).toHaveProperty("error")
+    expect(agent.stopThread.mock.calls).toEqual([["thread-a"]])
+    // The resume lands with the grant applied; its late stop hangs past the timeout.
+    const hung = deferred()
+    agent.stopThread.mockImplementationOnce(() => hung.promise)
+    landing.resolve()
+    await waitForDaemon(() => expect(agent.stopThread).toHaveBeenCalledTimes(2))
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    return { ...context, hung }
+  }
+
+  it("keeps the thread for every revoke while its late stop is out, then releases it once that stop resolves", async () => {
+    const { hung, revoke } = await lateStopHung()
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "restarted" }])
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "restarted" }])
+    hung.resolve()
+    await settle()
+    expect(await revoke()).toEqual([])
+  })
+
+  it("releases the thread once its hung late stop resolves", async () => {
+    const { hung, revoke } = await lateStopHung()
+    hung.resolve()
+    await settle()
+    expect(await revoke()).toEqual([])
+  })
+})
+
 describe("repository.revokeTrust and an emergency stop", () => {
   it("takes the grant back at once during a stop, then stops what the stop left, once", async () => {
     const { agents, grants, ok, rpc, sessionNamed } = await fixture()
