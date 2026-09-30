@@ -98,7 +98,11 @@ function agentFor(runtime: Runtime, reportsTrust: boolean) {
       return () => { listeners.delete(listener) }
     }),
     close: vi.fn(async () => {}),
-  } satisfies AgentAdapter
+    // Test-only: what the provider tells the daemon.
+    emit: (event: AgentEvent) => {
+      for (const listener of listeners) listener(event)
+    },
+  } satisfies AgentAdapter & { emit: (event: AgentEvent) => void }
   if (!reportsTrust) return adapter
   return {
     ...adapter,
@@ -785,6 +789,64 @@ describe("recovering a session whose own thread an emergency stop could not stop
     await ok("session.setRuntime", { sessionId: "session-codex", runtime: claude })
     expect(agents["claude-code"].startThread).toHaveBeenCalledOnce()
     expect(await sessionNamed("session-codex")).toMatchObject({ state: "idle", providerThreadId: "claude-code-started" })
+  })
+})
+
+// GPT review of #669 (ruling Q198 A).
+describe("grant-carrying calls that time out, and a revoke of a waiting session", () => {
+  it("tracks a thread whose resume with the grant timed out, so a revoke stops it after the quarantine and late stops failed", async () => {
+    const { agents, grants, rpc, revoke } = await fixture({ agentTimeoutMs: 300 })
+    grants.set(projectId, grant(projectId))
+    const resume = agents["claude-code"].resumeThread.getMockImplementation()!
+    const landing = deferred()
+    agents["claude-code"].resumeThread.mockImplementationOnce(async (input) => {
+      await landing.promise
+      return resume(input)
+    })
+    agents["claude-code"].stopThread.mockRejectedValue(new Error("provider gone"))
+    expect(await rpc("session.send", { client: "desktop", sessionId: "session-a", prompt: "work" })).toHaveProperty("error")
+    landing.resolve()
+    await settle()
+
+    agents["claude-code"].stopThread.mockResolvedValue(undefined)
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "restarted" }])
+    expect(agents["claude-code"].stopThread.mock.calls.at(-1)).toEqual(["thread-a"])
+  })
+
+  it("tracks a thread whose turn start with the grant timed out, so a revoke stops it after the quarantine and late stops failed", async () => {
+    const { agents, grants, ok, rpc, revoke } = await fixture({ agentTimeoutMs: 300 })
+    // Opened before the grant, so only the turn start carries it.
+    await ok("session.restartProviderThread", { sessionId: "session-restart" })
+    grants.set(projectId, grant(projectId))
+    const startTurn = agents["claude-code"].startTurn.getMockImplementation()!
+    const landing = deferred()
+    agents["claude-code"].startTurn.mockImplementationOnce(async (input) => {
+      await landing.promise
+      return startTurn(input)
+    })
+    agents["claude-code"].stopThread.mockRejectedValue(new Error("provider gone"))
+    expect(await rpc("session.send", { client: "desktop", sessionId: "session-restart", prompt: "work" })).toHaveProperty("error")
+    landing.resolve()
+    await settle()
+
+    agents["claude-code"].stopThread.mockResolvedValue(undefined)
+    expect(await revoke()).toEqual([{ sessionId: "session-restart", outcome: "restarted" }])
+    expect(agents["claude-code"].stopThread.mock.calls.at(-1)).toEqual(["claude-code-started"])
+  })
+
+  it("leaves a session that waited on an approval idle, with the approval gone, and lets it fork", async () => {
+    const { agents, grants, ok, revoke, sessionNamed, store } = await fixture()
+    grants.set(projectId, grant(projectId))
+    await ok("session.send", { sessionId: "session-a", prompt: "work" })
+    agents["claude-code"].emit({
+      type: "approval-requested", requestId: 7, threadId: "thread-a", turnId: "turn-thread-a", itemId: "call_ls", command: "ls",
+    })
+    await waitForDaemon(async () => expect((await sessionNamed("session-a")).state).toBe("waiting"))
+
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "restarted" }])
+    expect(await sessionNamed("session-a")).toMatchObject({ state: "idle" })
+    expect(store.load().approvals).toEqual([])
+    await ok("session.fork", { sessionId: "session-a", checkpointId: "checkpoint-fork", requestId: "fork-after-waiting", runtime: claude })
   })
 })
 

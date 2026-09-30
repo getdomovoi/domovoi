@@ -23,7 +23,10 @@ restart or handoff could not stop, and one that quarantine, a transfer or an own
 dropped without confirming its exit. A revoke attempts every stop even when holding a queued send
 or clearing approvals fails, and reports those failures afterwards. Cleanup of a failed handoff
 thread is now bounded by the agent timeout. A start that lands after its call timed out is
-tracked before its late cleanup stops it.
+tracked before its late cleanup stops it. A resume or turn start that carried a grant and then
+timed out or failed is tracked as if it applied the grant before its thread is quarantined, and
+one that lands after its timeout is stopped as a late start is. A revoke that stops a session
+waiting on an approval leaves it idle, as it does a session with an active turn.
 
 A stopped Codex thread that loaded trusted configuration is never counted as exited, since
 archiving it cannot confirm that the tool servers it started exited. While the grant holds, those

@@ -2116,6 +2116,40 @@ export class DomovoiDaemon {
     return true
   }
 
+  // GPT review of #669 (ruling Q198 A): a resume or turn start that carried a
+  // grant and then timed out or failed may still load trusted input in the
+  // provider, so the thread is tracked as applied, with the grant's digest,
+  // before any quarantine or cleanup, as a report that throws is. It stays
+  // tracked until a provider-confirmed stop. An adapter with no report never
+  // applies trust, so its thread is not tracked. A call that lands after its
+  // timeout is stopped as a late start is (#stopLateStart).
+  #trackUnsettledRepositoryTrust(call: RepositoryTrustCall, sessionId: string, provider: string, threadId: string): void {
+    const grant = call.input.repositoryTrust
+    if (grant === undefined) return
+    const threadKey = providerThreadKey(provider, threadId)
+    if (this.#trustedThreads.has(threadKey)) return
+    let reports = true
+    try {
+      reports = this.#agents.require(provider).repositoryTrustApplied !== undefined
+    } catch {
+      // No adapter to ask: tracked, so a revoke still tries to stop it.
+    }
+    if (!reports) return
+    this.#trustedThreads.set(threadKey, { projectId: call.projectId, sessionId, provider, threadId, trustedDigest: grant.trustedDigest })
+  }
+
+  // Stops a grant-carrying resume or turn start that lands after its call
+  // timed out; a failed stop leaves it tracked and fenced.
+  #stopLateTrustedCall(pending: Promise<unknown>, call: RepositoryTrustCall, sessionId: string, provider: string, threadId: string): void {
+    if (call.input.repositoryTrust === undefined) return
+    void pending.then(
+      () => this.#stopLateStart(call, sessionId, provider, threadId).catch((error: unknown) => {
+        this.#reportError("Domovoi could not stop a provider thread whose call landed late", error)
+      }),
+      () => undefined,
+    )
+  }
+
   // A start that landed after its call timed out, so its operation already
   // failed and nothing else will record it. Its thread is tracked first when
   // it applied trust, then stopped: a stop that fails leaves it tracked and
@@ -2338,7 +2372,10 @@ export class DomovoiDaemon {
       if (!session || sessionIsReadOnly(session)) continue
       if (session.providerThreadId === claim.threadId && session.runtime.provider === claim.provider) {
         if (outcome === "unconfirmed") session.state = "failed"
-        else if (!claim.fenced && session.state === "active") session.state = "idle"
+        // A turn waiting on an approval ended with its thread, and the
+        // approval was removed at the claim (GPT review of #669). A fenced
+        // claim keeps its state: that is not lifted here.
+        else if (!claim.fenced && (session.state === "active" || session.state === "waiting")) session.state = "idle"
       }
       session.updatedAt = stoppedAt
       this.#snapshot.thread.push({
@@ -9282,20 +9319,21 @@ export class DomovoiDaemon {
         const loadedThread = providerThreadKey(session.runtime.provider, providerThreadId)
         if (!this.#loadedAgentThreads.has(loadedThread)) {
           const resumeTrust = this.#repositoryTrustCall(session.projectId)
+          let resuming: Promise<void> | undefined
           try {
-            await withTimeout(
-              agent.resumeThread({
-                threadId: providerThreadId,
-                cwd: session.workspacePath,
-                runtime: session.runtime,
-                ...resumeTrust.input,
-              }),
-              this.#agentTimeoutMs,
-              "Agent thread resume timed out",
-            )
+            resuming = agent.resumeThread({
+              threadId: providerThreadId,
+              cwd: session.workspacePath,
+              runtime: session.runtime,
+              ...resumeTrust.input,
+            })
+            await withTimeout(resuming, this.#agentTimeoutMs, "Agent thread resume timed out")
           } catch (error) {
             this.#inFlightProviderThreads.delete(emergencyThread)
+            // Tracked before the quarantine below stops it (Q198 A).
+            if (resuming) this.#trackUnsettledRepositoryTrust(resumeTrust, session.id, session.runtime.provider, providerThreadId)
             if (error instanceof OperationTimeoutError) {
+              if (resuming) this.#stopLateTrustedCall(resuming, resumeTrust, session.id, session.runtime.provider, providerThreadId)
               await this.#quarantineProviderThread(session.id, error.message)
             }
             return await providerRefusal(error)
@@ -9310,6 +9348,8 @@ export class DomovoiDaemon {
         let turnId = session.activeTurnId
         const steering = turnId !== undefined
         let providerMessageId: string | undefined
+        let turnTrust: RepositoryTrustCall | undefined
+        let startingTurn: Promise<string> | undefined
         try {
           signal?.throwIfAborted()
           if (turnId) {
@@ -9322,21 +9362,18 @@ export class DomovoiDaemon {
             )
             providerMessageId = steering?.providerMessageId
           } else {
-            const turnTrust = this.#repositoryTrustCall(session.projectId)
-            turnId = await withTimeout(
-              agent.startTurn({
-                threadId: providerThreadId,
-                cwd: session.workspacePath,
-                prompt,
-                runtime: dispatchRuntime,
-                ...(preparedTurn.visualContexts.length > 0
-                  ? { visualContexts: preparedTurn.visualContexts }
-                  : {}),
-                ...turnTrust.input,
-              }),
-              this.#agentTimeoutMs,
-              "Agent turn timed out",
-            )
+            turnTrust = this.#repositoryTrustCall(session.projectId)
+            startingTurn = agent.startTurn({
+              threadId: providerThreadId,
+              cwd: session.workspacePath,
+              prompt,
+              runtime: dispatchRuntime,
+              ...(preparedTurn.visualContexts.length > 0
+                ? { visualContexts: preparedTurn.visualContexts }
+                : {}),
+              ...turnTrust.input,
+            })
+            turnId = await withTimeout(startingTurn, this.#agentTimeoutMs, "Agent turn timed out")
             this.#recordRepositoryTrust(turnTrust, session.id, dispatchRuntime.provider, providerThreadId)
             const dispatchedTurnId = turnId
             this.#updateUsageAccounting(() => this.#usageLedger.begin?.({
@@ -9347,6 +9384,13 @@ export class DomovoiDaemon {
           }
         } catch (error) {
           this.#inFlightProviderThreads.delete(emergencyThread)
+          // Tracked before the quarantine below stops it (Q198 A).
+          if (turnTrust && startingTurn) {
+            this.#trackUnsettledRepositoryTrust(turnTrust, session.id, dispatchRuntime.provider, providerThreadId)
+            if (error instanceof OperationTimeoutError) {
+              this.#stopLateTrustedCall(startingTurn, turnTrust, session.id, dispatchRuntime.provider, providerThreadId)
+            }
+          }
           if (error instanceof OperationTimeoutError) {
             await this.#quarantineProviderThread(session.id, error.message)
           }
