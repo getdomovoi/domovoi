@@ -11,6 +11,7 @@ import {
   countWord,
   cutAtCredential,
   repositoryFileGroups,
+  repositoryHeldBack,
   repositoryName,
   reviewCounts,
   toolKindLabel,
@@ -58,6 +59,10 @@ export function RepositoryTrustSheet({
     ? outcome.trust
     : repository?.trust.state === "untrusted" && repository.trust.reason === "cannot-trust" ? repository.trust : undefined
   const groups = loaded ? repositoryFileGroups(loaded) : []
+  // "None of it has run" holds only when the daemon holds back every entry
+  // the repository brings; an agent whose files it does not hold back loads
+  // them already.
+  const held = loaded ? repositoryHeldBack(loaded) : { held: 0, total: 0 }
   const omitted = loaded?.providers.filter((provider) => provider.omittedEntries > 0 && provider.files.some((file) => groups.some((group) => group.file.path === file.path))) ?? []
   // Entries the daemon left out to fit its answer are still covered by the
   // digest, so a grant would approve entries nobody saw: no trust is offered
@@ -99,7 +104,9 @@ export function RepositoryTrustSheet({
           <DialogTitle className="text-[16px] font-semibold tracking-[-0.01em]">
             {again ? `Trust ${name} again on ${machine}` : `Trust ${name} on ${machine}`}
           </DialogTitle>
-          <DialogDescription className="text-[13px] leading-[1.6]">Everything this repository would run for any agent here. None of it has run.</DialogDescription>
+          <DialogDescription className="text-[13px] leading-[1.6]">{held.held === held.total
+            ? "Everything this repository would run for any agent here. None of it has run."
+            : `${held.held} of ${held.total} entries from this repository are held back. The rest already load.`}</DialogDescription>
         </DialogHeader>
 
         {/* Block flow, not a flex column or grid: a file group clips its

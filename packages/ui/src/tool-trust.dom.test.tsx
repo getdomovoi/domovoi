@@ -212,6 +212,15 @@ describe("trust review sheet", () => {
     expect(within(sheet).getByText("claude-code: 2 more entries were left out to keep the answer within its size limit. They are not listed here.")).toBeTruthy()
   })
 
+  it("does not say none of it has run when the daemon holds back only some entries", async () => {
+    const provider = claude({ entries: entries().map((entry) => entry.file === ".mcp.json" ? entry : { ...entry, heldBack: false }) })
+    show(inventory(notTrusted, [provider]), { onTrust: vi.fn() })
+    const { sheet } = await openSheet()
+
+    expect(within(sheet).queryByText("Everything this repository would run for any agent here. None of it has run.")).toBeNull()
+    expect(within(sheet).getByText("2 of 7 entries from this repository are held back. The rest already load.")).toBeTruthy()
+  })
+
   it("offers no trust while entries the digest covers are left out of the list", async () => {
     const onTrust = vi.fn<Trust>()
     show(inventory(notTrusted, [claude({ omittedEntries: 3 })]), { onTrust })
