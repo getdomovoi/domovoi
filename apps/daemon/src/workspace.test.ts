@@ -2479,9 +2479,12 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
   // repository. A fake git-lfs stands in for the real one (none on this
   // machine): like git-lfs 3.8.0 it reads core.sshCommand, core.askPass and
   // the credential helper from `git config` and starts them.
-  it.each(["core.sshCommand", "core.askPass", "credential.helper"])(
+  it.each([
+    ["core.sshCommand", "ssh"], ["core.askPass", "askpass"], ["credential.helper", "helper"],
+    ["credential.https://lfs.example.test.helper", "url-helper"],
+  ])(
     "runs no program the repository's %s names through the exempt Git LFS lines",
-    async (key) => {
+    async (key, label) => {
       const { scratch, repositoryPath, payload, worktrees, git, ran } = await filteredRepository("domovoi-create-lfs-delegate-")
       await writeFile(join(repositoryPath, ".gitattributes"), "victim.txt filter=agent\n*.bin filter=lfs\n")
       await writeFile(join(repositoryPath, "object.bin"), "object\n")
@@ -2497,6 +2500,8 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
         "  value=$(git config --get \"$key\")",
         "  case \"$value\" in *payload*) sh -c \"$value\" ;; esac",
         "done",
+        "value=$(git config --get-urlmatch credential.helper https://lfs.example.test/repo)",
+        "case \"$value\" in *payload*) sh -c \"$value\" ;; esac",
         "cat",
         "",
       ].join("\n"), { mode: 0o755 })
@@ -2512,7 +2517,7 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
       process.env.HOME = home
       process.env.XDG_CONFIG_HOME = join(home, ".config")
       try {
-        const workspace = await new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, `session-lfs-${key.replace(".", "-").toLowerCase()}`)
+        const workspace = await new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, `session-lfs-${label}`)
         expect(await readFile(join(workspace.path, "object.bin"), "utf8")).toBe("object\n")
       } finally {
         for (const [name, value] of Object.entries(previous)) {
