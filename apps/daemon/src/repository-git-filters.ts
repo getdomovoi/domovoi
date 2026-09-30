@@ -2,7 +2,9 @@ import { execFile } from "node:child_process"
 import { resolve } from "node:path"
 import { promisify } from "node:util"
 
-import { repositoryGitConfigUnreadableReasons, repositoryGitFilterScopes, type RepositoryGitFilterScope } from "@getdomovoi/protocol"
+import {
+  repositoryGitConfigUnreadableReasons, repositoryGitFilterOperations, repositoryGitFilterScopes, type RepositoryGitFilterScope,
+} from "@getdomovoi/protocol"
 
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { isStandardLfsFilterLine } from "./git-read-config.js"
@@ -20,12 +22,26 @@ const execute = promisify(execFile)
 // not listed. Neither are the exact lines `git lfs install` writes (ruling
 // Q207 A), which run the person's own git-lfs, nor a line with no command,
 // which runs nothing.
+//
+// The exemption covers git-lfs itself, not what the repository's config tells
+// it to start (Q207 A as amended 2026-09-30). git-lfs reads the same Git
+// config and starts a custom transfer agent, or an extension's clean or
+// smudge command, that config names, so each such setting is listed like a
+// filter command. Keys as git-lfs v3.8.0 matches them: a custom transfer's
+// path by the unanchored, case-insensitive `customtransfer.<name>.path`
+// (tq/custom.go) and its args as `lfs.customtransfer.<name>.args`; the
+// standalone agent plain or URL-scoped (tq/manifest.go, config.URLConfig);
+// lfs.extension.<name>.clean and .smudge (config/git_fetcher.go). The
+// tracked .lfsconfig cannot set any of them: git-lfs reads only its safeKeys
+// list, extension priorities, remote.<name>.* and *.access keys from it
+// (git_fetcher.go readGitConfig), so this reads Git's config alone.
 
-export type RepositoryGitFilterOperation = "clean" | "smudge" | "process"
+export type RepositoryGitFilterOperation = (typeof repositoryGitFilterOperations)[number]
 
 export type RepositoryGitFilter = {
   scope: RepositoryGitFilterScope
-  // The key as `git config` prints it: filter.<driver>.<operation>.
+  // The key as `git config` prints it: filter.<driver>.<operation>, or the
+  // lfs.* setting.
   key: string
   driver: string
   operation: RepositoryGitFilterOperation
@@ -37,8 +53,25 @@ export type RepositoryGitFilter = {
   origin: string | undefined
 }
 
-const filterKeyPattern = String.raw`^filter\..+\.(clean|smudge|process)$`
+// Every filter and lfs setting; classify() picks the ones that start a program.
+const filterKeyPattern = String.raw`^(filter|lfs)\.`
 const repositoryScopes: ReadonlySet<string> = new Set(repositoryGitFilterScopes)
+
+// The driver and operation of a setting that starts a program, or undefined.
+// `git config` prints section and variable names in lower case.
+function classify(key: string, value: string): { driver: string; operation: RepositoryGitFilterOperation } | undefined {
+  const filter = /^filter\.(.+)\.(clean|smudge|process)$/u.exec(key)
+  if (filter) return { driver: filter[1]!, operation: filter[2] as RepositoryGitFilterOperation }
+  if (!key.startsWith("lfs.")) return undefined
+  const path = /customtransfer\.([^.]+)\.path/iu.exec(key)
+  if (path) return { driver: path[1]!, operation: "lfs-transfer-path" }
+  const args = /customtransfer\.([^.]+)\.args$/iu.exec(key)
+  if (args) return { driver: args[1]!, operation: "lfs-transfer-args" }
+  if (/^lfs\.(?:.+\.)?standalonetransferagent$/u.test(key)) return { driver: value, operation: "lfs-standalone-agent" }
+  const extension = /^lfs\.extension\.([^.]+)\.(clean|smudge)$/iu.exec(key)
+  if (extension) return { driver: extension[1]!, operation: `lfs-extension-${extension[2]!.toLowerCase() as "clean" | "smudge"}` }
+  return undefined
+}
 
 export type RepositoryGitConfigUnreadableReason = (typeof repositoryGitConfigUnreadableReasons)[number]
 
@@ -56,7 +89,31 @@ export class RepositoryGitConfigUnreadableError extends Error {
 
 export const maximumRepositoryGitConfigOutputBytes = 4 * 1024 * 1024
 
+// One filter or lfs setting as Git read it, from any scope.
+export type GitFilterSetting = { scope: string; key: string; value: string; origin: string | undefined }
+
 export async function readRepositoryGitFilters(directory: string, signal?: AbortSignal): Promise<RepositoryGitFilter[]> {
+  return repositoryGitFilters(await readGitFilterSettings(directory, signal))
+}
+
+// The settings from the repository's own config that start a program.
+export function repositoryGitFilters(settings: readonly GitFilterSetting[]): RepositoryGitFilter[] {
+  const filters: RepositoryGitFilter[] = []
+  for (const { scope, key, value, origin } of settings) {
+    if (trustedConfigScopes.has(scope)) continue
+    // An empty value runs nothing.
+    if (value === "" || isStandardLfsFilterLine(key, value)) continue
+    const classified = classify(key, value)
+    if (classified === undefined) continue
+    filters.push({ scope: scope as RepositoryGitFilterScope, key, ...classified, value, origin })
+  }
+  return filters
+}
+
+// Every filter and lfs setting Git reads in `directory`, in Git's order, from
+// every scope. A scope this reader does not know fails the read, so no caller
+// runs or hides what it sets.
+export async function readGitFilterSettings(directory: string, signal?: AbortSignal): Promise<GitFilterSetting[]> {
   let output: string
   try {
     output = (await execute("git", [
@@ -74,32 +131,23 @@ export async function readRepositoryGitFilters(directory: string, signal?: Abort
     throw new RepositoryGitConfigUnreadableError(code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? "too-large" : "git-failed", { cause: error })
   }
   const fields = output.split("\0")
-  const filters: RepositoryGitFilter[] = []
+  const settings: GitFilterSetting[] = []
   // Each record is scope NUL origin NUL key LF value NUL.
   for (let index = 0; index + 2 < fields.length; index += 3) {
     const scope = fields[index]!
     const origin = fields[index + 1]!
     const record = fields[index + 2]!
-    if (trustedConfigScopes.has(scope)) continue
-    // Fail closed on a scope this reader does not know: the operation that
-    // asked stops rather than run or hide what it sets.
-    if (!repositoryScopes.has(scope)) throw new RepositoryGitConfigUnreadableError("git-failed")
+    if (!trustedConfigScopes.has(scope) && !repositoryScopes.has(scope)) throw new RepositoryGitConfigUnreadableError("git-failed")
     const newline = record.indexOf("\n")
-    // A key with no value is a config error for a filter: Git stops before
-    // running anything. An empty value runs nothing.
+    // A key with no value is a config error for a filter or a program Git
+    // LFS would start: Git or git-lfs stops before running anything.
     if (newline === -1) continue
-    const key = record.slice(0, newline)
-    const value = record.slice(newline + 1)
-    if (value === "" || isStandardLfsFilterLine(key, value)) continue
-    const operationAt = key.lastIndexOf(".")
-    filters.push({
-      scope: scope as RepositoryGitFilterScope,
-      key,
-      driver: key.slice("filter.".length, operationAt),
-      operation: key.slice(operationAt + 1).toLowerCase() as RepositoryGitFilterOperation,
-      value,
+    settings.push({
+      scope,
+      key: record.slice(0, newline),
+      value: record.slice(newline + 1),
       origin: origin.startsWith("file:") ? resolve(directory, origin.slice("file:".length)) : undefined,
     })
   }
-  return filters
+  return settings
 }

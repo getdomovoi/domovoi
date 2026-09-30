@@ -17,6 +17,7 @@ import {
   maximumToolInventoryRuleLength,
   phoneAndTabletRpcMethods,
   repositoryGitConfigUnreadableReasons,
+  repositoryGitFilterOperations,
   rpcMethodAuthorizations,
   rpcMethodMutations,
   rpcMethods,
@@ -206,6 +207,19 @@ describe("tool inventory git filters", () => {
     expect(toolInventorySchema.safeParse(sample).success).toBe(true)
     expect(parses({ ...gitFilters, entries: gitFilters.entries.map((item) => ({ ...item, heldBack: false })) })).toBe(true)
     expect(parses({ ...gitFilters, omittedEntries: 3 })).toBe(true)
+  })
+
+  // Git LFS starts these programs itself when a filter selects it: a custom
+  // transfer agent and its arguments, the agent it uses without asking the
+  // server, and an extension's clean or smudge command.
+  it("lists the Git LFS settings that start a program as entries of their own", () => {
+    expect(repositoryGitFilterOperations).toEqual([
+      "clean", "smudge", "process",
+      "lfs-transfer-path", "lfs-transfer-args", "lfs-standalone-agent", "lfs-extension-clean", "lfs-extension-smudge",
+    ])
+    for (const operation of repositoryGitFilterOperations) {
+      expect(parses({ ...gitFilters, entries: [{ ...entry, driver: "evil", operation }] }), operation).toBe(true)
+    }
   })
 
   it("lists entries only from a listed file, each file once", () => {

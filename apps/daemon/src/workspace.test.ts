@@ -2462,6 +2462,24 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await worktreeList()).toHaveLength(1)
   })
 
+  // The install lines alone are exempt; what they would make git-lfs start is not.
+  it("refuses a session whose exempt Git LFS lines would start a transfer agent the repository names", async () => {
+    const { repositoryPath, worktrees, git, branches } = await filteredRepository("domovoi-create-lfs-agent-")
+    await git("config", "filter.lfs.process", "git-lfs filter-process")
+    await git("config", "filter.lfs.smudge", "git-lfs smudge -- %f")
+    await git("config", "lfs.customtransfer.evil.path", "/tmp/evil-agent")
+    await git("config", "lfs.standalonetransferagent", "evil")
+
+    await expect(new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, "session-lfs")).rejects.toMatchObject({
+      name: "RepositoryGitFilterRefusedError",
+      drivers: [{ name: "evil", scope: "local" }],
+      worktreeRemoved: true,
+      message: expect.stringContaining("lfs.customtransfer.evil.path in local Git config"),
+    })
+    await expect(lstat(join(worktrees, "session-lfs"))).rejects.toThrow()
+    expect(await branches()).toBe("")
+  })
+
   it("says the new worktree stayed, and why, when it could not be taken away", async () => {
     const { repositoryPath, filterFile, worktrees, git, ran, branches } = await filteredRepository("domovoi-create-kept-")
     await git("config", "includeIf.onbranch:domovoi/**.path", filterFile)

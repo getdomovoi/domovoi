@@ -10,7 +10,10 @@ out only when no such filter would run. Otherwise the worktree and the branch it
 away and nothing runs. `session.create` and `session.fork` answer with
 `repositoryGitFilterErrorCode` and the drivers, the configuration digest and the repository's
 trust read at that moment; a transfer keeps its existing refusal. Filters from the person's global
-or system Git config, and the exact lines `git lfs install` writes, still run.
+or system Git config, and the exact lines `git lfs install` writes, still run. The Git LFS
+settings in the repository's own config that make git-lfs start a program (a custom transfer
+agent's path or args, a standalone transfer agent, an extension's clean or smudge command) are
+refused, reported and pinned like a filter command.
 
 The repository trust digest now covers each filter driver the repository's own Git config sets,
 by scope, key and value, so a grant pins them. A repository that sets none keeps the digest it

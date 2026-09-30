@@ -125,6 +125,41 @@ describe("readRepositoryGitFilters", () => {
     expect(await readRepositoryGitFilters(linked)).toEqual([])
   })
 
+  // Ruling Q207 A as amended 2026-09-30: the exact install lines run the
+  // person's own git-lfs, but git-lfs then starts programs the repository's
+  // own config names. Each such setting is listed, and the exemption does not
+  // cover it. Keys as git-lfs v3.8.0 matches them: a custom transfer's path
+  // by an unanchored, case-insensitive "customtransfer.<name>.path"
+  // (tq/custom.go), the standalone agent plain or URL-scoped
+  // (tq/manifest.go), and lfs.extension.<name>.clean or .smudge
+  // (config/git_fetcher.go).
+  it("lists every Git LFS setting in the repository's own config that starts a program, beside the exempt install lines", async () => {
+    const { root, git } = await repository()
+    await git("config", "filter.lfs.process", "git-lfs filter-process")
+    await git("config", "filter.lfs.smudge", "git-lfs smudge -- %f")
+    await git("config", "lfs.customtransfer.evil.path", "/tmp/evil-agent")
+    await git("config", "lfs.customtransfer.evil.args", "--serve")
+    await git("config", "lfs.customtransfer.evil.concurrent", "false")
+    await git("config", "lfs.CustomTransfer.shout.path", "/tmp/shout")
+    await git("config", "lfs.standalonetransferagent", "evil")
+    await git("config", "lfs.https://lfs.example.test/repo.standalonetransferagent", "evil")
+    await git("config", "lfs.extension.ext.smudge", "/tmp/ext-smudge %f")
+    await git("config", "lfs.extension.ext.clean", "/tmp/ext-clean %f")
+    await git("config", "lfs.extension.ext.priority", "0")
+    await git("config", "lfs.url", "https://lfs.example.test/repo")
+
+    const listed = (await readRepositoryGitFilters(root)).map(({ driver, operation, value, scope }) => [driver, operation, value, scope])
+    expect(listed.sort()).toEqual([
+      ["evil", "lfs-standalone-agent", "evil", "local"],
+      ["evil", "lfs-standalone-agent", "evil", "local"],
+      ["evil", "lfs-transfer-args", "--serve", "local"],
+      ["evil", "lfs-transfer-path", "/tmp/evil-agent", "local"],
+      ["ext", "lfs-extension-clean", "/tmp/ext-clean %f", "local"],
+      ["ext", "lfs-extension-smudge", "/tmp/ext-smudge %f", "local"],
+      ["shout", "lfs-transfer-path", "/tmp/shout", "local"],
+    ])
+  })
+
   it("leaves out a line with no command, which runs nothing", async () => {
     const { root, git } = await repository()
     await git("config", "filter.off.clean", "")

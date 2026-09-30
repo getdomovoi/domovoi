@@ -160,7 +160,16 @@ export const toolInventoryProviderSchema = z.object({
 // inventory command is. heldBack: the daemon refuses what would run it.
 export const maximumToolInventoryGitFilters = 64
 export const maximumToolInventoryGitFilterFiles = 32
-export const repositoryGitFilterOperations = ["clean", "smudge", "process"] as const
+// clean, smudge and process are a filter driver's commands. The lfs-* ones are
+// the Git LFS settings that make git-lfs, once a filter runs it, start a
+// program of the repository's choosing: a custom transfer agent's path and
+// arguments, the agent it uses without asking the server, and an extension's
+// clean or smudge command. The driver is the agent's or extension's name, or
+// for lfs-standalone-agent the name it selects.
+export const repositoryGitFilterOperations = [
+  "clean", "smudge", "process",
+  "lfs-transfer-path", "lfs-transfer-args", "lfs-standalone-agent", "lfs-extension-clean", "lfs-extension-smudge",
+] as const
 
 export const toolInventoryGitFilterEntrySchema = z.object({
   driver: repositoryGitFilterDriverNameSchema,

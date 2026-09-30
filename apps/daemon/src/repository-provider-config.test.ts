@@ -1925,6 +1925,21 @@ describe("readRepositoryProviderConfig: git filters", () => {
     }).success).toBe(true)
   })
 
+  it("pins and lists a Git LFS setting that starts a program, and not the exact install lines", async () => {
+    const root = await repository()
+    git(root, "config", "filter.lfs.process", "git-lfs filter-process")
+    git(root, "config", "lfs.standalonetransferagent", "evil")
+    const standalone = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(standalone.configDigest).not.toBe(digestBeforeGitFilters)
+    git(root, "config", "lfs.customtransfer.evil.path", "/tmp/evil-agent")
+    const read = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(read.configDigest).not.toBe(standalone.configDigest)
+    expect(read.gitFilters?.entries).toEqual([
+      { driver: "evil", operation: "lfs-standalone-agent", command: "evil", file: ".git/config", heldBack: true },
+      { driver: "evil", operation: "lfs-transfer-path", command: "/tmp/evil-agent", file: ".git/config", heldBack: true },
+    ])
+  })
+
   // A config Git reads but the daemon cannot (past its output cap, or a
   // failure other than "not a Git repository") changes the digest, so a grant
   // made over the config as it was no longer covers it, and is listed as

@@ -286,7 +286,9 @@ export class RepositoryGitFilterRefusedError extends RepositoryFilterRefusedErro
   readonly worktreeRemoved: boolean
 
   constructor(filters: readonly RepositoryGitFilter[], worktreeRemoved: boolean) {
-    super(filters)
+    // The base class names each driver from a filter.<driver>.<op> key; an lfs
+    // setting's driver is its agent or extension name. The message is replaced below.
+    super(filters.map(({ scope, driver, operation }) => ({ scope, key: `filter.${driver}.${operation}` })))
     const names = [...new Set(filters.map(({ driver }) => driver))]
     const settings = filters.map(({ scope, key }) => `${key} in ${scope} Git config`).join(", ")
     this.message = `This repository's own Git config sets the filter ${names.map((name) => `"${name}"`).join(", ")} (${settings}). `
