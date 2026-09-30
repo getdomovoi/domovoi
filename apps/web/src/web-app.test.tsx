@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { BrowserPlatformEnvironment } from "./browser-platform"
-import type { PairingClient, PairingClientFactory } from "./daemon-pairing"
+import type { BearerPairingClient, CodePairingClient, PairingClientFactory } from "./daemon-pairing"
 import { WebApp, type WebAppProps } from "./web-app"
 
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true)
@@ -119,7 +119,7 @@ async function submitCode(value: string) {
   })
 }
 
-function pairingClient(outcome: "pairs" | "refuses"): PairingClient {
+function pairingClient(outcome: "pairs" | "refuses"): BearerPairingClient & CodePairingClient {
   return {
     connect: vi.fn(async () => undefined),
     request: vi.fn(async () => {

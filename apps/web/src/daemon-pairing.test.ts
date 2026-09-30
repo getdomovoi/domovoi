@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { daemonCredentialShapeMessage, pairBrowserDevice, type PairingClient } from "./daemon-pairing"
+import { daemonCredentialShapeMessage, pairBrowserDevice, type BearerPairingClient, type CodePairingClient } from "./daemon-pairing"
+
+type PairingClient = BearerPairingClient & CodePairingClient
 
 const deviceId = `device-${"a1b2c3d4".repeat(4)}`
 const bearer = "r".repeat(43)
@@ -123,6 +125,13 @@ describe("redeeming a web code", () => {
     const { pairingOutcomeFor } = await import("./daemon-pairing")
     const { DaemonRpcError } = await import("@/client")
     expect(pairingOutcomeFor(new DaemonRpcError(-32099, "Pairing is closed on this daemon"), "host")).toMatchObject({ pill: "refused", title: "The daemon refused pairing", mono: "pair.refused · -32099", body: "Pairing is closed on this daemon" })
+  })
+
+  it("does not blame the code for a refused greeting", async () => {
+    const { pairingOutcomeFor } = await import("./daemon-pairing")
+    const { DaemonRpcError } = await import("@/client")
+    const { daemonAuthenticationErrorCode } = await import("@getdomovoi/protocol")
+    expect(pairingOutcomeFor(new DaemonRpcError(daemonAuthenticationErrorCode, "Daemon authentication failed"), "host")).toMatchObject({ pill: "refused", title: "The daemon refused pairing", mono: `pair.refused · ${daemonAuthenticationErrorCode}`, body: "Daemon authentication failed" })
   })
 
   it("names a protocol mismatch even when the daemon sent no versions", async () => {

@@ -5,19 +5,31 @@ import { DaemonRpcError } from "@/client"
 
 import { daemonSessionFrom, isDaemonCredential, type DaemonSession } from "./credential"
 
-export type PairingClient = {
+type PairingConnection = {
   connect(): Promise<unknown>
-  request(method: "device.pair", params: { label: string; client: ClientKind }): Promise<unknown>
-  request(method: "device.redeemCode", params: { code: string; label: string; protocolVersion: string }): Promise<unknown>
   disconnect(): void
 }
 
-// A bearer only for the credential path; a code is redeemed with nothing.
-export type PairingClientFactory = (input: {
-  url: string
-  client: ClientKind
-  bearer?: string
-}) => PairingClient
+export type BearerPairingClient = PairingConnection & {
+  request(method: "device.pair", params: { label: string; client: ClientKind }): Promise<unknown>
+}
+
+export type CodePairingClient = PairingConnection & {
+  request(method: "device.redeemCode", params: { code: string; label: string; protocolVersion: string }): Promise<unknown>
+}
+
+// A bearer only for the credential path. A code is redeemed with nothing, and
+// its client sends the code before any greeting: the daemon refuses a
+// greeting from a tab that holds no credential, so a code sent after one is
+// never spent.
+export type PairingClientFactory = {
+  (input: { url: string; client: ClientKind; bearer: string }): BearerPairingClient
+  (input: { url: string; client: ClientKind }): CodePairingClient
+}
+
+// The daemon's words for a refused code. It answers a refused greeting with
+// the same error code and other words, and that is not the code's fault.
+const codeRefusalMessage = "Pairing was refused"
 
 export const webCodeShapeMessage = "A web code is the daemon's word code, like hearth-quiet-ember-42, shown on the machine in Settings under Phone and tablet."
 
@@ -61,7 +73,7 @@ export function pairingOutcomeFor(cause: unknown, host: string): Omit<PairingOut
     if (cause.code === devicePairingLimitErrorCode) {
       return { tone: "danger", pill: "refused", title: `${host} has no room for another device`, mono: "pair.refused · device_limit", body: "Unpair a device on the machine, under Machines, then show another code." }
     }
-    if (cause.code === daemonAuthenticationErrorCode) {
+    if (cause.code === daemonAuthenticationErrorCode && cause.message === codeRefusalMessage) {
       return { tone: "plain", pill: "refused", title: "That code was refused", mono: "pair.refused · works once · 180s", body: `It may have expired or been used already. Show another on ${host}, under Settings, Phone and tablet.` }
     }
     return { tone: "danger", pill: "refused", title: "The daemon refused pairing", mono: `pair.refused · ${cause.code}`, body: cause.message }
