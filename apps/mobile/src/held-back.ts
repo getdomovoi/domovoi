@@ -82,6 +82,10 @@ export type HeldBackView =
     root: string
     heading: string
     lead: string
+    // The instruction files that load whatever is held back, said whenever
+    // something is, so a summary that nothing loads never reads as covering
+    // them. Undefined when nothing is held back.
+    instructionFiles: string | undefined
     // Why each listed entry is held back. Every listed entry has the same
     // reason, because it follows the repository's trust, so it is said once
     // per file rather than dropped on a narrow screen.
@@ -249,6 +253,9 @@ export function heldBackView(inventory: ToolInventory): HeldBackView {
     root: repository.root,
     heading: held > 0 ? `${name} is held back on ${machine}` : `${name} on ${machine}`,
     lead,
+    // Trust holds back what a repository would run, not its instructions:
+    // the agents read these either way.
+    instructionFiles: held > 0 ? "CLAUDE.md · AGENTS.md" : undefined,
     reason: heldBackReason(trust),
     trust: trustSummary(trust),
     awaitsTrust: awaitsTrust(trust),

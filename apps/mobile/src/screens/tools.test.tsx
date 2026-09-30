@@ -59,6 +59,9 @@ describe("ToolsScreen", () => {
     await draw({ state: "loaded", inventory: inventory() })
     expect(screen.getByText("acme-api is held back on studio")).toBeOnTheScreen()
     expect(screen.getByText("None of it loads for any agent.")).toBeOnTheScreen()
+    // Repository instructions are not blocked by trust, and the summary says so.
+    expect(screen.getByText("Instruction files load either way:")).toBeOnTheScreen()
+    expect(screen.getByText("CLAUDE.md · AGENTS.md")).toBeOnTheScreen()
 
     const mcp = screen.getByLabelText(".mcp.json")
     expect(within(mcp).getByText("postgres-dev")).toBeOnTheScreen()

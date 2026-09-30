@@ -90,6 +90,12 @@ export function ToolsScreen({
             <Card className="gap-1.5">
               <Text variant="section">{view.heading}</Text>
               <Text variant="meta">{view.lead}</Text>
+              {view.instructionFiles ? (
+                <View className="flex-row flex-wrap items-baseline gap-x-1.5">
+                  <Text variant="meta">Instruction files load either way:</Text>
+                  <Text variant="machine" className="text-strong">{view.instructionFiles}</Text>
+                </View>
+              ) : null}
               <Text variant="machine">{view.root} · {view.trust}</Text>
             </Card>
 

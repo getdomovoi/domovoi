@@ -102,6 +102,15 @@ describe("heldBackView", () => {
     expect(view.incomplete).toBeUndefined()
   })
 
+  // Instruction files are not entries and are never held back, so a summary
+  // that says nothing loads keeps the exception beside it (trust.sheet copy).
+  it("says instruction files load either way whenever something is held back", () => {
+    expect(loaded(heldBackView(inventory())).instructionFiles).toBe("CLAUDE.md · AGENTS.md")
+    const trusted = inventory()
+    for (const provider of trusted.providers) provider.entries = provider.entries.map((entry) => ({ ...entry, heldBack: false }))
+    expect(loaded(heldBackView(trusted)).instructionFiles).toBeUndefined()
+  })
+
   it("counts what is held back when only some of it is", () => {
     const partly = inventory()
     const entry = partly.providers[0]!.entries[1]!
