@@ -67,6 +67,13 @@ function exceptionKey(key: string): string {
   return `${key.slice(0, first).toLowerCase()}.${key.slice(first + 1, last)}.${key.slice(last + 1).toLowerCase()}`
 }
 
+// One of the filter lines `git lfs install` writes, exactly as written: the
+// key as `git config` prints it, and the value.
+export function isStandardLfsFilterLine(key: string, value: string): boolean {
+  const allowedKey = exceptionKey(key)
+  return allowedKey.startsWith("filter.") && Object.hasOwn(standardLfsFilter, allowedKey) && standardLfsFilter[allowedKey] === value
+}
+
 function run(directory: string, args: string[], env: NodeJS.ProcessEnv): Promise<string | undefined> {
   return new Promise((done) => {
     execFile("git", ["-C", directory, ...args], { ...limits, env }, (error, stdout) => {
