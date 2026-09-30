@@ -2432,6 +2432,24 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     return { scratch, repositoryPath, payload, filterFile, worktrees, git, ran, branches, worktreeList }
   }
 
+  // A driver's name is the repository's text and can hold a credential; the
+  // refusal's message reaches clients, so it shows names as the inventory does.
+  it("shows a filter's name and key redacted in a refusal's message", async () => {
+    const { repositoryPath, worktrees, git } = await filteredRepository("domovoi-create-redact-")
+    await git("config", "filter.api_token=sekret-value.smudge", "cat")
+    await git("config", "filter.Bearer sekret-token.clean", "cat")
+
+    const message = await new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, "session-redact")
+      .then(() => "", (error: Error) => error.message)
+    expect(message).toContain("[REDACTED]")
+    expect(message).not.toContain("sekret")
+
+    const service = new GitWorkspaceService(worktrees)
+    const checkpoint = await service.checkpoint(repositoryPath, "redact").then(() => "", (error: Error) => error.message)
+    expect(checkpoint).toContain("Checkpoint, restore, revert")
+    expect(checkpoint).not.toContain("sekret")
+  })
+
   it("refuses to check a new session out when the repository's own config sets a filter, and leaves nothing behind", async () => {
     const { repositoryPath, payload, worktrees, git, ran, branches, worktreeList } = await filteredRepository("domovoi-create-filter-")
     await git("config", "filter.agent.smudge", `sh ${payload}`)

@@ -10,6 +10,7 @@ import { maximumPreviewSourceBytes, type RepositoryGitFilterScope } from "@getdo
 
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
+import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
 import { checkOutIsolated } from "./isolated-checkout.js"
 import {
   readGitFilterSettings, readRepositoryGitFilters, repositoryGitFilters, type GitFilterSetting, type RepositoryGitFilter,
@@ -261,14 +262,22 @@ async function submoduleHasLocalChanges(worktreePath: string, signal?: AbortSign
   return false
 }
 
+// A config key or driver name is the repository's own text and can hold a
+// credential ([filter "api_token=..."], a URL with its user info). A refusal's
+// message reaches clients, so each is shown as the tool inventory shows text:
+// redacted, and fitted to the cap of its kind of field.
+const shownName = (name: string) => redactInventoryText(name, inventoryFieldCaps.name)
+const shownSettings = (entries: readonly { scope: string; key: string }[]) =>
+  entries.map(({ scope, key }) => `${redactInventoryText(key, inventoryFieldCaps.detail)} in ${scope} Git config`).join(", ")
+
 export class RepositoryFilterRefusedError extends RepositoryConfigRefusedError {
   readonly filters: readonly string[]
 
   constructor(entries: readonly { scope: string; key: string }[]) {
     const filters = [...new Set(entries.map(({ key }) => key.slice("filter.".length, key.lastIndexOf("."))))]
-    const settings = entries.map(({ scope, key }) => `${key} in ${scope} Git config`).join(", ")
+    const settings = shownSettings(entries)
     super(
-      `This repository's own Git config sets the filter ${filters.map((name) => `"${name}"`).join(", ")} (${settings}). `
+      `This repository's own Git config sets the filter ${filters.map((name) => `"${shownName(name)}"`).join(", ")} (${settings}). `
       + "Checkpoint, restore, revert, archive and transfer would run its command, and Domovoi does not run "
       + "commands a repository's own config supplies until that repository can be trusted. "
       + "Filters from your global or system Git config still run.",
@@ -310,8 +319,7 @@ export class RepositoryGitFilterRefusedError extends RepositoryFilterRefusedErro
     // setting's driver is its agent or extension name. The message is replaced below.
     super(filters.map(({ scope, driver, operation }) => ({ scope, key: `filter.${driver}.${operation}` })))
     const names = [...new Set(filters.map(({ driver }) => driver))]
-    const settings = filters.map(({ scope, key }) => `${key} in ${scope} Git config`).join(", ")
-    this.message = `This repository's own Git config sets the filter ${names.map((name) => `"${name}"`).join(", ")} (${settings}). `
+    this.message = `This repository's own Git config sets the filter ${names.map((name) => `"${shownName(name)}"`).join(", ")} (${shownSettings(filters)}). `
       + "Checking it out for this session would run its command, and Domovoi does not run a filter a repository's "
       + "own Git config sets. Nothing ran. "
       + cleanupText(cleanup)
@@ -332,7 +340,7 @@ export class RepositoryGitFilterRefusedError extends RepositoryFilterRefusedErro
 export class RepositoryTransportRefusedError extends RepositoryConfigRefusedError {
   constructor(entries: readonly { scope: string; key: string }[]) {
     super(
-      `This repository's own Git config sets ${entries.map(({ scope, key }) => `${key} in ${scope} Git config`).join(", ")}. `
+      `This repository's own Git config sets ${shownSettings(entries)}. `
       + "Push and fetch would follow it, and Domovoi does not apply commands or URL rewrites a repository's "
       + "own config supplies until that repository can be trusted. Settings from your global or system Git config still apply.",
     )
