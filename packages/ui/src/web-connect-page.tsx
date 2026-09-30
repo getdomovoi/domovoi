@@ -44,9 +44,13 @@ export function WebConnectPage({
   onPair,
   onOpenLimits,
   onUseCredential,
+  codeName = "web code",
 }: {
   // The address the page dials, which is all a tab knows before it pairs.
   host: string
+  // The code this browser needs, named for the kind it greets as: a touch
+  // browser greets as a phone or tablet and is refused a web credential.
+  codeName?: string
   secure: boolean
   reopened?: boolean
   initialCode?: string
@@ -74,6 +78,7 @@ export function WebConnectPage({
     { text: "This page and the daemon must speak the same protocol version. After a daemon update, reload.", tone: "bg-info" },
   ]
   const tone = outcome ? tones[outcome.tone] : undefined
+  const codeLabel = codeName.charAt(0).toUpperCase() + codeName.slice(1)
 
   return (
     <main className="flex min-h-dvh items-start justify-center bg-background p-6 text-foreground">
@@ -85,7 +90,7 @@ export function WebConnectPage({
           </div>
           <span className="font-machine text-[13px] text-strong">{host}</span>
           <p className="m-0 text-[13px] leading-[1.6] text-muted-foreground">
-            {filledFromUrl ? "Opened from the QR on the machine. Check the machine name above, then pair." : "Type the web code shown on the machine, in Settings under Phone and tablet."}
+            {filledFromUrl ? "Opened from the QR on the machine. Check the machine name above, then pair." : `Type the ${codeName} shown on the machine, in Settings under Phone and tablet.`}
           </p>
         </div>
 
@@ -108,12 +113,12 @@ export function WebConnectPage({
           }}
         >
           <div className="flex items-baseline gap-2">
-            <label htmlFor="web-code" className="text-[12.5px] font-medium">Web code</label>
+            <label htmlFor="web-code" className="text-[12.5px] font-medium">{codeLabel}</label>
             <span className="font-machine text-[10.5px] text-faint">Works once, for 180 seconds</span>
           </div>
           <Input
             id="web-code"
-            aria-label="Web code"
+            aria-label={codeLabel}
             autoComplete="off"
             spellCheck={false}
             autoFocus

@@ -1,7 +1,11 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
 import { demoWorkspace, toolInventorySchema, type ToolInventory, type ToolInventoryEntry } from "@getdomovoi/protocol"
 import { describe, expect, it, vi } from "vitest"
 
-import type { RepositoryProviderConfigOptions } from "./repository-provider-config.js"
+import { readRepositoryProviderConfig, type RepositoryProviderConfigOptions } from "./repository-provider-config.js"
 import { repositoryEntryHeldBack } from "./repository-trust-apply.js"
 import { fitToolInventory, readToolInventory } from "./tool-inventory.js"
 
@@ -53,6 +57,39 @@ describe("readToolInventory", () => {
       machine, project, read: async () => ({ configDigest, providers: [], trustRefusals: [], documents: {} }),
     })
     expect(without.repository).not.toHaveProperty("gitFilters")
+  })
+
+  // Slice P6b: a trusted Claude Code entry is reported as loading exactly
+  // when the adapter passes it, from the documents the digest was read from.
+  it("marks a trusted repository's entries by what loads, and keeps the documents out of the answer", async () => {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-tool-inventory-trust-"))
+    try {
+      await mkdir(join(root, ".claude"), { recursive: true })
+      await writeFile(join(root, ".claude", "settings.json"), JSON.stringify({
+        hooks: { SessionStart: [{ hooks: [{ type: "command", command: "./bootstrap.sh" }] }] },
+        permissions: { allow: ["Bash(*)"] },
+        env: { PLANTED_VALUE: "planted-secret" },
+      }))
+      const read = vi.fn(readRepositoryProviderConfig)
+      const project = { id: "project-acme", path: root }
+      const untrusted = await readToolInventory({ machine, project, read })
+      const grant = { projectId: "project-acme", trustedDigest: untrusted.repository!.configDigest, trustedAt: "2026-09-29T12:00:00.000Z", trustedBy: { client: "desktop" as const } }
+      const trusted = await readToolInventory({ machine, project, grant, read })
+
+      expect(read).toHaveBeenLastCalledWith(root, { heldBack: repositoryEntryHeldBack, asLinkedWorktree: true, documents: true })
+      expect(trusted.repository?.trust.state).toBe("trusted")
+      const marks = (inventory: ToolInventory) => inventory.providers.find(({ provider }) => provider === "claude-code")!.entries.map((entry) => [entry.kind, entry.heldBack])
+      expect(marks(untrusted)).toEqual([["hook", true], ["env-key", true], ["permission-rule", true]])
+      expect(marks(trusted)).toEqual([["hook", false], ["env-key", false], ["permission-rule", true]])
+      expect(JSON.stringify(trusted)).not.toContain("planted-secret")
+
+      // A grant for another digest reports the held-back marks.
+      const changed = await readToolInventory({ machine, project, grant: { ...grant, trustedDigest: `sha256:${"b".repeat(64)}` }, read })
+      expect(changed.repository?.trust.state).toBe("untrusted")
+      expect(marks(changed)).toEqual(marks(untrusted))
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })
 

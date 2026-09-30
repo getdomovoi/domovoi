@@ -27,6 +27,17 @@ it("asks for the daemon's word code and locks Pair until the code is complete", 
   expect(onPair).toHaveBeenCalledWith("hearth-quiet-ember-42")
 })
 
+// Q197, 2026-09-29: a browser that greets as a phone needs the phone code, so
+// the prompt and the field name that code rather than sending the person to
+// fetch a web code the page would then refuse.
+it("names the code this browser needs in the prompt and the field", () => {
+  render(<WebConnectPage {...base} codeName="phone code" />)
+  expect(screen.getByText("Type the phone code shown on the machine, in Settings under Phone and tablet.")).toBeTruthy()
+  expect(screen.getByText("Phone code")).toBeTruthy()
+  expect(screen.getByRole("textbox", { name: "Phone code" })).toBeTruthy()
+  expect(screen.queryByText(/web code/i)).toBeNull()
+})
+
 it("says how this tab is trusted, and that the credential lives in the tab", () => {
   render(<WebConnectPage {...base} />)
   const facts = screen.getByRole("list", { name: "HOW THIS TAB IS TRUSTED" })

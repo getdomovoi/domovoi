@@ -8,7 +8,12 @@ import type { Runtime } from "@getdomovoi/protocol"
 
 const sdk = vi.hoisted(() => ({ query: vi.fn() }))
 
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: sdk.query }))
+// Only query is replaced: the adapter also reads the SDK's list of hook
+// events (claude-repository-trust.ts).
+vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>(),
+  query: sdk.query,
+}))
 
 const { ClaudeAgentSdkAdapter } = await import("./claude.js")
 

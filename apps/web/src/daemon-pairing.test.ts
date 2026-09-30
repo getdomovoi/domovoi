@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { daemonCredentialShapeMessage, pairBrowserDevice, type PairingClient } from "./daemon-pairing"
+import { daemonCredentialShapeMessage, pairBrowserDevice, type BearerPairingClient, type CodePairingClient } from "./daemon-pairing"
+
+type PairingClient = BearerPairingClient & CodePairingClient
 
 const deviceId = `device-${"a1b2c3d4".repeat(4)}`
 const bearer = "r".repeat(43)
@@ -102,9 +104,10 @@ describe("redeeming a web code", () => {
   })
 
   it("refuses a code that is not the daemon's word format before dialing", async () => {
-    const { redeemBrowserCode, webCodeShapeMessage } = await import("./daemon-pairing")
+    const { redeemBrowserCode, codeShapeMessage } = await import("./daemon-pairing")
     const factory = vi.fn()
-    await expect(redeemBrowserCode({ url: "wss://daemon.example/rpc", client: "web", code: "DVOI-4K7Q-91XZ", label: "x", createClient: factory })).rejects.toThrow(webCodeShapeMessage)
+    await expect(redeemBrowserCode({ url: "wss://daemon.example/rpc", client: "web", code: "DVOI-4K7Q-91XZ", label: "x", createClient: factory })).rejects.toThrow(codeShapeMessage("web"))
+    expect(codeShapeMessage("web")).toBe("A web code is the daemon's word code, like hearth-quiet-ember-42, shown on the machine in Settings under Phone and tablet.")
     expect(factory).not.toHaveBeenCalled()
   })
 
@@ -125,6 +128,76 @@ describe("redeeming a web code", () => {
     expect(pairingOutcomeFor(new DaemonRpcError(-32099, "Pairing is closed on this daemon"), "host")).toMatchObject({ pill: "refused", title: "The daemon refused pairing", mono: "pair.refused · -32099", body: "Pairing is closed on this daemon" })
   })
 
+  // Q196, 2026-09-29: a touch browser greets as a phone or tablet, and a code
+  // shown for a web browser binds its credential to web. The daemon refuses a
+  // greeting whose kind is not the credential's, so such a credential is not
+  // kept, and the page says which code this browser needs.
+  it("keeps no credential bound to a kind this page does not greet as", async () => {
+    const { redeemBrowserCode, pairingOutcomeFor } = await import("./daemon-pairing")
+    const client = fakeClient()
+    const caught = await redeemBrowserCode({ url: "wss://daemon.example/rpc", client: "phone", code: "hearth-quiet-ember-42", label: "Phone browser 4f2a1c9d", createClient: () => client }).catch((error: unknown) => error)
+    expect(client.disconnect).toHaveBeenCalledOnce()
+    expect(pairingOutcomeFor(caught, "mac-mini-m4.tail4c2e.ts.net")).toEqual({
+      tone: "danger",
+      pill: "not kept",
+      title: "This code is for a web browser",
+      mono: "pair.refused · kind_mismatch · code web, browser phone",
+      body: "This browser counts as a phone. On mac-mini-m4.tail4c2e.ts.net, show a phone code under Settings, Phone and tablet. The code was used, so unpair the extra device under Machines.",
+    })
+  })
+
+  it("names each kind a code can be bound to and a browser can greet as", async () => {
+    const { redeemBrowserCode, pairingOutcomeFor } = await import("./daemon-pairing")
+    const bound = (client: string) => fakeClient({ request: vi.fn().mockResolvedValue({ ...pairResult(), device: { ...pairResult().device, binding: { kind: "client", client } } }) })
+    const outcome = async (code: string, browser: "web" | "tablet" | "phone" | "desktop" | "cli") => pairingOutcomeFor(
+      await redeemBrowserCode({ url: "wss://daemon.example/rpc", client: browser, code: "hearth-quiet-ember-42", label: "x", createClient: () => bound(code) }).catch((error: unknown) => error),
+      "host",
+    )
+    expect(await outcome("tablet", "web")).toMatchObject({ title: "This code is for a tablet", body: expect.stringContaining("This browser counts as a web browser. On host, show a web code under") })
+    expect(await outcome("phone", "tablet")).toMatchObject({ title: "This code is for a phone", body: expect.stringContaining("This browser counts as a tablet. On host, show a tablet code under") })
+    expect(await outcome("desktop", "web")).toMatchObject({ title: "This code is for the desktop app" })
+    expect(await outcome("cli", "web")).toMatchObject({ title: "This code is for the command line" })
+    expect(await outcome("web", "desktop")).toMatchObject({ body: expect.stringContaining("This browser counts as the desktop app. On host, show a desktop code under") })
+    expect(await outcome("web", "cli")).toMatchObject({ body: expect.stringContaining("This browser counts as the command line. On host, show a command line code under") })
+  })
+
+  it("names the code this browser needs when a code is malformed", async () => {
+    const { redeemBrowserCode, pairingOutcomeFor } = await import("./daemon-pairing")
+    const factory = vi.fn()
+    const caught = await redeemBrowserCode({ url: "wss://daemon.example/rpc", client: "phone", code: "DVOI-4K7Q-91XZ", label: "x", createClient: factory }).catch((error: unknown) => error)
+    expect(factory).not.toHaveBeenCalled()
+    expect(pairingOutcomeFor(caught, "host")).toEqual({
+      tone: "plain",
+      pill: "not sent",
+      title: "That is not a phone code",
+      mono: "word-word-word-00",
+      body: "A phone code is the daemon's word code, like hearth-quiet-ember-42, shown on the machine in Settings under Phone and tablet.",
+    })
+  })
+
+  it("says a code that bound no client kind is not for a browser", async () => {
+    const { DeviceKindMismatchError, pairingOutcomeFor, redeemBrowserCode } = await import("./daemon-pairing")
+    const machine = fakeClient({ request: vi.fn().mockResolvedValue({ ...pairResult(), device: { ...pairResult().device, binding: { kind: "machine", machineId: `machine-${"a".repeat(32)}` } } }) })
+    const refusal = await redeemBrowserCode({ url: "wss://daemon.example/rpc", client: "web", code: "hearth-quiet-ember-42", label: "x", createClient: () => machine }).catch((error: unknown) => error)
+    expect(refusal).toBeInstanceOf(DeviceKindMismatchError)
+    expect((refusal as Error).message).toBe("The code paired a device that is not a client, and this browser greets as web")
+    expect(new DeviceKindMismatchError("web", "phone").message).toBe("The code paired web, and this browser greets as phone")
+    expect(pairingOutcomeFor(refusal, "host")).toMatchObject({ title: "This code is not for a browser", mono: "pair.refused · kind_mismatch · code none, browser web" })
+  })
+
+  it("keeps a credential bound to the kind this page greets as", async () => {
+    const { redeemBrowserCode } = await import("./daemon-pairing")
+    const phone = fakeClient({ request: vi.fn().mockResolvedValue({ ...pairResult(), device: { ...pairResult().device, binding: { kind: "client", client: "phone" } } }) })
+    await expect(redeemBrowserCode({ url: "wss://daemon.example/rpc", client: "phone", code: "hearth-quiet-ember-42", label: "x", createClient: () => phone })).resolves.toEqual({ deviceId, token: deviceToken })
+  })
+
+  it("does not blame the code for a refused greeting", async () => {
+    const { pairingOutcomeFor } = await import("./daemon-pairing")
+    const { DaemonRpcError } = await import("@/client")
+    const { daemonAuthenticationErrorCode } = await import("@getdomovoi/protocol")
+    expect(pairingOutcomeFor(new DaemonRpcError(daemonAuthenticationErrorCode, "Daemon authentication failed"), "host")).toMatchObject({ pill: "refused", title: "The daemon refused pairing", mono: `pair.refused · ${daemonAuthenticationErrorCode}`, body: "Daemon authentication failed" })
+  })
+
   it("names a protocol mismatch even when the daemon sent no versions", async () => {
     const { pairingOutcomeFor } = await import("./daemon-pairing")
     const { DaemonRpcError } = await import("@/client")
@@ -134,8 +207,8 @@ describe("redeeming a web code", () => {
   })
 
   it("says a malformed code was never sent", async () => {
-    const { pairingOutcomeFor, webCodeShapeMessage } = await import("./daemon-pairing")
-    expect(pairingOutcomeFor(new Error(webCodeShapeMessage), "host")).toMatchObject({ pill: "not sent", title: "That is not a web code", body: webCodeShapeMessage })
+    const { pairingOutcomeFor, CodeShapeError, codeShapeMessage } = await import("./daemon-pairing")
+    expect(pairingOutcomeFor(new CodeShapeError("web"), "host")).toMatchObject({ pill: "not sent", title: "That is not a web code", body: codeShapeMessage("web") })
   })
 
   it("reports the connection once it opens, before the daemon answers", async () => {
