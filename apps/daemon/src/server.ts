@@ -1653,6 +1653,11 @@ export class DomovoiDaemon {
   // settles them: a stop on another path that finishes meanwhile changes
   // nothing, and each fences its session (security review round 3 of #669).
   #claimedTrustThreads = new Map<string, TrustedThread>()
+  // Grant-carrying calls that timed out and have not settled, counted by
+  // thread, and the threads a stop resolved for while one was out
+  // (#holdUnsettledTrustedCall, security review round 8 of #669).
+  #unsettledTrustedCalls = new Map<string, number>()
+  #stoppedWhileUnsettled = new Set<string>()
   // Counts the revokes of each project's trust. A provider call records the
   // count it looked its grant up under, so a call that lands after a revoke
   // is known to carry a grant that is gone.
@@ -2138,16 +2143,37 @@ export class DomovoiDaemon {
     this.#trustedThreads.set(threadKey, { projectId: call.projectId, sessionId, provider, threadId, trustedDigest: grant.trustedDigest })
   }
 
-  // Stops a grant-carrying resume or turn start that lands after its call
-  // timed out; a failed stop leaves it tracked and fenced.
-  #stopLateTrustedCall(pending: Promise<unknown>, call: RepositoryTrustCall, sessionId: string, provider: string, threadId: string): void {
+  // Security review round 8 of #669: a grant-carrying resume or turn start
+  // that timed out is still out, and may apply the grant whenever it lands,
+  // whether it then resolves or rejects. Until it settles, its thread stays
+  // tracked: a stop meanwhile (the quarantine's, a revoke's, a fence retry's)
+  // does not drop it, and a revoke claims and stops it. When it settles, a
+  // thread whose adapter reports the grant applied (or whose report throws)
+  // is stopped as a late start is, and leaves tracking only on a confirmed
+  // exit. One that reports nothing is released; if a stop resolved while the
+  // call was out, that stop now counts.
+  #holdUnsettledTrustedCall(pending: Promise<unknown>, call: RepositoryTrustCall, sessionId: string, provider: string, threadId: string): void {
     if (call.input.repositoryTrust === undefined) return
-    void pending.then(
-      () => this.#stopLateStart(call, sessionId, provider, threadId).catch((error: unknown) => {
-        this.#reportError("Domovoi could not stop a provider thread whose call landed late", error)
-      }),
-      () => undefined,
-    )
+    const threadKey = providerThreadKey(provider, threadId)
+    this.#unsettledTrustedCalls.set(threadKey, (this.#unsettledTrustedCalls.get(threadKey) ?? 0) + 1)
+    const settled = () => {
+      const left = (this.#unsettledTrustedCalls.get(threadKey) ?? 1) - 1
+      if (left > 0) {
+        // Another call on the thread is still out; the last to settle decides.
+        this.#unsettledTrustedCalls.set(threadKey, left)
+        return
+      }
+      this.#unsettledTrustedCalls.delete(threadKey)
+      const stoppedMeanwhile = this.#stoppedWhileUnsettled.delete(threadKey)
+      if (this.#trackRepositoryTrust(call, sessionId, provider, threadId)) {
+        void this.#stopAbandonedThread(provider, threadId, "Late provider cleanup timed out").catch((error: unknown) => {
+          this.#reportError("Domovoi could not stop a provider thread whose call landed late", error)
+        })
+        return
+      }
+      if (stoppedMeanwhile) this.#threadStopped(provider, threadId)
+    }
+    void pending.then(settled, settled)
   }
 
   // A start that landed after its call timed out, so its operation already
@@ -2171,6 +2197,12 @@ export class DomovoiDaemon {
     const threadKey = providerThreadKey(provider, threadId)
     this.#loadedAgentThreads.delete(threadKey)
     if (this.#claimedTrustThreads.has(threadKey)) return
+    // A grant-carrying call on the thread is still out: tracking holds until
+    // it settles, and this stop counts then (#holdUnsettledTrustedCall).
+    if (this.#unsettledTrustedCalls.has(threadKey)) {
+      this.#stoppedWhileUnsettled.add(threadKey)
+      return
+    }
     const trusted = this.#trustedThreads.get(threadKey)
     const revoked = this.#revokedTrustThreads.get(threadKey)
     if (!trustedStopUnconfirmedProviders.has(provider)) {
@@ -2356,7 +2388,11 @@ export class DomovoiDaemon {
         ? "restarted" as const
         : "unconfirmed" as const
       this.#claimedTrustThreads.delete(claim.threadKey)
-      if (outcome === "restarted") {
+      if (outcome === "restarted" && this.#unsettledTrustedCalls.has(claim.threadKey)) {
+        // A grant-carrying call on the thread is still out and may apply the
+        // grant again: the thread stays tracked until it settles.
+        this.#stoppedWhileUnsettled.add(claim.threadKey)
+      } else if (outcome === "restarted") {
         this.#trustedThreads.delete(claim.threadKey)
         this.#revokedTrustThreads.delete(claim.threadKey)
       } else {
@@ -9333,7 +9369,7 @@ export class DomovoiDaemon {
             // Tracked before the quarantine below stops it (Q198 A).
             if (resuming) this.#trackUnsettledRepositoryTrust(resumeTrust, session.id, session.runtime.provider, providerThreadId)
             if (error instanceof OperationTimeoutError) {
-              if (resuming) this.#stopLateTrustedCall(resuming, resumeTrust, session.id, session.runtime.provider, providerThreadId)
+              if (resuming) this.#holdUnsettledTrustedCall(resuming, resumeTrust, session.id, session.runtime.provider, providerThreadId)
               await this.#quarantineProviderThread(session.id, error.message)
             }
             return await providerRefusal(error)
@@ -9388,7 +9424,7 @@ export class DomovoiDaemon {
           if (turnTrust && startingTurn) {
             this.#trackUnsettledRepositoryTrust(turnTrust, session.id, dispatchRuntime.provider, providerThreadId)
             if (error instanceof OperationTimeoutError) {
-              this.#stopLateTrustedCall(startingTurn, turnTrust, session.id, dispatchRuntime.provider, providerThreadId)
+              this.#holdUnsettledTrustedCall(startingTurn, turnTrust, session.id, dispatchRuntime.provider, providerThreadId)
             }
           }
           if (error instanceof OperationTimeoutError) {

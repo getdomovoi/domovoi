@@ -25,7 +25,9 @@ or clearing approvals fails, and reports those failures afterwards. Cleanup of a
 thread is now bounded by the agent timeout. A start that lands after its call timed out is
 tracked before its late cleanup stops it. A resume or turn start that carried a grant and then
 timed out or failed is tracked as if it applied the grant before its thread is quarantined, and
-one that lands after its timeout is stopped as a late start is. A revoke that stops a session
+one that lands after its timeout is stopped as a late start is. Until such a call settles, its
+thread stays tracked whatever stops it meanwhile, and a revoke stops it; when it settles, resolved
+or rejected, a thread whose adapter reports the grant applied is stopped again. A revoke that stops a session
 waiting on an approval leaves it idle, as it does a session with an active turn.
 
 A stopped Codex thread that loaded trusted configuration is never counted as exited, since

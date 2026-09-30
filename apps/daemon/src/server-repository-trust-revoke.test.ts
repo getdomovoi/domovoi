@@ -850,6 +850,57 @@ describe("grant-carrying calls that time out, and a revoke of a waiting session"
   })
 })
 
+// Security review round 8 of #669: a grant-carrying call that timed out
+// holds its thread tracked until the call settles, whatever stops it meanwhile.
+describe("a timed-out grant-carrying resume that has not settled", () => {
+  const timedOutResume = async (settle: (applied: () => Promise<void>) => Promise<void>) => {
+    const context = await fixture({ agentTimeoutMs: 300 })
+    const { agents, grants, rpc } = context
+    grants.set(projectId, grant(projectId))
+    const resume = agents["claude-code"].resumeThread.getMockImplementation()!
+    agents["claude-code"].resumeThread.mockImplementationOnce(async (input) => settle(() => resume(input)))
+    // The quarantine's stop resolves while the resume is still out.
+    expect(await rpc("session.send", { client: "desktop", sessionId: "session-a", prompt: "work" })).toHaveProperty("error")
+    expect(agents["claude-code"].stopThread.mock.calls).toEqual([["thread-a"]])
+    return context
+  }
+
+  it("stops a thread whose resume applied the grant and then rejected, and a revoke still finds it when that stop fails", async () => {
+    const landing = deferred()
+    const { agents, revoke } = await timedOutResume(async (applied) => {
+      await landing.promise
+      await applied()
+      throw new Error("resume failed after loading")
+    })
+    agents["claude-code"].stopThread.mockRejectedValueOnce(new Error("provider gone"))
+    landing.resolve()
+    await waitForDaemon(() => expect(agents["claude-code"].stopThread).toHaveBeenCalledTimes(2))
+
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "restarted" }])
+    expect(agents["claude-code"].stopThread.mock.calls).toEqual([["thread-a"], ["thread-a"], ["thread-a"]])
+  })
+
+  it("lets a revoke stop a thread whose resume applied the grant and is still out", async () => {
+    const { agents, revoke } = await timedOutResume(async (applied) => {
+      await applied()
+      await new Promise<void>(() => {})
+    })
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "restarted" }])
+    expect(agents["claude-code"].stopThread.mock.calls).toEqual([["thread-a"], ["thread-a"]])
+  })
+
+  it("stops a thread whose resume landed late, and forgets it once that stop is confirmed", async () => {
+    const landing = deferred()
+    const { agents, revoke } = await timedOutResume(async (applied) => {
+      await landing.promise
+      await applied()
+    })
+    landing.resolve()
+    await waitForDaemon(() => expect(agents["claude-code"].stopThread).toHaveBeenCalledTimes(2))
+    expect(await revoke()).toEqual([])
+  })
+})
+
 describe("repository.revokeTrust and an emergency stop", () => {
   it("takes the grant back at once during a stop, then stops what the stop left, once", async () => {
     const { agents, grants, ok, rpc, sessionNamed } = await fixture()
