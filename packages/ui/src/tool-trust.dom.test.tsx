@@ -212,6 +212,19 @@ describe("trust review sheet", () => {
     expect(within(sheet).getByText("claude-code: 2 more entries were left out to keep the answer within its size limit. They are not listed here.")).toBeTruthy()
   })
 
+  it("offers no trust while entries the digest covers are left out of the list", async () => {
+    const onTrust = vi.fn<Trust>()
+    show(inventory(notTrusted, [claude({ omittedEntries: 3 })]), { onTrust })
+    const { sheet } = await openSheet()
+
+    // The grant covers the whole configuration, so it would approve entries nobody saw.
+    expect(within(sheet).queryByRole("button", { name: "Trust for this machine" })).toBeNull()
+    expect(within(sheet).getByText("This list is not complete")).toBeTruthy()
+    expect(within(sheet).getByText("3 entries are not shown. Trust is not offered until every entry can be listed.")).toBeTruthy()
+    expect(within(sheet).getByRole("button", { name: "Keep held back" })).toBeTruthy()
+    expect(onTrust).not.toHaveBeenCalled()
+  })
+
   it("sends the digest the person reviewed, then reads the tools again", async () => {
     const onTrust = vi.fn<Trust>().mockResolvedValue(trustResult({
       outcome: "trusted",

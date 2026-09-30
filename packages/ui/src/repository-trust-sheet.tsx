@@ -59,7 +59,12 @@ export function RepositoryTrustSheet({
     : repository?.trust.state === "untrusted" && repository.trust.reason === "cannot-trust" ? repository.trust : undefined
   const groups = loaded ? repositoryFileGroups(loaded) : []
   const omitted = loaded?.providers.filter((provider) => provider.omittedEntries > 0 && provider.files.some((file) => groups.some((group) => group.file.path === file.path))) ?? []
-  const canTrust = repository !== undefined && refused === undefined && !pending
+  // Entries the daemon left out to fit its answer are still covered by the
+  // digest, so a grant would approve entries nobody saw: no trust is offered
+  // until every entry can be listed.
+  const notShown = omitted.reduce((total, provider) => total + provider.omittedEntries, 0)
+  const offerTrust = repository !== undefined && refused === undefined && inventory.state === "loaded" && notShown === 0
+  const canTrust = offerTrust && !pending
 
   const change = (next: boolean) => {
     if (!next) setOutcome(undefined)
@@ -116,6 +121,13 @@ export function RepositoryTrustSheet({
             </Alert>
           ) : null}
           {refused ? <TrustRefusals trust={refused} name={name} /> : null}
+          {repository && notShown > 0 ? (
+            <Alert>
+              <FileTextIcon />
+              <AlertTitle>This list is not complete</AlertTitle>
+              <AlertDescription>{`${notShown} ${notShown === 1 ? "entry is" : "entries are"} not shown. Trust is not offered until every entry can be listed.`}</AlertDescription>
+            </Alert>
+          ) : null}
 
           {inventory.state === "loading" ? (
             <div role="status" className="py-6 text-center text-sm text-muted-foreground">Reading the agents' files on the execution machine.</div>
@@ -155,7 +167,7 @@ export function RepositoryTrustSheet({
         </div>
 
         <DialogFooter className="m-0 flex-row flex-wrap items-center gap-2.5 rounded-b-xl border-t bg-sidebar px-5 py-3.5 sm:justify-start">
-          {repository && refused === undefined && inventory.state === "loaded" ? (
+          {offerTrust ? (
             <Button disabled={!canTrust} onClick={() => { void trust() }}>Trust for this machine</Button>
           ) : null}
           <Button variant="outline" onClick={() => change(false)}>Keep held back</Button>
