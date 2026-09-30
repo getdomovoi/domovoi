@@ -2622,7 +2622,12 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     return { ...repository, create, seenText }
   }
 
-  it.each([
+  // Git for Windows does not run the extensionless test wrapper that stands in
+  // for git-lfs. The isolation these tests check is platform-independent code,
+  // and macOS and Linux cover it (as ruling Q110 A did for the keeper tests).
+  const fakeLfsRuns = process.platform !== "win32"
+
+  it.skipIf(!fakeLfsRuns).each([
     ["core.sshCommand", "ssh"], ["core.askPass", "askpass"], ["credential.helper", "helper"],
     ["credential.https://lfs.example.test.helper", "url-helper"],
   ])(
@@ -2642,7 +2647,7 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
 
   // Ruling Q224: git-lfs takes a missing object's endpoint from the remote,
   // as it normally would, with the person's own transport settings.
-  it("lets git-lfs find its endpoint from the repository's remote, and still runs none of its commands", async () => {
+  it.skipIf(!fakeLfsRuns)("lets git-lfs find its endpoint from the repository's remote, and still runs none of its commands", async () => {
     const { payload, git, ran, create, seenText } = await lfsRepository("domovoi-create-lfs-remote-")
     await git("remote", "add", "origin", "https://lfs.example.test/repo.git")
     await git("config", "core.sshCommand", `sh ${payload}`)
@@ -2653,7 +2658,7 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await ran()).toBe(false)
   })
 
-  it.each([
+  it.skipIf(!fakeLfsRuns).each([
     ["ext::sh -c %S", "ext"], ["fd::7", "fd"], ["file:///tmp/elsewhere.git", "file"], ["helper::https://example.test/x", "helper"],
     ["/tmp/elsewhere.git", "path"], ["-oProxyCommand=sh:x", "dash-host"],
   ])("does not carry a remote url of the form %s into the checkout", async (url, label) => {
@@ -2701,9 +2706,27 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
       const missing = async () => (await run("-C", clone, "rev-list", "--objects", "--missing=print", "HEAD")).stdout
       expect(await missing()).toContain(`?${blob}`)
 
-      const workspace = await new GitWorkspaceService(join(scratch, "partial-worktrees")).createSessionWorkspace(clone, "session-partial")
+      // A home of the test's own with core.autocrlf=false, over Git for
+      // Windows' system default of true, so the checked-out bytes are the
+      // blob's on every platform.
+      const home = join(scratch, "home")
+      await mkdir(home)
+      await writeFile(join(home, ".gitconfig"), "[core]\n\tautocrlf = false\n")
+      const previous = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
+      process.env.HOME = home
+      process.env.XDG_CONFIG_HOME = join(home, ".config")
+      let workspace: Awaited<ReturnType<GitWorkspaceService["createSessionWorkspace"]>>
+      try {
+        workspace = await new GitWorkspaceService(join(scratch, "partial-worktrees")).createSessionWorkspace(clone, "session-partial")
+      } finally {
+        for (const [name, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[name]
+          else process.env[name] = value
+        }
+      }
 
       expect(await readFile(join(workspace.path, "victim.txt"), "utf8")).toBe("base\n")
+      expect(await missing()).not.toContain(`?${blob}`)
       expect((await run("-C", workspace.path, "status", "--porcelain")).stdout).toBe("")
     } finally {
       daemon.kill()
