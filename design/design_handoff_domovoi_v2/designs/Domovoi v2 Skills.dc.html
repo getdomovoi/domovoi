@@ -427,7 +427,7 @@
                 <span style="font-size: 13px; font-weight: 500; color: var(--foreground);">{{ heldTitle }}</span>
                 <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">all agents · this machine</span>
                 <span style="flex: 1;"></span>
-                <div onClick="{{ openSheet }}" style="padding: 7px 14px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 600; cursor: pointer;">Review what it would run</div>
+                <div onClick="{{ openSheet }}" style="padding: 7px 14px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 600; cursor: pointer;">Review and trust</div>
               </div>
               <div style="padding: 0 15px 12px; font-size: 12px; color: var(--muted-foreground); line-height: 1.55;">Its hooks, tool servers, plugins, env, rules and git filter do not load for any agent. <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">CLAUDE.md</span> and <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">AGENTS.md</span> still load.</div>
               <sc-for list="{{ trustGroups }}" as="f" hint-placeholder-count="3">
@@ -703,15 +703,24 @@
               <span style="font-size: 11.5px; color: var(--danger-dim);">{{ refusalNameLabel }}</span>
               <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--danger-fg);">{{ refusalName }}</span>
             </div>
-            <sc-if value="{{ refusalNotInline }}" hint-placeholder-val="{{ true }}">
+            <sc-if value="{{ refusalUntrusted }}" hint-placeholder-val="{{ true }}">
               <div style="display: flex; align-items: center; gap: 9px; padding: 0 16px 16px; flex-wrap: wrap;">
-                <div onClick="{{ openSheetRefusal }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 600; cursor: pointer;">Review what it would run</div>
+                <div onClick="{{ openSheetRefusal }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 600; cursor: pointer;">Review and trust</div>
                 <div onClick="{{ goHeld }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--danger-border); font-size: 12px; color: var(--danger-fg); cursor: pointer;">Open Tools</div>
                 <span style="flex: 1;"></span>
                 <span style="font-size: 11.5px; color: var(--danger-dim);">Nothing from the repository ran.</span>
               </div>
             </sc-if>
+            <sc-if value="{{ refusalTrusted }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; align-items: center; gap: 9px; padding: 12px 16px; border-top: 1px solid var(--danger-border); background: var(--card); flex-wrap: wrap;">
+                <span style="{{ trustedDot }}"></span>
+                <span style="font-size: 12.5px;">{{ trustedLine }}</span>
+                <span style="flex: 1;"></span>
+                <div onClick="{{ goTrusted }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 600; cursor: pointer;" style-hover="background: color-mix(in oklab, var(--primary) 90%, transparent);">Start the session again</div>
+              </div>
+            </sc-if>
           </div>
+
         </div>
       </sc-if>
 
@@ -752,6 +761,49 @@
                   </sc-for>
                 </div>
               </sc-for>
+            </div>
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 11px; padding: 14px 18px 30px; border-top: 1px solid var(--border); background: var(--sidebar);">
+              <span style="display: inline-flex; color: var(--muted-foreground);">{{ iMonitor }}</span>
+              <div style="display: flex; flex-direction: column; gap: 3px;">
+                <span style="font-size: 13.5px; font-weight: 500;">Trust from desktop or web</span>
+                <span style="font-size: 11.5px; color: var(--muted-foreground);">A phone shows this but cannot trust it.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isPhoneRefused }}" hint-placeholder-val="{{ false }}">
+        <div style="width: 100%; display: flex; justify-content: center; padding: 28px 0 40px;">
+          <div style="width: 390px; height: 820px; flex: 0 0 auto; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 40px; background: var(--background); overflow: hidden; box-shadow: 0 30px 80px var(--shadow-lg);">
+            <div style="height: 46px; flex: 0 0 46px; display: flex; align-items: center; padding: 0 28px; font-size: 13px; font-weight: 600;">9:41</div>
+            <div style="display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 16px 10px;">
+              <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+              <div style="min-width: 0; display: flex; flex-direction: column; gap: 2px;">
+                <span style="font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Migrate billing webhooks to the new idempotency table</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); overflow-wrap: anywhere;">{{ refusalWhere }}</span>
+              </div>
+            </div>
+            <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 8px 14px 16px;">
+              <div style="align-self: flex-end; max-width: 300px; padding: 10px 13px; border-radius: 14px; background: var(--accent); font-size: 13px; line-height: 1.5;">Start on the idempotency migration. Plan first, then the handler.</div>
+              <div style="border: 1px solid var(--danger-border); border-radius: var(--radius-xl); background: var(--danger-bg); overflow: hidden;">
+                <div style="display: flex; flex-direction: column; gap: 4px; padding: 13px 14px 8px;">
+                  <div style="display: flex; align-items: center; gap: 9px;">
+                    <span style="width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--destructive);"></span>
+                    <span style="font-size: 14px; font-weight: 600; color: var(--danger-fg);">{{ refusalHead }}</span>
+                  </div>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--danger-dim);">{{ refusalCode }}</span>
+                </div>
+                <div style="padding: 0 14px 6px; font-size: 12.5px; line-height: 1.55; color: var(--danger-fg);">{{ refusalBody }}</div>
+                <div style="display: flex; align-items: baseline; gap: 8px; padding: 0 14px 13px; flex-wrap: wrap;">
+                  <span style="font-size: 11.5px; color: var(--danger-dim);">{{ refusalNameLabel }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--danger-fg); overflow-wrap: anywhere;">{{ refusalName }}</span>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px 14px 14px; border-top: 1px solid var(--danger-border);">
+                  <div onClick="{{ goPhone }}" style="min-height: 44px; display: flex; align-items: center; justify-content: center; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--danger-border); color: var(--danger-fg); font-size: 13px; cursor: pointer;">See what is held back</div>
+                  <span style="font-size: 11.5px; color: var(--danger-dim); text-align: center;">Nothing from the repository ran.</span>
+                </div>
+              </div>
             </div>
             <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 11px; padding: 14px 18px 30px; border-top: 1px solid var(--border); background: var(--sidebar);">
               <span style="display: inline-flex; color: var(--muted-foreground);">{{ iMonitor }}</span>
@@ -812,8 +864,10 @@
               </div>
             </sc-for>
             <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding: 4px 2px 0; font-size: 11.5px; line-height: 1.55; color: var(--muted-foreground);">
+              <span style="color: var(--foreground);">Trusted, its hooks run and its tool servers start as you, with your file and network access, when a session opens and before any tool call asks.</span>
               <span>Trust is for this machine and this repository only.</span>
-              <span>It is pinned to these four files. Any change, an agent's edit included, holds it back again.</span>
+              <span>It is pinned to one digest of these four files. Any change, an agent's edit included, holds it back again.</span>
+              <span>If they change while this is open, nothing is trusted and the review reloads.</span>
               <span>Trust does not skip a gate, and its allow rules cannot either. Reads outside the worktree and gated actions still ask.</span>
             </div>
           </div>
@@ -844,7 +898,7 @@
               <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ t.effect }}</span>
             </div>
           </sc-for>
-          <div style="padding: 11px 22px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted-foreground);">They come back without its hooks, tool servers, plugins, env, rules and git filter.</div>
+          <div style="padding: 11px 22px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--muted-foreground);"><span>They come back without its hooks, tool servers, plugins, env, rules and git filter.</span><span>If Domovoi cannot confirm an old thread stopped, it says so for that session.</span></div>
           <div style="display: flex; align-items: center; gap: 9px; padding: 14px 22px; border-top: 1px solid var(--border); flex-wrap: wrap;">
             <div onClick="{{ goHeld }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--danger-border); background: var(--danger-bg); color: var(--danger-fg); font-size: 13px; font-weight: 600; cursor: pointer;">Take back trust and restart 2 threads</div>
             <div onClick="{{ goTrusted }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Cancel</div>
@@ -936,7 +990,7 @@ class Component extends DCLogic {
 
     const ALL = [
       { f: "mcp", kind: "server", name: "postgres-dev", detail: "stdio · npx -y @acme/pg-mcp · environment values not read", starts: true },
-      { f: "mcp", kind: "server", name: "linear", detail: "http · https://mcp.linear.app/mcp", starts: true },
+      { f: "mcp", kind: "server", name: "linear", detail: "http · mcp.linear.app:443", starts: true },
       { f: "mcp", kind: "server", name: "s3-sync", detail: "stdio · ./bin/s3-sync --bucket acme-dev-assets", starts: true, changedOnly: true },
       { f: "proj", kind: "plugin", name: "acme-review@acme-plugins", detail: "marketplace acme-plugins" },
       { f: "proj", kind: "env", name: "ACME_ENV · DATABASE_URL", detail: "key names only" },
@@ -1094,24 +1148,25 @@ class Component extends DCLogic {
       plugin: ["Plugin", "Puzzle", "plugin", "plugins"], env: ["Env keys", "KeyRound", "env key", "env keys"], rule: ["Rule", "ShieldCheck", "rule", "rules"],
       filter: ["Git filter", "Filter", "git filter", "git filters"], driver: ["Filter driver", "Terminal", "filter driver", "filter drivers"] };
     const G = [
-      { path: ".mcp.json", src: "repository file", digest: changed ? "sha256:c802…4d1" : "sha256:3f0a…91c", items: [
+      { path: ".mcp.json", src: "repository file", digest: "", items: [
         { k: "server", name: "postgres-dev", detail: "stdio · npx -y @acme/pg-mcp" },
-        { k: "server", name: "linear", detail: "http · mcp.linear.app" }
+        { k: "server", name: "linear", detail: "http · mcp.linear.app:443" }
       ].concat(changed ? [{ k: "server", name: "s3-sync", detail: "stdio · ./bin/s3-sync --bucket acme-dev-assets", isNew: true }] : []).concat([
         { k: "env", name: "PGHOST · PGUSER · PGPASSWORD", detail: "for postgres-dev", note: "Key names only. Values are not shown." }
       ]) },
-      { path: ".claude/settings.json", src: "project settings", digest: "sha256:a41c…07e", items: [
+      { path: ".claude/settings.json", src: "project settings", digest: "", items: [
         { k: "hook", name: "SessionStart", detail: "./scripts/dev-bootstrap.sh" },
+        { k: "hook", name: "PostToolUse · Edit", detail: "./scripts/notify.sh [REDACTED]", note: "Cut at a credential. Domovoi shows no secret." },
         { k: "hook", name: "PreToolUse · Bash", detail: "./scripts/guard-prod.sh" },
         { k: "plugin", name: "acme-review@acme-plugins", detail: "marketplace acme-plugins" },
         { k: "env", name: "ACME_ENV · DATABASE_URL", detail: "", note: "Key names only. Values are not shown." },
         { k: "rule", name: "allow", detail: "Bash(pnpm test:*)" },
         { k: "rule", name: "deny", detail: "Read(./.env*)" }
       ] },
-      { path: ".gitattributes", src: "repository file", digest: "sha256:5e19…b62", items: [
+      { path: ".gitattributes", src: "repository file", digest: "", items: [
         { k: "filter", name: "sops", detail: "*.enc.yaml filter=sops" }
       ] },
-      { path: ".git/config", src: "local git config", digest: changed ? "sha256:e37b…5c2" : "sha256:91d4…0ae", items: [
+      { path: ".git/config", src: "local git config", digest: "", items: [
         { k: "driver", name: "filter.sops", detail: changed ? "smudge sops -d --ignore-mac · clean sops -e" : "smudge sops -d · clean sops -e", isChanged: changed }
       ] }
     ];
@@ -1131,22 +1186,21 @@ class Component extends DCLogic {
       heldTitle: "acme-api is held back on " + m,
       heldDot: this.dot("var(--faint)", 7),
       trustChangeRows: [
-        { k: ".mcp.json", was: "sha256:3f0a…91c", now: "sha256:c802…4d1" },
-        { k: "Added", was: "", now: "tool server s3-sync · stdio · ./bin/s3-sync --bucket acme-dev-assets" },
-        { k: ".git/config", was: "sha256:91d4…0ae", now: "sha256:e37b…5c2" },
-        { k: "Changed", was: "filter.sops.smudge = sops -d", now: "filter.sops.smudge = sops -d --ignore-mac" },
+        { k: "Config digest", was: "sha256:3f0a…91c", now: "sha256:c802…4d1" },
+        { k: "Added", was: "", now: ".mcp.json · tool server s3-sync · stdio · ./bin/s3-sync --bucket acme-dev-assets" },
+        { k: "Changed", was: "filter.sops.smudge = sops -d", now: ".git/config · filter.sops.smudge = sops -d --ignore-mac" },
         { k: "Changed by", was: "", now: "claude-code · turn 6 · session s_7f24 · 14:18" }
       ],
       openSheet: () => this.setState({ screen: "trustSheet", sheetChanged: false, sheetFromRefusal: false }),
-      openSheetRefusal: () => this.setState({ screen: "trustSheet", sheetChanged: false, sheetFromRefusal: true }),
+      openSheetRefusal: () => this.setState({ screen: "trustSheet", sheetChanged: false, sheetFromRefusal: true, refusalTrusted: false }),
       sheetFoot: st.sheetFromRefusal ? "After trust, start the session again." : "Granted from desktop or web only.",
       openSheetChanged: () => this.setState({ screen: "trustSheet", sheetChanged: true, sheetFromRefusal: false }),
       goHeld: this.go("toolsHeld"),
-      goTrusted: this.go("toolsAgent"),
+      goTrusted: () => this.setState(st.sheetFromRefusal && sc === "trustSheet" ? { screen: "refused", refusalTrusted: true, sheetFromRefusal: false } : { screen: "toolsAgent", refusalTrusted: false }),
       goRevoke: this.go("revoke"),
       showSheet: sc === "trustSheet",
       sheetTitle: (changed ? "Trust acme-api again on " : "Trust acme-api on ") + m,
-      sheetWhere: "acme-api · " + (plat === "windows" ? "C:\\Users\\dana\\src\\acme-api" : "~/src/acme-api") + " · 4 files · all agents",
+      sheetWhere: "acme-api · " + (plat === "windows" ? "C:\\Users\\dana\\src\\acme-api" : "~/src/acme-api") + " · 4 files · all agents · config " + (changed ? "sha256:c802…4d1" : "sha256:3f0a…91c"),
       iClose: this.icon("X", 16), iBack: this.icon("ChevronLeft", 20), iMonitor: this.icon("Monitor", 20),
       showRevoke: sc === "revoke",
       revokeThreads: [
@@ -1154,18 +1208,23 @@ class Component extends DCLogic {
         { title: "Backfill replay ids for March", meta: "codex · idle", effect: "Restarts", k: "faint" }
       ].map(t => Object.assign({}, t, { dot: this.dot("var(--" + t.k + ")", 7) + " margin-top: 5px;" })),
       isRefusal: sc === "refused",
-      refusalNotInline: true,
-      refuseAgent: () => this.setState({ refusalKind: "agent" }),
-      refuseFilter: () => this.setState({ refusalKind: "filter" }),
+      isPhoneRefused: sc === "phoneRefused",
+      goPhone: this.go("phone"),
+      refusalUntrusted: !st.refusalTrusted,
+      refusalTrusted: !!st.refusalTrusted,
+      trustedLine: "Trusted on " + m + ". Nothing has started yet.",
+      trustedDot: this.dot("var(--success)", 7),
+      refuseAgent: () => this.setState({ refusalKind: "agent", refusalTrusted: false }),
+      refuseFilter: () => this.setState({ refusalKind: "filter", refusalTrusted: false }),
       segRefAgent: segRef(agentRef),
       segRefFilter: segRef(!agentRef),
-      refusalWhere: "acme-api · " + m + " · claude-code · new session",
-      refusalHead: agentRef ? "claude-code did not start" : "Domovoi did not start this session",
+      refusalWhere: "acme-api · " + m + " · " + (agentRef ? "codex" : "claude-code") + " · new session",
+      refusalHead: agentRef ? "codex did not start" : "Domovoi did not start this session",
       refusalCode: agentRef ? "refused · untrusted repository file" : "refused · untrusted git filter",
-      refusalBody: agentRef ? "claude-code will not start in acme-api until the repository is trusted on " + m + "." :
+      refusalBody: agentRef ? "codex would load .codex/config.toml from this worktree, and that file can start programs or change agent permissions." :
         "Checking out acme-api would run the sops filter driver, which is not trusted on " + m + ".",
       refusalNameLabel: agentRef ? "It names" : "Filter",
-      refusalName: agentRef ? ".claude/settings.json" : "sops · .gitattributes · .git/config",
+      refusalName: agentRef ? ".codex/config.toml" : "sops · .gitattributes · .git/config",
       isPhone: sc === "phone"
     };
   }
@@ -1188,16 +1247,16 @@ class Component extends DCLogic {
       { id: "toolsUnread", num: "10", label: "Could not read", note: "An unreadable file is named with its reason. Its entries are not listed or guessed." },
       { id: "toolsNonePassed", num: "11", label: "None passed", note: "This agent starts with no tool servers passed, so it says none passed, not none found." },
       { id: "toolsHeld", num: "12", label: "Held back", note: "Held back is a state, not a gate. Untrusted, a repository's hooks, tool servers, plugins, env, rules and git filter load for no agent." },
-      { id: "trustSheet", num: "13", label: "Trust review", note: "The one review surface, on desktop and web. Per machine and per repository, pinned to four file digests." },
+      { id: "trustSheet", num: "13", label: "Trust review", note: "The one review surface, on desktop and web. Per machine and per repository, pinned to one config digest. Commands are cut at a credential." },
       { id: "trustChanged", num: "14", label: "Changed since trust", note: "Any change to a trusted config file, an agent's own edit included, holds the repository back and asks again." },
-      { id: "refused", num: "15", label: "Session refused", note: "A refusing agent names the file; a git filter refusal names the filter. Review opens the same sheet, and the session does not start by itself." },
-      { id: "refusedInline", num: "16", label: "Inline review, not built", disabled: true, note: "Not built. One review surface: the sheet in step 13." },
+      { id: "refused", num: "15", label: "Session refused", note: "A refusing agent names the file; a git filter refusal names the filter. Review and trust opens the one sheet. After trust, the session does not start by itself." },
+      { id: "phoneRefused", num: "16", label: "Refused on the phone", note: "The phone shows the refusal with the file or filter it names. It cannot trust, so it points to desktop or web." },
       { id: "revoke", num: "17", label: "Take back trust", note: "Taking trust back restarts the repository's running threads now. A running turn and its tool servers stop." },
       { id: "phone", num: "18", label: "Phone", note: "The phone shows what is held back and why, with every entry. It cannot trust: that is desktop or web." }
     ];
     const plat = this.props.platform ?? "mac";
     const isToolsSc = ["toolsAgent", "toolsFile", "toolsNone", "toolsUnread", "toolsNonePassed", "toolGate", "toolsHeld", "trustSheet", "trustChanged", "revoke", "phone"].indexOf(sc) !== -1;
-    const isSessionSc = sc === "refused" || sc === "refusedInline";
+    const isSessionSc = sc === "refused" || sc === "phoneRefused";
     const tabStyle = on => "padding: 4px 10px; border-radius: calc(var(--radius) - 3px); font-size: 12px; cursor: pointer; color: var(--" +
       (on ? "foreground" : "muted-foreground") + "); background: " + (on ? "var(--accent)" : "transparent") + ";";
 

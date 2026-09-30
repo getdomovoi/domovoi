@@ -1,8 +1,11 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { EventEmitter } from "node:events"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { PassThrough } from "node:stream"
 
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
@@ -99,6 +102,8 @@ class FakeTransport implements CodexTransport {
     this.closeCount += 1
     await this.closeGate
   }
+
+  environmentIsLocalOnly?(): boolean
 }
 
 const runtime = (permissionMode: Runtime["permissionMode"], auto: boolean): Runtime => ({
@@ -177,6 +182,53 @@ describe("codexSandboxNotice", () => {
 })
 
 describe("StdioCodexTransport", () => {
+  // Security review round 3: Codex reads its environments once, when the
+  // app-server starts, from the variables and Codex home it is started with.
+  describe("local environment verdict", () => {
+    const homes: string[] = []
+    afterEach(() => {
+      for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true })
+    })
+    const cleanHome = () => {
+      const path = mkdtempSync(join(tmpdir(), "domovoi-codex-launch-"))
+      homes.push(path)
+      return path
+    }
+
+    it("starts the app-server with the variables it judged", () => {
+      const child = new FakeChild()
+      const env = { CODEX_HOME: cleanHome(), PATH: "/usr/bin" }
+      const factory = vi.fn((_env: NodeJS.ProcessEnv) => child as unknown as ChildProcessWithoutNullStreams)
+      const transport = new StdioCodexTransport(factory, 2_000, { env, cwd: tmpdir(), homeCandidates: [], platform: process.platform })
+      expect(factory).toHaveBeenCalledWith(env)
+      expect(transport.environmentIsLocalOnly()).toBe(true)
+    })
+
+    it("keeps a verdict taken before the start once the environments file goes away", () => {
+      const home = cleanHome()
+      writeFileSync(join(home, "environments.toml"), 'default = "build"\n')
+      const transport = new StdioCodexTransport(() => {
+        rmSync(join(home, "environments.toml"))
+        return new FakeChild() as unknown as ChildProcessWithoutNullStreams
+      }, 2_000, { env: { CODEX_HOME: home }, cwd: tmpdir(), homeCandidates: [], platform: process.platform })
+      expect(transport.environmentIsLocalOnly()).toBe(false)
+    })
+
+    it("never goes back to local for the life of the app-server", () => {
+      const home = cleanHome()
+      const transport = new StdioCodexTransport(
+        () => new FakeChild() as unknown as ChildProcessWithoutNullStreams,
+        2_000,
+        { env: { CODEX_HOME: home }, cwd: tmpdir(), homeCandidates: [], platform: process.platform },
+      )
+      expect(transport.environmentIsLocalOnly()).toBe(true)
+      writeFileSync(join(home, "environments.toml"), 'default = "build"\n')
+      expect(transport.environmentIsLocalOnly()).toBe(false)
+      rmSync(join(home, "environments.toml"))
+      expect(transport.environmentIsLocalOnly()).toBe(false)
+    })
+  })
+
   it("drains child stderr to prevent pipe backpressure", () => {
     const child = new FakeChild()
 
@@ -582,6 +634,69 @@ describe("CodexAppServerAdapter", () => {
     expect(event).not.toHaveBeenCalled()
 
     await adapter.close()
+  })
+
+  // Slice P6c: a trusted repository's server reaches Codex made to ask before
+  // each tool, its call raises a card like any tool server's, and the thread
+  // is reported as given trusted servers until the app-server that holds it
+  // is gone.
+  it("passes a trusted repository's server, raises a card for its call, and forgets the thread with its transport", async () => {
+    const transport = new FakeTransport()
+    const digest = `sha256:${"e".repeat(64)}`
+    const read = vi.fn(async () => ({
+      configDigest: digest, providers: [], trustRefusals: [],
+      documents: { ".codex/config.toml": { approval_policy: "never", mcp_servers: { db: { command: "db-mcp", default_tools_approval_mode: "approve" } } } },
+    }))
+    transport.environmentIsLocalOnly = () => true
+    const adapter = new CodexAppServerAdapter(() => transport, read)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const starting = adapter.startThread({
+      cwd: "/worktree",
+      runtime: runtime("build", false),
+      repositoryTrust: { projectId: "project-acme", trustedDigest: digest, trustedAt: "2026-09-29T12:00:00.000Z", trustedBy: { client: "desktop" } },
+    })
+    await vi.waitFor(
+      () => expect(transport.sent.at(-1)).toMatchObject({ method: "config/read", params: { cwd: "/worktree", includeLayers: true } }),
+      { timeout: 5_000 },
+    )
+    transport.receive({ id: transport.sent.at(-1)!.id!, result: { config: {}, layers: [{ name: { type: "user", file: "/home/person/.codex/config.toml" }, version: "1", config: {} }] } })
+    await vi.waitFor(
+      () => expect(transport.sent.at(-1)).toMatchObject({ method: "mcpServerStatus/list", params: { detail: "toolsAndAuthOnly" } }),
+      { timeout: 5_000 },
+    )
+    transport.receive({ id: transport.sent.at(-1)!.id!, result: { data: [{ name: "github", pluginId: "github@curated" }], nextCursor: null } })
+    await vi.waitFor(() => expect(transport.sent.at(-1)?.method).toBe("thread/start"), { timeout: 5_000 })
+    expect(transport.sent.at(-1)?.params?.config).toMatchObject({
+      mcp_servers: { db: { command: "db-mcp", default_tools_approval_mode: "prompt" } },
+      approvals_reviewer: "user",
+      features: { tool_call_mcp_elicitation: true },
+    })
+    expect(transport.sent.at(-1)?.params?.config).not.toHaveProperty("approval_policy")
+    transport.receive({ id: transport.sent.at(-1)!.id!, result: { thread: { id: "thread-1" } } })
+    expect(await starting).toBe("thread-1")
+    expect(adapter.repositoryTrustApplied("thread-1")).toEqual({ digest })
+
+    transport.receive({
+      method: "item/started",
+      params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "call-1", server: "db", tool: "query", arguments: {} } },
+    })
+    transport.receive({
+      id: 90,
+      method: "mcpServer/elicitation/request",
+      params: {
+        threadId: "thread-1", turnId: "turn-1", serverName: "db", mode: "form", message: "Allow query?",
+        requestedSchema: { type: "object", properties: {} }, _meta: { codex_approval_kind: "mcp_tool_call" },
+      },
+    })
+    expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", requestId: 90, toolServer: { name: "db" }, tool: "db.query" }))
+
+    transport.fail(new Error("Codex app-server exited with code 1"))
+    expect(adapter.repositoryTrustApplied("thread-1")).toBeUndefined()
   })
 
   it("shares initialization across concurrent connect calls", async () => {

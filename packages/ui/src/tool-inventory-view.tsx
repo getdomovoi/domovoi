@@ -1,18 +1,11 @@
-import { useId, useState, type ComponentType, type ReactNode } from "react"
+import { useId, useState, type ReactNode } from "react"
 import {
   BotIcon,
   EyeIcon,
   FileTextIcon,
   FolderGit2Icon,
   FolderOpenIcon,
-  KeyRoundIcon,
-  PuzzleIcon,
   SearchXIcon,
-  ServerIcon,
-  ShieldCheckIcon,
-  SparklesIcon,
-  TerminalIcon,
-  WebhookIcon,
 } from "lucide-react"
 
 import type { RepositoryTrustState, ToolInventory, ToolInventoryFile, ToolInventoryProvider } from "@getdomovoi/protocol"
@@ -24,6 +17,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./
 import { ScrollArea } from "./components/ui/scroll-area"
 import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { cn } from "./lib/utils"
+import { RepositoryTrustSheet, type RepositoryTrustRequest } from "./repository-trust-sheet"
 import {
   allHeldBackText,
   fromRepository,
@@ -33,17 +27,18 @@ import {
   plural,
   providerRows,
   readFileCount,
+  repositoryFileGroups,
   repositoryGroupNote,
+  repositoryHeldBack,
   repositoryName,
   repositoryRuns,
   toolKindLabel,
   toolSourceLabel,
-  trustRefusalLabel,
   trustSummary,
   unreadableFiles,
   type ToolRow,
-  type ToolRowKind,
 } from "./tool-inventory-model"
+import { eyebrow, GrantedWhere, kindIcon, mono, omittedText, TrustRefusals } from "./tool-inventory-parts"
 
 export type ToolInventoryLoad =
   | { state: "loading" }
@@ -52,27 +47,22 @@ export type ToolInventoryLoad =
 
 type Unreadable = Extract<ToolInventoryFile, { state: "unreadable" }>
 
-const kindIcon: Record<ToolRowKind, ComponentType<{ className?: string; "aria-hidden"?: boolean }>> = {
-  "tool-server": ServerIcon,
-  hook: WebhookIcon,
-  "permission-rule": ShieldCheckIcon,
-  "env-key": KeyRoundIcon,
-  helper: TerminalIcon,
-  plugin: PuzzleIcon,
-  skill: SparklesIcon,
-}
-
 const readTime = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })
 
-const eyebrow = "text-[10.5px] font-medium tracking-[0.13em] text-faint"
-const mono = "font-machine"
-
-// Read and report only: nothing here grants, revokes or starts anything.
-export function ToolInventoryView({ inventory, onRetry }: { inventory: ToolInventoryLoad; onRetry: () => void }) {
+// Reads and reports. The one action is trust, and only through the review
+// sheet: onTrust is given where this client may grant it (desktop and web),
+// and absent everywhere else, where the tab says where trust is granted.
+export function ToolInventoryView({ inventory, onRetry, onTrust }: {
+  inventory: ToolInventoryLoad
+  onRetry: () => void
+  onTrust?: RepositoryTrustRequest | undefined
+}) {
   const [view, setView] = useState<"agent" | "file">("agent")
+  const [reviewing, setReviewing] = useState(false)
   const loaded = inventory.state === "loaded" ? inventory.inventory : undefined
   const repository = loaded?.repository
   const name = repository ? repositoryName(repository.root) : undefined
+  const review = onTrust ? () => setReviewing(true) : undefined
 
   return (
     <ScrollArea className="min-h-0 min-w-0 flex-1">
@@ -121,6 +111,8 @@ export function ToolInventoryView({ inventory, onRetry }: { inventory: ToolInven
 
             {repository && name ? (
               <>
+                <HeldBackCard inventory={inventory.inventory} name={name} onReview={review} />
+                <ChangedCard trust={repository.trust} name={name} onReview={review} />
                 <RepositoryRunsPanel inventory={inventory.inventory} meta={`${name} · ${trustSummary(repository.trust)}`} />
                 <TrustRefusals trust={repository.trust} name={name} />
               </>
@@ -142,7 +134,78 @@ export function ToolInventoryView({ inventory, onRetry }: { inventory: ToolInven
           </>
         ) : null}
       </main>
+      {onTrust ? (
+        <RepositoryTrustSheet open={reviewing} onOpenChange={setReviewing} inventory={inventory} onTrust={onTrust} onReload={onRetry} />
+      ) : null}
     </ScrollArea>
+  )
+}
+
+// The way to trust a repository not yet reviewed (design step 12). It shows
+// whenever the repository brings a config file the digest covers, decided
+// from the trust state and the files, never from rows: a file can hold what
+// an agent refuses or loads without declaring an entry the inventory lists
+// (Codex and .codex/rules, or an empty config.toml). "Held back" is said only
+// when the daemon holds something back, and "for any agent" only when it
+// holds back every entry: an agent whose files it does not hold back loads
+// them anyway.
+function HeldBackCard({ inventory, name, onReview }: { inventory: ToolInventory; name: string; onReview: (() => void) | undefined }) {
+  const titleId = useId()
+  const trust = inventory.repository?.trust
+  if (trust?.state !== "untrusted" || trust.reason !== "not-trusted") return null
+  const files = repositoryFileGroups(inventory)
+  if (files.length === 0) return null
+  const { held, total } = repositoryHeldBack(inventory)
+  const heldBack = held > 0 || total === 0
+  return (
+    <section aria-labelledby={titleId} className="overflow-hidden rounded-xl border bg-card">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-[15px] pt-3 pb-1">
+        <span className="size-2 shrink-0 rounded-full bg-faint" aria-hidden />
+        <h2 id={titleId} className="m-0 text-[13px] font-medium">{heldBack ? `${name} is held back on ${inventory.machine.name}` : `${name} is not trusted on ${inventory.machine.name}`}</h2>
+        <span className="flex-1" />
+        <span className={cn(mono, "text-[10.5px] text-faint")}>all agents · this machine</span>
+      </div>
+      <div className="flex flex-col gap-1 px-[15px] pb-3 text-[12px] leading-[1.6] text-muted-foreground">
+        <p className="m-0">{held === total
+          ? "Its hooks, tool servers, plugins, env, rules and git filter do not load for any agent."
+          : `${held} of ${total} entries from this repository are held back. The rest load.`}</p>
+        <p className="m-0"><code className={cn(mono, "text-[11px] text-strong")}>CLAUDE.md</code> and <code className={cn(mono, "text-[11px] text-strong")}>AGENTS.md</code> still load.</p>
+      </div>
+      <ul className="m-0 list-none p-0">
+        {files.map((group) => (
+          <li key={group.file.path} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t px-[15px] py-[9px]">
+            <span className={cn(mono, "min-w-0 flex-1 basis-48 text-[11px] break-all text-strong")}>{group.file.path}</span>
+            <span className="text-[11.5px] text-muted-foreground">{group.file.state === "unreadable" ? "not read" : kindCounts(group.rows) || "no entries"}</span>
+          </li>
+        ))}
+      </ul>
+      <div className="flex flex-wrap items-center gap-3 border-t px-[15px] py-2.5">
+        {onReview ? <Button size="sm" onClick={onReview}>Review and trust</Button> : <GrantedWhere />}
+      </div>
+    </section>
+  )
+}
+
+// A trusted configuration changed, so the grant no longer applies (design
+// step 14). The daemon keeps one digest, so which file changed and who
+// changed it are not known here, and the card does not guess.
+function ChangedCard({ trust, name, onReview }: { trust: RepositoryTrustState; name: string; onReview: (() => void) | undefined }) {
+  const titleId = useId()
+  if (trust.state !== "untrusted" || trust.reason !== "config-changed") return null
+  return (
+    // Held back is a state, not a gate, so it is not amber.
+    <section aria-labelledby={titleId} className="overflow-hidden rounded-xl border bg-card">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-[15px] pt-3 pb-1">
+        <span className="size-2 shrink-0 rounded-full bg-faint" aria-hidden />
+        <h2 id={titleId} className="m-0 text-[13px] font-medium">{name} changed since you trusted it</h2>
+        <span className="flex-1" />
+        <span className={cn(mono, "text-[10.5px] text-faint")}>{trustSummary(trust)}</span>
+      </div>
+      <p className="m-0 px-[15px] pb-3 text-[12px] leading-[1.6] text-muted-foreground">A trusted config file changed, so everything the repository brings is held back again.</p>
+      <div className="flex flex-wrap items-center gap-3 border-t px-[15px] py-2.5">
+        {onReview ? <Button size="sm" onClick={onReview}>Review and trust again</Button> : <GrantedWhere />}
+      </div>
+    </section>
   )
 }
 
@@ -196,32 +259,6 @@ function RepositoryRunsPanel({ inventory, meta }: { inventory: ToolInventory; me
       </ul>
       {incomplete ? <p className="m-0 border-t border-info-border px-[15px] py-[9px] text-[11.5px]">This list is not complete: {incomplete}.</p> : null}
       <p className="m-0 border-t border-info-border px-[15px] pt-[9px] pb-[11px] text-[11.5px] text-info-dim">Listed before any session opens. Reading them does not start them.</p>
-    </section>
-  )
-}
-
-function TrustRefusals({ trust, name }: { trust: RepositoryTrustState; name: string }) {
-  const titleId = useId()
-  if (trust.state !== "untrusted" || trust.reason !== "cannot-trust") return null
-  return (
-    <section aria-labelledby={titleId} className="overflow-hidden rounded-xl border bg-card">
-      <div className="flex flex-wrap items-center gap-2.5 px-[15px] pt-3 pb-1">
-        <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden />
-        <h2 id={titleId} className="m-0 text-[13px] font-medium">{name} cannot be trusted on this machine</h2>
-      </div>
-      <p className="m-0 px-[15px] pb-3 text-[12px] text-muted-foreground">Its agents would also load what is listed here, and trust cannot cover it.</p>
-      <ul className="m-0 list-none p-0">
-        {trust.refusals.map((refusal, index) => (
-          <li key={`${refusal.provider}:${refusal.code}:${refusal.path}:${index}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t px-[15px] py-[9px]">
-            <span className={cn(mono, "w-24 shrink-0 text-[11px] text-strong")}>{refusal.provider}</span>
-            <span className="min-w-0 flex-1 basis-64 text-[11.5px] text-muted-foreground">{trustRefusalLabel[refusal.code]}</span>
-            <span className={cn(mono, "text-[10.5px] break-all text-faint")}>{refusal.path}</span>
-          </li>
-        ))}
-      </ul>
-      {trust.omittedRefusals > 0 ? (
-        <p className="m-0 border-t px-[15px] py-[9px] text-[11.5px] text-muted-foreground">{trust.omittedRefusals} more {trust.omittedRefusals === 1 ? "reason is" : "reasons are"} not listed.</p>
-      ) : null}
     </section>
   )
 }
@@ -306,10 +343,6 @@ function NonePassedRow() {
 function notPresent(files: readonly ToolInventoryFile[]): string | undefined {
   const absent = files.filter((file) => file.state === "absent").map((file) => file.path)
   return absent.length > 0 ? `not present: ${absent.join(", ")}` : undefined
-}
-
-function omittedText(count: number): string {
-  return `${count} more ${count === 1 ? "entry was" : "entries were"} left out to keep the answer within its size limit. They are not listed here.`
 }
 
 function AgentPanel({ provider, trust }: { provider: ToolInventoryProvider; trust: RepositoryTrustState | undefined }) {

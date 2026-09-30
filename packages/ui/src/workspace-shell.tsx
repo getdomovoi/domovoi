@@ -352,6 +352,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     forkSession,
     getSkillInventory,
     getToolInventory,
+    trustRepository,
     createTerminal,
     listModels,
     revokeApprovalRule,
@@ -1516,7 +1517,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           <SkillsSurface
             tab={skillsTab}
             onTabChange={setSkillsTab}
-            tools={{ inventory: toolInventory, onRetry: () => setToolsRefresh((current) => current + 1) }}
+            tools={{
+              inventory: toolInventory,
+              onRetry: () => setToolsRefresh((current) => current + 1),
+              // Trust is granted from desktop or web only (ruling Q67), and a
+              // watching client changes nothing; the daemon checks both again.
+              onTrust: !watching && (clientKind === "desktop" || clientKind === "web")
+                ? (params: { projectId: string; configDigest: string }) => trustRepository({ ...params, client: clientKind })
+                : undefined,
+            }}
             skills={{
               skills,
               inventorySources: skillInventories,

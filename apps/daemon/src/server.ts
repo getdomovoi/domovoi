@@ -2118,8 +2118,8 @@ export class DomovoiDaemon {
   // confirmed. Only the adapter's own
   // report counts (AgentAdapter.repositoryTrustApplied, ruling Q170 A): a
   // grant that was passed and not applied loaded nothing, so taking trust back
-  // leaves that thread running. No adapter reports it in this slice; P6b and
-  // P6c add it. A report that throws is taken as applied, so the thread is
+  // leaves that thread running. The Claude Code (P6b) and Codex (P6c)
+  // adapters report it. A report that throws is taken as applied, so the thread is
   // stopped rather than missed. A call without a grant clears nothing: a
   // thread that loaded trusted input earlier still holds it.
   // A call that lands after a revoke of its project carried a grant that is
@@ -7407,8 +7407,9 @@ export class DomovoiDaemon {
       }
 
       // Trust is recorded here and reported by tool.inventory; each provider
-      // call carries the grant (#repositoryTrustCall), and nothing loads under
-      // it yet (P6b to P8); taking it back stops the threads it was passed to
+      // call carries the grant (#repositoryTrustCall), Claude Code and Codex
+      // load parts of the configuration under it (P6b, P6c) and the other
+      // providers nothing yet; taking it back stops the threads that loaded it
       // (#restartRepositoryTrustThreads). Both methods answer for the open project only,
       // against its configuration read now, as its worktrees read it (ruling
       // Q145 A). A reader failure

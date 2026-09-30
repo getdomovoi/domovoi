@@ -2,6 +2,9 @@ import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "no
 import { homedir } from "node:os"
 import { basename, dirname, join, relative, resolve, sep } from "node:path"
 
+import { maximumRepositoryConfigFileBytes } from "./repository-provider-config.js"
+import { parseRepositoryToml } from "./repository-toml.js"
+
 // Codex loads a project `.codex` folder once the person trusts the project:
 // config.toml (MCP servers, hooks, permissions), hooks.json and rules/*.rules.
 // It reads every such folder from the session's directory up to the project
@@ -35,10 +38,11 @@ export function codexRepositoryConfigFile(
   return undefined
 }
 
+// Fixed interim text until the trust step's copy lands (ruling Q153 A).
 export function codexRepositoryConfigRefusal(file: string): string {
   return `Codex would load ${file} from this worktree, and that file can start programs or change agent permissions. `
-    + "Domovoi does not load repository-brought configuration until a trust gate ships. "
-    + `Remove ${file} from this worktree or use another provider here.`
+    + "Domovoi never lets Codex load the file itself, and gives Codex a repository's tool servers only when this machine trusts the worktree's current configuration. "
+    + `Remove ${file} from this worktree, trust this configuration, or use another provider here.`
 }
 
 // In a linked worktree Codex takes hook declarations from the main checkout:
@@ -72,8 +76,52 @@ export function codexMainCheckoutConfigFile(
 export function codexMainCheckoutConfigRefusal(file: string, mainCheckout: string): string {
   return `Codex would load ${file} from this repository's main checkout at ${mainCheckout}, `
     + "and that file can start programs or change agent permissions. "
-    + "Domovoi does not load repository-brought configuration until a trust gate ships. "
+    + "Domovoi never lets Codex load a main checkout's configuration, and gives Codex a repository's tool servers only when this machine trusts the repository. "
+    + `Remove ${file} from the main checkout, trust the repository, or use another provider here.`
+}
+
+// The main checkout's hooks alone: hooks.json, or a config.toml with a
+// [hooks] table, one that cannot be read or parsed, or one past the reader's
+// size cap, in the .codex folder for a directory on the session's way down.
+// A repository with them cannot be trusted (ruling Q113 B), and a trusted
+// session is checked for them before every request, as the reader checks for
+// them before trust (mainCheckoutHooks in repository-provider-config.ts).
+export function codexMainCheckoutHooksFile(
+  cwd: string,
+  codexHome: string = process.env.CODEX_HOME || join(homedir(), ".codex"),
+): { file: string; mainCheckout: string } | undefined {
+  const start = resolve(cwd)
+  const root = projectRoot(start)
+  const mainCheckout = mainCheckoutOf(root)
+  if (mainCheckout === undefined) return undefined
+  const home = realPath(codexHome)
+  for (const directory of directoriesFrom(root, start)) {
+    const folder = join(mainCheckout, relative(root, directory), ".codex")
+    if (!isDirectory(folder) || realPath(folder) === home) continue
+    if (exists(join(folder, "hooks.json"))) return { file: shown(mainCheckout, join(folder, "hooks.json")), mainCheckout }
+    const config = join(folder, "config.toml")
+    if (exists(config) && holdsHooks(config)) return { file: shown(mainCheckout, config), mainCheckout }
+  }
+  return undefined
+}
+
+export function codexMainCheckoutHooksRefusal(file: string, mainCheckout: string): string {
+  return `Codex would load hooks from ${file} in this repository's main checkout at ${mainCheckout}. `
+    + "Domovoi never lets Codex run a main checkout's hooks, and a repository whose main checkout holds them cannot be trusted. "
     + `Remove ${file} from the main checkout or use another provider here.`
+}
+
+function holdsHooks(config: string): boolean {
+  const info = lstatSync(config, { throwIfNoEntry: false })
+  if (!info?.isFile() || info.size > maximumRepositoryConfigFileBytes) return true
+  const text = readText(config)
+  if (text === undefined) return true
+  try {
+    const document = parseRepositoryToml(text.startsWith("\u{feff}") ? text.slice(1) : text)
+    return typeof document !== "object" || document === null || Object.hasOwn(document, "hooks")
+  } catch {
+    return true
+  }
 }
 
 // Codex looks trust up in [projects]: for each .codex folder under its own

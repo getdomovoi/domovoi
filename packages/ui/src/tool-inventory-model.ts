@@ -225,6 +225,79 @@ export function repositoryGroupNote(rows: readonly ToolRow[], trust: RepositoryT
     : `${lead} Not held back, so they run when a session starts.`
 }
 
+// One repository config file as trust reviews it: every agent that reads it,
+// and its entries once, however many agents read the same file. A file that is
+// not present holds nothing to review, though the digest still covers it.
+export type RepositoryFileGroup = {
+  file: ToolInventoryFile
+  providers: string[]
+  rows: ToolRow[]
+  envKeys: number
+}
+
+export function repositoryFileGroups(inventory: ToolInventory): RepositoryFileGroup[] {
+  const groups = new Map<string, RepositoryFileGroup & { seen: Set<string> }>()
+  for (const provider of inventory.providers) {
+    const rows = providerRows(provider)
+    for (const file of provider.files) {
+      if (!fromRepository(file.source) || file.state === "absent") continue
+      let group = groups.get(file.path)
+      if (!group) {
+        group = { file, providers: [], rows: [], envKeys: 0, seen: new Set() }
+        groups.set(file.path, group)
+      }
+      group.providers.push(provider.provider)
+      for (const row of rows) {
+        if (row.file.path !== file.path) continue
+        const identity = JSON.stringify([row.kind, row.name, row.detail])
+        if (group.seen.has(identity)) continue
+        group.seen.add(identity)
+        group.rows.push(row)
+        if (row.kind === "env-key") group.envKeys += row.name.split(" · ").length
+      }
+    }
+  }
+  return [...groups.values()].map(({ seen: _seen, ...group }) => group)
+}
+
+// The counts a trust review gives per file, in the design's words: environment
+// keys are counted one by one, since each is a name trust lets through.
+const reviewCountNames: ReadonlyArray<[ToolRowKind, string, string]> = [
+  ["tool-server", "tool server", "tool servers"],
+  ["hook", "hook", "hooks"],
+  ["plugin", "plugin", "plugins"],
+  ["env-key", "env key", "env keys"],
+  ["permission-rule", "rule", "rules"],
+  ["helper", "helper", "helpers"],
+  ["skill", "skill", "skills"],
+]
+
+export function reviewCounts(group: RepositoryFileGroup): string {
+  return reviewCountNames
+    .map(([kind, one, many]) => [kind === "env-key" ? group.envKeys : group.rows.filter((row) => row.kind === kind).length, one, many] as const)
+    .filter(([count]) => count > 0)
+    .map(([count, one, many]) => plural(count, one, many))
+    .join(" · ")
+}
+
+// How many of the repository's rows the daemon holds back, of all of them.
+export function repositoryHeldBack(inventory: ToolInventory): { held: number; total: number } {
+  const rows = inventory.providers.flatMap((provider) => providerRows(provider).filter((row) => fromRepository(row.file.source)))
+  return { held: rows.filter((row) => row.start === "held").length, total: rows.length }
+}
+
+// The daemon's reader cuts a text at the first credential trigger and writes
+// the rest as this marker (inventory-redaction.ts in the daemon).
+export function cutAtCredential(row: ToolRow): boolean {
+  return row.name.includes("[REDACTED]") || row.detail.includes("[REDACTED]")
+}
+
+const smallNumbers = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+
+export function countWord(count: number): string {
+  return smallNumbers[count] ?? String(count)
+}
+
 export const trustRefusalLabel: Record<RepositoryTrustRefusal["code"], string> = {
   "nested-config": "Agent configuration below the repository root",
   "main-checkout-hooks": "Hooks in this worktree's main checkout",
