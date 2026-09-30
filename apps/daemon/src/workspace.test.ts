@@ -2462,6 +2462,27 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await worktreeList()).toHaveLength(1)
   })
 
+  it("says the new worktree stayed, and why, when it could not be taken away", async () => {
+    const { repositoryPath, filterFile, worktrees, git, ran, branches } = await filteredRepository("domovoi-create-kept-")
+    await git("config", "includeIf.onbranch:domovoi/**.path", filterFile)
+    // A locked worktree survives one `worktree remove --force`.
+    const service = new GitWorkspaceService(worktrees, {
+      afterNewWorktreeScan: async (path) => { await git("worktree", "lock", path) },
+    })
+
+    const refused = service.createSessionWorkspace(repositoryPath, "session-kept")
+
+    await expect(refused).rejects.toMatchObject({ name: "RepositoryGitFilterRefusedError", worktreeRemoved: false })
+    const message = await refused.catch((error: Error) => error.message)
+    expect(message).not.toContain("no worktree was left")
+    expect(message).toContain("Nothing ran")
+    expect(message).toContain("could not take the new worktree away")
+    expect(message).toContain("kept for recovery")
+    expect(await ran()).toBe(false)
+    expect((await lstat(join(worktrees, "session-kept"))).isDirectory()).toBe(true)
+    expect(await branches()).toBe("domovoi/session-kept")
+  })
+
   it("refuses a fork whose source worktree's own config sets a filter the fork would copy", async () => {
     const { repositoryPath, payload, worktrees, git, ran, branches } = await filteredRepository("domovoi-fork-filter-")
     const service = new GitWorkspaceService(worktrees)
