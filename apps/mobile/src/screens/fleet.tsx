@@ -41,7 +41,7 @@ function PairingCard({ onScan, onType }: { onScan: () => void, onType: () => voi
   )
 }
 
-function MachineCard({ row, onOpen }: { row: MachineRow, onOpen: () => void }) {
+function MachineCard({ row, onOpen, onOpenTools }: { row: MachineRow, onOpen: () => void, onOpenTools: () => void }) {
   return (
     // The handoff fades a machine that has stopped answering, so the eye lands
     // on the ones that can still be worked on.
@@ -58,7 +58,10 @@ function MachineCard({ row, onOpen }: { row: MachineRow, onOpen: () => void }) {
       {row.note ? <Text variant="note" className="mt-1">{row.note}</Text> : null}
 
       {row.stats.length > 0 || row.action ? (
-        <View className="mt-2 flex-row items-center gap-3.5">
+        // The row wraps, and so do the actions: on a narrow phone or at a large
+        // font scale the actions move under the stats, then under each other,
+        // rather than run past the card where they cannot be tapped.
+        <View className="mt-2 flex-row flex-wrap items-center gap-x-3.5 gap-y-1">
           {row.stats.map((stat) => (
             <View key={stat.label}>
               <Text variant="label" className="tracking-[0.1em]">{stat.label}</Text>
@@ -70,14 +73,25 @@ function MachineCard({ row, onOpen }: { row: MachineRow, onOpen: () => void }) {
               </Text>
             </View>
           ))}
+          {/* The Tools screen reads the connected daemon's open repository,
+              so it opens from this machine's card and from no other. */}
           {row.action === "open" ? (
-            <Button
-              title="Open"
-              variant="ghost"
-              className="ml-auto px-0"
-              accessibilityLabel={`Open ${row.label}`}
-              onPress={onOpen}
-            />
+            <View className="ml-auto flex-row flex-wrap items-center justify-end gap-x-3.5">
+              <Button
+                title="Open Tools"
+                variant="ghost"
+                className="px-0"
+                accessibilityLabel={`Tools on ${row.label}`}
+                onPress={onOpenTools}
+              />
+              <Button
+                title="Open"
+                variant="ghost"
+                className="px-0"
+                accessibilityLabel={`Open ${row.label}`}
+                onPress={onOpen}
+              />
+            </View>
           ) : null}
         </View>
       ) : null}
@@ -95,6 +109,7 @@ export function MachinesScreen({
   now,
   onRefresh,
   onOpen,
+  onOpenTools,
   onScanPairingCode,
   onTypePairingCode,
   bottomInset,
@@ -112,6 +127,8 @@ export function MachinesScreen({
   now: number
   onRefresh: () => void
   onOpen: () => void
+  // What the connected machine's repository holds back (ruling Q211).
+  onOpenTools: () => void
   onScanPairingCode: () => void
   onTypePairingCode: () => void
   // What the floating tab bar covers, so the list can pad by exactly that.
@@ -156,7 +173,7 @@ export function MachinesScreen({
           ? <Text variant="meta">Last read while connected.</Text>
           : null}
 
-        {rows.map((row) => <MachineCard key={row.id} row={row} onOpen={onOpen} />)}
+        {rows.map((row) => <MachineCard key={row.id} row={row} onOpen={onOpen} onOpenTools={onOpenTools} />)}
 
         {fleet && !empty ? <PairingCard onScan={onScanPairingCode} onType={onTypePairingCode} /> : null}
       </PageScroller>

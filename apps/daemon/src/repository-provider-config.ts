@@ -15,7 +15,8 @@ import {
 import { parse as parseYaml } from "yaml"
 
 import {
-  inventoryFieldCaps as caps, redactInventoryArgv, redactInventoryCommand, redactInventoryPath, redactInventoryProgram, redactInventoryText,
+  inventoryFieldCaps as caps, redactInventoryArgv, redactInventoryCommand, redactInventoryEnvKey, redactInventoryHost, redactInventoryPath,
+  redactInventoryProgram, redactInventoryText,
 } from "./inventory-redaction.js"
 import { parseRepositoryToml, RepositoryTomlTooSlowError } from "./repository-toml.js"
 
@@ -370,12 +371,26 @@ const recordEntries = (value: unknown) => (isRecord(value) ? Object.entries(valu
 const keysOf = (value: unknown) => Object.keys(isRecord(value) ? value : {})
 const stringArray = (value: unknown) => (Array.isArray(value) && value.every((item) => typeof item === "string") ? value as string[] : undefined)
 
-// Host and port only: path, query and user info can carry a token.
+// Every environment key name a candidate carries, an env-key entry's key and
+// a tool server's envKeys, with a credential-shaped name shown as the marker.
+// Every candidate passes through here before the protocol check, so no
+// provider's reading can skip it.
+function withEnvKeysCut(candidate: Candidate): Candidate {
+  const cut = (key: unknown) => (typeof key === "string" ? redactInventoryEnvKey(key) : key)
+  return {
+    ...candidate,
+    ...(candidate.kind === "env-key" ? { key: cut(candidate.key) } : {}),
+    ...(Array.isArray(candidate.envKeys) ? { envKeys: candidate.envKeys.map(cut) } : {}),
+  }
+}
+
+// Host and port only: path, query and user info can carry a token. A host
+// with a credential-shaped label is shown as the marker.
 function remoteHost(url: unknown): { host?: string } {
   if (typeof url !== "string") return {}
   try {
     const { host } = new URL(url)
-    return host ? { host } : {}
+    return host ? { host: redactInventoryHost(host, url) } : {}
   } catch {
     return {}
   }
@@ -1197,7 +1212,7 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
       for (const candidate of candidates) {
         const checked = "omitted" in candidate || !listed || entries.length >= maximumProviderEntries
           ? undefined
-          : toolInventoryEntrySchema.safeParse({ ...candidate, file: path, heldBack: false })
+          : toolInventoryEntrySchema.safeParse({ ...withEnvKeysCut(candidate), file: path, heldBack: false })
         if (checked?.success) entries.push({ ...checked.data, heldBack: heldBackOf(scope.provider, checked.data) })
         else omittedEntries += 1
       }

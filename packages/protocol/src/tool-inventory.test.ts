@@ -170,13 +170,22 @@ describe("tool inventory", () => {
     }
   })
 
-  it("is an observe, read-only method the phone does not get", () => {
+  it("is an observe, read-only method", () => {
     expect(rpcMethods["tool.inventory"].params.safeParse({}).success).toBe(true)
     expect(rpcMethods["tool.inventory"].params.safeParse({ projectId: "x" }).success).toBe(false)
     expect(rpcMethods["tool.inventory"].result).toBe(toolInventorySchema)
     expect(rpcMethodAuthorizations["tool.inventory"]).toBe("observe")
     expect(rpcMethodMutations["tool.inventory"]).toBe("read-only")
-    expect(phoneAndTabletRpcMethods.has("tool.inventory")).toBe(false)
+  })
+
+  // Ruling Q211 (2026-09-30): the phone's Tools screen shows what a repository
+  // holds back, with every entry, and says trust is granted from desktop or
+  // web. It reads the inventory; trusting and taking trust back stay off the
+  // phone (ruling Q67).
+  it("is read by a phone, which still cannot trust or take trust back", () => {
+    expect(phoneAndTabletRpcMethods.has("tool.inventory")).toBe(true)
+    expect(phoneAndTabletRpcMethods.has("repository.trust")).toBe(false)
+    expect(phoneAndTabletRpcMethods.has("repository.revokeTrust")).toBe(false)
   })
 })
 
@@ -217,9 +226,33 @@ describe("tool inventory text", () => {
       "npx mcp --token=[REDACTED]",
       "npx mcp --api-key [REDACTED]",
       "git log --format=%H --port=5432",
-      "npx -y @acme/pg-mcp --token-file ~/.config/pg",
+      "npx -y @acme/pg-mcp --token-file [REDACTED]",
+      "npx mcp --password-file=[REDACTED]",
+      // A pointer that names a variable or a count, not where a secret lives.
+      "npx mcp --api-key-env API_KEY --max-tokens 100",
+      "npx mcp --keymap-file keys.json",
     ]) expect(parses(withEntry({ ...server, command })), command).toBe(true)
     expect(parses(withEntry({ ...rule, detail: "Bash(pnpm test:*)" }))).toBe(true)
+  })
+
+  // PR #682 security check, P3 (rulings #541 and Q101 A): the value after a
+  // flag that says where a token, key, secret, password or credential lives
+  // is a secret path, in `--flag value` and `--flag=value`.
+  it("refuses the path after a credential pointer flag", () => {
+    for (const command of [
+      "npx -y @acme/pg-mcp --token-file ~/.config/pg",
+      "npx mcp --token-file=/run/secrets/pg",
+      "npx mcp --password-file ~/.pgpass",
+      "npx mcp --ssh-key-path ~/.ssh/work",
+      "npx mcp --key-file=tls/server.pem",
+      "npx mcp --client-secret-file secret.json",
+      "npx mcp --credentials-file creds.json",
+      "npx mcp --auth-file ~/.config/auth",
+      "npx mcp \"--token-file\" \"~/.config/pg\"",
+    ]) {
+      expect(parses(withEntry({ ...server, command })), command).toBe(false)
+      expect(parses(withEntry({ ...hook, command })), `hook ${command}`).toBe(false)
+    }
   })
 
   it("refuses line separators, format controls and padding in display text", () => {
@@ -242,6 +275,32 @@ describe("tool inventory text", () => {
     }
     for (const host of ["[:::]", "[.]", "[::1", "-bad-.com", "bad-.com", "a..b", "host:0", "host:99999", "host:080", "host:", "999.1.1.1", "1.2.3", "example.com..", ".", `${"a".repeat(64)}.com`]) {
       expect(parses(withEntry({ ...remote, host })), host).toBe(false)
+    }
+  })
+
+  // PR #682 security check, P2: a host is a text a provider file supplies, and
+  // a DNS label can hold a credential shape. A host is read without regard to
+  // case, as DNS reads it, so a key id the URL parser lower-cased is still one.
+  it("refuses a host with a credential-shaped label, and takes the reader's cut", () => {
+    for (const host of [
+      "sk-proj-abcdefghijklmnop.mcp.example.com",
+      "mcp.xoxb-1234567890-abcdefgh.example.com:443",
+      "AKIAABCDEFGHIJKLMNOP.example.com",
+      "akiaabcdefghijklmnop.example.com",
+    ]) expect(parses(withEntry({ ...remote, host })), host).toBe(false)
+    for (const host of ["[REDACTED]", "secrets.example.com:8443", "token.internal"]) {
+      expect(parses(withEntry({ ...remote, host })), host).toBe(true)
+    }
+  })
+
+  it("refuses a credential-shaped environment key name, and takes the reader's cut", () => {
+    for (const key of ["ghp_abcdefghijklmnop1234", "sk_live_abcdefghijklmnop", "AKIAABCDEFGHIJKLMNOP"]) {
+      expect(parses(withEntry({ ...server, envKeys: [key] })), key).toBe(false)
+      expect(parses(withEntry({ kind: "env-key", key })), key).toBe(false)
+    }
+    for (const key of ["[REDACTED]", "GITHUB_TOKEN", "SK_LIVE_KEY"]) {
+      expect(parses(withEntry({ ...server, envKeys: [key] })), key).toBe(true)
+      expect(parses(withEntry({ kind: "env-key", key })), key).toBe(true)
     }
   })
 
@@ -395,7 +454,7 @@ describe("credential backstop", () => {
     // Names, paths and hosts.
     "Bearer Authentication", "Basic Authentication", "/Users/ada/.claude/settings.json", "C:\\Users\\ada\\.claude.json",
     "https://mcp.linear.app/mcp", "git@github.com:acme/api.git", "git log --format=%H --port=5432",
-    "npx mcp --token-file ~/.config/pg", "npx mcp --api-key-env API_KEY", "llm --max-tokens 100",
+    "npx mcp --token-file [REDACTED]", "npx mcp --api-key-env API_KEY", "llm --max-tokens 100",
     "EACCES: permission denied, open '/Users/ada/.claude/settings.local.json'",
     "Token limit exceeded", "Basic usage information", "Token limit exceeded.", "Basic usage information, see docs.", "Basic credentials.", "Bearer token.",
     // The marker, alone or ending a sentence; and a scheme word before an ellipsis.

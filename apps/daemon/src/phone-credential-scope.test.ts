@@ -1,6 +1,6 @@
 import { once } from "node:events"
 
-import { phoneAndTabletRpcMethods, protocolVersion, rpcMethods, type RpcMethod } from "@getdomovoi/protocol"
+import { phoneAndTabletRpcMethods, protocolVersion, rpcMethods, toolInventorySchema, type RpcMethod } from "@getdomovoi/protocol"
 import { WebSocket } from "ws"
 import { afterEach, describe, expect, it } from "vitest"
 
@@ -111,6 +111,17 @@ describe("a phone-scoped credential", () => {
       if (method === "system.hello") continue
       const reply = await call(phone, method, {})
       expect(errorMessage(reply), method).not.toMatch(refusal)
+    }
+
+    // Ruling Q211: the phone Tools screen reads what the open repository
+    // holds back, and answers with the inventory the protocol accepts. Trust
+    // is granted and taken back from desktop or web only (ruling Q67), so
+    // both trust methods meet the scope refusal before their parameters.
+    const inventory = await call(phone, "tool.inventory", {})
+    expect(inventory).not.toHaveProperty("error")
+    expect(toolInventorySchema.safeParse(inventory.result).success).toBe(true)
+    for (const method of ["repository.trust", "repository.revokeTrust"] as const) {
+      expect(errorMessage(await call(phone, method, {})), method).toMatch(refusal)
     }
 
     // The refusals changed nothing: the owner still sees one phone, active.

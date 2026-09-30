@@ -1532,6 +1532,18 @@ describe("phone and tablet credential scope", () => {
     }
   })
 
+  it("lets a phone read what a repository holds back and never trust it", () => {
+    // Ruling Q211: the phone Tools screen reads tool.inventory, an observe,
+    // read-only method whose entries carry env key names and redacted
+    // commands, never a value. Trust is granted from desktop or web (Q67).
+    expect(phoneAndTabletRpcMethods.has("tool.inventory")).toBe(true)
+    expect(rpcMethodAuthorizations["tool.inventory"]).toBe("observe")
+    expect(rpcMethodMutations["tool.inventory"]).toBe("read-only")
+    for (const method of ["repository.trust", "repository.revokeTrust"] as const) {
+      expect(phoneAndTabletRpcMethods.has(method), method).toBe(false)
+    }
+  })
+
   it("carries the pairing card's list", () => {
     // The card's list as PairingCard draws it (2026-09-23): the three grants,
     // the gates-while-open limit, the line the daemon does not keep yet marked
