@@ -227,4 +227,186 @@ describe("App", () => {
     expect(sent).toHaveLength(1)
     expect(sent[0]?.params).toMatchObject({ sessionId: audit.id, prompt: "Check the lockfile too", client: "phone" })
   })
+
+  // Ruling Q211: the phone Tools screen reads tool.inventory for the machine
+  // it is connected to and shows what the repository holds back. It reads
+  // and never asks to trust.
+  it("opens Tools from the connected machine and reads what the repository holds back", async () => {
+    const { socket } = await openApp(workspace())
+    await fireEvent.press(screen.getByRole("tab", { name: "Machines" }))
+    await settle()
+    const self = demoWorkspace.machine
+    await act(async () => {
+      socket.answer("fleet.list", {
+        entries: [{
+          kind: "machine",
+          machine: {
+            id: self.id,
+            label: self.name,
+            platform: "darwin",
+            arch: "arm64",
+            version: "0.0.1",
+            connection: "local",
+            capabilities: ["sessions"],
+            protocolVersion: "0.2.0",
+            transports: [],
+            heartbeat: { state: "online", lastSeenAt: new Date().toISOString() },
+            health: "healthy",
+            self: true,
+          },
+        }],
+      })
+    })
+    await settle()
+
+    await fireEvent.press(screen.getByRole("button", { name: `Tools on ${self.name}` }))
+    await settle()
+    expect(socket.requests("tool.inventory").map((frame) => frame.params)).toEqual([{}])
+    expect(screen.getByText(`Reading the agents' files on ${self.name}.`)).toBeOnTheScreen()
+
+    await act(async () => {
+      socket.answer("tool.inventory", {
+        machine: { id: self.id, name: self.name, platform: "darwin", arch: "arm64", version: "0.0.1" },
+        repository: { projectId: "project-acme-api", root: "/Users/dev/src/acme-api", configDigest: `sha256:${"a".repeat(64)}`, trust: { state: "untrusted", reason: "not-trusted" } },
+        providers: [{
+          provider: "claude-code",
+          toolServers: "read-from-files",
+          omittedEntries: 0,
+          files: [{ path: ".mcp.json", source: "repository-file", state: "read" }],
+          entries: [{ kind: "tool-server", name: "postgres-dev", transport: "stdio", command: "npx -y @acme/pg-mcp", envKeys: [], file: ".mcp.json", startsAtSessionStart: true, heldBack: true }],
+        }],
+      })
+    })
+    await settle()
+
+    expect(screen.getByText(`acme-api is held back on ${self.name}`)).toBeOnTheScreen()
+    expect(screen.getByText("postgres-dev")).toBeOnTheScreen()
+    expect(screen.getByText("Trust from desktop or web")).toBeOnTheScreen()
+    expect(socket.sent.filter((frame) => frame.method.startsWith("repository."))).toEqual([])
+
+    await fireEvent.press(screen.getByRole("button", { name: "Back" }))
+    expect(screen.queryByText("Trust from desktop or web")).toBeNull()
+    expect(screen.getByRole("button", { name: `Tools on ${self.name}` })).toBeOnTheScreen()
+  })
+
+  it("shows the daemon's refusal when Tools cannot be read, and asks again on request", async () => {
+    const { socket } = await openApp(workspace())
+    await fireEvent.press(screen.getByRole("tab", { name: "Machines" }))
+    await settle()
+    const self = demoWorkspace.machine
+    await act(async () => {
+      socket.answer("fleet.list", {
+        entries: [{
+          kind: "machine",
+          machine: {
+            id: self.id, label: self.name, platform: "darwin", arch: "arm64", version: "0.0.1", connection: "local",
+            capabilities: ["sessions"], protocolVersion: "0.2.0", transports: [],
+            heartbeat: { state: "online", lastSeenAt: new Date().toISOString() }, health: "healthy", self: true,
+          },
+        }],
+      })
+    })
+    await settle()
+    await fireEvent.press(screen.getByRole("button", { name: `Tools on ${self.name}` }))
+    const request = socket.requests("tool.inventory")[0]!
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32001, message: "A phone or tablet credential may only watch sessions, answer gates, and start, stop or steer sessions" } }) })
+    })
+    await settle()
+    expect(screen.getByText("Tools could not be read")).toBeOnTheScreen()
+    expect(screen.getByText(/A phone or tablet credential may only watch sessions/)).toBeOnTheScreen()
+
+    await fireEvent.press(screen.getByRole("button", { name: "Try again" }))
+    expect(socket.requests("tool.inventory")).toHaveLength(2)
+  })
+
+  // A project opened on any client while Tools is up changes what the daemon
+  // reads, so the screen reads again rather than showing the last project.
+  it("reads Tools again when the open project changes", async () => {
+    const { socket } = await openApp(workspace())
+    await fireEvent.press(screen.getByRole("tab", { name: "Machines" }))
+    await settle()
+    const self = demoWorkspace.machine
+    await act(async () => {
+      socket.answer("fleet.list", {
+        entries: [{
+          kind: "machine",
+          machine: {
+            id: self.id, label: self.name, platform: "darwin", arch: "arm64", version: "0.0.1", connection: "local",
+            capabilities: ["sessions"], protocolVersion: "0.2.0", transports: [],
+            heartbeat: { state: "online", lastSeenAt: new Date().toISOString() }, health: "healthy", self: true,
+          },
+        }],
+      })
+    })
+    await settle()
+    await fireEvent.press(screen.getByRole("button", { name: `Tools on ${self.name}` }))
+    await settle()
+    await act(async () => {
+      socket.answer("tool.inventory", {
+        machine: { id: self.id, name: self.name, platform: "darwin", arch: "arm64", version: "0.0.1" },
+        repository: { projectId: "project-acme-api", root: "/Users/dev/src/acme-api", configDigest: `sha256:${"a".repeat(64)}`, trust: { state: "untrusted", reason: "not-trusted" } },
+        providers: [],
+      })
+    })
+    await settle()
+    expect(screen.getByText(`acme-api on ${self.name}`)).toBeOnTheScreen()
+
+    // The same project again reads nothing new.
+    await act(async () => { socket.push("workspace.changed", workspace()) })
+    await settle()
+    expect(socket.requests("tool.inventory")).toHaveLength(1)
+
+    const moved = workspace()
+    moved.project = { ...moved.project!, id: "project-billing", name: "billing", path: "/Users/dev/src/billing" }
+    // A snapshot's sessions belong to its open project.
+    moved.sessions = moved.sessions.map((session) => ({ ...session, projectId: "project-billing" }))
+    await act(async () => { socket.push("workspace.changed", moved) })
+    await settle()
+    expect(socket.requests("tool.inventory")).toHaveLength(2)
+    expect(screen.queryByText(`acme-api on ${self.name}`)).toBeNull()
+    expect(screen.getByText(`Reading the agents' files on ${self.name}.`)).toBeOnTheScreen()
+  })
+
+  // An inventory read on an earlier visit is not a claim about now: Tools
+  // opened again while the connection is down shows nothing read, not it.
+  it("does not show the last inventory when Tools opens again while disconnected", async () => {
+    const { socket } = await openApp(workspace())
+    await fireEvent.press(screen.getByRole("tab", { name: "Machines" }))
+    await settle()
+    const self = demoWorkspace.machine
+    await act(async () => {
+      socket.answer("fleet.list", {
+        entries: [{
+          kind: "machine",
+          machine: {
+            id: self.id, label: self.name, platform: "darwin", arch: "arm64", version: "0.0.1", connection: "local",
+            capabilities: ["sessions"], protocolVersion: "0.2.0", transports: [],
+            heartbeat: { state: "online", lastSeenAt: new Date().toISOString() }, health: "healthy", self: true,
+          },
+        }],
+      })
+    })
+    await settle()
+    await fireEvent.press(screen.getByRole("button", { name: `Tools on ${self.name}` }))
+    await settle()
+    await act(async () => {
+      socket.answer("tool.inventory", {
+        machine: { id: self.id, name: self.name, platform: "darwin", arch: "arm64", version: "0.0.1" },
+        repository: { projectId: "project-acme-api", root: "/Users/dev/src/acme-api", configDigest: `sha256:${"a".repeat(64)}`, trust: { state: "untrusted", reason: "not-trusted" } },
+        providers: [],
+      })
+    })
+    await settle()
+    expect(screen.getByText(`acme-api on ${self.name}`)).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("button", { name: "Back" }))
+
+    await act(async () => { socket.close() })
+    await settle()
+    await fireEvent.press(screen.getByRole("button", { name: `Tools on ${self.name}` }))
+    await settle()
+    expect(screen.queryByText(`acme-api on ${self.name}`)).toBeNull()
+    expect(screen.getByText(`Reading the agents' files on ${self.name}.`)).toBeOnTheScreen()
+    expect(socket.requests("tool.inventory")).toHaveLength(1)
+  })
 })

@@ -207,19 +207,21 @@ describe("tool.inventory", () => {
     ["phone", { kind: "client", client: "phone", clientAccess: "watching" }],
     ["desktop", { kind: "client", client: "desktop", clientAccess: "watching" }],
     ["web", { kind: "client", client: "web", clientAccess: "watching" }],
-  ])("treats a %s credential (%o) the way skill.inventory does", async (client, binding) => {
+  ])("answers a %s credential (%o), where skill.inventory differs by client", async (client, binding) => {
+    // Ruling Q211: a phone or tablet reads tool.inventory for its Tools
+    // screen, a watching one included, because the method only observes.
+    // skill.inventory stays off a handheld.
     const root = await repository(configured)
     const { daemon, store } = await fixture(root)
     const { token } = store.devices.pair({ label: client, binding })
     const call = await hello(daemon, client, token)
     const skill = await call("skill.inventory", {})
-    const tool = await call("tool.inventory", {})
+    const tool = inventoryOf(await call("tool.inventory", {}))
+    expect(tool.repository?.trust).toEqual({ state: "untrusted", reason: "not-trusted" })
     if (binding.kind === "client" && (binding.client === "phone" || binding.client === "tablet")) {
       expect(skill).toHaveProperty("error")
-      expect(tool.error).toEqual(skill.error)
     } else {
       expect(skill).toHaveProperty("result")
-      inventoryOf(tool)
     }
   })
 

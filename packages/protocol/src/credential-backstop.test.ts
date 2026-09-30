@@ -2,7 +2,7 @@ import { performance } from "node:perf_hooks"
 
 import { describe, expect, it } from "vitest"
 
-import { credentialRules, credentialShapeAt, holdsCredential, isCredentialKey, type CredentialRules } from "./index.js"
+import { credentialRules, credentialShapeAt, holdsCredential, isCredentialKey, isCredentialLocationKey, type CredentialRules } from "./index.js"
 
 // The daemon's reader takes these rules from here, so each must be the rule
 // the backstop itself reads, frozen so no importer can change it for another.
@@ -11,7 +11,7 @@ describe("credential rules", () => {
 
   it("exports frozen lists of distinct lower-case words", () => {
     expect(Object.isFrozen(credentialRules)).toBe(true)
-    expect(lists.map(([name]) => name).sort()).toEqual(["exactKeys", "keyParts", "pointerSuffixes", "schemeWords", "tokenPrefixes"])
+    expect(lists.map(([name]) => name).sort()).toEqual(["exactKeys", "keyParts", "locationSuffixes", "pointerSuffixes", "schemeWords", "tokenPrefixes"])
     for (const [name, words] of lists) {
       expect(Object.isFrozen(words), name).toBe(true)
       expect(words.length, name).toBeGreaterThan(0)
@@ -44,7 +44,10 @@ describe("credential rules", () => {
     for (const suffix of credentialRules.pointerSuffixes) {
       const key = `token-${suffix}`
       expect(isCredentialKey(key), key).toBe(false)
-      expect(holdsCredential(`tool --${key} value`), key).toBe(false)
+      // A flag that says where the token lives is a secret path's flag (PR
+      // #682, P3); one that names a variable or counts something is not.
+      expect(isCredentialLocationKey(key), key).toBe(credentialRules.locationSuffixes.includes(suffix))
+      expect(holdsCredential(`tool --${key} value`), key).toBe(credentialRules.locationSuffixes.includes(suffix))
     }
     // A part inside a longer word is still a sensitive key; an exact key is
     // only one as the whole name.
@@ -52,6 +55,21 @@ describe("credential rules", () => {
     expect(isCredentialKey("client_secret")).toBe(true)
     expect(isCredentialKey("path")).toBe(false)
     expect(isCredentialKey("author")).toBe(false)
+  })
+
+  it("refuses the value after a flag that says where a credential lives", () => {
+    for (const key of ["token-file", "password-file", "secret-path", "credentials-file", "ssh-key-path", "key-file", "keyfile", "key-file-path", "auth-file", "api-key-dir"]) {
+      expect(isCredentialLocationKey(key), key).toBe(true)
+      for (const text of [`tool --${key} ~/.config/x`, `tool --${key}=~/.config/x`, `tool -${key} x`, `["tool", "--${key}", "x"]`]) {
+        expect(holdsCredential(text), text).toBe(true)
+      }
+      for (const text of [`tool --${key} [REDACTED]`, `tool --${key}=[REDACTED]`, `tool --${key} --next`, `tool --${key}`, `${key}: x`]) {
+        expect(holdsCredential(text), text).toBe(false)
+      }
+    }
+    for (const key of ["keymap-file", "profile-path", "tokenizer-path", "token-env", "max-tokens", "file"]) {
+      expect(isCredentialLocationKey(key), key).toBe(false)
+    }
   })
 
   it("reads a key by the rules it is given", () => {

@@ -1958,6 +1958,12 @@ export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
   // The composer offers skills by name; their files stay on the machine
   // (skill.read is not here).
   "skill.list",
+  // What the open repository's agent configuration declares and what the
+  // daemon holds back, as the phone Tools screen draws it (ruling Q211). It is
+  // a report: env key names, never values, and commands already redacted by
+  // the daemon's reader. repository.trust and repository.revokeTrust stay
+  // out: trust is granted from desktop or web (ruling Q67).
+  "tool.inventory",
 ])
 
 // Methods that grant or take back repository trust. The daemon admits them

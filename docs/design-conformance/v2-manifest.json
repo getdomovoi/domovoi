@@ -21,7 +21,8 @@
       "inventory": "docs/design-conformance/skills-v2.json",
       "sources": [
         "packages/ui/src/**/*.{ts,tsx}",
-        "packages/protocol/src/**/*.ts"
+        "packages/protocol/src/**/*.ts",
+        "apps/mobile/src/**/*.{ts,tsx}"
       ]
     },
     {

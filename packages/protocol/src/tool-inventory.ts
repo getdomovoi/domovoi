@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { credentialShapeAt } from "./credential-backstop.js"
 import { inventoryText, toolInventoryPathSchema } from "./inventory-text.js"
 import {
   refineRepositoryTrustPin, repositoryGitFilterDriverNameSchema, repositoryGitFilterScopeSchema, repositoryTrustStateSchema,
@@ -38,8 +39,23 @@ export const maximumToolInventoryRuleLength = 128
 // A hook's event.
 export const maximumToolInventoryEventLength = 64
 
-// An environment variable identifier, never `NAME=value`.
-export const toolInventoryEnvKeySchema = z.string().check(utf16MaxLength(128)).regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
+// What the daemon's reader shows in place of text it cut at a credential.
+export const toolInventoryCutMarker = "[REDACTED]"
+
+// Whether a name a provider file supplies, a host or an environment key name,
+// holds a credential the protocol knows by its shape (credentialShapeAt, the
+// recognizer the text backstop reads commands with). A host is also read in
+// upper case: DNS ignores case, and the URL parser lower-cases a host, so an
+// access key id in a label is still one after it.
+export function nameHoldsCredential(name: string, caseless = false): boolean {
+  return credentialShapeAt(name) !== undefined || (caseless && credentialShapeAt(name.toUpperCase()) !== undefined)
+}
+
+// An environment variable identifier, never `NAME=value`, and never one that
+// is itself shaped like a credential: the reader shows the cut marker there.
+export const toolInventoryEnvKeySchema = z.string().check(utf16MaxLength(128))
+  .refine((key) => key === toolInventoryCutMarker || /^[A-Za-z_][A-Za-z0-9_]*$/u.test(key), "Expected an environment variable name")
+  .refine((key) => !nameHoldsCredential(key), "An environment key name must not carry a credential; the reader cuts it first")
 
 function isHost(value: string): boolean {
   const match = /^(?:\[([^\]]+)\]|([^:[\]]+))(?::([1-9]\d{0,4}))?$/u.exec(value)
@@ -65,8 +81,12 @@ function isHost(value: string): boolean {
 }
 // Host and optional port only: a DNS name, IPv4 or bracketed IPv6 address, and
 // a port from 1 to 65535. A URL's path, query and user info can carry a token,
-// so a remote server is named by where it connects and nothing more.
-export const toolServerHostSchema = z.string().check(utf16MaxLength(260)).refine(isHost, "Expected a host and an optional port")
+// so a remote server is named by where it connects and nothing more. A label
+// can carry one too: a host with a credential-shaped label is refused, and
+// the reader shows the cut marker in its place.
+export const toolServerHostSchema = z.string().check(utf16MaxLength(260))
+  .refine((host) => host === toolInventoryCutMarker || isHost(host), "Expected a host and an optional port")
+  .refine((host) => !nameHoldsCredential(host, true), "A host must not carry a credential; the reader cuts it first")
 // "other" is a transport the file declares and Domovoi does not recognise; the
 // server is still listed rather than dropped.
 export const toolServerTransportSchema = z.enum(["stdio", "http", "sse", "other"])

@@ -4,7 +4,8 @@
   "derivedOn": "2026-09-30",
   "sources": [
     "packages/ui/src/**/*.{ts,tsx}",
-    "packages/protocol/src/**/*.ts"
+    "packages/protocol/src/**/*.ts",
+    "apps/mobile/src/**/*.{ts,tsx}"
   ],
   "note": "Inventory re-derived from the current v2 design. Statuses record current implementation evidence and platform blockers; layout, visual state and interaction fidelity remain human-read checks.",
   "elements": [
@@ -283,7 +284,7 @@
       "blocked": {
         "since": "2026-09-30",
         "needs": "protocol",
-        "reason": "a refused session reaches the client as prose, with no reason code and no file or filter field to name; and no grant lifts a refusal yet: Codex refuses a worktree holding .codex config whatever the grant until P6c, and a filter the repository's own Git config sets is refused whatever the grant (RepositoryFilterRefusedError), so Start the session again would be refused again"
+        "reason": "a refused session reaches the client as prose, with no reason code and no file or filter field to name; and no grant lifts a refusal yet: Codex refuses a worktree holding .codex config whatever the grant until P6c, and a filter the repository's own Git config sets is refused whatever the grant (RepositoryFilterRefusedError), so Start the session again would be refused again. The phone refusal (step 16), which names the file or filter and opens the phone Tools screen, waits on the same reason: as of 2026-09-30 a refused session reaches the phone as the daemon's prose with no refusal code, so there is no refusal card to attach the pointer to"
       }
     },
     {
@@ -312,20 +313,27 @@
     {
       "id": "trust.phone",
       "name": "Held back on the phone",
-      "where": "phone Tools screen (step 18): held back with every entry grouped by file, and a footer saying trust is granted from desktop or web; phone refusal (step 16): names the file or filter, See what is held back opens the phone Tools screen, and the same Trust from desktop or web bar; the phone cannot trust",
+      "where": "phone Tools screen (step 18): held back with every entry grouped by file, and a footer saying trust is granted from desktop or web; phone refusal (step 16): names the file or filter, See what is held back opens the phone Tools screen, and the same Trust from desktop or web bar; the phone cannot trust. The step 18 screen is built (2026-09-30, ruling Q211) in apps/mobile/src/screens/tools.tsx over tool.inventory, now on the phone and tablet allow-list, and opens from the connected machine's card on Machines; the step 16 refusal pointer is not built",
       "copy": [
         "None of it loads for any agent.",
         "Trust from desktop or web",
         "A phone shows this but cannot trust it.",
         "See what is held back"
       ],
-      "evidence": [
-        "Trust from desktop or web"
+      "presence": [
+        "None of it loads for any agent.",
+        "Trust from desktop or web",
+        "A phone shows this but cannot trust it."
       ],
-      "blocked": {
+      "evidence": [
+        "None of it loads for any agent.",
+        "Trust from desktop or web",
+        "A phone shows this but cannot trust it.",
+        "See what is held back"
+      ],
+      "partial": {
         "since": "2026-09-30",
-        "needs": "protocol",
-        "reason": "tool.inventory is not in phoneAndTabletRpcMethods, so a phone cannot read what is held back, and the phone app has no Tools screen for See what is held back to open; the phone refusal also needs the refusal reason code trust.refusal is blocked on"
+        "reason": "the step 18 Tools screen is built; the step 16 phone refusal, whose See what is held back opens it, waits on the refusal reason code trust.refusal is blocked on, since a refused session reaches the phone as prose with no card to attach the pointer to"
       }
     }
   ],
@@ -405,6 +413,11 @@
       "id": "tools.tab",
       "since": "2026-09-29",
       "note": "The Skills and Tools tabs sit in a strip at the top of the surface, not in the window bar, and an agent is named without its harness mark. Whether an entry runs at session start follows each entry's heldBack, so an untrusted repository whose entries the daemon does not hold back reads as running, and a trusted one never says trust made it so unless no entry is held back. An entry the daemon holds back from a trusted repository, or from one that cannot be trusted, reads Held back, without until you trust this repository. A cannot-trust repository lists its refusal codes in a card the design does not draw."
+    },
+    {
+      "id": "trust.phone",
+      "since": "2026-09-30",
+      "note": "Built from this inventory, not read against the design's step 18 frame. How the screen is reached is not drawn here: it opens from Open Tools on the connected machine's card on Machines. Each file card says the held-back reason once, since every entry shares it. The footer drops Trust from desktop or web where trust cannot lift the hold (a trusted repository, or one that cannot be trusted) and keeps A phone shows this but cannot trust it. Unreadable repository files, entries left out and cannot-trust reasons are listed in cards the design may draw differently."
     },
     {
       "id": "trust.held-back",

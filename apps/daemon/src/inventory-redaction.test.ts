@@ -126,8 +126,10 @@ describe("redactInventoryText", () => {
     ["curl -H X\\*Foo:opaque-secret x", "curl [REDACTED]"],
     // A scheme word starts wherever the protocol backstop reads one, after a
     // `/` too.
-    ["tool --token-file ./token --max-tokens 10", "tool --token-file ./[REDACTED]"],
     ["cat ./Token swordfish tail", "cat ./[REDACTED]"],
+    // A flag that says where a credential lives is a trigger (PR #682, P3):
+    // the path after it is a secret path.
+    ["tool --token-file ./token --max-tokens 10", "tool [REDACTED]"],
     // Kept whole before texts were cut at their first trigger: a scheme word
     // or assignment before the marker, and a header flag.
     ["Bearer [REDACTED]", "[REDACTED]"],
@@ -146,7 +148,7 @@ describe("redactInventoryText", () => {
   it.each([
     "pnpm build",
     "node /tmp/config=dev/index.js",
-    "tool --token-file ./secrets --max-tokens 10",
+    "tool --api-key-env API_KEY --max-tokens 10",
     // A URL with no path, or only `/`, keeps it.
     "curl https://example.com",
     "curl https://example.com/",
@@ -210,6 +212,61 @@ describe("redactInventoryText", () => {
 
 // A scheme word, a sensitive flag and a header flag are each a trigger, so a
 // chain of them is cut before the first: nothing after it is shown.
+// PR #682 security check, P3, under rulings #541 (hide every secret path) and
+// Q101 A (cut at the first trigger in any view): a flag that says where a
+// token, key, secret, password or credential lives, and an argument that is a
+// known secret path, cut a command there.
+describe("a credential pointer flag and a secret path", () => {
+  it.each([
+    ["npx -y @acme/pg-mcp --token-file ~/.config/pg", "npx -y @acme/pg-mcp [REDACTED]"],
+    ["npx mcp --token-file=/run/secrets/pg --port 1", "npx mcp [REDACTED]"],
+    ["npx mcp --password-file ~/.pgpass", "npx mcp [REDACTED]"],
+    ["npx mcp --ssh-key-path ~/.ssh/work", "npx mcp [REDACTED]"],
+    ["npx mcp --key-file=tls/server.crt", "npx mcp [REDACTED]"],
+    ["npx mcp --client-secret-file x.json", "npx mcp [REDACTED]"],
+    ["npx mcp \"--token-file\" ~/.config/pg", "npx mcp [REDACTED]"],
+  ])("cuts %j at the pointer flag, as text, a command and an argument vector", (input, expected) => {
+    for (const redacted of [redactInventoryText(input), redactInventoryCommand(input), redactInventoryArgv(inventoryShellWords(input)!)]) {
+      expect(redacted, input).toBe(expected)
+      expect(backstopAccepts(redacted), redacted).toBe(true)
+    }
+  })
+
+  it.each([
+    "npx mcp --api-key-env API_KEY --max-tokens 100",
+    "npx mcp --keymap-file keys.json",
+    "npx mcp --tokenizer-path models/tok.json",
+  ])("keeps %j, whose pointer names no secret's location", (input) => {
+    expect(redactInventoryCommand(input)).toBe(input)
+    expect(redactInventoryArgv(inventoryShellWords(input)!)).toBe(input)
+  })
+
+  it.each([
+    [["node", "server.js", "--config", "./.env.local"], "node server.js --config [REDACTED]"],
+    [["ssh", "-i", "~/.ssh/id_ed25519", "host"], "ssh -i [REDACTED]"],
+    [["cat", "/Users/ada/.aws/credentials"], "cat [REDACTED]"],
+    [["tool", "--config=./.env"], "tool [REDACTED]"],
+  ])("cuts the argument vector %j at a known secret path", (argv, expected) => {
+    const redacted = redactInventoryArgv(argv)
+    expect(redacted).toBe(expected)
+    expect(backstopAccepts(redacted)).toBe(true)
+  })
+
+  it.each([
+    ["cat ~/.aws/credentials | head", "cat [REDACTED]"],
+    ["node server.js --env-file .env.production", "node server.js --env-file [REDACTED]"],
+    ["bash -c 'cat ~/.netrc'", "bash -c [REDACTED]"],
+  ])("cuts the command %j at a known secret path", (input, expected) => {
+    const redacted = redactInventoryCommand(input)
+    expect(redacted).toBe(expected)
+    expect(backstopAccepts(redacted)).toBe(true)
+  })
+
+  it("keeps a secret path in a rule, which no shell runs", () => {
+    expect(redactInventoryText("Read(./.env)")).toBe("Read(./.env)")
+  })
+})
+
 describe("a scheme word before a sensitive flag", () => {
   const texts: ReadonlyArray<[string, string]> = [
     ["curl Bearer --token s3cr3t-value", "curl [REDACTED]"],
