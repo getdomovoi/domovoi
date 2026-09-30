@@ -335,6 +335,8 @@ export const maximumAuthenticationPayloadBytes = 4 * 1_024
 // so it stops accepting work that would deepen the gap.
 export const persistenceFailureThreshold = 3
 export const persistenceUnavailableContext = "Domovoi can no longer persist state"
+// Longest a stream with no pause in its deltas stays in memory before a save.
+export const streamPersistMaxWaitMilliseconds = 1_000
 // Security review round 1 of #576, approved by fetzy on 2026-09-25: the
 // answer to a turn asked for while the desktop holds the service handoff fence.
 export const serviceHandoffFencedMessage =
@@ -1539,6 +1541,9 @@ export class DomovoiDaemon {
   })
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
   #persistFlush: ReturnType<typeof setTimeout> | undefined
+  // Armed when a stream first defers a save and not reset by later deltas, so
+  // a stream that never pauses still reaches disk.
+  #persistDeadline: ReturnType<typeof setTimeout> | undefined
   #pendingWorkspaceDeltas: WorkspaceDelta[] = []
   #activeAssistantItems = new ActiveAssistantItemCache()
   #providerPlanTurns = new Set<string>()
@@ -2313,7 +2318,7 @@ export class DomovoiDaemon {
         this.#mutations.cancelAll(error)
         failures.push(error)
       }
-      if (this.#deltaFlush || this.#persistFlush) await this.#saveAgentState(false)
+      if (this.#deltaFlush || this.#persistFlush || this.#persistDeadline) await this.#saveAgentState(false)
     } catch (error) {
       failures.push(error)
     }
@@ -5388,7 +5393,9 @@ export class DomovoiDaemon {
         const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1"
         if (!loopback || socket instanceof DaemonRelaySocket || authenticatedActor?.kind !== "client"
           || this.#deviceCredentials.has(socket)) {
-          this.#error(socket, request.id, daemonAuthenticationErrorCode, "The service handoff fence requires a loopback local-owner connection")
+          // A policy refusal, not a credential failure, as for the update
+          // methods: every caller here has already passed authentication.
+          this.#error(socket, request.id, localOwnerRequiredErrorCode, "The service handoff fence requires a loopback local-owner connection")
           return
         }
         if (this.#serviceHandoffFence) {
@@ -11528,6 +11535,10 @@ export class DomovoiDaemon {
       this.#persistFlush = undefined
       void this.#flushAgentState(false)
     }, workspaceDeltaBatchDelayMilliseconds)
+    this.#persistDeadline ??= setTimeout(() => {
+      this.#persistDeadline = undefined
+      void this.#flushAgentState(false)
+    }, streamPersistMaxWaitMilliseconds)
     if (this.#deltaFlush) return
     this.#deltaFlush = setTimeout(() => {
       this.#deltaFlush = undefined
@@ -11638,6 +11649,10 @@ export class DomovoiDaemon {
     if (this.#persistFlush) {
       clearTimeout(this.#persistFlush)
       this.#persistFlush = undefined
+    }
+    if (this.#persistDeadline) {
+      clearTimeout(this.#persistDeadline)
+      this.#persistDeadline = undefined
     }
     await this.#persistSnapshot()
     if (broadcast) this.#broadcastSnapshot()
