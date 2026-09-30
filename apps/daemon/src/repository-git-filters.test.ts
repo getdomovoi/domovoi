@@ -164,6 +164,19 @@ describe("readRepositoryGitFilters", () => {
     ])
   })
 
+  // A config that includes a FIFO makes `git config` wait for a writer that
+  // never comes; tool.inventory and the trust step read with no signal of
+  // their own, so the read is bounded and reported as a failure.
+  it.skipIf(process.platform === "win32")("gives up on a config read that does not finish, and reports it", async () => {
+    const { scratch, root, git } = await repository()
+    const fifo = join(scratch, "blocking.gitconfig")
+    await execute("mkfifo", [fifo])
+    await git("config", "include.path", fifo)
+    const started = Date.now()
+    await expect(readRepositoryGitFilters(root, undefined, 500)).rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", reason: "git-failed" })
+    expect(Date.now() - started).toBeLessThan(5_000)
+  })
+
   it("leaves out a line with no command, which runs nothing", async () => {
     const { root, git } = await repository()
     await git("config", "filter.off.clean", "")

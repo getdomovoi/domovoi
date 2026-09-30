@@ -92,8 +92,17 @@ export const maximumRepositoryGitConfigOutputBytes = 4 * 1024 * 1024
 // One filter or lfs setting as Git read it, from any scope.
 export type GitFilterSetting = { scope: string; key: string; value: string; origin: string | undefined }
 
-export async function readRepositoryGitFilters(directory: string, signal?: AbortSignal): Promise<RepositoryGitFilter[]> {
-  return repositoryGitFilters(await readGitFilterSettings(directory, signal))
+// A config read that has not finished by then fails as git-failed: a config
+// can include a file that never ends, a FIFO, and tool.inventory and the
+// trust step read with no signal of their own.
+export const repositoryGitConfigReadTimeoutMs = 10_000
+
+export async function readRepositoryGitFilters(
+  directory: string,
+  signal?: AbortSignal,
+  timeoutMs: number = repositoryGitConfigReadTimeoutMs,
+): Promise<RepositoryGitFilter[]> {
+  return repositoryGitFilters(await readGitFilterSettings(directory, signal, timeoutMs))
 }
 
 // The settings from the repository's own config that start a program.
@@ -113,13 +122,20 @@ export function repositoryGitFilters(settings: readonly GitFilterSetting[]): Rep
 // Every filter and lfs setting Git reads in `directory`, in Git's order, from
 // every scope. A scope this reader does not know fails the read, so no caller
 // runs or hides what it sets.
-export async function readGitFilterSettings(directory: string, signal?: AbortSignal): Promise<GitFilterSetting[]> {
+export async function readGitFilterSettings(
+  directory: string,
+  signal?: AbortSignal,
+  timeoutMs: number = repositoryGitConfigReadTimeoutMs,
+): Promise<GitFilterSetting[]> {
   let output: string
   try {
     output = (await execute("git", [
       "-C", directory, ...inertRepositoryConfig,
       "config", "--show-scope", "--show-origin", "-z", "--get-regexp", filterKeyPattern,
-    ], { env: gitEnvironment(), encoding: "utf8", maxBuffer: maximumRepositoryGitConfigOutputBytes, ...(signal ? { signal } : {}) })).stdout
+    ], {
+      env: gitEnvironment(), encoding: "utf8", maxBuffer: maximumRepositoryGitConfigOutputBytes,
+      timeout: timeoutMs, killSignal: "SIGKILL", ...(signal ? { signal } : {}),
+    })).stdout
   } catch (error) {
     signal?.throwIfAborted()
     const { code, stderr } = error as { code?: unknown; stderr?: unknown }
