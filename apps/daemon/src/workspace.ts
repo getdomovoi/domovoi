@@ -10,7 +10,8 @@ import { maximumPreviewSourceBytes, type RepositoryGitFilterScope } from "@getdo
 
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
-import { readRepositoryGitFilters, type RepositoryGitFilter } from "./repository-git-filters.js"
+import { gitCheckoutPins, type CheckoutPins } from "./git-checkout-pins.js"
+import { readGitFilterSettings, readRepositoryGitFilters, repositoryGitFilters, type RepositoryGitFilter } from "./repository-git-filters.js"
 import { RestoreOperationLease, trackRestoreCommand } from "./workspace-restore-lease.js"
 
 const execute = promisify(execFile)
@@ -1115,25 +1116,38 @@ export class GitWorkspaceService implements WorkspaceService {
   // the new worktree reads it, and the worktree is checked out only when that
   // sets no repository filter. Otherwise it is taken away, with the branch this
   // operation made (madeBranch), and refused.
+  //
+  // The checkout is of `commit` itself, not of whatever the new branch names
+  // by then, and runs with every driver its attributes can select pinned to
+  // what this scan approved (git-checkout-pins.ts), so config written after
+  // the scan runs nothing.
   async #checkOutNewWorktree(
     repositoryPath: string,
     path: string,
+    commit: string,
     madeBranch: string | undefined,
     signal?: AbortSignal,
   ): Promise<void> {
-    let filters: RepositoryGitFilter[]
+    let pins: CheckoutPins
     try {
-      filters = await readRepositoryGitFilters(path, signal)
+      const settings = await readGitFilterSettings(path, signal)
+      const filters = repositoryGitFilters(settings)
+      if (filters.length > 0) {
+        await this.#afterNewWorktreeScan?.(path)
+        throw new RepositoryGitFilterRefusedError(filters, await discardNewWorktree(repositoryPath, path, madeBranch))
+      }
+      pins = await gitCheckoutPins(path, commit, settings, signal)
       await this.#afterNewWorktreeScan?.(path)
     } catch (error) {
-      await discardNewWorktree(repositoryPath, path, madeBranch)
+      if (!(error instanceof RepositoryGitFilterRefusedError)) await discardNewWorktree(repositoryPath, path, madeBranch)
       throw error
     }
-    if (filters.length > 0) {
-      throw new RepositoryGitFilterRefusedError(filters, await discardNewWorktree(repositoryPath, path, madeBranch))
-    }
+    signal?.throwIfAborted()
     // What `git worktree add` itself runs to check a new worktree out.
-    await git(path, ["reset", "--hard", "--quiet", "--no-recurse-submodules", "HEAD"], signal)
+    await trackRestoreCommand(() => execute("git", [
+      "-C", path, ...inertRepositoryConfig, ...pins.globalOptions,
+      "reset", "--hard", "--quiet", "--no-recurse-submodules", commit,
+    ], { env: { ...gitEnvironment(), ...pins.env }, encoding: "utf8", maxBuffer: maximumGitOutputBytes, signal }))
   }
 
   async inspect(repositoryPath: string, signal?: AbortSignal): Promise<RepositoryInfo> {
@@ -1171,7 +1185,7 @@ export class GitWorkspaceService implements WorkspaceService {
     // Retain its commit before creating the worktree so a ref failure leaves no worktree behind.
     await git(repository.root, ["update-ref", `refs/domovoi/checkpoints/${repository.head}`, repository.head], signal)
     await git(repository.root, ["worktree", "add", "--no-checkout", "-b", branch, path, repository.head], signal)
-    await this.#checkOutNewWorktree(repository.root, path, branch, signal)
+    await this.#checkOutNewWorktree(repository.root, path, repository.head, branch, signal)
     return { path, branch, baseCommit: repository.head }
   }
 
@@ -1244,7 +1258,7 @@ export class GitWorkspaceService implements WorkspaceService {
         : ["worktree", "add", "--no-checkout", "-b", branch, path, checkpointCommit],
       signal,
     )
-    await this.#checkOutNewWorktree(repository.root, path, existingBranchCommit ? undefined : branch, signal)
+    await this.#checkOutNewWorktree(repository.root, path, checkpointCommit, existingBranchCommit ? undefined : branch, signal)
     return { path: await realpath(path), branch, baseCommit: checkpointCommit }
   }
 
@@ -1743,7 +1757,7 @@ export class GitWorkspaceService implements WorkspaceService {
     }
 
     await git(repositoryPath, ["worktree", "add", "--no-checkout", "-b", branch, path, commit], operationSignal)
-    await this.#checkOutNewWorktree(repositoryPath, path, branch, operationSignal)
+    await this.#checkOutNewWorktree(repositoryPath, path, commit, branch, operationSignal)
     // The transferred checkpoint stays restorable here, as it does when a
     // session arrives as a bundle.
     await git(path, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], operationSignal)
@@ -2015,7 +2029,7 @@ export class GitWorkspaceService implements WorkspaceService {
         }
         throw error
       }
-      await this.#checkOutNewWorktree(repository.root, path, branch, signal)
+      await this.#checkOutNewWorktree(repository.root, path, arrived, branch, signal)
       await installCheckpointRefs()
       return { path, branch, baseCommit: arrived }
     } finally {

@@ -2462,6 +2462,73 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await worktreeList()).toHaveLength(1)
   })
 
+  // Another session's agent can write the shared config between the scan and
+  // the checkout. The checkout pins every driver its attributes can select to
+  // what the scan approved, so a driver defined after the scan runs nothing.
+  it("runs no filter the shared config defines after the scan, for a driver the commit's attributes select", async () => {
+    const { repositoryPath, payload, worktrees, git, ran } = await filteredRepository("domovoi-create-race-")
+    const service = new GitWorkspaceService(worktrees, {
+      afterNewWorktreeScan: async () => { await git("config", "filter.agent.smudge", `sh ${payload}`) },
+    })
+
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-race")
+
+    expect(await ran()).toBe(false)
+    expect(await readFile(join(workspace.path, "victim.txt"), "utf8")).toBe("base\n")
+  })
+
+  it("runs no filter defined after the scan for a driver info/attributes selected at the scan", async () => {
+    const { repositoryPath, payload, worktrees, git, ran } = await filteredRepository("domovoi-create-race-info-")
+    const infoAttributes = join(repositoryPath, ".git", "info", "attributes")
+    await mkdir(join(repositoryPath, ".git", "info"), { recursive: true })
+    await writeFile(infoAttributes, "victim.txt filter=late\n")
+    const service = new GitWorkspaceService(worktrees, {
+      afterNewWorktreeScan: async () => { await git("config", "filter.late.smudge", `sh ${payload}`) },
+    })
+
+    await service.createSessionWorkspace(repositoryPath, "session-race-info")
+
+    expect(await ran()).toBe(false)
+  })
+
+  it("reads attributes for the checkout from the commit, not from files planted in the new worktree", async () => {
+    const { repositoryPath, payload, worktrees, git, ran } = await filteredRepository("domovoi-create-race-planted-")
+    await mkdir(join(repositoryPath, "sub"))
+    await writeFile(join(repositoryPath, "sub", "note.txt"), "note\n")
+    await git("add", ".")
+    await git("-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "sub")
+    const service = new GitWorkspaceService(worktrees, {
+      afterNewWorktreeScan: async (path) => {
+        await mkdir(join(path, "sub"))
+        await writeFile(join(path, "sub", ".gitattributes"), "* filter=planted\n")
+        await git("config", "filter.planted.smudge", `sh ${payload}`)
+      },
+    })
+
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-race-planted")
+
+    expect(await ran()).toBe(false)
+    expect(await readFile(join(workspace.path, "sub", "note.txt"), "utf8")).toBe("note\n")
+  })
+
+  it("checks out the commit it scanned even when the session branch moves after the scan", async () => {
+    const { repositoryPath, worktrees, git } = await filteredRepository("domovoi-create-race-branch-")
+    const scanned = (await git("rev-parse", "HEAD")).stdout.trim()
+    await writeFile(join(repositoryPath, "victim.txt"), "moved\n")
+    await git("-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-am", "later")
+    const later = (await git("rev-parse", "HEAD")).stdout.trim()
+    await git("reset", "--hard", "-q", scanned)
+    const service = new GitWorkspaceService(worktrees, {
+      afterNewWorktreeScan: async () => { await git("update-ref", "refs/heads/domovoi/session-race-branch", later) },
+    })
+
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-race-branch")
+
+    expect(workspace.baseCommit).toBe(scanned)
+    expect((await execute("git", ["-C", workspace.path, "rev-parse", "HEAD"])).stdout.trim()).toBe(scanned)
+    expect(await readFile(join(workspace.path, "victim.txt"), "utf8")).toBe("base\n")
+  })
+
   // The install lines alone are exempt; what they would make git-lfs start is not.
   it("refuses a session whose exempt Git LFS lines would start a transfer agent the repository names", async () => {
     const { repositoryPath, worktrees, git, branches } = await filteredRepository("domovoi-create-lfs-agent-")

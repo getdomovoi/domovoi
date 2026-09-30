@@ -59,7 +59,7 @@ const repositoryScopes: ReadonlySet<string> = new Set(repositoryGitFilterScopes)
 
 // The driver and operation of a setting that starts a program, or undefined.
 // `git config` prints section and variable names in lower case.
-function classify(key: string, value: string): { driver: string; operation: RepositoryGitFilterOperation } | undefined {
+export function classify(key: string, value: string): { driver: string; operation: RepositoryGitFilterOperation } | undefined {
   const filter = /^filter\.(.+)\.(clean|smudge|process)$/u.exec(key)
   if (filter) return { driver: filter[1]!, operation: filter[2] as RepositoryGitFilterOperation }
   if (!key.startsWith("lfs.")) return undefined

@@ -7,7 +7,10 @@ when the new worktree would run a git filter the repository's own Git config set
 added without a checkout, Git's config is read as that worktree reads it (so a filter an
 `includeIf "onbranch:"` include or a copied `config.worktree` sets is found), and it is checked
 out only when no such filter would run. Otherwise the worktree and the branch it made are taken
-away and nothing runs. `session.create` and `session.fork` answer with
+away and nothing runs. The checkout is of the scanned commit itself, reads in-tree attributes from
+that commit on Git 2.40 and later, and runs with every filter driver its attributes can select
+pinned to the value the scan approved, so config written between the scan and the checkout runs
+nothing. `session.create` and `session.fork` answer with
 `repositoryGitFilterErrorCode` and the drivers, the configuration digest and the repository's
 trust read at that moment; a transfer keeps its existing refusal. Filters from the person's global
 or system Git config, and the exact lines `git lfs install` writes, still run. The Git LFS
