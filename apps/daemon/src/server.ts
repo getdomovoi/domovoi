@@ -2178,7 +2178,9 @@ export class DomovoiDaemon {
   // else will record it: when it settles, a thread whose adapter reports the
   // grant applied (or whose report throws) is stopped as a late start is. That
   // stop begins before the call's own count ends, so the thread is never idle
-  // in between. Returns the hook the caller marks a timeout with.
+  // in between. Returns the hook the caller marks a timeout with. Security
+  // review round 11 of #669: the call's count ends even when its bookkeeping
+  // throws, and that failure is reported.
   #watchTrustedCall(
     pending: Promise<unknown>,
     call: RepositoryTrustCall,
@@ -2191,15 +2193,25 @@ export class DomovoiDaemon {
     let timedOut = false
     this.#trustWorkBegan(threadKey)
     const settled = () => {
-      this.#trustApplied(threadKey)
-      if (timedOut && this.#trackRepositoryTrust(call, sessionId, provider, threadId)) {
-        void this.#stopAbandonedThread(provider, threadId, "Late provider cleanup timed out").catch((error: unknown) => {
-          this.#reportError("Domovoi could not stop a provider thread whose call landed late", error)
-        })
+      try {
+        this.#trustApplied(threadKey)
+        if (timedOut && this.#trackRepositoryTrust(call, sessionId, provider, threadId)) {
+          void this.#stopAbandonedThread(provider, threadId, "Late provider cleanup timed out").catch((error: unknown) => {
+            this.#reportError("Domovoi could not stop a provider thread whose call landed late", error)
+          })
+        }
+      } catch (error) {
+        // The grant may have been applied with no epoch on record, so no stop
+        // that resolved before now counts as the thread's exit.
+        this.#trustStopResolvedAt.delete(threadKey)
+        throw error
+      } finally {
+        this.#trustWorkEnded(provider, threadId)
       }
-      this.#trustWorkEnded(provider, threadId)
     }
-    void pending.then(settled, settled)
+    void pending.then(settled, settled).catch((error: unknown) => {
+      this.#reportError("Domovoi could not record a provider call that carried repository trust", error)
+    })
     return { timedOut: () => { timedOut = true } }
   }
 
@@ -2338,22 +2350,30 @@ export class DomovoiDaemon {
   // #669): a stop that resolves after its timeout still counts as the
   // thread's exit then. The timeout is only what the caller waits: a stop
   // that times out or fails is unconfirmed, fences a tracked thread and
-  // throws, as before.
+  // throws, as before. Security review round 11 of #669: the stop's count
+  // ends however its bookkeeping goes. Bookkeeping that throws before the
+  // timeout fails the stop, fence included; after it, it is reported.
   async #stopAbandonedThread(provider: string, threadId: string, timeoutMessage: string): Promise<void> {
     const threadKey = providerThreadKey(provider, threadId)
     const startedAt = this.#nextTrustEpoch()
     this.#trustWorkBegan(threadKey)
     let settled: Promise<void> | undefined
+    let waited = false
     try {
       const stopping = this.#agents.require(provider).stopThread(threadId)
       settled = stopping.then(
         () => {
-          this.#threadStopped(provider, threadId, startedAt)
-          this.#trustWorkEnded(provider, threadId)
+          try {
+            this.#threadStopped(provider, threadId, startedAt)
+          } finally {
+            this.#trustWorkEnded(provider, threadId)
+          }
         },
         () => this.#trustWorkEnded(provider, threadId),
       )
       await withTimeout(stopping, this.#agentTimeoutMs, timeoutMessage)
+      waited = true
+      await settled
     } catch (error) {
       if (this.#trustedThreads.has(threadKey)) {
         this.#failedEmergencyThreads.add(threadKey)
@@ -2361,9 +2381,13 @@ export class DomovoiDaemon {
       }
       // A stop that threw before it began settles nothing later.
       if (settled === undefined) this.#trustWorkEnded(provider, threadId)
+      // A stop this call no longer waits for records itself when it settles,
+      // and nothing else would see that fail.
+      else if (!waited) {
+        void settled.catch((late: unknown) => this.#reportError("Domovoi could not record a provider thread stop", late))
+      }
       throw error
     }
-    await settled
   }
 
   // Rulings Q4, Q146, Q152 and Q170 A: taking trust back stops, now, every
