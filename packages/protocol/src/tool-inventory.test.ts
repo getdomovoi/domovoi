@@ -170,13 +170,22 @@ describe("tool inventory", () => {
     }
   })
 
-  it("is an observe, read-only method the phone does not get", () => {
+  it("is an observe, read-only method", () => {
     expect(rpcMethods["tool.inventory"].params.safeParse({}).success).toBe(true)
     expect(rpcMethods["tool.inventory"].params.safeParse({ projectId: "x" }).success).toBe(false)
     expect(rpcMethods["tool.inventory"].result).toBe(toolInventorySchema)
     expect(rpcMethodAuthorizations["tool.inventory"]).toBe("observe")
     expect(rpcMethodMutations["tool.inventory"]).toBe("read-only")
-    expect(phoneAndTabletRpcMethods.has("tool.inventory")).toBe(false)
+  })
+
+  // Ruling Q211 (2026-09-30): the phone's Tools screen shows what a repository
+  // holds back, with every entry, and says trust is granted from desktop or
+  // web. It reads the inventory; trusting and taking trust back stay off the
+  // phone (ruling Q67).
+  it("is read by a phone, which still cannot trust or take trust back", () => {
+    expect(phoneAndTabletRpcMethods.has("tool.inventory")).toBe(true)
+    expect(phoneAndTabletRpcMethods.has("repository.trust")).toBe(false)
+    expect(phoneAndTabletRpcMethods.has("repository.revokeTrust")).toBe(false)
   })
 })
 
