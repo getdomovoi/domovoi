@@ -367,4 +367,46 @@ describe("App", () => {
     expect(screen.queryByText(`acme-api on ${self.name}`)).toBeNull()
     expect(screen.getByText(`Reading the agents' files on ${self.name}.`)).toBeOnTheScreen()
   })
+
+  // An inventory read on an earlier visit is not a claim about now: Tools
+  // opened again while the connection is down shows nothing read, not it.
+  it("does not show the last inventory when Tools opens again while disconnected", async () => {
+    const { socket } = await openApp(workspace())
+    await fireEvent.press(screen.getByRole("tab", { name: "Machines" }))
+    await settle()
+    const self = demoWorkspace.machine
+    await act(async () => {
+      socket.answer("fleet.list", {
+        entries: [{
+          kind: "machine",
+          machine: {
+            id: self.id, label: self.name, platform: "darwin", arch: "arm64", version: "0.0.1", connection: "local",
+            capabilities: ["sessions"], protocolVersion: "0.2.0", transports: [],
+            heartbeat: { state: "online", lastSeenAt: new Date().toISOString() }, health: "healthy", self: true,
+          },
+        }],
+      })
+    })
+    await settle()
+    await fireEvent.press(screen.getByRole("button", { name: `Tools on ${self.name}` }))
+    await settle()
+    await act(async () => {
+      socket.answer("tool.inventory", {
+        machine: { id: self.id, name: self.name, platform: "darwin", arch: "arm64", version: "0.0.1" },
+        repository: { projectId: "project-acme-api", root: "/Users/dev/src/acme-api", configDigest: `sha256:${"a".repeat(64)}`, trust: { state: "untrusted", reason: "not-trusted" } },
+        providers: [],
+      })
+    })
+    await settle()
+    expect(screen.getByText(`acme-api on ${self.name}`)).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("button", { name: "Back" }))
+
+    await act(async () => { socket.close() })
+    await settle()
+    await fireEvent.press(screen.getByRole("button", { name: `Tools on ${self.name}` }))
+    await settle()
+    expect(screen.queryByText(`acme-api on ${self.name}`)).toBeNull()
+    expect(screen.getByText(`Reading the agents' files on ${self.name}.`)).toBeOnTheScreen()
+    expect(socket.requests("tool.inventory")).toHaveLength(1)
+  })
 })

@@ -377,8 +377,11 @@ export function App() {
       setToolsLoad({ state: "error", message: cause instanceof Error ? cause.message : "The daemon did not answer." })
     }
   }, [call])
+  // Closing drops what was read, so Tools opened again, while disconnected or
+  // on a restarted daemon, shows nothing read rather than an old inventory.
   const closeTools = useCallback(() => {
     toolsRead.current += 1
+    setToolsLoad({ state: "loading" })
     setToolsOpen(false)
   }, [])
 
