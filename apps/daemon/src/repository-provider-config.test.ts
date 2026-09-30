@@ -1837,7 +1837,10 @@ describe("readRepositoryProviderConfig: config digest", () => {
 })
 
 describe("readRepositoryProviderConfig: git filters", () => {
-  const git = (root: string, ...args: string[]) => execFileSync("git", ["-C", root, ...args], { stdio: "pipe" })
+  // The test's own Git commands read no global or system config, so a runner
+  // with git-lfs installed globally sees what any other machine sees.
+  let env: NodeJS.ProcessEnv = process.env
+  const git = (root: string, ...args: string[]) => execFileSync("git", ["-C", root, ...args], { stdio: "pipe", env })
   const settings = JSON.stringify({ env: { NODE_ENV: "development" } })
   // This tree's digest as the reader computed it before git filters entered
   // the digest (origin/main bd0271e4). A repository whose own config sets no
@@ -1845,6 +1848,9 @@ describe("readRepositoryProviderConfig: git filters", () => {
   const digestBeforeGitFilters = "sha256:ee3579b7b1519f83907a0f595fc282fcdb22d8326147b99a565e6ef9f2f1fb3f"
 
   async function repository(): Promise<string> {
+    const empty = join(await scratch("domovoi-provider-git-config-"), "empty.gitconfig")
+    await writeFile(empty, "")
+    env = { ...process.env, GIT_CONFIG_GLOBAL: empty, GIT_CONFIG_SYSTEM: empty }
     const root = await realpath(await scratch("domovoi-provider-git-filters-"))
     await put(root, ".claude/settings.json", settings)
     git(root, "init", "--initial-branch=main")

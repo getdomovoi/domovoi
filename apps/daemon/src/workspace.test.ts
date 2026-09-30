@@ -2401,15 +2401,23 @@ describe("GitWorkspaceService file revert", () => {
 // new worktree reads it, and only then is it checked out or taken away
 // (ruling Q3 A).
 describe("GitWorkspaceService checkout under repository git filters", () => {
+  // The test's own Git commands read no global or system config, so a runner
+  // with git-lfs installed globally sees what any other machine sees. The
+  // service still reads the person's config as it always does.
+  let isolated: NodeJS.ProcessEnv = process.env
+  const run = (...args: string[]) => execute("git", args, { env: isolated })
+
   async function filteredRepository(prefix: string) {
     const scratch = await realpath(await mkdtemp(join(tmpdir(), prefix)))
     scratchDirectories.push(scratch)
+    await writeFile(join(scratch, "empty.gitconfig"), "")
+    isolated = { ...process.env, GIT_CONFIG_GLOBAL: join(scratch, "empty.gitconfig"), GIT_CONFIG_SYSTEM: join(scratch, "empty.gitconfig") }
     const repositoryPath = join(scratch, "project")
     const markerPath = join(scratch, "filter-ran").replaceAll("\\", "/")
     const payload = join(scratch, "payload.sh").replaceAll("\\", "/")
     await writeFile(payload, `echo ran >> "${markerPath}"\ncat\n`)
-    const git = (...args: string[]) => execute("git", ["-C", repositoryPath, ...args])
-    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    const git = (...args: string[]) => run("-C", repositoryPath, ...args)
+    await run("init", "--initial-branch=main", repositoryPath)
     await git("config", "core.autocrlf", "false")
     await writeFile(join(repositoryPath, ".gitattributes"), "victim.txt filter=agent\n")
     await writeFile(join(repositoryPath, "victim.txt"), "base\n")
@@ -2447,8 +2455,8 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
   it("refuses a filter only the new session's branch includes, after adding it without a checkout", async () => {
     const { repositoryPath, filterFile, worktrees, git, ran, branches, worktreeList } = await filteredRepository("domovoi-create-onbranch-")
     await git("config", "includeIf.onbranch:domovoi/**.path", filterFile)
-    // Read at the main checkout, on main, the config sets no filter.
-    expect((await git("config", "--get-regexp", "^filter\\.").catch(() => ({ stdout: "" }))).stdout).toBe("")
+    // Read at the main checkout, on main, the repository's own config sets no filter.
+    expect((await git("config", "--local", "--includes", "--get-regexp", "^filter\\.").catch(() => ({ stdout: "" }))).stdout).toBe("")
     const service = new GitWorkspaceService(worktrees)
 
     await expect(service.createSessionWorkspace(repositoryPath, "session-onbranch")).rejects.toMatchObject({
@@ -2525,7 +2533,7 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     const workspace = await service.createSessionWorkspace(repositoryPath, "session-race-branch")
 
     expect(workspace.baseCommit).toBe(scanned)
-    expect((await execute("git", ["-C", workspace.path, "rev-parse", "HEAD"])).stdout.trim()).toBe(scanned)
+    expect((await run("-C", workspace.path, "rev-parse", "HEAD")).stdout.trim()).toBe(scanned)
     expect(await readFile(join(workspace.path, "victim.txt"), "utf8")).toBe("base\n")
   })
 
@@ -2574,7 +2582,7 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     const source = await service.createSessionWorkspace(repositoryPath, "session-source")
     const checkpoint = await service.checkpoint(source.path, "before fork")
     await git("config", "extensions.worktreeConfig", "true")
-    await execute("git", ["-C", source.path, "config", "--worktree", "filter.agent.smudge", `sh ${payload}`])
+    await run("-C", source.path, "config", "--worktree", "filter.agent.smudge", `sh ${payload}`)
 
     await expect(service.createSessionWorkspaceFromCheckpoint(source.path, checkpoint.commit, "session-fork")).rejects.toMatchObject({
       name: "RepositoryGitFilterRefusedError",
@@ -2597,7 +2605,7 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
 
     expect(await readFile(join(workspace.path, "victim.txt"), "utf8")).toBe("base\n")
     expect(await readFile(join(workspace.path, ".gitattributes"), "utf8")).toBe("victim.txt filter=agent\n")
-    expect((await execute("git", ["-C", workspace.path, "status", "--porcelain"])).stdout).toBe("")
+    expect((await run("-C", workspace.path, "status", "--porcelain")).stdout).toBe("")
     expect(checkpoint).toBeUndefined()
     expect(await ran()).toBe(false)
     const fork = await service.createSessionWorkspaceFromCheckpoint(workspace.path, workspace.baseCommit, "session-clean-fork")
@@ -2632,8 +2640,8 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     await source.checkpoint(workspace.path, "before-transfer")
     const bundle = await source.bundleSession(workspace.path, join(scratch, "session.bundle"))
     const targetRepositoryPath = join(scratch, "target-project")
-    await execute("git", ["clone", "--quiet", repositoryPath, targetRepositoryPath])
-    await execute("git", ["-C", targetRepositoryPath, "config", "includeIf.onbranch:domovoi/**.path", filterFile])
+    await run("clone", "--quiet", repositoryPath, targetRepositoryPath)
+    await run("-C", targetRepositoryPath, "config", "includeIf.onbranch:domovoi/**.path", filterFile)
     const targetWorktrees = join(scratch, "target-worktrees")
     const target = new GitWorkspaceService(targetWorktrees)
 
@@ -2644,13 +2652,13 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     })
     expect(await ran()).toBe(false)
     await expect(lstat(join(targetWorktrees, "session-1"))).rejects.toThrow()
-    expect((await execute("git", ["-C", targetRepositoryPath, "branch", "--list", "domovoi/*"])).stdout.trim()).toBe("")
+    expect((await run("-C", targetRepositoryPath, "branch", "--list", "domovoi/*")).stdout.trim()).toBe("")
   })
 
   it("refuses to restore a session from a shared remote where the target's config sets a filter for its branch", async () => {
     const { scratch, repositoryPath, filterFile, git, ran } = await filteredRepository("domovoi-ref-transfer-filter-")
     const remotePath = join(scratch, "remote.git")
-    await execute("git", ["init", "--bare", remotePath])
+    await run("init", "--bare", remotePath)
     await git("remote", "add", "origin", remotePath)
     const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
     const workspace = await source.createSessionWorkspace(repositoryPath, "session-1")
@@ -2658,14 +2666,14 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     const checkpoint = await source.checkpoint(workspace.path, "before-transfer")
     await source.pushSessionRef(workspace.path, "origin", "session-1")
     const targetClone = join(scratch, "target-project")
-    await execute("git", ["clone", "--quiet", remotePath, targetClone])
-    await execute("git", ["-C", targetClone, "config", "includeIf.onbranch:domovoi/**.path", filterFile])
+    await run("clone", "--quiet", remotePath, targetClone)
+    await run("-C", targetClone, "config", "includeIf.onbranch:domovoi/**.path", filterFile)
     const targetWorktrees = join(scratch, "target-worktrees")
 
     await expect(new GitWorkspaceService(targetWorktrees).restoreSessionFromRef(targetClone, "origin", "session-1", checkpoint.commit))
       .rejects.toMatchObject({ name: "RepositoryGitFilterRefusedError", worktreeRemoved: true })
     expect(await ran()).toBe(false)
     await expect(lstat(join(targetWorktrees, "session-1"))).rejects.toThrow()
-    expect((await execute("git", ["-C", targetClone, "branch", "--list", "domovoi/*"])).stdout.trim()).toBe("")
+    expect((await run("-C", targetClone, "branch", "--list", "domovoi/*")).stdout.trim()).toBe("")
   })
 })

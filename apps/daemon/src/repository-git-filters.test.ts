@@ -20,8 +20,12 @@ async function repository() {
   const scratch = await realpath(await mkdtemp(join(tmpdir(), "domovoi-git-filters-")))
   scratchDirectories.push(scratch)
   const root = join(scratch, "project")
-  const git = (...args: string[]) => execute("git", ["-C", root, ...args])
-  await execute("git", ["init", "--initial-branch=main", root])
+  // The test's own Git commands read no global or system config, so a runner
+  // with git-lfs installed globally sees what any other machine sees.
+  await writeFile(join(scratch, "empty.gitconfig"), "")
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: join(scratch, "empty.gitconfig"), GIT_CONFIG_SYSTEM: join(scratch, "empty.gitconfig") }
+  const git = (...args: string[]) => execute("git", ["-C", root, ...args], { env })
+  await execute("git", ["init", "--initial-branch=main", root], { env })
   await writeFile(join(root, "a.txt"), "a\n")
   await git("add", ".")
   await git("-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "initial")
