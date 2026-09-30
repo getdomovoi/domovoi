@@ -14,8 +14,13 @@ handling, path protection, long paths, encoding round trips, sparse checkout, th
 store and the exact `git lfs install` lines), a copy of info/attributes and no hooks. So no
 repository key, a filter, core.sshCommand, core.askPass, a credential helper or core.fsmonitor,
 starts a program during the checkout, through Git or through git-lfs. The index it writes is
-copied into the new worktree, which is an ordinary linked worktree afterwards. A partial clone's
-missing object fails the checkout instead of being fetched. `session.create` and `session.fork` answer with
+copied into the new worktree, which is an ordinary linked worktree afterwards. Each remote's url,
+pushurl and lfsurl, and lfs.url and lfs.pushurl, are carried when they are https, http, ssh, git
+or scp-like addresses (ext::, fd::, other helper addresses, file:// and local paths are dropped),
+and a partial clone's partialClone extension with its promisor remote, so git-lfs finds its
+endpoint and a missing blob is fetched with the person's own transport settings over https,
+http, ssh or git only. A checkout directory a stopped daemon left behind is removed by the next
+checkout in that repository once it is ten minutes old. `session.create` and `session.fork` answer with
 `repositoryGitFilterErrorCode` and the drivers, the configuration digest and the repository's
 trust read at that moment; a transfer keeps its existing refusal. Filters from the person's global
 or system Git config, and the exact lines `git lfs install` writes, still run. The Git LFS

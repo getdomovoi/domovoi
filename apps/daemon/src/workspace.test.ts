@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process"
 import { createServer } from "node:http"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
@@ -2478,58 +2478,163 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
   // nothing a filter or git-lfs reads from Git config comes from the
   // repository. A fake git-lfs stands in for the real one (none on this
   // machine): like git-lfs 3.8.0 it reads core.sshCommand, core.askPass and
-  // the credential helper from `git config` and starts them.
-  it.each([
-    ["core.sshCommand", "ssh"], ["core.askPass", "askpass"], ["credential.helper", "helper"],
-    ["credential.https://lfs.example.test.helper", "url-helper"],
-  ])(
-    "runs no program the repository's %s names through the exempt Git LFS lines",
-    async (key, label) => {
-      const { scratch, repositoryPath, payload, worktrees, git, ran } = await filteredRepository("domovoi-create-lfs-delegate-")
-      await writeFile(join(repositoryPath, ".gitattributes"), "victim.txt filter=agent\n*.bin filter=lfs\n")
-      await writeFile(join(repositoryPath, "object.bin"), "object\n")
-      await git("add", ".")
-      await git("-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "lfs")
-      const bin = join(scratch, "bin")
-      await mkdir(bin)
-      const storage = join(scratch, "lfs-storage-seen")
-      await writeFile(join(bin, "git-lfs"), [
-        "#!/bin/sh",
-        `git config --get lfs.storage > "${storage.replaceAll("\\", "/")}"`,
-        "for key in core.sshcommand core.askpass credential.helper; do",
-        "  value=$(git config --get \"$key\")",
-        "  case \"$value\" in *payload*) sh -c \"$value\" ;; esac",
-        "done",
-        "value=$(git config --get-urlmatch credential.helper https://lfs.example.test/repo)",
-        "case \"$value\" in *payload*) sh -c \"$value\" ;; esac",
-        "cat",
-        "",
-      ].join("\n"), { mode: 0o755 })
-      await git("config", "filter.lfs.smudge", "git-lfs smudge -- %f")
-      await git("config", "filter.lfs.required", "true")
-      await git("config", key, `sh ${payload}`)
-      // An empty home, so a git-lfs the machine installed globally (its
-      // filter.lfs.process line) does not take the place of the fake.
+  // the credential helper from `git config` and starts them, and it records
+  // the object store and the remote it would take its endpoint from.
+  async function lfsRepository(prefix: string) {
+    const repository = await filteredRepository(prefix)
+    const { scratch, repositoryPath, git } = repository
+    await writeFile(join(repositoryPath, ".gitattributes"), "victim.txt filter=agent\n*.bin filter=lfs\n")
+    await writeFile(join(repositoryPath, "object.bin"), "object\n")
+    await git("add", ".")
+    await git("-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "lfs")
+    const bin = join(scratch, "bin")
+    await mkdir(bin)
+    const seen = (name: string) => join(scratch, `lfs-seen-${name}`).replaceAll("\\", "/")
+    await writeFile(join(bin, "git-lfs"), [
+      "#!/bin/sh",
+      `git config --get lfs.storage > "${seen("storage")}"`,
+      `git config --get remote.origin.url > "${seen("remote")}"`,
+      "for key in core.sshcommand core.askpass credential.helper; do",
+      "  value=$(git config --get \"$key\")",
+      "  case \"$value\" in *payload*) sh -c \"$value\" ;; esac",
+      "done",
+      "value=$(git config --get-urlmatch credential.helper https://lfs.example.test/repo)",
+      "case \"$value\" in *payload*) sh -c \"$value\" ;; esac",
+      "cat",
+      "",
+    ].join("\n"), { mode: 0o755 })
+    await git("config", "filter.lfs.smudge", "git-lfs smudge -- %f")
+    await git("config", "filter.lfs.required", "true")
+    const seenText = async (name: string) => (await readFile(seen(name), "utf8")).trim()
+    // An empty home, so a git-lfs the machine installed globally (its
+    // filter.lfs.process line) does not take the place of the fake.
+    const create = async (sessionId: string) => {
       const home = join(scratch, "home")
-      await mkdir(home)
+      await mkdir(home, { recursive: true })
       const previous = { PATH: process.env.PATH, HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
       process.env.PATH = `${bin}${process.platform === "win32" ? ";" : ":"}${previous.PATH ?? ""}`
       process.env.HOME = home
       process.env.XDG_CONFIG_HOME = join(home, ".config")
       try {
-        const workspace = await new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, `session-lfs-${label}`)
-        expect(await readFile(join(workspace.path, "object.bin"), "utf8")).toBe("object\n")
+        return await new GitWorkspaceService(repository.worktrees).createSessionWorkspace(repositoryPath, sessionId)
       } finally {
         for (const [name, value] of Object.entries(previous)) {
           if (value === undefined) delete process.env[name]
           else process.env[name] = value
         }
       }
+    }
+    return { ...repository, create, seenText }
+  }
+
+  it.each([
+    ["core.sshCommand", "ssh"], ["core.askPass", "askpass"], ["credential.helper", "helper"],
+    ["credential.https://lfs.example.test.helper", "url-helper"],
+  ])(
+    "runs no program the repository's %s names through the exempt Git LFS lines",
+    async (key, label) => {
+      const { repositoryPath, payload, git, ran, create, seenText } = await lfsRepository("domovoi-create-lfs-delegate-")
+      await git("config", key, `sh ${payload}`)
+
+      const workspace = await create(`session-lfs-${label}`)
+
+      expect(await readFile(join(workspace.path, "object.bin"), "utf8")).toBe("object\n")
       expect(await ran()).toBe(false)
       // git-lfs keeps finding the repository's own object store.
-      expect((await readFile(storage, "utf8")).trim()).toBe(join(await realpath(join(repositoryPath, ".git")), "lfs"))
+      expect(await seenText("storage")).toBe(join(await realpath(join(repositoryPath, ".git")), "lfs"))
     },
   )
+
+  // Ruling Q224: git-lfs takes a missing object's endpoint from the remote,
+  // as it normally would, with the person's own transport settings.
+  it("lets git-lfs find its endpoint from the repository's remote, and still runs none of its commands", async () => {
+    const { payload, git, ran, create, seenText } = await lfsRepository("domovoi-create-lfs-remote-")
+    await git("remote", "add", "origin", "https://lfs.example.test/repo.git")
+    await git("config", "core.sshCommand", `sh ${payload}`)
+
+    await create("session-lfs-remote")
+
+    expect(await seenText("remote")).toBe("https://lfs.example.test/repo.git")
+    expect(await ran()).toBe(false)
+  })
+
+  it.each([
+    ["ext::sh -c %S", "ext"], ["fd::7", "fd"], ["file:///tmp/elsewhere.git", "file"], ["helper::https://example.test/x", "helper"],
+    ["/tmp/elsewhere.git", "path"], ["-oProxyCommand=sh:x", "dash-host"],
+  ])("does not carry a remote url of the form %s into the checkout", async (url, label) => {
+    const { git, ran, create, seenText } = await lfsRepository("domovoi-create-lfs-remote-form-")
+    await git("config", "remote.origin.url", url)
+
+    await create(`session-lfs-form-${label}`)
+
+    expect(await seenText("remote")).toBe("")
+    expect(await ran()).toBe(false)
+  })
+
+  // Ruling Q224: a partial clone's missing blob is fetched from its promisor
+  // remote during the checkout, over a transport the daemon allows (git://
+  // here, served by a local git daemon for the test's life).
+  it("creates a session in a blob:none partial clone, fetching the blobs the checkout needs", async () => {
+    const { scratch, git } = await filteredRepository("domovoi-create-partial-")
+    await git("config", "uploadpack.allowFilter", "true")
+    await git("config", "uploadpack.allowAnySHA1InWant", "true")
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const probe = createServer()
+      probe.once("error", reject)
+      probe.listen(0, "127.0.0.1", () => {
+        const address = probe.address()
+        probe.close(() => resolvePort(typeof address === "object" && address ? address.port : 0))
+      })
+    })
+    const daemon = execFile("git", [
+      "daemon", "--reuseaddr", "--export-all", "--enable=upload-pack", `--base-path=${scratch}`, "--listen=127.0.0.1", `--port=${port}`, scratch,
+    ], { env: isolated })
+    try {
+      const clone = join(scratch, "partial")
+      const url = `git://127.0.0.1:${port}/project`
+      let cloned = false
+      for (let attempt = 0; attempt < 50 && !cloned; attempt += 1) {
+        cloned = await run("clone", "--quiet", "--no-checkout", "--filter=blob:none", url, clone).then(() => true, async () => {
+          await new Promise((wait) => setTimeout(wait, 100))
+          return false
+        })
+      }
+      expect(cloned).toBe(true)
+      // The clone checked nothing out, so the blobs of HEAD are not here.
+      const blob = (await run("-C", clone, "rev-parse", "HEAD:victim.txt")).stdout.trim()
+      // --missing=print lists a missing object with a leading "?" and fetches nothing.
+      const missing = async () => (await run("-C", clone, "rev-list", "--objects", "--missing=print", "HEAD")).stdout
+      expect(await missing()).toContain(`?${blob}`)
+
+      const workspace = await new GitWorkspaceService(join(scratch, "partial-worktrees")).createSessionWorkspace(clone, "session-partial")
+
+      expect(await readFile(join(workspace.path, "victim.txt"), "utf8")).toBe("base\n")
+      expect((await run("-C", workspace.path, "status", "--porcelain")).stdout).toBe("")
+    } finally {
+      daemon.kill()
+    }
+  }, 30_000)
+
+  // A checkout directory an earlier daemon left behind (it crashed mid
+  // checkout) is removed by the next checkout in that repository, once it is
+  // old enough not to be another checkout still running.
+  it("sweeps stale checkout directories from the repository's Git directory, and only those", async () => {
+    const { repositoryPath, worktrees } = await filteredRepository("domovoi-create-sweep-")
+    const gitDirectory = join(repositoryPath, ".git")
+    const stale = join(gitDirectory, "domovoi-checkout-00000000-0000-4000-8000-000000000001")
+    const fresh = join(gitDirectory, "domovoi-checkout-00000000-0000-4000-8000-000000000002")
+    const unrelated = join(gitDirectory, "domovoi-checkout-notes")
+    for (const directory of [stale, fresh, unrelated]) await mkdir(join(directory, "objects"), { recursive: true })
+    const old = new Date(Date.now() - 60 * 60 * 1000)
+    await utimes(stale, old, old)
+    await utimes(unrelated, old, old)
+
+    await new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, "session-sweep")
+
+    await expect(lstat(stale)).rejects.toThrow()
+    expect((await lstat(fresh)).isDirectory()).toBe(true)
+    expect((await lstat(unrelated)).isDirectory()).toBe(true)
+  })
 
   it("runs no repository core.fsmonitor command while it checks a session out", async () => {
     const { repositoryPath, payload, worktrees, git, ran } = await filteredRepository("domovoi-create-fsmonitor-")
