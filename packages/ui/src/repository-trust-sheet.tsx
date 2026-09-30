@@ -97,7 +97,10 @@ export function RepositoryTrustSheet({
           <DialogDescription className="text-[13px] leading-[1.6]">Everything this repository would run for any agent here. None of it has run.</DialogDescription>
         </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
+        {/* Block flow, not a flex column or grid: a file group clips its
+            corners with overflow hidden, and as a flex or grid item it would
+            then shrink below its content and cut off its entries. */}
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
           {outcome?.kind === "changed" ? (
             <Alert>
               <FileTextIcon />
