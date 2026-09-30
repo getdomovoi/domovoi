@@ -200,9 +200,9 @@ describe("tool inventory git filters", () => {
       { path: ".git/config.worktree", scope: "worktree" },
     ],
     entries: [
-      { driver: "sops", operation: "smudge", command: "sops --decrypt /dev/stdin", file: ".git/config", heldBack: true },
-      { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", file: ".git/config", heldBack: true },
-      { driver: "crypt", operation: "process", command: "git-crypt filter-process", file: ".git/config.worktree", heldBack: true },
+      { driver: "sops", operation: "smudge", command: "sops --decrypt /dev/stdin", file: ".git/config", scope: "local", heldBack: true },
+      { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", file: ".git/config", scope: "local", heldBack: true },
+      { driver: "crypt", operation: "process", command: "git-crypt filter-process", file: ".git/config.worktree", scope: "worktree", heldBack: true },
     ],
     omittedEntries: 0,
   }
@@ -234,6 +234,23 @@ describe("tool inventory git filters", () => {
   it("lists entries only from a listed file, each file once", () => {
     expect(parses({ ...gitFilters, entries: [{ ...entry, file: ".gitconfig" }] })).toBe(false)
     expect(parses({ ...gitFilters, files: [...gitFilters.files, gitFilters.files[0]] })).toBe(false)
+  })
+
+  // One included file can be read both from the repository's config and from
+  // a worktree's config.worktree; Git reports each read with its own scope.
+  it("lists a file once per scope it is read in, and each entry with the scope it came from", () => {
+    const shared = {
+      files: [{ path: "shared.gitconfig", scope: "local" }, { path: "shared.gitconfig", scope: "worktree" }],
+      entries: [
+        { ...entry, file: "shared.gitconfig", scope: "local" },
+        { ...entry, file: "shared.gitconfig", scope: "worktree" },
+      ],
+      omittedEntries: 0,
+    }
+    expect(parses(shared)).toBe(true)
+    expect(parses({ ...shared, entries: [{ ...entry, file: "shared.gitconfig", scope: "command" }] })).toBe(false)
+    const { scope: _, ...unscoped } = entry
+    expect(parses({ ...gitFilters, entries: [unscoped] })).toBe(false)
   })
 
   it("refuses an operation, scope or field it does not know", () => {

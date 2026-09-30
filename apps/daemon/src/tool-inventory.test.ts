@@ -45,7 +45,7 @@ describe("readToolInventory", () => {
   it("lists the repository's own git filters beside its trust, and nothing when it sets none", async () => {
     const gitFilters = {
       files: [{ path: ".git/config", scope: "local" as const }],
-      entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt /dev/stdin", file: ".git/config", heldBack: true }],
+      entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt /dev/stdin", file: ".git/config", scope: "local" as const, heldBack: true }],
       omittedEntries: 0,
     }
     const configDigest = `sha256:${"a".repeat(64)}`

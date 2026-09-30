@@ -195,7 +195,10 @@ export const toolInventoryGitFilterEntrySchema = z.object({
   driver: repositoryGitFilterDriverNameSchema,
   operation: z.enum(repositoryGitFilterOperations),
   command: text(maximumToolInventoryCommandLength),
+  // The file and the scope Git read it in: one included file can be read
+  // from the repository's config and from a worktree's config.worktree.
   file: toolInventoryPathSchema,
+  scope: repositoryGitFilterScopeSchema,
   heldBack: z.boolean(),
 }).strict()
 
@@ -219,13 +222,15 @@ export const toolInventoryGitFiltersSchema = z.object({
   if (filters.unreadable && (filters.files.length > 0 || filters.entries.length > 0 || filters.omittedEntries > 0)) {
     context.addIssue({ code: "custom", path: ["unreadable"], message: "Unreadable config lists nothing" })
   }
+  // A file is listed once per scope it is read in; an entry names both.
   const files = new Set<string>()
+  const id = (path: string, scope: string) => `${scope}\0${path}`
   for (const [index, file] of filters.files.entries()) {
-    if (files.has(file.path)) context.addIssue({ code: "custom", path: ["files", index, "path"], message: "A file is listed once" })
-    files.add(file.path)
+    if (files.has(id(file.path, file.scope))) context.addIssue({ code: "custom", path: ["files", index, "path"], message: "A file is listed once per scope" })
+    files.add(id(file.path, file.scope))
   }
   for (const [index, entry] of filters.entries.entries()) {
-    if (!files.has(entry.file)) context.addIssue({ code: "custom", path: ["entries", index, "file"], message: "Entries come only from a listed file" })
+    if (!files.has(id(entry.file, entry.scope))) context.addIssue({ code: "custom", path: ["entries", index, "file"], message: "Entries come only from a listed file, in its scope" })
   }
 })
 

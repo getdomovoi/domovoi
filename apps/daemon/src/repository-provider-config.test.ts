@@ -1972,9 +1972,9 @@ describe("readRepositoryProviderConfig: git filters", () => {
       files: [{ path: ".git/config", scope: "local" }, { path: included, scope: "local" }],
       entries: [
         // Cut at its first trigger, the assignment, as every inventory command is (ruling Q101 A).
-        { driver: "sops", operation: "smudge", command: "[REDACTED]", file: ".git/config", heldBack: true },
-        { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", file: ".git/config", heldBack: true },
-        { driver: "crypt", operation: "process", command: "git-crypt filter-process", file: included, heldBack: true },
+        { driver: "sops", operation: "smudge", command: "[REDACTED]", file: ".git/config", scope: "local", heldBack: true },
+        { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", file: ".git/config", scope: "local", heldBack: true },
+        { driver: "crypt", operation: "process", command: "git-crypt filter-process", file: included, scope: "local", heldBack: true },
       ],
       omittedEntries: 0,
     })
@@ -1998,8 +1998,8 @@ describe("readRepositoryProviderConfig: git filters", () => {
     const read = await readRepositoryProviderConfig(root, { heldBack: true })
     expect(read.configDigest).not.toBe(standalone.configDigest)
     expect(read.gitFilters?.entries).toEqual([
-      { driver: "evil", operation: "lfs-standalone-agent", command: "evil", file: ".git/config", heldBack: true },
-      { driver: "evil", operation: "lfs-transfer-path", command: "/tmp/evil-agent", file: ".git/config", heldBack: true },
+      { driver: "evil", operation: "lfs-standalone-agent", command: "evil", file: ".git/config", scope: "local", heldBack: true },
+      { driver: "evil", operation: "lfs-transfer-path", command: "/tmp/evil-agent", file: ".git/config", scope: "local", heldBack: true },
     ])
   })
 
@@ -2050,7 +2050,19 @@ describe("readRepositoryProviderConfig: git filters", () => {
     const read = await readRepositoryProviderConfig(root, { heldBack: true })
     expect(read.gitFilters?.files).toEqual([{ path: ".git/config.worktree", scope: "worktree" }])
     expect(read.gitFilters?.entries).toEqual([
-      { driver: "crypt", operation: "smudge", command: "git-crypt smudge", file: ".git/config.worktree", heldBack: true },
+      { driver: "crypt", operation: "smudge", command: "git-crypt smudge", file: ".git/config.worktree", scope: "worktree", heldBack: true },
     ])
+  })
+
+  it("lists a file the repository and the worktree config both include once per scope", async () => {
+    const root = await repository()
+    const shared = join(await realpath(await scratch()), "shared.gitconfig")
+    await writeFile(shared, "[filter \"crypt\"]\n\tsmudge = git-crypt smudge\n")
+    git(root, "config", "include.path", shared)
+    git(root, "config", "extensions.worktreeConfig", "true")
+    git(root, "config", "--worktree", "include.path", shared)
+    const read = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(read.gitFilters?.files).toEqual([{ path: shared, scope: "local" }, { path: shared, scope: "worktree" }])
+    expect(read.gitFilters?.entries.map(({ file, scope }) => [file, scope])).toEqual([[shared, "local"], [shared, "worktree"]])
   })
 })

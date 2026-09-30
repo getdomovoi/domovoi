@@ -1356,7 +1356,9 @@ async function gitFilterInventory(rootPath: string, filters: readonly Repository
     const origin = await realpath(filter.origin).catch(() => filter.origin!)
     const inside = relative(root, origin)
     const path = redactInventoryPath(inside !== "" && !inside.startsWith("..") && !isAbsolute(inside) ? inside.split(sep).join("/") : origin)
-    if (!files.some((file) => file.path === path)) {
+    // A file is listed once per scope Git read it in: one included file can
+    // be read from the repository's config and from a config.worktree.
+    if (!files.some((file) => file.path === path && file.scope === filter.scope)) {
       if (files.length >= maximumToolInventoryGitFilterFiles) {
         omittedEntries += 1
         continue
@@ -1368,6 +1370,7 @@ async function gitFilterInventory(rootPath: string, filters: readonly Repository
       operation: filter.operation,
       command: redactInventoryCommand(filter.value),
       file: path,
+      scope: filter.scope,
       heldBack: true,
     })
     if (entry.success && entries.length < maximumToolInventoryGitFilters) entries.push(entry.data)
