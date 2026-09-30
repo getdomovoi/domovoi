@@ -205,6 +205,25 @@ async function fixture(options: { agentTimeoutMs?: number; reportsTrust?: boolea
 const trustOf = (call: object | undefined) => (call as { repositoryTrust?: unknown } | undefined)?.repositoryTrust
 const settle = () => new Promise((resolve) => setTimeout(resolve, 50))
 
+const threadA = "claude-code\u0000thread-a"
+
+// Makes the next Map#set of `key`, in any map, throw once, as a bookkeeping
+// failure would. Returns the restore, which the caller runs in a finally.
+function failNextMapSet(key: string): () => void {
+  const set = Map.prototype.set
+  let armed = true
+  Map.prototype.set = function (this: Map<unknown, unknown>, candidate: unknown, value: unknown) {
+    if (armed && candidate === key) {
+      armed = false
+      throw new Error("bookkeeping failed")
+    }
+    return set.call(this, candidate, value)
+  }
+  return () => { Map.prototype.set = set }
+}
+// The reported detail carries the error's stack.
+const bookkeepingFailed = expect.stringContaining("Error: bookkeeping failed")
+
 describe("repository.revokeTrust stops the threads that opened under the grant", () => {
   it("reports no threads when none opened under it", async () => {
     const { agents, grants, revoke } = await fixture()
@@ -983,6 +1002,105 @@ describe("a late stop that outlives its timeout", () => {
     const { hung, revoke } = await lateStopHung()
     hung.resolve()
     await settle()
+    expect(await revoke()).toEqual([])
+  })
+
+  // Security review round 11 of #669.
+  it("reports a bookkeeping failure when its hung late stop resolves, and still ends its count", async () => {
+    const { errorSink, hung, revoke } = await lateStopHung()
+    const restore = failNextMapSet(threadA)
+    try {
+      hung.resolve()
+      await settle()
+    } finally {
+      restore()
+    }
+    expect(errorSink).toHaveBeenCalledWith({ context: "Domovoi could not record a provider thread stop", detail: bookkeepingFailed })
+    // The stop was not recorded, so the next revoke stops the thread again,
+    // and its confirmed stop releases it.
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "restarted" }])
+    expect(await revoke()).toEqual([])
+  })
+})
+
+// Security review round 11 of #669: bookkeeping that throws when a stop or a
+// grant-carrying call settles is reported, never left unobserved, and still
+// ends that work's count. A stop whose bookkeeping throws before its timeout
+// fails as any other failed stop does, fence included.
+describe("bookkeeping that throws when trust work settles", () => {
+  const fenced = "Provider thread requires recovery after emergency stop"
+
+  // A resume of the session's thread that carries the grant times out, and
+  // its quarantine stop resolves; landing it later applies the grant.
+  const timedOutResume = async (runtime: Runtime, sessionId: string) => {
+    const context = await fixture({ agentTimeoutMs: 300 })
+    const { agents, grants, rpc } = context
+    grants.set(projectId, grant(projectId))
+    const agent = agents[runtime.provider as "claude-code" | "codex"]
+    const resume = agent.resumeThread.getMockImplementation()!
+    const landing = deferred()
+    agent.resumeThread.mockImplementationOnce(async (input) => {
+      await landing.promise
+      await resume(input)
+    })
+    expect(await rpc("session.send", { client: "desktop", sessionId, prompt: "work" })).toHaveProperty("error")
+    expect(agent.stopThread).toHaveBeenCalledOnce()
+    return { ...context, agent, landing }
+  }
+
+  // The late stop resolves at once, but recording it throws. The failure is
+  // armed only once that stop is out, after the call's own count has ended.
+  const lateStopBookkeepingFails = async (runtime: Runtime, sessionId: string, threadKey: string) => {
+    const context = await timedOutResume(runtime, sessionId)
+    const { agent, errorSink, landing } = context
+    let restore = () => {}
+    agent.stopThread.mockImplementationOnce(async () => {
+      await Promise.resolve()
+      restore = failNextMapSet(threadKey)
+    })
+    try {
+      landing.resolve()
+      await waitForDaemon(() => expect(errorSink).toHaveBeenCalledWith({
+        context: "Domovoi could not stop a provider thread whose call landed late", detail: bookkeepingFailed,
+      }))
+    } finally {
+      restore()
+    }
+    expect(agent.stopThread).toHaveBeenCalledTimes(2)
+    return context
+  }
+
+  it("fails a late stop whose bookkeeping throws before its timeout, and still ends its count", async () => {
+    const { revoke } = await lateStopBookkeepingFails(claude, "session-a", threadA)
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "restarted" }])
+    expect(await revoke()).toEqual([])
+  })
+
+  it("fences a Codex thread whose late stop bookkeeping throws before its timeout", async () => {
+    const { agent, rpc } = await lateStopBookkeepingFails(codex, "session-codex", `codex\u0000thread-codex`)
+    // The retried stop resolves, which never confirms a Codex thread's exit,
+    // so the failed stop's fence holds.
+    expect(await rpc("session.restartProviderThread", { client: "desktop", sessionId: "session-codex" }))
+      .toMatchObject({ error: { message: fenced } })
+    expect(agent.stopThread).toHaveBeenCalledTimes(3)
+    expect(agent.startThread).not.toHaveBeenCalled()
+  })
+
+  it("reports a grant-carrying call whose bookkeeping throws when it lands, ends its count, and keeps the thread for a revoke", async () => {
+    const { errorSink, landing, revoke } = await timedOutResume(claude, "session-a")
+    const restore = failNextMapSet(threadA)
+    try {
+      landing.resolve()
+      await settle()
+    } finally {
+      restore()
+    }
+    expect(errorSink).toHaveBeenCalledWith({
+      context: "Domovoi could not record a provider call that carried repository trust", detail: bookkeepingFailed,
+    })
+    // The grant may have been applied after the quarantine stop, with no
+    // record of when, so that stop no longer counts as the thread's exit.
+    expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "restarted" }])
     expect(await revoke()).toEqual([])
   })
 })
