@@ -170,6 +170,23 @@ describe("WebApp", () => {
     expect(storage.getItem("domovoi.daemon-session")).toBeNull()
   })
 
+  // Q197, 2026-09-29: the prompt names the code this browser greets with.
+  it("asks a phone browser for the phone code and a desktop browser for the web code", async () => {
+    await draw(memoryStorage(), vi.fn(), { clientKind: "phone" })
+    expect(text()).toContain("Type the phone code shown on the machine, in Settings under Phone and tablet.")
+    expect(container.querySelector("label[for='web-code']")?.textContent).toBe("Phone code")
+    await act(async () => { root.unmount() })
+    root = createRoot(container)
+    await draw(memoryStorage(), vi.fn(), { clientKind: "tablet" })
+    expect(text()).toContain("Type the tablet code shown on the machine, in Settings under Phone and tablet.")
+    expect(container.querySelector("label[for='web-code']")?.textContent).toBe("Tablet code")
+    await act(async () => { root.unmount() })
+    root = createRoot(container)
+    await draw(memoryStorage(), vi.fn())
+    expect(text()).toContain("Type the web code shown on the machine, in Settings under Phone and tablet.")
+    expect(container.querySelector("label[for='web-code']")?.textContent).toBe("Web code")
+  })
+
   it("pairs a phone browser with a phone code", async () => {
     const storage = memoryStorage()
     const phone = pairedResult()

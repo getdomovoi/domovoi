@@ -31,7 +31,35 @@ export type PairingClientFactory = {
 // the same error code and other words, and that is not the code's fault.
 const codeRefusalMessage = "Pairing was refused"
 
-export const webCodeShapeMessage = "A web code is the daemon's word code, like hearth-quiet-ember-42, shown on the machine in Settings under Phone and tablet."
+// How the page names a kind: what the device is, and the code the machine
+// shows for it. The connect prompt, the field and the refusal cards read the
+// same row, so a browser is asked for the code it will keep.
+const kindNames: Record<ClientKind, { device: string; code: string }> = {
+  web: { device: "a web browser", code: "web code" },
+  phone: { device: "a phone", code: "phone code" },
+  tablet: { device: "a tablet", code: "tablet code" },
+  desktop: { device: "the desktop app", code: "desktop code" },
+  cli: { device: "the command line", code: "command line code" },
+}
+
+export function codeNameFor(client: ClientKind): string {
+  return kindNames[client].code
+}
+
+export function codeShapeMessage(client: ClientKind): string {
+  const code = codeNameFor(client)
+  return `A ${code} is the daemon's word code, like hearth-quiet-ember-42, shown on the machine in Settings under Phone and tablet.`
+}
+
+export class CodeShapeError extends Error {
+  readonly expected: ClientKind
+
+  constructor(expected: ClientKind) {
+    super(codeShapeMessage(expected))
+    this.name = "CodeShapeError"
+    this.expected = expected
+  }
+}
 
 // The code the machine shows is spent once, here, to enrol this browser as
 // its own paired device. The daemon decides the kind from the code, and a
@@ -46,7 +74,7 @@ export async function redeemBrowserCode(input: {
   onConnected?: (() => void) | undefined
 }): Promise<DaemonSession> {
   const code = pairingCodeSchema.safeParse(input.code.trim())
-  if (!code.success) throw new Error(webCodeShapeMessage)
+  if (!code.success) throw new CodeShapeError(input.client)
   const client = input.createClient({ url: input.url, client: input.client })
   try {
     await client.connect()
@@ -78,16 +106,6 @@ export class DeviceKindMismatchError extends Error {
   }
 }
 
-// How the mismatch card names a kind: what the device is, and the code the
-// machine shows for it.
-const kindNames: Record<ClientKind, { device: string; code: string }> = {
-  web: { device: "a web browser", code: "a web code" },
-  phone: { device: "a phone", code: "a phone code" },
-  tablet: { device: "a tablet", code: "a tablet code" },
-  desktop: { device: "the desktop app", code: "a desktop code" },
-  cli: { device: "the command line", code: "a command line code" },
-}
-
 function kindMismatchOutcome(cause: DeviceKindMismatchError, host: string): Omit<PairingOutcome, "action"> {
   const expected = kindNames[cause.expected]
   return {
@@ -95,7 +113,7 @@ function kindMismatchOutcome(cause: DeviceKindMismatchError, host: string): Omit
     pill: "not kept",
     title: cause.bound ? `This code is for ${kindNames[cause.bound].device}` : "This code is not for a browser",
     mono: `pair.refused · kind_mismatch · code ${cause.bound ?? "none"}, browser ${cause.expected}`,
-    body: `This browser counts as ${expected.device}. On ${host}, show ${expected.code} under Settings, Phone and tablet. The code was used, so unpair the extra device under Machines.`,
+    body: `This browser counts as ${expected.device}. On ${host}, show a ${expected.code} under Settings, Phone and tablet. The code was used, so unpair the extra device under Machines.`,
   }
 }
 
@@ -119,8 +137,8 @@ export function pairingOutcomeFor(cause: unknown, host: string): Omit<PairingOut
     }
     return { tone: "danger", pill: "refused", title: "The daemon refused pairing", mono: `pair.refused · ${cause.code}`, body: cause.message }
   }
-  if (cause instanceof Error && cause.message === webCodeShapeMessage) {
-    return { tone: "plain", pill: "not sent", title: "That is not a web code", mono: "word-word-word-00", body: cause.message }
+  if (cause instanceof CodeShapeError) {
+    return { tone: "plain", pill: "not sent", title: `That is not a ${codeNameFor(cause.expected)}`, mono: "word-word-word-00", body: cause.message }
   }
   return { tone: "plain", pill: "unconfirmed", title: `${host} did not answer, so pairing is unconfirmed`, mono: `pair · no reply · ${host}`, body: "The daemon may have stopped or left the tailnet. If the machine lists this browser under Phone and tablet, it paired." }
 }
