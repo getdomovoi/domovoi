@@ -15,6 +15,7 @@ import {
   sameWordCredentials, sameWordPlacements, sameWordWrappers, shellReadingTexts, unsettledViewTexts, viewCases, viewCredential, viewPlacements,
   viewSpellings, viewTexts,
 } from "./test-hidden-triggers.js"
+import { overflowingFilterConfig } from "./test-git-filter-config.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { adversarialCommands, adversarialTomlFiles, nearLinearGrowth, workGrowth } from "./test-work.js"
 
@@ -2008,9 +2009,8 @@ describe("readRepositoryProviderConfig: git filters", () => {
   // unreadable, never as a config that sets no filter.
   it("records Git config the daemon cannot read in the digest and lists it unreadable", async () => {
     const root = await repository()
-    const many = Array.from({ length: 40_000 }, (_, index) => `[filter "f${index}"]\n\tsmudge = cat\n`).join("")
     const included = join(await scratch(), "many.gitconfig")
-    await writeFile(included, many)
+    await writeFile(included, overflowingFilterConfig(included))
     git(root, "config", "include.path", included)
     const tooLarge = await readRepositoryProviderConfig(root, { heldBack: true })
     expect(tooLarge.configDigest).not.toBe(digestBeforeGitFilters)

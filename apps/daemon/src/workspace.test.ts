@@ -2490,27 +2490,81 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     const bin = join(scratch, "bin")
     await mkdir(bin)
     const seen = (name: string) => join(scratch, `lfs-seen-${name}`).replaceAll("\\", "/")
+    // Node answers both ways git runs git-lfs: `git-lfs smudge -- <file>`,
+    // which passes the content through, and `git-lfs filter-process`, the
+    // long-running pkt-line protocol (gitprotocol-long-running-process).
+    const fake = join(scratch, "fake-git-lfs.mjs").replaceAll("\\", "/")
+    await writeFile(fake, [
+      "import { execFileSync } from \"node:child_process\"",
+      "import { writeFileSync } from \"node:fs\"",
+      "const config = (...args) => { try { return execFileSync(\"git\", [\"config\", ...args], { encoding: \"utf8\" }).trim() } catch { return \"\" } }",
+      `writeFileSync(${JSON.stringify(seen("storage"))}, config("--get", "lfs.storage"))`,
+      `writeFileSync(${JSON.stringify(seen("remote"))}, config("--get", "remote.origin.url"))`,
+      "for (const value of [",
+      "  ...[\"core.sshcommand\", \"core.askpass\", \"credential.helper\"].map((key) => config(\"--get\", key)),",
+      "  config(\"--get-urlmatch\", \"credential.helper\", \"https://lfs.example.test/repo\"),",
+      "]) if (value.includes(\"payload\")) execFileSync(\"sh\", [\"-c\", value])",
+      "if (process.argv[2] !== \"filter-process\") {",
+      "  process.stdin.pipe(process.stdout)",
+      "} else {",
+      "  let buffer = Buffer.alloc(0)",
+      "  let ended = false",
+      "  const waiting = []",
+      "  const take = () => {",
+      "    if (buffer.length < 4) return undefined",
+      "    const length = parseInt(buffer.subarray(0, 4).toString(), 16)",
+      "    if (length === 0) { buffer = buffer.subarray(4); return \"flush\" }",
+      "    if (buffer.length < length) return undefined",
+      "    const packet = buffer.subarray(4, length)",
+      "    buffer = buffer.subarray(length)",
+      "    return packet",
+      "  }",
+      "  const pump = () => {",
+      "    while (waiting.length > 0) {",
+      "      const packet = take()",
+      "      if (packet === undefined && !ended) return",
+      "      waiting.shift()(packet ?? null)",
+      "    }",
+      "  }",
+      "  process.stdin.on(\"data\", (chunk) => { buffer = Buffer.concat([buffer, chunk]); pump() })",
+      "  process.stdin.on(\"end\", () => { ended = true; pump() })",
+      "  const read = () => new Promise((resolve) => { waiting.push(resolve); pump() })",
+      "  const list = async () => { const items = []; for (;;) { const packet = await read(); if (packet === null) return null; if (packet === \"flush\") return items; items.push(packet) } }",
+      "  const write = (data) => { const body = Buffer.from(data); process.stdout.write(Buffer.concat([Buffer.from((body.length + 4).toString(16).padStart(4, \"0\")), body])) }",
+      "  const flush = () => process.stdout.write(\"0000\")",
+      "  await list()",
+      "  write(\"git-filter-server\\n\"); write(\"version=2\\n\"); flush()",
+      "  await list()",
+      "  write(\"capability=clean\\n\"); write(\"capability=smudge\\n\"); flush()",
+      "  for (;;) {",
+      "    if (await list() === null) break",
+      "    const content = Buffer.concat(await list() ?? [])",
+      "    write(\"status=success\\n\"); flush()",
+      "    for (let at = 0; at < content.length; at += 65516) write(content.subarray(at, at + 65516))",
+      "    flush(); flush()",
+      "  }",
+      "}",
+      "",
+    ].join("\n"))
     await writeFile(join(bin, "git-lfs"), [
       "#!/bin/sh",
-      `git config --get lfs.storage > "${seen("storage")}"`,
-      `git config --get remote.origin.url > "${seen("remote")}"`,
-      "for key in core.sshcommand core.askpass credential.helper; do",
-      "  value=$(git config --get \"$key\")",
-      "  case \"$value\" in *payload*) sh -c \"$value\" ;; esac",
-      "done",
-      "value=$(git config --get-urlmatch credential.helper https://lfs.example.test/repo)",
-      "case \"$value\" in *payload*) sh -c \"$value\" ;; esac",
-      "cat",
+      `exec "${process.execPath.replaceAll("\\", "/")}" "${fake}" "$@"`,
       "",
     ].join("\n"), { mode: 0o755 })
     await git("config", "filter.lfs.smudge", "git-lfs smudge -- %f")
     await git("config", "filter.lfs.required", "true")
     const seenText = async (name: string) => (await readFile(seen(name), "utf8")).trim()
-    // An empty home, so a git-lfs the machine installed globally (its
-    // filter.lfs.process line) does not take the place of the fake.
+    // A home of the test's own whose config holds the lines `git lfs install`
+    // writes, as CI runners have them in their system config. The daemon's
+    // git reads the person's own global and system config as it always does,
+    // so the fake has to answer the long-running filter protocol either way.
     const create = async (sessionId: string) => {
       const home = join(scratch, "home")
       await mkdir(home, { recursive: true })
+      await writeFile(join(home, ".gitconfig"), [
+        "[filter \"lfs\"]", "\tclean = git-lfs clean -- %f", "\tsmudge = git-lfs smudge -- %f",
+        "\tprocess = git-lfs filter-process", "\trequired = true", "",
+      ].join("\n"))
       const previous = { PATH: process.env.PATH, HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
       process.env.PATH = `${bin}${process.platform === "win32" ? ";" : ":"}${previous.PATH ?? ""}`
       process.env.HOME = home

@@ -7,6 +7,7 @@ import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { readRepositoryGitFilters } from "./repository-git-filters.js"
+import { overflowingFilterConfig } from "./test-git-filter-config.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const execute = promisify(execFile)
@@ -115,8 +116,7 @@ describe("readRepositoryGitFilters", () => {
   // failure is reported with a reason code, never read as no filters.
   it("fails with a reason when Git cannot read the config, and reads a folder that is no repository as none", async () => {
     const { scratch, root, git } = await repository()
-    const many = Array.from({ length: 40_000 }, (_, index) => `[filter "f${index}"]\n\tsmudge = cat\n`).join("")
-    await writeFile(join(scratch, "many.gitconfig"), many)
+    await writeFile(join(scratch, "many.gitconfig"), overflowingFilterConfig(join(scratch, "many.gitconfig")))
     await git("config", "include.path", join(scratch, "many.gitconfig"))
     await expect(readRepositoryGitFilters(root)).rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", reason: "too-large" })
 
