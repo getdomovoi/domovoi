@@ -5,10 +5,17 @@ import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import {
+  maximumRepositoryGitFilterDriverNameLength,
+  maximumToolInventoryGitFilterFiles,
+  maximumToolInventoryGitFilters,
   toolInventoryEntrySchema,
+  toolInventoryGitFilterEntrySchema,
+  toolInventoryGitFiltersSchema,
   toolInventoryProviderSchema,
   type ToolInventoryEntry,
   type ToolInventoryFile,
+  type ToolInventoryGitFilterEntry,
+  type ToolInventoryGitFilters,
   type ToolInventoryProvider,
   type ToolInventorySource,
 } from "@getdomovoi/protocol"
@@ -17,6 +24,7 @@ import { parse as parseYaml } from "yaml"
 import {
   inventoryFieldCaps as caps, redactInventoryArgv, redactInventoryCommand, redactInventoryPath, redactInventoryProgram, redactInventoryText,
 } from "./inventory-redaction.js"
+import { readRepositoryGitFilters, type RepositoryGitFilter } from "./repository-git-filters.js"
 import { parseRepositoryToml, RepositoryTomlTooSlowError } from "./repository-toml.js"
 
 // What a repository's own Claude Code, OpenCode, Kilo and Codex configuration
@@ -42,6 +50,13 @@ import { parseRepositoryToml, RepositoryTomlTooSlowError } from "./repository-to
 // scope because the daemon loads them without trust, OpenCode themes because
 // they run nothing, and .claude/settings.local.json because it is the
 // person's own file, not the repository's.
+//
+// The digest also covers the git filter drivers the repository's own Git
+// config sets (repository-git-filters.ts), read with `git config`, which runs
+// no repository program. Each adds a record of its scope, key and value, not
+// of the file that sets it: Git names the same file differently from the
+// root and from a linked worktree. A repository that sets none adds no
+// record, so its digest is the one it had before filters were covered.
 
 export const maximumRepositoryConfigFileBytes = 256 * 1024
 const maximumDirectoryMembers = 256
@@ -904,6 +919,8 @@ export type RepositoryProviderConfig = {
   trustRefusals: RepositoryTrustRefusal[]
   // Empty unless the read asked for them; see above.
   documents: RepositoryConfigDocuments
+  // Present when the repository's own Git config sets a filter driver.
+  gitFilters?: ToolInventoryGitFilters
 }
 
 // Codex's home as written: CODEX_HOME when set and not empty, else ~/.codex
@@ -1269,5 +1286,59 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
   ]
   for (const refusal of refused) digestRecords.push(`${refusal.provider}:refused:${refusal.reason}:${refusal.path}`)
   const trustRefusals = refused.map((refusal) => ({ ...refusal, path: redactInventoryPath(refusal.path) }))
-  return { configDigest: `sha256:${sha256(digestRecords.join("\n"))}`, providers, trustRefusals, documents }
+  // In Git's order, which decides the value a repeated key takes. A read Git
+  // refuses (a broken .git file, a malformed config) adds no record: Git then
+  // refuses every command there, so no filter runs. A grant made over such a
+  // read covers no filter, and a later read that finds one has another digest;
+  // what would run a filter reads the config again and refuses when it cannot.
+  const gitFilters: RepositoryGitFilter[] = await readRepositoryGitFilters(rootPath).catch(() => [])
+  for (const filter of gitFilters) digestRecords.push(`git:filter:${filter.scope}:${sha256(`${filter.key}\0${filter.value}`)}`)
+  return {
+    configDigest: `sha256:${sha256(digestRecords.join("\n"))}`,
+    providers,
+    trustRefusals,
+    documents,
+    ...(gitFilters.length > 0 ? { gitFilters: await gitFilterInventory(rootPath, gitFilters) } : {}),
+  }
+}
+
+// The filters as tool.inventory lists them: by the file that sets each one,
+// relative to the root when inside it and absolute otherwise, the command
+// redacted. Every entry is held back: nothing runs a repository filter under
+// trust yet (P8, slice B). An entry Git names no file for, or past a cap, or
+// whose redacted text the protocol still refuses, is counted, not listed.
+async function gitFilterInventory(rootPath: string, filters: readonly RepositoryGitFilter[]): Promise<ToolInventoryGitFilters> {
+  const root = await realpath(rootPath).catch(() => resolve(rootPath))
+  const files: ToolInventoryGitFilters["files"] = []
+  const entries: ToolInventoryGitFilterEntry[] = []
+  let omittedEntries = 0
+  for (const filter of filters) {
+    if (filter.origin === undefined) {
+      omittedEntries += 1
+      continue
+    }
+    const origin = await realpath(filter.origin).catch(() => filter.origin!)
+    const inside = relative(root, origin)
+    const path = redactInventoryPath(inside !== "" && !inside.startsWith("..") && !isAbsolute(inside) ? inside.split(sep).join("/") : origin)
+    if (!files.some((file) => file.path === path)) {
+      if (files.length >= maximumToolInventoryGitFilterFiles) {
+        omittedEntries += 1
+        continue
+      }
+      files.push({ path, scope: filter.scope })
+    }
+    const entry = toolInventoryGitFilterEntrySchema.safeParse({
+      driver: redactInventoryText(filter.driver, maximumRepositoryGitFilterDriverNameLength),
+      operation: filter.operation,
+      command: redactInventoryCommand(filter.value),
+      file: path,
+      heldBack: true,
+    })
+    if (entry.success && entries.length < maximumToolInventoryGitFilters) entries.push(entry.data)
+    else omittedEntries += 1
+  }
+  const inventory = { files, entries, omittedEntries }
+  // The error names no path or value.
+  if (!toolInventoryGitFiltersSchema.safeParse(inventory).success) throw new Error("The repository's git filter inventory does not fit the protocol")
+  return inventory
 }

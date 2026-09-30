@@ -24,6 +24,9 @@ import type { RepositoryTrustGrant } from "./repository-trust-store.js"
 // Trust is this machine's grant for the repository (repository-trust-store.ts),
 // reported against the digest read now. The root is read as its session
 // worktrees read it (ruling Q145 A).
+//
+// The git filters the repository's own Git config sets are listed beside the
+// providers, every one held back: nothing runs one under trust yet.
 
 export type RepositoryProviderConfigReader = (rootPath: string, options: RepositoryProviderConfigOptions) => Promise<RepositoryProviderConfig>
 
@@ -48,6 +51,7 @@ export async function readToolInventory({ machine, project, grant, read = readRe
       root: redactInventoryPath(project.path),
       configDigest: config.configDigest,
       trust: repositoryTrustState(config, grant),
+      ...(config.gitFilters ? { gitFilters: config.gitFilters } : {}),
     },
     providers: config.providers,
   }))

@@ -36,6 +36,24 @@ describe("readToolInventory", () => {
     await readToolInventory({ machine, project: { id: "project-acme", path: "/code/acme" }, read })
     expect(read).toHaveBeenCalledWith("/code/acme", { heldBack: repositoryEntryHeldBack, asLinkedWorktree: true })
   })
+
+  it("lists the repository's own git filters beside its trust, and nothing when it sets none", async () => {
+    const gitFilters = {
+      files: [{ path: ".git/config", scope: "local" as const }],
+      entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt /dev/stdin", file: ".git/config", heldBack: true }],
+      omittedEntries: 0,
+    }
+    const configDigest = `sha256:${"a".repeat(64)}`
+    const project = { id: "project-acme", path: "/code/acme" }
+    const withFilters = await readToolInventory({
+      machine, project, read: async () => ({ configDigest, providers: [], trustRefusals: [], documents: {}, gitFilters }),
+    })
+    expect(withFilters.repository?.gitFilters).toEqual(gitFilters)
+    const without = await readToolInventory({
+      machine, project, read: async () => ({ configDigest, providers: [], trustRefusals: [], documents: {} }),
+    })
+    expect(without.repository).not.toHaveProperty("gitFilters")
+  })
 })
 
 const listed = (value: ToolInventory) => value.providers.map((provider) => provider.entries.length)

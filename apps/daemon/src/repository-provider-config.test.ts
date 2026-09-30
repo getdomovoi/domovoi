@@ -1835,3 +1835,118 @@ describe("readRepositoryProviderConfig: config digest", () => {
     }).success).toBe(true)
   })
 })
+
+describe("readRepositoryProviderConfig: git filters", () => {
+  const git = (root: string, ...args: string[]) => execFileSync("git", ["-C", root, ...args], { stdio: "pipe" })
+  const settings = JSON.stringify({ env: { NODE_ENV: "development" } })
+  // This tree's digest as the reader computed it before git filters entered
+  // the digest (origin/main bd0271e4). A repository whose own config sets no
+  // filter must keep it, so every grant recorded before still means the same.
+  const digestBeforeGitFilters = "sha256:ee3579b7b1519f83907a0f595fc282fcdb22d8326147b99a565e6ef9f2f1fb3f"
+
+  async function repository(): Promise<string> {
+    const root = await realpath(await scratch("domovoi-provider-git-filters-"))
+    await put(root, ".claude/settings.json", settings)
+    git(root, "init", "--initial-branch=main")
+    return root
+  }
+
+  it("keeps the digest of a repository whose own Git config sets no filter", async () => {
+    const plain = await scratch()
+    await put(plain, ".claude/settings.json", settings)
+    expect((await readRepositoryProviderConfig(plain, { heldBack: true })).configDigest).toBe(digestBeforeGitFilters)
+
+    const root = await repository()
+    git(root, "config", "filter.lfs.clean", "git-lfs clean -- %f")
+    git(root, "config", "filter.off.smudge", "")
+    const read = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(read.configDigest).toBe(digestBeforeGitFilters)
+    expect(read.gitFilters).toBeUndefined()
+  })
+
+  it("changes the digest with each filter's scope, key and value, and not with the file that sets it", async () => {
+    const root = await repository()
+    const digest = async () => (await readRepositoryProviderConfig(root, { heldBack: true })).configDigest
+    git(root, "config", "filter.sops.smudge", "sops --decrypt /dev/stdin")
+    const local = await digest()
+    expect(local).not.toBe(digestBeforeGitFilters)
+
+    git(root, "config", "filter.sops.smudge", "sops --decrypt --verbose /dev/stdin")
+    const changed = await digest()
+    expect(changed).not.toBe(local)
+
+    git(root, "config", "--unset", "filter.sops.smudge")
+    git(root, "config", "filter.sops.clean", "sops --decrypt --verbose /dev/stdin")
+    expect(await digest()).not.toBe(changed)
+
+    // The same line set in a file the repository config includes.
+    git(root, "config", "--unset", "filter.sops.clean")
+    const included = join(await scratch(), "shared.gitconfig")
+    await writeFile(included, "[filter \"sops\"]\n\tsmudge = sops --decrypt /dev/stdin\n")
+    git(root, "config", "include.path", included)
+    expect(await digest()).toBe(local)
+
+    git(root, "config", "extensions.worktreeConfig", "true")
+    git(root, "config", "--unset", "include.path")
+    git(root, "config", "--worktree", "filter.sops.smudge", "sops --decrypt /dev/stdin")
+    expect(await digest()).not.toBe(local)
+  })
+
+  it("lists each repository filter by the file that sets it, redacted and held back", async () => {
+    const root = await repository()
+    git(root, "config", "filter.sops.smudge", "SOPS_AGE_KEY=s3cr3t-value sops --decrypt /dev/stdin")
+    git(root, "config", "filter.sops.clean", "sops --encrypt /dev/stdin")
+    const outside = await realpath(await scratch())
+    const included = join(outside, "crypt.gitconfig")
+    await writeFile(included, "[filter \"crypt\"]\n\tprocess = git-crypt filter-process\n")
+    git(root, "config", "include.path", included)
+
+    // A policy that loads everything still holds a git filter back: nothing
+    // runs one under trust yet.
+    const read = await readRepositoryProviderConfig(root, { heldBack: false })
+
+    expect(read.gitFilters).toEqual({
+      files: [{ path: ".git/config", scope: "local" }, { path: included, scope: "local" }],
+      entries: [
+        // Cut at its first trigger, the assignment, as every inventory command is (ruling Q101 A).
+        { driver: "sops", operation: "smudge", command: "[REDACTED]", file: ".git/config", heldBack: true },
+        { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", file: ".git/config", heldBack: true },
+        { driver: "crypt", operation: "process", command: "git-crypt filter-process", file: included, heldBack: true },
+      ],
+      omittedEntries: 0,
+    })
+    expectNoSecret(read.gitFilters)
+    expect(toolInventorySchema.safeParse({
+      machine: { id: "machine-1", name: "m", platform: "darwin", arch: "arm64", version: "0.0.0" },
+      repository: {
+        projectId: "project-1", root, configDigest: read.configDigest, trust: { state: "untrusted", reason: "not-trusted" }, gitFilters: read.gitFilters,
+      },
+      providers: read.providers,
+    }).success).toBe(true)
+  })
+
+  // Git refuses every command there, so no filter can run: the read goes on
+  // with none, rather than failing the inventory or the trust step.
+  it("reads past Git config Git itself cannot read, and lists no filter", async () => {
+    const plain = await scratch()
+    await put(plain, ".claude/settings.json", settings)
+    await put(plain, ".git", "gitdir: ./missing\n")
+    expect(() => execFileSync("git", ["-C", plain, "config", "--list"], { stdio: "pipe" })).toThrow()
+    const read = await readRepositoryProviderConfig(plain, { heldBack: true })
+    expect(read.gitFilters).toBeUndefined()
+    // The .git file itself is read as Codex reads it: a main checkout that
+    // cannot be found refuses trust, as it did before filters were covered.
+    expect(read.trustRefusals).toEqual([{ provider: "codex", reason: "main-checkout-unknown", path: ".git" }])
+  })
+
+  it("names a worktree's own config file by its scope", async () => {
+    const root = await repository()
+    git(root, "config", "extensions.worktreeConfig", "true")
+    git(root, "config", "--worktree", "filter.crypt.smudge", "git-crypt smudge")
+    const read = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(read.gitFilters?.files).toEqual([{ path: ".git/config.worktree", scope: "worktree" }])
+    expect(read.gitFilters?.entries).toEqual([
+      { driver: "crypt", operation: "smudge", command: "git-crypt smudge", file: ".git/config.worktree", heldBack: true },
+    ])
+  })
+})
