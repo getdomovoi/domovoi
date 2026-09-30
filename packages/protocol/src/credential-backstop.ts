@@ -31,6 +31,10 @@ export interface CredentialRules {
   // A key that names where a secret lives, or counts something, rather than
   // holding it: --token-file, --api-key-env, --max-tokens.
   readonly pointerSuffixes: readonly string[]
+  // The pointer suffixes that name a place on disk. A flag with one after a
+  // credential's name (--token-file, --password-file, --ssh-key-path) takes a
+  // secret path as its value, which is hidden like a credential (#541).
+  readonly locationSuffixes: readonly string[]
   // Known token prefixes, each read before a `-` or `_` and eight or more
   // token characters: sk-..., ghp_..., xoxb-....
   readonly tokenPrefixes: readonly string[]
@@ -42,6 +46,7 @@ export const credentialRules: CredentialRules = Object.freeze({
   keyParts: frozenList(["apikey", "accesskey", "privatekey", "sessionkey", "token", "password", "passwd", "secret", "credential", "cookie", "authorization"]),
   exactKeys: frozenList(["auth", "pat"]),
   pointerSuffixes: frozenList(["file", "path", "dir", "env", "name", "type", "helper", "command", "cmd", "url", "tokens", "tokenizer", "count", "limit", "length", "size"]),
+  locationSuffixes: frozenList(["file", "path", "dir"]),
   tokenPrefixes: frozenList(["sk", "ghp", "gho", "github_pat", "xoxb", "xoxa", "xoxp", "xoxr", "xoxs"]),
 })
 
@@ -57,12 +62,31 @@ export function isCredentialKey(key: string, rules: CredentialRules = credential
 }
 const isSensitive = (key: string) => isCredentialKey(key)
 
+// Whether a key names where a credential lives on disk: a credential's name,
+// or any name ending in `key`, then one or more location suffixes, as in
+// --token-file, --password-file, --ssh-key-path, --key-file-path. The name
+// before them must not itself be a pointer (--tokenizer-path) and must name a
+// credential (--keymap-file does not). As a flag, its value is a secret path.
+export function isCredentialLocationKey(key: string, rules: CredentialRules = credentialRules): boolean {
+  let stem = key.toLowerCase().replace(/[-_.]/gu, "")
+  let located = false
+  for (let suffix = rules.locationSuffixes.find((word) => stem.endsWith(word)); suffix !== undefined; suffix = rules.locationSuffixes.find((word) => stem.endsWith(word))) {
+    stem = stem.slice(0, -suffix.length)
+    located = true
+  }
+  if (!located || stem === "" || rules.pointerSuffixes.some((word) => stem.endsWith(word))) return false
+  return stem.endsWith("key") || rules.exactKeys.includes(stem) || rules.keyParts.some((part) => stem.includes(part))
+}
+
 // A value after a sensitive key is a credential unless it is the marker alone.
 const redacted = (value: string) => value === marker
 
 function pairHoldsValue(flag: string, quoteAfterKey: string, key: string, separator: string, value: string, assignmentStart: boolean): boolean {
   if (value === "") return false
   const joinedBy = separator.trim()
+  // `--token-file path` and `--token-file=path`: a secret path, hidden like a
+  // credential. The next word is its value only when it is not a flag.
+  if (flag !== "" && isCredentialLocationKey(key) && !redacted(value) && (joinedBy === "=" || (joinedBy === "" && !value.startsWith("-")))) return true
   const envName = /^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)
   if (joinedBy === "") {
     // `--key value`: only a flag takes the next word as its value.

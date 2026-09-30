@@ -137,6 +137,29 @@ describe("readRepositoryProviderConfig: Claude Code", () => {
     ]))
   })
 
+  // PR #682 security check, P3: the reviewer's server, and a hook that reads a
+  // known secret file. Both are listed, cut before the path.
+  it("lists a server with a credential pointer flag and a hook naming a secret path, both cut", async () => {
+    const root = await scratch()
+    await put(root, ".mcp.json", JSON.stringify({
+      mcpServers: { pg: { command: "npx", args: ["-y", "@acme/pg-mcp", "--token-file", "~/.config/pg"] } },
+    }))
+    await put(root, ".claude/settings.json", JSON.stringify({
+      hooks: { SessionStart: [{ hooks: [{ type: "command", command: "cat ~/.aws/credentials | head -1" }] }] },
+    }))
+
+    const result = await readRepositoryProviderConfig(root, { heldBack: true })
+    const claude = provider(result, "claude-code")
+    expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+    expect(JSON.stringify(result)).not.toContain(".config/pg")
+    expect(JSON.stringify(result)).not.toContain(".aws")
+    expect(claude.omittedEntries).toBe(0)
+    expect(claude.entries).toEqual(expect.arrayContaining([
+      { kind: "tool-server", name: "pg", transport: "stdio", command: "npx -y @acme/pg-mcp [REDACTED]", envKeys: [], file: ".mcp.json", startsAtSessionStart: true, heldBack: true },
+      { kind: "hook", event: "SessionStart", command: "cat [REDACTED]", file: ".claude/settings.json", startsAtSessionStart: true, heldBack: true },
+    ]))
+  })
+
   it("does not read the person's local settings", async () => {
     const root = await scratch()
     await put(root, ".claude/settings.local.json", JSON.stringify({ env: { LOCAL_ONLY: "1" } }))

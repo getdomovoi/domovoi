@@ -226,9 +226,33 @@ describe("tool inventory text", () => {
       "npx mcp --token=[REDACTED]",
       "npx mcp --api-key [REDACTED]",
       "git log --format=%H --port=5432",
-      "npx -y @acme/pg-mcp --token-file ~/.config/pg",
+      "npx -y @acme/pg-mcp --token-file [REDACTED]",
+      "npx mcp --password-file=[REDACTED]",
+      // A pointer that names a variable or a count, not where a secret lives.
+      "npx mcp --api-key-env API_KEY --max-tokens 100",
+      "npx mcp --keymap-file keys.json",
     ]) expect(parses(withEntry({ ...server, command })), command).toBe(true)
     expect(parses(withEntry({ ...rule, detail: "Bash(pnpm test:*)" }))).toBe(true)
+  })
+
+  // PR #682 security check, P3 (rulings #541 and Q101 A): the value after a
+  // flag that says where a token, key, secret, password or credential lives
+  // is a secret path, in `--flag value` and `--flag=value`.
+  it("refuses the path after a credential pointer flag", () => {
+    for (const command of [
+      "npx -y @acme/pg-mcp --token-file ~/.config/pg",
+      "npx mcp --token-file=/run/secrets/pg",
+      "npx mcp --password-file ~/.pgpass",
+      "npx mcp --ssh-key-path ~/.ssh/work",
+      "npx mcp --key-file=tls/server.pem",
+      "npx mcp --client-secret-file secret.json",
+      "npx mcp --credentials-file creds.json",
+      "npx mcp --auth-file ~/.config/auth",
+      "npx mcp \"--token-file\" \"~/.config/pg\"",
+    ]) {
+      expect(parses(withEntry({ ...server, command })), command).toBe(false)
+      expect(parses(withEntry({ ...hook, command })), `hook ${command}`).toBe(false)
+    }
   })
 
   it("refuses line separators, format controls and padding in display text", () => {
@@ -430,7 +454,7 @@ describe("credential backstop", () => {
     // Names, paths and hosts.
     "Bearer Authentication", "Basic Authentication", "/Users/ada/.claude/settings.json", "C:\\Users\\ada\\.claude.json",
     "https://mcp.linear.app/mcp", "git@github.com:acme/api.git", "git log --format=%H --port=5432",
-    "npx mcp --token-file ~/.config/pg", "npx mcp --api-key-env API_KEY", "llm --max-tokens 100",
+    "npx mcp --token-file [REDACTED]", "npx mcp --api-key-env API_KEY", "llm --max-tokens 100",
     "EACCES: permission denied, open '/Users/ada/.claude/settings.local.json'",
     "Token limit exceeded", "Basic usage information", "Token limit exceeded.", "Basic usage information, see docs.", "Basic credentials.", "Bearer token.",
     // The marker, alone or ending a sentence; and a scheme word before an ellipsis.

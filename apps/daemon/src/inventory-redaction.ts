@@ -67,6 +67,7 @@ import {
   credentialShapeAt,
   holdsCredential,
   isCredentialKey,
+  isCredentialLocationKey,
   maximumToolInventoryCommandLength,
   maximumToolInventoryDetailLength,
   maximumToolInventoryEventLength,
@@ -77,6 +78,9 @@ import {
   nameHoldsCredential,
   toolInventoryPathSchema,
 } from "@getdomovoi/protocol"
+
+import { operandPieces } from "./credential-stores.js"
+import { namesSecretPath } from "./permission-policy.js"
 
 const marker = "[REDACTED]"
 
@@ -778,12 +782,14 @@ function keyTriggerAt(text: string, at: number, before: string): boolean {
   let joiner = keyEnd
   while (joiner < text.length && blankCharacter.test(text[joiner]!)) joiner += 1
   const sensitive = isCredentialKey(key, credentialRules)
-  if (text[joiner] === "=") return sensitive || (flag === "" && environmentName.test(key) && (at === 0 || assignmentBoundary.test(before)))
+  // A flag that says where a credential lives takes a secret path (#541).
+  const location = flag !== "" && isCredentialLocationKey(key, credentialRules)
+  if (text[joiner] === "=") return sensitive || location || (flag === "" && environmentName.test(key) && (at === 0 || assignmentBoundary.test(before)))
   if (text[joiner] === ":") {
     const blankAfter = joiner + 1 < text.length && blankCharacter.test(text[joiner + 1]!)
     return sensitive || (environmentStyleKey.test(key) && (quoteAfterKey !== "" || (blankAfter && key.includes("_"))))
   }
-  return joiner > keyEnd && flag !== "" && sensitive
+  return joiner > keyEnd && flag !== "" && (sensitive || location)
 }
 
 // The first index of a view's text where a trigger starts, or undefined. A
@@ -1057,10 +1063,25 @@ function redactShell(text: string, depth: number, nested: boolean, command: bool
   return plan.stopBefore !== undefined || stoppedAt !== undefined || controlCharacter.test(rest) ? cutRest(rest) : finish(`${output}${rest}`)
 }
 
-// Shell text a hook or provider file supplies, cut at its first trigger.
+// Whether a command's word, or a piece of it after `=` or `:`, names a
+// credential store or secret file, by the judge the hard gate and the
+// approval card use (namesSecretPath, #541). A rule, name or prompt is not a
+// command and keeps its paths: `Read(./.env)` is a rule about one.
+function namesSecretArgument(word: string): boolean {
+  return operandPieces(word).some(namesSecretPath)
+}
+
+// Shell text a hook or provider file supplies, cut at its first trigger. A
+// command line is also cut at its first word that names a secret path; a
+// shell's script is judged as one word, so a path in it cuts at the script.
 function redactText(text: string, command: boolean, maximum: number): string {
   const lexed = lexShell(text)
-  return redactShell(text, 0, false, command, maximum, cutOf(text, 0, lexed).at, lexed)
+  let { at } = cutOf(text, 0, lexed)
+  if (command) {
+    const secret = lexed.tokens.find((token) => token.kind === "word" && namesSecretArgument(token.value))
+    if (secret !== undefined && (at === undefined || secret.start < at)) at = secret.start
+  }
+  return redactShell(text, 0, false, command, maximum, at, lexed)
 }
 
 // The output when it reads back as exactly the tokens meant, and in a command
@@ -1185,6 +1206,10 @@ export function redactInventoryArgv(argv: readonly string[]): string {
   }
   for (let index = 0; index < cut; index += 1) {
     const argument = argv[index]!
+    if (namesSecretArgument(argument)) {
+      cut = index
+      break
+    }
     const script = scripts.has(index) ? cutOf(argument, 1) : undefined
     if (script !== undefined && !script.settled) settled = false
     if (script === undefined ? runsOrExpands.test(argument) : !script.settled || script.at !== undefined) {
