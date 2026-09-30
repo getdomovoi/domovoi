@@ -2,7 +2,7 @@ import { execFile } from "node:child_process"
 import { resolve } from "node:path"
 import { promisify } from "node:util"
 
-import { repositoryGitFilterScopes, type RepositoryGitFilterScope } from "@getdomovoi/protocol"
+import { repositoryGitConfigUnreadableReasons, repositoryGitFilterScopes, type RepositoryGitFilterScope } from "@getdomovoi/protocol"
 
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { isStandardLfsFilterLine } from "./git-read-config.js"
@@ -40,17 +40,38 @@ export type RepositoryGitFilter = {
 const filterKeyPattern = String.raw`^filter\..+\.(clean|smudge|process)$`
 const repositoryScopes: ReadonlySet<string> = new Set(repositoryGitFilterScopes)
 
+export type RepositoryGitConfigUnreadableReason = (typeof repositoryGitConfigUnreadableReasons)[number]
+
+// The config could not be read, for a reason other than the folder not being
+// a Git repository. Nothing is known about the filters it sets, so what asked
+// must not read it as setting none.
+export class RepositoryGitConfigUnreadableError extends Error {
+  constructor(readonly reason: RepositoryGitConfigUnreadableReason, options?: { cause?: unknown }) {
+    super(reason === "too-large"
+      ? "The repository's Git config sets more filter settings than Domovoi reads"
+      : "Git could not read the repository's Git config", options)
+    this.name = "RepositoryGitConfigUnreadableError"
+  }
+}
+
+export const maximumRepositoryGitConfigOutputBytes = 4 * 1024 * 1024
+
 export async function readRepositoryGitFilters(directory: string, signal?: AbortSignal): Promise<RepositoryGitFilter[]> {
   let output: string
   try {
     output = (await execute("git", [
       "-C", directory, ...inertRepositoryConfig,
       "config", "--show-scope", "--show-origin", "-z", "--get-regexp", filterKeyPattern,
-    ], { env: gitEnvironment(), encoding: "utf8", maxBuffer: 4 * 1024 * 1024, ...(signal ? { signal } : {}) })).stdout
+    ], { env: gitEnvironment(), encoding: "utf8", maxBuffer: maximumRepositoryGitConfigOutputBytes, ...(signal ? { signal } : {}) })).stdout
   } catch (error) {
+    signal?.throwIfAborted()
+    const { code, stderr } = error as { code?: unknown; stderr?: unknown }
     // Exit 1: no key matched.
-    if ((error as { code?: unknown }).code === 1) return []
-    throw error
+    if (code === 1) return []
+    // No repository here, so no repository config: Git refuses every
+    // command in this folder, and no filter runs.
+    if (code === 128 && typeof stderr === "string" && /not a git repository/iu.test(stderr)) return []
+    throw new RepositoryGitConfigUnreadableError(code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? "too-large" : "git-failed", { cause: error })
   }
   const fields = output.split("\0")
   const filters: RepositoryGitFilter[] = []
@@ -62,7 +83,7 @@ export async function readRepositoryGitFilters(directory: string, signal?: Abort
     if (trustedConfigScopes.has(scope)) continue
     // Fail closed on a scope this reader does not know: the operation that
     // asked stops rather than run or hide what it sets.
-    if (!repositoryScopes.has(scope)) throw new Error(`Git reported a config scope this daemon does not know: ${scope}`)
+    if (!repositoryScopes.has(scope)) throw new RepositoryGitConfigUnreadableError("git-failed")
     const newline = record.indexOf("\n")
     // A key with no value is a config error for a filter: Git stops before
     // running anything. An empty value runs nothing.

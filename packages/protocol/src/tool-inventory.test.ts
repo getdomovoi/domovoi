@@ -16,6 +16,7 @@ import {
   maximumToolInventoryNameLength,
   maximumToolInventoryRuleLength,
   phoneAndTabletRpcMethods,
+  repositoryGitConfigUnreadableReasons,
   rpcMethodAuthorizations,
   rpcMethodMutations,
   rpcMethods,
@@ -221,6 +222,19 @@ describe("tool inventory git filters", () => {
     expect(parses({ ...gitFilters, extra: true })).toBe(false)
     const { omittedEntries: _, ...uncounted } = gitFilters
     expect(parses(uncounted)).toBe(false)
+  })
+
+  // Git config the daemon could not read: it pins the digest to that state and
+  // lists nothing, so what the config holds is never shown as read.
+  it("says the repository's Git config could not be read, with a reason code and nothing listed", () => {
+    expect(repositoryGitConfigUnreadableReasons).toEqual(["too-large", "git-failed"])
+    for (const reason of repositoryGitConfigUnreadableReasons) {
+      expect(parses({ files: [], entries: [], omittedEntries: 0, unreadable: { reason } }), reason).toBe(true)
+    }
+    expect(parses({ ...gitFilters, unreadable: { reason: "git-failed" } })).toBe(false)
+    expect(parses({ files: [], entries: [], omittedEntries: 2, unreadable: { reason: "git-failed" } })).toBe(false)
+    expect(parses({ files: [], entries: [], omittedEntries: 0, unreadable: { reason: "fatal: bad config line 1" } })).toBe(false)
+    expect(parses({ files: [], entries: [], omittedEntries: 0, unreadable: { reason: "git-failed", detail: "x" } })).toBe(false)
   })
 
   it("holds its caps and the inventory text rules", () => {

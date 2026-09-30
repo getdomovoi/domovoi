@@ -1925,6 +1925,33 @@ describe("readRepositoryProviderConfig: git filters", () => {
     }).success).toBe(true)
   })
 
+  // A config Git reads but the daemon cannot (past its output cap, or a
+  // failure other than "not a Git repository") changes the digest, so a grant
+  // made over the config as it was no longer covers it, and is listed as
+  // unreadable, never as a config that sets no filter.
+  it("records Git config the daemon cannot read in the digest and lists it unreadable", async () => {
+    const root = await repository()
+    const many = Array.from({ length: 40_000 }, (_, index) => `[filter "f${index}"]\n\tsmudge = cat\n`).join("")
+    const included = join(await scratch(), "many.gitconfig")
+    await writeFile(included, many)
+    git(root, "config", "include.path", included)
+    const tooLarge = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(tooLarge.configDigest).not.toBe(digestBeforeGitFilters)
+    expect(tooLarge.gitFilters).toEqual({ files: [], entries: [], omittedEntries: 0, unreadable: { reason: "too-large" } })
+
+    await writeFile(join(root, ".git", "config"), "[filter \"broken\"\n\tsmudge = cat\n")
+    const failed = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(failed.configDigest).not.toBe(digestBeforeGitFilters)
+    expect(failed.gitFilters).toEqual({ files: [], entries: [], omittedEntries: 0, unreadable: { reason: "git-failed" } })
+    expect(toolInventorySchema.safeParse({
+      machine: { id: "machine-1", name: "m", platform: "darwin", arch: "arm64", version: "0.0.0" },
+      repository: {
+        projectId: "project-1", root, configDigest: failed.configDigest, trust: { state: "untrusted", reason: "not-trusted" }, gitFilters: failed.gitFilters,
+      },
+      providers: failed.providers,
+    }).success).toBe(true)
+  })
+
   // Git refuses every command there, so no filter can run: the read goes on
   // with none, rather than failing the inventory or the trust step.
   it("reads past Git config Git itself cannot read, and lists no filter", async () => {

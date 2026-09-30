@@ -170,6 +170,13 @@ export const toolInventoryGitFilterEntrySchema = z.object({
   heldBack: z.boolean(),
 }).strict()
 
+// Why the daemon could not read the repository's Git config (a reason code a
+// client words): too-large, its filter settings passed the daemon's output
+// cap; git-failed, `git config` failed for any other reason than the folder
+// not being a Git repository. The digest then records the failure, so a grant
+// made over a readable config no longer covers it.
+export const repositoryGitConfigUnreadableReasons = ["too-large", "git-failed"] as const
+
 export const toolInventoryGitFiltersSchema = z.object({
   files: z.array(z.object({ path: toolInventoryPathSchema, scope: repositoryGitFilterScopeSchema }).strict())
     .max(maximumToolInventoryGitFilterFiles),
@@ -177,7 +184,12 @@ export const toolInventoryGitFiltersSchema = z.object({
   // Entries the daemon left out: past the cap, set somewhere other than a
   // file, or whose redacted text the protocol still refuses.
   omittedEntries: z.number().int().nonnegative().max(1_000_000),
+  // Present when the config could not be read: nothing is listed or counted.
+  unreadable: z.object({ reason: z.enum(repositoryGitConfigUnreadableReasons) }).strict().optional(),
 }).strict().superRefine((filters, context) => {
+  if (filters.unreadable && (filters.files.length > 0 || filters.entries.length > 0 || filters.omittedEntries > 0)) {
+    context.addIssue({ code: "custom", path: ["unreadable"], message: "Unreadable config lists nothing" })
+  }
   const files = new Set<string>()
   for (const [index, file] of filters.files.entries()) {
     if (files.has(file.path)) context.addIssue({ code: "custom", path: ["files", index, "path"], message: "A file is listed once" })

@@ -16,4 +16,6 @@ The repository trust digest now covers each filter driver the repository's own G
 by scope, key and value, so a grant pins them. A repository that sets none keeps the digest it
 had, and every grant recorded for it keeps its meaning. `tool.inventory` lists those drivers in
 the repository's `gitFilters` block, each held back: nothing runs a repository filter under trust
-yet.
+yet. A Git config the daemon cannot read (past its output cap, or any failure other than the
+folder not being a Git repository) changes the digest and is listed as unreadable with its
+reason, so trust granted over the readable config no longer applies.

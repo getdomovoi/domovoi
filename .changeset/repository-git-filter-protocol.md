@@ -7,6 +7,8 @@ repository's own Git config sets (`local`, `worktree` or `command` scope), by op
 `smudge` or `process`), with its redacted command, the config file that sets it and whether the
 daemon holds it back. Files are listed once, entries come only from a listed file, at most 64
 entries and 32 files are listed, and `omittedEntries` counts the rest. The block is optional.
+When the daemon could not read the repository's Git config, the block lists nothing and carries
+`unreadable` with a reason code, `too-large` or `git-failed`.
 
 Adds `repositoryGitFilterErrorCode` (`-32020`) for a `session.create`, `session.fork` or transfer
 refused because checking the repository out would run a filter its own Git config sets. Its data,

@@ -24,7 +24,12 @@ import { parse as parseYaml } from "yaml"
 import {
   inventoryFieldCaps as caps, redactInventoryArgv, redactInventoryCommand, redactInventoryPath, redactInventoryProgram, redactInventoryText,
 } from "./inventory-redaction.js"
-import { readRepositoryGitFilters, type RepositoryGitFilter } from "./repository-git-filters.js"
+import {
+  readRepositoryGitFilters,
+  RepositoryGitConfigUnreadableError,
+  type RepositoryGitConfigUnreadableReason,
+  type RepositoryGitFilter,
+} from "./repository-git-filters.js"
 import { parseRepositoryToml, RepositoryTomlTooSlowError } from "./repository-toml.js"
 
 // What a repository's own Claude Code, OpenCode, Kilo and Codex configuration
@@ -1286,19 +1291,30 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
   ]
   for (const refusal of refused) digestRecords.push(`${refusal.provider}:refused:${refusal.reason}:${refusal.path}`)
   const trustRefusals = refused.map((refusal) => ({ ...refusal, path: redactInventoryPath(refusal.path) }))
-  // In Git's order, which decides the value a repeated key takes. A read Git
-  // refuses (a broken .git file, a malformed config) adds no record: Git then
-  // refuses every command there, so no filter runs. A grant made over such a
-  // read covers no filter, and a later read that finds one has another digest;
-  // what would run a filter reads the config again and refuses when it cannot.
-  const gitFilters: RepositoryGitFilter[] = await readRepositoryGitFilters(rootPath).catch(() => [])
+  // In Git's order, which decides the value a repeated key takes. A folder
+  // that is not a Git repository reads as none: Git refuses every command
+  // there. Any other failure is recorded with its reason and listed as
+  // unreadable, never read as setting none, so a grant made over a config
+  // this read could see does not carry over to one it cannot. What would run
+  // a filter reads the config again and refuses when it cannot.
+  let gitFilters: RepositoryGitFilter[] = []
+  let unreadable: RepositoryGitConfigUnreadableReason | undefined
+  try {
+    gitFilters = await readRepositoryGitFilters(rootPath)
+  } catch (error) {
+    unreadable = error instanceof RepositoryGitConfigUnreadableError ? error.reason : "git-failed"
+    digestRecords.push(`git:filters:unreadable:${unreadable}`)
+  }
   for (const filter of gitFilters) digestRecords.push(`git:filter:${filter.scope}:${sha256(`${filter.key}\0${filter.value}`)}`)
+  const gitFilterBlock: ToolInventoryGitFilters | undefined = unreadable !== undefined
+    ? { files: [], entries: [], omittedEntries: 0, unreadable: { reason: unreadable } }
+    : gitFilters.length > 0 ? await gitFilterInventory(rootPath, gitFilters) : undefined
   return {
     configDigest: `sha256:${sha256(digestRecords.join("\n"))}`,
     providers,
     trustRefusals,
     documents,
-    ...(gitFilters.length > 0 ? { gitFilters: await gitFilterInventory(rootPath, gitFilters) } : {}),
+    ...(gitFilterBlock ? { gitFilters: gitFilterBlock } : {}),
   }
 }
 
