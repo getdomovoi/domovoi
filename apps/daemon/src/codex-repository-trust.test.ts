@@ -274,10 +274,22 @@ describe("codexLaunchIsLocalOnly", () => {
     expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: link }))).toBe(false)
   })
 
+  // A path Node refuses to resolve (a NUL byte) cannot be read on any
+  // platform.
+  const unreadable = "unreadable\u0000home"
+
   it("cannot tell when a set Codex home cannot be read", () => {
+    expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: unreadable }))).toBe(false)
+    expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: join(home(), "missing") }))).toBe(false)
+  })
+
+  // POSIX reports ENOTDIR for a path through a file. Windows reports ENOENT,
+  // which reads as no environments file there, and Codex reading its home
+  // through the same file finds none either, so it stays local.
+  it.runIf(process.platform !== "win32")("cannot tell when a Codex home is a file", () => {
     const file = join(home({ "not-a-folder": "" }), "not-a-folder")
     expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: file }))).toBe(false)
-    expect(codexLaunchIsLocalOnly(launch({ CODEX_HOME: join(home(), "missing") }))).toBe(false)
+    expect(codexLaunchIsLocalOnly(launch({}, [home(), file]))).toBe(false)
   })
 
   // Security review round 3: with CODEX_HOME unset, Codex on Windows takes the
@@ -292,8 +304,7 @@ describe("codexLaunchIsLocalOnly", () => {
     })
 
     it("cannot tell when a candidate home cannot be read, or none is known", () => {
-      const file = join(home({ "not-a-folder": "" }), "not-a-folder")
-      expect(codexLaunchIsLocalOnly(launch({}, [home(), file]))).toBe(false)
+      expect(codexLaunchIsLocalOnly(launch({}, [home(), unreadable]))).toBe(false)
       expect(codexLaunchIsLocalOnly(launch({}, []))).toBe(false)
       expect(codexLaunchIsLocalOnly(launch({}, [""]))).toBe(false)
     })

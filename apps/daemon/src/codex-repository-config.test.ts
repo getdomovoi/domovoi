@@ -175,8 +175,13 @@ describe("Codex repository configuration", () => {
   })
 })
 
+// core.autocrlf is pinned off: Git for Windows turns it on by default, and a
+// worktree checked out with CRLF then holds other bytes than the main
+// checkout the test wrote, so its digest differs from the root's grant.
 function git(cwd: string, ...args: string[]): void {
-  execFileSync("git", ["-c", "user.name=Domovoi Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd, stdio: "ignore" })
+  execFileSync("git", [
+    "-c", "user.name=Domovoi Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", ...args,
+  ], { cwd, stdio: "ignore" })
 }
 
 function write(root: string, files: Record<string, string>): void {
