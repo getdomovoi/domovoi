@@ -901,6 +901,50 @@ describe("a timed-out grant-carrying resume that has not settled", () => {
   })
 })
 
+// Security review round 9 of #669: tracking leaves only when no grant-carrying
+// call or late stop on the thread is in flight and a stop that began after
+// the last possible grant application confirmed its exit.
+describe("a revoke held open while a timed-out resume applies the grant", () => {
+  for (const lateStop of ["fails", "succeeds"] as const) {
+    it(`keeps the thread tracked until a later stop confirms it, when the late stop ${lateStop}`, async () => {
+      const { agents, grants, ok, rpc, revoke } = await fixture({ agentTimeoutMs: 1_000 })
+      grants.set(projectId, grant(projectId))
+      const agent = agents["claude-code"]
+      await ok("session.send", { sessionId: "session-b", prompt: "work" })
+      const resume = agent.resumeThread.getMockImplementation()!
+      const landing = deferred()
+      agent.resumeThread.mockImplementationOnce(async (input) => {
+        await landing.promise
+        await resume(input)
+      })
+      // The resume of thread-a times out and the quarantine stops it.
+      expect(await rpc("session.send", { client: "desktop", sessionId: "session-a", prompt: "work" })).toHaveProperty("error")
+      expect(agent.stopThread.mock.calls).toEqual([["thread-a"]])
+
+      // The revoke stops thread-a at once; thread-b's interrupt holds it open.
+      const holdB = deferred()
+      agent.interruptTurn.mockImplementationOnce(() => holdB.promise)
+      const revoking = revoke()
+      await waitForDaemon(() => expect(agent.stopThread.mock.calls).toEqual([["thread-a"], ["thread-a"]]))
+
+      // The resume then applies the grant and settles, and its late stop runs.
+      if (lateStop === "fails") agent.stopThread.mockRejectedValueOnce(new Error("provider gone"))
+      landing.resolve()
+      await waitForDaemon(() => expect(agent.stopThread).toHaveBeenCalledTimes(3))
+      holdB.resolve()
+      const first = await revoking
+      expect([...first].sort((a, b) => String((a as { sessionId: string }).sessionId).localeCompare(String((b as { sessionId: string }).sessionId))))
+        .toEqual([{ sessionId: "session-a", outcome: "restarted" }, { sessionId: "session-b", outcome: "restarted" }])
+
+      if (lateStop === "fails") {
+        expect(await revoke()).toEqual([{ sessionId: "session-a", outcome: "restarted" }])
+      } else {
+        expect(await revoke()).toEqual([])
+      }
+    })
+  }
+})
+
 describe("repository.revokeTrust and an emergency stop", () => {
   it("takes the grant back at once during a stop, then stops what the stop left, once", async () => {
     const { agents, grants, ok, rpc, sessionNamed } = await fixture()
