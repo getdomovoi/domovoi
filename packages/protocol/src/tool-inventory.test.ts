@@ -9,11 +9,15 @@ import {
   maximumToolInventoryCommandLength,
   maximumToolInventoryDetailLength,
   maximumToolInventoryEventLength,
+  maximumToolInventoryGitFilterFiles,
+  maximumToolInventoryGitFilters,
   maximumToolInventoryHelperNameLength,
   maximumToolInventoryMatcherLength,
   maximumToolInventoryNameLength,
   maximumToolInventoryRuleLength,
   phoneAndTabletRpcMethods,
+  repositoryGitConfigUnreadableReasons,
+  repositoryGitFilterOperations,
   rpcMethodAuthorizations,
   rpcMethodMutations,
   rpcMethods,
@@ -186,6 +190,105 @@ describe("tool inventory", () => {
     expect(phoneAndTabletRpcMethods.has("tool.inventory")).toBe(true)
     expect(phoneAndTabletRpcMethods.has("repository.trust")).toBe(false)
     expect(phoneAndTabletRpcMethods.has("repository.revokeTrust")).toBe(false)
+  })
+})
+
+describe("tool inventory git filters", () => {
+  const gitFilters = {
+    files: [
+      { path: ".git/config", scope: "local" },
+      { path: ".git/config.worktree", scope: "worktree" },
+    ],
+    entries: [
+      { driver: "sops", operation: "smudge", command: "sops --decrypt /dev/stdin", file: ".git/config", scope: "local", heldBack: true },
+      { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", file: ".git/config", scope: "local", heldBack: true },
+      { driver: "crypt", operation: "process", command: "git-crypt filter-process", file: ".git/config.worktree", scope: "worktree", heldBack: true },
+    ],
+    omittedEntries: 0,
+  }
+  const inventory = (filters: unknown) => ({ ...sample, repository: { ...sample.repository, gitFilters: filters } })
+  const parses = (filters: unknown) => toolInventorySchema.safeParse(inventory(filters)).success
+  const entry = gitFilters.entries[0]!
+
+  it("lists each driver the repository's own Git config sets, by the file that sets it", () => {
+    expect(toolInventorySchema.parse(inventory(gitFilters))).toEqual(inventory(gitFilters))
+    // The block is optional: a repository without one sets no filter of its own.
+    expect(toolInventorySchema.safeParse(sample).success).toBe(true)
+    expect(parses({ ...gitFilters, entries: gitFilters.entries.map((item) => ({ ...item, heldBack: false })) })).toBe(true)
+    expect(parses({ ...gitFilters, omittedEntries: 3 })).toBe(true)
+  })
+
+  // Git LFS starts these programs itself when a filter selects it: a custom
+  // transfer agent and its arguments, the agent it uses without asking the
+  // server, and an extension's clean or smudge command.
+  it("lists the Git LFS settings that start a program as entries of their own", () => {
+    expect(repositoryGitFilterOperations).toEqual([
+      "clean", "smudge", "process",
+      "lfs-transfer-path", "lfs-transfer-args", "lfs-standalone-agent", "lfs-extension-clean", "lfs-extension-smudge",
+    ])
+    for (const operation of repositoryGitFilterOperations) {
+      expect(parses({ ...gitFilters, entries: [{ ...entry, driver: "evil", operation }] }), operation).toBe(true)
+    }
+  })
+
+  it("lists entries only from a listed file, each file once", () => {
+    expect(parses({ ...gitFilters, entries: [{ ...entry, file: ".gitconfig" }] })).toBe(false)
+    expect(parses({ ...gitFilters, files: [...gitFilters.files, gitFilters.files[0]] })).toBe(false)
+  })
+
+  // One included file can be read both from the repository's config and from
+  // a worktree's config.worktree; Git reports each read with its own scope.
+  it("lists a file once per scope it is read in, and each entry with the scope it came from", () => {
+    const shared = {
+      files: [{ path: "shared.gitconfig", scope: "local" }, { path: "shared.gitconfig", scope: "worktree" }],
+      entries: [
+        { ...entry, file: "shared.gitconfig", scope: "local" },
+        { ...entry, file: "shared.gitconfig", scope: "worktree" },
+      ],
+      omittedEntries: 0,
+    }
+    expect(parses(shared)).toBe(true)
+    expect(parses({ ...shared, entries: [{ ...entry, file: "shared.gitconfig", scope: "command" }] })).toBe(false)
+    const { scope: _, ...unscoped } = entry
+    expect(parses({ ...gitFilters, entries: [unscoped] })).toBe(false)
+  })
+
+  it("refuses an operation, scope or field it does not know", () => {
+    expect(parses({ ...gitFilters, entries: [{ ...entry, operation: "textconv" }] })).toBe(false)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, operation: "required" }] })).toBe(false)
+    expect(parses({ ...gitFilters, files: [{ path: "/Users/ada/.gitconfig", scope: "global" }] })).toBe(false)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, value: "x" }] })).toBe(false)
+    expect(parses({ ...gitFilters, files: [{ ...gitFilters.files[0], digest }] })).toBe(false)
+    expect(parses({ ...gitFilters, extra: true })).toBe(false)
+    const { omittedEntries: _, ...uncounted } = gitFilters
+    expect(parses(uncounted)).toBe(false)
+  })
+
+  // Git config the daemon could not read: it pins the digest to that state and
+  // lists nothing, so what the config holds is never shown as read.
+  it("says the repository's Git config could not be read, with a reason code and nothing listed", () => {
+    expect(repositoryGitConfigUnreadableReasons).toEqual(["too-large", "git-failed"])
+    for (const reason of repositoryGitConfigUnreadableReasons) {
+      expect(parses({ files: [], entries: [], omittedEntries: 0, unreadable: { reason } }), reason).toBe(true)
+    }
+    expect(parses({ ...gitFilters, unreadable: { reason: "git-failed" } })).toBe(false)
+    expect(parses({ files: [], entries: [], omittedEntries: 2, unreadable: { reason: "git-failed" } })).toBe(false)
+    expect(parses({ files: [], entries: [], omittedEntries: 0, unreadable: { reason: "fatal: bad config line 1" } })).toBe(false)
+    expect(parses({ files: [], entries: [], omittedEntries: 0, unreadable: { reason: "git-failed", detail: "x" } })).toBe(false)
+  })
+
+  it("holds its caps and the inventory text rules", () => {
+    expect(parses({ ...gitFilters, entries: [{ ...entry, command: "x".repeat(maximumToolInventoryCommandLength) }] })).toBe(true)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, command: "x".repeat(maximumToolInventoryCommandLength + 1) }] })).toBe(false)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, driver: "x".repeat(maximumToolInventoryNameLength + 1) }] })).toBe(false)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, command: "sops --decrypt\n/dev/stdin" }] })).toBe(false)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, command: "SOPS_AGE_KEY=AGE-SECRET-KEY-madeup sops -d" }] })).toBe(false)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, command: "SOPS_AGE_KEY=[REDACTED] sops -d" }] })).toBe(true)
+    expect(parses({ ...gitFilters, entries: Array.from({ length: maximumToolInventoryGitFilters }, () => entry) })).toBe(true)
+    expect(parses({ ...gitFilters, entries: Array.from({ length: maximumToolInventoryGitFilters + 1 }, () => entry) })).toBe(false)
+    const files = Array.from({ length: maximumToolInventoryGitFilterFiles + 1 }, (_, index) => ({ path: `.git/include-${index}`, scope: "local" }))
+    expect(parses({ files, entries: [], omittedEntries: 0 })).toBe(false)
+    expect(parses({ ...gitFilters, omittedEntries: -1 })).toBe(false)
   })
 })
 

@@ -42,6 +42,24 @@ describe("readToolInventory", () => {
     expect(read).toHaveBeenCalledWith("/code/acme", { heldBack: repositoryEntryHeldBack, asLinkedWorktree: true })
   })
 
+  it("lists the repository's own git filters beside its trust, and nothing when it sets none", async () => {
+    const gitFilters = {
+      files: [{ path: ".git/config", scope: "local" as const }],
+      entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt /dev/stdin", file: ".git/config", scope: "local" as const, heldBack: true }],
+      omittedEntries: 0,
+    }
+    const configDigest = `sha256:${"a".repeat(64)}`
+    const project = { id: "project-acme", path: "/code/acme" }
+    const withFilters = await readToolInventory({
+      machine, project, read: async () => ({ configDigest, providers: [], trustRefusals: [], documents: {}, gitFilters }),
+    })
+    expect(withFilters.repository?.gitFilters).toEqual(gitFilters)
+    const without = await readToolInventory({
+      machine, project, read: async () => ({ configDigest, providers: [], trustRefusals: [], documents: {} }),
+    })
+    expect(without.repository).not.toHaveProperty("gitFilters")
+  })
+
   // Slice P6b: a trusted Claude Code entry is reported as loading exactly
   // when the adapter passes it, from the documents the digest was read from.
   it("marks a trusted repository's entries by what loads, and keeps the documents out of the answer", async () => {

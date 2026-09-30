@@ -3,6 +3,7 @@ import {
   fleetSnapshotOverflowSchema,
   projectSwitchConfirmationSchema,
   protocolMismatchSchema,
+  repositoryGitFilterRefusalSchema,
   rpcMethods,
   rpcResponseSchema,
   sessionAttachmentRefusalSchema,
@@ -12,6 +13,7 @@ import {
   type FleetSnapshotOverflow,
   type ProjectSwitchConfirmation,
   type ProtocolMismatch,
+  type RepositoryGitFilterRefusal,
   type RpcMethod,
   type RpcResponse,
   type SessionAttachmentRefusal,
@@ -31,6 +33,7 @@ export type RpcErrorData =
   | ProtocolMismatch
   | SkillInstallRefusal
   | SessionAttachmentRefusal
+  | RepositoryGitFilterRefusal
 
 export type RpcErrorObject = { code: number, message: string, data?: RpcErrorData }
 
@@ -44,6 +47,7 @@ const errorDataSchemas = {
   "protocol-mismatch": protocolMismatchSchema,
   "skill-install-refused": skillInstallRefusalSchema,
   "session-attachment-refused": sessionAttachmentRefusalSchema,
+  "repository-git-filter": repositoryGitFilterRefusalSchema,
 } as const
 
 const issuedFrames = new WeakSet<ResponseFrame>()

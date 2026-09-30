@@ -71,6 +71,7 @@ import {
   type ProviderModel,
   type ProjectSwitchConfirmation,
   type QueuedSessionSend,
+  type RepositoryGitFilterRefusal,
   type RpcParams,
   type RpcResult,
   type RpcMethod,
@@ -197,6 +198,7 @@ import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
   RepositoryConfigRefusedError,
+  RepositoryGitFilterRefusedError,
   SubmoduleChangesRefusedError,
   GitWorkspaceService,
   WorkspaceEvidenceUnstableError,
@@ -231,6 +233,7 @@ import { configuredProfileDirectory } from "./profile-directory.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
 import { readToolInventory, type RepositoryProviderConfigReader } from "./tool-inventory.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
+import { RepositoryGitFilterRpcError, repositoryGitFilterRpcError } from "./repository-git-filter-refusal.js"
 import { maximumRevokedTrustThreads, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant, RepositoryTrustStore } from "./repository-trust-store.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
@@ -2063,6 +2066,31 @@ export class DomovoiDaemon {
   // against the worktree it opens (repository-trust-apply.ts). A store that
   // fails is reported and gives no grant, so the session opens held back.
   // Archive resume asks for none (ruling Q149 A).
+  // A new session's worktree refused over a repository git filter (ruling Q3
+  // A). The workspace took away what it made when worktreeRemoved says so, so
+  // the record of the attempt goes too; otherwise the record stays for
+  // recovery to preserve the worktree. The answer carries the drivers and the
+  // open project's trust read now; any other error passes through unchanged.
+  async #gitFilterRefusal(error: unknown, sessionId: string, projectId: string): Promise<unknown> {
+    if (!(error instanceof RepositoryGitFilterRefusedError)) return error
+    if (error.worktreeRemoved) {
+      try {
+        this.#store.sessionCreations?.beginCleanup(sessionId)
+        this.#store.sessionCreations?.discardAfterCleanup(sessionId)
+      } catch (cleanupError) {
+        this.#reportError("Domovoi could not clear a refused session creation", cleanupError)
+      }
+    }
+    const project = this.#snapshot.project
+    if (!project || project.id !== projectId) return error
+    return await repositoryGitFilterRpcError({
+      error,
+      project: { id: project.id, path: project.path },
+      grant: this.#repositoryTrustFor(project.id).repositoryTrust,
+      read: this.#repositoryProviderConfig,
+    }) ?? error
+  }
+
   #repositoryTrustFor(projectId: string): { repositoryTrust?: RepositoryTrustGrant } {
     let grant: RepositoryTrustGrant | undefined
     try {
@@ -3494,7 +3522,8 @@ export class DomovoiDaemon {
     id: string | number | null,
     code: number,
     message: string,
-    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal | SessionAttachmentRefusal,
+    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal | SessionAttachmentRefusal
+      | RepositoryGitFilterRefusal,
   ): void {
     this.#send(socket, this.#errorFrame(id, { code, message, ...(data ? { data } : {}) }))
   }
@@ -8954,9 +8983,9 @@ export class DomovoiDaemon {
           },
           this.#agentTimeoutMs,
           "Session workspace creation timed out",
-        ).catch((error: unknown) => {
+        ).catch(async (error: unknown) => {
           this.#removeAbandonedWorkspace(sessionId, creatingWorkspace)
-          throw error
+          throw await this.#gitFilterRefusal(error, sessionId, project.id)
         })
         let providerThreadId: string
         try {
@@ -9157,9 +9186,9 @@ export class DomovoiDaemon {
           },
           this.#agentTimeoutMs,
           "Fork workspace creation timed out",
-        ).catch((error: unknown) => {
+        ).catch(async (error: unknown) => {
           this.#removeAbandonedWorkspace(sessionId, creatingWorkspace)
-          throw error
+          throw await this.#gitFilterRefusal(error, sessionId, source.projectId)
         })
         const agent = this.#agents.require(runtime.provider)
         let providerThreadId: string
@@ -9904,7 +9933,7 @@ export class DomovoiDaemon {
         if (error instanceof OperationTimeoutError) {
           this.#reportError(`RPC ${method} timed out`, error)
         }
-        this.#error(socket, request.id, error.code, error.message)
+        this.#error(socket, request.id, error.code, error.message, error instanceof RepositoryGitFilterRpcError ? error.data : undefined)
         return
       }
       if (error instanceof RepositoryConfigRefusedError || error instanceof AgentProviderUnavailableError) {

@@ -2,7 +2,9 @@ import { z } from "zod"
 
 import { credentialShapeAt } from "./credential-backstop.js"
 import { inventoryText, toolInventoryPathSchema } from "./inventory-text.js"
-import { refineRepositoryTrustPin, repositoryTrustStateSchema } from "./repository-trust.js"
+import {
+  refineRepositoryTrustPin, repositoryGitFilterDriverNameSchema, repositoryGitFilterScopeSchema, repositoryTrustStateSchema,
+} from "./repository-trust.js"
 import { skillContentDigestSchema, skillInventoryMachineSchema } from "./skills.js"
 import { utf16MaxLength, wireRule } from "./validation.js"
 
@@ -171,6 +173,67 @@ export const toolInventoryProviderSchema = z.object({
   }
 })
 
+// The git filter drivers the repository's own Git config sets, grouped by the
+// config file that sets each one: they are the repository's, whichever agent
+// runs, and checking the repository out runs them, so they sit beside the
+// providers rather than under one. A command is shown redacted, as every
+// inventory command is. heldBack: the daemon refuses what would run it.
+export const maximumToolInventoryGitFilters = 64
+export const maximumToolInventoryGitFilterFiles = 32
+// clean, smudge and process are a filter driver's commands. The lfs-* ones are
+// the Git LFS settings that make git-lfs, once a filter runs it, start a
+// program of the repository's choosing: a custom transfer agent's path and
+// arguments, the agent it uses without asking the server, and an extension's
+// clean or smudge command. The driver is the agent's or extension's name, or
+// for lfs-standalone-agent the name it selects.
+export const repositoryGitFilterOperations = [
+  "clean", "smudge", "process",
+  "lfs-transfer-path", "lfs-transfer-args", "lfs-standalone-agent", "lfs-extension-clean", "lfs-extension-smudge",
+] as const
+
+export const toolInventoryGitFilterEntrySchema = z.object({
+  driver: repositoryGitFilterDriverNameSchema,
+  operation: z.enum(repositoryGitFilterOperations),
+  command: text(maximumToolInventoryCommandLength),
+  // The file and the scope Git read it in: one included file can be read
+  // from the repository's config and from a worktree's config.worktree.
+  file: toolInventoryPathSchema,
+  scope: repositoryGitFilterScopeSchema,
+  heldBack: z.boolean(),
+}).strict()
+
+// Why the daemon could not read the repository's Git config (a reason code a
+// client words): too-large, its filter settings passed the daemon's output
+// cap; git-failed, `git config` failed for any other reason than the folder
+// not being a Git repository. The digest then records the failure, so a grant
+// made over a readable config no longer covers it.
+export const repositoryGitConfigUnreadableReasons = ["too-large", "git-failed"] as const
+
+export const toolInventoryGitFiltersSchema = z.object({
+  files: z.array(z.object({ path: toolInventoryPathSchema, scope: repositoryGitFilterScopeSchema }).strict())
+    .max(maximumToolInventoryGitFilterFiles),
+  entries: z.array(toolInventoryGitFilterEntrySchema).max(maximumToolInventoryGitFilters),
+  // Entries the daemon left out: past the cap, set somewhere other than a
+  // file, or whose redacted text the protocol still refuses.
+  omittedEntries: z.number().int().nonnegative().max(1_000_000),
+  // Present when the config could not be read: nothing is listed or counted.
+  unreadable: z.object({ reason: z.enum(repositoryGitConfigUnreadableReasons) }).strict().optional(),
+}).strict().superRefine((filters, context) => {
+  if (filters.unreadable && (filters.files.length > 0 || filters.entries.length > 0 || filters.omittedEntries > 0)) {
+    context.addIssue({ code: "custom", path: ["unreadable"], message: "Unreadable config lists nothing" })
+  }
+  // A file is listed once per scope it is read in; an entry names both.
+  const files = new Set<string>()
+  const id = (path: string, scope: string) => `${scope}\0${path}`
+  for (const [index, file] of filters.files.entries()) {
+    if (files.has(id(file.path, file.scope))) context.addIssue({ code: "custom", path: ["files", index, "path"], message: "A file is listed once per scope" })
+    files.add(id(file.path, file.scope))
+  }
+  for (const [index, entry] of filters.entries.entries()) {
+    if (!files.has(id(entry.file, entry.scope))) context.addIssue({ code: "custom", path: ["entries", index, "file"], message: "Entries come only from a listed file, in its scope" })
+  }
+})
+
 // The daemon closes a connection whose buffered output reaches 1 MiB, and other
 // traffic shares that buffer, so a whole response, envelope included, stays at
 // its 256 KiB low-water mark. The envelope around the largest request id (512
@@ -190,6 +253,8 @@ export const toolInventorySchema = wireRule(z.object({
     root: toolInventoryPathSchema,
     configDigest: skillContentDigestSchema,
     trust: repositoryTrustStateSchema,
+    // Present when the repository's own Git config sets a filter driver.
+    gitFilters: toolInventoryGitFiltersSchema.optional(),
   }).strict().superRefine((repository, context) => {
     refineRepositoryTrustPin(repository.configDigest, repository.trust, context, ["trust"])
   }).optional(),
@@ -229,3 +294,5 @@ export type ToolInventoryEntry = z.infer<typeof toolInventoryEntrySchema>
 export type ToolInventoryFile = z.infer<typeof toolInventoryFileSchema>
 export type ToolInventorySource = z.infer<typeof toolInventorySourceSchema>
 export type ApprovalToolServer = z.infer<typeof approvalToolServerSchema>
+export type ToolInventoryGitFilters = z.infer<typeof toolInventoryGitFiltersSchema>
+export type ToolInventoryGitFilterEntry = z.infer<typeof toolInventoryGitFilterEntrySchema>
