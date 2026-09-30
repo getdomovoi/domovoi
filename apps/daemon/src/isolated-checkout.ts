@@ -33,7 +33,8 @@ const execute = promisify(execFile)
 //   defines, which is the person's own or the exact `git lfs install` line.
 // - It lives inside the repository's Git directory, so the person's
 //   `includeIf "gitdir:..."` conditions match as they do for the repository.
-//   One an earlier daemon left behind is swept away first (sweepStaleCheckouts).
+//   It records its owner process first, and one an earlier daemon left
+//   behind is swept away before a new one is made (sweepStaleCheckouts).
 //
 // Carried from the repository's config, as values only:
 // - The core settings that decide what the checkout writes (carriedCoreKeys):
@@ -81,10 +82,11 @@ const droppedEnvironment = [
   "GIT_PROTOCOL_FROM_USER", "GIT_ALLOW_PROTOCOL",
 ]
 
-// A checkout directory older than this is one a daemon that stopped mid
-// checkout left behind: a checkout is bounded by the daemon's operation
-// timeout, far shorter.
+// A checkout directory with no owner file older than this is one a daemon
+// that stopped mid checkout left behind before it wrote the file.
 export const staleCheckoutAgeMs = 10 * 60 * 1000
+// Written into each checkout directory first: {"pid", "startedAt"}.
+const checkoutOwnerFile = "domovoi-owner"
 const checkoutDirectoryName = /^domovoi-checkout-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u
 
 // Whether a remote URL is carried into the checkout: an https, http, ssh or
@@ -146,8 +148,39 @@ async function copyIfPresent(from: string, to: string): Promise<void> {
   }
 }
 
+// The pid that made a checkout directory, from the owner file written into
+// it first, or undefined when the file is absent, a link or unreadable.
+async function checkoutOwner(directory: string): Promise<number | undefined> {
+  const file = join(directory, checkoutOwnerFile)
+  const info = await fs.lstat(file).catch(() => undefined)
+  if (!info?.isFile()) return undefined
+  try {
+    const owner: unknown = JSON.parse(await fs.readFile(file, "utf8"))
+    const pid = typeof owner === "object" && owner !== null ? (owner as Record<string, unknown>).pid : undefined
+    return typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 ? pid : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// Whether a process with this pid runs on this machine: signal 0 checks and
+// sends nothing. EPERM means it runs as someone else.
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH"
+  }
+}
+
 // Removes checkout directories an earlier daemon left in this Git directory,
-// by their exact name pattern and only once they are stale. Best effort.
+// by their exact name pattern, and never one still in use. A directory whose
+// owner file names a process that is gone is removed; one whose owner runs is
+// kept however old it is, since a checkout can outlast any age (a longer
+// operation timeout, a stalled LFS fetch); one with no readable owner file is
+// removed only once it is stale, which also covers a checkout between making
+// its directory and writing the file. Links are never followed. Best effort.
 async function sweepStaleCheckouts(commonDirectory: string): Promise<void> {
   let names: string[]
   try {
@@ -159,7 +192,9 @@ async function sweepStaleCheckouts(commonDirectory: string): Promise<void> {
     if (!checkoutDirectoryName.test(name)) continue
     const path = join(commonDirectory, name)
     const info = await fs.lstat(path).catch(() => undefined)
-    if (!info?.isDirectory() || Date.now() - info.mtimeMs < staleCheckoutAgeMs) continue
+    if (!info?.isDirectory()) continue
+    const owner = await checkoutOwner(path)
+    if (owner === undefined ? Date.now() - info.mtimeMs < staleCheckoutAgeMs : processAlive(owner)) continue
     await fs.rm(path, { recursive: true, force: true }).catch(() => undefined)
   }
 }
@@ -227,6 +262,10 @@ export async function checkOutIsolated(input: {
   await sweepStaleCheckouts(commonDirectory)
   const gitDirectory = join(commonDirectory, `domovoi-checkout-${randomUUID()}`)
   try {
+    // The owner file comes first, so a sweep in another checkout sees this
+    // directory as in use for as long as this process runs.
+    await fs.mkdir(gitDirectory)
+    await fs.writeFile(join(gitDirectory, checkoutOwnerFile), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }))
     await fs.mkdir(join(gitDirectory, "objects"), { recursive: true })
     await fs.mkdir(join(gitDirectory, "refs", "heads"), { recursive: true })
     await fs.mkdir(join(gitDirectory, "info"), { recursive: true })

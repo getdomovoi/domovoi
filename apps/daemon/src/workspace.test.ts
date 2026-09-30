@@ -2636,6 +2636,32 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect((await lstat(unrelated)).isDirectory()).toBe(true)
   })
 
+  // A checkout can outlast the age threshold (a longer operation timeout, a
+  // stalled LFS fetch), so its directory carries an owner file with the pid
+  // that made it; the sweep never removes one whose owner is still running.
+  it("keeps an old checkout directory whose owner is alive, and removes one whose owner is gone", async () => {
+    const { repositoryPath, worktrees } = await filteredRepository("domovoi-create-sweep-owner-")
+    const gitDirectory = join(repositoryPath, ".git")
+    const live = join(gitDirectory, "domovoi-checkout-00000000-0000-4000-8000-000000000003")
+    const dead = join(gitDirectory, "domovoi-checkout-00000000-0000-4000-8000-000000000004")
+    const exited = await new Promise<number>((resolvePid, reject) => {
+      const child = execFile(process.execPath, ["-e", ""])
+      child.once("error", reject)
+      child.once("exit", () => resolvePid(child.pid!))
+    })
+    for (const [directory, pid] of [[live, process.pid], [dead, exited]] as const) {
+      await mkdir(join(directory, "objects"), { recursive: true })
+      await writeFile(join(directory, "domovoi-owner"), JSON.stringify({ pid, startedAt: "2026-09-30T00:00:00.000Z" }))
+    }
+    const old = new Date(Date.now() - 60 * 60 * 1000)
+    await utimes(live, old, old)
+
+    await new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, "session-sweep-owner")
+
+    expect((await lstat(live)).isDirectory()).toBe(true)
+    await expect(lstat(dead)).rejects.toThrow()
+  })
+
   it("runs no repository core.fsmonitor command while it checks a session out", async () => {
     const { repositoryPath, payload, worktrees, git, ran } = await filteredRepository("domovoi-create-fsmonitor-")
     await git("config", "core.fsmonitor", `sh ${payload}`)

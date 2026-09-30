@@ -19,8 +19,9 @@ pushurl and lfsurl, and lfs.url and lfs.pushurl, are carried when they are https
 or scp-like addresses (ext::, fd::, other helper addresses, file:// and local paths are dropped),
 and a partial clone's partialClone extension with its promisor remote, so git-lfs finds its
 endpoint and a missing blob is fetched with the person's own transport settings over https,
-http, ssh or git only. A checkout directory a stopped daemon left behind is removed by the next
-checkout in that repository once it is ten minutes old. `session.create` and `session.fork` answer with
+http, ssh or git only. Each checkout directory records the process that made it. A later checkout
+in that repository removes one whose process has ended, never one whose process still runs, and
+one with no such record once it is ten minutes old. `session.create` and `session.fork` answer with
 `repositoryGitFilterErrorCode` and the drivers, the configuration digest and the repository's
 trust read at that moment; a transfer keeps its existing refusal. Filters from the person's global
 or system Git config, and the exact lines `git lfs install` writes, still run. The Git LFS
