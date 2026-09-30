@@ -104,6 +104,39 @@ describe("readRepositoryProviderConfig: Claude Code", () => {
     expect(claude.entries.some((entry) => entry.kind === "plugin" && entry.name === "off@market")).toBe(false)
   })
 
+  // PR #682 security check, P2: a host label and an environment key name are
+  // text a repository supplies, and either can be shaped like a credential.
+  // The entry is listed with that name cut, never dropped for it.
+  it("lists a server whose host or env key name is credential-shaped, that name cut", async () => {
+    const root = await scratch()
+    await put(root, ".mcp.json", JSON.stringify({
+      mcpServers: {
+        labelled: { type: "http", url: "https://sk-proj-abcdefghijklmnop.mcp.example.com/v1" },
+        keyed: { type: "sse", url: "https://AKIAABCDEFGHIJKLMNOP.example.com:8443/" },
+        plain: { type: "http", url: "https://secrets.example.com:8443/" },
+        local: { command: "npx", args: ["server"], env: { ghp_abcdefghijklmnop1234: "x", REGION: "eu" } },
+      },
+    }))
+    await put(root, ".claude/settings.json", JSON.stringify({ env: { sk_live_abcdefghijklmnop: "x", DEBUG: "1" } }))
+
+    const result = await readRepositoryProviderConfig(root, { heldBack: true })
+    const claude = provider(result, "claude-code")
+    expect(toolInventoryProviderSchema.safeParse(claude).success).toBe(true)
+    const text = JSON.stringify(result)
+    for (const shape of ["sk-proj-abcdefghijklmnop", "akiaabcdefghijklmnop", "AKIAABCDEFGHIJKLMNOP", "ghp_abcdefghijklmnop1234", "sk_live_abcdefghijklmnop"]) {
+      expect(text).not.toContain(shape)
+    }
+    expect(claude.omittedEntries).toBe(0)
+    expect(claude.entries).toEqual(expect.arrayContaining([
+      { kind: "tool-server", name: "labelled", transport: "http", host: "[REDACTED]", envKeys: [], file: ".mcp.json", startsAtSessionStart: true, heldBack: true },
+      { kind: "tool-server", name: "keyed", transport: "sse", host: "[REDACTED]", envKeys: [], file: ".mcp.json", startsAtSessionStart: true, heldBack: true },
+      { kind: "tool-server", name: "plain", transport: "http", host: "secrets.example.com:8443", envKeys: [], file: ".mcp.json", startsAtSessionStart: true, heldBack: true },
+      { kind: "tool-server", name: "local", transport: "stdio", command: "npx server", envKeys: ["[REDACTED]", "REGION"], file: ".mcp.json", startsAtSessionStart: true, heldBack: true },
+      { kind: "env-key", key: "[REDACTED]", file: ".claude/settings.json", startsAtSessionStart: true, heldBack: true },
+      { kind: "env-key", key: "DEBUG", file: ".claude/settings.json", startsAtSessionStart: true, heldBack: true },
+    ]))
+  })
+
   it("does not read the person's local settings", async () => {
     const root = await scratch()
     await put(root, ".claude/settings.local.json", JSON.stringify({ env: { LOCAL_ONLY: "1" } }))

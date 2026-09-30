@@ -74,6 +74,7 @@ import {
   maximumToolInventoryMatcherLength,
   maximumToolInventoryNameLength,
   maximumToolInventoryRuleLength,
+  nameHoldsCredential,
   toolInventoryPathSchema,
 } from "@getdomovoi/protocol"
 
@@ -1103,6 +1104,23 @@ export function redactInventoryText(text: string, maximum: number = inventoryFie
 export function redactInventoryPath(path: string): string {
   const shown = redactText(path, false, inventoryFieldCaps.detail)
   return toolInventoryPathSchema.safeParse(shown).success ? shown : marker
+}
+
+// An environment key name a provider file supplies: shown as it is, or as the
+// marker when the name is itself shaped like a credential, as the protocol's
+// nameHoldsCredential reads one. The entry is listed either way.
+export function redactInventoryEnvKey(key: string): string {
+  return nameHoldsCredential(key) ? marker : key
+}
+
+// A remote tool server's host and port, from the URL a provider file gives:
+// the marker when a label is shaped like a credential. The host is read as
+// the URL parser gives it and as it is written in the URL, since the parser
+// lower-cases it and an access key id is known by its upper case.
+export function redactInventoryHost(host: string, url: string): string {
+  const authority = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#]*)/u.exec(url)?.[1] ?? ""
+  const written = authority.slice(authority.lastIndexOf("@") + 1)
+  return nameHoldsCredential(host, true) || nameHoldsCredential(written, true) ? marker : host
 }
 
 // A command line a shell runs: a hook's or a helper's command. Pattern and

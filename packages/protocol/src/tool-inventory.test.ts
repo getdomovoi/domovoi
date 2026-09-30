@@ -254,6 +254,32 @@ describe("tool inventory text", () => {
     }
   })
 
+  // PR #682 security check, P2: a host is a text a provider file supplies, and
+  // a DNS label can hold a credential shape. A host is read without regard to
+  // case, as DNS reads it, so a key id the URL parser lower-cased is still one.
+  it("refuses a host with a credential-shaped label, and takes the reader's cut", () => {
+    for (const host of [
+      "sk-proj-abcdefghijklmnop.mcp.example.com",
+      "mcp.xoxb-1234567890-abcdefgh.example.com:443",
+      "AKIAABCDEFGHIJKLMNOP.example.com",
+      "akiaabcdefghijklmnop.example.com",
+    ]) expect(parses(withEntry({ ...remote, host })), host).toBe(false)
+    for (const host of ["[REDACTED]", "secrets.example.com:8443", "token.internal"]) {
+      expect(parses(withEntry({ ...remote, host })), host).toBe(true)
+    }
+  })
+
+  it("refuses a credential-shaped environment key name, and takes the reader's cut", () => {
+    for (const key of ["ghp_abcdefghijklmnop1234", "sk_live_abcdefghijklmnop", "AKIAABCDEFGHIJKLMNOP"]) {
+      expect(parses(withEntry({ ...server, envKeys: [key] })), key).toBe(false)
+      expect(parses(withEntry({ kind: "env-key", key })), key).toBe(false)
+    }
+    for (const key of ["[REDACTED]", "GITHUB_TOKEN", "SK_LIVE_KEY"]) {
+      expect(parses(withEntry({ ...server, envKeys: [key] })), key).toBe(true)
+      expect(parses(withEntry({ kind: "env-key", key })), key).toBe(true)
+    }
+  })
+
   it("keeps a response well under the daemon's outbound limit, and counts what it left out", () => {
     // The daemon closes a connection whose buffered output reaches 1 MiB.
     expect(maximumToolInventoryBytes).toBeLessThanOrEqual(256 * 1_024)
