@@ -231,12 +231,16 @@ export function heldBackView(inventory: ToolInventory): HeldBackView {
 
   const name = repositoryName(repository.root)
   const trust = repository.trust
-  // "None of it" is said only of a list known to be whole.
-  const lead = held === 0
-    ? total === 0 ? "Its agent files declare nothing." : "Nothing from this repository is held back."
-    : held < total
-      ? `${held} of ${total} entries it brings are held back.`
-      : incomplete ? "None of what is listed loads for any agent." : "None of it loads for any agent."
+  // A claim about the whole repository is made only of a list known to be
+  // whole. An entry left out or a file not read may be held back, so a list
+  // that is not whole speaks of what is listed.
+  const lead = incomplete
+    ? held === 0
+      ? total === 0 ? "No entry is listed from its agent files." : "None of the listed entries is held back."
+      : held < total ? `${held} of the ${total} listed entries are held back.` : "None of what is listed loads for any agent."
+    : held === 0
+      ? total === 0 ? "Its agent files declare nothing." : "Nothing from this repository is held back."
+      : held < total ? `${held} of ${total} entries it brings are held back.` : "None of it loads for any agent."
 
   return {
     kind: "repository",

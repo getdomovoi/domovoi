@@ -144,6 +144,27 @@ describe("heldBackView", () => {
     expect(view.lead).toBe("None of what is listed loads for any agent.")
   })
 
+  // An entry left out or a file not read may be held back, so a list that is
+  // not whole speaks of what is listed and never of the whole repository.
+  it("speaks of the listed entries when the list is not whole", () => {
+    const partly = inventory()
+    partly.providers[0]!.entries[1] = { ...partly.providers[0]!.entries[1]!, heldBack: false }
+    partly.providers[0]!.omittedEntries = 2
+    expect(loaded(heldBackView(partly)).lead).toBe("6 of the 7 listed entries are held back.")
+
+    const none = inventory()
+    for (const provider of none.providers) provider.entries = provider.entries.map((entry) => ({ ...entry, heldBack: false }))
+    none.providers[1]!.omittedEntries = 1
+    const noneView = loaded(heldBackView(none))
+    expect(noneView.lead).toBe("None of the listed entries is held back.")
+    expect(noneView.heading).toBe("acme-api on studio")
+
+    const bare = inventory()
+    for (const provider of bare.providers) provider.entries = provider.entries.filter((entry) => entry.file.startsWith("/"))
+    bare.providers[1]!.files.push({ path: ".codex/rules/default.rules", source: "project-settings", state: "unreadable", reason: "EACCES" })
+    expect(loaded(heldBackView(bare)).lead).toBe("No entry is listed from its agent files.")
+  })
+
   it("lists why a repository cannot be trusted, and does not offer trust elsewhere", () => {
     const refused = inventory()
     refused.repository!.trust = {
