@@ -32,6 +32,7 @@ import {
   type TransferReceipt,
   daemonShuttingDownErrorCode,
   isRefusedWithoutPersistence,
+  localOwnerRequiredErrorCode,
   phoneAndTabletRpcMethods,
   repositoryTrustClientSchema,
   repositoryTrustGrantClients,
@@ -5675,7 +5676,9 @@ export class DomovoiDaemon {
         const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1"
         if (!loopback || socket instanceof DaemonRelaySocket || authenticatedActor?.kind !== "client"
           || this.#deviceCredentials.has(socket)) {
-          this.#error(socket, request.id, daemonAuthenticationErrorCode, "Updates require a loopback local-owner connection")
+          // A policy refusal, not a credential failure: clients read the
+          // authentication code as a revoked credential and drop the machine.
+          this.#error(socket, request.id, localOwnerRequiredErrorCode, "Updates require a loopback local-owner connection")
           return
         }
         const result = method === "update.status" ? this.#updates.status()

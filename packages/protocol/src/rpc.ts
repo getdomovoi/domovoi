@@ -147,6 +147,10 @@ export const turnSkillSelectionErrorCode = -32015 as const
 export const fleetSnapshotOverflowErrorCode = -32016 as const
 export const deviceLabelMismatchErrorCode = -32017 as const
 export const skillInstallErrorCode = -32018 as const
+// The caller is authenticated, but the method answers only the daemon owner on
+// a direct loopback connection. A policy refusal, not a credential failure:
+// clients keep the connection open and show why the method is unavailable.
+export const localOwnerRequiredErrorCode = -32019 as const
 
 const projectSwitchAffectedSessionSchema = z.object({
   id: z.string().min(1),
