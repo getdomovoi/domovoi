@@ -1,7 +1,9 @@
 import { z } from "zod"
 
 import { inventoryText, toolInventoryPathSchema } from "./inventory-text.js"
-import { refineRepositoryTrustPin, repositoryTrustStateSchema } from "./repository-trust.js"
+import {
+  refineRepositoryTrustPin, repositoryGitFilterDriverNameSchema, repositoryGitFilterScopeSchema, repositoryTrustStateSchema,
+} from "./repository-trust.js"
 import { skillContentDigestSchema, skillInventoryMachineSchema } from "./skills.js"
 import { utf16MaxLength, wireRule } from "./validation.js"
 
@@ -151,6 +153,39 @@ export const toolInventoryProviderSchema = z.object({
   }
 })
 
+// The git filter drivers the repository's own Git config sets, grouped by the
+// config file that sets each one: they are the repository's, whichever agent
+// runs, and checking the repository out runs them, so they sit beside the
+// providers rather than under one. A command is shown redacted, as every
+// inventory command is. heldBack: the daemon refuses what would run it.
+export const maximumToolInventoryGitFilters = 64
+export const maximumToolInventoryGitFilterFiles = 32
+export const repositoryGitFilterOperations = ["clean", "smudge", "process"] as const
+
+export const toolInventoryGitFiltersSchema = z.object({
+  files: z.array(z.object({ path: toolInventoryPathSchema, scope: repositoryGitFilterScopeSchema }).strict())
+    .max(maximumToolInventoryGitFilterFiles),
+  entries: z.array(z.object({
+    driver: repositoryGitFilterDriverNameSchema,
+    operation: z.enum(repositoryGitFilterOperations),
+    command: text(maximumToolInventoryCommandLength),
+    file: toolInventoryPathSchema,
+    heldBack: z.boolean(),
+  }).strict()).max(maximumToolInventoryGitFilters),
+  // Entries the daemon left out: past the cap, set somewhere other than a
+  // file, or whose redacted text the protocol still refuses.
+  omittedEntries: z.number().int().nonnegative().max(1_000_000),
+}).strict().superRefine((filters, context) => {
+  const files = new Set<string>()
+  for (const [index, file] of filters.files.entries()) {
+    if (files.has(file.path)) context.addIssue({ code: "custom", path: ["files", index, "path"], message: "A file is listed once" })
+    files.add(file.path)
+  }
+  for (const [index, entry] of filters.entries.entries()) {
+    if (!files.has(entry.file)) context.addIssue({ code: "custom", path: ["entries", index, "file"], message: "Entries come only from a listed file" })
+  }
+})
+
 // The daemon closes a connection whose buffered output reaches 1 MiB, and other
 // traffic shares that buffer, so a whole response, envelope included, stays at
 // its 256 KiB low-water mark. The envelope around the largest request id (512
@@ -170,6 +205,8 @@ export const toolInventorySchema = wireRule(z.object({
     root: toolInventoryPathSchema,
     configDigest: skillContentDigestSchema,
     trust: repositoryTrustStateSchema,
+    // Present when the repository's own Git config sets a filter driver.
+    gitFilters: toolInventoryGitFiltersSchema.optional(),
   }).strict().superRefine((repository, context) => {
     refineRepositoryTrustPin(repository.configDigest, repository.trust, context, ["trust"])
   }).optional(),
@@ -209,3 +246,4 @@ export type ToolInventoryEntry = z.infer<typeof toolInventoryEntrySchema>
 export type ToolInventoryFile = z.infer<typeof toolInventoryFileSchema>
 export type ToolInventorySource = z.infer<typeof toolInventorySourceSchema>
 export type ApprovalToolServer = z.infer<typeof approvalToolServerSchema>
+export type ToolInventoryGitFilters = z.infer<typeof toolInventoryGitFiltersSchema>

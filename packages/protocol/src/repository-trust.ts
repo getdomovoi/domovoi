@@ -184,6 +184,40 @@ export const repositoryRevokeTrustResultSchema = z.object({
   }
 })
 
+// A git filter driver runs a command whenever Git checks a file out or stages
+// it. One the repository's own Git config sets (its .git/config, a file that
+// config includes, or a worktree's config.worktree) is the repository's; one
+// from the person's global or system config is their own tool and is not
+// listed. "command" is Git's scope for -c and GIT_CONFIG_* settings, which the
+// daemon drops, and is named so a reader never has to leave one out.
+export const repositoryGitFilterScopes = ["local", "worktree", "command"] as const
+export const repositoryGitFilterScopeSchema = z.enum(repositoryGitFilterScopes)
+// A driver's name as the config section spells it: [filter "sops"].
+export const maximumRepositoryGitFilterDriverNameLength = 256
+export const repositoryGitFilterDriverNameSchema = inventoryText(maximumRepositoryGitFilterDriverNameLength)
+
+// The data of a session.create, session.fork or transfer refusal because
+// checking the repository out would run a filter its own Git config sets. It
+// names the drivers, never their commands, and the repository's trust against
+// its current configuration digest, so a client can offer the trust review. A
+// trusted state means the grant covers the digest and the daemon still held
+// the filter back. At most maximumRepositoryGitFilterDrivers are named, and
+// omittedDrivers counts the rest.
+export const maximumRepositoryGitFilterDrivers = 32
+export const repositoryGitFilterRefusalSchema = z.object({
+  kind: z.literal("repository-git-filter"),
+  projectId: repositoryTrustProjectIdSchema,
+  configDigest: repositoryConfigDigestSchema,
+  trust: repositoryTrustStateSchema,
+  drivers: z.array(z.object({
+    name: repositoryGitFilterDriverNameSchema,
+    scope: repositoryGitFilterScopeSchema,
+  }).strict()).min(1).max(maximumRepositoryGitFilterDrivers),
+  omittedDrivers: z.number().int().nonnegative().max(1_000_000),
+}).strict().superRefine((refusal, context) => {
+  refineRepositoryTrustPin(refusal.configDigest, refusal.trust, context, ["trust"])
+})
+
 export type RepositoryTrustGrantClient = z.infer<typeof repositoryTrustClientSchema>
 export type RepositoryTrustRefusal = z.infer<typeof repositoryTrustRefusalSchema>
 export type RepositoryTrust = z.infer<typeof repositoryTrustSchema>
@@ -192,3 +226,5 @@ export type RepositoryTrustResult = z.infer<typeof repositoryTrustResultSchema>
 export type RepositoryRevokeTrustParams = z.infer<typeof repositoryRevokeTrustParamsSchema>
 export type RepositoryTrustThreadRestart = z.infer<typeof repositoryTrustThreadRestartSchema>
 export type RepositoryRevokeTrustResult = z.infer<typeof repositoryRevokeTrustResultSchema>
+export type RepositoryGitFilterScope = z.infer<typeof repositoryGitFilterScopeSchema>
+export type RepositoryGitFilterRefusal = z.infer<typeof repositoryGitFilterRefusalSchema>

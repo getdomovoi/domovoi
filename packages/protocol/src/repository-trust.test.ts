@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest"
 
 import {
   demoWorkspace,
+  maximumRepositoryGitFilterDrivers,
   maximumRepositoryTrustRefusals,
   maximumRepositoryTrustThreadRestarts,
   phoneAndTabletRpcMethods,
+  repositoryGitFilterErrorCode,
+  repositoryGitFilterRefusalSchema,
+  repositoryGitFilterScopes,
   repositoryTrustGrantClients,
   repositoryTrustRefusalCodes,
   repositoryTrustRpcMethods,
@@ -13,6 +17,7 @@ import {
   rpcMethodAuthorizations,
   rpcMethodMutations,
   rpcMethods,
+  rpcResponseSchema,
   toolInventorySchema,
 } from "./index.js"
 
@@ -207,6 +212,72 @@ describe("repository.revokeTrust", () => {
     for (const omittedThreads of [-1, 1.5, "3", 1_000_001]) {
       expect(result({ threads: full, omittedThreads }), String(omittedThreads)).toBe(false)
     }
+  })
+})
+
+describe("repository git filter refusal", () => {
+  const driver = { name: "sops", scope: "local" } as const
+  const refusalData = (trust: unknown, fields: Record<string, unknown> = {}) => ({
+    kind: "repository-git-filter",
+    projectId: "project-acme",
+    configDigest: reviewed,
+    trust,
+    drivers: [driver],
+    omittedDrivers: 0,
+    ...fields,
+  })
+  const parses = (value: unknown) => repositoryGitFilterRefusalSchema.safeParse(value).success
+
+  it("is its own error code, apart from every other daemon refusal", () => {
+    expect(repositoryGitFilterErrorCode).toBe(-32020)
+    const response = {
+      jsonrpc: "2.0",
+      id: 7,
+      error: {
+        code: repositoryGitFilterErrorCode,
+        message: "This repository's own Git config sets the filter \"sops\"",
+        data: refusalData(notTrusted),
+      },
+    }
+    expect(rpcResponseSchema.parse(response)).toEqual(response)
+  })
+
+  it("names the drivers and the repository's trust, so a client can offer the review", () => {
+    expect(repositoryGitFilterScopes).toEqual(["local", "worktree", "command"])
+    for (const scope of repositoryGitFilterScopes) {
+      expect(parses(refusalData(notTrusted, { drivers: [{ name: "sops", scope }] })), scope).toBe(true)
+    }
+    for (const trust of [notTrusted, cannotTrust]) expect(parses(refusalData(trust))).toBe(true)
+    expect(parses(refusalData(changed, { configDigest: edited }))).toBe(true)
+    // A grant for the current digest still reads as trusted: the filter is held back all the same.
+    expect(parses(refusalData(trusted))).toBe(true)
+    const many = Array.from({ length: maximumRepositoryGitFilterDrivers }, (_, index) => ({ name: `driver-${index}`, scope: "local" }))
+    expect(parses(refusalData(notTrusted, { drivers: many, omittedDrivers: 4 }))).toBe(true)
+  })
+
+  it("pins the trust it reports to the digest it names", () => {
+    expect(parses(refusalData(trusted, { configDigest: edited }))).toBe(false)
+    expect(parses(refusalData(changed))).toBe(false)
+  })
+
+  it("refuses data that names no driver, too many, or a value", () => {
+    const refused = [
+      refusalData(notTrusted, { drivers: [] }),
+      refusalData(notTrusted, { drivers: Array.from({ length: maximumRepositoryGitFilterDrivers + 1 }, () => driver) }),
+      refusalData(notTrusted, { drivers: [{ ...driver, scope: "global" }] }),
+      refusalData(notTrusted, { drivers: [{ ...driver, command: "sops -d" }] }),
+      refusalData(notTrusted, { drivers: [{ ...driver, name: "" }] }),
+      refusalData(notTrusted, { drivers: [{ ...driver, name: "x".repeat(257) }] }),
+      refusalData(notTrusted, { drivers: [{ ...driver, name: "TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789" }] }),
+      refusalData(notTrusted, { omittedDrivers: -1 }),
+      refusalData(notTrusted, { kind: "project-switch-confirmation" }),
+      refusalData(notTrusted, { projectId: "" }),
+      refusalData(notTrusted, { extra: true }),
+      refusalData({ state: "trusted" }),
+    ]
+    for (const data of refused) expect(parses(data), JSON.stringify(data).slice(0, 200)).toBe(false)
+    const { omittedDrivers: _, ...uncounted } = refusalData(notTrusted)
+    expect(parses(uncounted)).toBe(false)
   })
 })
 

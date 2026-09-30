@@ -151,6 +151,11 @@ export const skillInstallErrorCode = -32018 as const
 // a direct loopback connection. A policy refusal, not a credential failure:
 // clients keep the connection open and show why the method is unavailable.
 export const localOwnerRequiredErrorCode = -32019 as const
+// Checking the repository out would run a git filter its own Git config sets,
+// so a session.create, session.fork or transfer was refused and nothing ran.
+// The error's data is a repositoryGitFilterRefusalSchema: the drivers and the
+// repository's trust, so a client can offer the trust review.
+export const repositoryGitFilterErrorCode = -32020 as const
 
 const projectSwitchAffectedSessionSchema = z.object({
   id: z.string().min(1),

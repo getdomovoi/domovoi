@@ -28,6 +28,7 @@ import {
   projectSwitchConfirmationSchema,
   rpcMethodMutations,
   protocolVersionMismatchErrorCode,
+  repositoryGitFilterErrorCode,
   rpcMethods,
   terminalClosedRetentionMilliseconds,
   terminalListParamsSchema,
@@ -77,6 +78,7 @@ describe("audit RPC contracts", () => {
       deviceLabelMismatchErrorCode,
       skillInstallErrorCode,
       localOwnerRequiredErrorCode,
+      repositoryGitFilterErrorCode,
     ]
     expect(new Set(codes).size).toBe(codes.length)
     const refusal = {
