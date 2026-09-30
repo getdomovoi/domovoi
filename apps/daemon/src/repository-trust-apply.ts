@@ -7,6 +7,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import { claudeEntryHeldBack, claudeRepositoryFiles, claudeRepositoryLoad } from "./claude-repository-trust.js"
+import { codexEntryHeldBack, codexRepositoryFiles, codexRepositoryLoad } from "./codex-repository-trust.js"
 import {
   readRepositoryProviderConfig,
   type RepositoryConfigDocuments,
@@ -25,9 +26,9 @@ import type { RepositoryProviderConfigReader } from "./tool-inventory.js"
 // of it, whose configuration can differ. A session's verdict reads its own
 // worktree, at the call that opens its thread or starts its turn, and never
 // relies on an earlier trust answer (#662 round 1): the documents it gives are
-// the ones the digest it compared was computed from. Claude Code loads parts
-// of a trusted verdict's documents (P6b, claude-repository-trust.ts); Codex
-// loads nothing from it until P6c.
+// the ones the digest it compared was computed from. Claude Code (P6b,
+// claude-repository-trust.ts) and Codex (P6c, codex-repository-trust.ts) each
+// load parts of a trusted verdict's documents.
 
 // Why a session's repository configuration is held back. Codes, not prose:
 // the notice that words them comes with the later slices (ruling Q153 A).
@@ -105,14 +106,16 @@ export async function trustedRepositoryConfig(
 // repository is trusted. Each claim is pinned by a test of the adapter's real
 // behaviour: Claude Code starts with settingSources ["user"], so it never
 // reads the repository's settings or .mcp.json, and is given parts of them
-// only under a trusted verdict (claude.test.ts); Codex refuses a worktree
-// holding a .codex config.toml or hooks.json, and marks every path it consults
-// for trust untrusted (codex-repository-config.test.ts). Nothing else is
-// claimed (ruling Q128 A): Domovoi's own skill catalog reads the skill folders
-// into prompts, and OpenCode, Kilo and the ACP agents are stated in P7.
+// only under a trusted verdict (claude.test.ts); Codex marks every path it
+// consults for trust untrusted, so it loads nothing from .codex itself,
+// refuses a worktree holding a config.toml or hooks.json there unless it is
+// trusted, and is given only the servers trustedEntryHeldBack reports under a
+// trusted verdict (codex-repository-config.test.ts). Nothing else is claimed
+// (ruling Q128 A): Domovoi's own skill catalog reads the skill folders into
+// prompts, and OpenCode, Kilo and the ACP agents are stated in P7.
 const heldBackFiles: Readonly<Record<string, ReadonlySet<string>>> = {
   "claude-code": claudeRepositoryFiles,
-  codex: new Set([".codex/config.toml", ".codex/hooks.json"]),
+  codex: codexRepositoryFiles,
 }
 
 export const repositoryEntryHeldBack: RepositoryEntryHeldBack = (provider: string, entry: ToolInventoryEntry) => (
@@ -120,14 +123,17 @@ export const repositoryEntryHeldBack: RepositoryEntryHeldBack = (provider: strin
 )
 
 // The policy under a trusted verdict whose documents are `documents`: Claude
-// Code's entries are held back unless the plan its adapter passes loads them
-// (claude-repository-trust.ts, slice P6b); every other provider's are marked
-// as when untrusted until its own slice loads them (Codex in P6c).
+// Code's and Codex's entries are held back unless the plan its adapter passes
+// loads them (claude-repository-trust.ts, slice P6b; codex-repository-trust.ts,
+// slice P6c); every other provider's are marked as when untrusted.
 export function trustedEntryHeldBack(documents: RepositoryConfigDocuments): RepositoryEntryHeldBack {
   const claude = claudeRepositoryLoad(documents)
-  return (provider, entry) => (provider === "claude-code" && claudeRepositoryFiles.has(entry.file)
-    ? claudeEntryHeldBack(entry, claude)
-    : repositoryEntryHeldBack(provider, entry))
+  const codex = codexRepositoryLoad(documents)
+  return (provider, entry) => {
+    if (provider === "claude-code" && claudeRepositoryFiles.has(entry.file)) return claudeEntryHeldBack(entry, claude)
+    if (provider === "codex" && codexRepositoryFiles.has(entry.file)) return codexEntryHeldBack(entry, codex)
+    return repositoryEntryHeldBack(provider, entry)
+  }
 }
 
 // The providers as the inventory reports them under `trust`. The reader

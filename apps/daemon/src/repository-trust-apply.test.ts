@@ -12,6 +12,7 @@ import {
   projectRootRead,
   repositoryEntryHeldBack,
   repositoryTrustVerdict,
+  trustedEntryHeldBack,
   trustedRepositoryConfig,
 } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant } from "./repository-trust-store.js"
@@ -153,6 +154,21 @@ describe("repositoryEntryHeldBack", () => {
     }
   })
 
+  // Slice P6c: under a trusted verdict a Codex server that passes loads, and
+  // the policy reports it so from the same documents.
+  it("reports a trusted repository's Codex servers that pass as loading, and nothing else", () => {
+    const heldBack = trustedEntryHeldBack({ ".codex/config.toml": { mcp_servers: { db: { command: "db-mcp" }, notes: { command: "notes-mcp" } } } })
+    const server = (name: string): ToolInventoryEntry => ({
+      kind: "tool-server", name, transport: "stdio", command: "db-mcp", envKeys: [], file: ".codex/config.toml", startsAtSessionStart: true, heldBack: true,
+    })
+    expect(heldBack("codex", server("db"))).toBe(false)
+    expect(heldBack("codex", server("notes"))).toBe(true)
+    expect(heldBack("codex", entry(".codex/config.toml"))).toBe(true)
+    expect(heldBack("codex", entry(".codex/hooks.json"))).toBe(true)
+    expect(heldBack("codex", entry(".agents/skills", "skill"))).toBe(false)
+    expect(heldBack("claude-code", entry(".mcp.json"))).toBe(true)
+  })
+
   // P7 states what OpenCode, Kilo and the ACP agents keep back.
   it("claims nothing for another provider, even for a file of the same name", () => {
     for (const provider of ["opencode", "kilo", "cursor-agent", "grok"]) {
@@ -226,7 +242,8 @@ describe("heldBackUnder", () => {
       ["claude-code", "skill", "deploy", false],
       ["opencode", "skill", "deploy", false],
       ["kilo", "skill", "deploy", false],
-      // Codex loads nothing from a trusted repository until P6c.
+      // Codex is given only a trusted repository's servers that pass (P6c),
+      // so its other settings stay held back.
       ["codex", "permission-rule", "sandbox_mode read-only", true],
     ])
     // The plan the adapter passes is the one the marks come from.

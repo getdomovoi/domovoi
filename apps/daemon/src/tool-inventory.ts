@@ -13,10 +13,11 @@ import type { RepositoryTrustGrant } from "./repository-trust-store.js"
 // provider: Domovoi starts none of them with tool servers stripped. Claude Code
 // loads the person's own servers (settingSources ["user"], claude.ts), and a
 // trusted repository's that its plan passes (claude-repository-trust.ts), Codex
-// its home's config.toml (no MCP override, codex.ts), and OpenCode and Kilo
-// their global config (the embedded config sets no `mcp`, opencode.ts and
-// kilo-runtime.ts). The ACP agents are given no servers, but they load their
-// own from the repository and the reader has no scope for them.
+// its home's config.toml, and a trusted repository's that its plan passes
+// (codex-repository-trust.ts), and OpenCode and Kilo their global config (the
+// embedded config sets no `mcp`, opencode.ts and kilo-runtime.ts). The ACP
+// agents are given no servers, but they load their own from the repository
+// and the reader has no scope for them.
 //
 // An entry is marked held back only where its adapter provably keeps it from
 // the agent (ruling Q128 A), and under a trusted grant only where it keeps it

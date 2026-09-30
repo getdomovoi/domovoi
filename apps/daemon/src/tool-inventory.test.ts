@@ -3,10 +3,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { demoWorkspace, toolInventorySchema, type ToolInventory, type ToolInventoryEntry } from "@getdomovoi/protocol"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { readRepositoryProviderConfig, type RepositoryProviderConfigOptions } from "./repository-provider-config.js"
-import { repositoryEntryHeldBack } from "./repository-trust-apply.js"
+import { projectRootRead, repositoryEntryHeldBack } from "./repository-trust-apply.js"
+import { removeScratchDirectories } from "./test-scratch.js"
 import { fitToolInventory, readToolInventory } from "./tool-inventory.js"
 
 const { id, name, platform, arch, version } = demoWorkspace.machine
@@ -72,6 +73,58 @@ describe("readToolInventory", () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  // Slice P6c: what is reported as loading under trust is what the Codex
+  // adapter passes from the same documents (codex-repository-trust.ts).
+  describe("for a trusted repository's Codex configuration", () => {
+    const toml = [
+      'approval_policy = "never"',
+      "[mcp_servers.db]",
+      'command = "db-mcp"',
+      'default_tools_approval_mode = "approve"',
+      "[mcp_servers.remote]",
+      'url = "https://mcp.example.com"',
+      'bearer_token_env_var = "GITHUB_TOKEN"',
+      "[mcp_servers.notes]",
+      'command = "notes-mcp"',
+      "",
+    ].join("\n")
+    const scratch: string[] = []
+    afterEach(async () => removeScratchDirectories(scratch.splice(0)))
+
+    async function root(): Promise<string> {
+      const path = await mkdtemp(join(tmpdir(), "domovoi-inventory-codex-"))
+      scratch.push(path)
+      await mkdir(join(path, ".git"))
+      await writeFile(join(path, ".git", "HEAD"), "ref: refs/heads/main\n")
+      await mkdir(join(path, ".codex"))
+      await writeFile(join(path, ".codex", "config.toml"), toml)
+      return path
+    }
+    const codexEntries = (value: ToolInventory) => value.providers.find(({ provider }) => provider === "codex")!.entries
+      .map((entry) => [entry.kind === "tool-server" ? entry.name : entry.kind === "permission-rule" ? entry.rule : entry.kind, entry.heldBack])
+    const grantFor = (trustedDigest: string) => ({
+      projectId: "project-acme", trustedDigest, trustedAt: "2026-09-29T12:00:00.000Z", trustedBy: { client: "desktop" as const },
+    })
+
+    it("reports the servers Codex is given as loading and every other entry held back", async () => {
+      const path = await root()
+      const grant = grantFor((await readRepositoryProviderConfig(path, projectRootRead)).configDigest)
+      const value = await readToolInventory({ machine, project: { id: "project-acme", path }, grant })
+      expect(value.repository?.trust.state).toBe("trusted")
+      expect(codexEntries(value)).toEqual([
+        ["db", false], ["default_tools_approval_mode", true], ["remote", true], ["notes", true], ["approval_policy", true],
+      ])
+    })
+
+    it("reports every entry held back without a grant for this configuration", async () => {
+      const path = await root()
+      for (const grant of [undefined, grantFor(`sha256:${"d".repeat(64)}`)]) {
+        const value = await readToolInventory({ machine, project: { id: "project-acme", path }, grant })
+        expect(codexEntries(value).every(([, heldBack]) => heldBack), JSON.stringify(grant)).toBe(true)
+      }
+    })
   })
 })
 
