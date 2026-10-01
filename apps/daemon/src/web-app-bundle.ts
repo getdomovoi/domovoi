@@ -30,10 +30,12 @@ import {
 // re-resolves a pathname from the root; Node has no openat2 or other lookup
 // anchored to a checked directory handle, and O_NOFOLLOW covers only the last
 // component. A directory swapped for a link and back between two checks is
-// not seen, and on Windows a link to the same file passes. With the owner
-// checks at trustedOwner, only the daemon's own account or root can make that
-// change, so a race by that account is a trusted-account limit, not one this
-// loader defends. Whatever the traversal, every byte kept has the size and
+// not seen, and on Windows a link to the same file passes. On POSIX, with the
+// owner and mode checks at trustedOwner and a trusted install location, only
+// the daemon's own account or root can make that change, so a race by that
+// account is a trusted-account limit, not one this loader defends. That does
+// not hold on Windows, where neither is checked, or where an ACL grants
+// another account rights the mode bits do not show. Whatever the traversal, every byte kept has the size and
 // SHA-256 the parsed manifest lists. Who may change the tree, and the
 // access-control-list limit, are stated at trustedOwner below.
 

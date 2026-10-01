@@ -126,9 +126,11 @@ the same directory both times.
 Stated limit (review F2, Q297): this is not link-free traversal. Every call re-resolves a pathname;
 Node has no `openat2` or other lookup anchored to a checked directory handle, and `O_NOFOLLOW`
 covers only the last component (Windows has neither). A directory swapped for a link and back
-between two checks is not seen. With the ownership checks below, only the daemon's own account or
-root can change the bundle tree, so a race by that account is a trusted-account limit. The digests
-still bind every byte kept to the manifest that was parsed.
+between two checks is not seen. On POSIX, with the owner and mode checks below and a trusted
+install location, only the daemon's own account or root can change the bundle tree, so a race by
+that account is a trusted-account limit. That does not hold on Windows, where neither owner nor
+mode is checked, or where an ACL grants another account rights the mode bits do not show. The
+digests still bind every byte kept to the manifest that was parsed.
 
 Stated limit (review F1, Q297): access control lists are not read. macOS ACLs and Windows ACLs can
 grant another account rights the mode bits do not show, and on Windows neither ownership nor mode
