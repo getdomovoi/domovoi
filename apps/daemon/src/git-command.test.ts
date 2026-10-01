@@ -56,6 +56,23 @@ describe("gitCommand on Windows", () => {
     expect(gitCommand({ Path: "'C:\\Tools;Git\\cmd'" }, "win32", exists)).toBe(quoted)
   })
 
+  // A malformed UNC prefix (two separators, then no server and share) joins
+  // into a path rooted on the current drive, which the launch can resolve on
+  // another drive than the probe did. Only a fully qualified drive path or a
+  // UNC path with a server and a share is probed (ruling Q305).
+  it("passes over an entry that joins to a path rooted on the current drive", () => {
+    const anything = vi.fn(() => true)
+    for (const entry of ["'\\\\/dir'", "\\\\/dir", "\\/dir", "/\\dir", "\\\\\\dir", "\\\\server", "//server/", "\\\\server\\\\share"]) {
+      anything.mockClear()
+      expect(() => gitCommand({ Path: entry }, "win32", anything), entry).toThrow(GitNotFoundError)
+      expect(anything, entry).not.toHaveBeenCalled()
+    }
+    // Mixed separators in a whole UNC path, and a drive path, still count.
+    expect(gitCommand({ Path: "//server/share/Git/cmd" }, "win32", anything)).toBe("\\\\server\\share\\Git\\cmd\\git.exe")
+    expect(gitCommand({ Path: "\\\\server/share\\Git" }, "win32", anything)).toBe("\\\\server\\share\\Git\\git.exe")
+    expect(gitCommand({ Path: "C:/Git/cmd" }, "win32", anything)).toBe("C:\\Git\\cmd\\git.exe")
+  })
+
   it("refuses when no absolute PATH entry holds git.exe", () => {
     expect(() => gitCommand({ Path: "C:\\nothing;.;relative\\bin" }, "win32", isFile)).toThrow(GitNotFoundError)
     expect(() => gitCommand({}, "win32", isFile)).toThrow("Domovoi found no git.exe")

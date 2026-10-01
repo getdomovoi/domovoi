@@ -81,6 +81,14 @@ function pathEntries(path: string): string[] {
   return entries
 }
 
+// A path that names one place whatever the current directory and drive: a
+// drive letter and a separator (C:\...), or a UNC path with a server and a
+// share (\\server\share...), either separator allowed. win32.isAbsolute is not
+// enough: it also takes \dir, rooted on the current drive (ruling Q305).
+function fullyQualified(path: string): boolean {
+  return /^[A-Za-z]:[\\/]/u.test(path) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+(?:[\\/]|$)/u.test(path)
+}
+
 export function gitCommand(
   environment: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
@@ -92,8 +100,11 @@ export function gitCommand(
   const known = cache ? resolved.get(path) : undefined
   if (known !== undefined) return known
   for (const directory of pathEntries(path)) {
-    if (directory.includes("\0") || !/^[A-Za-z]:[\\/]|^\\\\[^\\]/u.test(directory)) continue
+    if (directory.includes("\0") || !fullyQualified(directory)) continue
     const candidate = win32.join(directory, "git.exe")
+    // win32.join normalizes: a malformed prefix can collapse into a path
+    // rooted on the current drive, so the joined path is checked too.
+    if (!fullyQualified(candidate)) continue
     if (isFile(candidate)) {
       if (cache) resolved.set(path, candidate)
       return candidate
