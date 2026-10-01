@@ -1,6 +1,8 @@
 import {
   deviceLabelMismatchSchema,
   fleetSnapshotOverflowSchema,
+  projectCapRefusalSchema,
+  projectCloseConfirmationSchema,
   projectSwitchConfirmationSchema,
   protocolMismatchSchema,
   repositoryGitFilterRefusalSchema,
@@ -11,6 +13,8 @@ import {
   turnSkillSelectionRefusalSchema,
   type DeviceLabelMismatch,
   type FleetSnapshotOverflow,
+  type ProjectCapRefusal,
+  type ProjectCloseConfirmation,
   type ProjectSwitchConfirmation,
   type ProtocolMismatch,
   type RepositoryGitFilterRefusal,
@@ -34,6 +38,8 @@ export type RpcErrorData =
   | SkillInstallRefusal
   | SessionAttachmentRefusal
   | RepositoryGitFilterRefusal
+  | ProjectCapRefusal
+  | ProjectCloseConfirmation
 
 export type RpcErrorObject = { code: number, message: string, data?: RpcErrorData }
 
@@ -48,6 +54,8 @@ const errorDataSchemas = {
   "skill-install-refused": skillInstallRefusalSchema,
   "session-attachment-refused": sessionAttachmentRefusalSchema,
   "repository-git-filter": repositoryGitFilterRefusalSchema,
+  "project_cap": projectCapRefusalSchema,
+  "project-close-confirmation": projectCloseConfirmationSchema,
 } as const
 
 const issuedFrames = new WeakSet<ResponseFrame>()

@@ -963,10 +963,26 @@ export const annotationSchema = z.object({
   updatedAt: dateTimeSchema,
 })
 
-export const workspaceSnapshotSchema = z.object({
+// The most projects a daemon may keep active at once, whatever its configured
+// cap says. Each active project brings its own provider processes, watchers
+// and terminals.
+export const maximumProjectCap = 16
+
+// The object schema, for a result that extends the snapshot. Its checks come
+// with it. Everything else uses workspaceSnapshotSchema.
+export const workspaceSnapshotObjectSchema = z.object({
   protocolVersion: compatibleProtocolVersionSchema,
   machine: machineSchema,
+  // The focused project: the one a call that names no project acts on. It is
+  // one of `projects`, and null only when no project is active.
   project: projectSchema.nullable(),
+  // Every active project on this machine. Absent from a snapshot written
+  // before the list, whose only active project is `project`; read it through
+  // workspaceProjects.
+  projects: z.array(projectSchema).max(maximumProjectCap).optional(),
+  // How many projects the daemon keeps active at once. It refuses to open
+  // another past this.
+  projectCap: z.number().int().min(1).max(maximumProjectCap).optional(),
   sessions: z.array(sessionSummarySchema),
   activeSessionId: z.string().min(1).nullable(),
   approvals: z.array(approvalRequestSchema),
@@ -1049,7 +1065,35 @@ export const workspaceSnapshotSchema = z.object({
     queuedSendIds.add(queued.id)
   })
 
+  const projects = workspaceProjects(snapshot)
+  const projectIds = new Set<string>()
+  projects.forEach((project, index) => {
+    const path = snapshot.projects ? ["projects", index] : ["project"]
+    if (projectIds.has(project.id)) {
+      context.addIssue({ code: "custom", message: "Active projects must be unique", path: [...path, "id"] })
+    }
+    projectIds.add(project.id)
+    if (project.machineId !== snapshot.machine.id) {
+      context.addIssue({
+        code: "custom",
+        message: "Project must belong to the workspace machine",
+        path: [...path, "machineId"],
+      })
+    }
+  })
+  if (snapshot.projectCap !== undefined && projects.length > snapshot.projectCap) {
+    context.addIssue({ code: "custom", message: "Active projects cannot exceed the project cap", path: ["projects"] })
+  }
+
   if (snapshot.project === null) {
+    if (projects.length > 0) {
+      context.addIssue({
+        code: "custom",
+        message: "A workspace with active projects has a focused project",
+        path: ["project"],
+      })
+      return
+    }
     const populatedFields = [
       snapshot.sessions,
       snapshot.approvals,
@@ -1069,23 +1113,22 @@ export const workspaceSnapshotSchema = z.object({
     }
     return
   }
-  const project = snapshot.project
-
-  if (project.machineId !== snapshot.machine.id) {
+  const focused = snapshot.project
+  if (!projects.some((project) => sameProject(project, focused))) {
     context.addIssue({
       code: "custom",
-      message: "Project must belong to the workspace machine",
-      path: ["project", "machineId"],
+      message: "The focused project must be one of the active projects",
+      path: ["project"],
     })
   }
 
   const sessionIds = new Set(snapshot.sessions.map((session) => session.id))
   const forkRequestIds = new Set<string>()
   snapshot.sessions.forEach((session, index) => {
-    if (session.projectId !== project.id) {
+    if (!projectIds.has(session.projectId)) {
       context.addIssue({
         code: "custom",
-        message: "Session must belong to the workspace project",
+        message: "Session must belong to an active project",
         path: ["sessions", index, "projectId"],
       })
     }
@@ -1199,10 +1242,10 @@ export const workspaceSnapshotSchema = z.object({
     })
   })
   snapshot.approvalRules.forEach((rule, index) => {
-    if (rule.projectId !== project.id) {
+    if (!projectIds.has(rule.projectId)) {
       context.addIssue({
         code: "custom",
-        message: "Approval rule must reference the workspace project",
+        message: "Approval rule must reference an active project",
         path: ["approvalRules", index, "projectId"],
       })
     }
@@ -1285,12 +1328,37 @@ export const workspaceSnapshotSchema = z.object({
   })
 })
 
+// Typed by name so declaration output refers to the snapshot rather than
+// spelling it out in each of the many results that return it; spelled out,
+// those copies take rpcMethods past what the compiler will serialize
+// (TS7056). Only an interface keeps its name there: an alias of an inferred
+// type is written out in full. The annotation checks that the schema reads
+// exactly this type.
+export interface WorkspaceSnapshot extends z.infer<typeof workspaceSnapshotObjectSchema> {}
+export interface WorkspaceSnapshotInput extends z.input<typeof workspaceSnapshotObjectSchema> {}
+export const workspaceSnapshotSchema: z.ZodType<WorkspaceSnapshot, WorkspaceSnapshotInput> = workspaceSnapshotObjectSchema
+
 export type ClientKind = z.infer<typeof clientKindSchema>
 export type PermissionMode = z.infer<typeof permissionModeSchema>
 export type ApprovalRisk = z.infer<typeof approvalRiskSchema>
 export type Runtime = z.infer<typeof runtimeSchema>
 export type Machine = z.infer<typeof machineSchema>
 export type Project = z.infer<typeof projectSchema>
+
+// The snapshot's active projects. A snapshot written before the list has one
+// active project, its focused one, or none when no project is open.
+export function workspaceProjects(snapshot: { project: Project | null, projects?: Project[] | undefined }): Project[] {
+  return snapshot.projects ?? (snapshot.project ? [snapshot.project] : [])
+}
+
+function sameProject(left: Project, right: Project): boolean {
+  return left.id === right.id
+    && left.machineId === right.machineId
+    && left.name === right.name
+    && left.path === right.path
+    && left.branch === right.branch
+}
+
 export type QueuedSessionSendState = z.infer<typeof queuedSessionSendStateSchema>
 export type QueuedSessionSend = z.infer<typeof queuedSessionSendSchema>
 export type SessionSummary = z.infer<typeof sessionSummarySchema>
@@ -1317,4 +1385,3 @@ export type Annotation = z.infer<typeof annotationSchema>
 export type ProviderModel = z.infer<typeof providerModelSchema>
 export type ProviderFailure = z.infer<typeof providerFailureSchema>
 export type ProviderRuntime = z.infer<typeof providerRuntimeSchema>
-export type WorkspaceSnapshot = z.infer<typeof workspaceSnapshotSchema>

@@ -43,9 +43,10 @@ const identityFor = (machineId: string) => ({
 
 function otherMachine(original: ReturnType<typeof workspaceSnapshot>) {
   const otherId = `machine-${"b".repeat(32)}`
+  const project = original.project ? { ...original.project, machineId: otherId } : undefined
   return workspaceSnapshot({
     machine: { ...original.machine, id: otherId, name: "Other machine" },
-    ...(original.project ? { project: { ...original.project, machineId: otherId } } : {}),
+    ...(project ? { project, projects: [project] } : {}),
   })
 }
 

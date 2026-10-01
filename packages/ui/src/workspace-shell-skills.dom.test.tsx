@@ -59,6 +59,7 @@ function withProject(snapshot: WorkspaceSnapshot, path: string): WorkspaceSnapsh
   const updated = structuredClone(snapshot)
   const id = `project-${path}`
   updated.project = { ...updated.project!, id, path }
+  updated.projects = [updated.project]
   updated.sessions = updated.sessions.map((session) => ({ ...session, projectId: id }))
   return updated
 }

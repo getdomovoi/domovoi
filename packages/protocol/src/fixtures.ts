@@ -20,6 +20,14 @@ export function createEmptyWorkspace(machine: Machine): WorkspaceSnapshot {
   }
 }
 
+const demoProject = {
+  id: "project-acme-api",
+  machineId: "machine-5c31a542e8960cfc8f00a529353d4944",
+  name: "acme-api",
+  path: "/Users/dev/src/acme-api",
+  branch: "main",
+}
+
 export const demoWorkspace: WorkspaceSnapshot = {
   protocolVersion,
   machine: {
@@ -32,13 +40,10 @@ export const demoWorkspace: WorkspaceSnapshot = {
     reachable: true,
     providers: [],
   },
-  project: {
-    id: "project-acme-api",
-    machineId: "machine-5c31a542e8960cfc8f00a529353d4944",
-    name: "acme-api",
-    path: "/Users/dev/src/acme-api",
-    branch: "main",
-  },
+  project: demoProject,
+  projects: [demoProject],
+  // The default cap of ruling Q190.
+  projectCap: 3,
   activeSessionId: "session-billing",
   sessions: [
     {
