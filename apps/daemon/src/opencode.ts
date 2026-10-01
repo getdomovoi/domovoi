@@ -1145,7 +1145,15 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         permissionId: requestId,
         reply,
       })
-      if (!confirmed) await this.#stopServer(this.#unconfirmedStopReason())
+      // Always restarted (Codex review of #691, P1): an always reply leaves an
+      // allow rule in the server's memory for the whole directory, opencode
+      // permission/index.ts:145-151, kilo :342-351. OpenCode keeps no such
+      // rule anywhere else; what Kilo writes to its global configuration is
+      // beyond a restart (see the daemon README).
+      const name = this.#identity.providerName
+      await this.#stopServer(confirmed
+        ? `Domovoi restarted the ${name} server because an approval was answered outside Domovoi, so no approval it kept stays in place`
+        : this.#unconfirmedStopReason())
     })
   }
 

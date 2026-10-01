@@ -2129,6 +2129,28 @@ describe("approval replies Domovoi did not send", () => {
     await adapter.close()
   })
 
+  // Codex review of #691, P1: an always reply leaves an allow rule in the
+  // server's memory for the whole directory. The server is restarted after
+  // any reply made elsewhere, so nothing it left in place survives.
+  it.each(adapters)("restarts the %s server after a reply made elsewhere", async (name, make) => {
+    const { adapter, factory, server, events, ask, reply, approvals } = await askedTurn(make)
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+
+    reply("per_1", "always")
+
+    await waitForDaemon(() => expect(server.stop).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(events).toContainEqual({
+      type: "provider-disconnected",
+      reason: `Domovoi restarted the ${name} server because an approval was answered outside Domovoi, so no approval it kept stays in place`,
+    }))
+    expect(events.findIndex((event) => event.type === "approval-answered-elsewhere"))
+      .toBeLessThan(events.findIndex((event) => event.type === "provider-disconnected"))
+    await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    expect(factory).toHaveBeenCalledTimes(2)
+    await adapter.close()
+  })
+
   it("aborts every subagent of the thread as well as the thread", async () => {
     const { adapter, client, events, stream, threadId, ask, reply, approvals } = await askedTurn()
     stream.emit({ type: "session.created", properties: { sessionID: "ses_child", info: { id: "ses_child", parentID: threadId, directory: "/worktree" } } })

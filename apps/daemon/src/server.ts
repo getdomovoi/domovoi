@@ -12345,7 +12345,7 @@ export class DomovoiDaemon {
 
   // Q243 A: the adapter saw an approval reply it did not send and has already
   // stopped and unloaded the thread. The session fails with its own failure
-  // and keeps its provider thread, so the next send resumes it afresh.
+  // and lets its provider thread go.
   async #stopSessionAnsweredElsewhere(
     provider: string,
     threadId: string,
@@ -12357,6 +12357,12 @@ export class DomovoiDaemon {
     this.#flushCommandOutputStreams(session.id)
     for (const [key, run] of this.#approvedRuns) if (run.sessionId === session.id) this.#approvedRuns.delete(key)
     this.#loadedAgentThreads.delete(providerThreadKey(provider, threadId))
+    // Never resumed (Codex review of #691, P1): the provider session may hold
+    // approvals made elsewhere. Like a quarantined session, it continues only
+    // once the person restarts its provider thread, which starts a new one.
+    // The adapter restarts the server, which the provider-disconnected that
+    // follows reports to every other session on it.
+    delete session.providerThreadId
     delete session.activeTurnId
     session.state = "failed"
     session.providerFailure = { ...approvalAnsweredElsewhereFailure }
@@ -12367,7 +12373,7 @@ export class DomovoiDaemon {
       sessionId: session.id,
       kind: "system",
       body: "An approval in this session was answered outside Domovoi, so Domovoi stopped the session.",
-      detail: "A program on this machine that can read the provider server's password sent the answer, and the approved call may already have run. Review the session's changes before you send another message.",
+      detail: "A program on this machine that can read the provider server's password sent the answer, and what it approved may already have run. Review the session's changes, then restart the provider to continue: the session continues in a new provider session, without its earlier conversation.",
       createdAt: stoppedAt,
     })
     this.#appendAudit({

@@ -34,6 +34,7 @@ const answeredElsewhere = {
   retryable: false,
 } as const
 const notice = "An approval in this session was answered outside Domovoi, so Domovoi stopped the session."
+const restarted = "Domovoi restarted the OpenCode server because an approval was answered outside Domovoi, so no approval it kept stays in place"
 
 function openCodeSession(): WorkspaceSnapshot {
   const snapshot = structuredClone(demoWorkspace)
@@ -70,8 +71,12 @@ function recordingAuditLog() {
 async function start() {
   let emit: (event: AgentEvent) => void = () => {}
   const provider = {
-    connect: vi.fn(async () => {}), listModels: vi.fn(async () => []),
-    startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}), stopThread: vi.fn(async () => {}),
+    connect: vi.fn(async () => {}),
+    listModels: vi.fn(async () => [{
+      provider: "opencode", id: "anthropic/sonnet", displayName: "Anthropic / Claude Sonnet", description: "",
+      supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high", isDefault: true,
+    }]),
+    startThread: vi.fn(async () => "ses_fresh"), resumeThread: vi.fn(async () => {}), stopThread: vi.fn(async () => {}),
     startTurn: vi.fn<() => Promise<string>>().mockResolvedValueOnce("turn-billing").mockResolvedValue("turn-billing-2"),
     steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
     resolveApproval: vi.fn(),
@@ -129,10 +134,15 @@ describe("an approval answered outside Domovoi", () => {
       },
     })
     emit({ type: "approval-answered-elsewhere", threadId, turnId: "turn-billing", permissionId: "per_1", reply: "once" })
+    // The adapter then restarts the server, which every session on it hears.
+    emit({ type: "provider-disconnected", reason: restarted })
 
     await waitForDaemon(async () => expect(append).toHaveBeenCalledWith(expect.objectContaining({
-      action: "provider.approval-answered-elsewhere",
+      action: "provider.disconnected",
     })))
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      action: "provider.approval-answered-elsewhere",
+    }))
     expect(append).toHaveBeenCalledWith({
       actor: { kind: "provider", provider: "opencode", providerThreadId: threadId },
       action: "provider.approval-answered-elsewhere",
@@ -146,15 +156,26 @@ describe("an approval answered outside Domovoi", () => {
     expect(stopped.state).toBe("failed")
     expect(stopped.providerFailure).toEqual(answeredElsewhere)
     expect(stopped).not.toHaveProperty("activeTurnId")
-    expect(stopped.providerThreadId).toBe(threadId)
+    // Codex review of #691, P1: the provider session may hold approvals made
+    // elsewhere, so it is never resumed.
+    expect(stopped).not.toHaveProperty("providerThreadId")
     const after = await snapshot()
     expect(after.approvals).toEqual([])
     expect(after.thread).toContainEqual(expect.objectContaining({ sessionId, kind: "system", body: notice }))
+    expect(after.thread.filter((item) => item.sessionId === sessionId && item.kind === "system" && item.body.includes("disconnected")))
+      .toEqual([])
 
-    // The adapter unloaded the thread, so the next send resumes it first.
+    // It continues only in a new provider session, the way a quarantined
+    // session does: a send is refused until the provider thread is restarted.
+    const refused = await rpc("session.send", { sessionId, prompt: "go on", client: "desktop" })
+    expect(refused.error?.message).toBe("Session is not ready for agent turns")
+    const restart = await rpc("session.restartProviderThread", { sessionId, client: "desktop" })
+    expect(restart.error?.message).toBeUndefined()
+    expect(provider.startThread).toHaveBeenCalledOnce()
+    expect((await session()).providerThreadId).toBe("ses_fresh")
     const again = await rpc("session.send", { sessionId, prompt: "go on", client: "desktop" })
     expect(again.error?.message).toBeUndefined()
-    expect(provider.resumeThread).toHaveBeenCalledTimes(2)
+    expect(provider.resumeThread).toHaveBeenCalledOnce()
   })
 
   it("fails the session when the stop arrives with no turn running", async () => {
