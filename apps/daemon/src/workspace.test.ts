@@ -9,6 +9,7 @@ import { promisify } from "node:util"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { windowsTreeKill } from "./claude-process.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
 import { projectRootRead } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant } from "./repository-trust-store.js"
@@ -48,9 +49,30 @@ afterEach(async () => {
   vi.mocked(open).mockReset()
   vi.mocked(readFile).mockReset()
   vi.mocked(unlink).mockReset()
-  for (const daemon of gitDaemons.splice(0)) daemon.kill()
+  await Promise.all(gitDaemons.splice(0).map(stopGitDaemon))
   await removeScratchDirectories(scratchDirectories)
 })
+
+// git daemon serves each connection from a process of its own, and on Windows
+// git.exe is a launcher for the real one. A server left running holds the
+// served repository open, so its scratch directory cannot be removed and
+// every later test's cleanup fails on it. taskkill /T ends the whole tree.
+async function stopGitDaemon(daemon: ChildProcess): Promise<void> {
+  if (daemon.exitCode !== null || daemon.signalCode !== null) return
+  const exited = new Promise<void>((resolveExit) => daemon.once("exit", () => resolveExit()))
+  if (process.platform === "win32" && daemon.pid !== undefined) {
+    await windowsTreeKill(daemon.pid).catch(() => daemon.kill())
+  } else {
+    daemon.kill()
+  }
+  await exited
+}
+
+// Git for Windows hangs on a push to git daemon's receive-pack (observed in CI
+// run 36835693928: each such test ran into its 30 s timeout). A session ref
+// push and its restore run the same Git commands on every platform, so these
+// cases run on macOS and Linux only. Fetching from git daemon works on Windows.
+const gitDaemonPushes = process.platform !== "win32"
 
 // A shared remote served over git:// by a local git daemon for the test's
 // life, push included. A session transfer refuses a repository remote on a
@@ -2366,7 +2388,7 @@ describe("GitWorkspaceService session refs", () => {
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })
 
-  it("pushes the session checkpoint to the remote the caller named", async () => {
+  it.runIf(gitDaemonPushes)("pushes the session checkpoint to the remote the caller named", async () => {
     const { service, workspace, checkpoint, remotePath } = await sessionWithRemote("domovoi-ref-")
 
     const pushed = await service.pushSessionRef(workspace.path, "origin", "session-1")
@@ -2401,7 +2423,7 @@ describe("GitWorkspaceService session refs", () => {
 })
 
 describe("GitWorkspaceService session ref restore", () => {
-  it("restores a session the source pushed to a shared remote", async () => {
+  it.runIf(gitDaemonPushes)("restores a session the source pushed to a shared remote", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-ref-restore-"))
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
@@ -2465,7 +2487,7 @@ describe("GitWorkspaceService session ref restore", () => {
     )).rejects.toThrow("Remote session ref changed before transfer commit")
   })
 
-  it("pushes and restores checkpoint refs outside the current branch", async () => {
+  it.runIf(gitDaemonPushes)("pushes and restores checkpoint refs outside the current branch", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-ref-history-"))
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
@@ -3403,7 +3425,7 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect((await run("-C", targetRepositoryPath, "branch", "--list", "domovoi/*")).stdout.trim()).toBe("")
   })
 
-  it("refuses to restore a session from a shared remote where the target's config sets a filter for its branch", async () => {
+  it.runIf(gitDaemonPushes)("refuses to restore a session from a shared remote where the target's config sets a filter for its branch", async () => {
     const { scratch, repositoryPath, filterFile, git, ran } = await filteredRepository("domovoi-ref-transfer-filter-")
     const remotePath = join(scratch, "remote.git")
     await run("init", "--bare", remotePath)
