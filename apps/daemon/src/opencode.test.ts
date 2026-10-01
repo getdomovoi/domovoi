@@ -1932,6 +1932,61 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     await adapter.close()
   })
 
+  // Security review round 2 of #687: a tool server added during a turn (the
+  // server's POST /mcp) can register a tool named like an allowed built-in,
+  // which then runs with no card, and the servers emit no event for an add.
+  // The adapter watches the turn's tool calls: a call to a tool the catalog
+  // does not hold, or a change in the directory's tool servers seen while the
+  // turn calls tools, stops the turn. One call can run before the stop.
+  async function turnWithTools(setup?: (client: ReturnType<typeof harness>["client"]) => void) {
+    const { client, factory, stream } = harness()
+    setup?.(client)
+    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Work", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: "assistant-message", sessionID: threadId, role: "assistant", parentID: "turn-1" } } })
+    const call = (callID: string, tool: string) => stream.emit({
+      type: "message.part.updated",
+      properties: { part: { type: "tool", sessionID: threadId, messageID: "assistant-message", callID, tool, state: { status: "pending", input: {} } } },
+    })
+    return { adapter, client, events, stream, threadId, call }
+  }
+  const turnEnd = (events: AgentEvent[]) => events.find((event) => event.type === "turn-completed")
+
+  it("stops the turn when it calls a tool the catalog did not hold", async () => {
+    const { adapter, client, events, call } = await turnWithTools()
+    call("call-1", "plan_enter")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await waitForDaemon(() => expect(turnEnd(events)).toMatchObject({ params: { turn: { status: "failed", error: expect.stringContaining("plan_enter") } } }))
+    // The next prompt reads the catalog again and refuses the new server.
+    client.mcp.status.mockResolvedValue({ data: { plan: { status: "connected" } } })
+    await expect(adapter.startTurn({ threadId: "open-session", cwd: "/worktree", prompt: "Again", runtime: runtime("build") })).rejects.toThrow(`tool server named "plan"`)
+    await adapter.close()
+  })
+
+  it("stops the turn when the directory's tool servers change while it calls tools", async () => {
+    const { adapter, client, events, call } = await turnWithTools()
+    client.mcp.status.mockResolvedValue({ data: { github: { status: "connected" } } })
+    call("call-1", "bash")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await waitForDaemon(() => expect(turnEnd(events)).toMatchObject({ params: { turn: { status: "failed", error: expect.stringContaining("github") } } }))
+    await adapter.close()
+  })
+
+  it("lets a turn call the tools the catalog holds", async () => {
+    const { adapter, client, events, call } = await turnWithTools((setup) => {
+      setup.mcp.status.mockResolvedValue({ data: { docs: { status: "connected" } } })
+    })
+    for (const [id, tool] of [["a", "bash"], ["b", "docs_search"], ["c", "list_mcp_resources"], ["d", "read_mcp_resource"], ["e", "invalid"]] as const) call(id, tool)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    await waitForDaemon(() => expect(client.mcp.status.mock.calls.length).toBeGreaterThan(1))
+    expect(client.session.abort).not.toHaveBeenCalled()
+    expect(turnEnd(events)).toBeUndefined()
+    await adapter.close()
+  })
+
   it("checks again before each prompt", async () => {
     const { client, factory } = harness()
     const adapter = new OpenCodeSdkAdapter(factory)
