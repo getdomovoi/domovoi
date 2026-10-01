@@ -3464,6 +3464,28 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await branches()).toBe("domovoi/session-held-lock")
   })
 
+  // Another Git that wrote the new worktree's index, and finished, before the
+  // checkout publishes holds no lock any more. The publish compares the index
+  // with what it was when the worktree was added and, if it changed, keeps
+  // the writer's index, and the worktree and branch for recovery (ruling Q281).
+  it("keeps a new worktree's index another Git wrote before the checkout published", async () => {
+    const { repositoryPath, worktrees, branches } = await filteredRepository("domovoi-create-late-writer-")
+    const path = join(worktrees, "session-late-writer")
+    const service = new GitWorkspaceService(worktrees, {
+      afterNewWorktreeScan: async () => {
+        await writeFile(join(path, "late.txt"), "staged by another writer\n")
+        await run("-C", path, "add", "late.txt")
+      },
+    })
+
+    const error = await service.createSessionWorkspace(repositoryPath, "session-late-writer").then(() => undefined, (failure: unknown) => failure)
+
+    expect(error).toMatchObject({ name: "NewWorktreeKeptError" })
+    expect((error as Error).message).toContain("changed since the worktree was added")
+    expect((await run("-C", path, "ls-files", "late.txt")).stdout).toBe("late.txt\n")
+    expect(await branches()).toBe("domovoi/session-late-writer")
+  })
+
   // The install lines alone are exempt; what they would make git-lfs start is not.
   it("refuses a session whose exempt Git LFS lines would start a transfer agent the repository names", async () => {
     const { repositoryPath, worktrees, git, branches } = await filteredRepository("domovoi-create-lfs-agent-")

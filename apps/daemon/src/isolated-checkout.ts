@@ -623,6 +623,23 @@ export class IndexLockHeldError extends Error {
   }
 }
 
+// An index file's bytes, or undefined when there is none.
+export async function readIndexFile(path: string): Promise<Buffer | undefined> {
+  return fs.readFile(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined
+    throw error
+  })
+}
+
+// An index another Git wrote after Domovoi read it, and before Domovoi went to
+// write it: that Git's index is kept as it is.
+export class IndexChangedError extends Error {
+  constructor(readonly path: string) {
+    super(`The index at ${path} changed since the worktree was added, so Domovoi left it as another Git wrote it`)
+    this.name = "IndexChangedError"
+  }
+}
+
 // Writes `bytes` over `path` the way Git writes an index: into `path`.lock,
 // created exclusively, synced, then renamed over the file (ruling Q276).
 // `proceed` runs once the lock is held, while no Git can write the file, and
@@ -732,8 +749,11 @@ export async function checkOutIsolated(input: {
   reviewed?: ReadonlyArray<readonly [string, string]> | undefined
   beforeCommand?: (() => void) | undefined
   signal?: AbortSignal | undefined
+  // The new worktree's index file as it was when the worktree was added
+  // (undefined: none). The checkout publishes only over that same file.
+  initialIndex: Buffer | undefined
 }): Promise<void> {
-  const { commit } = input
+  const { commit, initialIndex } = input
   const isolated = await openIsolatedGit({ ...input, worktreeIndex: false })
   try {
     const version = await installedGitVersion()
@@ -746,9 +766,16 @@ export async function checkOutIsolated(input: {
     // The index names the files just written with their stat data, so the new
     // worktree reads as clean without hashing, and filtering, them again. It
     // is written as Git writes one, under the worktree's index.lock created
-    // exclusively; a lock already there refuses, the index as it was.
-    const published = await publishUnderIndexLock(isolated.worktreeIndex, () => fs.readFile(join(isolated.gitDirectory, "index")))
+    // exclusively; a lock already there refuses, the index as it was. Under
+    // the lock the index must still be the file it was when the worktree was
+    // added, byte for byte: another Git that wrote it since, and finished,
+    // holds no lock, and its index is kept (ruling Q281).
+    const published = await publishUnderIndexLock(isolated.worktreeIndex, () => fs.readFile(join(isolated.gitDirectory, "index")), async () => {
+      const now = await readIndexFile(isolated.worktreeIndex)
+      return now === undefined || initialIndex === undefined ? now === initialIndex : now.equals(initialIndex)
+    })
     if (published === "locked") throw new IndexLockHeldError(`${isolated.worktreeIndex}.lock`)
+    if (published === "declined") throw new IndexChangedError(isolated.worktreeIndex)
   } finally {
     await isolated.dispose()
   }

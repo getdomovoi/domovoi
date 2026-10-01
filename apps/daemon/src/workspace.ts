@@ -13,7 +13,7 @@ import {
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
 import {
-  carriedRemoteUrl, checkOutIsolated, IndexLockHeldError, IndexPublishedNotDurableError, openIsolatedGit, publishUnderIndexLock, runGitProcess, type IsolatedGit,
+  carriedRemoteUrl, checkOutIsolated, IndexChangedError, IndexLockHeldError, IndexPublishedNotDurableError, openIsolatedGit, publishUnderIndexLock, readIndexFile, runGitProcess, type IsolatedGit,
 } from "./isolated-checkout.js"
 import {
   repositoryFilterGate,
@@ -1431,7 +1431,11 @@ export class GitWorkspaceService implements WorkspaceService {
     signal?: AbortSignal,
   ): Promise<void> {
     let gate: RepositoryFilterGate
+    // The new worktree's index as it is now, before anything prepares the
+    // checkout: the publish writes only over this same file (ruling Q281).
+    let initialIndex: Buffer | undefined
     try {
+      initialIndex = await readIndexFile(resolve(path, await git(path, ["rev-parse", "--git-path", "index"], signal)))
       gate = await this.#gate(anchor, path, signal)
       await this.#afterNewWorktreeScan?.(path)
       if (!gate.open) {
@@ -1449,7 +1453,7 @@ export class GitWorkspaceService implements WorkspaceService {
     // never names one to remove.
     try {
       await checkOutIsolated({
-        worktree: path, commit, settings: gate.settings, reviewed: gate.open ? gate.reviewed : [], beforeCommand: this.#confirm(gate), signal,
+        worktree: path, commit, settings: gate.settings, reviewed: gate.open ? gate.reviewed : [], beforeCommand: this.#confirm(gate), signal, initialIndex,
       })
       await git(path, ["update-ref", "HEAD", commit], signal)
     } catch (error) {
@@ -1460,6 +1464,8 @@ export class GitWorkspaceService implements WorkspaceService {
       if (signal?.aborted === true || (error instanceof Error && error.name === "AbortError")) throw new NewWorktreeKeptError(error)
       // Removing the worktree would take a lock whose owner is unknown with it.
       if (error instanceof IndexLockHeldError) throw new NewWorktreeKeptError(error, "a Git command Domovoi cannot account for may hold its index lock")
+      // Removing it would take that Git's index with it.
+      if (error instanceof IndexChangedError) throw new NewWorktreeKeptError(error, "another Git wrote its index, which Domovoi did not replace")
       const cleanup = await discardNewWorktree(repositoryPath, path, madeBranch)
       if (error instanceof RepositoryFilterRefusedError) {
         throw new RepositoryGitFilterRefusedError(error.settings, cleanup, { reason: error.reason, projectId: error.projectId })
