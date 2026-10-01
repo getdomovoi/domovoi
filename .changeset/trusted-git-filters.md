@@ -34,8 +34,11 @@ lazy fetching off, so a prerequisite the target lacks fails the transfer instead
 from a promisor remote the target's config names. Neither fetch recurses into submodules.
 Submodules are checked for local work each through an isolated Git directory of its own, the
 superproject's status and diff keep out of submodule worktrees, and checkpoint, snapshot, restore,
-revert and transfer refuse while a checked-out submodule's own Git config sets a filter, which no
-trust covers.
+revert and transfer refuse while a checked-out submodule's own Git config sets a filter or makes it
+a partial clone, which no trust covers. Every other daemon Git command runs with lazy fetching off
+(Git 2.45 and later), so a partial clone's missing object fails the command instead of being
+fetched through the repository's own promisor and transport config; only the isolated directory,
+with the filtered transports, fetches one.
 
 Under trust, a filter runs in a process group of its own on macOS and Linux, and a timeout or an
 emergency stop ends the whole group. A process a filter started can leave that group, so after a
