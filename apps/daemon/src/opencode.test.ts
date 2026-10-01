@@ -2042,6 +2042,21 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     await adapter.close()
   })
 
+  // Security review round 3 of #687: call ids are not unique across provider
+  // sessions, so a subagent's call that reuses one is still checked.
+  it("checks a subagent's call that reuses a call id the turn already used", async () => {
+    const { adapter, client, call, stream, threadId } = await turnWithTools()
+    call("shared-call", "bash")
+    stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "child-message", sessionID: "child-session", role: "assistant", parentID: "child-user" } } })
+    stream.emit({
+      type: "message.part.updated",
+      properties: { part: { type: "tool", sessionID: "child-session", messageID: "child-message", callID: "shared-call", tool: "plan_enter", state: { status: "pending", input: {} } } },
+    })
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await adapter.close()
+  })
+
   it("lets a turn call the tools the catalog holds", async () => {
     const { adapter, client, events, call } = await turnWithTools((setup) => {
       setup.mcp.status.mockResolvedValue({ data: { docs: { status: "connected" } } })

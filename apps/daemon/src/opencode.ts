@@ -1327,9 +1327,12 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const tool = typeof part.tool === "string" ? part.tool : undefined
     const state = asRecord(part.state)
     if (!callId || !tool || !state || typeof state.status !== "string") return
-    if (session.toolPhases.get(callId) === state.status) return
-    if (!session.toolPhases.has(callId)) this.#watchToolCall(session, turnId, tool)
-    session.toolPhases.set(callId, state.status)
+    // Call ids are unique within a provider session only, and a thread's
+    // subagents report here too (security review round 3 of #687).
+    const phaseKey = `${typeof part.sessionID === "string" ? part.sessionID : session.threadId}\u0000${callId}`
+    if (session.toolPhases.get(phaseKey) === state.status) return
+    if (!session.toolPhases.has(phaseKey)) this.#watchToolCall(session, turnId, tool)
+    session.toolPhases.set(phaseKey, state.status)
     const input = asRecord(state.input) ?? {}
     const command = typeof input.command === "string" ? input.command : tool
     if (state.status === "running" && tool === "bash") {
