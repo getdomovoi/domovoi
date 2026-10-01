@@ -322,10 +322,12 @@ it.runIf(process.platform === "linux")("runs a real child and records its clean 
   expect(guestProcessAlive(record.attempts[0]!.child!)).toBe(false)
 })
 
-// The real loop with real children, on the Linux leg only: on Windows each
-// creation time is read through a real PowerShell, which no test runs.
-const supervisedHost = process.platform === "linux"
-const realBudget = 15_000
+// The real loop with real children, on the Linux and Windows CI legs and
+// skipped elsewhere. On Windows each creation time is read through the real
+// PowerShell, which takes seconds on a CI runner, and a stop runs the real
+// taskkill against the test's own child.
+const supervisedHost = process.platform === "linux" || process.platform === "win32"
+const realBudget = process.platform === "win32" ? 60_000 : 15_000
 
 // Ruling Q296 (2026-10-01): a loop that could not confirm its daemon's
 // process tree ended stops and says so. Status reports it as a failure, and
@@ -374,7 +376,30 @@ if (fs.existsSync(file)) { fs.rmSync(file); process.exit(code) } } }, 25)`
   return { executable: process.execPath, args: ["-e", script] }
 }
 
-it.runIf(supervisedHost)("restarts a real crashed child after its backoff and stops at a clean exit", async () => {
+// Windows CI leg only (ruling Q296): a crashed daemon's exit does not confirm
+// its process tree ended, so the real loop records it and does not restart.
+it.runIf(process.platform === "win32")("records a real crashed child as tree-unconfirmed and does not restart it", async () => {
+  const f = fixture()
+  const deadline = OperationDeadline.start(realBudget)
+  try {
+    const running = runGuestSupervisor(f.path, signalledChild(f.home))
+    void running.catch(() => {})
+    await untilRecord(f.home, deadline, (record) => record.state === "running" && record.attemptCount === 1)
+    writeFileSync(join(f.home, "crash"), "")
+    const record = await running
+    expect(record).toMatchObject({ state: "failed", attemptCount: 1, crashes: 1, reason: { kind: "tree-unconfirmed" } })
+    expect(record.attempts[0]).toMatchObject({ exit: { kind: "crash", code: 3 }, backoffMs: 0 })
+    expect(guestProcessAlive(record.attempts[0]!.child!)).toBe(false)
+    expect(readSupervisorRecord(f.home)).toEqual(record)
+    expect(readGuestSupervisorStatus(f.home)).toMatchObject({ running: false, supervising: false, supervisionFailure: "tree-unconfirmed" })
+  } finally {
+    deadline.clear()
+    writeFileSync(join(f.home, "clean"), "")
+  }
+}, realBudget + 5_000)
+
+// Linux leg only: on Windows the same crash is not restarted (above).
+it.runIf(process.platform === "linux")("restarts a real crashed child after its backoff and stops at a clean exit", async () => {
   const f = fixture()
   const deadline = OperationDeadline.start(realBudget)
   try {
@@ -481,13 +506,13 @@ it.runIf(process.platform === "linux")("starts a fresh loop after an unfinished 
   expect(record.loop.bootId).toBe(guestBootId())
 })
 
-// Linux only: on Windows the loop's stop runs taskkill.exe, which no test runs.
-it.runIf(process.platform === "linux")("a corrupt stop request stops the real child and refuses further supervision", async () => {
+// On Windows the loop's stop is the real taskkill /T /F of the test's child.
+it.runIf(supervisedHost)("a corrupt stop request stops the real child and refuses further supervision", async () => {
   const f = fixture()
   const running = runGuestSupervisor(f.path, { executable: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"] })
   // Attach rejection before the monitor can report the injected failure.
   const completed = running.then((record) => ({ record }), (error: unknown) => ({ error }))
-  const deadline = OperationDeadline.start(5_000)
+  const deadline = OperationDeadline.start(process.platform === "win32" ? realBudget : 5_000)
   try {
     while (readSupervisorRecord(f.home)?.state !== "running") {
       deadline.throwIfExpired()

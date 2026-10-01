@@ -6,13 +6,15 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { ProcessTreeUnconfirmedError } from "./guest-supervisor.js"
 import {
-  launchGuestChild, parseGuestProcessStat, parseWindowsProcessAnswer,
+  guestBootId, guestProcessAlive, guestProcessIdentity, launchGuestChild, parseGuestProcessStat, parseWindowsProcessAnswer,
   ProcessExitedBeforeIdentityError, windowsBootId, windowsProcessAlive, windowsProcessIdentity, windowsProcessQueryCommand,
 } from "./supervisor-process.js"
 import { guestProcessIdentitySchema } from "./supervisor-record.js"
 
-// On Windows a stop ends the child's tree with taskkill.exe. No test runs it:
-// this ends the test's own child directly, and is unused on other hosts.
+// On Windows a stop ends the child's tree with taskkill.exe. The portable tests
+// end the test's own child directly instead; this is unused on other hosts.
+// Only the Windows-only test at the end runs the real taskkill and PowerShell,
+// on the Windows CI leg.
 const withoutTaskkill = { treeKill: async (pid: number) => { process.kill(pid, "SIGKILL") } }
 
 it("reads start ticks after the final process-name delimiter and rejects zombies", () => {
@@ -51,7 +53,7 @@ it("stops a real child before refusing unavailable birth identity", async () => 
 // supervisor loop as the WSL guest. Windows has no /proc, so a process is
 // identified by its pid and its creation time as Task Scheduler's own CIM
 // provider reports it, and the boot by the System process's creation time.
-// These answers are injected: no test runs a real PowerShell.
+// These answers are injected; the Windows-only test at the end reads real ones.
 describe("Windows process identity", () => {
   afterEach(() => { vi.unstubAllEnvs() })
   const boot = "134041896000000000"
@@ -218,3 +220,28 @@ describe("Windows process tree shutdown", () => {
     expect(launched).toEqual({ state: "failed", errorCode: "EXITED_BEFORE_IDENTITY", treeUnconfirmed: true })
   })
 })
+
+// Windows CI leg only, skipped elsewhere: real creation times through the real
+// PowerShell, and a real taskkill /T /F of the test's own child, which is the
+// one stop that confirms a tree (ruling Q296). Its exit alone confirms nothing.
+it.runIf(process.platform === "win32")("identifies real processes by Windows creation time and confirms a tree only through taskkill", async () => {
+  const self = guestProcessIdentity(process.pid)
+  expect(guestProcessIdentity(process.pid)).toEqual(self)
+  expect(guestBootId()).toBe(self.bootId)
+  expect(guestProcessAlive(self)).toBe(true)
+  expect(guestProcessAlive({ ...self, start: String(BigInt(self.start) + 10n) })).toBe(false)
+
+  const killed = await launchGuestChild(process.execPath, ["-e", "setInterval(() => {}, 1000)"])
+  if (killed.state !== "started") throw new Error("child did not start")
+  expect(guestProcessAlive(killed.child.identity)).toBe(true)
+  await killed.child.stop()
+  expect(guestProcessAlive(killed.child.identity)).toBe(false)
+  await expect(killed.child.confirmTree!()).resolves.toBeUndefined()
+
+  const exited = await launchGuestChild(process.execPath, ["-e", "setTimeout(() => process.exit(3), 10000)"])
+  if (exited.state !== "started") throw new Error("child did not start")
+  await exited.child.exited
+  expect(guestProcessAlive(exited.child.identity)).toBe(false)
+  await expect(exited.child.confirmTree!()).rejects.toBeInstanceOf(ProcessTreeUnconfirmedError)
+  await expect(exited.child.stop()).rejects.toBeInstanceOf(ProcessTreeUnconfirmedError)
+}, 60_000)

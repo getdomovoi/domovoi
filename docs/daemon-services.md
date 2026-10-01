@@ -427,9 +427,11 @@ record also shows its child alive.
 Beyond those native tests these are configuration delivery and focused removal checks, not full
 native systemd, launchd, or Task Scheduler lifecycle acceptance. Crash supervision of the fixture
 process is proven on systemd and launchd. On Windows the logon task now runs the supervisor loop.
-The loop runs with real children, a crash and its restart after the 1 second backoff on the Linux
-leg only; on Windows every PowerShell, `taskkill` and `schtasks` answer is mocked, so no test
-reads a real creation time or kills a real tree there. No test registers a supervised task,
+The loop runs with real children on the Linux leg, a crash and its restart after the 1 second
+backoff. Tests for the Windows CI leg only, skipped elsewhere, read real creation times through
+PowerShell, end a test child's tree with the real `taskkill /T /F` and require the tree confirmed,
+and run the real loop until a crash, which must be recorded as `tree-unconfirmed` and not
+restarted; they had not run on Windows when this was written. No test registers a supervised task,
 crashes the daemon under Task Scheduler, or removes one: that native acceptance is open.
 Lingering is proven only against mocked and shimmed `loginctl`; no test changes a real user's
 lingering. Installer rollback
