@@ -87,6 +87,10 @@ type OpenCodeCatalog = {
 // How long a card waits for its directory's tool servers to be read again.
 const catalogReadTimeoutMs = 1_000
 
+// What a turn aborted for a tool change says of the abort: a stated limit,
+// not a gate (#watchToolCall).
+const abortLimit = "The call that showed it may already have run, and a tool that is running may not stop for the abort."
+
 // Tools the server adds to a turn outside its tool registry, so its tool ids
 // do not list them (session/tools.ts and session/prompt.ts at opencode
 // v1.18.32 and kilo v7.8.1): the tool server resource tools, structured
@@ -1301,19 +1305,23 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // emits no event) can register a tool named like a built-in permission the
   // embedded config allows, and that tool would run with no card (security
   // review round 2 of #687). Every tool call the turn makes is checked as it
-  // first appears: a tool the directory's catalog did not hold when the turn
-  // started stops the turn, and so does a change in the directory's tool
-  // servers, read again on each call, or a read that fails. The next prompt
-  // reads the catalog again and refuses a server that could take such a name.
-  // The call that showed the change can already have run: the stop comes
-  // after it.
+  // first appears: a tool the turn's checked catalog did not hold aborts the
+  // turn, and so does a change in the directory's tool servers, read again on
+  // each call, or a read that fails. The next prompt reads the catalog again
+  // and refuses a server that could take such a name.
+  //
+  // This is a stated limit, not a gate (rulings Q258 and Q262, security
+  // review round 4 of #687). The server reports a tool call only once it has
+  // started it, so the call that shows the change can already have run, and
+  // the abort reaches a running tool only if that tool honors cancellation;
+  // nothing here undoes what it did. The check holds the rest of the turn.
   #watchToolCall(session: Session, turnId: string, tool: string): void {
     const catalog = session.checkedCatalog
     const known = catalog !== undefined && (catalog.toolIds.has(tool) || serverInjectedTools.has(tool)
       || [...catalog.checkedStates.keys()].some((server) => tool.startsWith(`${openCodeToolPrefixName(server)}_`)))
     if (!known) {
       this.#stopTurn(session, turnId, `${this.#identity.providerName} called a tool named "${tool}" that was not among its tools when the turn started, `
-        + "so Domovoi stopped the turn: a tool added during a turn could run without approval. Send the prompt again to check the tools first.")
+        + `so Domovoi aborted the turn: a tool added during a turn could run without approval. ${abortLimit} Send the prompt again to check the tools first.`)
       return
     }
     void this.#checkToolServers(session, turnId, catalog)
@@ -1336,21 +1344,22 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       states = undefined
     }
     if (states === undefined) {
-      this.#stopTurn(session, turnId, `Domovoi could not read ${name}'s tool servers during the turn, so it stopped the turn: a tool added during a turn could run without approval. Send the prompt again.`)
+      this.#stopTurn(session, turnId, `Domovoi could not read ${name}'s tool servers during the turn, so it aborted the turn: a tool added during a turn could run without approval. ${abortLimit} Send the prompt again.`)
       return
     }
     const checked = catalog.checkedStates
     const changed = [...new Set([...states.keys(), ...checked.keys()])].filter((server) => states.get(server) !== checked.get(server))
     if (changed.length > 0) {
       this.#stopTurn(session, turnId, `${name}'s tool servers changed during the turn (${changed.map((server) => `"${server}"`).join(", ")}), `
-        + "so Domovoi stopped the turn: a tool added during a turn could run without approval. Send the prompt again to check the tools first.")
+        + `so Domovoi aborted the turn: a tool added during a turn could run without approval. ${abortLimit} Send the prompt again to check the tools first.`)
     }
   }
 
   // Aborts the turn's run, then ends the turn as failed with `reason`, so the
   // turn is not reported over before the server has taken the abort. A
   // failed abort is reported in the reason. The run's own end, arriving
-  // later, ends nothing.
+  // later, ends nothing. An answered abort does not show that a tool already
+  // running stopped: that tool may not honor it (#watchToolCall).
   #stopTurn(session: Session, turnId: string, reason: string): void {
     if (session.activeTurnId !== turnId || !this.#sessions.has(session.threadId) || session.stoppingTurnId === turnId) return
     session.stoppingTurnId = turnId

@@ -570,8 +570,10 @@ code or settings the repository brings:
   run and then ends the turn. The status answer names nothing else about a server, so one replaced
   under the same name with the same status is not seen; its tools still ask, since a server whose
   name could make one of the allowed names is refused before the prompt. The next prompt refuses a
-  server whose tools could be named like OpenCode's or Kilo's own. The first call to such a
-  colliding tool can run before the abort: the call that shows the change.
+  server whose tools could be named like OpenCode's or Kilo's own. This check is a stated limit,
+  not a gate: the server reports a tool call only once it has started it, so the first call to
+  such a colliding tool can run before the abort, and a tool that is already running may not stop
+  for the abort. Nothing the daemon does undoes what that call did.
 - OpenCode and Kilo ask before every tool that is not one of their own. The embedded configuration
   starts its permissions with a `"*": "ask"` rule and then restates the server's own rules for its
   built-in tools, so each built-in tool keeps the action it had, and a call to a tool server's
