@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
-import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep } from "./agents.js"
+import { ApprovalRequestNotPendingError, type AgentAdapter, type AgentEvent, type AgentWorkingPlanStep } from "./agents.js"
 import type { AcpProviderDefinition } from "./acp-providers.js"
 import { classifyProviderFailure } from "./provider-failures.js"
 import { redactDurableText } from "./secret-redaction.js"
@@ -190,7 +190,7 @@ export class AcpAgentAdapter implements AgentAdapter {
 
   resolveApproval(requestId: number, decision: ApprovalDecision): void {
     const pending = this.#pendingPermissions.get(requestId)
-    if (!pending) return
+    if (!pending) throw new ApprovalRequestNotPendingError(requestId)
     this.#pendingPermissions.delete(requestId)
     const desired = decision === "allow-once" || decision === "always-project"
       ? "allow_once"

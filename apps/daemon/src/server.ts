@@ -193,8 +193,10 @@ import {
 import {
   AgentProviderUnavailableError,
   AgentRegistry,
+  ApprovalRequestNotPendingError,
   type AgentAdapter,
   type AgentEvent,
+  type ProviderApprovalDecision,
   type UnavailableProvider,
 } from "./agents.js"
 import { modelImageInput, prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
@@ -275,7 +277,7 @@ import {
 import type { ConfiguredSshTunnel } from "./transport-config.js"
 import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { advertisedTransports } from "./advertised-transports.js"
-import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
+import { approvalAnsweredElsewhereFailure, classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import {
   ArtifactWatcher,
   maximumArtifactFileBytes,
@@ -651,6 +653,47 @@ function permissionViolation(runtime: Runtime, agent: AgentAdapter): string | un
   if (runtime.permissionMode !== "build" || !runtime.auto) return undefined
   if (agent.permissionCapabilities?.buildAuto === "pre-execution") return undefined
   return `${providerName} does not support enforceable Build auto`
+}
+
+const answeredElsewhereHoldReason = "An approval was answered outside Domovoi, so the queued send was held."
+const answeredElsewhereRefusal = "This request was answered outside Domovoi"
+// A failed activation save may still have written the active rule, so this
+// claims nothing about what the state file holds (round 10 of the Codex
+// review of #691).
+const activationUnconfirmedMessage = "Domovoi sent this Allow once, but could not confirm the standing rule was saved. "
+  + "It may or may not be in force after Domovoi restarts. Check Standing approval rules in Settings, Permissions and rules."
+
+// The facts of the card an outside answer was to, as the card showed them.
+// Each was settled, and any secret path hidden, when the card was made
+// (approval-settlement.ts); the audit log redacts its detail again on append.
+// No card means the answer matched none the session was showing. The match
+// is made only against the cards shown when the report arrived
+// (match=currently-shown, round 8, ruling Q279): a card Domovoi had already
+// decided is gone from them, so its own answer may have gone out first.
+function answeredApprovalAuditFacts(approval: WorkspaceSnapshot["approvals"][number] | undefined): string {
+  if (approval === undefined) return "match=currently-shown approval=none"
+  return [
+    "match=currently-shown",
+    `approval=${approval.id}`,
+    `risk=${approval.risk}`,
+    `operation=${JSON.stringify(approval.operation)}`,
+    `command=${JSON.stringify(approval.command)}`,
+    `directory=${JSON.stringify(approval.directory)}`,
+    `affects=${JSON.stringify(approval.affects)}`,
+    ...(approval.toolServer ? [`toolServer=${JSON.stringify(approval.toolServer.name)}`] : []),
+  ].join(" ")
+}
+
+function answeredApprovalNotice(approval: WorkspaceSnapshot["approvals"][number] | undefined): string {
+  if (approval === undefined) {
+    return "The answer matched no request Domovoi was showing in this session. A Domovoi decision may already have been saved or sent before this report; its acceptance was not confirmed."
+  }
+  return [
+    `The answer was to the request "${approval.operation}", command ${approval.command}, in ${approval.directory}.`,
+    approval.affects,
+    ...(approval.toolServer ? [`The tool is from the tool server ${approval.toolServer.name}.`] : []),
+    approval.risk === "hard-gate" ? "It was a hard gate." : "It was not a hard gate.",
+  ].join(" ")
 }
 
 function sessionReadOnlyMessage(
@@ -1752,6 +1795,22 @@ export class DomovoiDaemon {
   // it, since the stop's own count would otherwise match once it finished.
   #emergencyStopGeneration = 0
   #approvalRequestGenerations = new WeakMap<AgentEvent, { generation: number; duringStop: boolean }>()
+  // The session an approval-answered-elsewhere report named when it arrived,
+  // and the card it answered as the card stood then. The report can wait
+  // behind a mutation, such as an archive, that drops the provider thread and
+  // the cards before the report is handled, and the incident is still that
+  // session's and that card's (Codex review of #691 at a609034e, P1, and
+  // round 6, P2).
+  #answeredElsewhereReports = new WeakMap<
+    AgentEvent,
+    { sessionId: string; answered?: WorkspaceSnapshot["approvals"][number] }
+  >()
+  // Cards whose request was answered outside Domovoi, by card id. A cleanup
+  // that denies cards writes these no deny receipt and sends their provider
+  // no deny, and a person's answer to one is refused. An entry leaves once its
+  // incident is recorded and its card is gone, whichever comes last, so the
+  // map holds only reports still queued and cards still shown.
+  #approvalsAnsweredElsewhere = new Map<string, "queued" | "recorded">()
   // Snapshot and delta broadcasts held while a stop runs. The stop's own
   // notification goes out first, then one snapshot carries every change.
   #snapshotBroadcastHeld = false
@@ -2015,7 +2074,10 @@ export class DomovoiDaemon {
         if (event.type === "approval-requested") {
           this.#approvalRequestGenerations.set(event, { generation: this.#emergencyStopGeneration, duringStop: this.#emergencyStopInProgress })
         }
-        if (event.type === "provider-disconnected") {
+        if (event.type === "approval-answered-elsewhere") {
+          this.#receiveAnsweredElsewhere(provider, event)
+          this.#enqueueAnsweredElsewhere(provider, event)
+        } else if (event.type === "provider-disconnected") {
           void this.#enqueueMutation(() => this.#handleAgentEvent(provider, event))
         } else {
           void this.#mutations.enqueue(
@@ -2024,6 +2086,50 @@ export class DomovoiDaemon {
           )
         }
       }),
+    )
+  }
+
+  // Codex review of #691 at a609034e, P1, and round 6, P2 (ruling Q271): the
+  // session and the answered card are read when the report arrives, because
+  // an archive or an emergency stop can clear both before it is handled. The
+  // card is marked so that such a cleanup does not deny it: it was answered.
+  #receiveAnsweredElsewhere(
+    provider: string,
+    event: Extract<AgentEvent, { type: "approval-answered-elsewhere" }>,
+  ): void {
+    const owner = this.#snapshot.sessions.find((candidate) =>
+      candidate.runtime.provider === provider && candidate.providerThreadId === event.threadId)
+    if (!owner) return
+    const answered = event.requestId === undefined
+      ? undefined
+      : this.#snapshot.approvals.find((approval) =>
+          approval.sessionId === owner.id && approval.providerRequestId === event.requestId)
+    if (answered) this.#approvalsAnsweredElsewhere.set(answered.id, "queued")
+    this.#answeredElsewhereReports.set(event, {
+      sessionId: owner.id,
+      ...(answered ? { answered: structuredClone(answered) } : {}),
+    })
+  }
+
+  // An emergency stop cancels every queued mutation. The report is a record
+  // of what already happened, not work the stop prevents, so it is queued
+  // again behind the stop and recorded then. Only a daemon shutdown drops it.
+  #enqueueAnsweredElsewhere(
+    provider: string,
+    event: Extract<AgentEvent, { type: "approval-answered-elsewhere" }>,
+  ): void {
+    const report = this.#answeredElsewhereReports.get(event)
+    void this.#mutations.enqueue(
+      report ? `session:${report.sessionId}` : this.#resourceForAgentEvent(provider, event),
+      (signal) => this.#handleAgentEvent(provider, event, signal),
+      {
+        onCancelled: () => {
+          void this.#emergencyStopTail.then(() => {
+            if (this.#stopping || this.#stopped) return
+            this.#enqueueAnsweredElsewhere(provider, event)
+          })
+        },
+      },
     )
   }
 
@@ -2753,6 +2859,10 @@ export class DomovoiDaemon {
     await this.#recoverSessionArchives()
     signal?.throwIfAborted()
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.())
+    if (this.#dropUndeliveredRules(this.#snapshot, "startup-recovery").length > 0) {
+      workspaceSnapshotSchema.parse(this.#snapshot)
+      this.#store.save(this.#snapshot)
+    }
     this.#recoverInterruptedTurns()
     this.#recoverEmergencyStops()
     // Startup recovery expired every saved card (ruled 2026-09-24, #604), so
@@ -8263,6 +8373,25 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Approval does not exist")
           return
         }
+        // The provider already has an answer for it (round 6 of the Codex
+        // review of #691, ruling Q271); the incident queued behind this
+        // request records it and clears the card.
+        // The mark can also land while this request waits below, during
+        // settlement, the checkpoint or the save; the final check is the
+        // pending predicate inside the save (round 7, ruling Q274).
+        const answeredOutside = () => this.#approvalsAnsweredElsewhere.has(approval.id)
+        if (answeredOutside()) {
+          this.#error(socket, request.id, invalidParams, answeredElsewhereRefusal)
+          return
+        }
+        // An emergency stop that begins after this point cancels the
+        // decision: it denies the cards it finds, and one this decision has
+        // already taken off the list must not be allowed after it (round 9,
+        // ruling Q285).
+        const stopGeneration = this.#emergencyStopGeneration
+        const cancelled = () => signal?.aborted === true
+          || this.#emergencyStopInProgress
+          || this.#emergencyStopGeneration !== stopGeneration
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === approval.sessionId,
         )
@@ -8407,6 +8536,12 @@ export class DomovoiDaemon {
               useCount: 0,
             }
           : undefined
+        // The same rule as saved before the agent has the decision (ruling
+        // Q285): it never answers a request, and a daemon that loads it drops
+        // it. It replaces nothing until it is made active.
+        const pendingRule = newRule
+          ? { ...newRule, status: "inactive" as const, inactiveReason: "pending-delivery" as const }
+          : undefined
         const replacedRuleIds = new Set(newRule ? approval.reapproval?.inactiveRuleIds ?? [] : [])
         const withRule = (rules: WorkspaceSnapshot["approvalRules"]): WorkspaceSnapshot["approvalRules"] => {
           if (!newRule) return rules
@@ -8459,19 +8594,28 @@ export class DomovoiDaemon {
             ? "idle"
             : "active"
         }
+        // Round 8 of the Codex review of #691, P2 (ruling Q279): this write
+        // can still be refused after it reaches disk, and its undo can fail,
+        // so it never carries the standing rule. The rule is saved on its own
+        // once the decision is committed (below). A refused decision whose
+        // undo fails leaves at most its receipt and checkpoint row in the
+        // state file, never an active rule; the next whole-snapshot save that
+        // lands drops them, since memory never held them.
         const decided = (latest: WorkspaceSnapshot, slice: WorkspaceSnapshot) => workspaceSnapshotSchema.parse({
           ...mergeSessionSnapshotSlice(latest, slice, approval.sessionId),
-          approvalRules: withRule(latest.approvalRules),
+          approvalRules: latest.approvalRules,
         })
-        const stillPending = () => this.#snapshot.approvals.some((pending) => pending.id === approval.id)
+        // A card answered outside Domovoi is no longer pending for Domovoi's
+        // answer, so the decision and its receipt are kept only if no mark
+        // has landed by the point they are committed. A checkpoint taken
+        // above for the allow stays: it only records the worktree as it was,
+        // and its thread row is never committed.
+        const stillPending = () => !answeredOutside()
+          && this.#snapshot.approvals.some((pending) => pending.id === approval.id)
         let outcome = "cancelled" as "committed" | "cancelled" | "cancelled-after-write"
         try {
           await this.#serializeSnapshotPersistence(async () => {
             if (!stillPending()) return
-            undecided.replacedBy = new Map(this.#snapshot.approvalRules.map((rule) => [
-              rule.id,
-              "replacedByRuleId" in rule ? rule.replacedByRuleId : undefined,
-            ]))
             const persisted = decided(this.#snapshot, candidate)
             if (this.#store.saveAsync) await this.#store.saveAsync(persisted)
             else this.#store.save(persisted)
@@ -8503,8 +8647,118 @@ export class DomovoiDaemon {
               this.#reportError("Domovoi could not save state after a cancelled approval decision", error)
             }
           }
-          this.#error(socket, request.id, invalidParams, "Approval does not exist")
+          this.#error(socket, request.id, invalidParams, answeredOutside() ? answeredElsewhereRefusal : "Approval does not exist")
           return
+        }
+        // Takes this decision's standing rule out of a snapshot, pending or
+        // active, and gives back the links it took from the rules it replaced.
+        const withoutRule = (snapshot: WorkspaceSnapshot) => {
+          if (!newRule) return
+          snapshot.approvalRules = snapshot.approvalRules
+            .filter((rule) => rule.id !== newRule.id)
+            .map((rule) => {
+              if (!("replacedByRuleId" in rule) || rule.replacedByRuleId !== newRule.id) return rule
+              const { replacedByRuleId: _replaced, ...restored } = rule
+              const previous = undecided.replacedBy.get(rule.id)
+              return previous === undefined ? restored : { ...restored, replacedByRuleId: previous }
+            })
+        }
+        // Puts the card back as it was before this decision.
+        const undo = (snapshot: WorkspaceSnapshot) => {
+          snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId && item.id !== approvedCheckpoint?.id)
+          this.#approvalLedger.restore(
+            snapshot.approvals,
+            undecided.approval,
+            (restored) => this.#approvalWorkspace(restored),
+          )
+          withoutRule(snapshot)
+          snapshot.workingPlans = snapshot.workingPlans.map((plan) =>
+            structuredClone(undecided.plans.find((original) => original.sessionId === plan.sessionId)) ?? plan)
+          const undecidedSession = snapshot.sessions.find((candidateSession) => candidateSession.id === approval.sessionId)
+          if (undecidedSession && undecided.sessionState !== undefined) undecidedSession.state = undecided.sessionState
+        }
+        // Takes back what this decision wrote, and only that: its receipt,
+        // its checkpoint row and its rule. The card stays off the list, and
+        // the session and its plans stay as they are, because an emergency
+        // stop may have settled them since (round 9, ruling Q285), or the
+        // agent is no longer waiting for the answer.
+        const withdraw = (snapshot: WorkspaceSnapshot) => {
+          snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId && item.id !== approvedCheckpoint?.id)
+          withoutRule(snapshot)
+        }
+        // Applies one of the two to memory and saves it; answers whether the
+        // save landed. One that does not land leaves at most a rule pending
+        // delivery in the state file, which never answers a request and which
+        // the next daemon to load it drops.
+        const takeBack = async (change: (snapshot: WorkspaceSnapshot) => void): Promise<boolean> => {
+          const changedCopy = structuredClone(this.#snapshot)
+          change(changedCopy)
+          workspaceSnapshotSchema.parse(changedCopy)
+          change(this.#snapshot)
+          this.#sessionHistory.invalidate(approval.sessionId)
+          try {
+            await this.#persistSnapshot()
+            return true
+          } catch (rollbackError) {
+            this.#reportError("Domovoi could not save the undone approval decision", rollbackError)
+            return false
+          }
+        }
+        const rollBack = () => takeBack(undo)
+        const withdrawn = async (message: string) => {
+          await takeBack(withdraw)
+          this.#error(socket, request.id, invalidParams, message)
+        }
+        const withdrawnByStop = "The approval was withdrawn before it could be allowed"
+        // Committed: the card left the snapshot in the same synchronous run as
+        // the last pending check, and #receiveAnsweredElsewhere finds only
+        // shown cards, so no report can mark it from here on.
+        //
+        // An Always is saved next as a rule pending delivery (ruling Q285),
+        // and made active only once the agent has the decision. Its save
+        // waits, so a stop can begin meanwhile; the decision is checked for
+        // that before the save and again after it, and a cancelled one is
+        // never sent. If the save fails, the decision is undone and the agent
+        // is not told, as when the decision itself cannot be saved.
+        if (newRule && pendingRule) {
+          if (cancelled()) {
+            await withdrawn(withdrawnByStop)
+            return
+          }
+          try {
+            await this.#serializeSnapshotPersistence(async () => {
+              const staged = workspaceSnapshotSchema.parse({
+                ...this.#snapshot,
+                approvalRules: [...this.#snapshot.approvalRules.filter((rule) => rule.id !== pendingRule.id), pendingRule],
+              })
+              if (this.#store.saveAsync) await this.#store.saveAsync(staged)
+              else this.#store.save(staged)
+              this.#snapshot.approvalRules = [
+                ...this.#snapshot.approvalRules.filter((rule) => rule.id !== pendingRule.id),
+                pendingRule,
+              ]
+            })
+            this.#persistenceSucceeded()
+          } catch (error) {
+            this.#persistenceFailed(error)
+            this.#reportError("Domovoi could not save a standing rule", error)
+            if (cancelled()) {
+              await withdrawn(withdrawnByStop)
+              return
+            }
+            await rollBack()
+            this.#error(
+              socket,
+              request.id,
+              daemonPersistenceUnavailableErrorCode,
+              "Domovoi could not save this decision, so the agent was not told",
+            )
+            return
+          }
+          if (cancelled()) {
+            await withdrawn(withdrawnByStop)
+            return
+          }
         }
         this.#activeAssistantItems.clear()
         if (approval.providerRequestId !== undefined && session) {
@@ -8515,53 +8769,34 @@ export class DomovoiDaemon {
                 params.decision === "always-project" ? "allow-once" : params.decision,
               )
           } catch (error) {
-            this.#reportError("Domovoi could not pass an approval decision to the agent", error)
-            const undo = (snapshot: WorkspaceSnapshot) => {
-              snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId && item.id !== approvedCheckpoint?.id)
-              this.#approvalLedger.restore(
-                snapshot.approvals,
-                undecided.approval,
-                (restored) => this.#approvalWorkspace(restored),
-              )
-              if (newRule) {
-                snapshot.approvalRules = snapshot.approvalRules
-                  .filter((rule) => rule.id !== newRule.id)
-                  .map((rule) => {
-                    if (!("replacedByRuleId" in rule) || rule.replacedByRuleId !== newRule.id) return rule
-                    const { replacedByRuleId: _replaced, ...restored } = rule
-                    const previous = undecided.replacedBy.get(rule.id)
-                    return previous === undefined ? restored : { ...restored, replacedByRuleId: previous }
-                  })
+            // The agent is not waiting for it (ruling Q285). A refusal needs
+            // nothing sent and stands; an allow reached nothing, so it and
+            // its rule are taken back, and the card, which nothing can answer
+            // now, stays off the list.
+            if (error instanceof ApprovalRequestNotPendingError) {
+              if (allows) {
+                await withdrawn("The agent is no longer waiting for this approval, so it was not allowed")
+                return
               }
-              snapshot.workingPlans = snapshot.workingPlans.map((plan) =>
-                structuredClone(undecided.plans.find((original) => original.sessionId === plan.sessionId)) ?? plan)
-              const undecidedSession = snapshot.sessions.find((candidateSession) => candidateSession.id === approval.sessionId)
-              if (undecidedSession && undecided.sessionState !== undefined) undecidedSession.state = undecided.sessionState
-            }
-            const rolledBack = structuredClone(this.#snapshot)
-            undo(rolledBack)
-            workspaceSnapshotSchema.parse(rolledBack)
-            undo(this.#snapshot)
-            this.#sessionHistory.invalidate(approval.sessionId)
-            try {
-              await this.#persistSnapshot()
-            } catch (rollbackError) {
-              this.#reportError("Domovoi could not save the undone approval decision", rollbackError)
+            } else {
+              this.#reportError("Domovoi could not pass an approval decision to the agent", error)
+              if (!await rollBack()) {
+                this.#error(
+                  socket,
+                  request.id,
+                  daemonPersistenceUnavailableErrorCode,
+                  "Domovoi could not save this decision, so the agent was not told",
+                )
+                return
+              }
               this.#error(
                 socket,
                 request.id,
-                daemonPersistenceUnavailableErrorCode,
-                "Domovoi could not save this decision, so the agent was not told",
+                internalError,
+                "Domovoi could not reach the agent, so this decision was not applied. The approval is still waiting.",
               )
               return
             }
-            this.#error(
-              socket,
-              request.id,
-              internalError,
-              "Domovoi could not reach the agent, so this decision was not applied. The approval is still waiting.",
-            )
-            return
           }
         }
         this.#approvalTargets.delete(approval.id)
@@ -8584,6 +8819,47 @@ export class DomovoiDaemon {
             ...(project ? { projectId: project.id } : {}),
             target: approval.id,
           })
+        }
+        // The adapter took the answer for a request it was tracking as
+        // waiting, so the rule is made active, with the links to the rules it
+        // replaces, as one save (ruling Q285). That is not the provider's
+        // acknowledgement. The rule is active in memory only once the save
+        // lands. If the save reports failure, the rule stays pending in
+        // memory and answers no request here, but the failure does not prove
+        // the active rule never reached the state file: a save can fail after
+        // writing (round 10 of the Codex review of #691). A later whole save
+        // that lands writes it back as pending, which the next load drops;
+        // until then a restart can load it active. The person is told so.
+        if (newRule) {
+          try {
+            await this.#serializeSnapshotPersistence(async () => {
+              // The links this rule replaces, as they stand when it is applied,
+              // so an undo gives back another decision's link made since.
+              undecided.replacedBy = new Map(this.#snapshot.approvalRules.map((rule) => [
+                rule.id,
+                "replacedByRuleId" in rule ? rule.replacedByRuleId : undefined,
+              ]))
+              const promoted = workspaceSnapshotSchema.parse({
+                ...this.#snapshot,
+                approvalRules: withRule(this.#snapshot.approvalRules),
+              })
+              if (this.#store.saveAsync) await this.#store.saveAsync(promoted)
+              else this.#store.save(promoted)
+              this.#snapshot.approvalRules = withRule(this.#snapshot.approvalRules)
+            })
+            this.#persistenceSucceeded()
+          } catch (error) {
+            this.#persistenceFailed(error)
+            this.#reportError("Domovoi could not make a standing rule active", error)
+            this.#broadcastSnapshot()
+            this.#error(
+              socket,
+              request.id,
+              daemonPersistenceUnavailableErrorCode,
+              activationUnconfirmedMessage,
+            )
+            return
+          }
         }
         changed = true
         alreadyPersisted = true
@@ -9002,6 +9278,7 @@ export class DomovoiDaemon {
           // (ruled 2026-09-24, #604), before any client or save sees them.
           this.#snapshot.approvals = []
           this.#snapshot.approvalRules = restored?.approvalRules ?? []
+          this.#dropUndeliveredRules(this.#snapshot, "project-open")
           this.#snapshot.thread = restored?.thread ?? []
           this.#snapshot.artifacts = restored?.artifacts ?? []
           this.#snapshot.workingPlans = restored?.workingPlans ?? []
@@ -10109,6 +10386,13 @@ export class DomovoiDaemon {
       })
       return
     }
+    // A security incident, recorded for the session the report named when it
+    // arrived whatever has happened to that session since. Handled before the
+    // emergency, lifecycle and turn checks: the turn it names has already ended.
+    if (event.type === "approval-answered-elsewhere") {
+      await this.#approvalAnsweredElsewhere(provider, threadId, event)
+      return
+    }
     if (this.#emergencyBlockedThreads.has(providerThreadKey(provider, threadId))) return
     const session = this.#snapshot.sessions.find(
       (candidate) => candidate.runtime.provider === provider && candidate.providerThreadId === threadId,
@@ -10427,7 +10711,7 @@ export class DomovoiDaemon {
       // turn would hang, so the request is denied: nothing is approved that
       // cannot be recorded, and the turn ends instead of stalling.
       if (this.#persistenceUnavailable) {
-        this.#agents.require(provider).resolveApproval(event.requestId, "deny")
+        this.#answerProvider(provider, event.requestId, "deny")
         this.#reportError(
           persistenceUnavailableContext,
           new Error(`Denied ${settled.operation} because state cannot reach disk`),
@@ -10435,7 +10719,7 @@ export class DomovoiDaemon {
         return
       }
       if (allowed) {
-        this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
+        this.#answerProvider(provider, event.requestId, "allow-once")
       } else if (matchingRule) {
         matchingRule.useCount += 1
         try {
@@ -10455,7 +10739,7 @@ export class DomovoiDaemon {
             sessionId: session.id, projectId: project.id,
             detail: "Use count could not be persisted",
           })
-          this.#agents.require(provider).resolveApproval(event.requestId, "deny")
+          this.#answerProvider(provider, event.requestId, "deny")
           this.#reportError("Standing rule use could not be persisted", error)
           return
         }
@@ -10475,7 +10759,7 @@ export class DomovoiDaemon {
           action: "approval-rule.used", outcome: "succeeded", target: matchingRule.id,
           sessionId: session.id, projectId: project.id,
         })
-        this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
+        this.#answerProvider(provider, event.requestId, "allow-once")
       } else {
         const approval = settled
         this.#putApproval(approval)
@@ -10749,8 +11033,14 @@ export class DomovoiDaemon {
         sessionId: session.id,
         projectId: session.projectId,
       })
-      if (failed) this.#holdQueuedSessionSend(session.id, "The provider turn failed before the queued boundary could release.")
-      else releaseQueuedSend = true
+      // The adapter ends a turn whose approval was answered elsewhere before it
+      // reports the reply, and a held send keeps the reason it was held with,
+      // so the hold says why here (Codex review of #691 at a609034e, P2).
+      if (failed) {
+        this.#holdQueuedSessionSend(session.id, failure?.kind === "approval-answered-elsewhere"
+          ? answeredElsewhereHoldReason
+          : "The provider turn failed before the queued boundary could release.")
+      } else releaseQueuedSend = true
     }
 
     session.updatedAt = createdAt
@@ -10876,6 +11166,9 @@ export class DomovoiDaemon {
     if (!next) return []
     const { removed, blockedIds } = next
     this.#snapshot.approvals = this.#snapshot.approvals.filter((approval) => !next.removedIds.has(approval.id))
+    for (const id of next.removedIds) {
+      if (this.#approvalsAnsweredElsewhere.get(id) === "recorded") this.#approvalsAnsweredElsewhere.delete(id)
+    }
     this.#snapshot.workingPlans = next.workingPlans
     this.#forgetDepartedFileApprovalTargets()
     for (const approval of removed) {
@@ -10949,6 +11242,20 @@ export class DomovoiDaemon {
     return true
   }
 
+  // Ruling Q285: an adapter refuses an answer to a request it is not waiting
+  // on. Here such a request was answered or dropped before Domovoi's own
+  // answer: a refusal of it needs nothing sent, and an automatic allow of it
+  // reaches nothing, so neither is an error. A person's decision is not
+  // answered through this; approval.resolve reads the refusal itself.
+  #answerProvider(provider: string, requestId: number, decision: ProviderApprovalDecision): void {
+    try {
+      return this.#agents.require(provider).resolveApproval(requestId, decision)
+    } catch (error) {
+      if (error instanceof ApprovalRequestNotPendingError) return
+      throw error
+    }
+  }
+
   // Whether an emergency stop overtook this request: it arrived while a stop
   // ran, or a stop began after it arrived.
   #stopOvertook(event: AgentEvent): boolean {
@@ -10960,7 +11267,7 @@ export class DomovoiDaemon {
   #denyHeldApprovalRequest(provider: string, event: AgentEvent): unknown {
     if (event.type !== "approval-requested") return undefined
     try {
-      this.#agents.require(provider).resolveApproval(event.requestId, "deny")
+      this.#answerProvider(provider, event.requestId, "deny")
       return undefined
     } catch (error) {
       this.#reportError("Domovoi could not deny a request held for the service handoff", error)
@@ -11070,11 +11377,17 @@ export class DomovoiDaemon {
 
     let approvalsDenied = 0
     for (const approval of this.#snapshot.approvals) {
+      if (this.#approvalsAnsweredElsewhere.has(approval.id)) {
+        this.#recordAnsweredElsewhereCard(approval, requestedAt)
+        continue
+      }
       try {
         if (approval.providerRequestId !== undefined) {
-          this.#agents.require(
+          this.#answerProvider(
             this.#snapshot.sessions.find(({ id }) => id === approval.sessionId)!.runtime.provider,
-          ).resolveApproval(approval.providerRequestId, "deny")
+            approval.providerRequestId,
+            "deny",
+          )
         }
         approvalsDenied += 1
         this.#snapshot.thread.push({
@@ -11590,6 +11903,33 @@ export class DomovoiDaemon {
     }
   }
 
+  // A rule still pending delivery in a loaded snapshot belongs to a decision
+  // whose delivery to the agent was never confirmed: the daemon stopped, or
+  // could not save, between saving it and making it active (ruling Q285). It
+  // never answered a request and is not made active now; it is dropped and
+  // the audit log says so. It replaced no rule, so no link points to it.
+  #dropUndeliveredRules(
+    snapshot: WorkspaceSnapshot,
+    component: "startup-recovery" | "project-open",
+  ): WorkspaceSnapshot["approvalRules"] {
+    const isUndelivered = (rule: WorkspaceSnapshot["approvalRules"][number]) =>
+      rule.status === "inactive" && rule.inactiveReason === "pending-delivery"
+    const undelivered = snapshot.approvalRules.filter(isUndelivered)
+    if (undelivered.length === 0) return []
+    snapshot.approvalRules = snapshot.approvalRules.filter((rule) => !isUndelivered(rule))
+    for (const rule of undelivered) {
+      this.#appendAudit({
+        actor: { kind: "daemon", component },
+        action: "approval-rule.undelivered",
+        outcome: "cancelled",
+        projectId: rule.projectId,
+        target: rule.id,
+        detail: "The decision that made this standing rule was not confirmed delivered to the agent, so the rule was dropped without ever being in force.",
+      })
+    }
+    return undelivered
+  }
+
   // Runs before the listener opens, so no client can act on a stored card
   // before it expires.
   #recoverInterruptedTurns(): void {
@@ -11845,12 +12185,18 @@ export class DomovoiDaemon {
     )
     const unresolvedApprovalIds = new Set<string>()
     for (const approval of approvals) {
+      if (this.#approvalsAnsweredElsewhere.has(approval.id)) {
+        // Another cleanup, such as an emergency stop, may have recorded it.
+        if (!this.#snapshot.approvals.some(({ id }) => id === approval.id)) continue
+        const answeredAt = new Date().toISOString()
+        this.#recordAnsweredElsewhereCard(approval, answeredAt)
+        this.#removeApprovals((candidate) => candidate.id === approval.id, answeredAt)
+        await this.#saveAgentState(false)
+        continue
+      }
       try {
         if (approval.providerRequestId !== undefined && !storedApprovalIds?.has(approval.id)) {
-          await this.#agents.require(session.runtime.provider).resolveApproval(
-            approval.providerRequestId,
-            "deny",
-          )
+          await this.#answerProvider(session.runtime.provider, approval.providerRequestId, "deny")
         }
       } catch (error) {
         unresolvedApprovalIds.add(approval.id)
@@ -12417,6 +12763,102 @@ export class DomovoiDaemon {
     }
     await this.#persistSnapshot()
     if (broadcast) this.#broadcastSnapshot()
+  }
+
+  // Round 6 of the Codex review of #691, P2 (ruling Q271): a cleanup that
+  // denies cards meets one whose request was answered outside Domovoi before
+  // the report was handled. The provider has its answer, so the card gets no
+  // deny and no deny receipt; the session says what became of it instead.
+  #recordAnsweredElsewhereCard(approval: WorkspaceSnapshot["approvals"][number], createdAt: string): void {
+    this.#snapshot.thread.push({
+      id: `system-${randomUUID()}`,
+      sessionId: approval.sessionId,
+      kind: "system",
+      body: "A request in this session was answered outside Domovoi, so Domovoi did not deny it.",
+      detail: answeredApprovalNotice(approval),
+      createdAt,
+    })
+  }
+
+  // Q243 A: the adapter saw an approval reply it did not send and has already
+  // stopped and unloaded the thread. The notice and the audit entry are
+  // recorded for every session the report can be traced to (Codex review of
+  // #691 at a609034e, P1). Only a session still running on that thread is
+  // stopped here: it fails with its own failure and lets its provider thread
+  // go. An archive, a transfer or an emergency stop that took the session
+  // first decides how it ends.
+  async #approvalAnsweredElsewhere(
+    provider: string,
+    threadId: string,
+    event: Extract<AgentEvent, { type: "approval-answered-elsewhere" }>,
+  ): Promise<void> {
+    const report = this.#answeredElsewhereReports.get(event)
+    // The incident is handled here. A card still shown after that, in a
+    // session this does not stop, stays marked until it is gone.
+    const answeredId = report?.answered?.id
+    if (answeredId !== undefined) this.#approvalsAnsweredElsewhere.set(answeredId, "recorded")
+    const forgetGoneCard = () => {
+      if (answeredId === undefined || this.#snapshot.approvals.some(({ id }) => id === answeredId)) return
+      this.#approvalsAnsweredElsewhere.delete(answeredId)
+    }
+    const session = this.#snapshot.sessions.find((candidate) => report === undefined
+      ? candidate.runtime.provider === provider && candidate.providerThreadId === threadId
+      : candidate.id === report.sessionId)
+    if (!session) {
+      forgetGoneCard()
+      return
+    }
+    const stoppedAt = new Date().toISOString()
+    // The card as it stood when the report arrived (Codex review of #691 at
+    // a609034e, P2, and round 6, P2): the provider's permission id means
+    // nothing to the person, the card's facts do.
+    const answered = report?.answered
+    const threadKey = providerThreadKey(provider, threadId)
+    const live = !sessionIsReadOnly(session)
+      && session.runtime.provider === provider
+      && session.providerThreadId === threadId
+      && !this.#emergencyBlockedThreads.has(threadKey)
+    if (live) {
+      this.#holdQueuedSessionSend(session.id, answeredElsewhereHoldReason)
+      this.#flushCommandOutputStreams(session.id)
+      for (const [key, run] of this.#approvedRuns) if (run.sessionId === session.id) this.#approvedRuns.delete(key)
+      this.#loadedAgentThreads.delete(threadKey)
+      // Never resumed (Codex review of #691, P1): the provider session may hold
+      // approvals made elsewhere. Like a quarantined session, it continues only
+      // once the person restarts its provider thread, which starts a new one.
+      // The adapter restarts the server, which the provider-disconnected that
+      // follows reports to every other session on it.
+      delete session.providerThreadId
+      delete session.activeTurnId
+      session.state = "failed"
+      session.providerFailure = { ...approvalAnsweredElsewhereFailure }
+      session.updatedAt = stoppedAt
+      this.#removeApprovals((approval) => approval.sessionId === session.id, stoppedAt)
+    }
+    forgetGoneCard()
+    this.#snapshot.thread.push({
+      id: `system-${randomUUID()}`,
+      sessionId: session.id,
+      kind: "system",
+      body: live
+        ? "An approval in this session was answered outside Domovoi, so Domovoi stopped the session."
+        : "An approval in this session was answered outside Domovoi.",
+      detail: `${answeredApprovalNotice(answered)} ${live
+        ? "A program on this machine that can read the provider server's password sent the answer, and what it approved may already have run. Review the session's changes, then restart the provider to continue: the session continues in a new provider session, without its earlier conversation."
+        : "A program on this machine that can read the provider server's password sent the answer, and what it approved may already have run. Review the session's changes."}`,
+      createdAt: stoppedAt,
+    })
+    this.#appendAudit({
+      actor: { kind: "provider", provider, providerThreadId: threadId },
+      action: "provider.approval-answered-elsewhere",
+      outcome: "denied",
+      sessionId: session.id,
+      projectId: session.projectId,
+      ...(event.permissionId ? { target: event.permissionId } : {}),
+      detail: `reply=${event.reply} ${answeredApprovalAuditFacts(answered)}`,
+    })
+    this.#sessionHistory.invalidate(session.id)
+    await this.#flushAgentState()
   }
 
   async #quarantineProviderThread(

@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
-import type { AgentEvent } from "./agents.js"
+import { ApprovalRequestNotPendingError, type AgentEvent } from "./agents.js"
 import {
   claudeKeeperSource,
   runningClaudeProcesses,
@@ -783,6 +783,10 @@ describe("ClaudeAgentSdkAdapter", () => {
     })))
     adapter.resolveApproval(2, "deny")
     await expect(relative).resolves.toMatchObject({ behavior: "deny" })
+    // An answer to a request no longer waiting reaches nothing, and says so
+    // (ruling Q285).
+    expect(() => adapter.resolveApproval(2, "allow-once")).toThrow(ApprovalRequestNotPendingError)
+    expect(() => adapter.resolveApproval(99, "deny")).toThrow(ApprovalRequestNotPendingError)
     await adapter.close()
   })
 

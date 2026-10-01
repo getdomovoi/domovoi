@@ -5,8 +5,45 @@ import { afterEach, expect, it, vi } from "vitest"
 
 import { AppBar } from "./app-bar.js"
 import { SessionsDrawerTrigger } from "./sessions-drawer.js"
+import { StopMenu } from "./stop-menu.js"
 
 afterEach(cleanup)
+
+// The tooltip is the icon's only visible name, so it has to open while the
+// action is unavailable too: disconnected, watching only, or a stop on its way.
+it.each([
+  ["disconnected", { connected: false, pending: false, disabled: false }],
+  ["watching only", { connected: true, pending: false, disabled: true }],
+  ["a stop on its way", { connected: true, pending: true, disabled: false }],
+])("keeps the stop name reachable while %s, and does nothing when chosen", async (_state, props) => {
+  const user = userEvent.setup()
+  const onPauseAll = vi.fn()
+  const onEmergencyStop = vi.fn()
+  render(<StopMenu {...props} onPauseAll={onPauseAll} onEmergencyStop={onEmergencyStop} />)
+
+  const stop = screen.getByRole("button", { name: "Stop everything" })
+  expect(stop.getAttribute("aria-disabled")).toBe("true")
+
+  await user.hover(stop)
+  expect((await screen.findByRole("tooltip")).textContent).toContain("Stop everything on this machine")
+  await user.unhover(stop)
+
+  await user.click(stop)
+  await user.keyboard("{Enter}")
+  await user.keyboard("{ArrowDown}")
+  expect(screen.queryByRole("menu")).toBeNull()
+  expect(onPauseAll).not.toHaveBeenCalled()
+  expect(onEmergencyStop).not.toHaveBeenCalled()
+})
+
+it("names the unavailable stop by its tooltip when reached by keyboard", async () => {
+  const user = userEvent.setup()
+  render(<StopMenu connected={false} pending={false} onPauseAll={vi.fn()} onEmergencyStop={vi.fn()} />)
+
+  await user.tab()
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Stop everything" }))
+  expect((await screen.findByRole("tooltip")).textContent).toContain("Stop everything on this machine")
+})
 
 // Desktop V2's titlebar is a row of 28px icon buttons, each named by a tooltip
 // rather than by visible text. These pin what the design draws on that row.
@@ -47,7 +84,7 @@ it("draws stop everything as an icon with its tooltip, not a labelled button", a
   expect(stop.querySelector("svg.lucide-octagon-x")).toBeTruthy()
 
   await user.hover(stop)
-  expect((await screen.findByRole("tooltip")).textContent).toContain("Stop everything, every machine")
+  expect((await screen.findByRole("tooltip")).textContent).toContain("Stop everything on this machine")
 })
 
 it("heads the stop menu with its scope and gives each option the design's note", async () => {
@@ -56,7 +93,7 @@ it("heads the stop menu with its scope and gives each option the design's note",
 
   await user.click(screen.getByRole("button", { name: "Stop everything" }))
   const menu = await screen.findByRole("menu")
-  expect(within(menu).getByText("STOP EVERYTHING, ON EVERY MACHINE")).toBeTruthy()
+  expect(within(menu).getByText("STOP EVERYTHING ON THIS MACHINE")).toBeTruthy()
   expect(within(menu).getByText("Stops at the next turn boundary, nothing is killed.")).toBeTruthy()
   expect(within(menu).getByText("Kills processes now. Half-written files stay half-written.")).toBeTruthy()
 })
@@ -101,4 +138,20 @@ it("names the drawer toggle with a tooltip that follows the drawer", async () =>
 
   view.rerender(<SessionsDrawerTrigger snapshot={demoWorkspace} open onOpenChange={vi.fn()} />)
   expect((await screen.findByRole("tooltip")).textContent).toBe("Hide sessions")
+})
+
+// jsdom has no layout, so this pins the class contract: the drawn 380px, capped
+// to the viewport less a margin, with notes free to wrap. The real widths are
+// checked in a browser at 320px and 360px.
+it("caps the stop menu to the viewport and lets its notes wrap", async () => {
+  const user = userEvent.setup()
+  render(<StopMenu connected pending={false} onPauseAll={vi.fn()} onEmergencyStop={vi.fn()} />)
+
+  await user.click(screen.getByRole("button", { name: "Stop everything" }))
+  const menu = await screen.findByRole("menu")
+  expect(menu.className).toContain("w-[380px]")
+  expect(menu.className).toContain("max-w-[calc(100vw-2rem)]")
+  const note = within(menu).getByText("Stops at the next turn boundary, nothing is killed.")
+  expect(note.className).not.toMatch(/truncate|whitespace-nowrap/)
+  expect(note.parentElement?.className).toContain("min-w-0")
 })

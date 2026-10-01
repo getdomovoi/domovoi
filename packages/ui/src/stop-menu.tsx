@@ -1,4 +1,5 @@
 import { OctagonXIcon } from "lucide-react"
+import { useState } from "react"
 
 import { Button } from "./components/ui/button"
 import {
@@ -24,30 +25,45 @@ export function StopMenu({ connected, pending, disabled = false, onPauseAll, onE
   onPauseAll: () => void
   onEmergencyStop: () => void
 }) {
+  const [open, setOpen] = useState(false)
+  // The tooltip is the icon's only visible name. A disabled button takes no
+  // pointer events and no focus, so the name would vanish exactly when someone
+  // wants to know why it does nothing. The control stays focusable and
+  // hoverable, says it is unavailable through aria-disabled, and refuses to
+  // open its menu.
+  const unavailable = disabled || !connected || pending
   return (
     <TooltipProvider>
-      <DropdownMenu>
+      <DropdownMenu open={open && !unavailable} onOpenChange={(next) => setOpen(next && !unavailable)}>
         <Tooltip>
           <TooltipTrigger asChild>
             <DropdownMenuTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="electron-no-drag size-7 shrink-0 text-muted-foreground hover:bg-danger-background hover:text-danger-foreground aria-expanded:bg-danger-background aria-expanded:text-danger-foreground"
+                className={cn(
+                  "electron-no-drag size-7 shrink-0 text-muted-foreground",
+                  unavailable
+                    ? "opacity-50"
+                    : "hover:bg-danger-background hover:text-danger-foreground aria-expanded:bg-danger-background aria-expanded:text-danger-foreground",
+                )}
                 aria-label="Stop everything"
-                disabled={disabled || !connected || pending}
+                aria-disabled={unavailable || undefined}
               >
                 <OctagonXIcon className="size-4" />
               </Button>
             </DropdownMenuTrigger>
           </TooltipTrigger>
           <TooltipContent side="bottom" sideOffset={7} showArrow={false} className={titlebarTipClassName}>
-            Stop everything, every machine
+            Stop everything on this machine
           </TooltipContent>
         </Tooltip>
-        <DropdownMenuContent align="end" sideOffset={7} className="w-[380px] overflow-hidden rounded-[14px] border border-danger-border p-0">
+        {/* 380px as drawn, capped to the viewport less 1rem a side so a phone
+            browser at 320px or 360px keeps the whole menu on screen; the
+            notes wrap inside it. */}
+        <DropdownMenuContent align="end" sideOffset={7} collisionPadding={16} className="w-[380px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-[14px] border border-danger-border p-0">
           <DropdownMenuLabel className="border-b border-border px-[13px] py-2.5 text-[10.5px] font-medium tracking-[.13em] text-faint">
-            STOP EVERYTHING, ON EVERY MACHINE
+            STOP EVERYTHING ON THIS MACHINE
           </DropdownMenuLabel>
           <StopOption tone="info" label="Pause everything" note="Stops at the next turn boundary, nothing is killed." onSelect={onPauseAll} />
           <StopOption tone="destructive" label="Emergency stop" note="Kills processes now. Half-written files stay half-written." onSelect={onEmergencyStop} />
