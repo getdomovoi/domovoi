@@ -3,6 +3,16 @@ import { providerFailureSchema, type ProviderFailure } from "@getdomovoi/protoco
 export type ProviderFailureKind = ProviderFailure["kind"]
 export type ProviderFailureAction = ProviderFailure["action"]
 
+// Set by the OpenCode and Kilo adapters, never classified from error text: the
+// provider server reported an approval reply the adapter did not send, so the
+// session was stopped (ruling Q243 A).
+export const approvalAnsweredElsewhereFailure = {
+  kind: "approval-answered-elsewhere",
+  action: "review-changes",
+  message: "An approval was answered outside Domovoi",
+  retryable: false,
+} as const satisfies ProviderFailure
+
 export function classifyProviderFailure(error: unknown): ProviderFailure {
   const detail = error instanceof Error ? error.message : ""
   if (/\b401\b|unauthenticated|not logged|login required|token expired|authentication[_ -]?(?:expired|failed)/i.test(detail)) {

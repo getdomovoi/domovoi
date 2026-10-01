@@ -111,7 +111,7 @@ describe("Rules daemon support", () => {
       createdBy: "desktop", createdAt: "2026-09-01T00:00:00.000Z",
       inactivatedBy: "cli", inactivatedByConnectionId: connectionId, inactivatedByClientId: "rules-owner",
     })
-    expect(rule.status === "inactive" && Date.parse(rule.inactivatedAt)).toBeGreaterThan(0)
+    expect(rule.status === "inactive" && rule.inactiveReason === "revoked" && Date.parse(rule.inactivatedAt)).toBeGreaterThan(0)
     expect((await rpc(socket, "approvalRule.revoke", { ruleId: "rule-tests", client: "cli" })).result).toMatchObject({ approvalRules: [rule] })
     emit(3)
     const after = await rpc(socket, "workspace.get")

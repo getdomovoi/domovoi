@@ -1,6 +1,6 @@
 import type { Config } from "@kilocode/sdk"
 
-import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
+import { createAuthenticatedEmbeddedRuntime, embeddedServerCommand } from "./embedded-server.js"
 import { domovoiAgentPermission, requireOpenCodeClient, type OpenCodeFactory } from "./opencode.js"
 
 export const domovoiKiloConfig: Config = {
@@ -60,14 +60,19 @@ export const domovoiKiloConfig: Config = {
 
 export const createDefaultKiloRuntime: OpenCodeFactory = async () => {
   const sdkPackage = "@kilocode/sdk"
-  const { createKiloClient, createKiloServer } = await import(sdkPackage)
+  const { createKiloClient } = await import(sdkPackage)
   const runtime = await createAuthenticatedEmbeddedRuntime({
     passwordEnvironment: "KILO_SERVER_PASSWORD",
     usernameEnvironment: "KILO_SERVER_USERNAME",
     username: "kilo",
-    environment: { KILO_DISABLE_PROJECT_CONFIG: "1" },
-    config: domovoiKiloConfig,
-    startServer: createKiloServer,
+    // What the SDK's createKiloServer passes, plus the project switch. The SDK
+    // also merges a KILO_CONFIG_CONTENT the daemon itself inherited (from a
+    // Kilo terminal, say); this replaces it, so only Domovoi's rules load.
+    environment: {
+      KILO_DISABLE_PROJECT_CONFIG: "1",
+      KILO_CONFIG_CONTENT: JSON.stringify(domovoiKiloConfig),
+    },
+    startServer: embeddedServerCommand("kilo", "kilo server listening"),
     createClient: createKiloClient,
   })
   return {
