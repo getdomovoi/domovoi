@@ -134,6 +134,36 @@ describe("restore owner reclamation", () => {
     }
   })
 
+  // A command run in its own process group and ended whole (an isolated Git
+  // command on POSIX) says whether the group was then seen empty: only that
+  // confirmation keeps its descendants known after a kill.
+  it.each([
+    { label: "confirmed", ended: true, unknown: false },
+    { label: "not confirmed", ended: false, unknown: true },
+  ])("keeps a killed command's descendants known only when its launcher confirmed they ended: $label", async ({ ended, unknown }) => {
+    const f = await abandonedClaim()
+    vi.spyOn(process, "kill").mockImplementation(() => { throw noSuchProcess() })
+    const lease = new RestoreOperationLease(f.root, "session-test", randomUUID())
+    const child = new EventEmitter() as ChildProcess
+    Object.defineProperty(child, "pid", { value: 56789 })
+    Object.defineProperty(child, "killed", { value: false })
+    const failure = new Error("aborted")
+    failure.name = "AbortError"
+    const pending = Object.assign(Promise.reject(failure), { child, descendantsEnded: Promise.resolve(ended) })
+    void pending.catch(() => undefined)
+    const result = lease.run(() => trackRestoreCommand(() => pending))
+    try {
+      await recorded(f.ownerPath, { starting: 0, children: [56789] })
+      child.emit("close", null, "SIGKILL")
+      await expect(result).rejects.toBe(failure)
+      expect(JSON.parse(await readFile(f.ownerPath, "utf8"))).toMatchObject({ children: [], descendantsUnknown: unknown })
+      if (unknown) expect(() => lease.assertRecordedSettlement()).toThrow("descendant liveness is unknown")
+      else expect(() => lease.assertRecordedSettlement()).not.toThrow()
+    } finally {
+      lease.release()
+    }
+  })
+
   it("records every concurrently running child rather than only the latest PID", async () => {
     const f = await abandonedClaim()
     // This case needs no stale marker and runs actual bounded child processes.
