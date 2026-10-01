@@ -265,11 +265,17 @@ type Session = {
   // under way ends nothing, and is remembered so it is not waited for again.
   stoppingTurnId?: string
   stoppedRunEnded?: true
-  // The catalog checked for this session's latest prompt. The turn's tool
-  // calls are held to it, never to the directory's (security review round 4
-  // of #687).
+  // The catalog checked before the prompt that started the active turn. Every
+  // prompt, a steer's included, is checked before it is sent, but only the
+  // prompt that starts a turn sets this, and the turn's tool calls, a
+  // steer's included, are held to it until the turn ends, never to the
+  // directory's catalog or a steer's (security review rounds 4 to 6 of #687).
   checkedCatalog?: { turnId: string; catalog: ToolCatalog }
   assistantMessageTurnIds: Map<string, string>
+  // The active turn's steers, by message id. A steer's reply names the steer
+  // as its parent, and its tool calls are the turn's (security review round
+  // 6 of #687).
+  steerTurnIds: Map<string, string>
   toolPhases: Map<string, string>
 }
 
@@ -635,7 +641,31 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       throw new Error(`${this.#identity.providerName} turn is no longer active`)
     }
     const providerMessageId = this.#nextMessageId(session)
+    // Set before the prompt goes out: its reply can arrive before the answer.
+    session.steerTurnIds.set(providerMessageId, turnId)
     await this.#sendPrompt(session, providerMessageId, prompt, session.runtime, false)
+    // The server answers a prompt and ends a run independently, so the turn
+    // can end while the steer is in flight. The server then runs the
+    // accepted steer outside any Domovoi turn, where no tool call is checked:
+    // Domovoi aborts that run, waits for the abort, and fails the steer
+    // (security review round 6 of #687).
+    if (session.activeTurnId !== turnId) {
+      const name = this.#identity.providerName
+      const reason = `The ${name} turn ended while the steer was sent, so Domovoi stopped it: ${name} would have run it outside the turn, where Domovoi does not check its tool calls. Send it as a new prompt.`
+      // Another turn may hold the slot by now; the abort ends its run too, so
+      // that turn fails with the same reason.
+      const next = session.activeTurnId
+      let stopped: boolean
+      if (next !== undefined) {
+        stopped = await this.#stopTurn(session, next, reason)
+      } else {
+        stopped = await this.#abortRun(session.threadId, session.cwd)
+        // The aborted run's end is still to come and ends nothing, as after
+        // an interrupt.
+        if (session.activeTurnId === undefined) session.interruptedTurnId = turnId
+      }
+      throw new Error(stopped ? reason : `${reason} Domovoi could not confirm that ${name} stopped the run.`)
+    }
     return { providerMessageId }
   }
 
@@ -838,6 +868,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       runtime,
       generation: ++this.#nextGeneration,
       assistantMessageTurnIds: new Map(),
+      steerTurnIds: new Map(),
       toolPhases: new Map(),
     }
     const existing = this.#directories.get(cwd)
@@ -1187,11 +1218,20 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const subagentTurn = this.#subagents.get(sessionId)
     const subagent = subagentTurn !== undefined
     const session = this.#sessions.get(subagentTurn?.threadId ?? sessionId)
-    if (!session || session.cwd !== cwd) return
+    const toolCall = event.type === "message.part.updated" && asRecord(properties.part)?.type === "tool"
+    if (!session || session.cwd !== cwd) {
+      // A subagent started while its thread had no turn is never linked, and
+      // a tool call it makes runs outside any turn.
+      const neverLinked = this.#subagents.neverLinkedThread(sessionId)
+      if (toolCall && neverLinked !== undefined && this.#sessions.get(neverLinked)?.cwd === cwd) this.#abortUnwatched(sessionId, cwd)
+      return
+    }
     // A subagent outlives nothing: once the turn that started it has ended,
     // whatever it still sends is dropped rather than attached to a later turn,
-    // and an approval it asks for is refused at once, with no card.
+    // an approval it asks for is refused at once, with no card, and a tool
+    // call it makes aborts it.
     if (subagentTurn && session.activeTurnId !== subagentTurn.turnId) {
+      if (toolCall) this.#abortUnwatched(sessionId, cwd)
       if (event.type !== "permission.updated" && event.type !== "permission.asked") return
       const request = permissionRequest(event.type, properties, this.#identity.providerName)
       if (request) {
@@ -1245,14 +1285,19 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       return
     }
     const turnId = session.activeTurnId
-    if (!turnId) return
+    if (!turnId) {
+      // No turn is active, so a run that calls a tool, or asks to, is one the
+      // server started outside any turn (security review round 6 of #687).
+      if (toolCall || event.type === "permission.updated" || event.type === "permission.asked") this.#abortUnwatched(sessionId, cwd)
+      return
+    }
     if (event.type === "message.part.updated") {
       const part = asRecord(properties.part)
-      if (
-        typeof part?.messageID !== "string"
-        || !session.assistantMessageTurnIds.has(part.messageID)
-      ) return
-      const parentTurnId = session.assistantMessageTurnIds.get(part.messageID)!
+      if (typeof part?.messageID !== "string") return
+      // A tool call in a message the adapter did not see is still checked,
+      // as the active turn's.
+      const parentTurnId = session.assistantMessageTurnIds.get(part.messageID) ?? (part.type === "tool" ? turnId : undefined)
+      if (parentTurnId === undefined) return
       if (!subagent && part?.type === "text" && typeof properties.delta === "string") {
         this.#emit({ type: "text-delta", threadId: session.threadId, turnId: parentTurnId, delta: properties.delta })
       }
@@ -1321,11 +1366,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // A tool server added while a turn runs (the server's POST /mcp, which
   // emits no event) can register a tool named like a built-in permission the
   // embedded config allows, and that tool would run with no card (security
-  // review round 2 of #687). Every tool call the turn makes is checked as it
-  // first appears: a tool the turn's checked catalog did not hold aborts the
-  // turn, and so does a change in the directory's tool servers, read again on
-  // each call, or a read that fails. The next prompt reads the catalog again
-  // and refuses a server that could take such a name.
+  // review round 2 of #687). Every tool call the turn makes, a steer's
+  // included, is checked as it first appears: a tool the catalog checked
+  // before the turn's first prompt did not hold aborts the turn, and so does
+  // a change in the directory's tool servers, read again on each call, or a
+  // read that fails. Every prompt reads the catalog again before it is sent
+  // and refuses a server that could take such a name, but only the turn's
+  // first prompt sets what its calls are held to.
   //
   // This is a stated limit, not a gate (rulings Q258 and Q262, security
   // review round 4 of #687). The server reports a tool call only once it has
@@ -1338,7 +1385,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const known = catalog !== undefined && (catalog.toolIds.has(tool) || serverInjectedTools.has(tool)
       || [...catalog.checkedStates.keys()].some((server) => tool.startsWith(`${openCodeToolPrefixName(server)}_`)))
     if (!known) {
-      this.#stopTurn(session, turnId, `${this.#identity.providerName} called a tool named "${tool}" that was not among its tools when the turn started, `
+      void this.#stopTurn(session, turnId, `${this.#identity.providerName} called a tool named "${tool}" that was not among its tools when the turn started, `
         + `so Domovoi aborted the turn: a tool added during a turn could run without approval. ${abortLimit} Send the prompt again to check the tools first.`)
       return
     }
@@ -1362,13 +1409,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       states = undefined
     }
     if (states === undefined) {
-      this.#stopTurn(session, turnId, `Domovoi could not read ${name}'s tool servers during the turn, so it aborted the turn: a tool added during a turn could run without approval. ${abortLimit} Send the prompt again.`)
+      void this.#stopTurn(session, turnId, `Domovoi could not read ${name}'s tool servers during the turn, so it aborted the turn: a tool added during a turn could run without approval. ${abortLimit} Send the prompt again.`)
       return
     }
     const checked = catalog.checkedStates
     const changed = [...new Set([...states.keys(), ...checked.keys()])].filter((server) => states.get(server) !== checked.get(server))
     if (changed.length > 0) {
-      this.#stopTurn(session, turnId, `${name}'s tool servers changed during the turn (${changed.map((server) => `"${server}"`).join(", ")}), `
+      void this.#stopTurn(session, turnId, `${name}'s tool servers changed during the turn (${changed.map((server) => `"${server}"`).join(", ")}), `
         + `so Domovoi aborted the turn: a tool added during a turn could run without approval. ${abortLimit} Send the prompt again to check the tools first.`)
     }
   }
@@ -1378,29 +1425,48 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // failed abort is reported in the reason. The run's own end, arriving
   // later, ends nothing. An answered abort does not show that a tool already
   // running stopped: that tool may not honor it (#watchToolCall).
-  #stopTurn(session: Session, turnId: string, reason: string): void {
-    if (session.activeTurnId !== turnId || !this.#sessions.has(session.threadId) || session.stoppingTurnId === turnId) return
+  // Resolves true once the server answered the abort; a stop already under
+  // way for the turn, or a turn no longer active, resolves true at once.
+  async #stopTurn(session: Session, turnId: string, reason: string): Promise<boolean> {
+    if (session.activeTurnId !== turnId || !this.#sessions.has(session.threadId) || session.stoppingTurnId === turnId) return true
     session.stoppingTurnId = turnId
     delete session.stoppedRunEnded
-    void this.#client().then(async (client) => {
+    const stopped = await this.#abortRun(session.threadId, session.cwd)
+    const finalReason = stopped ? reason : `${reason} Domovoi could not confirm that ${this.#identity.providerName} stopped the run.`
+    if (session.stoppingTurnId === turnId) delete session.stoppingTurnId
+    const ended = session.stoppedRunEnded === true
+    delete session.stoppedRunEnded
+    if (session.activeTurnId !== turnId) return stopped
+    this.#complete(session, "failed", finalReason)
+    // The run's end, unless it already came, is still to arrive.
+    if (!ended) session.interruptedTurnId = turnId
+    return stopped
+  }
+
+  // Aborts a provider session's run: the thread's, or a subagent's. Resolves
+  // false when the server did not answer the abort.
+  async #abortRun(providerSessionId: string, cwd: string): Promise<boolean> {
+    try {
+      const client = await this.#client()
       unwrap(await client.session.abort({
-        path: { id: session.threadId },
-        query: { directory: session.cwd },
+        path: { id: providerSessionId },
+        query: { directory: cwd },
         throwOnError: true,
       }), `${this.#identity.providerName} turn interruption`)
-      return reason
-    }).catch((error: unknown) => {
+      return true
+    } catch (error) {
       console.error(`Domovoi could not stop a ${this.#identity.providerName} turn`, error)
-      return `${reason} Domovoi could not confirm that ${this.#identity.providerName} stopped the run.`
-    }).then((finalReason) => {
-      if (session.stoppingTurnId === turnId) delete session.stoppingTurnId
-      const ended = session.stoppedRunEnded === true
-      delete session.stoppedRunEnded
-      if (session.activeTurnId !== turnId) return
-      this.#complete(session, "failed", finalReason)
-      // The run's end, unless it already came, is still to arrive.
-      if (!ended) session.interruptedTurnId = turnId
-    })
+      return false
+    }
+  }
+
+  // A run the server started outside any Domovoi turn, such as a steer it
+  // accepted after the turn ended, or a subagent of one, calls tools no
+  // turn checks. A tool call or tool approval it reports aborts it (security
+  // review round 6 of #687). A late report from a run Domovoi already
+  // stopped aborts nothing that is still running.
+  #abortUnwatched(providerSessionId: string, cwd: string): void {
+    void this.#abortRun(providerSessionId, cwd)
   }
 
   #receiveTool(session: Session, turnId: string, part: Record<string, unknown>): void {
@@ -1412,7 +1478,18 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // subagents report here too (security review round 3 of #687).
     const phaseKey = `${typeof part.sessionID === "string" ? part.sessionID : session.threadId}\u0000${callId}`
     if (session.toolPhases.get(phaseKey) === state.status) return
-    if (!session.toolPhases.has(phaseKey)) this.#watchToolCall(session, turnId, tool)
+    if (!session.toolPhases.has(phaseKey)) {
+      // A steer's reply names the steer as its parent; its calls are the
+      // turn's (security review round 6 of #687).
+      const logicalTurnId = session.steerTurnIds.get(turnId) ?? turnId
+      if (logicalTurnId === session.activeTurnId) this.#watchToolCall(session, logicalTurnId, tool)
+      else if (state.status === "pending" || state.status === "running") {
+        // A call that starts in a message of no active turn or steer. A call
+        // already over is a late report from a run that ended.
+        void this.#stopTurn(session, session.activeTurnId!, `${this.#identity.providerName} called a tool named "${tool}" outside the active turn, `
+          + `so Domovoi aborted the turn: Domovoi does not check such a call. ${abortLimit} Send the prompt again.`)
+      }
+    }
     session.toolPhases.set(phaseKey, state.status)
     const input = asRecord(state.input) ?? {}
     const command = typeof input.command === "string" ? input.command : tool
@@ -1478,6 +1555,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     delete session.activeTurnId
     delete session.activeTurnStarted
     session.toolPhases.clear()
+    session.steerTurnIds.clear()
     // A subagent's request cannot outlive the turn that started it. Refuse it
     // on the provider and forget it, so a later answer to its card does nothing.
     for (const [requestId, pending] of this.#pendingApprovals) {

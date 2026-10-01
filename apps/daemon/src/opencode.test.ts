@@ -2073,10 +2073,10 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
   // The adapter watches the turn's tool calls: a call to a tool the catalog
   // does not hold, or a change in the directory's tool servers seen while the
   // turn calls tools, stops the turn. One call can run before the stop.
-  async function turnWithTools(setup?: (client: ReturnType<typeof harness>["client"]) => void) {
+  async function turnWithTools(setup?: (client: ReturnType<typeof harness>["client"]) => void, id: () => string = () => "turn-1") {
     const { client, factory, stream } = harness()
     setup?.(client)
-    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
+    const adapter = new OpenCodeSdkAdapter(factory, id)
     const events: AgentEvent[] = []
     adapter.onEvent((event) => events.push(event))
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
@@ -2184,6 +2184,97 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     else await steer
     call("call-1", "docs_search")
     await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await adapter.close()
+  })
+
+  // Security review round 6 of #687 (P2): the server answers a prompt and
+  // ends a run independently, so a turn can end while a steer is in flight.
+  // The run the accepted steer starts is outside any Domovoi turn: Domovoi
+  // aborts it, waits for the abort, and reports the steer as failed.
+  it("stops a steer the server accepted after the turn ended, and reports it failed", async () => {
+    let accept!: () => void
+    let answerAbort!: () => void
+    const { adapter, client, events, call, stream, threadId } = await turnWithTools()
+    client.session.promptAsync.mockImplementationOnce(() => new Promise((resolve) => { accept = () => resolve({ data: undefined }) }))
+    client.session.abort.mockImplementationOnce(() => new Promise((resolve) => { answerAbort = () => resolve({ data: true }) }))
+    const steer = adapter.steerTurn(threadId, "turn-1", "More")
+    let settled = false
+    const outcome = steer.then(() => "sent", (error: Error) => error.message).finally(() => { settled = true })
+    await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledTimes(2))
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(turnEnd(events)).toMatchObject({ params: { turn: { status: "completed" } } }))
+    accept()
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } })))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(settled).toBe(false)
+    answerAbort()
+    expect(await outcome).toContain("turn ended while the steer was sent, so Domovoi stopped it")
+    // The steer's run, if the abort has not reached it, still calls tools.
+    client.session.abort.mockClear()
+    call("call-9", "docs_search")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } })))
+    await adapter.close()
+  })
+
+  it("aborts a run that calls a tool while the thread has no turn", async () => {
+    const { adapter, client, events, call, stream, threadId } = await turnWithTools()
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
+    expect(client.session.abort).not.toHaveBeenCalled()
+    call("call-9", "bash")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } })))
+    await adapter.close()
+  })
+
+  it("aborts a run that asks for a tool's approval while the thread has no turn", async () => {
+    const { adapter, client, events, stream, threadId } = await turnWithTools()
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "p", sessionID: threadId, permission: "bash", patterns: ["ls"], metadata: {}, always: ["ls"], tool: { messageID: "msg_9", callID: "call_9" } },
+    })
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } })))
+    expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(0)
+    await adapter.close()
+  })
+
+  it.each([
+    ["linked to a turn that ended", true],
+    ["started while the thread had no turn", false],
+  ] as const)("aborts a subagent %s that calls a tool", async (_case, linked) => {
+    const { adapter, client, events, stream, threadId } = await turnWithTools()
+    if (linked) stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
+    if (!linked) stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "child-message", sessionID: "child-session", role: "assistant", parentID: "child-user" } } })
+    stream.emit({
+      type: "message.part.updated",
+      properties: { part: { type: "tool", sessionID: "child-session", messageID: "child-message", callID: "call-c", tool: "bash", state: { status: "running", input: {} } } },
+    })
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "child-session" } })))
+    await adapter.close()
+  })
+
+  // A steer's reply names the steer as its parent, not the turn; its calls
+  // are still the turn's and are held to the turn's catalog.
+  it("holds a steer's own tool calls inside a live turn to the turn's catalog", async () => {
+    let next = 0
+    const { adapter, client, events, stream, threadId } = await turnWithTools(undefined, () => `prompt-${++next}`)
+    expect(await adapter.steerTurn(threadId, "prompt-1", "More")).toEqual({ providerMessageId: "prompt-2" })
+    stream.emit({ type: "message.updated", properties: { info: { id: "steer-reply", sessionID: threadId, role: "assistant", parentID: "prompt-2" } } })
+    const call = (callID: string, tool: string) => stream.emit({
+      type: "message.part.updated",
+      properties: { part: { type: "tool", sessionID: threadId, messageID: "steer-reply", callID, tool, state: { status: "pending", input: {} } } },
+    })
+    call("call-1", "bash")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.session.abort).not.toHaveBeenCalled()
+    expect(turnEnd(events)).toBeUndefined()
+    call("call-2", "plan_enter")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await waitForDaemon(() => expect(turnEnd(events)).toMatchObject({ params: { turnId: "prompt-1", turn: { status: "failed", error: expect.stringContaining("plan_enter") } } }))
     await adapter.close()
   })
 
