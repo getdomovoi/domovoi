@@ -671,6 +671,67 @@ describe("GitWorkspaceService", () => {
     expect(Buffer.byteLength(evidence.diff, "utf8")).toBeLessThanOrEqual(256 * 1_024)
   })
 
+  // Git before 2.45 ignores GIT_NO_LAZY_FETCH, so on it a partial clone's
+  // missing object would be fetched through the repository's own promisor
+  // and transport config. A partial clone is refused there before anything
+  // reads an object; any other repository works as before. The version is
+  // injected, so the test does not depend on this machine's Git.
+  describe("on Git that cannot be kept from lazy fetching", () => {
+    async function repository(prefix: string, partial: boolean) {
+      const scratch = await mkdtemp(join(tmpdir(), prefix))
+      scratchDirectories.push(scratch)
+      const repositoryPath = join(scratch, "project")
+      const git = (...args: string[]) => execute("git", ["-C", repositoryPath, ...args])
+      await execute("git", ["init", "--initial-branch=main", repositoryPath])
+      await git("config", "core.autocrlf", "false")
+      await mkdir(join(repositoryPath, "sub"))
+      await writeFile(join(repositoryPath, "sub", "nested.txt"), "nested\n")
+      await writeFile(join(repositoryPath, "top.txt"), "top\n")
+      await git("add", ".")
+      await git("-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial")
+      const markerPath = join(scratch, "transport-ran").replaceAll("\\", "/")
+      if (partial) {
+        const payload = join(scratch, "payload.sh").replaceAll("\\", "/")
+        await writeFile(payload, `echo ran >> "${markerPath}"\nexit 1\n`)
+        const subtree = (await git("rev-parse", "HEAD:sub")).stdout.trim()
+        await rm(join(repositoryPath, ".git", "objects", subtree.slice(0, 2), subtree.slice(2)))
+        await git("config", "core.repositoryformatversion", "1")
+        await git("config", "extensions.partialClone", "origin")
+        await git("config", "remote.origin.promisor", "true")
+        await git("config", "remote.origin.url", "ssh://git@example.invalid/project.git")
+        await git("config", "core.sshCommand", `sh ${payload}`)
+      }
+      await writeFile(join(repositoryPath, "top.txt"), "changed\n")
+      const ran = async () => readFile(markerPath, "utf8").then(() => true, () => false)
+      const service = (version: string | undefined) => new GitWorkspaceService(join(scratch, "worktrees"), { gitVersion: async () => version })
+      return { repositoryPath, ran, service }
+    }
+
+    it.each([["Git 2.39", "git version 2.39.5"], ["an unparseable version", "not a version"], ["no version", undefined]])(
+      "refuses every operation in a partial clone on %s, and runs no transport",
+      async (_label, version) => {
+        const { repositoryPath, ran, service } = await repository("domovoi-old-git-partial-", true)
+        const old = service(version)
+
+        await expect(old.evidence(repositoryPath, undefined, true)).rejects.toMatchObject({ name: "GitLazyFetchUnsupportedError" })
+        await expect(old.checkpoint(repositoryPath, "old git")).rejects.toMatchObject({ name: "GitLazyFetchUnsupportedError" })
+        await expect(old.createSessionWorkspace(repositoryPath, "session-old")).rejects.toMatchObject({
+          name: "GitLazyFetchUnsupportedError", message: expect.stringContaining("2.45"),
+        })
+        await expect(old.projectHasLineage(repositoryPath, "a".repeat(40))).rejects.toMatchObject({ name: "GitLazyFetchUnsupportedError" })
+        expect(await ran()).toBe(false)
+      },
+    )
+
+    it("keeps working in an ordinary repository on Git 2.39", async () => {
+      const { repositoryPath, service } = await repository("domovoi-old-git-ordinary-", false)
+      const old = service("git version 2.39.5")
+
+      expect((await old.evidence(repositoryPath, undefined, true)).files.map((file) => file.path)).toEqual(["top.txt"])
+      expect((await old.checkpoint(repositoryPath, "old git")).changedFiles).toEqual(["top.txt"])
+    })
+  })
+
   // Evidence reads in an isolated Git directory that drops the repository's
   // diff settings; a driver's binary flag starts nothing and keeps a file's
   // contents out of the diff, so it is carried.

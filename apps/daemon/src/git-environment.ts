@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process"
 import { join } from "node:path"
 
 // How the daemon runs Git for its own bookkeeping, shared by workspace.ts and
@@ -42,7 +43,8 @@ const droppedGitEnvironment = new Set([
 // (core.sshCommand, a credential helper). Only the isolated Git directory
 // (isolated-checkout.ts), which carries the filtered transports and none of
 // the repository's transport config, takes this variable away and may fetch.
-// Git before 2.45 ignores it.
+// Git before 2.45 ignores it, so on such Git the workspace refuses a partial
+// clone before anything reads an object (workspace.ts, refuseLazyFetch).
 export function gitEnvironment(): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {}
   for (const [name, value] of Object.entries(process.env)) {
@@ -52,6 +54,26 @@ export function gitEnvironment(): NodeJS.ProcessEnv {
   }
   environment.GIT_NO_LAZY_FETCH = "1"
   return environment
+}
+
+// Whether this Git honours GIT_NO_LAZY_FETCH: 2.45 and later. A version that
+// cannot be read counts as older.
+export function gitSupportsNoLazyFetch(version: string | undefined): boolean {
+  const match = /(\d+)\.(\d+)/.exec(version ?? "")
+  if (!match) return false
+  const major = Number(match[1])
+  const minor = Number(match[2])
+  return major > 2 || (major === 2 && minor >= 45)
+}
+
+let installedVersion: Promise<string | undefined> | undefined
+
+// `git --version` as the daemon's Git prints it, read once.
+export function installedGitVersionText(): Promise<string | undefined> {
+  installedVersion ??= new Promise((done) => {
+    execFile("git", ["--version"], { env: gitEnvironment(), timeout: 3_000 }, (error, stdout) => done(error ? undefined : stdout.trim()))
+  })
+  return installedVersion
 }
 
 // A filter driver runs a command on every add, checkout and reset. One the

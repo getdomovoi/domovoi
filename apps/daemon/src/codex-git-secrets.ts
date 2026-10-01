@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process"
 
 import { codexWorktreeSecretPatterns } from "./codex.js"
+import { gitSupportsNoLazyFetch } from "./git-environment.js"
 import { gitReadCanRunProgram } from "./git-read-config.js"
 
 // The Codex sandbox refuses reads of these files on disk, but Git can still
@@ -31,13 +32,7 @@ export const historyScanGit = [
   ...["file", "ssh", "git", "http", "https", "ext"].flatMap((protocol) => ["-c", `protocol.${protocol}.allow=never`]),
 ] as const
 
-export function gitSupportsNoLazyFetch(version: string | undefined): boolean {
-  const match = /(\d+)\.(\d+)/.exec(version ?? "")
-  if (!match) return false
-  const major = Number(match[1])
-  const minor = Number(match[2])
-  return major > 2 || (major === 2 && minor >= 45)
-}
+export { gitSupportsNoLazyFetch }
 
 function gitVersion(): Promise<string | undefined> {
   return new Promise((done) => {

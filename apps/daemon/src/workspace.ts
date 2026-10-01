@@ -8,7 +8,9 @@ import { promisify } from "node:util"
 import { publishFileDurably } from "@getdomovoi/credential-store"
 import { maximumPreviewSourceBytes, type RepositoryGitFilterScope } from "@getdomovoi/protocol"
 
-import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
+import {
+  gitEnvironment, gitSupportsNoLazyFetch, inertRepositoryConfig, installedGitVersionText, trustedConfigScopes,
+} from "./git-environment.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
 import { carriedRemoteUrl, checkOutIsolated, openIsolatedGit, type IsolatedGit } from "./isolated-checkout.js"
@@ -303,6 +305,21 @@ export class SubmodulePromisorRefusedError extends RepositoryConfigRefusedError 
 }
 
 const promisorSettingPattern = String.raw`^(extensions\.partialclone|remote\..+\.promisor)$`
+
+// A partial clone on a Git that cannot be kept from lazy fetching (before
+// 2.45, or a version that cannot be read): a missing object would be fetched
+// through the promisor remote the repository's own config names, with that
+// config's transport settings. Refused before anything reads an object.
+export class GitLazyFetchUnsupportedError extends RepositoryConfigRefusedError {
+  constructor(version: string | undefined) {
+    super(
+      `This repository is a partial clone, and the installed Git (${version === undefined ? "version unknown" : redactInventoryText(version, inventoryFieldCaps.detail)}) `
+      + "cannot be told not to fetch a missing object through the repository's own promisor remote. Domovoi needs Git 2.45 "
+      + "or later to work in a partial clone. Nothing ran.",
+    )
+    this.name = "GitLazyFetchUnsupportedError"
+  }
+}
 
 // Whether a repository's config makes it a partial clone: an
 // extensions.partialClone, or a remote marked promisor. Reading the config
@@ -728,6 +745,19 @@ export type GitWorkspaceServiceOptions = {
   // read at every call (repository-git-filter-gate.ts). Without it, every
   // repository filter stays held back.
   repositoryTrust?: RepositoryFilterTrustLookup
+  // `git --version` as the daemon's Git prints it, for the lazy-fetch check
+  // (refuseLazyFetch). The installed Git's by default; a test seam.
+  gitVersion?: () => Promise<string | undefined>
+}
+
+// On a Git that ignores GIT_NO_LAZY_FETCH, refuses a repository or worktree
+// that is a partial clone by its own effective config, before any command
+// that reads an object runs there. Other repositories cannot lazy fetch and
+// work as before. Reading the version and the config reads no object.
+async function refuseLazyFetch(path: string, version: () => Promise<string | undefined>, signal?: AbortSignal): Promise<void> {
+  const text = await version()
+  if (gitSupportsNoLazyFetch(text)) return
+  if (await hasPromisor(path, signal)) throw new GitLazyFetchUnsupportedError(text)
 }
 
 export interface WorkspaceService {
@@ -1307,6 +1337,7 @@ export class GitWorkspaceService implements WorkspaceService {
   readonly #afterNewWorktreeScan?: GitWorkspaceServiceOptions["afterNewWorktreeScan"]
   readonly #afterRepositoryFilterGate?: GitWorkspaceServiceOptions["afterRepositoryFilterGate"]
   readonly #repositoryTrust?: GitWorkspaceServiceOptions["repositoryTrust"]
+  readonly #gitVersion: () => Promise<string | undefined>
 
   constructor(worktreeRoot: string, options: GitWorkspaceServiceOptions = {}) {
     this.worktreeRoot = resolve(worktreeRoot)
@@ -1316,6 +1347,11 @@ export class GitWorkspaceService implements WorkspaceService {
     this.#afterNewWorktreeScan = options.afterNewWorktreeScan
     this.#afterRepositoryFilterGate = options.afterRepositoryFilterGate
     this.#repositoryTrust = options.repositoryTrust
+    this.#gitVersion = options.gitVersion ?? installedGitVersionText
+  }
+
+  #refuseLazyFetch(path: string, signal?: AbortSignal): Promise<void> {
+    return refuseLazyFetch(path, this.#gitVersion, signal)
   }
 
   #gate(anchor: string, worktree: string, signal?: AbortSignal): Promise<RepositoryFilterGate> {
@@ -1344,6 +1380,7 @@ export class GitWorkspaceService implements WorkspaceService {
     work: (isolated: IsolatedGit) => Promise<T>,
     whenRefused: "refuse" | "filters-off" = "refuse",
   ): Promise<T> {
+    await this.#refuseLazyFetch(worktree, signal)
     const gate = await this.#gate(anchor, worktree, signal)
     if (!gate.open && whenRefused === "refuse") throw new RepositoryFilterRefusedError(gate.filters, { reason: gate.reason, projectId: gate.projectId })
     // Evidence keeps out of submodule worktrees (--ignore-submodules=dirty);
@@ -1363,6 +1400,7 @@ export class GitWorkspaceService implements WorkspaceService {
   // Before a new session worktree is added: refuse with nothing made when the
   // checkout it is added from already reads a filter its trust does not cover.
   async #refuseBeforeAdding(anchor: string, directory: string, signal?: AbortSignal): Promise<void> {
+    await this.#refuseLazyFetch(directory, signal)
     const gate = await this.#gate(anchor, directory, signal)
     if (!gate.open) {
       throw new RepositoryGitFilterRefusedError(gate.filters, { worktreeRemoved: true, branchRemoved: undefined }, { reason: gate.reason, projectId: gate.projectId })
@@ -1487,6 +1525,7 @@ export class GitWorkspaceService implements WorkspaceService {
   ): Promise<SessionWorkspace> {
     if (!safeSessionId.test(sessionId)) throw new Error("Session id is not safe for a worktree")
     if (!/^[a-f0-9]{40}$/.test(checkpointCommit)) throw new Error("Checkpoint commit is invalid")
+    await this.#refuseLazyFetch(sourceWorktreePath, signal)
     let durableCommit: string
     try {
       durableCommit = await git(sourceWorktreePath, [
@@ -1648,6 +1687,7 @@ export class GitWorkspaceService implements WorkspaceService {
     signal?: AbortSignal,
   ): Promise<boolean> {
     if (!/^[a-f0-9]{40}$/u.test(lineageCommit)) return false
+    await this.#refuseLazyFetch(repositoryPath, signal)
     try {
       await git(repositoryPath, ["merge-base", "--is-ancestor", lineageCommit, "HEAD"], signal)
       return true
@@ -2459,6 +2499,8 @@ export class GitWorkspaceService implements WorkspaceService {
   async sessionBranchFacts(worktreePath: string, sourcePath: string, signal?: AbortSignal): Promise<SessionBranchFacts> {
     const resolved = await this.#resolveManagedWorktree(worktreePath, signal)
     if (!resolved) throw new Error("Session worktree does not exist")
+    await this.#refuseLazyFetch(resolved.path, signal)
+    await this.#refuseLazyFetch(sourcePath, signal)
     const branch = await git(resolved.path, ["branch", "--show-current"], signal)
     if (!branch) throw new Error("Session worktree is not on a branch")
     // The checkout the session came from, which may itself be a linked
