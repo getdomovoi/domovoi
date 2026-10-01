@@ -639,6 +639,33 @@ function permissionViolation(runtime: Runtime, agent: AgentAdapter): string | un
 
 const answeredElsewhereHoldReason = "An approval was answered outside Domovoi, so the queued send was held."
 
+// The facts of the card an outside answer was to, as the card showed them.
+// Each was settled, and any secret path hidden, when the card was made
+// (approval-settlement.ts); the audit log redacts its detail again on append.
+// No card means the answer matched none the session was showing.
+function answeredApprovalAuditFacts(approval: WorkspaceSnapshot["approvals"][number] | undefined): string {
+  if (approval === undefined) return "approval=none"
+  return [
+    `approval=${approval.id}`,
+    `risk=${approval.risk}`,
+    `operation=${JSON.stringify(approval.operation)}`,
+    `command=${JSON.stringify(approval.command)}`,
+    `directory=${JSON.stringify(approval.directory)}`,
+    `affects=${JSON.stringify(approval.affects)}`,
+    ...(approval.toolServer ? [`toolServer=${JSON.stringify(approval.toolServer.name)}`] : []),
+  ].join(" ")
+}
+
+function answeredApprovalNotice(approval: WorkspaceSnapshot["approvals"][number] | undefined): string {
+  if (approval === undefined) return "The answer matched no request Domovoi was showing in this session."
+  return [
+    `The answer was to the request "${approval.operation}", command ${approval.command}, in ${approval.directory}.`,
+    approval.affects,
+    ...(approval.toolServer ? [`The tool is from the tool server ${approval.toolServer.name}.`] : []),
+    approval.risk === "hard-gate" ? "It was a hard gate." : "It was not a hard gate.",
+  ].join(" ")
+}
+
 function sessionReadOnlyMessage(
   session: WorkspaceSnapshot["sessions"][number] | undefined,
 ): string | undefined {
@@ -12451,6 +12478,12 @@ export class DomovoiDaemon {
       : candidate.id === ownerId)
     if (!session) return
     const stoppedAt = new Date().toISOString()
+    // Read before the cards go (Codex review of #691 at a609034e, P2): the
+    // provider's permission id means nothing to the person, the card's facts do.
+    const answered = event.requestId === undefined
+      ? undefined
+      : this.#snapshot.approvals.find((approval) =>
+          approval.sessionId === session.id && approval.providerRequestId === event.requestId)
     const threadKey = providerThreadKey(provider, threadId)
     const live = !sessionIsReadOnly(session)
       && session.runtime.provider === provider
@@ -12480,9 +12513,9 @@ export class DomovoiDaemon {
       body: live
         ? "An approval in this session was answered outside Domovoi, so Domovoi stopped the session."
         : "An approval in this session was answered outside Domovoi.",
-      detail: live
+      detail: `${answeredApprovalNotice(answered)} ${live
         ? "A program on this machine that can read the provider server's password sent the answer, and what it approved may already have run. Review the session's changes, then restart the provider to continue: the session continues in a new provider session, without its earlier conversation."
-        : "A program on this machine that can read the provider server's password sent the answer, and what it approved may already have run. Review the session's changes.",
+        : "A program on this machine that can read the provider server's password sent the answer, and what it approved may already have run. Review the session's changes."}`,
       createdAt: stoppedAt,
     })
     this.#appendAudit({
@@ -12492,7 +12525,7 @@ export class DomovoiDaemon {
       sessionId: session.id,
       projectId: session.projectId,
       ...(event.permissionId ? { target: event.permissionId } : {}),
-      detail: `reply=${event.reply}`,
+      detail: `reply=${event.reply} ${answeredApprovalAuditFacts(answered)}`,
     })
     this.#sessionHistory.invalidate(session.id)
     await this.#flushAgentState()

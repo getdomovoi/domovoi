@@ -58,6 +58,11 @@ export type AgentEvent =
       turnId?: string
       /** The provider's id for the answered request, as the provider sent it. */
       permissionId: string
+      /**
+       * The id this adapter's approval-requested event gave the answered
+       * request, when that request was still waiting for Domovoi's answer.
+       */
+      requestId?: number
       reply: "once" | "always" | "reject" | "unknown"
     }
   | { type: "item"; phase: "started" | "completed"; params: Record<string, unknown> }

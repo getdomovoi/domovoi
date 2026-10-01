@@ -1861,6 +1861,7 @@ describe("approval replies Domovoi did not send", () => {
       threadId,
       turnId: "turn-1",
       permissionId: "per_1",
+      requestId: 1,
       reply: value,
     }]))
     const completion = events.findIndex((event) => event.type === "turn-completed")
@@ -1919,6 +1920,26 @@ describe("approval replies Domovoi did not send", () => {
 
     await waitForDaemon(() => expect(stopped(events)).toEqual([
       expect.objectContaining({ threadId, permissionId: "per_1", reply: "once" }),
+    ]))
+    // Domovoi had answered that card, so no card it shows is the one answered.
+    expect(stopped(events)[0]).not.toHaveProperty("requestId")
+    await adapter.close()
+  })
+
+  // Codex review of #691 at a609034e, P2: the daemon names the card that was
+  // answered, so the report carries the id the card's request had.
+  it("names the request it had reported for the answered permission", async () => {
+    const { adapter, events, threadId, ask, reply, approvals } = await askedTurn()
+    ask("per_1")
+    ask("per_2")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(2))
+    const asked = approvals().find((event) => event.type === "approval-requested" && event.itemId === "call_per_2")
+    expect(asked).toMatchObject({ requestId: 2 })
+
+    reply("per_2", "always")
+
+    await waitForDaemon(() => expect(stopped(events)).toEqual([
+      expect.objectContaining({ threadId, permissionId: "per_2", requestId: 2, reply: "always" }),
     ]))
     await adapter.close()
   })
@@ -2042,7 +2063,7 @@ describe("approval replies Domovoi did not send", () => {
     reply("per_child", "once", "ses_child")
 
     await waitForDaemon(() => expect(stopped(events)).toEqual([
-      expect.objectContaining({ threadId, turnId: "turn-1", permissionId: "per_child", reply: "once" }),
+      expect.objectContaining({ threadId, turnId: "turn-1", permissionId: "per_child", requestId: 1, reply: "once" }),
     ]))
     await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } })))
     await adapter.close()

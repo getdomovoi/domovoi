@@ -575,7 +575,9 @@ code or settings the repository brings:
   `permission.v2.replied`, the daemon refuses every request the session still waits on, aborts
   the session's run and its subagents' runs and waits for the server to confirm, fails the session
   with `approval-answered-elsewhere`, and records `provider.approval-answered-elsewhere` in the
-  audit log. It then stops the server, which drops every approval the server kept in memory, and
+  audit log. The audit entry and the session's notice name the card that was answered, with its
+  operation, command, directory, affected files, tool server and whether it was a hard gate, as
+  the card showed them, or say that the answer matched no card. It then stops the server, which drops every approval the server kept in memory, and
   every other session on that server reconnects to a new server on its next message. The stopped
   session's provider session is never resumed: it continues only after you restart its provider,
   in a new provider session without its earlier conversation. An abort the server does not

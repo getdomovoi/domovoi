@@ -151,7 +151,7 @@ describe("an approval answered outside Domovoi", () => {
       sessionId,
       projectId: (await session()).projectId,
       target: "per_1",
-      detail: "reply=once",
+      detail: "reply=once approval=none",
     })
     const stopped = await session()
     expect(stopped.state).toBe("failed")
@@ -177,6 +177,60 @@ describe("an approval answered outside Domovoi", () => {
     const again = await rpc("session.send", { sessionId, prompt: "go on", client: "desktop" })
     expect(again.error?.message).toBeUndefined()
     expect(provider.resumeThread).toHaveBeenCalledOnce()
+  })
+
+  // Codex review of #691 at a609034e, P2: with several cards up, the record
+  // says which one was answered and what it asked, before the cards go.
+  it("names the answered card and its facts in the notice and the audit entry", async () => {
+    const { snapshot, append, emit } = await start()
+    emit({
+      type: "approval-requested", requestId: 42, threadId, turnId: "turn-billing", itemId: "call_clean",
+      command: "rm -rf dist", reason: "Clean the build output",
+    })
+    await waitForDaemon(async () => expect((await snapshot()).approvals).toHaveLength(2))
+    const card = (await snapshot()).approvals.find((approval) => approval.providerRequestId === 42)!
+    const other = (await snapshot()).approvals.find((approval) => approval.providerRequestId === 41)!
+
+    emit({ type: "approval-answered-elsewhere", threadId, turnId: "turn-billing", permissionId: "per_2", requestId: 42, reply: "always" })
+
+    await waitForDaemon(() => expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      action: "provider.approval-answered-elsewhere",
+    })))
+    const entry = append.mock.calls.map(([input]) => input).find((input) => input.action === "provider.approval-answered-elsewhere")!
+    expect(entry.target).toBe("per_2")
+    expect(entry.detail).toBe([
+      "reply=always",
+      `approval=${card.id}`,
+      `risk=${card.risk}`,
+      `operation=${JSON.stringify(card.operation)}`,
+      `command=${JSON.stringify(card.command)}`,
+      `directory=${JSON.stringify(card.directory)}`,
+      `affects=${JSON.stringify(card.affects)}`,
+    ].join(" "))
+    expect(entry.detail).not.toContain(other.id)
+    const after = await snapshot()
+    expect(after.approvals).toEqual([])
+    const stoppedNotice = after.thread.find((item) => item.sessionId === sessionId && item.kind === "system" && item.body === notice)
+    expect(stoppedNotice?.kind === "system" ? stoppedNotice.detail : undefined).toContain(
+      `The answer was to the request "${card.operation}", command ${card.command}, in ${card.directory}. ${card.affects} ${
+        card.risk === "hard-gate" ? "It was a hard gate." : "It was not a hard gate."
+      }`,
+    )
+  })
+
+  it("says when the answered permission matched no card it was showing", async () => {
+    const { snapshot, append, emit } = await start()
+
+    emit({ type: "approval-answered-elsewhere", threadId, turnId: "turn-billing", permissionId: "per_unseen", reply: "once" })
+
+    await waitForDaemon(() => expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      action: "provider.approval-answered-elsewhere",
+      target: "per_unseen",
+      detail: "reply=once approval=none",
+    })))
+    const stoppedNotice = (await snapshot()).thread.find((item) => item.sessionId === sessionId && item.kind === "system" && item.body === notice)
+    expect(stoppedNotice?.kind === "system" ? stoppedNotice.detail : undefined)
+      .toContain("The answer matched no request Domovoi was showing in this session.")
   })
 
   // Codex review of #691 at a609034e, P2: the adapter ends the turn before it
@@ -249,7 +303,7 @@ describe("an approval answered outside Domovoi", () => {
     expect(append).toHaveBeenCalledWith(expect.objectContaining({
       action: "provider.approval-answered-elsewhere",
       target: "per_late",
-      detail: "reply=always",
+      detail: "reply=always approval=none",
     }))
   })
 })

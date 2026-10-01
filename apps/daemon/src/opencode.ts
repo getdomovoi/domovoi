@@ -1160,10 +1160,16 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     if (session.stopping) return
     session.stopping = true
     const turnId = session.activeTurnId
-    for (const waiting of [this.#pendingApprovals, this.#failedRefusals]) {
-      for (const [id, pending] of waiting) {
-        if (pending.providerSessionId === sessionId && pending.permissionId === requestId) waiting.delete(id)
-      }
+    // The daemon's card for the answered request, if it still showed one,
+    // carries the id its approval-requested event gave it.
+    let answered: number | undefined
+    for (const [id, pending] of this.#pendingApprovals) {
+      if (pending.providerSessionId !== sessionId || pending.permissionId !== requestId) continue
+      answered = id
+      this.#pendingApprovals.delete(id)
+    }
+    for (const [id, pending] of this.#failedRefusals) {
+      if (pending.providerSessionId === sessionId && pending.permissionId === requestId) this.#failedRefusals.delete(id)
     }
     this.#refusePendingFor(session.threadId)
     void this.#abortThread(session, sessionId).then(async (confirmed) => {
@@ -1176,6 +1182,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         threadId: session.threadId,
         ...(turnId ? { turnId } : {}),
         permissionId: requestId,
+        ...(answered === undefined ? {} : { requestId: answered }),
         reply,
       })
       // Always restarted (Codex review of #691, P1): an always reply leaves an

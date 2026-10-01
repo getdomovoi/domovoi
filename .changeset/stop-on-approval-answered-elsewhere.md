@@ -10,7 +10,9 @@ server has accepted the daemon's answer. Any other reply refuses every request s
 aborts the session's runs and waits for the server to confirm, fails the session with
 `approval-answered-elsewhere`, holds a queued send, and records
 `provider.approval-answered-elsewhere` in the audit log. The audit entry and the session's
-notice are recorded even when an archive, a transfer or an emergency stop took the session
+notice name the answered card and its facts as the card showed them (operation, command,
+directory, affected files, tool server, hard gate), or say the answer matched no card. They
+are recorded even when an archive, a transfer or an emergency stop took the session
 before the report was handled; only a session still running is stopped. The daemon then stops the server,
 so no approval it kept in memory stays in place, and every other session on it reconnects to a
 new server on its next message. An abort the server does not confirm also stops the server.
