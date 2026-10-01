@@ -1,10 +1,12 @@
+import type { ChildProcess } from "node:child_process"
+import { EventEmitter } from "node:events"
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { gitTeardownTimeoutMs, publishUnderIndexLock, runGitProcess } from "./isolated-checkout.js"
+import { gitTeardownTimeoutMs, publishUnderIndexLock, runGitProcess, windowsGitStop } from "./isolated-checkout.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const scratchDirectories: string[] = []
@@ -108,6 +110,57 @@ describe("runGitProcess", () => {
     // lease's "descendants unknown" covers.
     expect(alive(child)).toBe(true)
   }, 30_000)
+})
+
+// Windows has no process groups: a stop runs taskkill /T on the direct Git.
+// Once that Git has been seen to exit its PID can belong to another process,
+// so no taskkill runs then (ruling Q276), and a taskkill still running at the
+// teardown bound is ended with its listeners gone. Runs on every platform
+// with a fake Git and a fake taskkill.
+describe("windowsGitStop", () => {
+  const fakeGit = (state: { exitCode: number | null; signalCode: NodeJS.Signals | null }) => ({ pid: 4_242, ...state, kill: vi.fn(() => true) })
+  const fakeTaskkill = () => Object.assign(new EventEmitter(), { exitCode: null as number | null, signalCode: null, kill: vi.fn(() => true) })
+
+  it.each([
+    ["exited", { exitCode: 0, signalCode: null }],
+    ["been killed", { exitCode: null, signalCode: "SIGTERM" as const }],
+  ])("runs no taskkill once Git has %s", (_label, state) => {
+    const run = vi.fn(() => fakeTaskkill() as unknown as ChildProcess)
+    windowsGitStop(fakeGit(state), run).stop()
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it("runs one taskkill /T for a running Git, however often the stop comes", () => {
+    const run = vi.fn((_command: string, _args: string[]) => fakeTaskkill() as unknown as ChildProcess)
+    const stop = windowsGitStop(fakeGit({ exitCode: null, signalCode: null }), run)
+    stop.stop()
+    stop.stop()
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(run.mock.calls[0]![1]).toEqual(["/PID", "4242", "/T", "/F"])
+  })
+
+  it("ends a taskkill still running at the teardown bound and removes its listeners", () => {
+    const taskkill = fakeTaskkill()
+    const stop = windowsGitStop(fakeGit({ exitCode: null, signalCode: null }), () => taskkill as unknown as ChildProcess)
+    stop.stop()
+    expect(taskkill.listenerCount("exit")).toBe(1)
+
+    stop.cancel()
+
+    expect(taskkill.kill).toHaveBeenCalledOnce()
+    expect(taskkill.listenerCount("exit")).toBe(0)
+    // A failed kill reports an error event; nothing crashes on it.
+    expect(() => taskkill.emit("error", new Error("kill failed"))).not.toThrow()
+  })
+
+  it("leaves a taskkill that already finished alone at the bound", () => {
+    const taskkill = fakeTaskkill()
+    const stop = windowsGitStop(fakeGit({ exitCode: null, signalCode: null }), () => taskkill as unknown as ChildProcess)
+    stop.stop()
+    taskkill.exitCode = 0
+    stop.cancel()
+    expect(taskkill.kill).not.toHaveBeenCalled()
+  })
 })
 
 // An index is published as Git writes one (ruling Q276): under its lock,

@@ -1,4 +1,4 @@
-import { execFile, spawn, type PromiseWithChild } from "node:child_process"
+import { execFile, spawn, type ChildProcess, type PromiseWithChild } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
 import { isAbsolute, join, relative, resolve } from "node:path"
@@ -6,7 +6,7 @@ import { promisify } from "node:util"
 
 import { publishFileDurably } from "@getdomovoi/credential-store"
 
-import { windowsTreeKill } from "./claude-process.js"
+import { windowsTreeKill, type TaskkillSpawn } from "./claude-process.js"
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { isStandardLfsFilterLine } from "./git-read-config.js"
 import type { GitFilterSetting } from "./repository-git-filters.js"
@@ -236,6 +236,38 @@ function abortError(signal: AbortSignal): Error {
   return error
 }
 
+// The Windows stop of one Git command (ruling Q276). taskkill /T ends the
+// tree under the PID it is given, and runs only while Git has not been seen
+// to exit: Node holds Git's process handle until it reports the exit, so the
+// PID cannot belong to another process until then. Once Git has exited, its
+// orphaned children are out of reach, and only the bounded teardown settles
+// the command, until the Q111 job-object follow-up keeps authority over
+// them. A small window remains between this check and taskkill opening the
+// PID, should Git exit in it. One taskkill at a time; cancel ends one still
+// running at the teardown bound, with its listeners removed.
+export function windowsGitStop(
+  child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode" | "kill">,
+  run: TaskkillSpawn = spawn,
+): { stop(): void; cancel(): void } {
+  let taskkill: ChildProcess | undefined
+  const exited = (spawned: Pick<ChildProcess, "exitCode" | "signalCode">) => spawned.exitCode !== null || spawned.signalCode !== null
+  return {
+    stop() {
+      if (child.pid === undefined || exited(child)) return
+      if (taskkill !== undefined && !exited(taskkill)) return
+      void windowsTreeKill(child.pid, (command, args, options) => (taskkill = run(command, args, options))).catch(() => {
+        if (!exited(child)) child.kill("SIGKILL")
+      })
+    },
+    cancel() {
+      if (taskkill === undefined || exited(taskkill)) return
+      taskkill.removeAllListeners()
+      taskkill.on("error", () => {})
+      taskkill.kill()
+    },
+  }
+}
+
 // How long a stopped command's teardown may take once its group was
 // signalled: then its output pipes are destroyed and the command settles as
 // stopped, whatever still holds them (ruling Q272).
@@ -248,10 +280,7 @@ export const gitTeardownTimeoutMs = 5_000
 // and hold the pipes (ruling Q272). While a process holds them the group id
 // is normally still in use, since that process is usually in the group, so
 // the signal reaches processes this command started. On Windows the process
-// tree is ended instead; taskkill /T finds the tree through the process it
-// is given, so once Git itself has exited its orphaned children are out of
-// reach, and only the bounded teardown below settles the command. A Windows
-// job object is the real fix (the Q111 follow-up).
+// tree is ended instead, and only while Git itself runs (windowsGitStop).
 //
 // Ending the group does not prove that every process the command started has
 // ended: one can leave the group (setsid). So a killed command still leaves
@@ -273,6 +302,7 @@ export function runGitProcess(args: readonly string[], options: {
     windowsHide: true,
   })
   const { signal } = options
+  const windows = posix ? undefined : windowsGitStop(child)
   const errors: Buffer[] = []
   let errorBytes = 0
   let settled = false
@@ -286,10 +316,10 @@ export function runGitProcess(args: readonly string[], options: {
       killing = true
       options.beforeKill?.()
     }
-    const exited = child.exitCode !== null || child.signalCode !== null
-    if (!posix) {
-      void windowsTreeKill(child.pid).catch(() => { if (!exited) child.kill("SIGKILL") })
+    if (windows !== undefined) {
+      windows.stop()
     } else {
+      const exited = child.exitCode !== null || child.signalCode !== null
       try {
         process.kill(-child.pid, "SIGKILL")
       } catch {
@@ -298,6 +328,7 @@ export function runGitProcess(args: readonly string[], options: {
     }
     teardown ??= setTimeout(() => {
       if (settled) return
+      windows?.cancel()
       child.stdout.destroy()
       child.stderr.destroy()
       settle(signal?.aborted
