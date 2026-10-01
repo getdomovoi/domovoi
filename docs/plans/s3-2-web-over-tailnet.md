@@ -236,7 +236,10 @@ fail too (`S3.3` lists that render as unverified on a device). Slice 5 starts wi
 that settles it.
 
 The fix is one module, `apps/daemon/src/listener-authorities.ts`, that answers two separate
-questions (review F4-R2b, Q297). They share inputs but not results.
+questions (review F4-R2b, Q297). They share inputs but not results. The module, both
+computations and their split test land in slice 4, because the static hook and the origin set
+read them from the first slice that serves; slice 5 only makes `#acceptsHost` delegate to the
+Host authorities (review round 3, Q297).
 
 **HTTP Host authorities**, the `Host` values this listener answers to (the static hook and
 `#acceptsHost` read these):
@@ -497,7 +500,7 @@ touch the request listener (`server.ts:2765-2790`), `#acceptsHost` (`:5068-5072`
 | one hook line in the request listener, before the final 404 | `:2786-2788` | 4 |
 | after `listen`, add the listener's own browser origins to the origin set | `:2885` | 4 |
 | the host-only TLS fallback (`namesThisDaemon`) stops admitting an origin whose scheme is not the listener's; the served app is admitted by exact canonical origin (section 3.5) | `:559-583`, `:2792-2794` | 4, with or before the hook line |
-| `#acceptsHost` body delegates to `listener-authorities.ts` | `:5068-5072` | 5 |
+| `#acceptsHost` body delegates to the Host authorities `listener-authorities.ts` has computed since slice 4 | `:5068-5072` | 5 |
 
 New modules, each with its own test file:
 
@@ -591,25 +594,30 @@ Each is one pull request, test first, with `pnpm typecheck`, `pnpm test`, `pnpm 
 4. **Wire it in** (Codex). Lands only after slice 2 is merged. `DOMOVOI_WEB_DIR` in `config.ts`,
    the default data folder per platform (section 1.2, Q299) with a test for each platform's path
    and for `XDG_DATA_HOME` unset or relative, loading in `production-daemon.ts`, the startup line
-   and help in
-   `index.ts`, `webDirectory` in `service/configuration.ts`, the `server.ts` option, field and
-   hook, the loopback origin admission (only the literal loopback origins, scheme included, and
-   only with a loaded bundle; `null` stays refused), the sandbox test (section 3.8), coexistence
-   tests, README rows, changeset. This slice can already serve on a TLS listener that is
-   configured, so it also carries the TLS origin policy of section 3.5 (review F4-R2a, Q297),
-   none of it after the hook: the browser-origin half of `listener-authorities.ts`, with the test
-   that advertisement settings add no browser origin (section 2.4); the
-   listener's exact canonical origins, scheme included, join the origin set after `listen`, which
-   updates preview `frame-ancestors`; a test listing the clients that reach `/rpc` through the
-   host-only fallback; then the fallback stops admitting another scheme, with the negative test
-   for a same-authority `http` Origin on TLS written first; the TLS test certificate tests for the
-   app and `/rpc`. After this the app is served on loopback, and on a TLS listener that is
-   already configured.
-5. **Listener authorities: tailnet names, previews, artifacts** (Codex). The Host-authority half
-   of `listener-authorities.ts`; `#acceptsHost` delegates to it; the TLS test certificate tests
-   for `/artifacts/`; the sandbox test extended to the tailnet name. The section 2.4 test is
-   written first and must fail on `main`. After this Design review works over the tailnet, and
-   phone previews over the tailnet name may start working too.
+   and help in `index.ts`, `webDirectory` in `service/configuration.ts`, the `server.ts` option,
+   field and hook, the loopback origin admission (only the literal loopback origins, scheme
+   included, and only with a loaded bundle; `null` stays refused), the sandbox test (section 3.8),
+   coexistence tests, README rows, changeset.
+
+   The helper lands whole in this slice (review round 3, Q297): `listener-authorities.ts`
+   computes both the HTTP Host authorities and the browser origins of section 2.4, with the split
+   test that advertisement settings are Host authorities and never browser origins. The static
+   hook checks Host against those authorities from its first line, so the app is served under a
+   certificate name.
+
+   This slice can already serve on a TLS listener that is configured, so it also carries the TLS
+   origin policy of section 3.5 (review F4-R2a, Q297), none of it after the hook: the listener's
+   exact canonical origins, scheme included, join the origin set after `listen`, which updates
+   preview `frame-ancestors`; a test listing the clients that reach `/rpc` through the host-only
+   fallback; then the fallback stops admitting another scheme, with the negative test for a
+   same-authority `http` Origin on TLS written first; the TLS test certificate tests for the app,
+   served under the certificate name, and for `/rpc`. After this the app is served on loopback,
+   and on a TLS listener that is already configured.
+5. **Artifacts under the listener's names** (Codex). No new helper: `#acceptsHost` delegates to
+   the Host authorities slice 4 already computes, so `/artifacts/` answers to the certificate
+   names too; the TLS test certificate tests for `/artifacts/`; the sandbox test extended to the
+   tailnet name. The section 2.4 test is written first and must fail on `main`. After this Design
+   review works over the tailnet, and phone previews over the tailnet name may start working too.
 6. **Packaging and documents** (Claude Code for `scripts/`, the daemon owner for README). A
    `domovoi-web-<version>.tar.gz` in `scripts/release-artifacts.mjs` with its line in `SHA256SUMS`;
    install steps in `docs/clean-machine-setup.md` and the tailnet section of `apps/mobile/README.md`
