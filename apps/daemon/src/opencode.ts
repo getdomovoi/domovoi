@@ -4,15 +4,19 @@ import { isAbsolute, join } from "node:path"
 
 import {
   createOpencodeClient,
-  createOpencodeServer,
   type Config,
 } from "@opencode-ai/sdk"
-import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
+import type { ApprovalDecision, ProviderFailure, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
-import type { AgentAdapter, AgentEvent } from "./agents.js"
+import { ApprovalRequestNotPendingError, type AgentAdapter, type AgentEvent } from "./agents.js"
+import { approvalAnsweredElsewhereFailure as approvalAnsweredElsewhere } from "./provider-failures.js"
 import { normalizeProviderUsage } from "./usage.js"
-import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
+import { createAuthenticatedEmbeddedRuntime, embeddedServerCommand, type EmbeddedServer } from "./embedded-server.js"
 import { projectInstructions } from "./project-instructions.js"
+import { PublicRpcError } from "./rpc-errors.js"
+
+// JSON-RPC invalid params, the code the daemon gives a refusal a person can act on.
+const invalidParams = -32602
 
 type OpenCodeResult<T> = { data?: T; error?: unknown }
 
@@ -71,9 +75,12 @@ type OpenCodeCatalog = {
   default: Record<string, string>
 }
 
+type OpenCodeServer = Pick<EmbeddedServer, "close" | "stop" | "processGroup" | "processKind">
+
 export type OpenCodeFactory = () => Promise<{
   client: OpenCodeClient
-  server: { close(): void }
+  server: OpenCodeServer
+
 }>
 
 export type OpenCodeAdapterIdentity = {
@@ -104,6 +111,9 @@ type Session = {
   interruptedTurnId?: string
   assistantMessageTurnIds: Map<string, string>
   toolPhases: Map<string, string>
+  // Set while the thread is being stopped because an approval was answered
+  // elsewhere. Its events are still read until the provider confirms the stop.
+  stopping?: true
 }
 
 type DirectoryStream = {
@@ -121,6 +131,29 @@ type PendingApproval = {
   // Its approval ends with that turn.
   subagentTurn?: SubagentTurn
   generation?: number
+  // Kilo ignores an approval of a skill shell batch or a sandbox escalation
+  // unless the reply says a person gave it interactively, which the legacy
+  // reply Domovoi sends cannot say. An approval of one is never Domovoi's.
+  interactiveOnly?: true
+}
+
+type ProviderReply = "once" | "always" | "reject" | "unknown"
+
+// A reply this adapter sent. It is recorded before it is sent, because the
+// server publishes permission.replied before it answers the request that
+// caused it, but it counts as Domovoi's only once the server has accepted it:
+// the server takes one answer per request and refuses every later one, so the
+// answer it accepted is the one its event reports. Until then it is an intent.
+type SentReply = {
+  response: "once" | "reject"
+  // The Domovoi thread the asking session belongs to, so an unload forgets it.
+  threadId: string
+  providerSessionId: string
+  permissionId: string
+  state: "sending" | "accepted"
+  // A matching reply event that arrived while the answer was being sent. It
+  // is Domovoi's if the server accepts the answer, and someone else's if not.
+  eventSeen?: true
 }
 
 type SubagentTurn = {
@@ -193,6 +226,14 @@ export class SubagentRegistry {
       if (oldest === undefined) break
       this.#tombstones.delete(oldest)
     }
+  }
+
+  // Every subagent session known to belong to the thread, linked or not.
+  sessionsOf(threadId: string): string[] {
+    return [
+      ...[...this.#linked].filter(([, owner]) => owner.threadId === threadId).map(([sessionId]) => sessionId),
+      ...[...this.#neverLinked].filter(([, owner]) => owner === threadId).map(([sessionId]) => sessionId),
+    ]
   }
 
   forgetThread(threadId: string): void {
@@ -283,6 +324,24 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // Refusals the provider did not accept, by request id. They are sent again
   // when the card is answered or the thread's next turn starts or ends.
   #failedRefusals = new Map<number, PendingApproval>()
+  // Replies this adapter sent, by asking session and request (replyKey). The
+  // embedded server's password is in its startup environment, which every
+  // program the server starts can read as the same user, and nothing in a
+  // reply says who sent it; these records are how a reply is known as ours.
+  #sentReplies = new Map<string, SentReply>()
+  // A rejection the server takes rejects every other request of the same
+  // session that is waiting then (opencode permission/index.ts:129-138, kilo
+  // :322-331). The requests Domovoi knew to be waiting when it sent one, by
+  // replyKey, with the rejection that covers them (origin) and their thread.
+  // A rejection of one of them is the server's; it refuses nothing more. They
+  // are dropped when the rejection does not go through and when the turn ends
+  // (Codex review of #691, P3).
+  #cascadeRejections = new Map<string, { origin: string; threadId: string }>()
+  // A server Domovoi stopped and has not confirmed gone, kept so it can be
+  // stopped again, and the stop under way. While either is set, no other
+  // server starts (Codex review of #691, round 2).
+  #retiredServer: OpenCodeServer | undefined
+  #retiring: Promise<void> | undefined
   #nextApprovalId = 0
   #nextGeneration = 0
 
@@ -299,6 +358,14 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   async connect(): Promise<void> {
     if (this.#closed) throw new Error(`${this.#identity.providerName} adapter closed`)
     if (this.#runtime) return
+    // A stopped server not yet confirmed gone blocks the next one (Codex
+    // review of #691, round 2): it is stopped again, and while it may still
+    // run, with the password and the programs it started, none other starts.
+    const retired = this.#retiredServer
+    if (retired) {
+      await this.#retire(retired)
+      if (this.#retiredServer) throw new PublicRpcError(invalidParams, this.#retiredServerRefusal(retired))
+    }
     this.#connection ??= this.#factory().then((runtime) => {
       if (this.#closed) runtime.server.close()
       else this.#runtime = runtime
@@ -512,21 +579,49 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       return
     }
     const pending = this.#pendingApprovals.get(requestId)
-    if (!pending) return
+    if (!pending) throw new ApprovalRequestNotPendingError(requestId)
     this.#pendingApprovals.delete(requestId)
     this.#respond(pending, decision === "allow-once" || decision === "always-project" ? "once" : "reject", requestId)
   }
 
   #respond(pending: PendingApproval, response: "once" | "reject", requestId: number): void {
+    // Recorded before anything is sent, synchronously: the reply event this
+    // causes can arrive before the request that caused it is answered.
+    const threadId = pending.subagentTurn?.threadId ?? this.#subagents.neverLinkedThread(pending.providerSessionId)
+      ?? pending.providerSessionId
+    const key = replyKey(pending.providerSessionId, pending.permissionId)
+    const record: SentReply = {
+      response,
+      threadId,
+      providerSessionId: pending.providerSessionId,
+      permissionId: pending.permissionId,
+      state: "sending",
+    }
+    // An approval the server ignores is not recorded, so none it reports is ours.
+    if (!pending.interactiveOnly || response === "reject") this.#sentReplies.set(key, record)
+    else this.#sentReplies.delete(key)
+    if (response === "reject") {
+      for (const waiting of this.#pendingApprovals.values()) {
+        if (waiting.providerSessionId !== pending.providerSessionId || waiting.permissionId === pending.permissionId) continue
+        this.#cascadeRejections.set(replyKey(waiting.providerSessionId, waiting.permissionId), { origin: key, threadId })
+      }
+    }
     void this.#client().then(async (client) => {
-      unwrap(await client.postSessionIdPermissionsPermissionId({
-        path: { id: pending.providerSessionId, permissionID: pending.permissionId },
-        query: { directory: pending.cwd },
-        body: { response },
-        throwOnError: true,
-      }), `${this.#identity.providerName} permission response`)
-    }).catch((error: unknown) => {
+      // Bounded (Codex review of #691, round 2): an answer with no outcome
+      // after the bound is an unknown outcome, the same as a failed one.
+      unwrap(await settlesWithin(
+        client.postSessionIdPermissionsPermissionId({
+          path: { id: pending.providerSessionId, permissionID: pending.permissionId },
+          query: { directory: pending.cwd },
+          body: { response },
+          throwOnError: true,
+        }),
+        permissionAnswerConfirmMs,
+        `${this.#identity.providerName} did not answer a permission response within ${permissionAnswerConfirmMs} ms`,
+      ), `${this.#identity.providerName} permission response`)
+    }).then(() => this.#replyAccepted(key, record), (error: unknown) => {
       console.error(`Domovoi could not resolve a ${this.#identity.providerName} permission`, error)
+      this.#replyFailed(key, record)
       // A subagent's refusal must not be lost, or the subagent waits on it.
       const owner = pending.subagentTurn ? this.#sessions.get(pending.subagentTurn.threadId) : undefined
       const stillLoaded = owner !== undefined && owner.generation === pending.generation
@@ -536,6 +631,29 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         this.#failedRefusals.set(requestId, pending)
       }
     })
+  }
+
+  // The server accepted the answer, so the reply it reports for this request
+  // is Domovoi's: one that already arrived is settled, a later one will be.
+  #replyAccepted(key: string, record: SentReply): void {
+    if (this.#sentReplies.get(key) !== record) return
+    if (record.eventSeen) this.#sentReplies.delete(key)
+    else record.state = "accepted"
+  }
+
+  // The answer did not go through, or nothing says whether it did. The record
+  // is dropped, so a later reply for the request counts as someone else's,
+  // and one that already arrived was someone else's.
+  #replyFailed(key: string, record: SentReply): void {
+    // A rejection the server did not take rejected nothing else either.
+    for (const [covered, cascade] of this.#cascadeRejections) {
+      if (cascade.origin === key) this.#cascadeRejections.delete(covered)
+    }
+    if (this.#sentReplies.get(key) !== record) return
+    this.#sentReplies.delete(key)
+    if (!record.eventSeen) return
+    const session = this.#sessions.get(record.threadId)
+    if (session) this.#stopForReplyElsewhere(session, record.providerSessionId, record.permissionId, record.response)
   }
 
   #retryFailedRefusals(threadId: string): void {
@@ -559,8 +677,11 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#subagents = new SubagentRegistry()
     this.#pendingApprovals.clear()
     this.#failedRefusals.clear()
+    this.#sentReplies.clear()
+    this.#cascadeRejections.clear()
     this.#runtime?.server.close()
     this.#runtime = undefined
+    this.#retiredServer?.close()
     await this.#connection
   }
 
@@ -698,18 +819,43 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     )
   }
 
+  // Without its event stream a directory's runs cannot be watched: a reply
+  // made elsewhere would go unseen. Their pending requests are refused and
+  // their runs aborted before they are let go, and a run the provider does
+  // not confirm stopped ends the whole server (Codex review of #691, P1).
   #disconnect(cwd: string, controller: AbortController, reason: string): void {
     if (controller.signal.aborted) return
     controller.abort()
     this.#directories.delete(cwd)
-    for (const session of this.#sessions.values()) {
-      if (session.cwd !== cwd) continue
-      this.#complete(session, "failed", reason)
-      this.#refusePendingFor(session.threadId)
-      this.#forgetSubagents(session.threadId)
-      this.#sessions.delete(session.threadId)
+    const sessions = [...this.#sessions.values()].filter((session) => session.cwd === cwd)
+    for (const session of sessions) this.#refusePendingFor(session.threadId)
+    void Promise.all(sessions.map((session) => this.#abortThread(session))).then(async (confirmed) => {
+      if (!confirmed.every(Boolean)) {
+        await this.#stopServer(this.#unconfirmedStopReason())
+        return
+      }
+      for (const session of sessions) {
+        if (this.#sessions.get(session.threadId) !== session) continue
+        this.#complete(session, "failed", reason)
+        this.#forgetSubagents(session.threadId)
+        this.#forgetReplies(session.threadId)
+        this.#sessions.delete(session.threadId)
+      }
+      this.#emit({ type: "provider-disconnected", reason })
+    })
+  }
+
+  // An unloaded thread hears no more replies, so what was recorded for its
+  // sessions is dropped.
+  #forgetReplies(threadId: string): void {
+    for (const [key, sent] of this.#sentReplies) if (sent.threadId === threadId) this.#sentReplies.delete(key)
+    this.#forgetCascadeRejections(threadId)
+  }
+
+  #forgetCascadeRejections(threadId: string): void {
+    for (const [key, cascade] of this.#cascadeRejections) {
+      if (cascade.threadId === threadId) this.#cascadeRejections.delete(key)
     }
-    this.#emit({ type: "provider-disconnected", reason })
   }
 
   #forgetSubagents(threadId: string): void {
@@ -743,6 +889,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #unloadSession(session: Session): void {
     this.#refusePendingFor(session.threadId)
     this.#forgetSubagents(session.threadId)
+    this.#forgetReplies(session.threadId)
     this.#sessions.delete(session.threadId)
     const directory = this.#directories.get(session.cwd)
     if (!directory) return
@@ -832,6 +979,17 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
     const sessionId = eventSessionId(properties)
     if (!sessionId) return
+    // permission.v2.replied has the current reply's shape (opencode
+    // schema/src/permission.ts:44-51). Domovoi sends no v2 reply, so every one
+    // is someone else's (Codex review of #691, P2).
+    if (event.type === "permission.replied" || event.type === "permission.v2.replied") {
+      this.#receiveReply(cwd, sessionId, properties)
+      return
+    }
+    if (event.type === "permission.v2.asked") {
+      this.#refuseUnanswerable(cwd, sessionId)
+      return
+    }
     const subagentTurn = this.#subagents.get(sessionId)
     const subagent = subagentTurn !== undefined
     const session = this.#sessions.get(subagentTurn?.threadId ?? sessionId)
@@ -916,6 +1074,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         cwd,
         permissionId: request.permissionId,
         ...(subagentTurn ? { subagentTurn, generation: session.generation } : {}),
+        ...(interactiveOnly(properties) ? { interactiveOnly: true as const } : {}),
       })
       this.#emit({
         type: "approval-requested",
@@ -952,6 +1111,193 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       return
     }
     if (event.type === "session.idle") this.#complete(session, "completed")
+  }
+
+  // `requestID` and `reply` are what current servers send (opencode 1.18,
+  // kilo 7.8); `permissionID` and `response` are the older shape. A reply is
+  // this adapter's only when it sent that same reply for that request and the
+  // server accepted it (Q246 A, Codex review of #691), or when it is a
+  // rejection the server added for a session this adapter had sent a
+  // rejection to. A matching reply that arrives while the answer is still
+  // being sent waits for the server's answer. Anything else stops the thread
+  // the asking session belongs to (Q247 A), including a reply that names no
+  // request: nothing in it says it was this adapter's.
+  #receiveReply(cwd: string, sessionId: string, properties: Record<string, unknown>): void {
+    const threadId = this.#subagents.get(sessionId)?.threadId
+      ?? this.#subagents.neverLinkedThread(sessionId)
+      ?? sessionId
+    const session = this.#sessions.get(threadId)
+    if (!session || session.cwd !== cwd) return
+    const requestId = typeof properties.requestID === "string"
+      ? properties.requestID
+      : typeof properties.permissionID === "string" ? properties.permissionID : ""
+    const value = properties.reply ?? properties.response
+    const reply: ProviderReply = value === "once" || value === "always" || value === "reject" ? value : "unknown"
+    const key = replyKey(sessionId, requestId)
+    const sent = requestId ? this.#sentReplies.get(key) : undefined
+    // Checked first: Domovoi's own rejection of a request the server has just
+    // rejected for it is then refused, and that refusal must not stop the thread.
+    if (reply === "reject" && this.#cascadeRejections.delete(key)) {
+      this.#sentReplies.delete(key)
+      return
+    }
+    if (sent?.response === reply) {
+      if (sent.state === "accepted") this.#sentReplies.delete(key)
+      else sent.eventSeen = true
+      return
+    }
+    this.#stopForReplyElsewhere(session, sessionId, requestId, reply)
+  }
+
+  // The request was already answered, so it is dropped without a reply, and
+  // every other request the thread holds is refused at once. The thread's
+  // run and its subagents' runs are aborted, and the thread stays watched
+  // until the provider confirms each abort (Codex review of #691, P1). Then the
+  // turn fails with its own failure, the thread is unloaded and the daemon is
+  // told, after the turn's end, so it can record why the session stopped. A
+  // stop the provider does not confirm ends the whole server.
+  #stopForReplyElsewhere(session: Session, sessionId: string, requestId: string, reply: ProviderReply): void {
+    if (session.stopping) return
+    session.stopping = true
+    const turnId = session.activeTurnId
+    // The daemon's card for the answered request, if it still showed one,
+    // carries the id its approval-requested event gave it.
+    let answered: number | undefined
+    for (const [id, pending] of this.#pendingApprovals) {
+      if (pending.providerSessionId !== sessionId || pending.permissionId !== requestId) continue
+      answered = id
+      this.#pendingApprovals.delete(id)
+    }
+    for (const [id, pending] of this.#failedRefusals) {
+      if (pending.providerSessionId === sessionId && pending.permissionId === requestId) this.#failedRefusals.delete(id)
+    }
+    this.#refusePendingFor(session.threadId)
+    void this.#abortThread(session, sessionId).then(async (confirmed) => {
+      if (this.#sessions.get(session.threadId) === session) {
+        this.#complete(session, "failed", approvalAnsweredElsewhere.message, approvalAnsweredElsewhere)
+        this.#unloadSession(session)
+      }
+      this.#emit({
+        type: "approval-answered-elsewhere",
+        threadId: session.threadId,
+        ...(turnId ? { turnId } : {}),
+        permissionId: requestId,
+        ...(answered === undefined ? {} : { requestId: answered }),
+        reply,
+      })
+      // Always restarted (Codex review of #691, P1): an always reply leaves an
+      // allow rule in the server's memory for the whole directory, opencode
+      // permission/index.ts:145-151, kilo :342-351. OpenCode keeps no such
+      // rule anywhere else; what Kilo writes to its global configuration is
+      // beyond a restart (see the daemon README).
+      const name = this.#identity.providerName
+      await this.#stopServer(confirmed
+        ? `Domovoi restarted the ${name} server because an approval was answered outside Domovoi, so no approval it kept stays in place`
+        : this.#unconfirmedStopReason())
+    })
+  }
+
+  // A v2 permission request is answered through an interface Domovoi does not
+  // use, so it cannot be shown or answered. Its run is aborted and the turn
+  // ends, rather than wait for an answer that could only come from elsewhere.
+  #refuseUnanswerable(cwd: string, sessionId: string): void {
+    const threadId = this.#subagents.get(sessionId)?.threadId
+      ?? this.#subagents.neverLinkedThread(sessionId)
+      ?? sessionId
+    const session = this.#sessions.get(threadId)
+    if (!session || session.cwd !== cwd || session.stopping) return
+    const name = this.#identity.providerName
+    void this.#abortThread(session, sessionId).then(async (confirmed) => {
+      if (!confirmed) {
+        await this.#stopServer(this.#unconfirmedStopReason())
+        return
+      }
+      if (this.#sessions.get(session.threadId) !== session) return
+      this.#complete(
+        session,
+        "failed",
+        `${name} asked for an approval through a permission interface Domovoi does not answer, so Domovoi stopped the turn`,
+      )
+    })
+  }
+
+  // Aborts the thread's run and every subagent run it is known to have, and
+  // resolves true only when the provider confirmed each abort in time.
+  async #abortThread(session: Session, ...more: string[]): Promise<boolean> {
+    const runtime = this.#runtime
+    if (!runtime) return false
+    const ids = new Set([session.threadId, ...more, ...this.#subagents.sessionsOf(session.threadId)])
+    const results = await Promise.allSettled([...ids].map((id) => settlesWithin(
+      runtime.client.session.abort({
+        path: { id },
+        query: { directory: session.cwd },
+        throwOnError: true,
+      }).then((result) => unwrap(result, `${this.#identity.providerName} session stop`)),
+      abortConfirmMs,
+      `${this.#identity.providerName} did not confirm the stop within ${abortConfirmMs} ms`,
+    )))
+    const failed = results.filter((result) => result.status === "rejected")
+    for (const failure of failed) {
+      console.error(`Domovoi could not confirm a ${this.#identity.providerName} session stopped`, failure.reason)
+    }
+    return failed.length === 0
+  }
+
+  #unconfirmedStopReason(): string {
+    const name = this.#identity.providerName
+    return `Domovoi stopped the ${name} server because it could not confirm that a session it stopped had stopped`
+  }
+
+  // Ends the server and every session on it. Each loaded thread's turn fails
+  // with the reason, nothing more is sent to the server, and the daemon hears
+  // the provider disconnected, so the next message starts a new server.
+  async #stopServer(reason: string): Promise<void> {
+    const runtime = this.#runtime
+    this.#runtime = undefined
+    for (const directory of this.#directories.values()) directory.controller.abort()
+    this.#directories.clear()
+    this.#pendingApprovals.clear()
+    this.#failedRefusals.clear()
+    for (const session of this.#sessions.values()) this.#complete(session, "failed", reason)
+    this.#sessions.clear()
+    this.#subagents = new SubagentRegistry()
+    this.#sentReplies.clear()
+    this.#cascadeRejections.clear()
+    // Retired before anything is awaited, so no other server can start
+    // while this one is being stopped.
+    const stopped = runtime ? await this.#retire(runtime.server) : true
+    const name = this.#identity.providerName
+    this.#emit({
+      type: "provider-disconnected",
+      reason: stopped
+        ? reason
+        : `${reason}. Domovoi could not confirm that the server and the programs it started have ended, `
+          + `so it starts no other ${name} server until it can. Each new message checks again`,
+    })
+  }
+
+  // Stops a server and keeps it until it is confirmed gone. A stop already
+  // under way is shared rather than repeated. Resolves true once it is gone.
+  #retire(server: OpenCodeServer): Promise<boolean> {
+    this.#retiredServer = server
+    this.#retiring ??= server.stop().catch(() => false).then((stopped) => {
+      if (stopped && this.#retiredServer === server) this.#retiredServer = undefined
+    }).finally(() => {
+      this.#retiring = undefined
+    })
+    return this.#retiring.then(() => this.#retiredServer !== server)
+  }
+
+  // Ending the programs alone is not always enough: on Windows a tree that
+  // could not be confirmed stays unconfirmed, and only a restart, which
+  // forgets the stopped server, clears it (Codex review of #691, round 3).
+  #retiredServerRefusal(server: OpenCodeServer): string {
+    const name = this.#identity.providerName
+    const kind = server.processKind ?? "group"
+    const group = server.processGroup === undefined ? "" : ` (process ${kind} ${server.processGroup})`
+    return `Domovoi could not confirm that the earlier ${name} server and the programs it started have ended, `
+      + `so it starts no other ${name} server. Each new message checks again. To continue sooner, end those `
+      + `programs${group}, then restart Domovoi.`
   }
 
   #receiveTool(session: Session, turnId: string, part: Record<string, unknown>): void {
@@ -1010,15 +1356,18 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
   }
 
-  #complete(session: Session, status: "completed" | "failed", error?: string): void {
+  #complete(session: Session, status: "completed" | "failed", error?: string, failure?: ProviderFailure): void {
     const turnId = session.activeTurnId
     if (!turnId) return
+    // Before the refusals below, whose own rejections may still cover others.
+    this.#forgetCascadeRejections(session.threadId)
     this.#emit({
       type: "turn-completed",
       params: {
         threadId: session.threadId,
         turnId,
         turn: { id: turnId, status, ...(error ? { error } : {}) },
+        ...(failure ? { failure } : {}),
       },
     })
     if (session.interruptedTurnId === session.activeTurnId) delete session.interruptedTurnId
@@ -1104,6 +1453,37 @@ function permissionRequest(
     // A permission with no name is still a provider tool, never shell text.
     ...(shell || edit !== undefined ? {} : { tool: kind || "unknown" }),
   }
+}
+
+// kilo 7.8 permission/index.ts:295-304: a skill shell batch or a sandbox
+// escalation takes only a reply marked interactive.
+function interactiveOnly(properties: Record<string, unknown>): boolean {
+  const metadata = asRecord(properties.metadata)
+  return metadata?.skillShell === true || metadata?.sandboxEscalation === true
+}
+
+// How long a stop waits for the provider to confirm a run was aborted.
+const abortConfirmMs = 10_000
+// How long Domovoi waits for the server to accept or refuse its answer to a
+// permission request. Past it the outcome is unknown, and a matching reply the
+// server reported meanwhile counts as someone else's.
+export const permissionAnswerConfirmMs = 10_000
+
+function settlesWithin<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+    promise.then((value) => {
+      clearTimeout(timer)
+      resolve(value)
+    }, (error: unknown) => {
+      clearTimeout(timer)
+      reject(error instanceof Error ? error : new Error(String(error)))
+    })
+  })
+}
+
+function replyKey(sessionId: string, requestId: string): string {
+  return `${sessionId}\u0000${requestId}`
 }
 
 function eventSessionId(properties: Record<string, unknown>): string | undefined {
@@ -1320,9 +1700,12 @@ const defaultOpenCodeFactory: OpenCodeFactory = async () => {
     passwordEnvironment: "OPENCODE_SERVER_PASSWORD",
     usernameEnvironment: "OPENCODE_SERVER_USERNAME",
     username: "opencode",
-    environment: { OPENCODE_DISABLE_PROJECT_CONFIG: "1" },
-    config: domovoiOpenCodeConfig,
-    startServer: createOpencodeServer,
+    // What the SDK's createOpencodeServer passes, plus the project switch.
+    environment: {
+      OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+      OPENCODE_CONFIG_CONTENT: JSON.stringify(domovoiOpenCodeConfig),
+    },
+    startServer: embeddedServerCommand("opencode", "opencode server listening"),
     createClient: createOpencodeClient,
   })
   return {
