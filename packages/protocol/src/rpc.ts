@@ -57,6 +57,7 @@ import {
   clientIdentityIdSchema,
   clientKindSchema,
   connectionIdSchema,
+  maximumProjectCap,
   maximumWorkingPlanSteps,
   maximumWorkingPlanTextLength,
   pendingWorkingPlanEditSchema,
@@ -66,6 +67,7 @@ import {
   workingPlanClientAttributionSchema,
   workingPlanStructureSchema,
   workingPlanStructureStepSchema,
+  workspaceSnapshotObjectSchema,
   workspaceSnapshotSchema,
   sessionSummarySchema,
 } from "./schema.js"
@@ -104,6 +106,7 @@ import {
   credentialSchema,
   forkRequestIdSchema,
   machineIdSchema,
+  projectIdSchema,
   toolKindSchema,
   toolStatusSchema,
 } from "./identifiers.js"
@@ -115,7 +118,7 @@ import {
   repositoryTrustParamsSchema,
   repositoryTrustResultSchema,
 } from "./repository-trust.js"
-import { toolInventorySchema } from "./tool-inventory.js"
+import { toolInventoryParamsSchema, toolInventorySchema } from "./tool-inventory.js"
 import {
   skillCapabilityManifestSchema,
   skillContentDigestSchema,
@@ -156,6 +159,12 @@ export const localOwnerRequiredErrorCode = -32019 as const
 // The error's data is a repositoryGitFilterRefusalSchema: the drivers and the
 // repository's trust, so a client can offer the trust review.
 export const repositoryGitFilterErrorCode = -32020 as const
+// project.open was refused because the daemon already keeps its cap of active
+// projects. The error's data is a projectCapRefusalSchema.
+export const projectCapErrorCode = -32021 as const
+// project.close was refused until the caller confirms the sessions it stops.
+// The error's data is a projectCloseConfirmationSchema to send back.
+export const projectCloseConfirmationErrorCode = -32022 as const
 
 const projectSwitchAffectedSessionSchema = z.object({
   id: z.string().min(1),
@@ -189,6 +198,52 @@ export const projectSwitchConfirmationSchema = z.object({
 })
 
 export type ProjectSwitchConfirmation = z.infer<typeof projectSwitchConfirmationSchema>
+
+// Closing a project stops its sessions' agent threads, so the daemon first
+// answers with the sessions it would stop. The caller sends this back
+// unchanged to confirm; a change since then is refused with a new one.
+export const projectCloseConfirmationSchema = z.object({
+  kind: z.literal("project-close-confirmation"),
+  projectId: projectIdSchema,
+  sessions: z.array(projectSwitchAffectedSessionSchema),
+  sessionCount: z.number().int().nonnegative(),
+  worktreeCount: z.number().int().nonnegative(),
+}).strict().superRefine((confirmation, context) => {
+  if (confirmation.sessionCount !== confirmation.sessions.length) {
+    context.addIssue({
+      code: "custom",
+      message: "Session count must match the affected sessions",
+      path: ["sessionCount"],
+    })
+  }
+  const worktreeCount = confirmation.sessions.filter((session) => session.workspacePath).length
+  if (confirmation.worktreeCount !== worktreeCount) {
+    context.addIssue({
+      code: "custom",
+      message: "Worktree count must match affected session worktrees",
+      path: ["worktreeCount"],
+    })
+  }
+})
+
+export type ProjectCloseConfirmation = z.infer<typeof projectCloseConfirmationSchema>
+
+// project.open past the cap (ruling Q190 A): the cap and the active projects
+// holding it, so a client can offer to close one.
+export const projectCapRefusalSchema = z.object({
+  kind: z.literal("project_cap"),
+  cap: z.number().int().min(1).max(maximumProjectCap),
+  activeProjectIds: z.array(projectIdSchema).max(maximumProjectCap),
+}).strict().superRefine((refusal, context) => {
+  if (new Set(refusal.activeProjectIds).size !== refusal.activeProjectIds.length) {
+    context.addIssue({ code: "custom", message: "An active project is listed once", path: ["activeProjectIds"] })
+  }
+  if (refusal.activeProjectIds.length < refusal.cap) {
+    context.addIssue({ code: "custom", message: "A cap refusal lists at least the cap of active projects", path: ["activeProjectIds"] })
+  }
+})
+
+export type ProjectCapRefusal = z.infer<typeof projectCapRefusalSchema>
 
 const rpcMethodNameSchema = z.string().min(1).refine(
   (method) => method.trim() === method,
@@ -909,7 +964,7 @@ export const stateRecoverySchema = z.object({
   workspaceKept: z.boolean(),
 }).strict()
 
-export const systemHelloResultSchema = workspaceSnapshotSchema.extend({
+export const systemHelloResultSchema = workspaceSnapshotObjectSchema.extend({
   connectionId: connectionIdSchema.optional(),
   sessionImageAttachments: z.boolean().optional(),
   clientAccess: clientAccessSchema.optional(),
@@ -1168,10 +1223,45 @@ export const projectOpenParamsSchema = z.object({
   confirmation: projectSwitchConfirmationSchema.optional(),
 }).strict()
 
+// project.close stops every agent thread of one active project's sessions and
+// keeps their worktrees and records. Ruling Q192 B keeps it off the phone.
+export const projectCloseParamsSchema = z.object({
+  projectId: projectIdSchema,
+  client: clientKindSchema,
+  confirmation: projectCloseConfirmationSchema.optional(),
+}).strict().refine(
+  (params) => params.confirmation === undefined || params.confirmation.projectId === params.projectId,
+  { path: ["confirmation", "projectId"], message: "The confirmation must be for the project being closed" },
+)
+
+// unconfirmed: the daemon asked the session's thread to stop and could not
+// confirm that it did. The list holds at most maximumProjectCloseSessions, and
+// omittedSessions, present only when something was left out, counts the rest.
+export const maximumProjectCloseSessions = 1_024
+export const projectCloseSessionStopSchema = z.object({
+  sessionId: z.string().min(1).check(utf16MaxLength(512)),
+  outcome: z.enum(["stopped", "unconfirmed"]),
+}).strict()
+
+export const projectCloseResultSchema = z.object({
+  snapshot: workspaceSnapshotSchema,
+  sessions: z.array(projectCloseSessionStopSchema).max(maximumProjectCloseSessions),
+  omittedSessions: z.number().int().min(1).max(1_000_000).optional(),
+}).strict().superRefine((result, context) => {
+  const seen = new Set<string>()
+  for (const [index, session] of result.sessions.entries()) {
+    if (seen.has(session.sessionId)) context.addIssue({ code: "custom", path: ["sessions", index, "sessionId"], message: "A session is listed once" })
+    seen.add(session.sessionId)
+  }
+})
+
+// projectId names an active project to create the session in; left out, the
+// daemon uses the focused project.
 export const sessionCreateParamsSchema = z.object({
   title: z.string().trim().min(1).check(utf16MaxLength(512)),
   runtime: runtimeSchema,
   client: clientKindSchema,
+  projectId: projectIdSchema.optional(),
 })
 
 export const sessionForkParamsSchema = z.object({
@@ -1550,17 +1640,23 @@ export const rpcMethods = {
   "session.search": { params: sessionSearchParamsSchema, result: sessionSearchResultSchema },
   "audit.query": { params: auditQueryParamsSchema, result: auditQueryPageSchema },
   "audit.export": { params: auditExportParamsSchema, result: auditExportResultSchema },
-  "skill.list": { params: z.object({}).strict(), result: skillSummariesSchema },
-  "skill.inventory": { params: z.object({}).strict(), result: skillInventorySchema },
-  "tool.inventory": { params: z.object({}).strict(), result: toolInventorySchema },
+  // Every skill call takes the project whose skills it reads or changes;
+  // left out, the daemon uses the focused project.
+  "skill.list": { params: z.object({ projectId: projectIdSchema.optional() }).strict(), result: skillSummariesSchema },
+  "skill.inventory": { params: z.object({ projectId: projectIdSchema.optional() }).strict(), result: skillInventorySchema },
+  "tool.inventory": { params: toolInventoryParamsSchema, result: toolInventorySchema },
   "repository.trust": { params: repositoryTrustParamsSchema, result: repositoryTrustResultSchema },
   "repository.revokeTrust": { params: repositoryRevokeTrustParamsSchema, result: repositoryRevokeTrustResultSchema },
   "skill.read": {
-    params: z.object({ id: skillIdSchema }),
+    params: z.object({ id: skillIdSchema, projectId: projectIdSchema.optional() }),
     result: skillDocumentSchema,
   },
   "skill.reviewRevision": {
-    params: z.object({ id: skillIdSchema, contentDigest: skillContentDigestSchema }).strict(),
+    params: z.object({
+      id: skillIdSchema,
+      contentDigest: skillContentDigestSchema,
+      projectId: projectIdSchema.optional(),
+    }).strict(),
     result: skillReviewRevisionResultSchema,
   },
   "skill.setEnabled": {
@@ -1569,6 +1665,7 @@ export const rpcMethods = {
       enabled: z.boolean(),
       contentDigest: skillContentDigestSchema,
       manifest: skillCapabilityManifestSchema,
+      projectId: projectIdSchema.optional(),
     }).strict(),
     result: workspaceSnapshotSchema,
   },
@@ -1577,11 +1674,12 @@ export const rpcMethods = {
       id: skillIdSchema,
       contentDigest: skillContentDigestSchema,
       decision: skillReviewDecisionSchema,
+      projectId: projectIdSchema.optional(),
     }).strict(),
     result: skillSummarySchema,
   },
   "skill.installPreview": {
-    params: z.object({ source: skillInstallSourceSchema }).strict(),
+    params: z.object({ source: skillInstallSourceSchema, projectId: projectIdSchema.optional() }).strict(),
     result: skillInstallPreviewSchema,
   },
   "skill.install": {
@@ -1589,6 +1687,7 @@ export const rpcMethods = {
       source: skillInstallSourceSchema,
       scope: skillInstallScopeSchema,
       sourceDigest: skillContentDigestSchema,
+      projectId: projectIdSchema.optional(),
     }).strict(),
     result: skillSummarySchema,
   },
@@ -1654,6 +1753,7 @@ export const rpcMethods = {
     result: workspaceSnapshotSchema,
   },
   "project.open": { params: projectOpenParamsSchema, result: workspaceSnapshotSchema },
+  "project.close": { params: projectCloseParamsSchema, result: projectCloseResultSchema },
   "session.activate": { params: sessionActivateParamsSchema, result: workspaceSnapshotSchema },
   "session.pause": { params: sessionPauseParamsSchema, result: workspaceSnapshotSchema },
   "session.archive": { params: sessionArchiveParamsSchema, result: workspaceSnapshotSchema },
@@ -1770,6 +1870,7 @@ export const rpcMethodAuthorizations = {
   "session.setRuntime": "control",
   "session.restartProviderThread": "control",
   "project.open": "control",
+  "project.close": "control",
   "session.activate": "control",
   "session.pause": "control",
   "session.archive": "control",
@@ -1868,6 +1969,7 @@ export const rpcMethodMutations = {
   "session.setRuntime": "mutating",
   "session.restartProviderThread": "mutating",
   "project.open": "mutating",
+  "project.close": "mutating",
   "session.activate": "mutating",
   "session.pause": "mutating",
   "session.archive": "mutating",
@@ -1940,6 +2042,8 @@ export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
   "approval.resolve",
   // Start, stop and steer. project.open names a directory already on the
   // machine so a session can be created there; it moves no files to the phone.
+  // project.close is not here: it stops every session of a project, and the
+  // phone never closes one (ruling Q192 B).
   "project.open",
   "session.create",
   "session.fork",
