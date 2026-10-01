@@ -603,6 +603,15 @@ export const approvalRuleSchema = z.discriminatedUnion("status", [
       inactivatedByConnectionId: connectionIdSchema,
       inactivatedByClientId: clientIdentityIdSchema.optional(),
     }).strict(),
+    // Saved before the decision that makes it has reached the agent, and
+    // made active only once it has (ruling Q285). It never matches a
+    // request. A daemon that loads one drops it: delivery was never confirmed.
+    z.object({
+      ...approvalRuleCommonFields,
+      status: z.literal("inactive"),
+      inactiveReason: z.literal("pending-delivery"),
+      execution: resolvedExecutionSchema,
+    }).strict(),
   ]),
 ])
 
@@ -1272,7 +1281,9 @@ export const workspaceSnapshotObjectSchema = z.object({
         path: ["approvalRules", index, "projectId"],
       })
     }
-    if (rule.status === "inactive" && rule.inactiveReason !== "revoked" && rule.replacedByRuleId !== undefined) {
+    // A pending-delivery rule replaces nothing yet, so only a retired rule
+    // names a replacement, and the replacement is active or revoked.
+    if ("replacedByRuleId" in rule && rule.replacedByRuleId !== undefined) {
       const replacement = approvalRulesById.get(rule.replacedByRuleId)
       if (!replacement || (replacement.status !== "active" && replacement.inactiveReason !== "revoked") || replacement.projectId !== rule.projectId) {
         context.addIssue({
