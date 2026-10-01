@@ -1897,18 +1897,27 @@ export class GitWorkspaceService implements WorkspaceService {
       return digest.digest("hex")
     }
     let seeded: string
-    try {
-      await writeFile(index, await readFile(sharedIndex))
+    // Only the worktree's index itself being absent means there is none
+    // (ruling Q295): nothing else that goes missing below does.
+    const seed = await readIndexFile(sharedIndex)
+    if (seed !== undefined) {
+      await writeFile(index, seed)
       // A split index keeps most entries in a sharedindex.<hash> file, which
       // Git looks for beside the index it reads. The copy gets those files
       // too, and is then written whole (ruling Q281): the index published
-      // from it must not name a shared index that lives only here.
+      // from it must not name a shared index that lives only here. Git
+      // removes expired ones on its own, so one that vanishes meanwhile is
+      // passed over; if it was the one the index needs, rewriting the copy
+      // whole fails, and so does the checkpoint.
       const shared = (await readdir(dirname(sharedIndex))).filter((name) => /^sharedindex\.[0-9a-f]+$/u.test(name))
-      for (const name of shared) await copyFile(join(dirname(sharedIndex), name), join(isolated.gitDirectory, name))
+      for (const name of shared) {
+        await copyFile(join(dirname(sharedIndex), name), join(isolated.gitDirectory, name)).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error
+        })
+      }
       if (shared.length > 0) await isolated.run(["update-index", "--no-split-index"], { index, signal })
       seeded = await entries(index)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    } else {
       // No index lists no entry: the digest of nothing.
       seeded = createHash("sha256").digest("hex")
       if (head !== undefined) await isolated.run(["read-tree", head], { index, signal })

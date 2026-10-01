@@ -2,7 +2,7 @@ import { execFile, spawnSync, type ChildProcess } from "node:child_process"
 import { createServer } from "node:http"
 import { createServer as createNetServer, type AddressInfo, type Socket } from "node:net"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises"
+import { copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -25,7 +25,7 @@ import {
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>()
-  return { ...actual, open: vi.fn(actual.open), readFile: vi.fn(actual.readFile), unlink: vi.fn(actual.unlink) }
+  return { ...actual, copyFile: vi.fn(actual.copyFile), open: vi.fn(actual.open), readFile: vi.fn(actual.readFile), unlink: vi.fn(actual.unlink) }
 })
 
 const execute = promisify(execFile)
@@ -47,6 +47,7 @@ async function failNextRestoreClaimClose(error: Error) {
 const gitDaemons: ChildProcess[] = []
 
 afterEach(async () => {
+  vi.mocked(copyFile).mockReset()
   vi.mocked(open).mockReset()
   vi.mocked(readFile).mockReset()
   vi.mocked(unlink).mockReset()
@@ -1432,6 +1433,45 @@ describe("GitWorkspaceService", () => {
     expect(checkpoint.changedFiles).toEqual(["tracked.txt"])
     expect(await gitIn("show", `${checkpoint.commit}:tracked.txt`)).toBe("changed\n")
     expect(await gitIn("status", "--porcelain")).toBe("")
+  })
+
+  // Git removes expired shared index files on its own. One that vanishes while
+  // the seed is copied says nothing about the worktree's index, which exists:
+  // the seed stays the worktree's index, and a staged ignored file is in the
+  // checkpoint (ruling Q295). A base the index needs that is gone refuses.
+  it("keeps the worktree's index as the seed when an unrelated shared index file vanishes while copied", async () => {
+    const { scratch, repositoryPath, gitIn } = await repositoryWithWork("domovoi-checkpoint-split-vanished-")
+    await writeFile(join(repositoryPath, ".gitignore"), "secret.txt\n")
+    await writeFile(join(repositoryPath, "secret.txt"), "staged though ignored\n")
+    await gitIn("add", "-f", "secret.txt")
+    await gitIn("update-index", "--split-index")
+    const unrelated = `sharedindex.${"0".repeat(40)}`
+    await writeFile(join(repositoryPath, ".git", unrelated), "expired")
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+    vi.mocked(copyFile).mockImplementation(async (source, destination, mode) => {
+      if (String(source).endsWith(unrelated)) {
+        await actual.unlink(source)
+        throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${String(source)}'`), { code: "ENOENT" })
+      }
+      return actual.copyFile(source, destination, mode)
+    })
+
+    const checkpoint = await new GitWorkspaceService(join(scratch, "worktrees")).checkpoint(repositoryPath, "vanished")
+
+    expect(await gitIn("show", `${checkpoint.commit}:secret.txt`)).toBe("staged though ignored\n")
+  })
+
+  it("refuses a checkpoint when the shared index file its seed needs is gone", async () => {
+    const { scratch, repositoryPath, gitIn } = await repositoryWithWork("domovoi-checkpoint-split-missing-")
+    await gitIn("update-index", "--split-index")
+    for (const name of await readdir(join(repositoryPath, ".git"))) {
+      if (name.startsWith("sharedindex.")) await rm(join(repositoryPath, ".git", name))
+    }
+    const head = await gitIn("rev-parse", "HEAD")
+
+    await expect(new GitWorkspaceService(join(scratch, "worktrees")).checkpoint(repositoryPath, "missing")).rejects.toThrow()
+
+    expect(await gitIn("rev-parse", "HEAD")).toBe(head)
   })
 
   it("leaves the worktree's index at the checkpoint, and the status clean, when nobody else wrote it", async () => {
