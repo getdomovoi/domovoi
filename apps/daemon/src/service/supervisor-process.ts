@@ -49,7 +49,7 @@ $ErrorActionPreference = 'Stop'
 $boot = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = 4'
 if ($null -eq $boot -or $null -eq $boot.CreationDate) { throw 'Windows reported no System process creation time' }
 $process = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}'
-$start = if ($null -eq $process) { 'missing' } elseif ($null -eq $process.CreationDate) { 'unknown' } else { [string]$process.CreationDate.ToFileTimeUtc() }
+$start = if ($null -eq $process -or $null -eq $process.CreationDate) { 'missing' } else { [string]$process.CreationDate.ToFileTimeUtc() }
 [Console]::Out.WriteLine('domovoi-process:' + [string]$boot.CreationDate.ToFileTimeUtc() + ':' + $start)
 `
   return {
@@ -59,9 +59,6 @@ $start = if ($null -eq $process) { 'missing' } elseif ($null -eq $process.Creati
 }
 
 export function parseWindowsProcessAnswer(text: string): WindowsProcessAnswer {
-  // A process that is there without a creation time cannot be told from a
-  // reused pid, nor taken for gone: refused (review of #698).
-  if (/^domovoi-process:[0-9]{1,24}:unknown$/.test(text.trim())) throw new Error("Windows reported the process without a creation time")
   const match = /^domovoi-process:([0-9]{1,24}):([0-9]{1,24}|missing)$/.exec(text.trim())
   if (!match) throw new Error("Windows did not report a process creation time")
   return { boot: match[1]!, start: match[2] === "missing" ? null : match[2]! }

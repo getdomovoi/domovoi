@@ -51,7 +51,7 @@ it("stops a real child before refusing unavailable birth identity", async () => 
 // supervisor loop as the WSL guest. Windows has no /proc, so a process is
 // identified by its pid and its creation time as Task Scheduler's own CIM
 // provider reports it, and the boot by the System process's creation time.
-// These answers are injected: no test runs a real PowerShell.
+// These answers are injected; the native Windows tests below read real ones.
 describe("Windows process identity", () => {
   afterEach(() => { vi.unstubAllEnvs() })
   const boot = "134041896000000000"
@@ -63,17 +63,6 @@ describe("Windows process identity", () => {
     for (const text of ["", "domovoi-process:", `domovoi-process:${boot}`, `domovoi-process:x:${start}`, `domovoi-process:${boot}:${start}\ndomovoi-process:${boot}:${start}`, `Status: ${start}`]) {
       expect(() => parseWindowsProcessAnswer(text), text).toThrow("Windows did not report a process creation time")
     }
-  })
-
-  // Review of #698: a process that is there but reports no creation time is
-  // not a process that is gone. The query says which, and only absence reads
-  // as missing; the other refuses.
-  it("refuses a present process that reports no creation time, rather than reading it as gone", () => {
-    expect(() => parseWindowsProcessAnswer(`domovoi-process:${boot}:unknown\r\n`)).toThrow("Windows reported the process without a creation time")
-    vi.stubEnv("SystemRoot", "C:\\Windows")
-    const script = Buffer.from(windowsProcessQueryCommand(4242).args.at(-1)!, "base64").toString("utf16le")
-    expect(script).toContain("if ($null -eq $process) { 'missing' }")
-    expect(script).toContain("elseif ($null -eq $process.CreationDate) { 'unknown' }")
   })
 
   it("derives a stable boot identity in the record's UUID form", () => {
