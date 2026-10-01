@@ -551,7 +551,10 @@ code or settings the repository brings:
 - OpenCode and Kilo servers start with `OPENCODE_DISABLE_PROJECT_CONFIG=1` and
   `KILO_DISABLE_PROJECT_CONFIG=1`. Project `opencode.json`, `kilo.json`, `.opencode/`, `.kilo/`
   and `.kilocode/` configuration, plugins and MCP entries are not loaded, and no package install
-  runs in those directories. Your global provider configuration still applies.
+  runs in those directories. Your global provider configuration still applies. Skills under
+  `.claude/skills` and `.agents/skills` still load with that switch set. The tool inventory lists
+  every OpenCode and Kilo entry from those files and folders as held back, and those skills as
+  loading.
 - OpenCode and Kilo ask before every tool that is not one of their own. The embedded configuration
   starts its permissions with a `"*": "ask"` rule and then restates the server's own rules for its
   built-in tools, so each built-in tool keeps the action it had, and a call to a tool server's
