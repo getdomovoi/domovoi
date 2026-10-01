@@ -565,8 +565,11 @@ code or settings the repository brings:
   tool that is not the server's own, unless its name is one of OpenCode's or Kilo's own
   permissions that the embedded configuration allows (a server named `plan` with a tool named
   `enter` makes `plan_enter`). The daemon checks each tool call as it appears: a call to a tool it
-  did not see before the prompt, a change in the directory's tool servers (read again on each
-  call), or a failed read aborts the run and then ends the turn, and the next prompt refuses a
+  did not see before the prompt, a tool server added or removed or a change in any server's
+  status (connected, failed and the like, read again on each call), or a failed read aborts the
+  run and then ends the turn. The status answer names nothing else about a server, so one replaced
+  under the same name with the same status is not seen; its tools still ask, since a server whose
+  name could make one of the allowed names is refused before the prompt. The next prompt refuses a
   server whose tools could be named like OpenCode's or Kilo's own. The first call to such a
   colliding tool can run before the abort: the call that shows the change.
 - OpenCode and Kilo ask before every tool that is not one of their own. The embedded configuration

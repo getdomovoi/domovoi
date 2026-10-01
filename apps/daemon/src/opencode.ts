@@ -164,7 +164,29 @@ function unnamedToolAllow(rules: readonly MergedRule[], builtIns: ReadonlySet<st
 
 // What a directory's instance was last read to hold: its tool servers by
 // name, and its tool ids.
-type ToolCatalog = { servers: readonly string[]; toolIds: ReadonlySet<string> }
+type ToolCatalog = {
+  servers: readonly string[]
+  // Each server's status entry as mcp.status gave it (connected, failed,
+  // disabled, needs_auth, with any error), so a server that connects, fails
+  // or is replaced with a different status counts as changed. The status
+  // answer names no more of a server than that: a replacement under the same
+  // name with the same status is not visible (security review round 3 of
+  // #687).
+  serverStates: ReadonlyMap<string, string>
+  // The servers and states as the check before the prompt read them. A card
+  // that reads the servers again updates `servers` for its attribution only;
+  // a turn's tool calls are held to what was checked.
+  checkedStates: ReadonlyMap<string, string>
+  toolIds: ReadonlySet<string>
+}
+
+// A tool server status answer's servers and the state of each.
+function serverStatesOf(status: Record<string, unknown>): Map<string, string> {
+  return new Map(Object.entries(status).map(([name, entry]) => {
+    const record = asRecord(entry)
+    return [name, JSON.stringify(record ? Object.entries(record).sort(([left], [right]) => left.localeCompare(right)) : entry)]
+  }))
+}
 
 type Session = {
   threadId: string
@@ -843,7 +865,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         if (listed.has(id)) throw this.#unownedTool(id)
         listed.add(id)
       }
-      catalog = { servers: Object.keys(servers), toolIds: listed }
+      const states = serverStatesOf(servers)
+      catalog = { servers: Object.keys(servers), serverStates: states, checkedStates: states, toolIds: listed }
     } catch (error) {
       if (error instanceof UnownedToolError) throw error
       throw unreadable
@@ -924,7 +947,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
           signal: AbortSignal.timeout(catalogReadTimeoutMs),
           throwOnError: true,
         }), `${this.#identity.providerName} tool server status`))
-        if (servers && this.#catalogs.get(cwd) === catalog) this.#catalogs.set(cwd, { ...catalog, servers: Object.keys(servers) })
+        if (servers && this.#catalogs.get(cwd) === catalog) {
+          this.#catalogs.set(cwd, { ...catalog, servers: Object.keys(servers), serverStates: serverStatesOf(servers) })
+        }
       } catch {
         // The card goes out without a tool server; the next one reads again.
       }
@@ -1231,7 +1256,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #watchToolCall(session: Session, turnId: string, tool: string): void {
     const catalog = this.#catalogs.get(session.cwd)
     const known = catalog !== undefined && (catalog.toolIds.has(tool) || serverInjectedTools.has(tool)
-      || catalog.servers.some((server) => tool.startsWith(`${openCodeToolPrefixName(server)}_`)))
+      || [...catalog.checkedStates.keys()].some((server) => tool.startsWith(`${openCodeToolPrefixName(server)}_`)))
     if (!known) {
       this.#stopTurn(session, turnId, `${this.#identity.providerName} called a tool named "${tool}" that was not among its tools when the turn started, `
         + "so Domovoi stopped the turn: a tool added during a turn could run without approval. Send the prompt again to check the tools first.")
@@ -1242,7 +1267,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
   async #checkToolServers(session: Session, turnId: string, catalog: ToolCatalog): Promise<void> {
     const name = this.#identity.providerName
-    let servers: string[] | undefined
+    let states: Map<string, string> | undefined
     try {
       const client = this.#runtime?.client
       const answer = client?.mcp
@@ -1252,16 +1277,16 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
           throwOnError: true,
         }), `${name} tool server status`))
         : undefined
-      servers = answer ? Object.keys(answer) : undefined
+      states = answer ? serverStatesOf(answer) : undefined
     } catch {
-      servers = undefined
+      states = undefined
     }
-    if (servers === undefined) {
+    if (states === undefined) {
       this.#stopTurn(session, turnId, `Domovoi could not read ${name}'s tool servers during the turn, so it stopped the turn: a tool added during a turn could run without approval. Send the prompt again.`)
       return
     }
-    const before = new Set(catalog.servers)
-    const changed = [...servers.filter((server) => !before.has(server)), ...catalog.servers.filter((server) => !servers.includes(server))]
+    const checked = catalog.checkedStates
+    const changed = [...new Set([...states.keys(), ...checked.keys()])].filter((server) => states.get(server) !== checked.get(server))
     if (changed.length > 0) {
       this.#stopTurn(session, turnId, `${name}'s tool servers changed during the turn (${changed.map((server) => `"${server}"`).join(", ")}), `
         + "so Domovoi stopped the turn: a tool added during a turn could run without approval. Send the prompt again to check the tools first.")

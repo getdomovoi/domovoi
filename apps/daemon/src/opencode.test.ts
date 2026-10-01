@@ -2015,6 +2015,33 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     await adapter.close()
   })
 
+  // Security review round 3 of #687: a server listed as failed at the prompt
+  // that connects during the turn exposes tools the prompt's read did not
+  // see, under a name the catalog already holds; a change of status counts.
+  it("stops the turn when a tool server's status changes while it calls tools", async () => {
+    const { adapter, client, events, call } = await turnWithTools((setup) => {
+      setup.mcp.status.mockResolvedValue({ data: { mcp: { status: "failed", error: "Connection closed" } } })
+    })
+    client.mcp.status.mockResolvedValue({ data: { mcp: { status: "connected" } } })
+    call("call-1", "mcp_newly_available")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await waitForDaemon(() => expect(turnEnd(events)).toMatchObject({ params: { turn: { status: "failed", error: expect.stringContaining("mcp") } } }))
+    await adapter.close()
+  })
+
+  it("holds a turn's calls to the servers checked before the prompt, whatever a card read since", async () => {
+    const { adapter, client, events, call, stream, threadId } = await turnWithTools()
+    client.mcp.status.mockResolvedValue({ data: { github: { status: "connected" } } })
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "p", sessionID: threadId, permission: "github_create_issue", patterns: ["*"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: "call_p" } },
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", toolServer: { name: "github" } })))
+    call("call-2", "github_close_issue")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await adapter.close()
+  })
+
   it("lets a turn call the tools the catalog holds", async () => {
     const { adapter, client, events, call } = await turnWithTools((setup) => {
       setup.mcp.status.mockResolvedValue({ data: { docs: { status: "connected" } } })
