@@ -450,6 +450,31 @@ waiting." If that second save also fails, the answer is `-32014` as above. A dec
 approval an emergency stop or another path removed during the save is not applied and not sent to
 the agent.
 
+A standing rule (Always) is saved first with the status `inactive` and the reason
+`pending-delivery`, after the decision itself is saved. A pending rule never answers a request.
+It is made active, with the links to the rules it replaces, in one more save, and only after the
+agent has the decision: the adapter's `resolveApproval` returned and the provider was waiting for
+that request. An adapter answers a request it is not waiting on (never asked, already answered,
+or dropped with its turn) by throwing `ApprovalRequestNotPendingError` and sending nothing; the
+OpenCode, Kilo, Claude, Codex and ACP adapters all do. Returning is not the provider's acceptance.
+
+- An emergency stop that begins while the pending rule is saved cancels the decision. It is checked
+  before that save and again after it. A cancelled decision is never sent. Its receipt, checkpoint
+  row and rule are taken back, but the card and the session stay as the stop left them, and the
+  answer is "The approval was withdrawn before it could be allowed".
+- If the agent is not waiting for the request, an allow is taken back the same way and the answer
+  is "The agent is no longer waiting for this approval, so it was not allowed". A refusal of such a
+  request needs nothing sent and stands.
+- If the pending rule cannot be saved, or the agent cannot be told, the decision is undone as
+  above. If that undo cannot be saved either, the state file holds at most the receipt, the
+  checkpoint row and a pending rule, never an active rule.
+- If making the rule active cannot be saved, the Allow already reached the agent and holds once.
+  The rule stays pending, in memory and in the state file, and the answer is `-32014` with "Domovoi
+  allowed this once, but could not save the standing rule, so it is not in force".
+- A daemon that loads a pending rule, at startup or when a project opens, drops it and records
+  `approval-rule.undelivered` in the audit log: the decision that made it was never confirmed
+  delivered. It replaced no rule, since links are made only when a rule becomes active.
+
 Read-only methods keep working, including `workspace.get`, so an operator can read the state that
 is not reaching disk. `system.pauseAll`, `session.pause`, and `system.emergencyStop` also keep
 working, because they reduce what an unpersisted daemon is still doing. The daemon accepts changes
@@ -584,9 +609,10 @@ code or settings the repository brings:
   Until the report is handled, an archive or an emergency stop does not deny that card but notes
   that it was answered outside Domovoi, and a person's answer to it is refused, including one
   already being saved, which then keeps no receipt and no standing rule. A standing rule is
-  saved only after the decision that makes it is committed, and is active only once it is on
-  disk. A refused decision whose undo cannot be saved can leave its receipt and checkpoint row in
-  the state file, never an active standing rule; the next save that lands removes them. It then
+  saved only after the decision that makes it is committed, as a rule pending delivery, and is
+  made active only after the agent has the decision (see "When state cannot reach disk"). A
+  refused decision whose undo cannot be saved can leave its receipt and checkpoint row in the
+  state file, never an active standing rule; the next save that lands removes them. It then
   stops the server, which drops every approval the server kept in memory, and
   every other session on that server reconnects to a new server on its next message. The stopped
   session's provider session is never resumed: it continues only after you restart its provider,

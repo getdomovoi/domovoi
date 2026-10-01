@@ -12,6 +12,17 @@ import type { RepositoryTrustGrant } from "./repository-trust-store.js"
 
 export type ProviderApprovalDecision = Exclude<ApprovalDecision, "always-project">
 
+// An answer to an approval request the provider is not waiting on: never
+// asked, already answered, or dropped with its turn or its connection
+// (ruling Q285). Nothing was sent. A caller that needs the answer delivered
+// treats it as undelivered; a refusal needs nothing sent to such a request.
+export class ApprovalRequestNotPendingError extends Error {
+  constructor(readonly requestId: number) {
+    super(`Approval request ${requestId} is not waiting for an answer`)
+    this.name = "ApprovalRequestNotPendingError"
+  }
+}
+
 export type AgentWorkingPlanStep = {
   text: string
   status: WorkingPlanStepStatus
@@ -129,6 +140,9 @@ export interface AgentAdapter {
   ): Promise<void | { providerMessageId: string }>
   // Domovoi owns project-scoped rules. Provider adapters receive only
   // one-shot grants so provider-native policy cannot outlive daemon state.
+  // Returns only once the answer is on its way to a request the provider is
+  // waiting on; throws ApprovalRequestNotPendingError when it is not waiting
+  // (ruling Q285). Returning is not the provider's acceptance.
   resolveApproval(requestId: number, decision: ProviderApprovalDecision): void
   onEvent(listener: (event: AgentEvent) => void): () => void
   close(): Promise<void>

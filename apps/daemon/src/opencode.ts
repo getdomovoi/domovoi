@@ -8,7 +8,7 @@ import {
 } from "@opencode-ai/sdk"
 import type { ApprovalDecision, ProviderFailure, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
-import type { AgentAdapter, AgentEvent } from "./agents.js"
+import { ApprovalRequestNotPendingError, type AgentAdapter, type AgentEvent } from "./agents.js"
 import { approvalAnsweredElsewhereFailure as approvalAnsweredElsewhere } from "./provider-failures.js"
 import { normalizeProviderUsage } from "./usage.js"
 import { createAuthenticatedEmbeddedRuntime, embeddedServerCommand, type EmbeddedServer } from "./embedded-server.js"
@@ -579,7 +579,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       return
     }
     const pending = this.#pendingApprovals.get(requestId)
-    if (!pending) return
+    if (!pending) throw new ApprovalRequestNotPendingError(requestId)
     this.#pendingApprovals.delete(requestId)
     this.#respond(pending, decision === "allow-once" || decision === "always-project" ? "once" : "reject", requestId)
   }

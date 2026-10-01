@@ -13,8 +13,9 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
-import type { AgentAdapter, AgentEvent } from "./agents.js"
+import { ApprovalRequestNotPendingError, type AgentAdapter, type AgentEvent } from "./agents.js"
 import type { AuditLog } from "./audit-log.js"
+import { resolveCommandExecution } from "./execution-resolution.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -607,6 +608,240 @@ describe("an approval answered outside Domovoi", () => {
       action: "provider.approval-answered-elsewhere",
       target: "per_late",
       detail: "reply=always match=currently-shown approval=none",
+    }))
+  })
+})
+
+// Round 9 of the Codex review of #691 (ruling Q285). A person's Always is
+// saved first as a rule pending delivery, which never answers a request, and
+// made active only once the agent has been told and was waiting for the
+// answer. A stop that cancels the decision while its rule is saved ends it
+// without telling the agent and without putting back what the stop removed.
+describe("a standing rule and the decision that makes it", () => {
+  const activeRules = (snapshot: WorkspaceSnapshot) => snapshot.approvalRules.filter((rule) => rule.status === "active")
+  const ruleWrite = (written: WorkspaceSnapshot, card: Card) => written.approvalRules.some((rule) => rule.id.startsWith(`rule-${card.id}-`))
+  const receipts = (snapshot: WorkspaceSnapshot, card: Card) =>
+    snapshot.thread.filter((item) => item.kind === "receipt" && item.id.startsWith(`receipt-${card.id}-`))
+
+  async function heldRuleWrite(context: Started, card: Card, release: "save" | "fail") {
+    const save = context.store.saveAsync.bind(context.store)
+    let held = false
+    let releaseWrite!: () => void
+    vi.spyOn(context.store, "saveAsync").mockImplementation(async (written) => {
+      if (!held && ruleWrite(written, card)) {
+        held = true
+        await new Promise<void>((resolve) => { releaseWrite = resolve })
+        if (release === "fail") throw new Error("disk full")
+      }
+      await save(written)
+    })
+    const decided = context.rpc("approval.resolve", { approvalId: card.id, decision: "always-project", revision: card.revision })
+    await waitForDaemon(() => expect(held).toBe(true))
+    return { decided, release: () => releaseWrite() }
+  }
+
+  async function stopDuring(context: Started, release: () => void) {
+    const stopped = context.rpc("system.emergencyStop", { client: "desktop" })
+    // The stop has denied the cards it found and interrupted the turn.
+    await waitForDaemon(() => expect(context.provider.interruptTurn).toHaveBeenCalled())
+    release()
+    expect((await stopped).error).toBeUndefined()
+  }
+
+  it("tells the agent nothing when an emergency stop cancels the decision while its rule is saved", async () => {
+    const paths = onDisk()
+    const context = await start(paths)
+    const card = await ruleCard(context, paths.workspacePath)
+    const { decided, release } = await heldRuleWrite(context, card, "save")
+
+    await stopDuring(context, release)
+
+    expect((await decided).error?.message).toBe("The approval was withdrawn before it could be allowed")
+    expect(context.provider.resolveApproval).not.toHaveBeenCalledWith(42, expect.anything())
+    const live = await context.snapshot()
+    expect(activeRules(live)).toEqual([])
+    expect(receipts(live, card)).toEqual([])
+    expect(live.approvals.map(({ id }) => id)).not.toContain(card.id)
+    const stored = await reopened(paths.storePath)
+    expect(activeRules(stored)).toEqual([])
+    expect(receipts(stored, card)).toEqual([])
+  })
+
+  it("keeps what an emergency stop removed when the cancelled decision's rule cannot be saved", async () => {
+    const paths = onDisk()
+    const context = await start(paths)
+    const card = await ruleCard(context, paths.workspacePath)
+    const { decided, release } = await heldRuleWrite(context, card, "fail")
+
+    await stopDuring(context, release)
+
+    expect((await decided).error).toBeDefined()
+    expect(context.provider.resolveApproval).not.toHaveBeenCalledWith(42, expect.anything())
+    const live = await context.snapshot()
+    expect(live.approvals).toEqual([])
+    expect(activeRules(live)).toEqual([])
+    const stored = await reopened(paths.storePath)
+    expect(stored.approvals).toEqual([])
+    expect(activeRules(stored)).toEqual([])
+  })
+
+  it("leaves no active rule in the state file when the agent cannot be told and the undo cannot be saved", async () => {
+    const paths = onDisk()
+    const context = await start(paths)
+    const { store, rpc, provider } = context
+    const card = await ruleCard(context, paths.workspacePath)
+    provider.resolveApproval.mockImplementation((requestId: number) => {
+      if (requestId === 42) throw new Error("stdin closed")
+    })
+    const save = store.saveAsync.bind(store)
+    let failing = false
+    vi.spyOn(store, "saveAsync").mockImplementation(async (written) => {
+      if (failing) throw new Error("disk full")
+      await save(written)
+      if (ruleWrite(written, card)) failing = true
+    })
+
+    const decided = await rpc("approval.resolve", { approvalId: card.id, decision: "always-project", revision: card.revision })
+
+    expect(decided.error).toEqual({
+      code: daemonPersistenceUnavailableErrorCode,
+      message: "Domovoi could not save this decision, so the agent was not told",
+    })
+    expect(activeRules(await context.snapshot())).toEqual([])
+    expect(activeRules(await reopened(paths.storePath))).toEqual([])
+  })
+
+  it("leaves no active rule in the state file when the rule's save reports failure after writing and the undo fails", async () => {
+    const paths = onDisk()
+    const context = await start(paths)
+    const { store, rpc, provider } = context
+    const card = await ruleCard(context, paths.workspacePath)
+    const save = store.saveAsync.bind(store)
+    let failing = false
+    vi.spyOn(store, "saveAsync").mockImplementation(async (written) => {
+      if (failing) throw new Error("disk full")
+      await save(written)
+      if (ruleWrite(written, card)) {
+        failing = true
+        // The snapshot reached the file; a later step of the same save failed.
+        throw new Error("project index write failed")
+      }
+    })
+
+    const decided = await rpc("approval.resolve", { approvalId: card.id, decision: "always-project", revision: card.revision })
+
+    expect(decided.error).toEqual({
+      code: daemonPersistenceUnavailableErrorCode,
+      message: "Domovoi could not save this decision, so the agent was not told",
+    })
+    expect(provider.resolveApproval).not.toHaveBeenCalledWith(42, expect.anything())
+    expect(activeRules(await context.snapshot())).toEqual([])
+    expect(activeRules(await reopened(paths.storePath))).toEqual([])
+  })
+
+  it("makes no rule when the agent is no longer waiting for the request", async () => {
+    const paths = onDisk()
+    const context = await start(paths)
+    const { rpc, provider } = context
+    const card = await ruleCard(context, paths.workspacePath)
+    provider.resolveApproval.mockImplementation((requestId: number) => {
+      if (requestId === 42) throw new ApprovalRequestNotPendingError(42)
+    })
+
+    const decided = await rpc("approval.resolve", { approvalId: card.id, decision: "always-project", revision: card.revision })
+
+    expect(decided.error?.message).toBe("The agent is no longer waiting for this approval, so it was not allowed")
+    const live = await context.snapshot()
+    expect(activeRules(live)).toEqual([])
+    expect(receipts(live, card)).toEqual([])
+    expect(live.approvalRules).toEqual([])
+    const stored = await reopened(paths.storePath)
+    expect(activeRules(stored)).toEqual([])
+  })
+
+  it("makes the rule active only after the agent has the decision", async () => {
+    const paths = onDisk()
+    const context = await start(paths)
+    const { store, rpc, provider } = context
+    const card = await ruleCard(context, paths.workspacePath)
+    const order: string[] = []
+    const save = store.saveAsync.bind(store)
+    vi.spyOn(store, "saveAsync").mockImplementation(async (written) => {
+      const rule = written.approvalRules.find((candidate) => candidate.id.startsWith(`rule-${card.id}-`))
+      if (rule && !order.includes(rule.status === "active" ? "active" : "pending")) {
+        order.push(rule.status === "active" ? "active" : rule.inactiveReason)
+      }
+      await save(written)
+    })
+    provider.resolveApproval.mockImplementation((requestId: number) => {
+      if (requestId === 42) order.push("told")
+    })
+
+    const decided = await rpc("approval.resolve", { approvalId: card.id, decision: "always-project", revision: card.revision })
+
+    expect(decided.error).toBeUndefined()
+    expect(order).toEqual(["pending-delivery", "told", "active"])
+    expect(provider.resolveApproval).toHaveBeenCalledWith(42, "allow-once")
+    expect(activeRules(await context.snapshot())).toHaveLength(1)
+    expect(activeRules(await reopened(paths.storePath))).toEqual([
+      expect.objectContaining({ command: card.command, status: "active" }),
+    ])
+  })
+
+  it("keeps the rule pending, and says the Allow held once, when making it active cannot be saved", async () => {
+    const paths = onDisk()
+    const context = await start(paths)
+    const { store, rpc, provider } = context
+    const card = await ruleCard(context, paths.workspacePath)
+    const save = store.saveAsync.bind(store)
+    vi.spyOn(store, "saveAsync").mockImplementation(async (written) => {
+      if (written.approvalRules.some((rule) => rule.id.startsWith(`rule-${card.id}-`) && rule.status === "active")) {
+        throw new Error("disk full")
+      }
+      await save(written)
+    })
+
+    const decided = await rpc("approval.resolve", { approvalId: card.id, decision: "always-project", revision: card.revision })
+
+    expect(decided.error).toEqual({
+      code: daemonPersistenceUnavailableErrorCode,
+      message: "Domovoi allowed this once, but could not save the standing rule, so it is not in force",
+    })
+    expect(provider.resolveApproval).toHaveBeenCalledWith(42, "allow-once")
+    const live = await context.snapshot()
+    expect(activeRules(live)).toEqual([])
+    expect(live.approvalRules).toEqual([expect.objectContaining({ status: "inactive", inactiveReason: "pending-delivery" })])
+    expect(activeRules(await reopened(paths.storePath))).toEqual([])
+  })
+
+  it("drops a rule left pending delivery when the daemon starts, and says so", async () => {
+    const paths = onDisk()
+    const seeded = openCodeSession(paths.workspacePath)
+    const execution = resolveCommandExecution({ command: "prisma migrate deploy" })
+    if (execution.state !== "resolved") throw new Error("The seeded rule needs a resolved record")
+    seeded.approvalRules = [{
+      id: "rule-undelivered",
+      projectId: seeded.project!.id,
+      operation: "Run a command",
+      command: "pnpm run show",
+      createdBy: "desktop",
+      createdAt: "2026-10-01T12:00:00.000Z",
+      useCount: 0,
+      status: "inactive",
+      inactiveReason: "pending-delivery",
+      execution,
+    }]
+    const seed = new SqliteWorkspaceStore(paths.storePath, workspaceSnapshotSchema.parse(seeded))
+    await seed.close()
+
+    const context = await start(paths)
+
+    expect((await context.snapshot()).approvalRules).toEqual([])
+    expect((await reopened(paths.storePath)).approvalRules).toEqual([])
+    expect(context.append).toHaveBeenCalledWith(expect.objectContaining({
+      action: "approval-rule.undelivered",
+      outcome: "cancelled",
+      target: "rule-undelivered",
     }))
   })
 })

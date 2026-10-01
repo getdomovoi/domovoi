@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
-import type { AgentEvent } from "./agents.js"
+import { ApprovalRequestNotPendingError, type AgentEvent } from "./agents.js"
 import { embeddedServerCommand } from "./embedded-server.js"
 import { KiloSdkAdapter } from "./kilo.js"
 import { domovoiKiloConfig } from "./kilo-runtime.js"
@@ -1402,7 +1402,9 @@ describe("subagents and current permission events", () => {
     await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(
       expect.objectContaining({ path: { id: "ses_child", permissionID: "per_child" }, body: { response: "reject" } }),
     ))
-    adapter.resolveApproval(1, "allow-once")
+    // The request is no longer waiting, so the answer says it reached
+    // nothing (ruling Q285).
+    expect(() => adapter.resolveApproval(1, "allow-once")).toThrow(ApprovalRequestNotPendingError)
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalledWith(
       expect.objectContaining({ body: { response: "once" } }),
@@ -1438,7 +1440,9 @@ describe("subagents and current permission events", () => {
     stream.emit({ type: "session.deleted", properties: { info: { id: "ses_child", parentID: threadId } } })
     await new Promise((resolve) => setTimeout(resolve, 20))
     await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
-    adapter.resolveApproval(1, "allow-once")
+    // The request is no longer waiting, so the answer says it reached
+    // nothing (ruling Q285).
+    expect(() => adapter.resolveApproval(1, "allow-once")).toThrow(ApprovalRequestNotPendingError)
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1)
     await adapter.close()
@@ -1568,7 +1572,9 @@ describe("subagents and current permission events", () => {
     await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(
       expect.objectContaining({ path: { id: "ses_child", permissionID: "per_child" }, body: { response: "reject" } }),
     ))
-    adapter.resolveApproval(1, "allow-once")
+    // The request is no longer waiting, so the answer says it reached
+    // nothing (ruling Q285).
+    expect(() => adapter.resolveApproval(1, "allow-once")).toThrow(ApprovalRequestNotPendingError)
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalledWith(
       expect.objectContaining({ path: { id: "ses_child", permissionID: "per_child" }, body: { response: "once" } }),
@@ -1886,9 +1892,10 @@ describe("approval replies Domovoi did not send", () => {
     expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalledWith(
       expect.objectContaining({ path: { id: threadId, permissionID: "per_1" } }),
     )
-    // A later answer to either card sends nothing, and the thread is unloaded.
-    adapter.resolveApproval(1, "allow-once")
-    adapter.resolveApproval(2, "allow-once")
+    // A later answer to either card sends nothing and says it reached
+    // nothing (ruling Q285), and the thread is unloaded.
+    expect(() => adapter.resolveApproval(1, "allow-once")).toThrow(ApprovalRequestNotPendingError)
+    expect(() => adapter.resolveApproval(2, "allow-once")).toThrow(ApprovalRequestNotPendingError)
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledOnce()
     await expect(adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Again", runtime: runtime("build") }))

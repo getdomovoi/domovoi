@@ -193,8 +193,10 @@ import {
 import {
   AgentProviderUnavailableError,
   AgentRegistry,
+  ApprovalRequestNotPendingError,
   type AgentAdapter,
   type AgentEvent,
+  type ProviderApprovalDecision,
   type UnavailableProvider,
 } from "./agents.js"
 import { modelImageInput, prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
@@ -2852,6 +2854,10 @@ export class DomovoiDaemon {
     await this.#recoverSessionArchives()
     signal?.throwIfAborted()
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.())
+    if (this.#dropUndeliveredRules(this.#snapshot, "startup-recovery").length > 0) {
+      workspaceSnapshotSchema.parse(this.#snapshot)
+      this.#store.save(this.#snapshot)
+    }
     this.#recoverInterruptedTurns()
     this.#recoverEmergencyStops()
     // Startup recovery expired every saved card (ruled 2026-09-24, #604), so
@@ -8373,6 +8379,14 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, answeredElsewhereRefusal)
           return
         }
+        // An emergency stop that begins after this point cancels the
+        // decision: it denies the cards it finds, and one this decision has
+        // already taken off the list must not be allowed after it (round 9,
+        // ruling Q285).
+        const stopGeneration = this.#emergencyStopGeneration
+        const cancelled = () => signal?.aborted === true
+          || this.#emergencyStopInProgress
+          || this.#emergencyStopGeneration !== stopGeneration
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === approval.sessionId,
         )
@@ -8517,6 +8531,12 @@ export class DomovoiDaemon {
               useCount: 0,
             }
           : undefined
+        // The same rule as saved before the agent has the decision (ruling
+        // Q285): it never answers a request, and a daemon that loads it drops
+        // it. It replaces nothing until it is made active.
+        const pendingRule = newRule
+          ? { ...newRule, status: "inactive" as const, inactiveReason: "pending-delivery" as const }
+          : undefined
         const replacedRuleIds = new Set(newRule ? approval.reapproval?.inactiveRuleIds ?? [] : [])
         const withRule = (rules: WorkspaceSnapshot["approvalRules"]): WorkspaceSnapshot["approvalRules"] => {
           if (!newRule) return rules
@@ -8625,6 +8645,19 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, answeredOutside() ? answeredElsewhereRefusal : "Approval does not exist")
           return
         }
+        // Takes this decision's standing rule out of a snapshot, pending or
+        // active, and gives back the links it took from the rules it replaced.
+        const withoutRule = (snapshot: WorkspaceSnapshot) => {
+          if (!newRule) return
+          snapshot.approvalRules = snapshot.approvalRules
+            .filter((rule) => rule.id !== newRule.id)
+            .map((rule) => {
+              if (!("replacedByRuleId" in rule) || rule.replacedByRuleId !== newRule.id) return rule
+              const { replacedByRuleId: _replaced, ...restored } = rule
+              const previous = undecided.replacedBy.get(rule.id)
+              return previous === undefined ? restored : { ...restored, replacedByRuleId: previous }
+            })
+        }
         // Puts the card back as it was before this decision.
         const undo = (snapshot: WorkspaceSnapshot) => {
           snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId && item.id !== approvedCheckpoint?.id)
@@ -8633,28 +8666,30 @@ export class DomovoiDaemon {
             undecided.approval,
             (restored) => this.#approvalWorkspace(restored),
           )
-          if (newRule) {
-            snapshot.approvalRules = snapshot.approvalRules
-              .filter((rule) => rule.id !== newRule.id)
-              .map((rule) => {
-                if (!("replacedByRuleId" in rule) || rule.replacedByRuleId !== newRule.id) return rule
-                const { replacedByRuleId: _replaced, ...restored } = rule
-                const previous = undecided.replacedBy.get(rule.id)
-                return previous === undefined ? restored : { ...restored, replacedByRuleId: previous }
-              })
-          }
+          withoutRule(snapshot)
           snapshot.workingPlans = snapshot.workingPlans.map((plan) =>
             structuredClone(undecided.plans.find((original) => original.sessionId === plan.sessionId)) ?? plan)
           const undecidedSession = snapshot.sessions.find((candidateSession) => candidateSession.id === approval.sessionId)
           if (undecidedSession && undecided.sessionState !== undefined) undecidedSession.state = undecided.sessionState
         }
-        // Undoes the decision in memory and saves that; answers whether the
-        // save landed.
-        const rollBack = async (): Promise<boolean> => {
-          const rolledBack = structuredClone(this.#snapshot)
-          undo(rolledBack)
-          workspaceSnapshotSchema.parse(rolledBack)
-          undo(this.#snapshot)
+        // Takes back what this decision wrote, and only that: its receipt,
+        // its checkpoint row and its rule. The card stays off the list, and
+        // the session and its plans stay as they are, because an emergency
+        // stop may have settled them since (round 9, ruling Q285), or the
+        // agent is no longer waiting for the answer.
+        const withdraw = (snapshot: WorkspaceSnapshot) => {
+          snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId && item.id !== approvedCheckpoint?.id)
+          withoutRule(snapshot)
+        }
+        // Applies one of the two to memory and saves it; answers whether the
+        // save landed. One that does not land leaves at most a rule pending
+        // delivery in the state file, which never answers a request and which
+        // the next daemon to load it drops.
+        const takeBack = async (change: (snapshot: WorkspaceSnapshot) => void): Promise<boolean> => {
+          const changedCopy = structuredClone(this.#snapshot)
+          change(changedCopy)
+          workspaceSnapshotSchema.parse(changedCopy)
+          change(this.#snapshot)
           this.#sessionHistory.invalidate(approval.sessionId)
           try {
             await this.#persistSnapshot()
@@ -8664,36 +8699,48 @@ export class DomovoiDaemon {
             return false
           }
         }
+        const rollBack = () => takeBack(undo)
+        const withdrawn = async (message: string) => {
+          await takeBack(withdraw)
+          this.#error(socket, request.id, invalidParams, message)
+        }
+        const withdrawnByStop = "The approval was withdrawn before it could be allowed"
         // Committed: the card left the snapshot in the same synchronous run as
         // the last pending check, and #receiveAnsweredElsewhere finds only
         // shown cards, so no report can mark it from here on.
         //
-        // The standing rule is saved only now, and is active in memory only
-        // once it is on disk (ruling Q279). If it cannot be saved, the
-        // decision is undone and the agent is not told, as when the decision
-        // itself cannot be saved; an undo that cannot be saved either leaves
-        // the receipt and checkpoint row in the state file, never the rule.
-        if (newRule) {
+        // An Always is saved next as a rule pending delivery (ruling Q285),
+        // and made active only once the agent has the decision. Its save
+        // waits, so a stop can begin meanwhile; the decision is checked for
+        // that before the save and again after it, and a cancelled one is
+        // never sent. If the save fails, the decision is undone and the agent
+        // is not told, as when the decision itself cannot be saved.
+        if (newRule && pendingRule) {
+          if (cancelled()) {
+            await withdrawn(withdrawnByStop)
+            return
+          }
           try {
             await this.#serializeSnapshotPersistence(async () => {
-              // The links this rule replaces, as they stand when it is applied,
-              // so an undo gives back another decision's link made since.
-              undecided.replacedBy = new Map(this.#snapshot.approvalRules.map((rule) => [
-                rule.id,
-                "replacedByRuleId" in rule ? rule.replacedByRuleId : undefined,
-              ]))
-              const ruled = workspaceSnapshotSchema.parse({
+              const staged = workspaceSnapshotSchema.parse({
                 ...this.#snapshot,
-                approvalRules: withRule(this.#snapshot.approvalRules),
+                approvalRules: [...this.#snapshot.approvalRules.filter((rule) => rule.id !== pendingRule.id), pendingRule],
               })
-              if (this.#store.saveAsync) await this.#store.saveAsync(ruled)
-              else this.#store.save(ruled)
-              this.#snapshot.approvalRules = withRule(this.#snapshot.approvalRules)
+              if (this.#store.saveAsync) await this.#store.saveAsync(staged)
+              else this.#store.save(staged)
+              this.#snapshot.approvalRules = [
+                ...this.#snapshot.approvalRules.filter((rule) => rule.id !== pendingRule.id),
+                pendingRule,
+              ]
             })
             this.#persistenceSucceeded()
           } catch (error) {
             this.#persistenceFailed(error)
             this.#reportError("Domovoi could not save a standing rule", error)
+            if (cancelled()) {
+              await withdrawn(withdrawnByStop)
+              return
+            }
             await rollBack()
             this.#error(
               socket,
@@ -8701,6 +8748,10 @@ export class DomovoiDaemon {
               daemonPersistenceUnavailableErrorCode,
               "Domovoi could not save this decision, so the agent was not told",
             )
+            return
+          }
+          if (cancelled()) {
+            await withdrawn(withdrawnByStop)
             return
           }
         }
@@ -8713,23 +8764,34 @@ export class DomovoiDaemon {
                 params.decision === "always-project" ? "allow-once" : params.decision,
               )
           } catch (error) {
-            this.#reportError("Domovoi could not pass an approval decision to the agent", error)
-            if (!await rollBack()) {
+            // The agent is not waiting for it (ruling Q285). A refusal needs
+            // nothing sent and stands; an allow reached nothing, so it and
+            // its rule are taken back, and the card, which nothing can answer
+            // now, stays off the list.
+            if (error instanceof ApprovalRequestNotPendingError) {
+              if (allows) {
+                await withdrawn("The agent is no longer waiting for this approval, so it was not allowed")
+                return
+              }
+            } else {
+              this.#reportError("Domovoi could not pass an approval decision to the agent", error)
+              if (!await rollBack()) {
+                this.#error(
+                  socket,
+                  request.id,
+                  daemonPersistenceUnavailableErrorCode,
+                  "Domovoi could not save this decision, so the agent was not told",
+                )
+                return
+              }
               this.#error(
                 socket,
                 request.id,
-                daemonPersistenceUnavailableErrorCode,
-                "Domovoi could not save this decision, so the agent was not told",
+                internalError,
+                "Domovoi could not reach the agent, so this decision was not applied. The approval is still waiting.",
               )
               return
             }
-            this.#error(
-              socket,
-              request.id,
-              internalError,
-              "Domovoi could not reach the agent, so this decision was not applied. The approval is still waiting.",
-            )
-            return
           }
         }
         this.#approvalTargets.delete(approval.id)
@@ -8752,6 +8814,43 @@ export class DomovoiDaemon {
             ...(project ? { projectId: project.id } : {}),
             target: approval.id,
           })
+        }
+        // The agent has the decision and was waiting for it, so the rule is
+        // made active, with the links to the rules it replaces, as one save
+        // (ruling Q285). It is active in memory only once that save lands.
+        // If it does not, the rule stays pending delivery, in memory and in
+        // the state file, and answers no request; the next daemon to load it
+        // drops it, and the person is told the Allow held only this once.
+        if (newRule) {
+          try {
+            await this.#serializeSnapshotPersistence(async () => {
+              // The links this rule replaces, as they stand when it is applied,
+              // so an undo gives back another decision's link made since.
+              undecided.replacedBy = new Map(this.#snapshot.approvalRules.map((rule) => [
+                rule.id,
+                "replacedByRuleId" in rule ? rule.replacedByRuleId : undefined,
+              ]))
+              const promoted = workspaceSnapshotSchema.parse({
+                ...this.#snapshot,
+                approvalRules: withRule(this.#snapshot.approvalRules),
+              })
+              if (this.#store.saveAsync) await this.#store.saveAsync(promoted)
+              else this.#store.save(promoted)
+              this.#snapshot.approvalRules = withRule(this.#snapshot.approvalRules)
+            })
+            this.#persistenceSucceeded()
+          } catch (error) {
+            this.#persistenceFailed(error)
+            this.#reportError("Domovoi could not make a standing rule active", error)
+            this.#broadcastSnapshot()
+            this.#error(
+              socket,
+              request.id,
+              daemonPersistenceUnavailableErrorCode,
+              "Domovoi allowed this once, but could not save the standing rule, so it is not in force",
+            )
+            return
+          }
         }
         changed = true
         alreadyPersisted = true
@@ -9170,6 +9269,7 @@ export class DomovoiDaemon {
           // (ruled 2026-09-24, #604), before any client or save sees them.
           this.#snapshot.approvals = []
           this.#snapshot.approvalRules = restored?.approvalRules ?? []
+          this.#dropUndeliveredRules(this.#snapshot, "project-open")
           this.#snapshot.thread = restored?.thread ?? []
           this.#snapshot.artifacts = restored?.artifacts ?? []
           this.#snapshot.workingPlans = restored?.workingPlans ?? []
@@ -10602,7 +10702,7 @@ export class DomovoiDaemon {
       // turn would hang, so the request is denied: nothing is approved that
       // cannot be recorded, and the turn ends instead of stalling.
       if (this.#persistenceUnavailable) {
-        this.#agents.require(provider).resolveApproval(event.requestId, "deny")
+        this.#answerProvider(provider, event.requestId, "deny")
         this.#reportError(
           persistenceUnavailableContext,
           new Error(`Denied ${settled.operation} because state cannot reach disk`),
@@ -10610,7 +10710,7 @@ export class DomovoiDaemon {
         return
       }
       if (allowed) {
-        this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
+        this.#answerProvider(provider, event.requestId, "allow-once")
       } else if (matchingRule) {
         matchingRule.useCount += 1
         try {
@@ -10630,7 +10730,7 @@ export class DomovoiDaemon {
             sessionId: session.id, projectId: project.id,
             detail: "Use count could not be persisted",
           })
-          this.#agents.require(provider).resolveApproval(event.requestId, "deny")
+          this.#answerProvider(provider, event.requestId, "deny")
           this.#reportError("Standing rule use could not be persisted", error)
           return
         }
@@ -10650,7 +10750,7 @@ export class DomovoiDaemon {
           action: "approval-rule.used", outcome: "succeeded", target: matchingRule.id,
           sessionId: session.id, projectId: project.id,
         })
-        this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
+        this.#answerProvider(provider, event.requestId, "allow-once")
       } else {
         const approval = settled
         this.#putApproval(approval)
@@ -11133,6 +11233,20 @@ export class DomovoiDaemon {
     return true
   }
 
+  // Ruling Q285: an adapter refuses an answer to a request it is not waiting
+  // on. Here such a request was answered or dropped before Domovoi's own
+  // answer: a refusal of it needs nothing sent, and an automatic allow of it
+  // reaches nothing, so neither is an error. A person's decision is not
+  // answered through this; approval.resolve reads the refusal itself.
+  #answerProvider(provider: string, requestId: number, decision: ProviderApprovalDecision): void {
+    try {
+      return this.#agents.require(provider).resolveApproval(requestId, decision)
+    } catch (error) {
+      if (error instanceof ApprovalRequestNotPendingError) return
+      throw error
+    }
+  }
+
   // Whether an emergency stop overtook this request: it arrived while a stop
   // ran, or a stop began after it arrived.
   #stopOvertook(event: AgentEvent): boolean {
@@ -11144,7 +11258,7 @@ export class DomovoiDaemon {
   #denyHeldApprovalRequest(provider: string, event: AgentEvent): unknown {
     if (event.type !== "approval-requested") return undefined
     try {
-      this.#agents.require(provider).resolveApproval(event.requestId, "deny")
+      this.#answerProvider(provider, event.requestId, "deny")
       return undefined
     } catch (error) {
       this.#reportError("Domovoi could not deny a request held for the service handoff", error)
@@ -11260,9 +11374,11 @@ export class DomovoiDaemon {
       }
       try {
         if (approval.providerRequestId !== undefined) {
-          this.#agents.require(
+          this.#answerProvider(
             this.#snapshot.sessions.find(({ id }) => id === approval.sessionId)!.runtime.provider,
-          ).resolveApproval(approval.providerRequestId, "deny")
+            approval.providerRequestId,
+            "deny",
+          )
         }
         approvalsDenied += 1
         this.#snapshot.thread.push({
@@ -11778,6 +11894,33 @@ export class DomovoiDaemon {
     }
   }
 
+  // A rule still pending delivery in a loaded snapshot belongs to a decision
+  // whose delivery to the agent was never confirmed: the daemon stopped, or
+  // could not save, between saving it and making it active (ruling Q285). It
+  // never answered a request and is not made active now; it is dropped and
+  // the audit log says so. It replaced no rule, so no link points to it.
+  #dropUndeliveredRules(
+    snapshot: WorkspaceSnapshot,
+    component: "startup-recovery" | "project-open",
+  ): WorkspaceSnapshot["approvalRules"] {
+    const isUndelivered = (rule: WorkspaceSnapshot["approvalRules"][number]) =>
+      rule.status === "inactive" && rule.inactiveReason === "pending-delivery"
+    const undelivered = snapshot.approvalRules.filter(isUndelivered)
+    if (undelivered.length === 0) return []
+    snapshot.approvalRules = snapshot.approvalRules.filter((rule) => !isUndelivered(rule))
+    for (const rule of undelivered) {
+      this.#appendAudit({
+        actor: { kind: "daemon", component },
+        action: "approval-rule.undelivered",
+        outcome: "cancelled",
+        projectId: rule.projectId,
+        target: rule.id,
+        detail: "The decision that made this standing rule was not confirmed delivered to the agent, so the rule was dropped without ever being in force.",
+      })
+    }
+    return undelivered
+  }
+
   // Runs before the listener opens, so no client can act on a stored card
   // before it expires.
   #recoverInterruptedTurns(): void {
@@ -12044,10 +12187,7 @@ export class DomovoiDaemon {
       }
       try {
         if (approval.providerRequestId !== undefined && !storedApprovalIds?.has(approval.id)) {
-          await this.#agents.require(session.runtime.provider).resolveApproval(
-            approval.providerRequestId,
-            "deny",
-          )
+          await this.#answerProvider(session.runtime.provider, approval.providerRequestId, "deny")
         }
       } catch (error) {
         unresolvedApprovalIds.add(approval.id)
