@@ -635,9 +635,15 @@ code or settings the repository brings:
   (its session status and the session's messages). A session the server reports busy settles
   nothing, so an earlier run's idle never ends a later turn this way. The status is read again
   after the messages, and the read counts only if the session is still idle then, no prompt,
-  message, tool progress, busy status or approval request arrived for the session while it ran,
-  and no abort concerning the turn started meanwhile; otherwise it is read again later, or the
-  abort's answer ends the turn as above. With the session idle, the turn ends by the newest
+  message, tool progress, busy status or approval request arrived for the session or a subagent
+  of the current turn while it ran, and no abort to the session started meanwhile, even one that
+  has already settled; otherwise it is read again later, or the abort's answer ends the turn as
+  above. A stop of the whole thread (an approval answered elsewhere, a request the daemon cannot
+  answer, a closed event stream) aborts the thread and its subagents and holds the turn until
+  every one of those aborts has settled and the stop has ended the turn with its own failure,
+  even when it joined an interrupt or a stop already under way: until then neither the run's
+  end nor a read ends the turn, and a new prompt or steer waits. With the session idle, the turn
+  ends by the newest
   assistant message after its prompt in the server's own order (time created, then id), whatever
   that message
   answers: completed if it finished without an error, failed with its error, or failed as

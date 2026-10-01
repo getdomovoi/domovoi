@@ -2885,6 +2885,114 @@ describe("reconciling a turn with the server's own state", () => {
     expect(turnEnds(events, turnId)).toEqual(ended("failed", "context overflow"))
     await adapter.close()
   })
+
+  // Security review round 11 of #687 (ruling Q302, R11-1): a thread-wide
+  // stop (an approval answered elsewhere, a request Domovoi cannot answer, a
+  // closed event stream) aborts the thread and its subagents. Until every
+  // abort has settled and the stop has applied its own failure, nothing else
+  // ends the turn: not the root abort's answer, not a read of the server.
+  it.each([
+    ["an approval answered elsewhere", "outside"],
+    ["a request Domovoi cannot answer", "v2"],
+    ["a closed event stream", "closed"],
+  ] as const)("holds the turn through %s until its subagent's abort settles", async (_case, cause) => {
+    const { adapter, client, events, stream, threadId, turnId, history, seen, tick } = await reconciledTurn()
+    let answerChild!: () => void
+    client.session.abort.mockImplementation((...args: unknown[]) => {
+      const id = (args[0] as { path: { id: string } }).path.id
+      return id === "ses_child"
+        ? new Promise<{ data: boolean }>((resolve) => { answerChild = () => resolve({ data: true }) })
+        : Promise.resolve({ data: true })
+    })
+    seen()
+    stream.emit({ type: "session.created", properties: { info: { id: "ses_child", parentID: threadId } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11 } } } })
+    await tick(0)
+    history([user(turnId, 10), reply("msg_5", turnId, 11)])
+    if (cause === "outside") stream.emit({ type: "permission.replied", properties: { sessionID: threadId, requestID: "per_elsewhere", reply: "once" } })
+    if (cause === "v2") stream.emit({ type: "permission.v2.asked", properties: { sessionID: threadId, id: "per_v2" } })
+    if (cause === "closed") stream.close()
+    await tick(0)
+    expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "ses_child" } }))
+    await tick(5_000)
+    expect(turnEnds(events, turnId)).toEqual([])
+    answerChild()
+    await tick(10)
+    const end = turnEnds(events, turnId)
+    expect(end).toEqual(ended("failed"))
+    const error = ((end[0] as unknown as { params: { turn: { error?: string } } }).params.turn.error) ?? ""
+    if (cause === "outside") expect(end[0]).toMatchObject({ params: { failure: expect.anything() } })
+    if (cause === "v2") expect(error).toContain("permission interface Domovoi does not answer")
+    if (cause === "closed") expect(error).toContain("event stream")
+    await adapter.close()
+  })
+
+  it("keeps the thread-wide stop's failure when it joins a catalog stop under way", async () => {
+    const { adapter, client, events, stream, threadId, turnId, seen, tick } = await reconciledTurn()
+    let answer!: () => void
+    client.session.abort.mockImplementationOnce(() => new Promise((resolve) => { answer = () => resolve({ data: true }) }))
+    seen()
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11 } } } })
+    stream.emit({ type: "message.part.updated", properties: { part: { type: "tool", sessionID: threadId, messageID: "msg_5", callID: "c1", tool: "plan_enter", state: { status: "pending", input: {} } } } })
+    await tick(10)
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    stream.emit({ type: "permission.v2.asked", properties: { sessionID: threadId, id: "per_v2" } })
+    await tick(10)
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    // A steer sent meanwhile waits for the stop, and then finds the turn over.
+    const steer = adapter.steerTurn(threadId, turnId, "More").then(() => "sent", (failure: Error) => failure.message)
+    answer()
+    await tick(10)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "permission interface Domovoi does not answer"))
+    expect(await steer).toContain("no longer active")
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1)
+    await adapter.close()
+  })
+
+  // R11-2: an abort that starts and settles while a read is in flight makes
+  // that read stale; a fresh read after the abort decides.
+  it("reads afresh after an abort that started and settled during the read", async () => {
+    const { adapter, client, events, threadId, turnId, history, idle, seen, tick } = await reconciledTurn()
+    client.session.abort.mockRejectedValueOnce(new Error("abort refused"))
+    seen()
+    idle()
+    let release!: (messages: Message[]) => void
+    client.session.messages.mockImplementationOnce(() => new Promise((resolve) => { release = (messages) => resolve({ data: messages }) }))
+    await tick(2_100)
+    const interrupt = adapter.interruptTurn(threadId, turnId).then(() => "answered", (failure: Error) => failure.message)
+    expect(await interrupt).toContain("could not confirm")
+    history([user(turnId, 10), reply("msg_5", turnId, 11, { completed: true, error: "stopped by the server" })])
+    release([user(turnId, 10), reply("msg_5", turnId, 11)])
+    await tick(100)
+    expect(turnEnds(events, turnId)).toEqual([])
+    await tick(2_100)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "stopped by the server"))
+    await adapter.close()
+  })
+
+  // R11-3: events from a subagent whose turn has ended are refused or
+  // dropped; they are not the current turn's activity.
+  it("does not let an ended turn's subagent reset the current turn's retries", async () => {
+    const { adapter, client, events, stream, threadId, turnId, idle, seen, tick } = await reconciledTurn()
+    stream.emit({ type: "session.created", properties: { info: { id: "ses_old", parentID: threadId } } })
+    seen()
+    finishRun(stream, threadId, turnId)
+    await tick(10)
+    expect(turnEnds(events, turnId)).toHaveLength(1)
+    const next = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    let sent = 0
+    client.session.messages.mockImplementation(async () => {
+      // An old subagent message arrives during every read.
+      stream.emit({ type: "message.updated", properties: { info: { id: `old_${++sent}`, sessionID: "ses_old", role: "assistant", parentID: "old-user" } } })
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      return { data: [] }
+    })
+    idle()
+    await tick(45_000)
+    expect(sent).toBeGreaterThan(3)
+    expect(turnEnds(events, next)).toEqual(ended("failed", "never recorded"))
+    await adapter.close()
+  })
 })
 
 describe("Kilo legacy repository configuration", () => {

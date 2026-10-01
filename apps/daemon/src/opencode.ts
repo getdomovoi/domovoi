@@ -305,6 +305,12 @@ type Session = {
   // is applied only if this did not move while it ran (security review round
   // 10 of #687).
   activity: number
+  // Thread-wide stops under way (#holdThread): an approval answered
+  // elsewhere, a request Domovoi cannot answer, a closed event stream. Each
+  // aborts the thread and its subagents, then ends the turn with its own
+  // failure. Until each has, nothing else ends the turn and no prompt is
+  // sent (security review round 11 of #687).
+  threadStops: Set<Promise<void>>
   // The catalog checked before the prompt that started the active turn. Every
   // prompt, a steer's included, is checked before it is sent, but only the
   // prompt that starts a turn sets this, and the turn's tool calls, a
@@ -1043,6 +1049,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       steerTurnIds: new Map(),
       toolPhases: new Map(),
       activity: 0,
+      threadStops: new Set(),
     }
     const existing = this.#directories.get(cwd)
     if (existing) {
@@ -1089,6 +1096,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#directories.delete(cwd)
     const sessions = [...this.#sessions.values()].filter((session) => session.cwd === cwd)
     for (const session of sessions) this.#refusePendingFor(session.threadId)
+    const releases = sessions.map((session) => this.#holdThread(session))
     void Promise.all(sessions.map((session) => this.#abortThread(session))).then(async (confirmed) => {
       if (!confirmed.every(Boolean)) {
         await this.#stopServer(this.#unconfirmedStopReason())
@@ -1102,7 +1110,26 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         this.#sessions.delete(session.threadId)
       }
       this.#emit({ type: "provider-disconnected", reason })
+    }).finally(() => {
+      for (const release of releases) release()
     })
+  }
+
+  // Holds the thread's turn for a thread-wide stop until the returned
+  // release: the root abort's answer, a read of the server's state and the
+  // run's own end do not end it, and a prompt waits (security review round 11
+  // of #687). The stop's owner ends the turn with its own failure before it
+  // releases. A turn still open then is read from the server again.
+  #holdThread(session: Session): () => void {
+    let release!: () => void
+    const stop = new Promise<void>((resolve) => { release = resolve })
+    session.threadStops.add(stop)
+    this.#clearReconcile(session)
+    return () => {
+      if (!session.threadStops.delete(stop)) return
+      release()
+      if (session.threadStops.size === 0 && session.activeTurnId !== undefined) this.#scheduleReconcile(session, session.activeTurnId)
+    }
   }
 
   // An unloaded thread hears no more replies, so what was recorded for its
@@ -1332,6 +1359,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // of #687). An abort the server did not answer fails the prompt with the
   // stop's reason, and a prompt whose turn ended meanwhile is not sent.
   async #readyToSend(session: Session, turnId: string): Promise<void> {
+    // A thread-wide stop under way ends the turn or unloads the thread
+    // first (#holdThread); what is left is checked below.
+    while (session.threadStops.size > 0) await Promise.all(session.threadStops)
     const record = this.#runAborts.get(session.threadId)
     if (record?.pending && !await record.settled) {
       throw new Error(`${record.reason} ${this.#unconfirmed()} Domovoi did not send this prompt.`)
@@ -1472,11 +1502,6 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       }
       return
     }
-    // Anything but an end (idle, error, an idle status) is activity that a
-    // read of the server's state did not see (#reconcile).
-    const ends = event.type === "session.idle" || event.type === "session.error"
-      || (event.type === "session.status" && asRecord(properties.status)?.type === "idle")
-    if (!ends) session.activity += 1
     // A subagent outlives nothing: once the turn that started it has ended,
     // whatever it still sends is dropped rather than attached to a later turn,
     // an approval it asks for is refused at once, with no card, and that or
@@ -1495,6 +1520,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       if (toolStarts || permission) this.#abortUnwatched(sessionId, cwd)
       return
     }
+    // Anything but an end (idle, error, an idle status) is activity that a
+    // read of the server's state did not see (#reconcile). A subagent whose
+    // turn has ended was handled above: its events are not the current
+    // turn's activity (security review round 11 of #687).
+    const ends = event.type === "session.idle" || event.type === "session.error"
+      || (event.type === "session.status" && asRecord(properties.status)?.type === "idle")
+    if (!ends) session.activity += 1
     if (event.type === "message.updated") {
       const info = asRecord(properties.info)
       if (!subagent && info) this.#trackTurnMessage(session, info)
@@ -1705,6 +1737,12 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       // A prompt waiting on the abort fails with the stop's reason.
       if (turn.ends === "stop") record.reason = reason
     }
+    // A read of the thread's state already scheduled or under way predates
+    // this abort, so it no longer counts, even if the abort settles before
+    // the read returns; the abort's settling schedules a fresh one (security
+    // review round 11 of #687).
+    const owner = this.#sessions.get(providerSessionId)
+    if (owner) this.#clearReconcile(owner)
     if (pending) return pending
     this.#runAborts.set(providerSessionId, record)
     record.settled = this.#sendAbort(providerSessionId, cwd).then((answered) => {
@@ -1712,16 +1750,20 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       if (this.#runAborts.get(providerSessionId) === record) this.#runAborts.delete(providerSessionId)
       const session = this.#sessions.get(providerSessionId)
       const active = session?.activeTurnId
-      const entry = active === undefined ? undefined : record.turns.get(active)
-      if (session && entry && (entry.ends === "stop" || (entry.ends === "interrupt" && answered))) {
+      if (!session || active === undefined) return answered
+      // A thread-wide stop under way ends the turn with its own failure,
+      // whatever stop or interrupt it joined (#holdThread).
+      const entry = record.turns.get(active)
+      if (session.threadStops.size === 0 && entry && (entry.ends === "stop" || (entry.ends === "interrupt" && answered))) {
         this.#complete(session, "failed", answered ? entry.reason : `${entry.reason} ${this.#unconfirmed()}`)
       }
-      // The abort held the turn's end, and the turn is still open: an
-      // interrupt or a thread stop whose abort failed or went unanswered, or
-      // a thread stop whose deletion may yet fail. What the run published
-      // meanwhile is read back from the server (security review round 9 of
-      // #687, ruling Q294).
-      if (session && entry && active !== undefined && session.activeTurnId === active) this.#scheduleReconcile(session, active)
+      // The turn is still open: an interrupt or a thread stop whose abort
+      // failed or went unanswered, a thread stop whose deletion may yet fail,
+      // or an abort that made a read stale. What the run published meanwhile
+      // is read back from the server (security review rounds 9 and 11 of
+      // #687, ruling Q294). A thread-wide stop under way reads it, if need
+      // be, once it releases the turn.
+      if (session.activeTurnId === active && session.threadStops.size === 0) this.#scheduleReconcile(session, active)
       return answered
     })
     return record
@@ -1807,7 +1849,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const turnId = session.activeTurnId
     const turn = session.activeTurn
     if (turnId === undefined || !turn?.seen) return
-    if (this.#runAborts.get(session.threadId)?.turns.has(turnId)) return
+    if (this.#runAborts.get(session.threadId)?.turns.has(turnId) || session.threadStops.size > 0) return
     if (turn.reply ? !turn.reply.done : turn.error === undefined) return
     const error = turn.reply?.error ?? turn.error
     if (error === undefined) this.#complete(session, "completed")
@@ -1862,7 +1904,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       return
     }
     // A pending abort holds the turn; its settling schedules this again.
-    const held = () => this.#runAborts.get(session.threadId)?.turns.has(turnId) === true
+    // A pending abort concerning the turn, or a thread-wide stop under way,
+    // holds it; its settling or release schedules this again.
+    const held = () => this.#runAborts.get(session.threadId)?.turns.has(turnId) === true || session.threadStops.size > 0
     if (held()) {
       this.#clearReconcile(session)
       return
@@ -2094,6 +2138,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       if (pending.providerSessionId === sessionId && pending.permissionId === requestId) this.#failedRefusals.delete(id)
     }
     this.#refusePendingFor(session.threadId)
+    const release = this.#holdThread(session)
     void this.#abortThread(session, sessionId).then(async (confirmed) => {
       if (this.#sessions.get(session.threadId) === session) {
         this.#complete(session, "failed", approvalAnsweredElsewhere.message, approvalAnsweredElsewhere)
@@ -2116,7 +2161,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       await this.#stopServer(confirmed
         ? `Domovoi restarted the ${name} server because an approval was answered outside Domovoi, so no approval it kept stays in place`
         : this.#unconfirmedStopReason())
-    })
+    }).finally(release)
   }
 
   // A v2 permission request is answered through an interface Domovoi does not
@@ -2129,6 +2174,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const session = this.#sessions.get(threadId)
     if (!session || session.cwd !== cwd || session.stopping) return
     const name = this.#identity.providerName
+    const release = this.#holdThread(session)
     void this.#abortThread(session, sessionId).then(async (confirmed) => {
       if (!confirmed) {
         await this.#stopServer(this.#unconfirmedStopReason())
@@ -2140,7 +2186,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         "failed",
         `${name} asked for an approval through a permission interface Domovoi does not answer, so Domovoi stopped the turn`,
       )
-    })
+    }).finally(release)
   }
 
   // Aborts the thread's run and every subagent run it is known to have, and
