@@ -3844,6 +3844,29 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await allGone(pids)).toBe(true)
   }, 30_000)
 
+  // Git killed while it holds the worktree's index.lock cannot remove the
+  // lock itself. The lock this command made, absent before it started and
+  // unchanged since the kill, is removed once Git has been reaped, so the
+  // session's next index write does not fail on it.
+  it.skipIf(!processGroups)("removes the index lock a killed checkpoint left", async () => {
+    const { repositoryPath, trust, service, waitForPids } = await hangingRepository("domovoi-trusted-hang-lock-", "process")
+    await trust()
+    const trusted = service()
+    const workspace = await trusted.createSessionWorkspace(repositoryPath, "session-hang-lock")
+    await writeFile(join(workspace.path, "work.hang"), "agent work\n")
+    const lock = `${resolve(workspace.path, (await run("-C", workspace.path, "rev-parse", "--git-path", "index")).stdout.trim())}.lock`
+    const controller = new AbortController()
+
+    const checkpoint = trusted.checkpoint(workspace.path, "hang", controller.signal)
+    const outcome = checkpoint.then(() => undefined, (error: unknown) => error)
+    expect(await waitForPids()).toHaveLength(2)
+    expect((await lstat(lock)).isFile()).toBe(true)
+    controller.abort(new Error("Checkpoint timed out"))
+
+    expect(await outcome).toBeInstanceOf(Error)
+    await expect(lstat(lock)).rejects.toMatchObject({ code: "ENOENT" })
+  }, 30_000)
+
   // An emptied process group does not prove that every process a filter
   // started has ended: one can leave the group (setsid). So after a kill the
   // checkout's descendants are unknown (fail closed, as ruling Q111 B), the
