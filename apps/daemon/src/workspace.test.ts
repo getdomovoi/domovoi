@@ -1394,6 +1394,21 @@ describe("GitWorkspaceService", () => {
     expect(await gitIn("ls-files", "--stage", "late.txt")).not.toBe("")
   })
 
+  // A split index keeps most entries in a sharedindex.<hash> file beside it.
+  // The checkpoint's own index is seeded with that file too, and written
+  // whole, so a split-index worktree checkpoints as any other (ruling Q281).
+  it("checkpoints a worktree with a split index and leaves its status clean", async () => {
+    const { scratch, repositoryPath, gitIn } = await repositoryWithWork("domovoi-checkpoint-split-")
+    await gitIn("update-index", "--split-index")
+    expect((await readdir(join(repositoryPath, ".git"))).some((name) => name.startsWith("sharedindex."))).toBe(true)
+
+    const checkpoint = await new GitWorkspaceService(join(scratch, "worktrees")).checkpoint(repositoryPath, "split")
+
+    expect(checkpoint.changedFiles).toEqual(["tracked.txt"])
+    expect(await gitIn("show", `${checkpoint.commit}:tracked.txt`)).toBe("changed\n")
+    expect(await gitIn("status", "--porcelain")).toBe("")
+  })
+
   it("leaves the worktree's index at the checkpoint, and the status clean, when nobody else wrote it", async () => {
     const { scratch, repositoryPath, gitIn } = await repositoryWithWork("domovoi-checkpoint-clean-")
     await writeFile(join(repositoryPath, "fresh.txt"), "fresh\n")

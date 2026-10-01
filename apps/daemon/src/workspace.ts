@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { constants } from "node:fs"
-import { chmod, copyFile, lstat, mkdir, open, readFile, readlink, realpath, rm, unlink, writeFile } from "node:fs/promises"
+import { chmod, copyFile, lstat, mkdir, open, readdir, readFile, readlink, realpath, rm, unlink, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 
@@ -1886,6 +1886,13 @@ export class GitWorkspaceService implements WorkspaceService {
     let seeded: string
     try {
       await writeFile(index, await readFile(sharedIndex))
+      // A split index keeps most entries in a sharedindex.<hash> file, which
+      // Git looks for beside the index it reads. The copy gets those files
+      // too, and is then written whole (ruling Q281): the index published
+      // from it must not name a shared index that lives only here.
+      const shared = (await readdir(dirname(sharedIndex))).filter((name) => /^sharedindex\.[0-9a-f]+$/u.test(name))
+      for (const name of shared) await copyFile(join(dirname(sharedIndex), name), join(isolated.gitDirectory, name))
+      if (shared.length > 0) await isolated.run(["update-index", "--no-split-index"], { index, signal })
       seeded = await entries(index)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
