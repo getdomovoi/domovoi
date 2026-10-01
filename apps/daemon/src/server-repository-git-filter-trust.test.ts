@@ -72,9 +72,11 @@ async function fixture() {
   const scratch = await realpath(await mkdtemp(join(tmpdir(), "domovoi-server-filter-trust-")))
   scratchDirectories.push(scratch)
   const repositoryPath = join(scratch, "project")
-  const marker = join(scratch, "ran")
+  // Git runs a filter command through sh, which reads an unquoted backslash
+  // as an escape: a Windows path keeps its separators only as forward slashes.
+  const marker = join(scratch, "ran").replaceAll("\\", "/")
   const script = async (name: string, body: string) => {
-    const path = join(scratch, `${name}.sh`)
+    const path = join(scratch, `${name}.sh`).replaceAll("\\", "/")
     await writeFile(path, `echo ${name} >> "${marker}"\n${body}\n`)
     return path
   }
