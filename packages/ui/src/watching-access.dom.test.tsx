@@ -52,7 +52,8 @@ it("renders the v2 watching titlebar state and locks titlebar mutations", () => 
 
   expect(screen.getByText("watching only")).toBeTruthy()
   expect((screen.getByRole("button", { name: "New session" }) as HTMLButtonElement).disabled).toBe(true)
-  expect((screen.getByRole("button", { name: "Stop everything" }) as HTMLButtonElement).disabled).toBe(true)
+  // Unavailable rather than disabled, so its tooltip name stays reachable.
+  expect(screen.getByRole("button", { name: "Stop everything" }).getAttribute("aria-disabled")).toBe("true")
 })
 
 it("keeps observation surfaces and provider failure visible while locking composer mutations", () => {

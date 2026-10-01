@@ -239,14 +239,18 @@ Parallel with Phase 0. Touches nothing the gates decide.
       the maintainer says so.
 - [x] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
       pre-auth) proven across restart. Landed as #374 (c8eb1a93).
-- [ ] **S1.6 [CX + CC]** CLI to parity: install, status, pair, doctor, skill push, logs.
-      Five of six landed. `domovoid service install` and `domovoid service status` are the
-      daemon's (`apps/daemon/src/index.ts`). The user-facing `domovoi` binary is `apps/cli`:
-      `pair` and `status` (95711761), `doctor` (83f1406d), `logs` (d81ef5c9), and
-      `skill install <path>`, a reviewed local copy. `skill push` is the open sixth:
-      `docs/cli-parity-decision.md` says local copying does not establish remote
-      distribution, and no push command or RPC exists on `main`. The 2026-09-10 note that no
-      `domovoi` binary existed was true when written and is superseded by `apps/cli`.
+- [ ] **S1.6 [CX + CC]** CLI to parity: install, status, pair, doctor, logs. `domovoid
+      service install` and `domovoid service status` are the daemon's
+      (`apps/daemon/src/index.ts`). The user-facing `domovoi` binary is `apps/cli`: `pair` and
+      `status` (95711761), `doctor` (83f1406d), `logs` (d81ef5c9), and `skill install <path>`,
+      a reviewed local copy (553e24ab). `skill push` left M1 on 2026-10-01 (owner ruling
+      Q284 A): it needs a destination, overwrite rules and a trust step on the receiving
+      machine, which is a new cross-machine RPC, so remote skill distribution is a later fleet
+      feature (`docs/cli-parity-decision.md`). The 2026-09-10 note that no `domovoi` binary
+      existed was true when written and is superseded by `apps/cli`. Still open on 2026-10-01:
+      install and service status are only on `domovoid`, `domovoi pair` cannot take the code
+      `domovoid pair` prints, and which `domovoid` commands move to `domovoi`, in which
+      package, is not yet decided.
 - [x] **S1.7 [CX]** The accounting and turn-record work lands here — it is daemon bookkeeping and it
       unblocks UI in Phase 3. Usage accounting (4359bcf9) and turn records (e7364720,
       84d90d50, 1991666a); the detail is under "From the work split" below.
@@ -1394,7 +1398,7 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
         design carries the convention on all four captions as of 2026-09-18, with the reason,
         and frame 21 names both blockers (the relay and a native target). The vendored
         `Domovoi Phone v2.dc.html` had 19 frames; #503 re-vendors it whole with all 23.
-- [ ] **S3.4 [H]** Push notifications need a decision, not code. Over loopback and the
+- [x] **S3.4 [H]** Push notifications need a decision, not code. Over loopback and the
       tailnet a closed app cannot be woken. Two options as first written, consequences
       stated; the check below settles which one M1 can have:
       (a) the product says plainly that you open the app to see a waiting gate; the phone is a
@@ -1427,6 +1431,11 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       notification. Phone v2 frames 20 to 23 (the "without opening the app" section) are
       drawn, not built, and cannot be built in M1; see `S3.3`. Option (a) is what M1 ships,
       and its copy is the open item: the phone is a pull surface until Phase 2.
+      **Copy met, 2026-10-01 (owner rulings Q280 A, Q283 A):** the phone already says it
+      where a person would expect a notification. The pairing success card and Settings read
+      "Gates reach this phone only while Domovoi is open on it. There are no notifications
+      yet.", and the sessions list reads "Keep Domovoi open to answer gates. Nothing is pushed
+      to this phone yet." (b7680553). No further phone copy is added for M1.
 - [ ] **S3.5 [CC]** Tablet. A tablet shell landed in #517 (6542cb30, 2026-09-22); the tablet
       inventory reads 7 built, 1 blocked on 2026-09-22. `jest-expo` proves it, a device has
       not. It was "nothing exists yet" until then.
@@ -2082,6 +2091,12 @@ request per lane on `fix/audit-0922-*` branches, under the rulings above. The M1
 open, read from this file on 2026-09-22: `S1.1`'s logon acceptance and the two 2026-09-17
 policies, `S1.6`'s `skill push`, `S3.2`'s web app over the tailnet, `S3.4`'s pull-surface copy,
 and `S3.10`'s remaining conformance entries.
+
+On 2026-10-01 `S3.4` closed, because the phone already carries its copy (Q283 A), and `skill
+push` left M1 (Q284 A). Open M1 items: `S1.1`'s logon acceptance and the two policies, `S1.6`'s
+move of install and status to `domovoi` and its pairing gap, `S3.2`'s web app over the tailnet,
+and `S3.10`. Most trust gate pull requests of the audit fix program have merged; the git-filter
+acknowledgement, the OpenCode and Kilo checks, and the outside-answer handling are in review.
 
 **Neither** adds a carrier by adding a branch. The transport list is the only place a new
 route goes.
