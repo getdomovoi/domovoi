@@ -25,7 +25,7 @@ it.each([
   expect(stop.getAttribute("aria-disabled")).toBe("true")
 
   await user.hover(stop)
-  expect((await screen.findByRole("tooltip")).textContent).toContain("Stop everything, every machine")
+  expect((await screen.findByRole("tooltip")).textContent).toContain("Stop everything on this machine")
   await user.unhover(stop)
 
   await user.click(stop)
@@ -42,7 +42,7 @@ it("names the unavailable stop by its tooltip when reached by keyboard", async (
 
   await user.tab()
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Stop everything" }))
-  expect((await screen.findByRole("tooltip")).textContent).toContain("Stop everything, every machine")
+  expect((await screen.findByRole("tooltip")).textContent).toContain("Stop everything on this machine")
 })
 
 // Desktop V2's titlebar is a row of 28px icon buttons, each named by a tooltip
@@ -84,7 +84,7 @@ it("draws stop everything as an icon with its tooltip, not a labelled button", a
   expect(stop.querySelector("svg.lucide-octagon-x")).toBeTruthy()
 
   await user.hover(stop)
-  expect((await screen.findByRole("tooltip")).textContent).toContain("Stop everything, every machine")
+  expect((await screen.findByRole("tooltip")).textContent).toContain("Stop everything on this machine")
 })
 
 it("heads the stop menu with its scope and gives each option the design's note", async () => {
@@ -93,7 +93,7 @@ it("heads the stop menu with its scope and gives each option the design's note",
 
   await user.click(screen.getByRole("button", { name: "Stop everything" }))
   const menu = await screen.findByRole("menu")
-  expect(within(menu).getByText("STOP EVERYTHING, ON EVERY MACHINE")).toBeTruthy()
+  expect(within(menu).getByText("STOP EVERYTHING ON THIS MACHINE")).toBeTruthy()
   expect(within(menu).getByText("Stops at the next turn boundary, nothing is killed.")).toBeTruthy()
   expect(within(menu).getByText("Kills processes now. Half-written files stay half-written.")).toBeTruthy()
 })

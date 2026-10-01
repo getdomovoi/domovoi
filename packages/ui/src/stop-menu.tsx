@@ -55,7 +55,7 @@ export function StopMenu({ connected, pending, disabled = false, onPauseAll, onE
             </DropdownMenuTrigger>
           </TooltipTrigger>
           <TooltipContent side="bottom" sideOffset={7} showArrow={false} className={titlebarTipClassName}>
-            Stop everything, every machine
+            Stop everything on this machine
           </TooltipContent>
         </Tooltip>
         {/* 380px as drawn, capped to the viewport less 1rem a side so a phone
@@ -63,7 +63,7 @@ export function StopMenu({ connected, pending, disabled = false, onPauseAll, onE
             notes wrap inside it. */}
         <DropdownMenuContent align="end" sideOffset={7} collisionPadding={16} className="w-[380px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-[14px] border border-danger-border p-0">
           <DropdownMenuLabel className="border-b border-border px-[13px] py-2.5 text-[10.5px] font-medium tracking-[.13em] text-faint">
-            STOP EVERYTHING, ON EVERY MACHINE
+            STOP EVERYTHING ON THIS MACHINE
           </DropdownMenuLabel>
           <StopOption tone="info" label="Pause everything" note="Stops at the next turn boundary, nothing is killed." onSelect={onPauseAll} />
           <StopOption tone="destructive" label="Emergency stop" note="Kills processes now. Half-written files stay half-written." onSelect={onEmergencyStop} />

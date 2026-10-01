@@ -178,13 +178,18 @@
       "evidence": [
         "Stop everything",
         "<OctagonXIcon className=\"size-4\" />",
-        "Stop everything, every machine",
-        "STOP EVERYTHING, ON EVERY MACHINE",
+        "Stop everything on this machine",
+        "STOP EVERYTHING ON THIS MACHINE",
+        {
+          "absent": "ON EVERY MACHINE",
+          "in": "packages/ui/src/stop-menu.tsx"
+        },
         "Stops at the next turn boundary, nothing is killed.",
         "Kills processes now. Half-written files stay half-written."
       ],
       "notes": [
-        "2026-10-01 (S3.10 slice 1): was a labelled ghost button with the visible text Stop everything and a menu with no heading. Now the 28px octagon icon named by its tooltip, and the 380px danger-bordered menu headed STOP EVERYTHING, ON EVERY MACHINE with a dot, label and note per row, in the design's words. Pinned in packages/ui/src/titlebar-v2.dom.test.tsx."
+        "2026-10-01 (S3.10 slice 1): was a labelled ghost button with the visible text Stop everything and a menu with no heading. Now the 28px octagon icon named by its tooltip, and the 380px danger-bordered menu headed STOP EVERYTHING, ON EVERY MACHINE with a dot, label and note per row, in the design's words. Pinned in packages/ui/src/titlebar-v2.dom.test.tsx.",
+        "2026-10-01 (Q290 A): the tooltip and menu heading say Stop everything on this machine and STOP EVERYTHING ON THIS MACHINE instead of the drawn every-machine wording, because system.pauseAll and system.emergencyStop reach only the selected machine's daemon. A fleet-wide stop with per-machine outcomes is a separate pull request. The copy claims stay the drawn strings; the evidence holds the shipped text."
       ]
     },
     {
