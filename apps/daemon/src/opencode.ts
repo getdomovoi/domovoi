@@ -4,7 +4,6 @@ import { isAbsolute, join } from "node:path"
 
 import {
   createOpencodeClient,
-  createOpencodeServer,
   type Config,
 } from "@opencode-ai/sdk"
 import type { ApprovalDecision, ProviderFailure, ProviderModel, Runtime } from "@getdomovoi/protocol"
@@ -12,7 +11,7 @@ import type { ApprovalDecision, ProviderFailure, ProviderModel, Runtime } from "
 import type { AgentAdapter, AgentEvent } from "./agents.js"
 import { approvalAnsweredElsewhereFailure as approvalAnsweredElsewhere } from "./provider-failures.js"
 import { normalizeProviderUsage } from "./usage.js"
-import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
+import { createAuthenticatedEmbeddedRuntime, embeddedServerCommand, type EmbeddedServer } from "./embedded-server.js"
 import { projectInstructions } from "./project-instructions.js"
 
 type OpenCodeResult<T> = { data?: T; error?: unknown }
@@ -74,7 +73,8 @@ type OpenCodeCatalog = {
 
 export type OpenCodeFactory = () => Promise<{
   client: OpenCodeClient
-  server: { close(): void }
+  server: Pick<EmbeddedServer, "close" | "stop">
+
 }>
 
 export type OpenCodeAdapterIdentity = {
@@ -105,6 +105,9 @@ type Session = {
   interruptedTurnId?: string
   assistantMessageTurnIds: Map<string, string>
   toolPhases: Map<string, string>
+  // Set while the thread is being stopped because an approval was answered
+  // elsewhere. Its events are still read until the provider confirms the stop.
+  stopping?: true
 }
 
 type DirectoryStream = {
@@ -217,6 +220,14 @@ export class SubagentRegistry {
       if (oldest === undefined) break
       this.#tombstones.delete(oldest)
     }
+  }
+
+  // Every subagent session known to belong to the thread, linked or not.
+  sessionsOf(threadId: string): string[] {
+    return [
+      ...[...this.#linked].filter(([, owner]) => owner.threadId === threadId).map(([sessionId]) => sessionId),
+      ...[...this.#neverLinked].filter(([, owner]) => owner === threadId).map(([sessionId]) => sessionId),
+    ]
   }
 
   forgetThread(threadId: string): void {
@@ -782,19 +793,30 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     )
   }
 
+  // Without its event stream a directory's runs cannot be watched: a reply
+  // made elsewhere would go unseen. Their pending requests are refused and
+  // their runs aborted before they are let go, and a run the provider does
+  // not confirm stopped ends the whole server (Codex review of #691, P1).
   #disconnect(cwd: string, controller: AbortController, reason: string): void {
     if (controller.signal.aborted) return
     controller.abort()
     this.#directories.delete(cwd)
-    for (const session of this.#sessions.values()) {
-      if (session.cwd !== cwd) continue
-      this.#complete(session, "failed", reason)
-      this.#refusePendingFor(session.threadId)
-      this.#forgetSubagents(session.threadId)
-      this.#forgetReplies(session.threadId)
-      this.#sessions.delete(session.threadId)
-    }
-    this.#emit({ type: "provider-disconnected", reason })
+    const sessions = [...this.#sessions.values()].filter((session) => session.cwd === cwd)
+    for (const session of sessions) this.#refusePendingFor(session.threadId)
+    void Promise.all(sessions.map((session) => this.#abortThread(session))).then(async (confirmed) => {
+      if (!confirmed.every(Boolean)) {
+        await this.#stopServer(this.#unconfirmedStopReason())
+        return
+      }
+      for (const session of sessions) {
+        if (this.#sessions.get(session.threadId) !== session) continue
+        this.#complete(session, "failed", reason)
+        this.#forgetSubagents(session.threadId)
+        this.#forgetReplies(session.threadId)
+        this.#sessions.delete(session.threadId)
+      }
+      this.#emit({ type: "provider-disconnected", reason })
+    })
   }
 
   // An unloaded thread hears no more replies, so what was recorded for its
@@ -1094,37 +1116,87 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#stopForReplyElsewhere(session, sessionId, requestId, reply)
   }
 
-  // The request was already answered, so it is dropped without a reply. The
-  // run is aborted, the turn fails with its own failure, every other request
-  // the thread holds is refused, and the thread is unloaded. The daemon is
-  // told last, after the turn's end, so it can record why the session stopped.
+  // The request was already answered, so it is dropped without a reply, and
+  // every other request the thread holds is refused at once. The thread's
+  // run and its subagents' runs are aborted, and the thread stays watched
+  // until the provider confirms each abort (Codex review of #691, P1). Then the
+  // turn fails with its own failure, the thread is unloaded and the daemon is
+  // told, after the turn's end, so it can record why the session stopped. A
+  // stop the provider does not confirm ends the whole server.
   #stopForReplyElsewhere(session: Session, sessionId: string, requestId: string, reply: ProviderReply): void {
+    if (session.stopping) return
+    session.stopping = true
     const turnId = session.activeTurnId
     for (const waiting of [this.#pendingApprovals, this.#failedRefusals]) {
       for (const [id, pending] of waiting) {
         if (pending.providerSessionId === sessionId && pending.permissionId === requestId) waiting.delete(id)
       }
     }
-    const stopped = new Set([session.threadId, sessionId])
-    void this.#client().then(async (client) => {
-      for (const id of stopped) {
-        unwrap(await client.session.abort({
-          path: { id },
-          query: { directory: session.cwd },
-          throwOnError: true,
-        }), `${this.#identity.providerName} session stop`)
+    this.#refusePendingFor(session.threadId)
+    void this.#abortThread(session, sessionId).then(async (confirmed) => {
+      if (this.#sessions.get(session.threadId) === session) {
+        this.#complete(session, "failed", approvalAnsweredElsewhere.message, approvalAnsweredElsewhere)
+        this.#unloadSession(session)
       }
-    }).catch((error: unknown) => {
-      console.error(`Domovoi could not stop a ${this.#identity.providerName} session after an approval was answered outside it`, error)
+      this.#emit({
+        type: "approval-answered-elsewhere",
+        threadId: session.threadId,
+        ...(turnId ? { turnId } : {}),
+        permissionId: requestId,
+        reply,
+      })
+      if (!confirmed) await this.#stopServer(this.#unconfirmedStopReason())
     })
-    this.#complete(session, "failed", approvalAnsweredElsewhere.message, approvalAnsweredElsewhere)
-    this.#unloadSession(session)
+  }
+
+  // Aborts the thread's run and every subagent run it is known to have, and
+  // resolves true only when the provider confirmed each abort in time.
+  async #abortThread(session: Session, ...more: string[]): Promise<boolean> {
+    const runtime = this.#runtime
+    if (!runtime) return false
+    const ids = new Set([session.threadId, ...more, ...this.#subagents.sessionsOf(session.threadId)])
+    const results = await Promise.allSettled([...ids].map((id) => settlesWithin(
+      runtime.client.session.abort({
+        path: { id },
+        query: { directory: session.cwd },
+        throwOnError: true,
+      }).then((result) => unwrap(result, `${this.#identity.providerName} session stop`)),
+      abortConfirmMs,
+      `${this.#identity.providerName} did not confirm the stop within ${abortConfirmMs} ms`,
+    )))
+    const failed = results.filter((result) => result.status === "rejected")
+    for (const failure of failed) {
+      console.error(`Domovoi could not confirm a ${this.#identity.providerName} session stopped`, failure.reason)
+    }
+    return failed.length === 0
+  }
+
+  #unconfirmedStopReason(): string {
+    const name = this.#identity.providerName
+    return `Domovoi stopped the ${name} server because it could not confirm that a session it stopped had stopped`
+  }
+
+  // Ends the server and every session on it. Each loaded thread's turn fails
+  // with the reason, nothing more is sent to the server, and the daemon hears
+  // the provider disconnected, so the next message starts a new server.
+  async #stopServer(reason: string): Promise<void> {
+    const runtime = this.#runtime
+    this.#runtime = undefined
+    for (const directory of this.#directories.values()) directory.controller.abort()
+    this.#directories.clear()
+    this.#pendingApprovals.clear()
+    this.#failedRefusals.clear()
+    for (const session of this.#sessions.values()) this.#complete(session, "failed", reason)
+    this.#sessions.clear()
+    this.#subagents = new SubagentRegistry()
+    this.#sentReplies.clear()
+    this.#cascadeRejections.clear()
+    const stopped = runtime ? await runtime.server.stop() : true
     this.#emit({
-      type: "approval-answered-elsewhere",
-      threadId: session.threadId,
-      ...(turnId ? { turnId } : {}),
-      permissionId: requestId,
-      reply,
+      type: "provider-disconnected",
+      reason: stopped
+        ? reason
+        : `${reason}. Domovoi could not confirm that the server and the programs it started have ended`,
     })
   }
 
@@ -1288,6 +1360,22 @@ function permissionRequest(
 function interactiveOnly(properties: Record<string, unknown>): boolean {
   const metadata = asRecord(properties.metadata)
   return metadata?.skillShell === true || metadata?.sandboxEscalation === true
+}
+
+// How long a stop waits for the provider to confirm a run was aborted.
+const abortConfirmMs = 10_000
+
+function settlesWithin<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+    promise.then((value) => {
+      clearTimeout(timer)
+      resolve(value)
+    }, (error: unknown) => {
+      clearTimeout(timer)
+      reject(error instanceof Error ? error : new Error(String(error)))
+    })
+  })
 }
 
 function replyKey(sessionId: string, requestId: string): string {
@@ -1508,9 +1596,12 @@ const defaultOpenCodeFactory: OpenCodeFactory = async () => {
     passwordEnvironment: "OPENCODE_SERVER_PASSWORD",
     usernameEnvironment: "OPENCODE_SERVER_USERNAME",
     username: "opencode",
-    environment: { OPENCODE_DISABLE_PROJECT_CONFIG: "1" },
-    config: domovoiOpenCodeConfig,
-    startServer: createOpencodeServer,
+    // What the SDK's createOpencodeServer passes, plus the project switch.
+    environment: {
+      OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+      OPENCODE_CONFIG_CONTENT: JSON.stringify(domovoiOpenCodeConfig),
+    },
+    startServer: embeddedServerCommand("opencode", "opencode server listening"),
     createClient: createOpencodeClient,
   })
   return {

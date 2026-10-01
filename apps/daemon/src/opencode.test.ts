@@ -106,7 +106,7 @@ function harness() {
     },
     postSessionIdPermissionsPermissionId: vi.fn(async () => ({ data: true })),
   } satisfies OpenCodeClient
-  const server = { close: vi.fn() }
+  const server = { url: "http://127.0.0.1:4096", close: vi.fn(), stop: vi.fn(async () => true) }
   const factory = vi.fn(async () => ({ client, server })) satisfies OpenCodeFactory
   return { client, factory, server, stream }
 }
@@ -1817,7 +1817,7 @@ describe("approval replies Domovoi did not send", () => {
   ] as const
 
   async function askedTurn(make: (factory: OpenCodeFactory) => OpenCodeSdkAdapter = adapters[0][1]) {
-    const { client, factory, stream } = harness()
+    const { client, factory, server, stream } = harness()
     const adapter = make(factory)
     const events: AgentEvent[] = []
     adapter.onEvent((event) => events.push(event))
@@ -1835,7 +1835,7 @@ describe("approval replies Domovoi did not send", () => {
       properties: { sessionID, requestID, reply: value },
     })
     const approvals = () => events.filter((event) => event.type === "approval-requested")
-    return { adapter, client, events, stream, threadId, ask, reply, approvals }
+    return { adapter, client, factory, server, events, stream, threadId, ask, reply, approvals }
   }
 
   const stopped = (events: AgentEvent[]) => events.filter((event) => event.type === "approval-answered-elsewhere")
@@ -2106,6 +2106,101 @@ describe("approval replies Domovoi did not send", () => {
     await waitForDaemon(() => expect(stopped(events)).toEqual([
       expect.objectContaining({ threadId, permissionId: "per_1", reply: "once" }),
     ]))
+    await adapter.close()
+  })
+
+  // Codex review of #691, P1: nothing is reported stopped until the provider
+  // confirms it, and a stop it cannot confirm ends the whole server.
+  it("keeps watching the thread until the provider confirms the run stopped", async () => {
+    const { adapter, client, events, ask, reply, approvals } = await askedTurn()
+    const abort = deferred<{ data: boolean }>()
+    client.session.abort.mockImplementationOnce(() => abort.promise)
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+
+    reply("per_1", "once")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledOnce())
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    expect(stopped(events)).toEqual([])
+    expect(events.some((event) => event.type === "turn-completed")).toBe(false)
+    abort.resolve({ data: true })
+    await waitForDaemon(() => expect(stopped(events)).toHaveLength(1))
+    await adapter.close()
+  })
+
+  it("aborts every subagent of the thread as well as the thread", async () => {
+    const { adapter, client, events, stream, threadId, ask, reply, approvals } = await askedTurn()
+    stream.emit({ type: "session.created", properties: { sessionID: "ses_child", info: { id: "ses_child", parentID: threadId, directory: "/worktree" } } })
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+
+    reply("per_1", "once")
+
+    await waitForDaemon(() => expect(stopped(events)).toHaveLength(1))
+    const aborted = (client.session.abort.mock.calls as unknown as Array<[{ path: { id: string } }]>)
+      .map(([options]) => options.path.id)
+    expect(aborted.sort()).toEqual([threadId, "ses_child"].sort())
+    await adapter.close()
+  })
+
+  it("stops the whole server when it cannot confirm the run stopped, and says so", async () => {
+    const { adapter, client, server, events, threadId, ask, reply, approvals } = await askedTurn()
+    client.session.abort.mockRejectedValueOnce(new Error("socket hang up"))
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+
+    reply("per_1", "once")
+
+    await waitForDaemon(() => expect(server.stop).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(events).toContainEqual({
+      type: "provider-disconnected",
+      reason: "Domovoi stopped the OpenCode server because it could not confirm that a session it stopped had stopped",
+    }))
+    expect(stopped(events)).toEqual([expect.objectContaining({ threadId, permissionId: "per_1" })])
+    await adapter.close()
+  })
+
+  it("says so when it cannot confirm the server stopped either", async () => {
+    const { adapter, client, server, events, ask, reply, approvals } = await askedTurn()
+    client.session.abort.mockResolvedValueOnce({ error: { message: "busy" } } as never)
+    server.stop.mockResolvedValueOnce(false)
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+
+    reply("per_1", "once")
+
+    await waitForDaemon(() => expect(events).toContainEqual({
+      type: "provider-disconnected",
+      reason: "Domovoi stopped the OpenCode server because it could not confirm that a session it stopped had stopped. Domovoi could not confirm that the server and the programs it started have ended",
+    }))
+    await adapter.close()
+  })
+
+  it("aborts the runs of a directory whose event stream closed before it lets them go", async () => {
+    const { adapter, client, server, events, stream, threadId } = await askedTurn()
+
+    stream.close()
+
+    await waitForDaemon(() => expect(events).toContainEqual({
+      type: "provider-disconnected", reason: "OpenCode event stream connection closed",
+    }))
+    expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } }))
+    expect(server.stop).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("stops the server when a run in a directory whose event stream closed cannot be aborted", async () => {
+    const { adapter, client, server, events, stream } = await askedTurn()
+    client.session.abort.mockRejectedValueOnce(new Error("connect ECONNREFUSED"))
+
+    stream.close()
+
+    await waitForDaemon(() => expect(server.stop).toHaveBeenCalledOnce())
+    expect(events).toContainEqual({
+      type: "provider-disconnected",
+      reason: "Domovoi stopped the OpenCode server because it could not confirm that a session it stopped had stopped",
+    })
     await adapter.close()
   })
 
