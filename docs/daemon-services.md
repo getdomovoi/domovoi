@@ -28,9 +28,11 @@ Remove an existing registration before reinstalling. Interrupted installation ca
 require operator reconciliation if no supervisor identity was ever recorded.
 
 This is Windows user logon, not Windows boot supervision. The guest loop is not
-self-restarting after distro or loop loss. Native Windows crash policy and Linux
-lingering are unchanged. A demand-start fixture does not establish real logon
-acceptance; that remains open in the lifecycle assessment.
+self-restarting after distro or loop loss. A demand-start fixture does not
+establish real logon acceptance; that remains open in the lifecycle assessment.
+The native Windows logon task runs the same loop on the host
+([Windows crash supervision](#windows-crash-supervision)), and a Linux install
+turns lingering on ([Linux lingering](#linux-lingering)).
 
 It captures the current daemon configuration before asking the service manager to start anything.
 Close other daemon owners, including Desktop, before starting the service, then reopen Desktop to
@@ -39,8 +41,10 @@ Existing installations need one reinstall to replace their old launch command; u
 alone does not rewrite service-manager configuration.
 
 The installer writes `<user-home>/.domovoi/service.json`. The installed command names the Node
-runtime, daemon entry point, and `--service-config <path>` explicitly. On startup the production
-factory receives the saved settings, not daemon variables inherited from the supervisor.
+runtime, daemon entry point, and `--service-config <path>` explicitly. The Windows logon task names
+`--service-supervise <path>` instead, and its supervisor loop starts the daemon with
+`--service-config <path>`. On startup the production factory receives the saved settings, not
+daemon variables inherited from the supervisor.
 Windows installation refuses command lines over 262 characters before writing files; use shorter
 absolute installation paths rather than a truncated launch command.
 
@@ -117,11 +121,82 @@ but it yields no recovery receipt: the command names the unreadable file and poi
 `domovoid profile recover --confirm-no-supervisor` after repair. It does not remove the
 credential, identity, workspace database, or worktrees.
 
+## Linux lingering
+
+Decided 2026-09-17 (`SHIP-PLAN.md` S1.1). Without lingering, systemd stops a user's units when that
+user's last session ends and starts them again at the next login, so the daemon would stop at
+logout. `domovoid service install` on Linux (not inside WSL) therefore asks
+`loginctl show-user <uid> --property=Linger --value` first:
+
+- `no`: it runs `loginctl enable-linger <uid>`, saves `"lingerEnabledByDomovoi": true` in
+  `service.json`, and prints `Turned on lingering for <user> with loginctl enable-linger, so the
+  daemon keeps running after <user> logs out and starts when the machine boots. domovoid service
+  remove turns it off again.`
+- `yes`: it changes nothing, saves `"lingerEnabledByDomovoi": false`, and prints `Lingering was
+  already on for <user>, so Domovoi left it as it was. domovoid service remove will leave it on.`
+  A reinstall over a configuration that already says `true` keeps `true` and prints `Lingering for
+  <user> stays on from an earlier Domovoi install. domovoid service remove turns it off again.`
+
+Lingering is asked for under the profile lease, before `service.json` is written, so one write
+records it. Any other answer is a failure: `loginctl` missing (`loginctl was not found`), a non-zero
+exit (its own message), or a value other than `yes` or `no`. A failure records nothing, installs
+the service anyway, exits 0, and prints on stderr `Could not turn on lingering for <user>: <reason>.
+The service is installed, but systemd stops the daemon when <user> logs out of every session and
+starts it again at the next login. To keep it running, run loginctl enable-linger; domovoid service
+remove will then leave lingering on.` It warns rather than fails because the service itself works
+while the user is logged in, the way the WSL install succeeds and states its own limit (`Windows user
+logon only; no boot supervision.`). Every manager step stays fatal, and so does an expired deadline. If a later install step fails and the previous service files are put back, the lingering
+this install turned on is turned off again; if that fails too, the error says lingering is still
+on.
+
+`domovoid service remove` reads the record before anything changes. Only `true` runs
+`loginctl disable-linger <uid>`, after the unit and `service.json` are gone, and prints `Turned off
+lingering for <user>, which Domovoi turned on at install.` `false` prints `Lingering for <user> was
+on before Domovoi was installed, so it was left on.` No record, or a configuration that cannot be
+read, leaves lingering as found and prints nothing about it. A failed `disable-linger` does not undo
+the removal; it prints on stderr that lingering stays on and how to turn it off. The desktop's
+install and removal do the same and return the outcome as `linger`; the desktop does not show it
+yet.
+
+## Windows crash supervision
+
+Decided 2026-09-17 (`SHIP-PLAN.md` S1.1): the limited-user `ONLOGON` task runs
+`domovoid --service-supervise <service.json>`, the supervisor loop the WSL guest runs, instead of the
+daemon itself. The loop starts the daemon with `--service-config`, restarts it after a crash with
+1, 5 and 15 second backoffs, and after a fourth crash records exhaustion in
+`<profile>/supervisor.json` and exits 1 with `Daemon supervision exhausted after 4 crashes and 4
+attempts.` A clean exit or a deliberate stop does not restart. The task is still created by
+`schtasks /create /sc onlogon /rl LIMITED` with that tool's default settings.
+
+Windows has no `/proc`, so the loop identifies a process by its pid and its creation time, a UTC
+`FILETIME` read from `Win32_Process` through PowerShell under `SystemRoot`, and the boot by the
+System process's creation time. A query that fails refuses rather than reading as a dead process.
+Each read starts PowerShell and blocks its caller while it runs, the desktop's status read
+included; that cost has not been measured. A daemon that exits before its creation time is read is recorded as a failed
+launch (`EXITED_BEFORE_IDENTITY`) and counted as a crash, once its exit is observed. A stop ends the
+daemon's whole process tree with `taskkill /T /F`; nothing relies on Task Scheduler's own stop to
+end the processes the loop started, which is not proved.
+
+`domovoid service status` reads the task's state and the loop's record:
+`installed, running: Domovoi daemon is running; daemon running; attempt 1; 0 crashes`, and exits 1
+when supervision is exhausted or refused. A task installed before this change still runs the
+daemon directly and is reported, removed and updated as before. Installing over a supervised task
+whose loop is still running refuses with `The Windows task "Domovoi daemon" still runs Domovoi's
+crash supervisor. Run domovoid service remove, then install again. Nothing was stopped or changed.`
+An update stops the loop the same way removal does, without retiring its registration, since it
+registers the same one again.
+
 ## Windows removal
 
 `domovoid service remove` disables the logon task before stopping it, waits for Task Scheduler to
 report that it is disabled with no queued or running instances, and only then removes the task and
 saved configuration. Deleting a registration alone does not stop its running program.
+A supervised task is disabled first, then its loop is asked to stop through its own stop request,
+cancels any backoff, stops the daemon, and is proved dead with every daemon it started before Task
+Scheduler stops and deletes the task: that Task Scheduler's stop also ends the daemon the loop
+started is not proved, so it is not relied on. A loop that never recorded a start has no daemon to
+stop. A failed proof keeps the task,
+disabled, and the configuration, as any failure after the stop step does.
 See [schtasks delete](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-delete)
 and [RegisteredTask.State](https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-state).
 
@@ -290,12 +365,18 @@ Windows status uses the numeric Task Scheduler `RegisteredTask.State` through th
 COM inspection as removal. State 4 reports running; 1, 2 and 3 report registered but not running.
 Only an explicit missing-task answer reports no registration. Unknown state 0, malformed output
 and every nonzero PowerShell exit refuse the query. Localized `schtasks` prose is not parsed.
+For a supervised task, a running task is the loop: the daemon reports running only when the loop's
+record also shows its child alive.
 
 Beyond those native tests these are configuration delivery and focused removal checks, not full
 native systemd, launchd, or Task Scheduler lifecycle acceptance. Crash supervision of the fixture
-process is proven on systemd and launchd, and absent on Windows: the logon task is created with
-no restart setting at all, so nothing on that platform claims to relaunch a crashed daemon before
-the next logon and there is no policy there for a test to hold to. Installer rollback
+process is proven on systemd and launchd. On Windows the logon task now runs the supervisor loop.
+Tests added on 2026-10-01 for the ordinary Windows CI leg run that loop in the test process with
+real children, crash one and require its restart after the 1 second backoff, and read real
+creation times; they had not run on Windows when this was written. No test registers a supervised
+task, crashes the daemon under Task Scheduler, or removes one: that native acceptance is open.
+Lingering is proven only against mocked and shimmed `loginctl`; no test changes a real user's
+lingering. Installer rollback
 remains separate audit work. A timed-out manager may already have changed OS state; inspect service
 status before retrying. Each file is replaced by a same-directory rename only after a complete
 private staging write. A failed write preserves the last complete file. Expiry or a crash can leave

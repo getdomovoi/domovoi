@@ -644,6 +644,24 @@ written to a system-wide location and no step asks for elevation. `status` repor
 service file is present and whether the manager currently runs it, and exits non-zero when nothing
 is installed. `remove` stops the service and deletes the file it pointed at.
 
+Two policies decided on 2026-09-17 keep the daemon running while its person is away:
+
+- **Linux lingering.** Without it, systemd stops the daemon when the user's last session ends.
+  `install` runs `loginctl enable-linger` for the installing user when lingering is off, says so,
+  and records `"lingerEnabledByDomovoi": true` in `service.json`; lingering that was already on is
+  left alone and recorded as `false`. `remove` runs `loginctl disable-linger` only on `true`, so
+  lingering that another service or the person relied on stays as it was. When `loginctl` is
+  missing or refuses, `install` still installs, exits 0, records nothing, and says on stderr that
+  the daemon stops at logout and starts again at the next login.
+- **Windows crash supervision.** The logon task runs `domovoid --service-supervise`, the
+  supervisor loop the WSL guest runs. It restarts a crashed daemon after 1, 5 and 15 seconds,
+  records a fourth crash as exhausted, and `status` then reports it and exits 1. `remove` stops the
+  loop and proves the daemon stopped before deleting the task. A task installed earlier still runs
+  the daemon directly until it is reinstalled or updated from the app.
+
+[Daemon service configuration](../../docs/daemon-services.md) has the printed text, failure
+handling and what is and is not proved natively.
+
 A service file never carries a secret. `DOMOVOI_AUTH_TOKEN` and any other credential stay in the
 user-private files the daemon already reads.
 

@@ -522,7 +522,7 @@ describe("updateDaemonService with a Windows logon task", () => {
   })
 
   // Decided 2026-09-17 (SHIP-PLAN S1.1): a task installed since runs the
-  // supervisor loop, whose daemon Task Scheduler's stop does not end. The
+  // supervisor loop, whose daemon Task Scheduler's stop is not proved to end. The
   // update disables the task and has the loop stop its daemon, proved, without
   // retiring the registration it registers again; then it stops the task.
   const supervised = oldWindowsCommand.replace("--service-config", "--service-supervise")

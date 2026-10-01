@@ -223,7 +223,7 @@ describe("Windows service removal", () => {
 })
 
 // Decided 2026-09-17 (SHIP-PLAN S1.1): the task runs the supervisor loop.
-// Task Scheduler's stop ends the loop's process, not the daemon it started,
+// Task Scheduler's stop is not proved to end the daemon the loop started,
 // so removal disables the task, has the loop stop its daemon and proves both
 // dead, and only then stops and deletes the task, as the WSL removal does.
 describe("Windows removal of a supervised task", () => {

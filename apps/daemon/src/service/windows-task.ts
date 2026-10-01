@@ -12,8 +12,8 @@ export type WindowsTaskRemovalPlan = {
   kind: "task"
   name: string
   // Disables without stopping: a supervised task's loop is stopped through
-  // its own stop request first, since Task Scheduler's stop ends the loop's
-  // process and not the daemon it started (install.ts).
+  // its own stop request first, since Task Scheduler's stop is not proved to
+  // end the daemon the loop started (install.ts).
   disable?: ServiceCommand
   stop: ServiceCommand
   inspect: ServiceCommand

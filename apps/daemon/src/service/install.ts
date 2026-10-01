@@ -891,7 +891,7 @@ export function isDomovoiTaskAction(action: Pick<WindowsTaskAction, "path" | "ar
 }
 
 // "supervised": Domovoi's task runs the supervisor loop. Its daemon is the
-// loop's child, which Task Scheduler's stop does not end.
+// loop's child, which Task Scheduler's stop is not proved to end.
 async function windowsTaskOwner(
   home: string,
   effects: Pick<ServiceEffects, "capture" | "readConfiguration">,
@@ -915,8 +915,9 @@ export class WindowsTaskSupervisingError extends Error {
 
 // The supervised task's loop, stopped through its own stop request and
 // proved stopped with its daemon before Task Scheduler stops or deletes the
-// task: Task Scheduler's stop ends the loop's process, not the daemon it
-// started. A loop that never recorded a start has no daemon to stop.
+// task: that Task Scheduler's stop also ends the daemon the loop started is
+// not proved, so it is not relied on. A loop that never recorded a start has
+// no daemon to stop.
 // retire: false for an update, which registers the same registration again.
 async function stopSupervisedTask(
   home: string,
@@ -1172,8 +1173,8 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
     // Decided 2026-09-17 (SHIP-PLAN S1.1): the new task runs the supervisor
     // loop, and so may the previous one. A supervised task is disabled and its
     // loop stops the daemon, proved, before Task Scheduler stops the task,
-    // whose stop ends the loop's process and not the daemon. The registration
-    // is not retired: the update registers it again.
+    // whose stop is not proved to end the daemon. The registration is not
+    // retired: the update registers it again.
     if (!effects.supervisorStatus || !effects.stopSupervisor) {
       throw new DaemonServiceUpdateError("nothing-changed", new Error("Windows supervisor shutdown proof is unavailable"))
     }
