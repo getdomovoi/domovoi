@@ -2,7 +2,7 @@
 
 Status: plan, written 2026-10-01 on `feat/s3-2-web-over-tailnet` from `origin/main` 164eb985.
 Every `file:line` below was read on that commit. The owner answered section 7 on 2026-10-01
-(Q286, A for each).
+(Q286, A for each; Q299, A).
 
 ## What this closes
 
@@ -14,7 +14,8 @@ certificate the phone already trusts, as a separate artifact beside the daemon r
 compiled in, so a web regression is not a daemon release. Ask 4 names three parts:
 
 1. `GET /` and the bundle's static paths on the daemon's listener, from a configured directory
-   (`DOMOVOI_WEB_DIR`, default beside the daemon's install), with an app CSP, cache rules that let
+   (`DOMOVOI_WEB_DIR`; the ask's default beside the daemon's install was replaced by the user's
+   data folder in Q299, section 1.2), with an app CSP, cache rules that let
    a new bundle replace an old one, and a plain page when nothing is there. Plaintext on loopback
    only, as for the socket.
 2. `apps/web` reads its rpc URL from `location` when served by the daemon and keeps the
@@ -78,13 +79,24 @@ follows.
 - `DOMOVOI_WEB_DIR`: an absolute directory, parsed in `apps/daemon/src/config.ts` beside the other
   path settings (`parseStatePath`, used at `config.ts:71-78`). Relative paths, NUL and newlines
   are refused like the other paths.
-- Default when unset: `<daemon package root>/web`, resolved from the daemon's own module URL
-  (`new URL("../web/", import.meta.url)` from `dist/`). That is "beside the daemon's install" for
-  the repository build (`apps/daemon/web`), the bootstrap runtime (`.runtime-*/web`,
-  `docs/distribution.md:96-115`) and the desktop's runtime copy
-  (`<profile>/runtime/<version>/<id>`, `apps/daemon/src/service/desktop-service.ts:81-86`). The npm
-  tarball's `files` list (`apps/daemon/package.json`) does not include `web/`, so a daemon release
-  never carries a bundle.
+- Default when unset (Q299, answered A, fetzy 2026-10-01): the user's own data folder, outside the
+  profile directory:
+  - macOS: `~/Library/Application Support/Domovoi/web`;
+  - Linux: `$XDG_DATA_HOME/domovoi/web`, and `~/.local/share/domovoi/web` when `XDG_DATA_HOME` is
+    unset or not absolute (the XDG rule for a relative value);
+  - Windows: `%LOCALAPPDATA%\Domovoi\web`, the user's local AppData.
+
+  The earlier draft defaulted to `<daemon package root>/web`, beside the daemon's install. That is
+  dropped: the desktop's runtime copy lives at `<profile>/runtime/<version>/<id>`
+  (`apps/daemon/src/service/desktop-service.ts:81-86`), inside the profile, where the loader
+  refuses a root, and an install directory is often a shared or package-managed location. A daemon
+  release still never carries a bundle: the npm tarball's `files` list (`apps/daemon/package.json`)
+  has no `web/`.
+- The ancestor rule in section 1.3 is unchanged by this. A Homebrew-style location whose
+  directories are group-writable without the sticky bit (for example `/opt/homebrew/lib`, owned by
+  the user with the `admin` group able to write) is refused by design: another member of that
+  group could replace the bundle. The install documents place the bundle in the default folder
+  above, whose ancestors are the user's own home directories.
 - The service keeps the setting: `service.json`'s schema is `.strict()`
   (`apps/daemon/src/service/configuration.ts:17-37`), so it gains an optional `webDirectory`, and
   `serviceEnvironment` (`configuration.ts:57-78`) maps it back to `DOMOVOI_WEB_DIR`. Without this a
@@ -150,7 +162,7 @@ or an administrator controls is the supported contract.
 - **At `/`**, a small fixed page with status 503 and `cache-control: no-store`, so a later install
   is not hidden by a cached refusal. It never names a path, a user name or a file: the page is
   unauthenticated and reachable from the whole tailnet. Copy per state, plain punctuation:
-  - absent: "No web app is installed beside this Domovoi daemon. The machine's owner can install
+  - absent: "No web app is installed for this Domovoi daemon. The machine's owner can install
     one; the daemon's startup output says where it looks."
   - incompatible: "The web app installed here is for protocol <a.b>, and this daemon speaks
     <c.d>. Install the web app from the same release as the daemon." (Both versions are already
@@ -577,7 +589,9 @@ Each is one pull request, test first, with `pnpm typecheck`, `pnpm test`, `pnpm 
 3. **HTTP module** (Codex). `apps/daemon/src/web-app-http.ts` and test against a bare `node:http`
    server. Still no `server.ts` change.
 4. **Wire it in** (Codex). Lands only after slice 2 is merged. `DOMOVOI_WEB_DIR` in `config.ts`,
-   default resolution and loading in `production-daemon.ts`, the startup line and help in
+   the default data folder per platform (section 1.2, Q299) with a test for each platform's path
+   and for `XDG_DATA_HOME` unset or relative, loading in `production-daemon.ts`, the startup line
+   and help in
    `index.ts`, `webDirectory` in `service/configuration.ts`, the `server.ts` option, field and
    hook, the loopback origin admission (only the literal loopback origins, scheme included, and
    only with a loaded bundle; `null` stays refused), the sandbox test (section 3.8), coexistence
@@ -598,8 +612,11 @@ Each is one pull request, test first, with `pnpm typecheck`, `pnpm test`, `pnpm 
    phone previews over the tailnet name may start working too.
 6. **Packaging and documents** (Claude Code for `scripts/`, the daemon owner for README). A
    `domovoi-web-<version>.tar.gz` in `scripts/release-artifacts.mjs` with its line in `SHA256SUMS`;
-   install steps in `docs/clean-machine-setup.md` and the tailnet section of `apps/mobile/README.md`;
-   A14 restated for the loopback case; the bundle version requirement below.
+   install steps in `docs/clean-machine-setup.md` and the tailnet section of `apps/mobile/README.md`
+   that unpack the bundle into the default data folder (section 1.2, Q299), with
+   `DOMOVOI_WEB_DIR` and `webDirectory` as the override, and that say a group-writable location
+   such as a Homebrew prefix is refused by design; A14 restated for the loopback case; the bundle
+   version requirement below.
 7. **Checks** (owner and Claude Code). Section 5.2 run, then section 5.3 by the owner, then a
    follow-up that ticks the `S3.2` line citing the squash shas.
 
@@ -610,8 +627,8 @@ for M1.
 
 ## 7. Owner answers
 
-The owner answered all six on 2026-10-01 as Q286: A for each. The options are kept as asked, with
-the answer under each.
+The owner answered Q1 to Q6 on 2026-10-01 as Q286, A for each, and the default location as Q299,
+A. The options are kept as asked, with the answer under each.
 
 - **Q1. One origin for the app and the previews?** (A) Same origin; the CSP sandbox on every
   artifact response keeps previews in an opaque origin, pinned by a test. (B) Serve the app on a
@@ -622,7 +639,8 @@ the answer under each.
 - **Q2. When is the app served?** (A) Whenever a valid bundle is at `DOMOVOI_WEB_DIR` or the
   default path beside the install, with the state page at `/` otherwise; this is the 2026-09-17
   shape. (B) Only when `DOMOVOI_WEB_DIR` is set; `/` stays a 404 otherwise.
-  Answer: A, fetzy 2026-10-01, Q286.
+  Answer: A, fetzy 2026-10-01, Q286. The default path is the user's data folder, not beside the
+  install (Q299 below).
 - **Q3. Serve on a plaintext loopback listener too?** (A) Yes, the same rule as the socket, with
   A14's loopback limit restated. (B) TLS listeners only; loopback keeps the vite dev server.
   Answer: A, fetzy 2026-10-01, Q286.
@@ -638,4 +656,13 @@ the answer under each.
   owner places, documented in clean-machine setup. (B) The desktop packs it beside its daemon
   runtime (`apps/desktop/electron-builder.yml` `extraResources`) so a desktop-installed service
   serves it with no step.
-  Answer: A, fetzy 2026-10-01, Q286. B can follow with `S1.4`.
+  Answer: A, fetzy 2026-10-01, Q286. B can follow with `S1.4`; the runtime copy sits inside the
+  profile, so B would install into the default data folder (Q299) rather than beside the runtime.
+- **Q299. Where is the default bundle location?** (A) The user's own data folder, outside the
+  profile: macOS `~/Library/Application Support/Domovoi/web`, Linux
+  `$XDG_DATA_HOME/domovoi/web` (default `~/.local/share/domovoi/web`), Windows
+  `%LOCALAPPDATA%\Domovoi\web`. `DOMOVOI_WEB_DIR` and `service.json` `webDirectory` still override
+  it. (B) Beside the daemon's install, `<daemon package root>/web`, as first drafted.
+  Answer: A, fetzy 2026-10-01, Q299. The strict ancestor rule (section 1.3) is unchanged:
+  Homebrew-style group-writable locations are refused by design, and the install documents place
+  the bundle in the default folder.
