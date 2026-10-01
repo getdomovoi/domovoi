@@ -61,7 +61,6 @@ import { type ProviderSecretStatus } from "./provider-settings"
 import type { LocalDaemonDescription } from "./settings-shell"
 import type { SkillsSurfaceTab } from "./skills-surface"
 import type { ToolInventoryLoad } from "./tool-inventory-view"
-import { SessionRefusalCard } from "./session-refusal-card"
 import { gitFilterRefusalFrom } from "./session-refusal"
 import { lazySurface, prefetchWhenIdle, SurfaceCodeReload } from "./lazy-surface"
 import { ThreadSkeleton } from "./loading-skeleton"
@@ -167,11 +166,15 @@ const settingsSurface = lazySurface("Settings", async () => (await import("./set
 const skillsSurface = lazySurface("Skills", async () => (await import("./skills-surface")).SkillsSurface)
 const machinesSurface = lazySurface("Machines", async () => (await import("./fleet-view")).FleetView)
 const auditSurface = lazySurface("Audit log", async () => (await import("./audit-log-view")).AuditLogView)
-const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface]
+// A refused start is rare, and its card carries the trust sheet, so it loads
+// like a surface rather than with the shell.
+const refusalSurface = lazySurface("the refusal", async () => (await import("./session-refusal-card")).SessionRefusalCard)
+const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface, refusalSurface]
 const SettingsShell = settingsSurface.Surface
 const SkillsSurface = skillsSurface.Surface
 const FleetView = machinesSurface.Surface
 const AuditLogView = auditSurface.Surface
+const SessionRefusalCard = refusalSurface.Surface
 
 export type WorkspaceShellProps = {
   clientKind?: ClientKind

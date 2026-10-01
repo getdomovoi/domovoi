@@ -114,6 +114,8 @@ async function refusedStart() {
     fail(socket, "session.create", { code: repositoryGitFilterErrorCode, message: "This repository's own Git config sets the filter \"sops\".", data: refusal(snapshot) })
   })
   await settle()
+  // The card's code loads on first use.
+  await screen.findByRole("region", { name: "Domovoi did not start this session" })
   return { socket, snapshot, user }
 }
 
