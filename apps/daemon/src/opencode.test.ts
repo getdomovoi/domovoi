@@ -1988,6 +1988,24 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     await adapter.close()
   })
 
+  // Security review round 3 of #687: the run is aborted, and the abort
+  // answered, before the Domovoi turn ends.
+  it("ends the turn only once the abort is answered", async () => {
+    let answer!: () => void
+    const { adapter, client, events, call, stream, threadId } = await turnWithTools((setup) => {
+      setup.session.abort.mockImplementation(() => new Promise((resolve) => { answer = () => resolve({ data: true }) }))
+    })
+    call("call-1", "plan_enter")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    // The run's own end, while the abort is under way, does not end the turn.
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnd(events)).toBeUndefined()
+    answer()
+    await waitForDaemon(() => expect(turnEnd(events)).toMatchObject({ params: { turn: { status: "failed" } } }))
+    await adapter.close()
+  })
+
   it("stops the turn when the directory's tool servers change while it calls tools", async () => {
     const { adapter, client, events, call } = await turnWithTools()
     client.mcp.status.mockResolvedValue({ data: { github: { status: "connected" } } })

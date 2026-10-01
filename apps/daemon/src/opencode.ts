@@ -186,6 +186,10 @@ type Session = {
   // error before that idle is the same run's). Only an interrupt arms the wait
   // above; without one, the first idle or error ends the active turn as before.
   interruptedTurnId?: string
+  // A turn Domovoi is stopping (#stopTurn): the run's end while the abort is
+  // under way ends nothing, and is remembered so it is not waited for again.
+  stoppingTurnId?: string
+  stoppedRunEnded?: true
   assistantMessageTurnIds: Map<string, string>
   toolPhases: Map<string, string>
 }
@@ -1005,9 +1009,11 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   ): Promise<void> {
     await this.#refuseHeldBackRepositoryFiles(session.cwd)
     const client = await this.#client()
-    await this.#refuseUnownedNames(client, session.cwd)
     const model = openCodeModel(runtime.model)
     const system = await projectInstructions(session.cwd, "opencode")
+    // Last before the prompt goes out, after everything else it waits on, so
+    // a tool server added meanwhile is seen (security review round 3 of #687).
+    await this.#refuseUnownedNames(client, session.cwd)
     ensureSuccess(await client.session.promptAsync({
       path: { id: session.threadId },
       query: { directory: session.cwd },
@@ -1187,6 +1193,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
     // A subagent finishing or failing ends its task tool call, not the turn.
     if (subagent) return
+    if ((event.type === "session.error" || event.type === "session.idle") && session.stoppingTurnId !== undefined && session.stoppingTurnId === session.activeTurnId) {
+      if (event.type === "session.idle") session.stoppedRunEnded = true
+      return
+    }
     if (event.type === "session.error" || event.type === "session.idle") {
       const interrupted = session.interruptedTurnId
       // An interrupted run can end with an error and then an idle (the
@@ -1258,20 +1268,32 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
   }
 
-  // Ends the turn as failed with `reason` and aborts its run. The run's own
-  // end, arriving later, ends nothing.
+  // Aborts the turn's run, then ends the turn as failed with `reason`, so the
+  // turn is not reported over before the server has taken the abort. A
+  // failed abort is reported in the reason. The run's own end, arriving
+  // later, ends nothing.
   #stopTurn(session: Session, turnId: string, reason: string): void {
-    if (session.activeTurnId !== turnId || !this.#sessions.has(session.threadId)) return
-    this.#complete(session, "failed", reason)
-    session.interruptedTurnId = turnId
+    if (session.activeTurnId !== turnId || !this.#sessions.has(session.threadId) || session.stoppingTurnId === turnId) return
+    session.stoppingTurnId = turnId
+    delete session.stoppedRunEnded
     void this.#client().then(async (client) => {
       unwrap(await client.session.abort({
         path: { id: session.threadId },
         query: { directory: session.cwd },
         throwOnError: true,
       }), `${this.#identity.providerName} turn interruption`)
+      return reason
     }).catch((error: unknown) => {
       console.error(`Domovoi could not stop a ${this.#identity.providerName} turn`, error)
+      return `${reason} Domovoi could not confirm that ${this.#identity.providerName} stopped the run.`
+    }).then((finalReason) => {
+      if (session.stoppingTurnId === turnId) delete session.stoppingTurnId
+      const ended = session.stoppedRunEnded === true
+      delete session.stoppedRunEnded
+      if (session.activeTurnId !== turnId) return
+      this.#complete(session, "failed", finalReason)
+      // The run's end, unless it already came, is still to arrive.
+      if (!ended) session.interruptedTurnId = turnId
     })
   }
 

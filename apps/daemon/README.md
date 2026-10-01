@@ -558,12 +558,17 @@ code or settings the repository brings:
   OpenCode 1.18 passes its whole environment, that password included, to every local tool server
   it starts, and the daemon has no setting that removes it; a tool server of yours could use it to
   answer that server's approval prompts. Kilo 7.8 removes it from a tool server's environment.
-  A tool server added while a turn runs (through the server's own API, which emits no event for
-  it) is not in the tools the daemon checked before the prompt. The daemon checks each tool call
-  as it appears: a call to a tool it did not see before the prompt, a change in the directory's
-  tool servers (read again on each call), or a failed read stops the turn, and the next prompt
-  refuses a server whose tools could be named like OpenCode's or Kilo's own. One call can run
-  before the stop: the call that shows the change.
+  The daemon reads the directory's tool servers, tools and agent rules immediately before it sends
+  each prompt. A tool server added after that, while the turn runs, is not in what it read; adding
+  one takes the embedded server's password, which the daemon holds and, with OpenCode, every
+  local tool server it starts receives. A tool such a server adds asks before it runs, like any
+  tool that is not the server's own, unless its name is one of OpenCode's or Kilo's own
+  permissions that the embedded configuration allows (a server named `plan` with a tool named
+  `enter` makes `plan_enter`). The daemon checks each tool call as it appears: a call to a tool it
+  did not see before the prompt, a change in the directory's tool servers (read again on each
+  call), or a failed read aborts the run and then ends the turn, and the next prompt refuses a
+  server whose tools could be named like OpenCode's or Kilo's own. The first call to such a
+  colliding tool can run before the abort: the call that shows the change.
 - OpenCode and Kilo ask before every tool that is not one of their own. The embedded configuration
   starts its permissions with a `"*": "ask"` rule and then restates the server's own rules for its
   built-in tools, so each built-in tool keeps the action it had, and a call to a tool server's
