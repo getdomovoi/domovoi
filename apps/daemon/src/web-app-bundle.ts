@@ -24,8 +24,8 @@ import {
 // again after it is read, and must still be the same directory. The file is
 // opened with O_NOFOLLOW where the platform has it (Windows does not) and
 // O_NONBLOCK, so a FIFO swapped in cannot hold the open, and the open
-// descriptor must be the regular file lstat saw. Windows ACLs are not
-// checked, the same stated limit as the TLS key check in tls-material.ts.
+// descriptor must be the regular file lstat saw. Who may change the tree,
+// and the access-control-list limit, are stated at trustedOwner below.
 
 // The file-system calls the loader makes, so a test can swap a file between
 // two of them.
@@ -54,6 +54,9 @@ export type WebAppBundleInvalidReason =
   | "root-not-directory"
   | "root-in-profile"
   | "root-writable"
+  | "owner-untrusted"
+  | "ancestor-owner-untrusted"
+  | "ancestor-writable"
   | "manifest-too-large"
   | "manifest-not-json"
   | "symbolic-link"
@@ -69,7 +72,9 @@ export type WebAppBundleInvalidReason =
   | "duplicate-file"
 
 // path, when set, is relative to the root as the manifest writes it, so a
-// report can name the file without a home directory in it.
+// report can name the file without a home directory in it. The exception is
+// a directory above the root (the ancestor reasons, and a link or unreadable
+// entry found there), named by its absolute path.
 export type WebAppBundleLoad =
   | { state: "loaded", root: string, version: string, protocolVersion: string, files: ReadonlyMap<string, LoadedWebAppFile>, path?: undefined }
   | { state: "absent", root: string, reason: "root-missing" | "manifest-missing", path?: undefined }
@@ -98,9 +103,31 @@ function errorCode(error: unknown): string | undefined {
 
 const posix = process.platform !== "win32"
 
-// Another account must not be able to swap the app the owner's browser runs.
+// Who may change the bundle tree: the daemon's own account and root. Mode
+// bits alone do not say that: an entry with mode 0644 owned by another
+// account stays writable, and re-permissionable, by that account. So every
+// entry the loader reads must be owned by one of these and not writable by
+// group or others. fs.access(W_OK) is no substitute: it answers for the
+// daemon's account, not for anyone else's.
+//
+// Stated limit: access control lists are not read. macOS ACLs and Windows
+// ACLs can grant another account rights the mode bits do not show, and on
+// Windows neither ownership nor mode is checked at all, as for the TLS key in
+// tls-material.ts. Installing the bundle in a location only the owner (or an
+// administrator) controls is the supported contract.
+function trustedOwner(stats: BigIntStats): boolean {
+  const effective = process.geteuid?.()
+  return !posix || effective === undefined || stats.uid === BigInt(effective) || stats.uid === 0n
+}
+
 function writableByOthers(stats: BigIntStats): boolean {
   return posix && (stats.mode & 0o022n) !== 0n
+}
+
+// A directory others can write lets them rename or replace what is in it,
+// unless the sticky bit limits that to each entry's owner (as /tmp).
+function replaceableByOthers(stats: BigIntStats): boolean {
+  return writableByOthers(stats) && (stats.mode & 0o1000n) === 0n
 }
 
 function sameEntry(left: BigIntStats, right: BigIntStats): boolean {
@@ -179,6 +206,7 @@ class BundleReader {
       const stats = await this.#lstat(join(this.#root, ...segments.slice(0, index + 1)), listed)
       if (stats.isSymbolicLink()) throw new Refusal("symbolic-link", name)
       if (!stats.isDirectory()) throw new Refusal("not-a-directory", name)
+      if (!trustedOwner(stats)) throw new Refusal("owner-untrusted", name)
       if (writableByOthers(stats)) throw new Refusal("directory-writable", name)
       const seen = this.#directories.get(name)
       if (seen === undefined) this.#directories.set(name, stats)
@@ -210,6 +238,7 @@ class BundleReader {
     try {
       const opened = await handle.stat({ bigint: true })
       if (!opened.isFile() || !sameEntry(opened, entry)) throw new Refusal("file-changed", listed)
+      if (!trustedOwner(opened)) throw new Refusal("owner-untrusted", listed)
       if (writableByOthers(opened)) throw new Refusal("file-writable", listed)
       const identity = `${opened.dev}:${opened.ino}`
       if (this.#files.has(identity)) throw new Refusal("duplicate-file", listed)
@@ -234,6 +263,25 @@ class BundleReader {
     } finally {
       await handle.close().catch(() => undefined)
     }
+  }
+}
+
+// Whoever can replace a directory above the real root can replace the root
+// itself, whatever the root's own mode. Every ancestor up to the file system
+// root must be owned by a trusted account and not replaceable by others.
+// These refusals name the ancestor by its absolute path.
+async function checkAncestors(fileSystem: WebAppBundleFileSystem, root: string): Promise<void> {
+  for (let current = dirname(root); ; current = dirname(current)) {
+    let stats: BigIntStats
+    try {
+      stats = await fileSystem.lstat(current, { bigint: true })
+    } catch {
+      throw new Refusal("root-unreadable", current)
+    }
+    if (stats.isSymbolicLink()) throw new Refusal("symbolic-link", current)
+    if (!trustedOwner(stats)) throw new Refusal("ancestor-owner-untrusted", current)
+    if (replaceableByOthers(stats)) throw new Refusal("ancestor-writable", current)
+    if (dirname(current) === current) return
   }
 }
 
@@ -263,7 +311,9 @@ export async function loadWebAppBundle(options: WebAppBundleOptions): Promise<We
     if (!rootStats.isDirectory()) throw new Refusal("root-not-directory")
     const profile = await canonicalPath(fileSystem, options.profileDirectory)
     if (within(profile, root) || within(root, profile)) throw new Refusal("root-in-profile")
+    if (!trustedOwner(rootStats)) throw new Refusal("owner-untrusted")
     if (writableByOthers(rootStats)) throw new Refusal("root-writable")
+    await checkAncestors(fileSystem, root)
 
     const reader = new BundleReader(fileSystem, root, rootStats)
     try {

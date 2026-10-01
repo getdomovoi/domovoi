@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { constants } from "node:fs"
+import { constants, type BigIntStats } from "node:fs"
 import { chmod, lstat, mkdir, mkdtemp, open, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -81,6 +81,40 @@ async function load(root: string, options: { profileDirectory?: string, daemonPr
     ...(options.daemonProtocolVersion === undefined ? {} : { daemonProtocolVersion: options.daemonProtocolVersion }),
     ...(options.fileSystem === undefined ? {} : { fileSystem: options.fileSystem }),
   })
+}
+
+// Another account's uid, for ownership a test cannot create without root.
+const otherAccount = (process.geteuid?.() ?? 0) + 1
+
+// The same entry as the file system reported it, with its owner or mode
+// changed. Node's Stats methods read the copied own fields.
+function changed(stats: BigIntStats, change: { uid?: number, mode?: number }): BigIntStats {
+  const copy = Object.assign(Object.create(Object.getPrototypeOf(stats) as object) as BigIntStats, stats)
+  if (change.uid !== undefined) copy.uid = BigInt(change.uid)
+  if (change.mode !== undefined) copy.mode = BigInt(change.mode)
+  return copy
+}
+
+// lstat of one path, and fstat of a file opened at that path, report the change.
+function reporting(target: string, change: { uid?: number, mode?: number }): WebAppBundleFileSystem {
+  return {
+    realpath,
+    lstat: async (path, options) => {
+      const stats = await lstat(path, options)
+      return path === target ? changed(stats, change) : stats
+    },
+    open: async (path, flags) => {
+      const handle = await open(path, flags)
+      if (path !== target) return handle
+      return new Proxy(handle, {
+        get(handleTarget, key) {
+          if (key === "stat") return async () => changed(await handleTarget.stat({ bigint: true }), change)
+          const value: unknown = Reflect.get(handleTarget, key, handleTarget)
+          return typeof value === "function" ? (value as (...values: unknown[]) => unknown).bind(handleTarget) : value
+        },
+      })
+    },
+  }
 }
 
 function refusal(result: Awaited<ReturnType<typeof load>>) {
@@ -312,6 +346,64 @@ describe("refusals", () => {
   })
 
   describe.skipIf(!posix)("on POSIX", () => {
+    describe("ownership", () => {
+      it("refuses a root owned by another account", async () => {
+        const root = await bundle()
+        const fileSystem = reporting(await realpath(root), { uid: otherAccount })
+        expect(refusal(await load(root, { fileSystem }))).toEqual({ state: "invalid", reason: "owner-untrusted" })
+      })
+
+      it("refuses a directory owned by another account", async () => {
+        const root = await bundle()
+        const fileSystem = reporting(join(await realpath(root), "assets"), { uid: otherAccount })
+        expect(refusal(await load(root, { fileSystem }))).toEqual({ state: "invalid", reason: "owner-untrusted", path: "assets" })
+      })
+
+      it("refuses a file owned by another account, with mode 0644", async () => {
+        const root = await bundle()
+        const fileSystem = reporting(join(await realpath(root), "index.html"), { uid: otherAccount })
+        expect(refusal(await load(root, { fileSystem }))).toEqual({ state: "invalid", reason: "owner-untrusted", path: "index.html" })
+      })
+
+      it("refuses a manifest owned by another account", async () => {
+        const root = await bundle()
+        const fileSystem = reporting(join(await realpath(root), "domovoi-web.json"), { uid: otherAccount })
+        expect(refusal(await load(root, { fileSystem }))).toEqual({ state: "invalid", reason: "owner-untrusted", path: "domovoi-web.json" })
+      })
+
+      it("accepts entries owned by root", async () => {
+        const root = await bundle()
+        const real = await realpath(root)
+        for (const target of [real, join(real, "assets"), join(real, "index.html"), join(real, "domovoi-web.json")]) {
+          expect((await load(root, { fileSystem: reporting(target, { uid: 0 }) })).state).toBe("loaded")
+        }
+      })
+
+      it("refuses a root below a directory owned by another account", async () => {
+        const root = await bundle()
+        const parent = dirname(await realpath(root))
+        const fileSystem = reporting(parent, { uid: otherAccount })
+        expect(refusal(await load(root, { fileSystem }))).toEqual({ state: "invalid", reason: "ancestor-owner-untrusted", path: parent })
+      })
+
+      it("refuses a root below a directory others can write without the sticky bit", async () => {
+        const root = await bundle()
+        const parent = dirname(await realpath(root))
+        for (const mode of [0o40775, 0o40757]) {
+          expect(refusal(await load(root, { fileSystem: reporting(parent, { mode }) })))
+            .toEqual({ state: "invalid", reason: "ancestor-writable", path: parent })
+        }
+        // Sticky, as /tmp: another account cannot rename or remove this one's entries.
+        expect((await load(root, { fileSystem: reporting(parent, { mode: 0o41777 }) })).state).toBe("loaded")
+      })
+
+      it("checks every ancestor up to the file system root", async () => {
+        const root = await bundle()
+        const fileSystem = reporting("/", { uid: otherAccount })
+        expect(refusal(await load(root, { fileSystem }))).toEqual({ state: "invalid", reason: "ancestor-owner-untrusted", path: "/" })
+      })
+    })
+
     it("refuses the profile reached through a symbolic link", async () => {
       const home = await profile()
       const link = join(await directory(), "profile-link")

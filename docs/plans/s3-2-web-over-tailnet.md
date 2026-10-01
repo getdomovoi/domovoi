@@ -111,12 +111,20 @@ these hold:
 | a listed extension is outside a fixed table (`.html .js .css .svg .png .ico .webmanifest .woff2`) | content type comes from the table, never from the file |
 | any path component under the real root is a symlink, or the leaf is not a regular file | symlink refusal; the root itself may be a symlink the owner configured, resolved once with `realpath` |
 | the real root is inside the profile directory (which holds `worktrees/`) | agent-written files must never be served as the app (section 3.4) |
-| on POSIX, the root or a listed file is writable by group or others | another account must not be able to swap the app the owner's browser runs; mirrors the key check in `tls-material.ts:29-38`. Windows ACLs are not checked, the same stated limit as there |
+| on POSIX, the root, a directory under it, the manifest or a listed file is owned by an account other than the daemon's effective uid or root, or is writable by group or others | mode bits alone do not keep another account out: an owner keeps write and chmod rights whatever the mode. Never `fs.access(W_OK)`, which answers for the daemon's account only (review F1, Q297) |
+| on POSIX, a directory above the real root, up to `/`, is owned by another account, or is writable by group or others without the sticky bit | whoever can replace an ancestor can replace the root (review F1, Q297) |
 | a file's size or SHA-256 differs from the manifest | partial or mismatched copy |
 | file count, per-file size or total size exceeds a bound | memory bound; bounds set from a measured build with headroom, like the coverage floors |
 
 Leaves are opened with `O_NOFOLLOW` where the platform has it and read through that descriptor, so
-a symlink swapped in during the load is refused rather than followed.
+a symlink swapped in at the leaf during the load is refused rather than followed.
+
+Stated limit (review F1, Q297): access control lists are not read. macOS ACLs and Windows ACLs can
+grant another account rights the mode bits do not show, and on Windows neither ownership nor mode
+is checked, the same stated limit as the TLS key check (`tls-material.ts:29-38`). The checks show
+that the mode bits and owners give no other account write access to the bundle tree; they do not
+prove that no other account can swap the app. Installing the bundle in a location only the owner
+or an administrator controls is the supported contract.
 
 ### 1.4 How a missing or mismatched bundle is reported
 
