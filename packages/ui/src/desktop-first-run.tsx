@@ -48,6 +48,7 @@ export type ProviderFirstRunRecovery = {
     | "model-access-missing"
     | "retryable-error"
     | "adapter-unavailable"
+    | "approval-answered-elsewhere"
   title: string
   description: string
   canComplete: boolean
@@ -115,50 +116,8 @@ export function providerFirstRunRecovery(
       canComplete: false,
     }
   }
-  if (failure?.kind === "authentication-expired") {
-    return {
-      kind: "authentication-expired",
-      title: failure.message,
-      description: "Run the provider-owned sign-in command in a terminal on this machine, then retry diagnostics.",
-      canComplete: false,
-      copyGuidance: providerAccountCommand(provider),
-      copyLabel: "Copy sign-in command",
-    }
-  }
-  if (failure?.kind === "rate-limit") {
-    return {
-      kind: "rate-limited",
-      title: failure.message,
-      description: "Wait for the provider cooldown, then retry diagnostics. Domovoi cannot bypass provider limits.",
-      canComplete: false,
-    }
-  }
-  if (failure?.kind === "quota-exhausted") {
-    return {
-      kind: "quota-exhausted",
-      title: failure.message,
-      description: "Review quota or billing in the provider account, then retry diagnostics. No credential is stored here.",
-      canComplete: false,
-    }
-  }
-  if (failure?.kind === "model-unavailable") {
-    return {
-      kind: "model-access-missing",
-      title: failure.message,
-      description: "Restore access to that model or choose an available model after setup, then retry diagnostics.",
-      canComplete: false,
-    }
-  }
-  if (failure?.kind === "transport" || failure?.kind === "unknown") {
-    return {
-      kind: "retryable-error",
-      title: failure.message,
-      description: failure.kind === "transport"
-        ? "Restore the provider connection, then retry diagnostics."
-        : "Retry diagnostics. If the provider still cannot be verified, review Provider settings.",
-      canComplete: false,
-    }
-  }
+  const failed = failure === undefined ? undefined : failureRecovery(provider, failure)
+  if (failed) return failed
   if (provider.status === "unknown") {
     return {
       kind: "retryable-error",
@@ -172,6 +131,71 @@ export function providerFirstRunRecovery(
     title: `${providerDisplayName(provider.id)} is ready`,
     description: "The daemon verified the CLI and its provider-owned authentication on this machine.",
     canComplete: true,
+  }
+}
+
+// One case per failure kind, so a kind added to the protocol fails typecheck
+// here instead of reading as a ready provider. Undefined only for a failure
+// that says nothing about the provider's setup.
+function failureRecovery(
+  provider: ProviderRuntime,
+  failure: ProviderFailure,
+): ProviderFirstRunRecovery | undefined {
+  switch (failure.kind) {
+    case "authentication-expired":
+      return {
+        kind: "authentication-expired",
+        title: failure.message,
+        description: "Run the provider-owned sign-in command in a terminal on this machine, then retry diagnostics.",
+        canComplete: false,
+        copyGuidance: providerAccountCommand(provider),
+        copyLabel: "Copy sign-in command",
+      }
+    case "rate-limit":
+      return {
+        kind: "rate-limited",
+        title: failure.message,
+        description: "Wait for the provider cooldown, then retry diagnostics. Domovoi cannot bypass provider limits.",
+        canComplete: false,
+      }
+    case "quota-exhausted":
+      return {
+        kind: "quota-exhausted",
+        title: failure.message,
+        description: "Review quota or billing in the provider account, then retry diagnostics. No credential is stored here.",
+        canComplete: false,
+      }
+    case "model-unavailable":
+      return {
+        kind: "model-access-missing",
+        title: failure.message,
+        description: "Restore access to that model or choose an available model after setup, then retry diagnostics.",
+        canComplete: false,
+      }
+    case "transport":
+    case "unknown":
+      return {
+        kind: "retryable-error",
+        title: failure.message,
+        description: failure.kind === "transport"
+          ? "Restore the provider connection, then retry diagnostics."
+          : "Retry diagnostics. If the provider still cannot be verified, review Provider settings.",
+        canComplete: false,
+      }
+    // The daemon stopped a session whose approval was answered by something
+    // else holding the provider server's password (ruling Q243 A).
+    case "approval-answered-elsewhere":
+      return {
+        kind: "approval-answered-elsewhere",
+        title: failure.message,
+        description: "A program on this machine used the provider server's password to answer an approval, so Domovoi stopped that session. What it approved may have run. Review the changes in that session's worktree before you continue it.",
+        canComplete: false,
+      }
+    // A turn too long for the model says nothing about the provider's setup.
+    case "context-window-exceeded":
+      return undefined
+    default:
+      return failure satisfies never
   }
 }
 

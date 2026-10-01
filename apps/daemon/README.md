@@ -450,6 +450,38 @@ waiting." If that second save also fails, the answer is `-32014` as above. A dec
 approval an emergency stop or another path removed during the save is not applied and not sent to
 the agent.
 
+A standing rule (Always) is saved first with the status `inactive` and the reason
+`pending-delivery`, after the decision itself is saved. A pending rule never answers a request.
+It is made active, with the links to the rules it replaces, in one more save, and only after
+delivery. Delivery here means the adapter's `resolveApproval` returned for a request id the
+adapter was tracking as waiting. It is not an acknowledgement from the provider: OpenCode and Kilo,
+for example, send the answer over HTTP after `resolveApproval` returns, and a later failure of that
+send does not take back a rule already made active. An adapter answers a request it is not
+tracking as waiting (never asked, already answered, or dropped with its turn) by throwing
+`ApprovalRequestNotPendingError` and sending nothing; the OpenCode, Kilo, Claude, Codex and ACP
+adapters all do.
+
+- An emergency stop that begins while the pending rule is saved cancels the decision. It is checked
+  before that save and again after it. A cancelled decision is never sent. Its receipt, checkpoint
+  row and rule are taken back, but the card and the session stay as the stop left them, and the
+  answer is "The approval was withdrawn before it could be allowed".
+- If the agent is not waiting for the request, an allow is taken back the same way and the answer
+  is "The agent is no longer waiting for this approval, so it was not allowed". A refusal of such a
+  request needs nothing sent and stands.
+- If the pending rule cannot be saved, or the agent cannot be told, the decision is undone as
+  above. If that undo cannot be saved either, the state file holds at most the receipt, the
+  checkpoint row and a pending rule, never an active rule.
+- If the save that makes the rule active reports failure, the Allow was already sent once. The
+  rule stays pending in memory and answers no request while this daemon runs. A rejected save is
+  not proof that no active rule reached the state file: a save can fail after it has written, and
+  a restart then loads the rule active. A later whole save that lands rewrites the rule as
+  pending, which the next load drops. The answer is `-32014` with "Domovoi sent this Allow once,
+  but could not confirm the standing rule was saved. It may or may not be in force after Domovoi
+  restarts. Check Standing approval rules in Settings, Permissions and rules."
+- A daemon that loads a pending rule, at startup or when a project opens, drops it and records
+  `approval-rule.undelivered` in the audit log: the decision that made it was never confirmed
+  delivered. It replaced no rule, since links are made only when a rule becomes active.
+
 Read-only methods keep working, including `workspace.get`, so an operator can read the state that
 is not reaching disk. `system.pauseAll`, `session.pause`, and `system.emergencyStop` also keep
 working, because they reduce what an unpersisted daemon is still doing. The daemon accepts changes
@@ -562,16 +594,13 @@ code or settings the repository brings:
   runs in those directories. Your global provider configuration still applies. Skills under
   `.claude/skills` and `.agents/skills` still load with that switch set. The tool inventory lists
   every OpenCode and Kilo entry from those files and folders as held back, and those skills as
-  loading. Each embedded server takes a random password for its local API from its environment.
-  OpenCode 1.18 passes its whole environment, that password included, to every local tool server
-  it starts, and the daemon has no setting that removes it; a tool server of yours could use it to
-  answer that server's approval prompts. Kilo 7.8 removes it from a tool server's environment.
-  The daemon reads the directory's tool servers, tools and agent rules immediately before it sends
+  loading. Each embedded server's password, and what a program holding it can do, is described
+  in the next item. The daemon reads the directory's tool servers, tools and agent rules immediately before it sends
   each prompt, a steer included, and refuses the prompt when that read fails a check below. Only
   the read before the prompt that starts a turn sets what the turn's tool calls are held to; a
   steer's read never changes it, and the turn keeps it until it ends. A tool server added after
   that read, while the turn runs, is not in it; adding one takes the embedded server's password,
-  which the daemon holds and, with OpenCode, every local tool server it starts receives. A tool
+  which every program the server starts can read. A tool
   such a server adds asks before it runs, like any tool that is not the server's own, unless its
   name is one of OpenCode's or Kilo's own permissions that the embedded configuration allows (a
   server named `plan` with a tool named `enter` makes `plan_enter`). The daemon checks each tool
@@ -587,7 +616,8 @@ code or settings the repository brings:
   and that request or a tool call it starts aborts the subagent. A report of a tool that has
   already finished (completed or failed) is never checked and aborts nothing, in a turn or
   outside one; its output is still shown. Every abort the daemon sends, for a stop, an interrupt,
-  a thread stop or a run outside any turn, goes through one record per session, so it sends at
+  a thread stop, a run outside any turn, an approval answered elsewhere, a request it cannot
+  answer or a closed event stream, goes through one record per session, so it sends at
   most one abort at a time to a session; a second reason to stop it waits for that abort's
   answer. The daemon waits ten seconds for the answer and then treats the abort as failed. A
   stopped turn ends when the abort is answered or fails, with the reason it was stopped, not
@@ -669,6 +699,83 @@ code or settings the repository brings:
   (the server's name with each UTF-16 unit outside letters, digits, `-` and `_` turned into `_`,
   then `_` and the tool's name), never for a tool the directory lists among its tool ids (OpenCode's
   or Kilo's own, or a plugin's), and then it offers no Always.
+- The daemon starts one OpenCode server and one Kilo server, each on loopback with a new random
+  password at each start. Both read that password only from their environment, so it is in each
+  server's startup environment, though never in the daemon's own environment or in any process's
+  arguments. Every program a server starts (an approved command, a tool server, a language server)
+  runs as the same user and can read that environment (`ps eww` on macOS, `/proc/<pid>/environ` on
+  Linux). The password authenticates the whole server API, for every session on that server, not
+  one session. With it a program can:
+  - list every session on the server and read its messages;
+  - create a session with permission rules or a parent session it chooses;
+  - change the server's global or directory configuration, including permission rules;
+  - add or connect MCP servers;
+  - start a terminal (PTY) and run commands in it;
+  - send or resend prompts, which run on your provider accounts;
+  - abort or delete other sessions;
+  - answer any session's approval requests, and on Kilo save always-allow rules
+    (`/permission/{requestID}/always-rules`) or allow everything (`/permission/allow-everything`).
+
+  What the daemon does about it. A reply to an approval counts as the daemon's only when the
+  daemon sent that answer and the server accepted it: a server takes one answer per request and
+  refuses later ones. When a server reports any other reply, in `permission.replied` or
+  `permission.v2.replied`, the daemon refuses every request the session still waits on, aborts
+  the session's run and its subagents' runs and waits for the server to confirm, fails the session
+  with `approval-answered-elsewhere`, and records `provider.approval-answered-elsewhere` in the
+  audit log. The audit entry and the session's notice name the card that was answered, with its
+  operation, command, directory, affected files, tool server and whether it was a hard gate, as
+  the card showed them when the report arrived, or say that the answer matched no card. The
+  match is made only against the cards shown when the report arrived, and the entry says so
+  (`match=currently-shown`): when it matched none, the notice adds that a Domovoi decision may
+  already have been saved or sent before the report and that its acceptance was not confirmed.
+  Until the report is handled, an archive or an emergency stop does not deny that card but notes
+  that it was answered outside Domovoi, and a person's answer to it is refused, including one
+  already being saved, which then keeps no receipt and no standing rule. A standing rule is
+  saved only after the decision that makes it is committed, as a rule pending delivery, and is
+  made active only after the agent has the decision (see "When state cannot reach disk"). A
+  refused decision whose undo cannot be saved can leave its receipt and checkpoint row in the
+  state file, never an active standing rule; the next save that lands removes them. It then
+  stops the server, which drops every approval the server kept in memory, and
+  every other session on that server reconnects to a new server on its next message. The stopped
+  session's provider session is never resumed: it continues only after you restart its provider,
+  in a new provider session without its earlier conversation. An abort the server does not
+  confirm, or a directory whose event stream closes with a run the server will not confirm
+  aborted, also stops the server. A `permission.v2.asked` request, which the daemon cannot
+  answer, ends its turn.
+
+  A stop kills the server's process group on POSIX, or its process tree on Windows, and the
+  daemon starts no other server for that provider until the stop is over and it has confirmed
+  that none of those processes is left. If it cannot confirm that, it keeps the stopped server,
+  stops it again on each new message, and refuses the message. On POSIX the refusal ends once no
+  process of the group is left. On Windows a stop is confirmed only when the first `taskkill /T`
+  succeeds while the server's first process still runs and that process then exits. If that
+  process exits before any `taskkill`, or a `taskkill` fails, a process it started may still run
+  where nothing can find it, so the stop stays unconfirmed for good: `taskkill` is not run again,
+  and only a restart of Domovoi clears it. The refusal names the process group or tree. To
+  continue, end those programs yourself, then restart Domovoi, which forgets the stopped server
+  and starts a new one.
+
+  Limits:
+  - The server runs the approved call before the daemon hears of the reply, so whatever was
+    approved, and anything it started, may have run before the stop.
+  - The password stays readable by those programs for as long as the server runs, and nothing
+    the API allows apart from approval replies is seen: configuration, MCP, terminal, prompt and
+    session changes made with it go unnoticed.
+  - When the daemon cannot tell whether the server accepted its own answer, because the answer
+    failed or had no outcome within 10 seconds, it counts a matching reply as someone else's and
+    stops the session.
+  - A reply sent while the daemon's event stream for that directory is down, or for a subagent
+    whose creation the daemon never saw, is not seen.
+  - Kilo writes always-allow rules and a global allow everything to your global Kilo
+    configuration file, where a restart does not remove them, and allow everything with no
+    request waiting reports nothing the daemon sees. The daemon's own Kilo agents keep its ask
+    rules after any rule in that file, but Kilo's built-in subagents (`general`, `debug`) do
+    not: when the file names `bash` or `edit` before a global allow everything, that allow
+    everything opens commands and edits to them.
+  - A reply made in another session's name, or a forged subagent, stops that session, and every
+    stop restarts the server for every session on it.
+  - A process that leaves the server's process group (`setsid`) or, on Windows, its process tree
+    survives a stop.
 - Kilo still reads its legacy files from the session directory with that switch set: a
   `.kilo/mcp.json` or `.kilocode/mcp.json` starts its MCP servers, and a `.kilocodemodes` adds
   agents with their own permissions. The daemon refuses to open or continue a Kilo session in a

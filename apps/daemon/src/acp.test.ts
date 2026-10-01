@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { AcpPeer, AcpPeerHandlers, AcpSessionSetup, AcpUpdate } from "./acp.js"
 import { AcpAgentAdapter } from "./acp.js"
 import { CURSOR_ACP_PROVIDER } from "./acp-providers.js"
-import type { AgentEvent } from "./agents.js"
+import { ApprovalRequestNotPendingError, type AgentEvent } from "./agents.js"
 import { classifyProviderFailure } from "./provider-failures.js"
 
 const runtime: Runtime = {
@@ -219,6 +219,8 @@ describe("AcpAgentAdapter", () => {
     ))
     adapter.resolveApproval(approval!.requestId, "always-project")
     await expect(permission).resolves.toEqual({ optionId: "once" })
+    // A second answer reaches nothing, and says so (ruling Q285).
+    expect(() => adapter.resolveApproval(approval!.requestId, "allow-once")).toThrow(ApprovalRequestNotPendingError)
 
     // The agent's own tool reaches the approval named as a tool, never as a
     // shell command.

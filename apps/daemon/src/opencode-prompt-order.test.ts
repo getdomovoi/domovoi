@@ -46,7 +46,7 @@ function client() {
 describe("the prompt's tool check", () => {
   it("reads the catalog after the prompt's instructions, right before sending it", async () => {
     const fake = client()
-    const adapter = new OpenCodeSdkAdapter(async () => ({ client: fake, server: { close: vi.fn() } }), () => "turn-1")
+    const adapter = new OpenCodeSdkAdapter(async () => ({ client: fake, server: { close: vi.fn(), stop: vi.fn(async () => true) } }), () => "turn-1")
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime })
     instructionsRead.hook = () => fake.mcp.status.mockResolvedValue({ data: { plan: { status: "connected" } } })
     await expect(adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Hello", runtime })).rejects.toThrow(`tool server named "plan"`)

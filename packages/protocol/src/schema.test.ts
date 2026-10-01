@@ -439,6 +439,7 @@ describe("workspace protocol", () => {
       ["context-window-exceeded", "shorten-context", "Turn exceeded the model context window", false],
       ["transport", "retry", "Provider connection failed", true],
       ["unknown", "retry", "Provider request failed", true],
+      ["approval-answered-elsewhere", "review-changes", "An approval was answered outside Domovoi", false],
     ] as const
 
     for (const [kind, action, message, retryable] of failures) {
@@ -460,6 +461,13 @@ describe("workspace protocol", () => {
       action: "sign-in",
       message: "token=super-secret",
       retryable: false,
+    }).success).toBe(false)
+    // A stop for an approval answered outside Domovoi is never offered as a retry.
+    expect(providerFailureSchema.safeParse({
+      kind: "approval-answered-elsewhere",
+      action: "retry",
+      message: "An approval was answered outside Domovoi",
+      retryable: true,
     }).success).toBe(false)
 
     const snapshot = structuredClone(demoWorkspace)
