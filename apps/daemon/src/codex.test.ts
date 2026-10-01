@@ -27,7 +27,7 @@ import {
   type CodexTransport,
   type JsonRpcMessage,
 } from "./codex.js"
-import type { AgentEvent } from "./agents.js"
+import { ApprovalRequestNotPendingError, type AgentEvent } from "./agents.js"
 import { classifyProviderFailure } from "./provider-failures.js"
 
 class FakeChild extends EventEmitter {
@@ -1243,6 +1243,12 @@ describe("CodexAppServerAdapter", () => {
 
     adapter.resolveApproval(41, "always-project")
     expect(transport.sent.at(-1)).toEqual({ id: 41, result: { decision: "accept" } })
+    // An answer to a request Codex is no longer waiting on, or never asked,
+    // is not sent, and says so (ruling Q285).
+    const sent = transport.sent.length
+    expect(() => adapter.resolveApproval(41, "allow-once")).toThrow(ApprovalRequestNotPendingError)
+    expect(() => adapter.resolveApproval(99, "deny")).toThrow(ApprovalRequestNotPendingError)
+    expect(transport.sent).toHaveLength(sent)
     await adapter.close()
   })
 

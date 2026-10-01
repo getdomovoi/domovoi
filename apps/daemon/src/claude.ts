@@ -13,12 +13,13 @@ import {
 } from "@anthropic-ai/claude-agent-sdk"
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
-import type {
-  AgentAdapter,
-  AgentEvent,
-  AgentRepositoryTrust,
-  AgentVisualContext,
-  AgentWorkingPlanStep,
+import {
+  ApprovalRequestNotPendingError,
+  type AgentAdapter,
+  type AgentEvent,
+  type AgentRepositoryTrust,
+  type AgentVisualContext,
+  type AgentWorkingPlanStep,
 } from "./agents.js"
 import {
   claudeRepositoryLoad,
@@ -427,7 +428,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
 
   resolveApproval(requestId: number, decision: ApprovalDecision): void {
     const pending = this.#pendingApprovals.get(requestId)
-    if (!pending) return
+    if (!pending) throw new ApprovalRequestNotPendingError(requestId)
     this.#pendingApprovals.delete(requestId)
     if (decision === "allow-once" || decision === "always-project") {
       pending.resolve({ behavior: "allow", updatedInput: pending.input })

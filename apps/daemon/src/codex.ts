@@ -11,7 +11,14 @@ import {
   type Runtime,
 } from "@getdomovoi/protocol"
 
-import type { AgentAdapter, AgentEvent, AgentRepositoryTrust, AgentWorkingPlanStep, ApprovalScope } from "./agents.js"
+import {
+  ApprovalRequestNotPendingError,
+  type AgentAdapter,
+  type AgentEvent,
+  type AgentRepositoryTrust,
+  type AgentWorkingPlanStep,
+  type ApprovalScope,
+} from "./agents.js"
 import { codexSandboxReach } from "./approval-facts.js"
 import {
   codexMainCheckoutConfigFile,
@@ -402,6 +409,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
   // answered in that shape. Both belong to the transport that sent them.
   #toolServerCalls = new Map<string, ToolServerCall>()
   #toolServerApprovals = new Set<number>()
+  // The command approvals Codex asked for and has not had an answer to, so
+  // an answer to any other id is refused rather than sent (ruling Q285).
+  #commandApprovals = new Set<number>()
   // Threads opened on this transport under a trusted verdict, by thread id,
   // with the digest it compared: their turns skip the worktree refusal
   // (ruling Q143 A). And threads given a trusted repository's servers: Codex
@@ -712,13 +722,17 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const mapped = decision === "allow-once" || decision === "always-project"
       ? "accept"
       : "decline"
+    // Both sets belong to the transport, so with none attached neither holds
+    // the request, and nothing is sent.
+    const transport = this.#transport
     // An accepted elicitation with no persist in its _meta runs the call once;
     // Codex is never asked to remember a tool server answer.
-    if (this.#toolServerApprovals.delete(requestId)) {
-      this.#transport?.send({ id: requestId, result: { action: mapped, content: null } })
+    if (transport && this.#toolServerApprovals.delete(requestId)) {
+      transport.send({ id: requestId, result: { action: mapped, content: null } })
       return
     }
-    this.#transport?.send({ id: requestId, result: { decision: mapped } })
+    if (!transport || !this.#commandApprovals.delete(requestId)) throw new ApprovalRequestNotPendingError(requestId)
+    transport.send({ id: requestId, result: { decision: mapped } })
   }
 
   onEvent(listener: (event: AgentEvent) => void): () => void {
@@ -816,6 +830,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     this.#transport = undefined
     this.#toolServerCalls.clear()
     this.#toolServerApprovals.clear()
+    this.#commandApprovals.clear()
     // The app-server that held these threads is gone; each is opened again,
     // and checked again, on the next transport.
     this.#trustedThreads.clear()
@@ -865,6 +880,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       message.method === "item/commandExecution/requestApproval" &&
       message.id !== undefined
     ) {
+      this.#commandApprovals.add(message.id)
       this.#emit({
         type: "approval-requested",
         requestId: message.id,
