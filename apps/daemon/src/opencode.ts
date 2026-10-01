@@ -1249,10 +1249,29 @@ function ensureSuccess(result: OpenCodeResult<unknown>, action: string): void {
   if (result.error !== undefined) throw new Error(`${action} failed`)
 }
 
-// Every agent, including the built-in subagents the task tool starts, asks
+// How OpenCode (and Kilo, its fork) decide: each agent's rules are the
+// server's defaults, then the agent's own built-in rules, then the person's
+// merged `permission` (where this config's top-level block lands), then this
+// config's block for that agent, and the last rule that matches wins. Read
+// from anomalyco/opencode v1.18.32 permission/index.ts and agent/agent.ts,
+// and checked against `opencode serve`'s /agent answer.
+//
+// Ruling Q155 A: every tool that is not one of the server's own asks first,
+// so a tool server's tool, the person's own included, gets an approval card.
+// That is the catch-all "*" below. It comes first so every rule after it
+// still applies, and it overrides the defaults and built-in rules before it,
+// so those are restated after it as they were (ruling Q229 A):
+//   - the tools the defaults allow, and their ask for .env files;
+//   - the tools the defaults deny;
+//   - each agent's own allows and denies, in this config's agent blocks.
+// task and todowrite are restated only in the primary agents' blocks: a
+// subagent whose rules name neither is denied both by its session, as before.
+// Every agent, the built-in subagents the task tool starts included, asks
 // before it edits, runs a command, fetches or leaves the project. A subagent
 // keeps only its parent's deny rules, so a per-agent "ask" does not reach it.
-export const domovoiAgentPermission = {
+// opencode-permission.test.ts holds every agent a session runs to the
+// actions it had before, apart from tools that are not the server's own.
+export const askBeforeEdits = {
   edit: "ask",
   bash: "ask",
   webfetch: "ask",
@@ -1260,59 +1279,101 @@ export const domovoiAgentPermission = {
   external_directory: "ask",
 } as const
 
+// The read rules the servers' defaults give every agent.
+const defaultReads = { "*": "allow", "*.env": "ask", "*.env.*": "ask", "*.env.example": "allow" } as const
+
+// The built-in tools OpenCode's defaults allow and deny. Kilo adds its own
+// (kilo-runtime.ts).
+export const openCodeDefaultAllows = ["glob", "grep", "list", "lsp", "skill", "websearch"] as const
+export const openCodeDefaultDenies = ["question", "plan_enter", "plan_exit"] as const
+
+export const permissionActions = <Action extends "allow" | "deny">(names: readonly string[], action: Action) => (
+  Object.fromEntries(names.map((name) => [name, action])) as Record<string, Action>
+)
+
+export function domovoiPermission(allows: readonly string[], denies: readonly string[]) {
+  return {
+    "*": "ask",
+    read: defaultReads,
+    ...permissionActions(allows, "allow"),
+    ...permissionActions(denies, "deny"),
+    ...askBeforeEdits,
+  } as const
+}
+
+export const domovoiAgentPermission = domovoiPermission(openCodeDefaultAllows, openCodeDefaultDenies)
+
+// Domovoi's read-only Ask agent: every tool off but the reading ones.
+export const domovoiAskAgent = {
+  mode: "primary",
+  description: "Domovoi read-only ask mode",
+  tools: {
+    "*": false,
+    read: true,
+    glob: true,
+    grep: true,
+    list: true,
+    webfetch: true,
+    websearch: true,
+    question: true,
+  },
+  permission: {
+    edit: "deny",
+    bash: "deny",
+    webfetch: "allow",
+    external_directory: "deny",
+  },
+} as const
+
+// What Plan may not do, on top of its built-in rules.
+export const domovoiPlanLimits = {
+  edit: "deny",
+  bash: "deny",
+  webfetch: "allow",
+  external_directory: "deny",
+} as const
+
+// The agent blocks as the servers take them. The SDK's generated agent type
+// names five permissions; the server's schema takes any permission name
+// (packages/core/src/v1/config/permission.ts, a struct with a string rest).
+type PermissionAction = "allow" | "ask" | "deny"
+export type EmbeddedAgents = Record<string, {
+  mode?: "primary"
+  description?: string
+  tools?: Readonly<Record<string, boolean>>
+  permission: Readonly<Record<string, PermissionAction | Readonly<Record<string, PermissionAction>>>>
+}>
+
 export const domovoiOpenCodeConfig: Config = {
   autoupdate: false,
   permission: domovoiAgentPermission,
-  agent: {
-    "domovoi-ask": {
-      mode: "primary",
-      description: "Domovoi read-only ask mode",
-      tools: {
-        "*": false,
-        read: true,
-        glob: true,
-        grep: true,
-        list: true,
-        webfetch: true,
-        websearch: true,
-        question: true,
-      },
-      permission: {
-        edit: "deny",
-        bash: "deny",
-        webfetch: "allow",
-        external_directory: "deny",
-      },
-    },
+  agent: ({
+    "domovoi-ask": domovoiAskAgent,
     plan: {
       permission: {
-        edit: "deny",
-        bash: "deny",
-        webfetch: "allow",
-        external_directory: "deny",
+        question: "allow",
+        plan_exit: "allow",
+        task: { "*": "allow", general: "deny" },
+        todowrite: "allow",
+        ...domovoiPlanLimits,
       },
     },
     build: {
-      permission: {
-        edit: "ask",
-        bash: "ask",
-        webfetch: "ask",
-        doom_loop: "ask",
-        external_directory: "ask",
-      },
+      permission: { question: "allow", plan_enter: "allow", task: "allow", todowrite: "allow", ...askBeforeEdits },
     },
     "domovoi-auto": {
       mode: "primary",
       description: "Domovoi automatic build mode",
-      permission: {
-        edit: "ask",
-        bash: "ask",
-        webfetch: "ask",
-        doom_loop: "ask",
-        external_directory: "ask",
-      },
+      permission: { task: "allow", todowrite: "allow", ...askBeforeEdits },
     },
-  },
+    general: { permission: { todowrite: "deny" } },
+    explore: {
+      permission: { "*": "deny", grep: "allow", glob: "allow", list: "allow", websearch: "allow", read: "allow", ...askBeforeEdits },
+    },
+    // OpenCode's own agents for compaction, titles and summaries deny every
+    // tool before the person's rules.
+    ...Object.fromEntries(["compaction", "title", "summary"].map((name) => [name, { permission: { "*": "deny", ...askBeforeEdits } }])),
+  } satisfies EmbeddedAgents) as NonNullable<Config["agent"]>,
 }
 
 const defaultOpenCodeFactory: OpenCodeFactory = async () => {

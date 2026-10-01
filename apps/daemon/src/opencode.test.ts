@@ -1125,7 +1125,7 @@ describe("subagents and current permission events", () => {
     ["OpenCode", domovoiOpenCodeConfig],
     ["Kilo", domovoiKiloConfig],
   ])("makes every %s agent, built-in subagents included, ask before it edits, runs or fetches", (_name, config) => {
-    expect(config.permission).toEqual({
+    expect(config.permission).toMatchObject({
       edit: "ask",
       bash: "ask",
       webfetch: "ask",

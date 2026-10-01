@@ -552,6 +552,13 @@ code or settings the repository brings:
   `KILO_DISABLE_PROJECT_CONFIG=1`. Project `opencode.json`, `kilo.json`, `.opencode/`, `.kilo/`
   and `.kilocode/` configuration, plugins and MCP entries are not loaded, and no package install
   runs in those directories. Your global provider configuration still applies.
+- OpenCode and Kilo ask before every tool that is not one of their own. The embedded configuration
+  starts its permissions with a `"*": "ask"` rule and then restates the server's own rules for its
+  built-in tools, so each built-in tool keeps the action it had, and a call to a tool server's
+  tool, one of yours included, or to a plugin's tool raises an approval card. Kilo's explore
+  subagent used to have tool server tools hidden; it now sees them and asks before each call. An
+  allow rule in your own `permission` configuration still applies when your configuration lists
+  it after a `"*"` rule of its own; without one, the catch-all comes after your rule and asks.
 - Kilo still reads its legacy files from the session directory with that switch set: a
   `.kilo/mcp.json` or `.kilocode/mcp.json` starts its MCP servers, and a `.kilocodemodes` adds
   agents with their own permissions. The daemon refuses to open or continue a Kilo session in a
