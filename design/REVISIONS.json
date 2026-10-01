@@ -4,7 +4,7 @@
     "project": "Relay multi-device platform",
     "projectId": "a3b4404e-4d0c-451e-8dd2-203116a76c06"
   },
-  "recordedOn": "2026-09-30",
+  "recordedOn": "2026-10-01",
   "files": {
     "design/assets/mark-reduced.svg": {
       "bytes": 519,
@@ -119,8 +119,8 @@
       "sha256": "13bec69b54f560d9c59a765b56f285a63b4dd3a33ccaf3c465de785865dfeaae"
     },
     "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html": {
-      "bytes": 611115,
-      "sha256": "52bafd8d3bae523a0e1d26813de3ca07b3630ac5cc6e5b9f4baa1ef52428da4c"
+      "bytes": 611376,
+      "sha256": "e8801310720f1d3fafff071424ec3486fb29f2e70ae86958b029ac18db9fb5ff"
     },
     "design/design_handoff_domovoi_v2/designs/Domovoi Pairing Layouts.dc.html": {
       "bytes": 10402,

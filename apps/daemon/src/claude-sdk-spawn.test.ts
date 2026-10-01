@@ -44,7 +44,7 @@ async function* noMessages(): AsyncGenerator<SDKUserMessage> {}
 describe("the SDK spawn Domovoi copies", () => {
   it("is the one in the SDK release Domovoi was checked against", async () => {
     const manifest = JSON.parse(await readFile(join(sdkDirectory, "package.json"), "utf8")) as { version: string }
-    expect(manifest.version).toBe("0.3.263")
+    expect(manifest.version).toBe("0.3.281")
 
     const source = await readFile(join(sdkDirectory, "sdk.mjs"), "utf8")
     const start = source.indexOf("spawnLocalProcess(")

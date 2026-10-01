@@ -1,7 +1,7 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html",
-  "sha256": "52bafd8d3bae523a0e1d26813de3ca07b3630ac5cc6e5b9f4baa1ef52428da4c",
-  "derivedOn": "2026-09-26",
+  "sha256": "e8801310720f1d3fafff071424ec3486fb29f2e70ae86958b029ac18db9fb5ff",
+  "derivedOn": "2026-09-30",
   "sources": [
     "packages/ui/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts",
@@ -1761,7 +1761,7 @@
         "Balances the time it spends against what it catches.",
         "Applies from the next turn. A turn already in flight keeps the effort it started with.",
         "has no",
-        "when you changed model. It stays there."
+        "the model's default,"
       ],
       "evidence": [
         "<EffortChip",
@@ -1769,7 +1769,8 @@
         "`EFFORT ON ${provider.toUpperCase()}`",
         "Applies from the next turn. A turn already in flight keeps the effort it started with.",
         "so this moved to",
-        "when you changed model. It stays there.",
+        "so this moved to the model's default, ${dropped.to}. It stays until you pick a level.",
+        "so this moved to ${dropped.to}. It stays until you pick a level.",
         "kind: \"reasoning effort\"",
         "Stops reasoning early. Fine for triage and single-file edits.",
         "Balances the time it spends against what it catches.",

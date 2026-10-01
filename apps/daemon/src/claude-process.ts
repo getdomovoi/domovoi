@@ -255,7 +255,7 @@ control.on("error", end)
 `
 
 // Starts Claude the way the SDK's own spawn does (spawnLocalProcess in
-// @anthropic-ai/claude-agent-sdk 0.3.263): the command, arguments, directory,
+// @anthropic-ai/claude-agent-sdk 0.3.281): the command, arguments, directory,
 // environment and abort signal exactly as the SDK built them, piped stdio, no
 // console window, and stderr decoded as UTF-8 into the stderr option, which a
 // custom spawn does not get from the SDK. Like the SDK's, the exit it reports
