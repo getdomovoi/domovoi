@@ -35,7 +35,9 @@ export const supervisorRecordSchema = z.object({
   startedAt: z.iso.datetime(), updatedAt: z.iso.datetime(),
   state: z.enum(["starting", "running", "backoff", "stopping", "stopped", "exhausted", "failed"]),
   attemptCount: count, crashes: count, attempts: z.array(attemptSchema).max(4),
-  reason: z.object({ kind: z.enum(["clean-exit", "deliberate-stop", "restart-limit", "observation-failure"]), at: z.iso.datetime() }).strict().nullable(),
+  // tree-unconfirmed (ruling Q296): a Windows daemon exited, or was stopped,
+  // without a tree kill that succeeded, so what it started may still run.
+  reason: z.object({ kind: z.enum(["clean-exit", "deliberate-stop", "restart-limit", "observation-failure", "tree-unconfirmed"]), at: z.iso.datetime() }).strict().nullable(),
 }).strict().refine((record) => {
   if (record.attemptCount !== record.attempts.length
     || record.crashes !== record.attempts.filter((attempt) => isCrash(attempt.exit)).length) return false
@@ -51,7 +53,7 @@ export const supervisorRecordSchema = z.object({
   if (record.state === "running" && (!last?.child || last.exit !== null)) return false
   if (record.state === "backoff" && (!last || !isCrash(last.exit) || last.backoffMs === 0)) return false
   if (record.state === "exhausted" && (record.crashes !== 4 || record.reason?.kind !== "restart-limit")) return false
-  if (record.state === "failed" && record.reason?.kind !== "observation-failure") return false
+  if (record.state === "failed" && record.reason?.kind !== "observation-failure" && record.reason?.kind !== "tree-unconfirmed") return false
   if (record.state === "stopped" && record.reason?.kind !== "clean-exit" && record.reason?.kind !== "deliberate-stop") return false
   if (record.reason?.kind === "clean-exit" && last?.exit?.kind !== "clean") return false
   if (["stopped", "exhausted", "failed"].includes(record.state)) {

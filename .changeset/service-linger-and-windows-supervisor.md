@@ -12,9 +12,11 @@ says on stderr that the daemon stops at logout and starts again at the next logi
 install and removal return what they did as `linger`.
 
 On Windows, the logon task now runs the supervisor loop the WSL guest runs
-(`domovoid --service-supervise`). A crashed daemon restarts after 1, 5 and 15 seconds; a fourth
-crash is recorded as exhausted and `service status` then exits 1. Removal and updates stop the loop
-and prove the daemon stopped before Task Scheduler stops the task. Installing over a supervised task
+(`domovoid --service-supervise`). A daemon's exit on Windows does not prove that what it started
+has ended, so a crash is recorded, the daemon is not restarted, and `service status` exits 1;
+restarting waits for a job object that contains its tree. Removal and updates stop the loop and
+prove the daemon stopped before Task Scheduler stops the task, and refuse, keeping the task and
+configuration, when the daemon's process tree could not be confirmed ended. Installing over a supervised task
 whose loop still runs is refused with the remedy. A task installed earlier keeps working and is
 replaced at the next install or update. Each registration then lifts Task Scheduler's default
 72 hour execution limit and battery stops, as the WSL task does, so the loop is not ended after

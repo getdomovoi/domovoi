@@ -124,6 +124,7 @@ export function readGuestSupervisorStatus(home: string, alive = guestProcessAliv
   const running = record.state === "running" && loopAlive && activeChild?.child !== null
     && activeChild?.child !== undefined && activeChild.exit === null && alive(activeChild.child)
   const observed = record.state === "exhausted" ? `stopped; supervision exhausted after ${record.crashes} crashes; ${lastExit(record)}`
+    : record.reason?.kind === "tree-unconfirmed" ? `stopped; the daemon's process tree could not be confirmed ended, so it was not restarted; ${lastExit(record)}`
     : record.state === "failed" ? `stopped; supervision refused after an observation failure; ${lastExit(record)}`
       : record.state === "stopped" ? `stopped (${record.reason?.kind}); ${lastExit(record)}`
         : !loopAlive ? `stopped; supervisor is not alive; ${lastExit(record)}`
@@ -131,7 +132,9 @@ export function readGuestSupervisorStatus(home: string, alive = guestProcessAliv
             : running ? `${windows ? "daemon" : "guest daemon"} running; attempt ${record.attemptCount}; ${record.crashes} crashes`
               : `child stopped; supervisor ${record.state}; ${lastExit(record)}`
   const supervisionFailure = configuration === undefined ? "configuration-missing"
-    : record.state === "exhausted" ? "exhausted" : record.state === "failed" ? "observation-failure" : undefined
+    : record.state === "exhausted" ? "exhausted"
+      : record.reason?.kind === "tree-unconfirmed" ? "tree-unconfirmed"
+        : record.state === "failed" ? "observation-failure" : undefined
   const detail = configuration ? observed : `service configuration missing; ${windows ? "supervisor" : "guest"} evidence is not bound to an installed service; ${observed}`
   // A live loop that has not stopped still starts children: a backoff ends in
   // another launch. An install over it would race it (install.ts).
@@ -158,6 +161,11 @@ export async function stopGuestSupervisor(path: string, deadline: OperationDeadl
     const current = boundRecord(path)
     if (!current || current.supervisorId !== initial.supervisorId || !sameProcess(current.loop, initial.loop)) {
       throw new Error("Supervisor identity changed during shutdown")
+    }
+    // Ruling Q296: dead recorded processes do not prove a tree the loop could
+    // not confirm ended. The task and configuration stay, for recovery.
+    if (current.reason?.kind === "tree-unconfirmed") {
+      throw new Error("The daemon's process tree could not be confirmed ended, so processes it started may still run; removal refused. End them, then retry the removal.")
     }
     const loopAlive = effects.alive(current.loop)
     const childrenAlive = current.attempts.some((attempt) => attempt.child !== null && effects.alive(attempt.child))

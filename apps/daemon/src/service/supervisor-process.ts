@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs"
 import { windowsTreeKill } from "../claude-process.js"
 import { OperationDeadline, OperationDeadlineExceededError } from "../operation-deadline.js"
 import { withinServiceDeadline } from "./deadline.js"
-import type { GuestExit, GuestLaunch } from "./guest-supervisor.js"
+import { ProcessTreeUnconfirmedError, type GuestExit, type GuestLaunch } from "./guest-supervisor.js"
 import { guestProcessIdentitySchema, type GuestProcessIdentity } from "./supervisor-record.js"
 import type { ServiceCommand } from "./install.js"
 import { windowsPowerShellPath } from "./windows-task.js"
@@ -138,9 +138,13 @@ export function launchGuestChild(executable: string, args: string[], options: {
   // since Windows has no SIGTERM and kill() would end the daemon alone,
   // leaving the agents and terminals it started.
   platform?: NodeJS.Platform; treeKill?: (pid: number) => Promise<void>
+  // Whether a recorded identity still names a live process.
+  alive?: (identity: GuestProcessIdentity) => boolean
 } = {}): Promise<GuestLaunch> {
   const platform = options.platform ?? process.platform
   const treeKill = options.treeKill ?? ((pid: number) => windowsTreeKill(pid))
+  const alive = options.alive ?? guestProcessAlive
+  const windows = platform === "win32"
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, { stdio: "inherit", env: options.environment ?? process.env })
     let spawned = false
@@ -161,16 +165,10 @@ export function launchGuestChild(executable: string, args: string[], options: {
       const deadline = OperationDeadline.start(5_000)
       try { return await withinServiceDeadline(deadline, () => exited) } finally { deadline.clear() }
     }
-    const terminate = async () => {
-      if (platform !== "win32" || child.pid === undefined) { child.kill("SIGTERM"); return }
-      // A tree kill that fails leaves the deadline below to decide; kill()
-      // then ends at least the daemon itself.
-      await treeKill(child.pid).catch(() => {})
-    }
-    let stopping: Promise<GuestExit> | undefined
-    const stop = (): Promise<GuestExit> => stopping ??= (async () => {
-      if (result !== undefined) return result
-      await terminate()
+    // Waits for the exit, killing the daemon through Node's own handle if the
+    // first wait runs out. The handle keeps the pid from naming another
+    // process until Node reports the exit.
+    const reap = async (): Promise<GuestExit> => {
       try { return await wait() } catch (error) {
         if (!(error instanceof OperationDeadlineExceededError)) throw error
         child.kill("SIGKILL")
@@ -180,21 +178,78 @@ export function launchGuestChild(executable: string, args: string[], options: {
         }
         return cleanup.value
       }
+    }
+
+    // Ruling Q296 (2026-10-01, applying Q111 B), the tree state claude-process.ts
+    // keeps for Claude: on Windows the daemon's exit says nothing of the agents,
+    // terminals and tools it started. Only a tree kill that succeeded is proof
+    // ("killed"). A failed tree kill, a kill of the daemon alone, or an exit
+    // Node reported first leaves the tree unconfirmed for good, and the stop
+    // rejects saying so; the loop then neither restarts nor lets removal pass.
+    // A job object that contains the tree is the follow-up that could prove it.
+    let tree: "untouched" | "killed" | "unconfirmed" = "untouched"
+    let identity: GuestProcessIdentity | undefined
+    const exitedFirst = "the daemon exited before its tree was ended, and a pid whose process has exited may already name another one"
+    const killTree = async (): Promise<string | undefined> => {
+      try {
+        if (child.pid === undefined) return "the daemon has no pid"
+        await treeKill(child.pid)
+        tree = "killed"
+        return undefined
+      } catch (error) {
+        tree = "unconfirmed"
+        return error instanceof Error ? error.message : String(error)
+      }
+    }
+    let stopping: Promise<GuestExit> | undefined
+    const stop = (): Promise<GuestExit> => stopping ??= (async () => {
+      if (!windows) {
+        if (result !== undefined) return result
+        child.kill("SIGTERM")
+        return reap()
+      }
+      if (result !== undefined) {
+        if (tree === "killed") return result
+        tree = "unconfirmed"
+        throw new ProcessTreeUnconfirmedError(exitedFirst, result)
+      }
+      const failure = await killTree()
+      if (result === undefined) child.kill("SIGKILL")
+      const exit = await reap()
+      if (failure !== undefined || tree !== "killed") throw new ProcessTreeUnconfirmedError(failure ?? exitedFirst, exit)
+      return exit
     })()
+    // After an exit the loop saw first: the dead attempt's tree is ended only
+    // through its recorded identity, still alive; a dead one is not killed by
+    // its pid, so its tree stays unconfirmed.
+    const confirmTree = async (): Promise<void> => {
+      if (tree === "killed") return
+      if (result === undefined && identity !== undefined && alive(identity)) {
+        await stop()
+        return
+      }
+      tree = "unconfirmed"
+      throw new ProcessTreeUnconfirmedError(exitedFirst, result)
+    }
     child.once("spawn", () => {
       spawned = true
       try {
         if (child.pid === undefined) throw new Error("Guest launch supplied no child pid")
-        const identity = (options.identify ?? guestProcessIdentity)(child.pid)
-        resolve({ state: "started", child: { identity, exited, stop } })
+        identity = (options.identify ?? guestProcessIdentity)(child.pid)
+        resolve({ state: "started", child: { identity, exited, stop, ...(windows ? { confirmTree } : {}) } })
       } catch (error) {
         // On Windows the creation time is read after the spawn, through a
         // PowerShell that takes a moment; a daemon that exits at once is gone
         // by then. Its exit is a failed launch, counted as a crash, once it is
-        // known to have ended: no child is left whose identity was not kept.
-        const exitedFirst = error instanceof ProcessExitedBeforeIdentityError
-        void stop().then(() => exitedFirst ? resolve({ state: "failed", errorCode: "EXITED_BEFORE_IDENTITY" }) : reject(error), (cleanup) => reject(
-          new AggregateError([error, cleanup], "Guest identity and shutdown failed", { cause: error })))
+        // known to have ended. With no identity its tree cannot be named, so
+        // on Windows the daemon is ended through Node's handle alone and its
+        // tree stays unconfirmed: the loop does not restart it.
+        const exitedBeforeIdentity = error instanceof ProcessExitedBeforeIdentityError
+        const ended = windows ? (async () => { if (result === undefined) child.kill("SIGKILL"); return reap() })() : stop()
+        void ended.then(() => {
+          if (!exitedBeforeIdentity) reject(error)
+          else resolve({ state: "failed", errorCode: "EXITED_BEFORE_IDENTITY", ...(windows ? { treeUnconfirmed: true as const } : {}) })
+        }, (cleanup) => reject(new AggregateError([error, cleanup], "Guest identity and shutdown failed", { cause: error })))
       }
     })
   })

@@ -165,10 +165,25 @@ yet.
 
 Decided 2026-09-17 (`SHIP-PLAN.md` S1.1): the limited-user `ONLOGON` task runs
 `domovoid --service-supervise <service.json>`, the supervisor loop the WSL guest runs, instead of the
-daemon itself. The loop starts the daemon with `--service-config`, restarts it after a crash with
-1, 5 and 15 second backoffs, and after a fourth crash records exhaustion in
-`<profile>/supervisor.json` and exits 1 with `Daemon supervision exhausted after 4 crashes and 4
-attempts.` A clean exit or a deliberate stop does not restart. The task is still created by
+daemon itself. The loop starts the daemon with `--service-config`. On Linux, in the WSL guest, it
+restarts a crash after 1, 5 and 15 second backoffs and records a fourth as exhausted.
+
+On Windows it does not restart, by ruling Q296 (2026-10-01, applying Q111 B: Windows orphans fail
+closed). A daemon's exit there says nothing of the agents, terminals and tools it started, which
+Windows lets outlive it, and only a `taskkill /T /F` that succeeded proves them ended. Once Node
+has reported the daemon's exit, its pid may already name another process, so its tree is never
+killed by that pid. Any exit the loop did not cause through such a tree kill, a crash, a clean
+exit, or a daemon gone before its identity was read, therefore leaves the tree unconfirmed: the
+loop records `"reason": { "kind": "tree-unconfirmed" }` with state `failed` in
+`<profile>/supervisor.json`, does not restart, and exits 1 with `Supervision stopped: the daemon's
+process tree could not be confirmed ended, so it was not restarted. Processes it started may still
+run. See domovoid service status.` A deliberate stop whose tree kill fails ends the daemon through
+Node's own handle and records the same, since a kill of the daemon alone is not tree proof. Status
+then reports `stopped; the daemon's process tree could not be confirmed ended, so it was not
+restarted; <last exit>` and exits 1, and removal refuses with `The daemon's process tree could not
+be confirmed ended, so processes it started may still run; removal refused. End them, then retry
+the removal.`, keeping the task, disabled, and `service.json` for recovery. Restarting a Windows
+daemon after a crash waits for a job object that contains its tree; that is the follow-up. The task is still created by
 `schtasks /create /sc onlogon /rl LIMITED`, which cannot set a task's run limit or battery rules
 and leaves Task Scheduler's defaults: a 72 hour execution limit, as Microsoft documents it, and
 battery rules that stop the task. The loop and its daemon would end there. So after every
@@ -185,9 +200,9 @@ Windows has no `/proc`, so the loop identifies a process by its pid and its crea
 System process's creation time. A query that fails refuses rather than reading as a dead process.
 Each read starts PowerShell and blocks its caller while it runs, the desktop's status read
 included; that cost has not been measured. A daemon that exits before its creation time is read is recorded as a failed
-launch (`EXITED_BEFORE_IDENTITY`) and counted as a crash, once its exit is observed. A stop ends the
-daemon's whole process tree with `taskkill /T /F`; nothing relies on Task Scheduler's own stop to
-end the processes the loop started, which is not proved.
+launch (`EXITED_BEFORE_IDENTITY`) and counted as a crash, once its exit is observed, with its tree
+unconfirmed. A stop ends the daemon's whole process tree with `taskkill /T /F`; nothing relies on
+Task Scheduler's own stop to end the processes the loop started, which is not proved.
 
 `domovoid service status` reads the task's state and the loop's record:
 `installed, running: Domovoi daemon is running; daemon running; attempt 1; 0 crashes`, and exits 1
@@ -387,10 +402,10 @@ record also shows its child alive.
 Beyond those native tests these are configuration delivery and focused removal checks, not full
 native systemd, launchd, or Task Scheduler lifecycle acceptance. Crash supervision of the fixture
 process is proven on systemd and launchd. On Windows the logon task now runs the supervisor loop.
-Tests added on 2026-10-01 for the ordinary Windows CI leg run that loop in the test process with
-real children, crash one and require its restart after the 1 second backoff, and read real
-creation times; they had not run on Windows when this was written. No test registers a supervised
-task, crashes the daemon under Task Scheduler, or removes one: that native acceptance is open.
+The loop runs with real children, a crash and its restart after the 1 second backoff on the Linux
+leg only; on Windows every PowerShell, `taskkill` and `schtasks` answer is mocked, so no test
+reads a real creation time or kills a real tree there. No test registers a supervised task,
+crashes the daemon under Task Scheduler, or removes one: that native acceptance is open.
 Lingering is proven only against mocked and shimmed `loginctl`; no test changes a real user's
 lingering. Installer rollback
 remains separate audit work. A timed-out manager may already have changed OS state; inspect service
