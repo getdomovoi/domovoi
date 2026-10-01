@@ -27,8 +27,13 @@ conversion stay off. A session bundle is written in that directory too, from obj
 lazy fetching off, so a partial clone's missing blob fails the transfer instead of being fetched
 with the repository's own transport settings. Restore clears the merge, cherry-pick, revert and
 finished sequencer state `git reset --hard` clears, and refuses while a submodule has local
-changes, as a snapshot does. Push and fetch for a transfer allow only https, http, ssh, git and
-file transports, and refuse a remote whose address is anything else or that names a remote helper.
+changes, as a snapshot does. Push and fetch for a transfer allow only https, http, ssh and git
+remotes, and refuse a remote whose address is anything else, a local path or a file:// URL
+included, or that names a remote helper; a received bundle is still read from its own file.
+Submodules are checked for local work each through an isolated Git directory of its own, the
+superproject's status and diff keep out of submodule worktrees, and checkpoint, snapshot, restore,
+revert and transfer refuse while a checked-out submodule's own Git config sets a filter, which no
+trust covers.
 
 Under trust, a filter runs in a process group of its own on macOS and Linux, and a timeout or an
 emergency stop ends the whole group. A process a filter started can leave that group, so after a
