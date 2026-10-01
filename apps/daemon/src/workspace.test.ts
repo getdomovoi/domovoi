@@ -1,4 +1,4 @@
-import { execFile, type ChildProcess } from "node:child_process"
+import { execFile, spawnSync, type ChildProcess } from "node:child_process"
 import { createServer } from "node:http"
 import { createServer as createNetServer, type AddressInfo, type Socket } from "node:net"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -1392,6 +1392,31 @@ describe("GitWorkspaceService", () => {
     expect(await gitIn("rev-parse", "HEAD")).toBe(`${checkpoint.commit}\n`)
     // The writer's index stays as it left it: late.txt staged.
     expect(await gitIn("ls-files", "--stage", "late.txt")).not.toBe("")
+  })
+
+  // Git lists paths as their raw bytes; two paths that are not UTF-8 can
+  // read as the same text. The check under the lock compares the raw bytes
+  // (their digest), so a writer that swapped one such staged path for another
+  // still keeps its staging (ruling Q281). Index-only entries: macOS refuses
+  // such file names, Linux worktrees can hold them.
+  it("keeps another writer's staging of a path that differs from the seed only in bytes that are not UTF-8", async () => {
+    const { scratch, repositoryPath, gitIn } = await repositoryWithWork("domovoi-checkpoint-raw-paths-")
+    const blob = (await gitIn("hash-object", "-w", join(repositoryPath, "tracked.txt"))).trim()
+    const indexInfo = (lines: Buffer[]) => {
+      const result = spawnSync("git", ["-C", repositoryPath, "update-index", "--index-info"], { input: Buffer.concat(lines) })
+      expect(result.status).toBe(0)
+    }
+    const entry = (mode: string, oid: string, last: number) => Buffer.concat([Buffer.from(`${mode} ${oid}\tpath-`), Buffer.from([last]), Buffer.from("\n")])
+    indexInfo([entry("100644", blob, 0xff)])
+    const listed = () => spawnSync("git", ["-C", repositoryPath, "ls-files", "-z"]).stdout as Buffer
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), {
+      // Another writer swaps path-0xff for path-0xfe, same mode and blob.
+      afterCheckpointStaging: () => indexInfo([entry("0", "0".repeat(40), 0xff), entry("100644", blob, 0xfe)]),
+    })
+
+    await service.checkpoint(repositoryPath, "raw")
+
+    expect(listed().includes(Buffer.from([0x70, 0x61, 0x74, 0x68, 0x2d, 0xfe]))).toBe(true)
   })
 
   // A split index keeps most entries in a sharedindex.<hash> file beside it.

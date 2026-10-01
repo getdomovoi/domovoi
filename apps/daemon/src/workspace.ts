@@ -1881,8 +1881,15 @@ export class GitWorkspaceService implements WorkspaceService {
     const index = join(isolated.gitDirectory, "checkpoint-index")
     // The entries the worktree's index held at the start, as `ls-files`
     // lists them: what a later writer is detected by. Stat data a refresh
-    // rewrites does not count.
-    const entries = (path: string) => isolated.run(["ls-files", "--stage", "-v", "-z"], { index: path, signal: null })
+    // rewrites does not count. Git lists paths as their raw bytes, so the
+    // comparison is of a digest of the raw output, never of decoded text, in
+    // which two paths that are not UTF-8 can read alike (ruling Q281).
+    const entries = async (path: string) => {
+      const digest = createHash("sha256")
+      const result = await isolated.stream(["ls-files", "--stage", "-v", "-z"], (chunk) => { digest.update(chunk) }, { index: path, signal: null })
+      if (result.code !== 0) throw new Error(result.stderr || `git ls-files exited with ${result.code ?? result.signal ?? "no status"}`)
+      return digest.digest("hex")
+    }
     let seeded: string
     try {
       await writeFile(index, await readFile(sharedIndex))
@@ -1896,7 +1903,8 @@ export class GitWorkspaceService implements WorkspaceService {
       seeded = await entries(index)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-      seeded = ""
+      // No index lists no entry: the digest of nothing.
+      seeded = createHash("sha256").digest("hex")
       if (head !== undefined) await isolated.run(["read-tree", head], { index, signal })
     }
     if (head !== undefined) await isolated.setHead(head)
