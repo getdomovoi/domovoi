@@ -121,12 +121,36 @@ export type OpenCodeAdapterIdentity = {
   builtInPermissions?: ReadonlySet<string>
   builtInToolIds?: readonly string[]
   allowedPermissions?: ReadonlySet<string>
-  // The agents a Domovoi session runs: its primary agents and the subagents
-  // they start without a card. Each must ask before a tool it does not name.
-  sessionAgents?: readonly string[]
+  // The server's name for the primary agent Domovoi asks for (Kilo runs
+  // build as code).
+  agentName?: (agent: string) => string
 }
 
-const openCodeSessionAgents: readonly string[] = ["build", "plan", "domovoi-auto", "domovoi-ask", "general", "explore"]
+// The server's rule matching (packages/core/src/util/wildcard.ts at opencode
+// v1.18.32 and kilo v7.8.1): `*` is any run, `?` any one character, a
+// trailing " *" also matches nothing, and Windows matches in any case.
+function wildcardMatches(input: string, pattern: string): boolean {
+  let escaped = pattern.replaceAll("\\", "/").replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")
+  if (escaped.endsWith(" .*")) escaped = `${escaped.slice(0, -3)}( .*)?`
+  return new RegExp(`^${escaped}$`, process.platform === "win32" ? "si" : "s").test(input.replaceAll("\\", "/"))
+}
+
+// The agents a session can reach from the primary agent it runs (security
+// review round 3 of #687): that agent, and every agent the task tool can
+// start from it, which is any agent whose effective mode is not primary and
+// whose start the primary's task rule does not deny. An agent asked for that
+// the server does not list is undefined.
+function reachableAgents(agents: readonly unknown[], primary: string): Array<{ name: string; permission: unknown }> | undefined {
+  const listed = agents.flatMap((agent) => {
+    const record = asRecord(agent)
+    return typeof record?.name === "string" ? [{ name: record.name, mode: record.mode, permission: record.permission }] : []
+  })
+  const selected = listed.find((agent) => agent.name === primary)
+  const rules = selected === undefined ? undefined : mergedRules(selected.permission)
+  if (selected === undefined || rules === undefined) return selected === undefined ? undefined : [selected]
+  const starts = (name: string) => rules.findLast((rule) => wildcardMatches("task", rule.permission) && wildcardMatches(name, rule.pattern))?.action !== "deny"
+  return [selected, ...listed.filter((agent) => agent.name !== primary && agent.mode !== "primary" && starts(agent.name))]
+}
 
 type MergedRule = { permission: string; pattern: string; action: "allow" | "ask" | "deny" }
 
@@ -474,7 +498,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
     await this.#refuseHeldBackRepositoryFiles(cwd)
     const client = await this.#client()
-    await this.#refuseUnownedNames(client, cwd)
+    await this.#refuseUnownedNames(client, cwd, runtime)
     const action = `${this.#identity.providerName} session creation`
     const created = requireSession(
       unwrap(await client.session.create({
@@ -512,7 +536,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#pendingSessionLoads.set(threadId, pending)
     try {
       const client = await this.#client()
-      await this.#refuseUnownedNames(client, cwd)
+      await this.#refuseUnownedNames(client, cwd, runtime)
       const action = `${this.#identity.providerName} session resume`
       const session = requireSession(
         unwrap(await client.session.get({
@@ -845,7 +869,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // A tool server or plugin added while a turn runs is checked at the next
   // prompt. A plugin tool that asks under another name, or does not ask, is
   // the person's own code and is not caught here.
-  async #refuseUnownedNames(client: OpenCodeClient, cwd: string): Promise<void> {
+  async #refuseUnownedNames(client: OpenCodeClient, cwd: string, runtime: Runtime): Promise<void> {
     const name = this.#identity.providerName
     const unreadable = new Error(
       `Domovoi could not read ${name}'s tool servers and tools for this worktree, so it cannot tell whether a tool could run without approval. Try again.`,
@@ -892,14 +916,16 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // person's, an organization's or a managed config, can still leave an
     // agent allowing a tool that is not the server's own (security review
     // rounds 2 and 3 of #687). The agents' merged rules, as the server will
-    // judge calls, are checked by shape (unnamedToolAllow). An agent the
-    // server does not list is not run.
-    const runs = new Set(this.#identity.sessionAgents ?? openCodeSessionAgents)
+    // judge calls, are checked by shape (unnamedToolAllow), for every agent
+    // the session can reach from the primary agent it runs (reachableAgents).
+    const primary = (this.#identity.agentName ?? ((agent: string) => agent))(openCodeAgentFor(runtime))
+    const reachable = reachableAgents(agents, primary)
+    if (reachable === undefined) {
+      throw new UnownedToolError(`${name} does not list its ${primary} agent, so Domovoi cannot tell whether a tool could run there without approval.`)
+    }
     const builtIns = this.#identity.builtInPermissions ?? openCodeBuiltInPermissions
     const config = "your own configuration (an agent or mode block, or the top-level permission block) or an organization's or managed config"
-    for (const agent of agents) {
-      const record = asRecord(agent)
-      if (typeof record?.name !== "string" || !runs.has(record.name)) continue
+    for (const record of reachable) {
       const rules = mergedRules(record.permission)
       if (rules === undefined) {
         throw new UnownedToolError(`${name}'s ${record.name} agent has a rule Domovoi cannot read, so it cannot tell whether a tool could run there without approval. Check ${name}'s ${config}.`)
@@ -1038,7 +1064,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const system = await projectInstructions(session.cwd, "opencode")
     // Last before the prompt goes out, after everything else it waits on, so
     // a tool server added meanwhile is seen (security review round 3 of #687).
-    await this.#refuseUnownedNames(client, session.cwd)
+    await this.#refuseUnownedNames(client, session.cwd, runtime)
     ensureSuccess(await client.session.promptAsync({
       path: { id: session.threadId },
       query: { directory: session.cwd },

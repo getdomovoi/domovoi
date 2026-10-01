@@ -21,7 +21,8 @@ export class KiloSdkAdapter extends OpenCodeSdkAdapter {
       builtInPermissions: kiloBuiltInPermissions,
       builtInToolIds: kiloBuiltInToolIds,
       allowedPermissions: kiloAllowedPermissions,
-      sessionAgents: ["code", "plan", "domovoi-auto", "domovoi-ask", "general", "explore"],
+      // Kilo runs the build agent as code (kilocode/agent/index.ts resolveKey).
+      agentName: (agent) => (agent === "build" ? "code" : agent),
     })
   }
 }

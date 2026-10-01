@@ -1932,6 +1932,43 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     await adapter.close()
   })
 
+  // Security review round 3 of #687 (P2): only the agents a session can reach
+  // are checked: the primary agent it runs now, and every agent the task tool
+  // can start from it, by the agent's effective mode and the primary's task
+  // rule.
+  it("checks only the primary agent selected and the subagents it can start", async () => {
+    const opens = async (agents: unknown[], permissionMode: Runtime["permissionMode"] = "build") => {
+      const { client, factory } = harness()
+      client.app.agents.mockResolvedValue({ data: agents })
+      const adapter = new OpenCodeSdkAdapter(factory)
+      try {
+        await adapter.startThread({ cwd: "/worktree", runtime: runtime(permissionMode) })
+        return "opened"
+      } catch (error) {
+        return (error as Error).message
+      } finally {
+        await adapter.close()
+      }
+    }
+    const build = { name: "build", mode: "primary", permission: [ask("*")] }
+    // A general the person made primary cannot be started by the task tool.
+    expect(await opens([build, { name: "general", mode: "primary", permission: [allow("*")] }])).toBe("opened")
+    // A subagent of the person's that the task tool can start, with a card.
+    expect(await opens([build, { name: "reviewer", mode: "subagent", permission: [ask("*"), allow("mcp_*")] }])).toContain("reviewer agent")
+    expect(await opens([build, { name: "helper", mode: "all", permission: [ask("*"), allow("mcp_*")] }])).toContain("helper agent")
+    // One the primary's task rule denies cannot be started.
+    expect(await opens([
+      { name: "build", mode: "primary", permission: [ask("*"), { permission: "task", pattern: "reviewer", action: "deny" }] },
+      { name: "reviewer", mode: "subagent", permission: [ask("*"), allow("mcp_*")] },
+    ])).toBe("opened")
+    // Plan is checked when it is the agent the session runs.
+    const plan = { name: "plan", mode: "primary", permission: [ask("*"), allow("mcp_*")] }
+    expect(await opens([build, plan])).toBe("opened")
+    expect(await opens([build, plan], "plan")).toContain("plan agent")
+    // An agent the session would run that the server does not list refuses.
+    expect(await opens([{ name: "general", mode: "subagent", permission: [ask("*")] }])).toContain("build agent")
+  })
+
   it("lets the server's own permissions be allowed after the catch-all, and anything before it", async () => {
     const { client, factory } = harness()
     client.app.agents.mockResolvedValue(agentsWith([

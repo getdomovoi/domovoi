@@ -590,7 +590,9 @@ code or settings the repository brings:
   agents' blocks are set under the deprecated `mode` key as well, because the servers merge a
   `mode` block into its agent after every other config, so your own `mode` block cannot replace
   them either. Before a session opens and before each prompt the daemon also reads the merged
-  rules of every agent a session can reach from the server, in the order the server judges them,
+  rules of every agent a session can reach from the server (the primary agent it runs, and every
+  agent that is not primary-only and that agent's task rule does not deny), in the order the
+  server judges them,
   and checks their shape: the last rule for every tool and every argument (`"*"`) must ask or
   deny, and every allow rule after it must name one of OpenCode's or Kilo's own permissions
   literally. Otherwise it refuses the session, naming the agent and the rule: a wildcard allow
