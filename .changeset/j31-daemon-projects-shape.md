@@ -10,3 +10,11 @@ first, or leave projectId out to use the open project." Naming the open project 
 it out does. `project.close` is refused with "Closing a project is not available yet. Opening another
 project switches to it after you confirm the sessions it stops." and changes nothing. A phone or
 tablet credential cannot call it.
+
+Stored state that a newer Domovoi wrote with several active projects, meaning a stored project
+list naming another project, or a session or approval rule of another project beside such a list,
+is not loaded. The daemon does not start, says "Domovoi state at <path> was written by a newer
+Domovoi that keeps several projects open, and this daemon keeps one project open at a time. It was
+left as it is and this daemon did not start. Run the newer Domovoi again.", and leaves the stored
+rows as they are. A stored list naming only the open project is dropped when the state is read, so
+it is not saved again after another project opens.

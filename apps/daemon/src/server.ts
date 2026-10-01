@@ -989,11 +989,22 @@ export class ActiveAssistantItemCache {
 // The daemon keeps one project open (J31 S1), so the list is that project
 // alone. It is built here, the one place snapshots are built for clients.
 export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
+  const projects = snapshot.project ? [snapshot.project] : []
+  // The store refuses state with several projects (ruling Q257), so nothing
+  // here belongs to a project the list leaves out. If something ever does,
+  // fail here, loudly, rather than send a snapshot the schema refuses.
+  const listed = new Set(projects.map((project) => project.id))
+  if (
+    snapshot.sessions.some((session) => !listed.has(session.projectId))
+    || snapshot.approvalRules.some((rule) => !listed.has(rule.projectId))
+  ) {
+    throw new Error("The workspace holds a session or approval rule outside the projects it lists")
+  }
   const thread = boundedClientThread(snapshot.thread, snapshot.activeSessionId)
   const historyTruncated = thread.length < snapshot.thread.length
   return {
     ...snapshot,
-    projects: snapshot.project ? [snapshot.project] : [],
+    projects,
     projectCap: activeProjectCap,
     thread,
     ...(historyTruncated ? { historyTruncated: true } : {}),

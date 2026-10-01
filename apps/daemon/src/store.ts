@@ -293,6 +293,12 @@ function migrateStoredWorkspace(value: unknown): {
     return finalizeStoredWorkspace(workspaceSnapshotSchema.parse(value), false, [])
   }
   const migrated = structuredClone(value)
+  // This daemon keeps one project open and derives the list it sends from it.
+  // A stored list names only the focused project by now (keepsSeveralProjects
+  // refused any other), so it is dropped here and no later change of project
+  // can save it stale. The row keeps it until the next save.
+  delete migrated.projects
+  delete migrated.projectCap
   let repaired = false
   // These reviewed predecessors retain their state. Rules from 0.6 gain a zero
   // use count below; full validation still runs before any migrated write.
@@ -449,6 +455,40 @@ export class NewerWorkspaceStateError extends Error {
     super(`Domovoi state at ${path} was written by a newer daemon (protocol ${storedProtocolVersion}), and this daemon speaks protocol ${daemonProtocolVersion}. It was left as it is and this daemon did not start. Run the newer Domovoi again, or update this one to protocol ${minor} or later.`)
     this.name = "NewerWorkspaceStateError"
   }
+}
+
+// A newer Domovoi keeps several projects active and lists them in `projects`.
+// This daemon keeps one open at a time (J31 S1), and would otherwise serve
+// another project's sessions as if they were open. That state is that
+// version's to open: it is left exactly as it is and this daemon does not
+// start (ruling Q257).
+export class MultiProjectWorkspaceStateError extends NewerWorkspaceStateError {
+  constructor(path: string, storedProtocolVersion: string) {
+    super(path, storedProtocolVersion, protocolVersion)
+    this.message = `Domovoi state at ${path} was written by a newer Domovoi that keeps several projects open, and this daemon keeps one project open at a time. It was left as it is and this daemon did not start. Run the newer Domovoi again.`
+    this.name = "MultiProjectWorkspaceStateError"
+  }
+}
+
+// Stored state lists a project other than the focused one, or, beside a list,
+// holds a session or approval rule of another project. A snapshot without a
+// list is this daemon's own shape and is read as before.
+function keepsSeveralProjects(value: unknown): boolean {
+  if (!isRecord(value) || !Array.isArray(value.projects)) return false
+  const focused = isRecord(value.project) ? value.project.id : undefined
+  const another = (projectId: unknown) => projectId !== focused
+  if (value.projects.some((project) => !isRecord(project) || another(project.id))) return true
+  const records = (field: string): unknown[] => {
+    const listed = value[field]
+    return Array.isArray(listed) ? listed : []
+  }
+  return [...records("sessions"), ...records("approvalRules")]
+    .some((record) => isRecord(record) && another(record.projectId))
+}
+
+function refuseSeveralProjects(path: string, value: unknown): MultiProjectWorkspaceStateError {
+  const stored = isRecord(value) && typeof value.protocolVersion === "string" ? value.protocolVersion : protocolVersion
+  return new MultiProjectWorkspaceStateError(path, stored)
 }
 
 function quarantineStamp(): string {
@@ -1006,6 +1046,11 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         this.#databaseClosed = true
         throw refuseNewerStoredState(path, newer)
       }
+      if (stored && keepsSeveralProjects(stored.value)) {
+        this.#database.close()
+        this.#databaseClosed = true
+        throw refuseSeveralProjects(path, stored.value)
+      }
       try {
         migratedExisting = migrateStoredWorkspace(stored ? stored.value : JSON.parse(existing.snapshot))
       } catch (error) {
@@ -1062,7 +1107,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")
       .get() as StoredWorkspace | undefined
     if (!row) throw new Error("Workspace state is not initialized")
-    const migrated = migrateStoredWorkspace(JSON.parse(row.snapshot))
+    const value: unknown = JSON.parse(row.snapshot)
+    if (keepsSeveralProjects(value)) throw refuseSeveralProjects(this.path, value)
+    const migrated = migrateStoredWorkspace(value)
     if (migrated.repaired) {
       try {
         this.save(migrated.snapshot)
