@@ -3297,7 +3297,9 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
 
   // A killed checkout leaves its directory with an index lock whose owner
   // Domovoi cannot know (ruling Q265); a later sweep leaves it too.
-  it("keeps an old checkout directory that holds an index lock, whatever its owner", async () => {
+  // Every index lock this code can leave counts: the isolated index's own
+  // and the checkpoint's private index's (ruling Q281).
+  it.each(["index.lock", "checkpoint-index.lock"])("keeps an old checkout directory that holds %s, whatever its owner", async (lockName) => {
     const { repositoryPath, worktrees } = await filteredRepository("domovoi-create-sweep-locked-")
     const locked = join(repositoryPath, ".git", "domovoi-checkout-00000000-0000-4000-8000-000000000005")
     const exited = await new Promise<number>((resolvePid, reject) => {
@@ -3307,11 +3309,11 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     })
     await mkdir(join(locked, "objects"), { recursive: true })
     await writeFile(join(locked, "domovoi-owner"), JSON.stringify({ pid: exited, startedAt: "2026-09-30T00:00:00.000Z" }))
-    await writeFile(join(locked, "index.lock"), "")
+    await writeFile(join(locked, lockName), "")
 
     await new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, "session-sweep-locked")
 
-    expect((await lstat(join(locked, "index.lock"))).isFile()).toBe(true)
+    expect((await lstat(join(locked, lockName))).isFile()).toBe(true)
   })
 
   it("runs no repository core.fsmonitor command while it checks a session out", async () => {

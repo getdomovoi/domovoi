@@ -221,9 +221,14 @@ async function sweepStaleCheckouts(commonDirectory: string): Promise<void> {
     if (!info?.isDirectory()) continue
     const owner = await checkoutOwner(path)
     if (owner === undefined ? Date.now() - info.mtimeMs < staleCheckoutAgeMs : processAlive(owner)) continue
-    // One holding an index lock stays: a killed checkout leaves it so, and
-    // Domovoi cannot tell no other Git holds the lock (ruling Q265).
-    if (await fs.lstat(join(path, "index.lock")).then(() => true, () => false)) continue
+    // One holding a lock stays: a killed command leaves its index lock (the
+    // isolated index's index.lock, a checkpoint's checkpoint-index.lock), and
+    // Domovoi cannot tell no other Git holds it (rulings Q265, Q281). Any
+    // name ending .lock counts, so a lock name added later is kept too, and so
+    // is a directory that cannot be listed. The daemon owner's exit proves
+    // nothing about the processes its commands started.
+    const entries = await fs.readdir(path).catch(() => undefined)
+    if (entries === undefined || entries.some((name) => name.endsWith(".lock"))) continue
     await fs.rm(path, { recursive: true, force: true }).catch(() => undefined)
   }
 }
