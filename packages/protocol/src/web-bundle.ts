@@ -54,7 +54,9 @@ const segmentPattern = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*(?![\s\S])/
 // Win32 drops a segment's trailing period and reads a device basename with
 // any extension as the device (learn.microsoft.com, "Naming Files, Paths, and
 // Namespaces"), so either would name something other than the file listed.
-// That page lists COM0 and LPT0 as well.
+// That page lists COM1 to COM9 and LPT1 to LPT9. COM0 and LPT0 are refused
+// too, as a conservative choice. Its superscript forms are already outside
+// the ASCII grammar above.
 const windowsDevicePattern = /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|(?![\s\S]))/i
 
 function portableSegment(segment: string): boolean {
