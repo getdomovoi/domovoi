@@ -661,6 +661,9 @@ Two policies decided on 2026-09-17 keep the daemon running while its person is a
   A stop whose tree kill fails does the same, and `remove` then refuses and keeps the task,
   disabled, and `service.json`. Restarting after a crash waits for a job object that contains the
   tree. `remove` otherwise stops the loop and proves the daemon stopped before deleting the task.
+  Known limit: `taskkill` names the daemon by pid. Its creation time is read again right before,
+  and a pid that names another process is not killed, but the daemon can still exit and its pid be
+  reused between that read and the kill. The job object is also what closes that window.
   A task installed earlier still runs the daemon directly until it is reinstalled or updated from
   the app.
 

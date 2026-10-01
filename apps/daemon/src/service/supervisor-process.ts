@@ -190,9 +190,24 @@ export function launchGuestChild(executable: string, args: string[], options: {
     let tree: "untouched" | "killed" | "unconfirmed" = "untouched"
     let identity: GuestProcessIdentity | undefined
     const exitedFirst = "the daemon exited before its tree was ended, and a pid whose process has exited may already name another one"
+    // Review F2: taskkill names the daemon by pid alone, and Node offers no
+    // handle to give it. So the recorded creation time is read again right
+    // before, and a pid that no longer names this daemon, or whose creation
+    // time cannot be read, is not killed by pid at all. Known limit: between
+    // that read and taskkill opening the pid, the daemon can exit, Node can
+    // release its handle, and Windows can give the pid to another process.
+    // The check narrows that window and does not close it; a job object that
+    // owns the tree is the follow-up that does.
     const killTree = async (): Promise<string | undefined> => {
       try {
-        if (child.pid === undefined) return "the daemon has no pid"
+        if (child.pid === undefined || identity === undefined) {
+          tree = "unconfirmed"
+          return "the daemon has no recorded identity to name its tree by"
+        }
+        if (!alive(identity)) {
+          tree = "unconfirmed"
+          return "the daemon's pid no longer names the process this loop started"
+        }
         await treeKill(child.pid)
         tree = "killed"
         return undefined
