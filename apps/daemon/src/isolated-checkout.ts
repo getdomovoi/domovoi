@@ -340,6 +340,8 @@ export type IsolatedGitRun = {
   // The command's own signal, or null to run it with none (a cleanup that
   // must still happen after a cancel). The isolated directory's by default.
   signal?: AbortSignal | null | undefined
+  // Fetch nothing, not even a promised object a partial clone lacks.
+  offline?: boolean | undefined
 }
 
 export type IsolatedGit = {
@@ -468,11 +470,26 @@ export async function openIsolatedGit(input: {
   })
   environment.GIT_CONFIG_COUNT = String(pins.length)
 
+  // An offline command fetches nothing: a promised object a partial clone
+  // lacks fails the command instead of being fetched, and no transport is
+  // allowed, the pins after the carried ones overriding them.
+  const offline = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+    const offlinePins: Array<readonly [string, string]> = [["protocol.allow", "never"], ...allowedProtocols.map((protocol) => [`protocol.${protocol}.allow`, "never"] as const)]
+    const next: NodeJS.ProcessEnv = { ...env, GIT_NO_LAZY_FETCH: "1" }
+    offlinePins.forEach(([key, value], position) => {
+      next[`GIT_CONFIG_KEY_${pins.length + position}`] = key
+      next[`GIT_CONFIG_VALUE_${pins.length + position}`] = value
+    })
+    next.GIT_CONFIG_COUNT = String(pins.length + offlinePins.length)
+    return next
+  }
+
   const launch = async (args: readonly string[], options: IsolatedGitRun, onStdout: (chunk: Buffer, stop: () => void) => void) => {
     input.beforeCommand?.()
     const commandSignal = options.signal === null ? undefined : options.signal ?? signal
     commandSignal?.throwIfAborted()
-    const env = options.index === undefined ? environment : { ...environment, GIT_INDEX_FILE: options.index }
+    const indexed = options.index === undefined ? environment : { ...environment, GIT_INDEX_FILE: options.index }
+    const env = options.offline === true ? offline(indexed) : indexed
     return trackRestoreCommand(() => runGitProcess([...inertRepositoryConfig, ...args], { env, cwd: worktree, signal: commandSignal, onStdout }))
   }
 

@@ -2003,17 +2003,25 @@ export class GitWorkspaceService implements WorkspaceService {
       throw new Error("Bundle base commit is invalid")
     }
 
-    const commit = await this.#isolated(worktreePath, worktreePath, signal, (isolated) => this.#checkpointedHead(worktreePath, isolated, signal))
-
-    const checkpointRefs = await verifiedCheckpointRefs(
-      worktreePath,
-      checkpointCommits,
-      signal,
-    )
-    const revisions = sinceCommit === undefined
-      ? ["HEAD", ...checkpointRefs]
-      : [`^${sinceCommit}`, "HEAD", ...checkpointRefs]
-    await git(worktreePath, ["bundle", "create", resolved, ...revisions], signal)
+    // The bundle is written in the isolated directory, from object ids: its
+    // HEAD is the checkpointed commit, and each checkpoint ref is made there
+    // from the commit the repository's ref was verified to name. It runs
+    // offline: packing a partial clone's history can need a promised object
+    // the clone never fetched, and fetching it would follow the repository's
+    // own promisor remote and transport settings. The transfer fails instead.
+    const commit = await this.#isolated(worktreePath, worktreePath, signal, async (isolated) => {
+      const commit = await this.#checkpointedHead(worktreePath, isolated, signal)
+      const checkpointRefs = await verifiedCheckpointRefs(worktreePath, checkpointCommits, signal)
+      const commits = uniqueCheckpointCommits(checkpointCommits)
+      for (const [index, ref] of checkpointRefs.entries()) {
+        await isolated.run(["update-ref", ref, commits[index]!], { signal, offline: true })
+      }
+      const revisions = sinceCommit === undefined
+        ? ["HEAD", ...checkpointRefs]
+        : [`^${sinceCommit}`, "HEAD", ...checkpointRefs]
+      await isolated.run(["bundle", "create", "--quiet", resolved, ...revisions], { signal, offline: true })
+      return commit
+    })
     await restrictBundlePermissions(resolved)
     return { path: resolved, commit, incremental: sinceCommit !== undefined }
   }

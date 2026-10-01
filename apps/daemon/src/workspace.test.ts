@@ -4,6 +4,7 @@ import { removeScratchDirectories } from "./test-scratch.js"
 import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -1175,6 +1176,43 @@ describe("GitWorkspaceService session bundles", () => {
     const workspace = await service.createSessionWorkspace(repositoryPath, "session-1")
     return { scratch, service, workspace, base }
   }
+
+  // A bundle of a partial clone needs blobs the clone never fetched. Fetching
+  // one would follow the repository's promisor remote with its own
+  // core.sshCommand, so the bundle is made in an isolated Git directory with
+  // lazy fetching off: the transfer fails instead.
+  it("fails a bundle that needs a missing promised blob, and runs no repository transport command", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-bundle-partial-"))
+    scratchDirectories.push(scratch)
+    const source = join(scratch, "source")
+    const clone = join(scratch, "clone")
+    const markerPath = join(scratch, "transport-ran").replaceAll("\\", "/")
+    const payload = join(scratch, "payload.sh").replaceAll("\\", "/")
+    await writeFile(payload, `echo ran >> "${markerPath}"\nexit 1\n`)
+    const git = (path: string, ...args: string[]) => execute("git", ["-C", path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", ...args])
+    await execute("git", ["init", "--initial-branch=main", source])
+    await git(source, "config", "uploadpack.allowFilter", "true")
+    await writeFile(join(source, "old.txt"), "only in history\n")
+    await git(source, "add", ".")
+    await git(source, "commit", "-m", "old")
+    await git(source, "rm", "-q", "old.txt")
+    await writeFile(join(source, "README.md"), "base\n")
+    await git(source, "add", ".")
+    await git(source, "commit", "-m", "current")
+    await execute("git", ["clone", "--quiet", "--no-local", "--filter=blob:none", pathToFileURL(source).href, clone])
+    const oldBlob = (await git(clone, "rev-parse", "HEAD~1:old.txt")).stdout.trim()
+    expect((await git(clone, "rev-list", "--objects", "--missing=print", "HEAD")).stdout).toContain(`?${oldBlob}`)
+    await git(clone, "config", "core.autocrlf", "false")
+    await git(clone, "remote", "set-url", "origin", "ssh://git@example.invalid/source.git")
+    await git(clone, "config", "core.sshCommand", `sh ${payload}`)
+    const service = new GitWorkspaceService(join(scratch, "worktrees"))
+    const workspace = await service.createSessionWorkspace(clone, "session-partial")
+
+    await expect(service.bundleSession(workspace.path, join(scratch, "session.bundle"))).rejects.toThrow()
+
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+    expect((await git(clone, "rev-list", "--objects", "--missing=print", "HEAD")).stdout).toContain(`?${oldBlob}`)
+  })
 
   it("bundles the session checkpoint so a target can restore it", async () => {
     const { scratch, service, workspace } = await repositoryWithSession("domovoi-bundle-")
