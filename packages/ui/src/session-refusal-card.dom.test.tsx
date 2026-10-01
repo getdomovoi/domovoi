@@ -170,6 +170,9 @@ describe("review and trust from the refusal", () => {
     expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest })
     expect(screen.queryByRole("dialog")).toBeNull()
     expect(within(card).getByText("Trusted on mac-mini-m4. Nothing has started yet.")).toBeTruthy()
+    // The refusal no longer says the filter is not trusted.
+    expect(within(card).getByText("Checking out acme-api would run the sops filter driver.")).toBeTruthy()
+    expect(within(card).queryByText(/is not trusted on/)).toBeNull()
     expect(within(card).queryByRole("button", { name: "Review and trust" })).toBeNull()
     // The session never starts by itself (ruling Q202 A).
     expect(onStartAgain).not.toHaveBeenCalled()

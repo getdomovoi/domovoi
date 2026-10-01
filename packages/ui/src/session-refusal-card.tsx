@@ -90,15 +90,18 @@ export function SessionRefusalCard({
 
   return (
     <section aria-labelledby={titleId} className="overflow-hidden rounded-xl border bg-card">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 pr-2 pl-[15px]">
-        <span className="size-2 shrink-0 rounded-full bg-faint" aria-hidden />
-        <h2 id={titleId} className="m-0 text-[13px] font-medium">Domovoi did not start this session</h2>
-        <span className="flex-1" />
-        <span className={cn(mono, "text-[10.5px] text-faint")}>refused · untrusted git filter</span>
+      {/* The dismiss button stays on the title row when a narrow card wraps. */}
+      <div className="flex items-start gap-2 py-2 pr-2 pl-[15px]">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 pt-1">
+          <span className="size-2 shrink-0 rounded-full bg-faint" aria-hidden />
+          <h2 id={titleId} className="m-0 text-[13px] font-medium">Domovoi did not start this session</h2>
+          <span className="flex-1" />
+          <span className={cn(mono, "text-[10.5px] text-faint")}>refused · untrusted git filter</span>
+        </div>
         <Button variant="ghost" size="icon-sm" aria-label="Dismiss" onClick={onClose}><XIcon /></Button>
       </div>
       <div className="flex flex-col gap-2 px-[15px] pb-3 text-[12px] leading-[1.6] text-muted-foreground">
-        <p className="m-0">{refusalSentence(refusal, named, repository, machine)}</p>
+        <p className="m-0">{refusalSentence(refusal, named, repository, machine, trusted)}</p>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
           <span className="text-[11.5px]">It names</span>
           {refusal.drivers.map((driver) => (
@@ -152,10 +155,12 @@ function driversPhrase(named: readonly string[], omitted: number): { phrase: str
 
 // What the refusal says, by the trust the daemon read with it. Trusted means
 // the grant covers the configuration and the daemon still holds the filter
-// back, so the card does not point to trust.
-function refusalSentence(refusal: RepositoryGitFilterRefusal, named: readonly string[], repository: string, machine: string): string {
+// back, so the card does not point to trust. Once the person trusts from this
+// card, the trust clause no longer holds and the line below says so instead.
+function refusalSentence(refusal: RepositoryGitFilterRefusal, named: readonly string[], repository: string, machine: string, grantedHere: boolean): string {
   const { phrase, many } = driversPhrase(named, refusal.omittedDrivers)
   const lead = `Checking out ${repository} would run ${phrase}`
+  if (grantedHere) return `${lead}.`
   const { trust } = refusal
   if (trust.state === "trusted") {
     return `${lead}. ${repository} is trusted on ${machine}, and Domovoi still does not run a filter the repository's own Git config sets.`
