@@ -831,10 +831,11 @@ async function git(
   repositoryPath: string,
   arguments_: string[],
   signal?: AbortSignal,
+  environment: NodeJS.ProcessEnv = {},
 ): Promise<string> {
   signal?.throwIfAborted()
   const result = await trackRestoreCommand(() => execute("git", gitArguments(repositoryPath, arguments_), {
-    env: gitEnvironment(),
+    env: { ...gitEnvironment(), ...environment },
     encoding: "utf8",
     maxBuffer: maximumGitOutputBytes,
     signal,
@@ -2021,11 +2022,14 @@ export class GitWorkspaceService implements WorkspaceService {
     const checkpointRefs = uniqueCheckpointCommits(checkpointCommits).map(checkpointRef)
     const transport = await repositoryTransportOverrides(repositoryPath, "remote", operationSignal)
     await refuseRemoteAddresses(repositoryPath, remote, operationSignal)
+    // Submodules are not fetched: that would run in each submodule under its
+    // own config.
     await git(repositoryPath, [
       ...transport,
       "fetch",
       "--quiet",
       "--atomic",
+      "--no-recurse-submodules",
       "--",
       remote,
       `${ref}:${ref}`,
@@ -2257,6 +2261,11 @@ export class GitWorkspaceService implements WorkspaceService {
     // The file transport is allowed only for this path, the bundle Domovoi
     // received, and only while it is a regular file: a repository directory
     // there would start a serving side with that repository's own config.
+    // It also runs offline: a prerequisite the bundle names and this
+    // repository lacks fails the fetch, instead of being fetched lazily from a
+    // promisor remote the repository's config names, whose serving side that
+    // config would choose. Submodules are not fetched: that would run in each
+    // submodule under its own config.
     const transport = await repositoryTransportOverrides(repository.root, "bundle", signal)
     const bundle = await lstat(bundlePath).catch(() => undefined)
     if (!bundle?.isFile()) throw new Error("Bundle could not be verified")
@@ -2266,11 +2275,12 @@ export class GitWorkspaceService implements WorkspaceService {
         "fetch",
         "--quiet",
         "--atomic",
+        "--no-recurse-submodules",
         "--",
         bundlePath,
         `+HEAD:${incomingRef}`,
         ...incomingCheckpoints.map(({ source, target }) => `+${source}:${target}`),
-      ], signal)
+      ], signal, { GIT_NO_LAZY_FETCH: "1" })
     } catch {
       signal?.throwIfAborted()
       throw new Error("Bundle could not be verified")

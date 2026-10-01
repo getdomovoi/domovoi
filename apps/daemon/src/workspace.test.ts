@@ -2036,6 +2036,43 @@ describe("GitWorkspaceService bundle restore", () => {
     } finally { inspect.mockRestore() }
   })
 
+  // A bundle's missing prerequisite must not be fetched from a promisor
+  // remote the target repository names: that would run a serving side
+  // chosen by the repository's config, here a local repository. The fetch
+  // runs with lazy fetching off, so the transfer fails instead.
+  it("refuses a bundle whose prerequisite the target lacks, and fetches nothing from the target's promisor remote", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-restore-prerequisite-"))
+    scratchDirectories.push(scratch)
+    const source = join(scratch, "source")
+    const git = (path: string, ...args: string[]) => execute("git", ["-C", path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", ...args])
+    await execute("git", ["init", "--initial-branch=main", source])
+    await writeFile(join(source, "README.md"), "base\n")
+    await git(source, "add", ".")
+    await git(source, "commit", "-m", "base")
+    await git(source, "branch", "base")
+    await writeFile(join(source, "README.md"), "prerequisite\n")
+    await git(source, "commit", "-am", "prerequisite")
+    const prerequisite = (await git(source, "rev-parse", "HEAD")).stdout.trim()
+    await writeFile(join(source, "README.md"), "arrived\n")
+    await git(source, "commit", "-am", "arrived")
+    const bundlePath = join(scratch, "incremental.bundle")
+    await git(source, "bundle", "create", "--quiet", bundlePath, `^${prerequisite}`, "HEAD")
+    const target = join(scratch, "target")
+    await execute("git", ["clone", "--quiet", "--no-local", "--single-branch", "--branch", "base", source, target])
+    // The target names the source as its promisor remote, by a local path.
+    await git(target, "config", "core.repositoryformatversion", "1")
+    await git(target, "config", "extensions.partialClone", "origin")
+    await git(target, "config", "remote.origin.promisor", "true")
+    const lacks = async () => execute("git", ["-C", target, "cat-file", "-e", prerequisite], { env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } }).then(() => false, () => true)
+    expect(await lacks()).toBe(true)
+
+    const service = new GitWorkspaceService(join(scratch, "target-worktrees"))
+    await expect(service.restoreSessionFromBundle(bundlePath, "session-1", { repositoryPath: target })).rejects.toThrow("Bundle could not be verified")
+
+    expect(await lacks()).toBe(true)
+    await expect(lstat(join(scratch, "target-worktrees", "session-1"))).rejects.toThrow()
+  })
+
   it("refuses a bundle it cannot verify", async () => {
     const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-bad-")
     const damaged = join(scratch, "damaged.bundle")
