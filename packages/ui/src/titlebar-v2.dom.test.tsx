@@ -5,8 +5,45 @@ import { afterEach, expect, it, vi } from "vitest"
 
 import { AppBar } from "./app-bar.js"
 import { SessionsDrawerTrigger } from "./sessions-drawer.js"
+import { StopMenu } from "./stop-menu.js"
 
 afterEach(cleanup)
+
+// The tooltip is the icon's only visible name, so it has to open while the
+// action is unavailable too: disconnected, watching only, or a stop on its way.
+it.each([
+  ["disconnected", { connected: false, pending: false, disabled: false }],
+  ["watching only", { connected: true, pending: false, disabled: true }],
+  ["a stop on its way", { connected: true, pending: true, disabled: false }],
+])("keeps the stop name reachable while %s, and does nothing when chosen", async (_state, props) => {
+  const user = userEvent.setup()
+  const onPauseAll = vi.fn()
+  const onEmergencyStop = vi.fn()
+  render(<StopMenu {...props} onPauseAll={onPauseAll} onEmergencyStop={onEmergencyStop} />)
+
+  const stop = screen.getByRole("button", { name: "Stop everything" })
+  expect(stop.getAttribute("aria-disabled")).toBe("true")
+
+  await user.hover(stop)
+  expect((await screen.findByRole("tooltip")).textContent).toContain("Stop everything, every machine")
+  await user.unhover(stop)
+
+  await user.click(stop)
+  await user.keyboard("{Enter}")
+  await user.keyboard("{ArrowDown}")
+  expect(screen.queryByRole("menu")).toBeNull()
+  expect(onPauseAll).not.toHaveBeenCalled()
+  expect(onEmergencyStop).not.toHaveBeenCalled()
+})
+
+it("names the unavailable stop by its tooltip when reached by keyboard", async () => {
+  const user = userEvent.setup()
+  render(<StopMenu connected={false} pending={false} onPauseAll={vi.fn()} onEmergencyStop={vi.fn()} />)
+
+  await user.tab()
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Stop everything" }))
+  expect((await screen.findByRole("tooltip")).textContent).toContain("Stop everything, every machine")
+})
 
 // Desktop V2's titlebar is a row of 28px icon buttons, each named by a tooltip
 // rather than by visible text. These pin what the design draws on that row.

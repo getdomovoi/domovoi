@@ -34,8 +34,15 @@ describe("StopMenu", () => {
     expect(onPauseAll).not.toHaveBeenCalled()
   })
 
-  it("is disabled while disconnected or while a stop is on its way", () => {
-    render(<StopMenu connected={false} pending={false} onPauseAll={vi.fn()} onEmergencyStop={vi.fn()} />)
-    expect((screen.getByRole("button", { name: "Stop everything" }) as HTMLButtonElement).disabled).toBe(true)
+  it("is unavailable while disconnected or while a stop is on its way, and opens nothing", async () => {
+    const user = userEvent.setup()
+    for (const props of [{ connected: false, pending: false }, { connected: true, pending: true }]) {
+      render(<StopMenu {...props} onPauseAll={vi.fn()} onEmergencyStop={vi.fn()} />)
+      const stop = screen.getByRole("button", { name: "Stop everything" })
+      expect(stop.getAttribute("aria-disabled")).toBe("true")
+      await user.click(stop)
+      expect(screen.queryByRole("menu")).toBeNull()
+      cleanup()
+    }
   })
 })
