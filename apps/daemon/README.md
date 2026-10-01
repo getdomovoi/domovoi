@@ -559,6 +559,11 @@ code or settings the repository brings:
   subagent used to have tool server tools hidden; it now sees them and asks before each call. An
   allow rule in your own `permission` configuration still applies when your configuration lists
   it after a `"*"` rule of its own; without one, the catch-all comes after your rule and asks.
+  When a session's directory opens, the daemon reads the names of the tool servers that directory
+  knows. A card names a tool's server only when exactly one of them could have made the tool's name
+  (the server's name with characters outside letters, digits, `-` and `_` turned into `_`, then
+  `_` and the tool's name), never for one of OpenCode's or Kilo's own tools, and then it offers no
+  Always.
 - Kilo still reads its legacy files from the session directory with that switch set: a
   `.kilo/mcp.json` or `.kilocode/mcp.json` starts its MCP servers, and a `.kilocodemodes` adds
   agents with their own permissions. The daemon refuses to open or continue a Kilo session in a

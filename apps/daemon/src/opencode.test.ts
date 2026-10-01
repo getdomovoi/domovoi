@@ -1230,6 +1230,68 @@ describe("subagents and current permission events", () => {
     await adapter.close()
   })
 
+  // A tool server's tool asks under its key, the server's name and the tool's
+  // joined by one `_` (opencode mcp/catalog.ts toolName). The card names the
+  // server only when exactly one server the session's directory knows could
+  // have made the key, and never for one of the server's own tools.
+  it.each([
+    ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory)],
+    ["Kilo", (factory: OpenCodeFactory) => new KiloSdkAdapter(factory)],
+  ] as const)("names the tool server a %s tool call belongs to", async (_name, create) => {
+    const { client, factory, stream } = harness()
+    const status = vi.fn(async (_options?: unknown) => ({
+      data: {
+        github: { status: "connected" }, git: { status: "connected" }, git_hub: { status: "failed" },
+        "my.docs": { status: "connected" }, doom: { status: "connected" }, board: { status: "connected" },
+      },
+    }))
+    const adapter = create(() => factory().then((runtime) => ({ ...runtime, client: { ...client, mcp: { status } } })))
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Call tools", runtime: runtime("build") })
+    await waitForDaemon(() => expect(status).toHaveBeenCalledWith(expect.objectContaining({ query: { directory: "/worktree" } })))
+    const ask = (id: string, permission: string) => stream.emit({
+      type: "permission.asked",
+      properties: { id, sessionID: threadId, permission, patterns: ["*"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: `call_${id}` } },
+    })
+    ask("issue", "github_create_issue")
+    ask("ambiguous", "git_hub_status")
+    ask("only_git", "git_status")
+    ask("dotted", "my_docs_search")
+    ask("builtin", "doom_loop")
+    ask("unknown", "slack_post")
+    // Kilo's own board tool; OpenCode has none, so there the board server's.
+    ask("board", "board_post")
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(7))
+    const approval = (itemId: string) => events.find((event) => event.type === "approval-requested" && event.itemId === itemId)
+    expect(approval("call_issue")).toMatchObject({ tool: "github_create_issue", toolServer: { name: "github" } })
+    expect(approval("call_only_git")).toMatchObject({ tool: "git_status", toolServer: { name: "git" } })
+    expect(approval("call_dotted")).toMatchObject({ tool: "my_docs_search", toolServer: { name: "my.docs" } })
+    for (const itemId of ["call_ambiguous", "call_builtin", "call_unknown"]) expect(approval(itemId)).not.toHaveProperty("toolServer")
+    if (_name === "Kilo") expect(approval("call_board")).not.toHaveProperty("toolServer")
+    else expect(approval("call_board")).toMatchObject({ toolServer: { name: "board" } })
+    await adapter.close()
+  })
+
+  it("raises the card without a tool server when the server list cannot be read", async () => {
+    const { client, factory, stream } = harness()
+    const status = vi.fn(async () => { throw new Error("no list") })
+    const adapter = new OpenCodeSdkAdapter(() => factory().then((runtime) => ({ ...runtime, client: { ...client, mcp: { status } } })))
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Call tools", runtime: runtime("build") })
+    await waitForDaemon(() => expect(status).toHaveBeenCalled())
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "issue", sessionID: threadId, permission: "github_create_issue", patterns: ["*"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: "call_issue" } },
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", tool: "github_create_issue" })))
+    expect(events.find((event) => event.type === "approval-requested")).not.toHaveProperty("toolServer")
+    await adapter.close()
+  })
+
   it("routes a subagent's approvals and commands to the parent thread and answers the child session", async () => {
     const { adapter, client, events, stream, threadId } = await buildTurn()
     const child = "ses_child"

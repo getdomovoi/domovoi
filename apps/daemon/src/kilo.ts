@@ -3,6 +3,7 @@ import {
   nextOpenCodeMessageId,
   type OpenCodeFactory,
 } from "./opencode.js"
+import { kiloBuiltInPermissions } from "./kilo-runtime.js"
 
 export type KiloFactory = OpenCodeFactory
 
@@ -14,6 +15,7 @@ export class KiloSdkAdapter extends OpenCodeSdkAdapter {
       providerId: "kilo",
       providerName: "Kilo",
       heldBackRepositoryFiles: kiloLegacyRepositoryFiles,
+      builtInPermissions: kiloBuiltInPermissions,
     })
   }
 }

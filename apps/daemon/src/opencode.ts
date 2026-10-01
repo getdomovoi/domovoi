@@ -53,6 +53,11 @@ export type OpenCodeClient = {
   postSessionIdPermissionsPermissionId(
     options: MethodOptions<OpencodeSdkClient["postSessionIdPermissionsPermissionId"]>,
   ): Promise<OpenCodeResult<unknown>>
+  // The tool servers a directory knows, by name. Optional: without it an
+  // approval card names no tool server.
+  mcp?: {
+    status(options: MethodOptions<OpencodeSdkClient["mcp"]["status"]>): Promise<OpenCodeResult<unknown>>
+  }
 }
 
 type OpenCodeConfig = { model?: string }
@@ -80,6 +85,9 @@ export type OpenCodeAdapterIdentity = {
   providerId: string
   providerName: string
   heldBackRepositoryFiles?: readonly string[]
+  // The permissions the server's own tools ask under. A card for one of them
+  // never names a tool server, whatever a server is called.
+  builtInPermissions?: ReadonlySet<string>
 }
 
 type Session = {
@@ -109,6 +117,8 @@ type Session = {
 type DirectoryStream = {
   controller: AbortController
   threadIds: Set<string>
+  // The tool servers the directory's instance knows, once read.
+  toolServers?: readonly string[]
 }
 
 type PendingApproval = {
@@ -686,8 +696,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       controller.abort()
       throw new Error(`${this.#identity.providerName} session stopped while resuming`)
     }
-    this.#directories.set(cwd, { controller, threadIds: new Set([threadId]) })
+    const directory: DirectoryStream = { controller, threadIds: new Set([threadId]) }
+    this.#directories.set(cwd, directory)
     this.#sessions.set(threadId, session)
+    void this.#readToolServers(client, cwd, directory)
     void this.#consume(cwd, events.stream).then(
       () => this.#disconnect(cwd, controller, `${this.#identity.providerName} event stream connection closed`),
       (error: unknown) => this.#disconnect(
@@ -710,6 +722,38 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       this.#sessions.delete(session.threadId)
     }
     this.#emit({ type: "provider-disconnected", reason })
+  }
+
+  // Reads the tool servers a directory knows, without holding the session's
+  // start for it. The server starts them as it answers, as the session's
+  // first prompt would. A card raised before the answer, or after a failed
+  // read, names no tool server.
+  async #readToolServers(client: OpenCodeClient, cwd: string, directory: DirectoryStream): Promise<void> {
+    if (!client.mcp) return
+    try {
+      const servers = asRecord(unwrap(await client.mcp.status({
+        query: { directory: cwd },
+        signal: directory.controller.signal,
+        throwOnError: true,
+      }), `${this.#identity.providerName} tool server status`))
+      if (servers && this.#directories.get(cwd) === directory) directory.toolServers = Object.keys(servers)
+    } catch {
+      // Read failed: cards in this directory name no tool server.
+    }
+  }
+
+  // The tool server whose tool asks under `permission`: the one server the
+  // directory knows whose name, made into a tool key prefix as the server
+  // makes it (opencode mcp/catalog.ts: every character outside [a-zA-Z0-9_-]
+  // becomes `_`, then `_` before the tool's name), starts the permission.
+  // None when no server or more than one could have made it, so a card never
+  // names a server the call may not reach, and none for the server's own
+  // tools.
+  #toolServerOf(cwd: string, permission: string): string | undefined {
+    if ((this.#identity.builtInPermissions ?? openCodeBuiltInPermissions).has(permission)) return undefined
+    const servers = this.#directories.get(cwd)?.toolServers ?? []
+    const matches = servers.filter((name) => permission.startsWith(`${name.replace(/[^a-zA-Z0-9_-]/gu, "_")}_`))
+    return matches.length === 1 ? matches[0] : undefined
   }
 
   #forgetSubagents(threadId: string): void {
@@ -911,6 +955,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       const request = permissionRequest(event.type, properties, this.#identity.providerName)
       if (!request) return
       const requestId = ++this.#nextApprovalId
+      const toolServer = request.tool === undefined ? undefined : this.#toolServerOf(cwd, request.tool)
       this.#pendingApprovals.set(requestId, {
         providerSessionId: sessionId,
         cwd,
@@ -927,6 +972,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         cwd,
         ...(request.path ? { path: request.path } : {}),
         ...(request.tool !== undefined ? { tool: request.tool } : {}),
+        ...(toolServer !== undefined ? { toolServer: { name: toolServer } } : {}),
         ...(request.reason ? { reason: request.reason } : {}),
       })
       return
@@ -1286,6 +1332,16 @@ const defaultReads = { "*": "allow", "*.env": "ask", "*.env.*": "ask", "*.env.ex
 // (kilo-runtime.ts).
 export const openCodeDefaultAllows = ["glob", "grep", "list", "lsp", "skill", "websearch"] as const
 export const openCodeDefaultDenies = ["question", "plan_enter", "plan_exit"] as const
+
+// Every permission OpenCode's own tools ask under.
+export const openCodeBuiltInPermissions: ReadonlySet<string> = new Set([
+  ...openCodeDefaultAllows,
+  ...openCodeDefaultDenies,
+  ...Object.keys(askBeforeEdits),
+  "read",
+  "task",
+  "todowrite",
+])
 
 export const permissionActions = <Action extends "allow" | "deny">(names: readonly string[], action: Action) => (
   Object.fromEntries(names.map((name) => [name, action])) as Record<string, Action>

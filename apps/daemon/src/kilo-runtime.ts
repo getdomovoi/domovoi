@@ -6,6 +6,7 @@ import {
   domovoiAskAgent,
   domovoiPermission,
   domovoiPlanLimits,
+  openCodeBuiltInPermissions,
   openCodeDefaultAllows,
   openCodeDefaultDenies,
   permissionActions,
@@ -38,6 +39,16 @@ export const kiloDefaultAllows = [
   "write",
 ] as const
 export const kiloDefaultDenies = [...openCodeDefaultDenies, "suggest", "repo_clone", "repo_overview"] as const
+
+// Every permission Kilo's own tools ask under.
+export const kiloBuiltInPermissions: ReadonlySet<string> = new Set([
+  ...openCodeBuiltInPermissions,
+  ...kiloDefaultAllows,
+  ...kiloDefaultDenies,
+  "recall",
+  "kilo_memory_recall",
+  "kilo_memory_save",
+])
 
 // What Kilo's explore subagent may use before the person's rules; every other
 // tool the catch-all would open is denied again by name.
