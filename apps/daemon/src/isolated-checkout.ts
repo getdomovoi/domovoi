@@ -234,11 +234,22 @@ function abortError(signal: AbortSignal): Error {
   return error
 }
 
+// How long a stopped command's teardown may take once its group was
+// signalled: then its output pipes are destroyed and the command settles as
+// stopped, whatever still holds them (ruling Q272).
+export const gitTeardownTimeoutMs = 5_000
+
 // Runs one Git command in a process group of its own (POSIX), feeding its
 // output to onStdout, which can stop it. A cancelled or stopped command is
-// ended with its whole group, and only while Git has not been reaped: until
-// then no other group can take its id, so the signal reaches only processes
-// this command started. On Windows the process tree is ended instead.
+// ended with its whole group. Kill authority lasts until the output pipes
+// close, not only until Git itself exits: a child Git started can outlive it
+// and hold the pipes (ruling Q272). While a process holds them the group id
+// is normally still in use, since that process is usually in the group, so
+// the signal reaches processes this command started. On Windows the process
+// tree is ended instead; taskkill /T finds the tree through the process it
+// is given, so once Git itself has exited its orphaned children are out of
+// reach, and only the bounded teardown below settles the command. A Windows
+// job object is the real fix (the Q111 follow-up).
 //
 // Ending the group does not prove that every process the command started has
 // ended: one can leave the group (setsid). So a killed command still leaves
@@ -259,31 +270,47 @@ export function runGitProcess(args: readonly string[], options: {
     detached: posix,
     windowsHide: true,
   })
+  const { signal } = options
+  const errors: Buffer[] = []
+  let errorBytes = 0
+  let settled = false
   let killing = false
+  let teardown: NodeJS.Timeout | undefined
+  let settle: (outcome: { error: unknown } | { result: GitProcessResult }) => void = () => {}
+  const stderrText = () => Buffer.concat(errors).toString("utf8").trim()
   const end = () => {
-    if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return
+    if (settled || child.pid === undefined) return
     if (!killing) {
       killing = true
       options.beforeKill?.()
     }
+    const exited = child.exitCode !== null || child.signalCode !== null
     if (!posix) {
-      void windowsTreeKill(child.pid).catch(() => { child.kill("SIGKILL") })
-      return
+      void windowsTreeKill(child.pid).catch(() => { if (!exited) child.kill("SIGKILL") })
+    } else {
+      try {
+        process.kill(-child.pid, "SIGKILL")
+      } catch {
+        if (!exited) child.kill("SIGKILL")
+      }
     }
-    try {
-      process.kill(-child.pid, "SIGKILL")
-    } catch {
-      child.kill("SIGKILL")
-    }
+    teardown ??= setTimeout(() => {
+      if (settled) return
+      child.stdout.destroy()
+      child.stderr.destroy()
+      settle(signal?.aborted
+        ? { error: abortError(signal) }
+        : { result: { code: child.exitCode, signal: child.signalCode ?? "SIGKILL", stderr: stderrText() } })
+    }, gitTeardownTimeoutMs)
   }
-  const { signal } = options
   const promise = new Promise<GitProcessResult>((resolvePromise, reject) => {
-    const errors: Buffer[] = []
-    let errorBytes = 0
-    let settled = false
-    const finish = () => {
+    settle = (outcome) => {
+      if (settled) return
       settled = true
+      if (teardown !== undefined) clearTimeout(teardown)
       signal?.removeEventListener("abort", end)
+      if ("error" in outcome) reject(outcome.error)
+      else resolvePromise(outcome.result)
     }
     signal?.addEventListener("abort", end, { once: true })
     if (signal?.aborted) end()
@@ -294,19 +321,9 @@ export function runGitProcess(args: readonly string[], options: {
       errors.push(captured)
       errorBytes += captured.length
     })
-    child.once("error", (error) => {
-      if (settled) return
-      finish()
-      reject(error)
-    })
+    child.once("error", (error) => settle({ error }))
     child.once("close", (code, closeSignal) => {
-      if (settled) return
-      finish()
-      if (signal?.aborted) {
-        reject(abortError(signal))
-        return
-      }
-      resolvePromise({ code, signal: closeSignal, stderr: Buffer.concat(errors).toString("utf8").trim() })
+      settle(signal?.aborted ? { error: abortError(signal) } : { result: { code, signal: closeSignal, stderr: stderrText() } })
     })
   }) as PromiseWithChild<GitProcessResult>
   promise.child = child
