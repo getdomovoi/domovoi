@@ -29,7 +29,9 @@ with the repository's own transport settings. Restore clears the merge, cherry-p
 finished sequencer state `git reset --hard` clears, and refuses while a submodule has local
 changes, as a snapshot does. Push and fetch for a transfer allow only https, http, ssh and git
 remotes, and refuse a remote whose address is anything else, a local path or a file:// URL
-included, or that names a remote helper; a received bundle is still read from its own file.
+included, or that names a remote helper; a received bundle is still read from its own file, with
+lazy fetching off, so a prerequisite the target lacks fails the transfer instead of being fetched
+from a promisor remote the target's config names. Neither fetch recurses into submodules.
 Submodules are checked for local work each through an isolated Git directory of its own, the
 superproject's status and diff keep out of submodule worktrees, and checkpoint, snapshot, restore,
 revert and transfer refuse while a checked-out submodule's own Git config sets a filter, which no
