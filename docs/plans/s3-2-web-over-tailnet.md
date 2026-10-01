@@ -339,14 +339,29 @@ on encrypted sockets only (`server.ts:559-583`); the default list is the vite or
 and `domovoi-app://desktop` (`server.ts:1879-1881`).
 
 - **Tailnet, TLS:** the served page's Origin is `https://<name>:<port>` and its Host is
-  `<name>:<port>`, so `namesThisDaemon` already admits it. No change is needed for the socket.
+  `<name>:<port>`. `namesThisDaemon` would admit it today, but it compares host and port only and
+  drops the scheme, so an `http://<name>:<port>` page with the same authority passes it too (review
+  F4, Q297). A web origin is scheme, host and port (RFC 6454), and WSS authenticates the connection,
+  not the page that opened it. The served app is therefore not admitted through that fallback.
+  Slices 4 and 5 admit the listener's exact canonical origins, scheme included, from
+  `listener-authorities.ts` (section 2.4): `https://<name>:<port>` for each certificate name and
+  the bound host on a TLS listener. Authorities are validated against the listener's configured set,
+  never taken from `Host`, forwarded headers or advertisement settings. Before the fallback is
+  narrowed, slice 5 lists in a test which current clients reach `/rpc` through it, so native-client
+  behavior is kept on purpose rather than by the host-only rule. A negative test pins it: on a TLS
+  listener, `Origin: http://<name>:<port>` with `Host: <name>:<port>` is refused.
 - **Loopback, plaintext:** the served page's Origin is `http://127.0.0.1:<port>`, which is refused
   today on purpose (`apps/daemon/src/socket-origin.test.ts`, "refuses an origin that names this
   daemon"), because over plaintext a rebound name can make Origin and Host agree. The change admits
   only the listener's literal loopback origins (`http://127.0.0.1:<port>`,
-  `http://localhost:<port>`, `http://[::1]:<port>` as bound), and only while a bundle is loaded. A
-  rebinding page carries its own host name in Origin and cannot claim a literal loopback origin,
+  `http://localhost:<port>`, `http://[::1]:<port>` as bound), and only while a bundle is loaded. No
+  other plaintext origin is ever added: not a tailnet name, not a wildcard, not an advertised host.
+  A rebinding page carries its own host name in Origin and cannot claim a literal loopback origin,
   so the existing refusal and its test stay as they are.
+- **`null`:** an Origin of `null`, which every sandboxed preview document sends, stays refused on
+  every listener. Admitting it would remove the preview boundary in section 3.4.
+- Origin and Host checks are admission controls. `/rpc` authentication stays independent of Origin:
+  a bearer or device credential is still required after admission.
 - **Preview `frame-ancestors`:** built from `allowedOrigins` (`frameAncestorsFor`,
   `server.ts:12607-12622`, used at `:5522`). On a TLS listener the served origin is not in that
   set, because admission came from `namesThisDaemon`, so a browser would refuse to frame previews
@@ -418,6 +433,7 @@ touch the request listener (`server.ts:2765-2790`), `#acceptsHost` (`:5068-5072`
 | one private field set in the constructor | near `:1878` | 4 |
 | one hook line in the request listener, before the final 404 | `:2786-2788` | 4 |
 | after `listen`, add the listener's own origins to the origin set | `:2885` | 5 |
+| the host-only TLS fallback (`namesThisDaemon`) stops admitting an origin whose scheme is not the listener's; the served app is admitted by exact canonical origin (section 3.5) | `:559-583`, `:2792-2794` | 5 |
 | `#acceptsHost` body delegates to `listener-authorities.ts` | `:5068-5072` | 5 |
 
 New modules, each with its own test file:
@@ -455,7 +471,8 @@ All daemon tests use temporary directories (`removeScratchDirectories`, as in
 | headers | exact CSP string per scheme, `nosniff`, `frame-ancestors 'none'`, `X-Frame-Options`, cache class per path, `ETag` and 304 |
 | state page | each state's copy, 503, `no-store`, and no path in the body |
 | coexistence | `DomovoiDaemon` with a bundle: `/healthz` unchanged, `/rpc` upgrade and hello unchanged, an authorized `/artifacts/` URL still serves with its sandbox CSP, unknown paths still `404 {"error":"not_found"}` |
-| loopback origin | with a bundle, `http://127.0.0.1:<port>` opens `/rpc`; without one it is refused; `http://evil.example` and the existing rebinding case stay refused (extends `socket-origin.test.ts`) |
+| loopback origin | with a bundle, `http://127.0.0.1:<port>` opens `/rpc`; without one it is refused; `http://evil.example`, `null` and the existing rebinding case stay refused (extends `socket-origin.test.ts`) |
+| exact origins on TLS | written first in slice 5: on a TLS listener, `Origin: http://<name>:<port>` with `Host: <name>:<port>` is refused (it passes the host-only fallback today); `Origin: null` is refused; `https://<name>:<port>` is admitted only for a name in the listener's set; a test lists the clients that reach `/rpc` through the fallback before it is narrowed |
 | tailnet name, without a tailnet | TLS listener on `127.0.0.1` with a certificate whose SAN is `DNS:studio.example.ts.net`, generated by `openssl` in a temp dir (`skipIf` no openssl, as `socket-origin.test.ts` does) or committed as test data next to `test-fixtures/local-owner-tls`. Client connects to `127.0.0.1` with `servername` and `Host: studio.example.ts.net:<port>`, trusting that certificate: app served; `/rpc` with `Origin: https://studio.example.ts.net:<port>` admitted; `/artifacts/` with that Host served (fails first, section 2.4); preview CSP `frame-ancestors` contains that origin; `Host: 127.0.0.2:<port>` refused |
 | sandbox is load-bearing | every document-returning `/artifacts/` path has `sandbox` and no `allow-same-origin` |
 | service setting | `service/configuration.test.ts`: `webDirectory` round-trips through `serializeServiceConfiguration` and `serviceEnvironment` |
@@ -503,12 +520,16 @@ Each is one pull request, test first, with `pnpm typecheck`, `pnpm test`, `pnpm 
 4. **Wire it in** (Codex). `DOMOVOI_WEB_DIR` in `config.ts`, default resolution and loading in
    `production-daemon.ts`, the startup line and help in `index.ts`, `webDirectory` in
    `service/configuration.ts`, the `server.ts` option, field and hook, the loopback origin
-   admission, coexistence tests, README rows, changeset. After this the app is served on loopback.
+   admission (only the literal loopback origins, scheme included, and only with a loaded bundle;
+   `null` stays refused), coexistence tests, README rows, changeset. After this the app is served
+   on loopback.
 5. **Listener authorities: tailnet names, previews, artifacts** (Codex). `listener-authorities.ts`;
-   `#acceptsHost` delegates to it; the listener's own origins join the origin set after `listen`,
-   which updates preview `frame-ancestors`; the TLS test certificate tests; the sandbox test. The
-   section 2.4 test is written first and must fail on `main`. After this the app works over the
-   tailnet, and phone previews over the tailnet name may start working too.
+   `#acceptsHost` delegates to it; the listener's exact canonical origins, scheme included, join
+   the origin set after `listen`, which updates preview `frame-ancestors`; the host-only TLS
+   fallback stops admitting another scheme, with the negative test for a same-authority `http`
+   Origin on TLS written first; the TLS test certificate tests; the sandbox test. The section 2.4
+   test is written first and must fail on `main`. After this the app works over the tailnet, and
+   phone previews over the tailnet name may start working too.
 6. **Pairing copy off loopback** (Claude Code), per Q5 (answered A): the served app offers code
    pairing only when its origin is not loopback.
 7. **Packaging and documents** (Claude Code for `scripts/`, the daemon owner for README). A
