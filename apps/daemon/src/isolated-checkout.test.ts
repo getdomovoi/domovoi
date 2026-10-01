@@ -1,10 +1,10 @@
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
-import { gitTeardownTimeoutMs, runGitProcess } from "./isolated-checkout.js"
+import { gitTeardownTimeoutMs, publishUnderIndexLock, runGitProcess } from "./isolated-checkout.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const scratchDirectories: string[] = []
@@ -108,4 +108,58 @@ describe("runGitProcess", () => {
     // lease's "descendants unknown" covers.
     expect(alive(child)).toBe(true)
   }, 30_000)
+})
+
+// An index is published as Git writes one (ruling Q276): under its lock,
+// created exclusively, and never past a lock that was already there.
+describe("publishUnderIndexLock", () => {
+  async function file() {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-index-publish-"))
+    scratchDirectories.push(scratch)
+    const path = join(scratch, "index")
+    await writeFile(path, "old")
+    return { path, lock: `${path}.lock` }
+  }
+
+  it("publishes the bytes through its own lock and leaves no lock", async () => {
+    const { path, lock } = await file()
+    expect(await publishUnderIndexLock(path, async () => Buffer.from("new"))).toBe("published")
+    expect(await readFile(path, "utf8")).toBe("new")
+    await expect(lstat(lock)).rejects.toThrow()
+  })
+
+  it("leaves the file and a lock already there untouched", async () => {
+    const { path, lock } = await file()
+    await writeFile(lock, "someone else's")
+    expect(await publishUnderIndexLock(path, async () => Buffer.from("new"))).toBe("locked")
+    expect(await readFile(path, "utf8")).toBe("old")
+    expect(await readFile(lock, "utf8")).toBe("someone else's")
+  })
+
+  it("changes nothing, and removes its own lock, when the check under the lock declines", async () => {
+    const { path, lock } = await file()
+    expect(await publishUnderIndexLock(path, async () => Buffer.from("new"), async () => false)).toBe("declined")
+    expect(await readFile(path, "utf8")).toBe("old")
+    await expect(lstat(lock)).rejects.toThrow()
+  })
+
+  it("removes its own lock and passes the failure on when writing fails", async () => {
+    const { path, lock } = await file()
+    await expect(publishUnderIndexLock(path, async () => { throw new Error("read failed") })).rejects.toThrow("read failed")
+    expect(await readFile(path, "utf8")).toBe("old")
+    await expect(lstat(lock)).rejects.toThrow()
+  })
+
+  // POSIX: an open file cannot be swapped for a directory on Windows.
+  it.skipIf(process.platform === "win32")("names its own lock beside the failure when it cannot remove it", async () => {
+    const { path, lock } = await file()
+    const failing = publishUnderIndexLock(path, async () => {
+      await rm(lock)
+      await mkdir(lock)
+      await writeFile(join(lock, "held"), "")
+      throw new Error("read failed")
+    })
+    await expect(failing).rejects.toThrow(`read failed. Domovoi could not remove its own index lock at ${lock}`)
+    expect(await readFile(path, "utf8")).toBe("old")
+  })
 })

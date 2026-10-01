@@ -5,7 +5,6 @@ import { chmod, copyFile, lstat, mkdir, open, readFile, readlink, realpath, rm, 
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 
-import { publishFileDurably } from "@getdomovoi/credential-store"
 import { maximumPreviewSourceBytes, type RepositoryGitFilterScope } from "@getdomovoi/protocol"
 
 import {
@@ -13,7 +12,7 @@ import {
 } from "./git-environment.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
-import { carriedRemoteUrl, checkOutIsolated, openIsolatedGit, runGitProcess, type IsolatedGit } from "./isolated-checkout.js"
+import { carriedRemoteUrl, checkOutIsolated, openIsolatedGit, publishUnderIndexLock, runGitProcess, type IsolatedGit } from "./isolated-checkout.js"
 import {
   repositoryFilterGate,
   type RepositoryFilterGate,
@@ -679,9 +678,10 @@ async function commitIndex(
   isolated: IsolatedGit,
   parent: string | undefined,
   message: string,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  index: string,
 ): Promise<string> {
-  const tree = (await isolated.run(["write-tree"], { signal })).trim()
+  const tree = (await isolated.run(["write-tree"], { index, signal })).trim()
   const commit = await git(worktreePath, [
     "-c", "user.name=Domovoi", "-c", "user.email=domovoi@localhost", "-c", "commit.gpgsign=false",
     "commit-tree", "--no-gpg-sign", tree, ...(parent === undefined ? [] : ["-p", parent]), "-m", message,
@@ -943,62 +943,11 @@ async function git(
   return result.stdout.trim()
 }
 
-type IndexSnapshot = { path: string; head: string | undefined; bytes: Buffer | undefined }
-
 async function currentHead(worktreePath: string, signal?: AbortSignal): Promise<string | undefined> {
   const head = await git(worktreePath, ["rev-parse", "-q", "--verify", "HEAD^{commit}"], signal).catch(() => "")
   return head || undefined
 }
 
-async function snapshotIndex(worktreePath: string, signal?: AbortSignal): Promise<IndexSnapshot> {
-  const path = resolve(worktreePath, await git(worktreePath, ["rev-parse", "--git-path", "index"], signal))
-  const head = await currentHead(worktreePath, signal)
-  try {
-    return { path, head, bytes: await readFile(path) }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { path, head, bytes: undefined }
-    throw error
-  }
-}
-
-// Puts a saved index back the way Git writes one: under Git's own index lock,
-// created exclusively, then renamed over the index. A lock already there,
-// left by a killed Git or held by another, refuses the restore ("locked")
-// and stays, so the index under it keeps its file (ruling Q272). While this
-// lock exists no Git can take it, so nothing writes the index meanwhile.
-async function restoreIndex(snapshot: IndexSnapshot): Promise<"restored" | "locked"> {
-  const lock = `${snapshot.path}.lock`
-  let handle: Awaited<ReturnType<typeof open>>
-  try {
-    handle = await open(lock, "wx")
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return "locked"
-    throw error
-  }
-  let published = false
-  try {
-    try {
-      if (snapshot.bytes) {
-        await handle.writeFile(snapshot.bytes)
-        await handle.sync()
-      }
-    } finally {
-      await handle.close()
-    }
-    if (snapshot.bytes) {
-      await publishFileDurably(lock, snapshot.path)
-      published = true
-    } else {
-      await unlink(snapshot.path).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== "ENOENT") throw error
-      })
-    }
-  } finally {
-    // This store's own lock, created exclusively above.
-    if (!published) await unlink(lock).catch(() => undefined)
-  }
-  return "restored"
-}
 
 // The commit's whole tree, read in the isolated directory: in a partial clone
 // a tree the repository lacks is fetched there, with the person's own
@@ -1915,43 +1864,49 @@ export class GitWorkspaceService implements WorkspaceService {
   }
 
   // Stages the whole worktree through the isolated directory, where only the
-  // filters its gate allowed can run, then commits the index with plumbing
-  // that reads no file.
+  // filters its gate allowed can run, then commits with plumbing that reads
+  // no file. Staging and the commit use an index of the checkpoint's own,
+  // seeded from the worktree's index (so the person's staging and files
+  // tracked despite an ignore rule are in it) and kept in the isolated
+  // directory, which goes with it (ruling Q276). The worktree's own index is
+  // never written while the checkpoint runs, so a failed checkpoint has
+  // nothing to put back, and nothing another Git wrote meanwhile is undone.
   async #checkpoint(worktreePath: string, label: string, isolated: IsolatedGit, signal?: AbortSignal): Promise<Checkpoint> {
-    // A failed checkpoint must leave the index exactly as it found it,
-    // including anything the person had staged themselves.
-    const index = await snapshotIndex(worktreePath, signal)
-    let changedFiles: string[]
+    const head = await currentHead(worktreePath, signal)
+    const sharedIndex = resolve(worktreePath, await git(worktreePath, ["rev-parse", "--git-path", "index"], signal))
+    const index = join(isolated.gitDirectory, "checkpoint-index")
+    // The entries the worktree's index held at the start, as `ls-files`
+    // lists them: what a later writer is detected by. Stat data a refresh
+    // rewrites does not count.
+    const entries = (path: string) => isolated.run(["ls-files", "--stage", "-v", "-z"], { index: path, signal: null })
+    let seeded: string
     try {
-      if (index.head !== undefined) await isolated.setHead(index.head)
-      await isolated.run(["add", "--all"], { signal })
-      await this.#afterCheckpointStaging?.()
-      const names = await isolated.run(["--no-optional-locks", "diff", "--cached", "--name-only", "-z"], { signal })
-      changedFiles = names.split("\0").filter(Boolean)
-      if (changedFiles.length > 0) await commitIndex(worktreePath, isolated, index.head, `chore(domovoi): checkpoint ${label}`, signal)
+      await writeFile(index, await readFile(sharedIndex))
+      seeded = await entries(index)
     } catch (error) {
-      // A lock a killed command left may be another Git's now (ruling Q265):
-      // the index under it is not put back, and the error says so.
-      if (isolated.indexLocksLeft.length > 0) {
-        if (error instanceof Error) error.message = `${error.message} Domovoi did not put back the index it saved, since a Git it cannot account for may hold that lock.`
-        throw error
-      }
-      // A deadline can land after the commit itself did. The index is then
-      // the new HEAD's tree, and the old one would read as reverting it.
-      const head = await currentHead(worktreePath).catch(() => undefined)
-      if (head === undefined || head === index.head) {
-        // A lock already there, whoever left it, keeps the index as it is
-        // (ruling Q272), and the error names it as the recorded case does.
-        const restored = await restoreIndex(index).catch(() => "failed" as const)
-        if (restored === "locked" && error instanceof Error) {
-          error.message = `${error.message} Git's index lock at ${index.path}.lock remains. Remove it once no Git command is running in this worktree.`
-            + " Domovoi did not put back the index it saved, since a Git it cannot account for may hold that lock."
-        }
-      }
-      throw error
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      seeded = ""
+      if (head !== undefined) await isolated.run(["read-tree", head], { index, signal })
     }
+    if (head !== undefined) await isolated.setHead(head)
+    await isolated.run(["add", "--all"], { index, signal })
+    await this.#afterCheckpointStaging?.()
+    const names = await isolated.run(["--no-optional-locks", "diff", "--cached", "--name-only", "-z"], { index, signal })
+    const changedFiles = names.split("\0").filter(Boolean)
+    if (changedFiles.length > 0) await commitIndex(worktreePath, isolated, head, `chore(domovoi): checkpoint ${label}`, signal, index)
     const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
     await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
+    // Then the worktree's index becomes the checkpoint's, as Git would write
+    // it, so the worktree reads as clean. Only while it still holds the
+    // entries it had at the start: a lock already there, or another Git's
+    // write since, leaves it as that Git left it. The checkpoint stands
+    // either way; the status then shows its files against the new HEAD.
+    try {
+      // An absent index lists no entry, as one seeded from nothing does.
+      await publishUnderIndexLock(sharedIndex, () => readFile(index), async () => await entries(sharedIndex) === seeded)
+    } catch (error) {
+      throw new Error(`Domovoi made checkpoint ${commit}, but could not update the worktree's index to it: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
+    }
     return { commit, changedFiles }
   }
 

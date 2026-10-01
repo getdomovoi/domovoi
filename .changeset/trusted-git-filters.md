@@ -32,7 +32,10 @@ reads or writes the worktree's files or index in the same temporary Git director
 session's checkout, so no repository config key (core.sshCommand, core.askPass, a credential
 helper, core.fsmonitor, a Git LFS program setting, an included file) starts a program there,
 trusted or not. Commits are written with Git's plumbing, since `git commit` and every index write
-can run a clean filter. Those operations read the exact `git lfs install` lines as exempt and the
+can run a clean filter. A checkpoint stages and commits in an index of its own, seeded from the
+worktree's, so a failed checkpoint leaves the worktree's index as it was and undoes nothing another
+Git wrote meanwhile; on success the worktree's index becomes the checkpoint's, written under
+`index.lock` as Git writes one, only if it still holds the entries it had at the start. Those operations read the exact `git lfs install` lines as exempt and the
 Git LFS program settings as repository filters, as a new session's checkout does, and refuse
 while the repository's Git config cannot be read. Without trust, evidence still reads with the
 repository's filters treated as absent; a diff driver's `diff.<driver>.binary` setting is carried,

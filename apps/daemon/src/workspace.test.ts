@@ -1340,6 +1340,73 @@ describe("GitWorkspaceService", () => {
 
     expect(await observe()).toEqual(before)
   })
+
+  // A checkpoint stages and commits through an index of its own (ruling
+  // Q276), so another Git's write to the worktree's index while it runs is
+  // never rolled back: not when the checkpoint fails, and not when it
+  // succeeds, where the index is updated only if nobody wrote it meanwhile.
+  async function repositoryWithWork(prefix: string) {
+    const scratch = await mkdtemp(join(tmpdir(), prefix))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await writeFile(join(repositoryPath, "tracked.txt"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", ["-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"])
+    await writeFile(join(repositoryPath, "tracked.txt"), "changed\n")
+    const gitIn = async (...args: string[]) => (await execute("git", ["-C", repositoryPath, ...args])).stdout
+    // Another Git staging a file of its own while the checkpoint runs.
+    const stageLate = async () => {
+      await writeFile(join(repositoryPath, "late.txt"), "staged by another writer\n")
+      await gitIn("add", "late.txt")
+    }
+    return { scratch, repositoryPath, gitIn, stageLate }
+  }
+
+  it("keeps another writer's staging when a checkpoint fails after it staged", async () => {
+    const { scratch, repositoryPath, gitIn, stageLate } = await repositoryWithWork("domovoi-checkpoint-late-failed-")
+    const controller = new AbortController()
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), {
+      afterCheckpointStaging: async () => {
+        await stageLate()
+        controller.abort(new Error("checkpoint timed out"))
+      },
+    })
+
+    await expect(service.checkpoint(repositoryPath, "late", controller.signal)).rejects.toThrow("checkpoint timed out")
+
+    expect(await gitIn("diff", "--cached", "--name-only")).toBe("late.txt\n")
+    expect(await gitIn("status", "--porcelain")).toBe("A  late.txt\n M tracked.txt\n")
+  })
+
+  it("keeps another writer's staging when it lands during a checkpoint that succeeds", async () => {
+    const { scratch, repositoryPath, gitIn, stageLate } = await repositoryWithWork("domovoi-checkpoint-late-made-")
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), { afterCheckpointStaging: stageLate })
+
+    const checkpoint = await service.checkpoint(repositoryPath, "late")
+
+    expect(checkpoint.changedFiles).toEqual(["tracked.txt"])
+    expect(await gitIn("show", `${checkpoint.commit}:tracked.txt`)).toBe("changed\n")
+    await expect(gitIn("show", `${checkpoint.commit}:late.txt`)).rejects.toThrow()
+    expect(await gitIn("rev-parse", "HEAD")).toBe(`${checkpoint.commit}\n`)
+    // The writer's index stays as it left it: late.txt staged.
+    expect(await gitIn("ls-files", "--stage", "late.txt")).not.toBe("")
+  })
+
+  it("leaves the worktree's index at the checkpoint, and the status clean, when nobody else wrote it", async () => {
+    const { scratch, repositoryPath, gitIn } = await repositoryWithWork("domovoi-checkpoint-clean-")
+    await writeFile(join(repositoryPath, "fresh.txt"), "fresh\n")
+    const index = resolve(repositoryPath, ".git", "index")
+
+    const checkpoint = await new GitWorkspaceService(join(scratch, "worktrees")).checkpoint(repositoryPath, "clean")
+
+    expect(checkpoint.changedFiles.sort()).toEqual(["fresh.txt", "tracked.txt"])
+    expect(await gitIn("status", "--porcelain")).toBe("")
+    expect(await gitIn("diff", "--cached", "--name-only")).toBe("")
+    await expect(lstat(`${index}.lock`)).rejects.toThrow()
+    expect(await gitIn("rev-parse", `refs/domovoi/checkpoints/${checkpoint.commit}`)).toBe(`${checkpoint.commit}\n`)
+  })
 })
 
 describe("GitWorkspaceService session bundles", () => {
@@ -3963,9 +4030,11 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await allGone(pids)).toBe(true)
   }, 30_000)
 
-  // Git killed while it holds the worktree's index.lock cannot remove the
-  // lock itself. Domovoi cannot tell that no other Git took the lock over
-  // since (ruling Q255), so it leaves the lock in place, fails, and names it.
+  // A checkpoint stages in an index of its own (ruling Q276), so a Git killed
+  // mid-staging holds that index's lock, in the checkpoint's private Git
+  // directory, never the worktree's. Domovoi cannot tell that no other Git
+  // took the lock over since (ruling Q255), so the lock and its directory
+  // stay, the error names them, and the worktree's index keeps its file.
   it.skipIf(!processGroups)("leaves the index lock a killed checkpoint left, and names it in the error", async () => {
     const { repositoryPath, trust, service, waitForPids } = await hangingRepository("domovoi-trusted-hang-lock-", "process")
     await trust()
@@ -3973,33 +4042,32 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     const workspace = await trusted.createSessionWorkspace(repositoryPath, "session-hang-lock")
     await writeFile(join(workspace.path, "work.hang"), "agent work\n")
     const index = resolve(workspace.path, (await run("-C", workspace.path, "rev-parse", "--git-path", "index")).stdout.trim())
-    const lock = `${index}.lock`
+    const commonDirectory = join(repositoryPath, ".git")
     const indexBefore = await lstat(index)
     const controller = new AbortController()
 
     const checkpoint = trusted.checkpoint(workspace.path, "hang", controller.signal)
     const outcome = checkpoint.then(() => undefined, (error: unknown) => error)
     expect(await waitForPids()).toHaveLength(2)
-    expect((await lstat(lock)).isFile()).toBe(true)
+    await expect(lstat(`${index}.lock`)).rejects.toThrow()
     controller.abort(new Error("Checkpoint timed out"))
 
     const error = await outcome
     expect(error).toBeInstanceOf(Error)
+    const [checkout] = (await readdir(commonDirectory)).filter((name) => name.startsWith("domovoi-checkout-"))
+    const lock = join(commonDirectory, checkout!, "checkpoint-index.lock")
+    expect((await lstat(lock)).isFile()).toBe(true)
     expect((error as Error).message).toContain(`Git's index lock at ${lock} remains`)
     expect((error as Error).message).toContain("Remove it once no Git command is running in this worktree")
-    expect((await lstat(lock)).isFile()).toBe(true)
-    // Nor does the checkpoint put back the index it saved (ruling Q265): a Git
-    // that took the lock over may be writing it. Putting it back would
-    // publish a new file under the index's name.
-    expect((error as Error).message).toContain("did not put back the index it saved")
+    expect((error as Error).message).toContain(`left the temporary Git directory ${join(commonDirectory, checkout!)} in place`)
+    await expect(lstat(`${index}.lock`)).rejects.toThrow()
     expect((await lstat(index)).ino).toBe(indexBefore.ino)
   }, 30_000)
 
-  // A lock an earlier operation left, or any Git holds, belongs to no record
-  // of this checkpoint. Its index is not put back either (ruling Q272): the
-  // checkpoint fails on Git's lock error, the lock stays and the index keeps
-  // its file.
-  it("leaves the index under a lock it found already there, and names the lock", async () => {
+  // A lock on the worktree's index, left by an earlier operation or held by
+  // another Git, is never touched (ruling Q276): the checkpoint, made in its
+  // own index, stands, and the worktree's index and its lock stay as they are.
+  it("makes a checkpoint without touching a lock it finds on the worktree's index", async () => {
     const { repositoryPath, worktrees } = await filteredRepository("domovoi-checkpoint-held-lock-")
     const service = new GitWorkspaceService(worktrees)
     const workspace = await service.createSessionWorkspace(repositoryPath, "session-held-lock")
@@ -4009,11 +4077,9 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     await writeFile(lock, "")
     const indexBefore = await lstat(index)
 
-    const error = await service.checkpoint(workspace.path, "held").then(() => undefined, (failure: unknown) => failure)
+    const checkpoint = await service.checkpoint(workspace.path, "held")
 
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toContain(`Git's index lock at ${lock} remains`)
-    expect((error as Error).message).toContain("did not put back the index it saved")
+    expect((await run("-C", workspace.path, "show", `${checkpoint.commit}:victim.txt`)).stdout).toBe("changed\n")
     expect((await lstat(lock)).isFile()).toBe(true)
     expect((await lstat(index)).ino).toBe(indexBefore.ino)
   })

@@ -4,6 +4,8 @@ import { promises as fs } from "node:fs"
 import { isAbsolute, join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
 
+import { publishFileDurably } from "@getdomovoi/credential-store"
+
 import { windowsTreeKill } from "./claude-process.js"
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { isStandardLfsFilterLine } from "./git-read-config.js"
@@ -574,6 +576,54 @@ export async function openIsolatedGit(input: {
       await fs.rm(gitDirectory, { recursive: true, force: true })
     },
   }
+}
+
+// Writes `bytes` over `path` the way Git writes an index: into `path`.lock,
+// created exclusively, synced, then renamed over the file (ruling Q276).
+// `proceed` runs once the lock is held, while no Git can write the file, and
+// returns false to leave everything as it was. A lock already there, whoever
+// left it, is never touched ("locked"). A lock this function made and could
+// not remove is named in the error, beside whatever failed first. On POSIX
+// the rename is synced through its directory; Windows gives no such promise
+// for a rename (publishFileDurably).
+export async function publishUnderIndexLock(
+  path: string,
+  bytes: () => Promise<Buffer>,
+  proceed: () => Promise<boolean> = async () => true,
+): Promise<"published" | "locked" | "declined"> {
+  const lock = `${path}.lock`
+  let handle: fs.FileHandle
+  try {
+    handle = await fs.open(lock, "wx")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return "locked"
+    throw error
+  }
+  let outcome: "published" | "declined" = "declined"
+  let failure: { error: unknown } | undefined
+  try {
+    if (await proceed()) {
+      await handle.writeFile(await bytes())
+      await handle.sync()
+      await handle.close()
+      await publishFileDurably(lock, path)
+      outcome = "published"
+    }
+  } catch (error) {
+    failure = { error }
+  } finally {
+    await handle.close().catch(() => undefined)
+  }
+  if (outcome !== "published") {
+    const removed = await fs.unlink(lock).then(() => true, (error: NodeJS.ErrnoException) => error.code === "ENOENT")
+    if (!removed) {
+      const left = `Domovoi could not remove its own index lock at ${lock}. Remove it once no Git command is running in this worktree.`
+      if (failure === undefined) throw new Error(left)
+      throw new AggregateError([failure.error], `${failure.error instanceof Error ? failure.error.message : String(failure.error)}. ${left}`)
+    }
+  }
+  if (failure !== undefined) throw failure.error
+  return outcome
 }
 
 // Checks a new session worktree out of `commit` in an isolated Git directory
