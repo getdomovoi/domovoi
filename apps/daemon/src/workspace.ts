@@ -348,6 +348,23 @@ function cleanupText(cleanup: NewWorktreeCleanup): string {
   return "No worktree was left. "
 }
 
+// A new session worktree whose checkout was stopped part way, by a cancel or
+// a timeout. Its process group was killed, but a process a filter started
+// can have left the group, so Domovoi cannot confirm that nothing still
+// writes to the worktree, and does not delete it: the worktree stays where it
+// was added, with its branch, and the record of the session's creation is
+// kept for recovery.
+export class NewWorktreeKeptError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `${cause instanceof Error ? cause.message : "The checkout stopped"}. The new worktree was partly checked out and stays `
+      + "where it was added, with its branch, kept for recovery: a process the stopped checkout started may still be running.",
+      { cause },
+    )
+    this.name = "NewWorktreeKeptError"
+  }
+}
+
 export class RepositoryGitFilterRefusedError extends RepositoryFilterRefusedError {
   readonly worktreeRemoved: boolean
   readonly branchRemoved: boolean | undefined
@@ -1330,6 +1347,11 @@ export class GitWorkspaceService implements WorkspaceService {
       })
       await git(path, ["update-ref", "HEAD", commit], signal)
     } catch (error) {
+      // A checkout ended by a cancel or a timeout had its process group
+      // killed, and a process a filter started can have left that group, so
+      // something may still write to the worktree. It is not deleted under
+      // such a writer: it stays, with its branch, for recovery.
+      if (signal?.aborted === true || (error instanceof Error && error.name === "AbortError")) throw new NewWorktreeKeptError(error)
       const cleanup = await discardNewWorktree(repositoryPath, path, madeBranch)
       if (error instanceof RepositoryFilterRefusedError) {
         throw new RepositoryGitFilterRefusedError(error.settings, cleanup, { reason: error.reason, projectId: error.projectId })

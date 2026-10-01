@@ -3534,12 +3534,25 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
   // has no process groups (ruling Q110 A).
   const processGroups = process.platform !== "win32"
 
-  async function hangingRepository(prefix: string, operation: "process" | "smudge") {
+  async function hangingRepository(prefix: string, operation: "process" | "smudge", escapes = false) {
     const repository = await trustedRepository(prefix)
     const { scratch, repositoryPath, git } = repository
     const pids = join(scratch, "pids").replaceAll("\\", "/")
+    const escapedPids = join(scratch, "escaped-pids").replaceAll("\\", "/")
     const hang = join(scratch, "hang.sh").replaceAll("\\", "/")
-    await writeFile(hang, `echo $$ >> "${pids}"\nsleep 60 &\necho $! >> "${pids}"\nwait\n`)
+    // An escaping filter first starts a child in a session of its own, which
+    // leaves the filter's process group, as setsid does.
+    const escape = join(scratch, "escape.mjs").replaceAll("\\", "/")
+    await writeFile(escape, [
+      "import { spawn } from \"node:child_process\"",
+      "import { appendFileSync } from \"node:fs\"",
+      "const child = spawn(process.execPath, [\"-e\", \"setTimeout(() => {}, 60000)\"], { detached: true, stdio: \"ignore\" })",
+      "appendFileSync(process.argv[2], `${child.pid}\\n`)",
+      "child.unref()",
+      "",
+    ].join("\n"))
+    const escaping = escapes ? `"${process.execPath.replaceAll("\\", "/")}" "${escape}" "${escapedPids}"\n` : ""
+    await writeFile(hang, `${escaping}echo $$ >> "${pids}"\nsleep 60 &\necho $! >> "${pids}"\nwait\n`)
     await writeFile(join(repositoryPath, ".gitattributes"), "victim.txt filter=agent\n*.hang filter=hang\n")
     if (operation === "smudge") await writeFile(join(repositoryPath, "stuck.hang"), "stuck\n")
     await git("add", ".")
@@ -3562,7 +3575,8 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
       for (let attempt = 0; attempt < 200 && list.some(alive); attempt += 1) await new Promise((wait) => setTimeout(wait, 25))
       return !list.some(alive)
     }
-    return { ...repository, waitForPids, allGone }
+    const escaped = async () => (await readFile(escapedPids, "utf8").catch(() => "")).split("\n").filter(Boolean).map(Number)
+    return { ...repository, waitForPids, allGone, alive, escaped }
   }
 
   it.skipIf(!processGroups)("ends a hanging trusted process driver and every process it started when the operation times out", async () => {
@@ -3583,20 +3597,45 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await allGone(pids)).toBe(true)
   }, 30_000)
 
-  it.skipIf(!processGroups)("leaves no half-checked-out worktree when an emergency stop lands during a trusted create", async () => {
-    const { repositoryPath, worktrees, trust, service, waitForPids, allGone, branches } = await hangingRepository("domovoi-trusted-stop-", "smudge")
+  // An emptied process group does not prove that every process a filter
+  // started has ended: one can leave the group (setsid). So after a kill the
+  // checkout's descendants are unknown (fail closed, as ruling Q111 B), the
+  // half-checked-out worktree is kept for recovery rather than deleted under
+  // a writer that may still run, and the restore claim stays for inspection.
+  it.skipIf(!processGroups).each([
+    ["a filter that stays in its group", false],
+    ["a filter that starts a child outside its group", true],
+  ] as const)("keeps the worktree for recovery when an emergency stop lands during a trusted create: %s", async (_label, escapes) => {
+    const { repositoryPath, worktrees, trust, service, waitForPids, allGone, alive, escaped, branches } = await hangingRepository(`domovoi-trusted-stop-${escapes ? "escape" : "group"}-`, "smudge", escapes)
     await trust()
     const controller = new AbortController()
+    const left: number[] = []
+    try {
+      const creating = service().createSessionWorkspace(repositoryPath, "session-stop", controller.signal)
+      const outcome = creating.then(() => undefined, (error: unknown) => error)
+      const pids = await waitForPids()
+      expect(pids).toHaveLength(2)
+      left.push(...await escaped())
+      expect(left).toHaveLength(escapes ? 1 : 0)
+      controller.abort(new Error("Operation cancelled by emergency stop"))
 
-    const creating = service().createSessionWorkspace(repositoryPath, "session-stop", controller.signal)
-    const outcome = creating.then(() => undefined, (error: unknown) => error)
-    const pids = await waitForPids()
-    expect(pids).toHaveLength(2)
-    controller.abort(new Error("Operation cancelled by emergency stop"))
-
-    expect(await outcome).toBeInstanceOf(Error)
-    expect(await allGone(pids)).toBe(true)
-    await expect(lstat(join(worktrees, "session-stop"))).rejects.toThrow()
-    expect(await branches()).toBe("")
+      const error = await outcome as AggregateError
+      expect(error).toMatchObject({ name: "SessionRestoreClaimCleanupError", message: expect.stringContaining("kept for recovery") })
+      expect(error.errors.some((cause) => cause instanceof Error && cause.message.includes("descendant liveness is unknown"))).toBe(true)
+      expect(await allGone(pids)).toBe(true)
+      // The escaped child outlives the kill: this is what the claim guards.
+      expect(left.every(alive)).toBe(true)
+      expect((await lstat(join(worktrees, "session-stop"))).isDirectory()).toBe(true)
+      expect(await branches()).toBe("domovoi/session-stop")
+      expect((await lstat(join(worktrees, ".restore-claims", "session-stop"))).isFile()).toBe(true)
+    } finally {
+      for (const pid of left) {
+        try {
+          process.kill(pid, "SIGKILL")
+        } catch {
+          // Already gone.
+        }
+      }
+    }
   }, 30_000)
 })

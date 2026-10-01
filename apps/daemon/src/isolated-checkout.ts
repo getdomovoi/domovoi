@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process"
+import { execFile, spawn, type PromiseWithChild } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
 import { isAbsolute, join, resolve } from "node:path"
@@ -8,7 +8,7 @@ import { windowsTreeKill } from "./claude-process.js"
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { isStandardLfsFilterLine } from "./git-read-config.js"
 import type { GitFilterSetting } from "./repository-git-filters.js"
-import { trackRestoreCommand, type TrackedCommand } from "./workspace-restore-lease.js"
+import { trackRestoreCommand } from "./workspace-restore-lease.js"
 
 const execute = promisify(execFile)
 
@@ -231,35 +231,21 @@ function abortError(signal: AbortSignal): Error {
   return error
 }
 
-// Whether a process group ended by SIGKILL has no member left, probed with
-// signal 0, which delivers nothing: a group id taken again meanwhile can only
-// make the answer "still running". Members the kill reached are reaped by
-// their new parent within moments.
-async function processGroupEmptied(groupId: number): Promise<boolean> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      process.kill(-groupId, 0)
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "ESRCH"
-    }
-    await new Promise((wait) => setTimeout(wait, 20))
-  }
-  return false
-}
-
 // Runs one Git command in a process group of its own (POSIX), feeding its
 // output to onStdout, which can stop it. A cancelled or stopped command is
 // ended with its whole group, and only while Git has not been reaped: until
 // then no other group can take its id, so the signal reaches only processes
-// this command started. descendantsEnded then says whether the group was seen
-// empty afterwards (workspace-restore-lease.ts). On Windows the process tree
-// is ended instead, and nothing is confirmed.
+// this command started. On Windows the process tree is ended instead.
+//
+// Ending the group does not prove that every process the command started has
+// ended: one can leave the group (setsid). So a killed command still leaves
+// its descendants unknown to the restore lease (workspace-restore-lease.ts).
 export function runGitProcess(args: readonly string[], options: {
   env: NodeJS.ProcessEnv
   cwd: string
   signal?: AbortSignal | undefined
   onStdout?: (chunk: Buffer, stop: () => void) => void
-}): TrackedCommand<GitProcessResult> {
+}): PromiseWithChild<GitProcessResult> {
   const posix = process.platform !== "win32"
   const child = spawn("git", [...args], {
     cwd: options.cwd,
@@ -268,7 +254,6 @@ export function runGitProcess(args: readonly string[], options: {
     detached: posix,
     windowsHide: true,
   })
-  let groupEnded = false
   const end = () => {
     if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return
     if (!posix) {
@@ -277,15 +262,10 @@ export function runGitProcess(args: readonly string[], options: {
     }
     try {
       process.kill(-child.pid, "SIGKILL")
-      groupEnded = true
     } catch {
       child.kill("SIGKILL")
     }
   }
-  const descendantsEnded = new Promise<boolean>((resolveEnded) => {
-    child.once("close", () => resolveEnded(groupEnded && child.pid !== undefined ? processGroupEmptied(child.pid) : false))
-    child.once("error", () => resolveEnded(false))
-  })
   const { signal } = options
   const promise = new Promise<GitProcessResult>((resolvePromise, reject) => {
     const errors: Buffer[] = []
@@ -318,9 +298,8 @@ export function runGitProcess(args: readonly string[], options: {
       }
       resolvePromise({ code, signal: closeSignal, stderr: Buffer.concat(errors).toString("utf8").trim() })
     })
-  }) as TrackedCommand<GitProcessResult>
+  }) as PromiseWithChild<GitProcessResult>
   promise.child = child
-  promise.descendantsEnded = descendantsEnded
   return promise
 }
 
