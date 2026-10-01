@@ -3587,9 +3587,12 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     const trust = async (reviewed = true) => {
       const config = await readRepositoryProviderConfig(repositoryPath, projectRootRead)
       expect(config.trustRefusals).toEqual([])
+      // As repository.trust records it: only for a block that lists every filter.
+      const block = config.gitFilters
+      const reviewDigest = block?.unreadable === undefined && block?.omittedEntries === 0 ? block.reviewDigest : undefined
       state.grant = {
         projectId, trustedDigest: config.configDigest, trustedAt: "2026-09-30T12:00:00.000Z", trustedBy: { client: "desktop" },
-        ...(reviewed ? { gitFiltersReviewed: true as const } : {}),
+        ...(reviewed && reviewDigest !== undefined ? { gitFilterReviewDigest: reviewDigest } : {}),
       }
     }
     const revoke = () => {
@@ -3645,6 +3648,33 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     await expect(refused).rejects.toThrow("trust it again from an updated Domovoi client")
     expect(await markers()).toEqual([])
     await expect(lstat(join(worktrees, "session-unreviewed"))).rejects.toThrow()
+  })
+
+  // The trust digest does not cover the file that sets a filter, but the
+  // block the client showed does. Settings moved to another file after trust
+  // keep the trust digest and change the block, so the grant no longer covers
+  // what would be shown, and the filters stay held back (ruling Q265).
+  it("refuses under a grant whose reviewed block differs from the one read now, and runs nothing", async () => {
+    const { scratch, repositoryPath, worktrees, git, markers, trust, service, projectId, state } = await trustedRepository("domovoi-trusted-moved-")
+    await trust()
+    const trustedDigest = state.grant?.trustedDigest
+    const settings = (await git("config", "--local", "--get-regexp", "^filter\\.agent\\.")).stdout.trim().split("\n")
+    await git("config", "--unset", "filter.agent.clean")
+    await git("config", "--unset", "filter.agent.smudge")
+    const included = join(scratch, "moved-agent.gitconfig")
+    await writeFile(included, `[filter "agent"]\n${settings.map((line) => {
+      const space = line.indexOf(" ")
+      return `\t${line.slice("filter.agent.".length, space)} = ${line.slice(space + 1)}\n`
+    }).join("")}`)
+    await git("config", "include.path", included.replaceAll("\\", "/"))
+    expect((await readRepositoryProviderConfig(repositoryPath, projectRootRead)).configDigest).toBe(trustedDigest)
+
+    const refused = service().createSessionWorkspace(repositoryPath, "session-moved")
+
+    await expect(refused).rejects.toMatchObject({ name: "RepositoryGitFilterRefusedError", reason: "filters-changed", projectId })
+    await expect(refused).rejects.toThrow("not the ones shown when it was trusted")
+    expect(await markers()).toEqual([])
+    await expect(lstat(join(worktrees, "session-moved"))).rejects.toThrow()
   })
 
   it("refuses create when a reviewed filter's command changed after trust, and runs nothing", async () => {

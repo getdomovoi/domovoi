@@ -1,6 +1,6 @@
 import { readGitFilterSettings, readRepositoryGitFilters, repositoryGitFilters, type GitFilterSetting, type RepositoryGitFilter } from "./repository-git-filters.js"
 import { readRepositoryProviderConfig, type RepositoryProviderConfig } from "./repository-provider-config.js"
-import { projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
+import { gitFilterBlockReviewed, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant } from "./repository-trust-store.js"
 import type { RepositoryProviderConfigReader } from "./tool-inventory.js"
 
@@ -19,8 +19,12 @@ import type { RepositoryProviderConfigReader } from "./tool-inventory.js"
 // 3. Otherwise the project's grant on this machine, looked up now and never
 //    taken from an earlier answer (the #662 rule): none refuses not-trusted.
 //    A grant whose client never said it showed the git filters
-//    (gitFiltersReviewed, repository.trust gitFilters) refuses
+//    (gitFilterReviewDigest, repository.trust gitFilters) refuses
 //    filters-not-reviewed, once step 4 finds it covers the configuration.
+//    One whose recorded review digest is not that of the root's block read
+//    in step 4, or whose block is incomplete, refuses filters-changed (ruling
+//    Q265): the trust digest does not cover the file that sets a filter, so
+//    the shown block can change while the configuration digest holds.
 // 4. The project root read now, as tool.inventory and the trust step read it
 //    (ruling Q145 A), with its own filters T: its digest must be the one the
 //    grant names and nothing in it may refuse trust, else the refusal says
@@ -68,8 +72,10 @@ export type RepositoryFilterTrustLookup = (anchor: string) => RepositoryFilterTr
 // filters-not-reviewed: the grant covers the configuration, but its client
 // never said it showed the git filters (an older client, or a grant made
 // before filters could run), so they stay held back until trust is given
-// again from a client that shows them.
-export type RepositoryFilterRefusalReason = "not-trusted" | "config-changed" | "cannot-trust" | "unreadable" | "filters-not-reviewed"
+// again from a client that shows them. filters-changed: the grant reviewed
+// another git filter block than the one read now, or the block read now does
+// not list every filter.
+export type RepositoryFilterRefusalReason = "not-trusted" | "config-changed" | "cannot-trust" | "unreadable" | "filters-not-reviewed" | "filters-changed"
 
 export type RepositoryFilterGate =
   | {
@@ -126,7 +132,8 @@ export async function repositoryFilterGate(input: {
   input.signal?.throwIfAborted()
   const trust = repositoryTrustState(config, grant)
   if (trust.state !== "trusted") return refuse(trust.reason === "cannot-trust" ? "cannot-trust" : "config-changed")
-  if (grant.gitFiltersReviewed !== true) return refuse("filters-not-reviewed")
+  if (grant.gitFilterReviewDigest === undefined) return refuse("filters-not-reviewed")
+  if (!gitFilterBlockReviewed(config.gitFilters, grant)) return refuse("filters-changed")
   if (!sameFilters(filters, rootFilters)) return refuse("config-changed")
   const reviewed: Array<readonly [string, string]> = rootFilters.map(({ key, value }) => [key, value] as const)
   const requiredPins = new Map<string, string>()

@@ -76,13 +76,17 @@ describe("readToolInventory", () => {
     const read = async () => ({ configDigest, providers: [], trustRefusals: [], documents: {}, gitFilters })
     const grant = {
       projectId: "project-acme", trustedDigest: configDigest, trustedAt: "2026-09-30T12:00:00.000Z", trustedBy: { client: "desktop" as const },
-      gitFiltersReviewed: true as const,
+      gitFilterReviewDigest: gitFilters.reviewDigest,
     }
     const heldBack = (inventory: ToolInventory) => inventory.repository?.gitFilters?.entries.map((entry) => entry.heldBack)
 
     expect(heldBack(await readToolInventory({ machine, project, grant, read }))).toEqual([false])
-    const { gitFiltersReviewed: _, ...unreviewed } = grant
+    const { gitFilterReviewDigest: _, ...unreviewed } = grant
     expect(heldBack(await readToolInventory({ machine, project, grant: unreviewed, read }))).toEqual([true])
+    // A grant that reviewed another block than the one read now (ruling Q265).
+    expect(heldBack(await readToolInventory({ machine, project, grant: { ...grant, gitFilterReviewDigest: `sha256:${"c".repeat(64)}` }, read }))).toEqual([true])
+    const incomplete = async () => ({ ...await read(), gitFilters: { ...gitFilters, omittedEntries: 1 } })
+    expect(heldBack(await readToolInventory({ machine, project, grant, read: incomplete }))).toEqual([true])
     expect(heldBack(await readToolInventory({ machine, project, read }))).toEqual([true])
     expect(heldBack(await readToolInventory({ machine, project, grant: { ...grant, trustedDigest: `sha256:${"b".repeat(64)}` }, read }))).toEqual([true])
     const refused = async () => ({ ...await read(), trustRefusals: [{ provider: "codex", reason: "nested-config" as const, path: "sub/.codex/config.toml" }] })

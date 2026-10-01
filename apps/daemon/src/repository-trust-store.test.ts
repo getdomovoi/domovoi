@@ -39,16 +39,72 @@ describe("SqliteRepositoryTrust", () => {
   })
 
   // A grant lets the daemon run the repository's git filters only when the
-  // client acknowledged showing them (repository.trust gitFilters).
-  it("records whether the grant reviewed the repository's git filters", () => {
+  // client acknowledged showing them (repository.trust gitFilters), and only
+  // for the block it showed: the grant keeps that block's review digest
+  // (ruling Q265).
+  it("records the review digest of the git filter block the grant reviewed", () => {
     const trust = new SqliteRepositoryTrust(new DatabaseSync(":memory:"))
-    const reviewed = trust.record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" }, gitFiltersReviewed: true })
+    const reviewed = trust.record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" }, gitFilterReviewDigest: digest("c") })
     const unreviewed = trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "web" } })
 
-    expect(reviewed.gitFiltersReviewed).toBe(true)
+    expect(reviewed.gitFilterReviewDigest).toBe(digest("c"))
     expect(trust.find("project-acme")).toEqual(reviewed)
     expect(trust.find("project-beta")).toEqual(unreviewed)
-    expect(trust.find("project-beta")).not.toHaveProperty("gitFiltersReviewed")
+    expect(trust.find("project-beta")).not.toHaveProperty("gitFilterReviewDigest")
+    expect(() => trust.record({ projectId: "project-gamma", trustedDigest: digest("a"), trustedBy: { client: "desktop" }, gitFilterReviewDigest: "sha256:short" })).toThrow()
+  })
+
+  // A table an earlier build of this store made, with the acknowledgement but
+  // no review digest: it gains the column, NULL for its grants, and none of
+  // them runs a git filter until the repository is trusted again.
+  it("keeps the grants of a table without review digests, none of them running git filters", () => {
+    const database = new DatabaseSync(":memory:")
+    database.exec(`
+      CREATE TABLE repository_trust (
+        project_id TEXT PRIMARY KEY,
+        trusted_digest TEXT NOT NULL,
+        trusted_at TEXT NOT NULL,
+        trusted_client TEXT NOT NULL,
+        trusted_client_id TEXT,
+        git_filters_reviewed INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX repository_trust_trusted_at ON repository_trust (trusted_at);
+    `)
+    database.prepare("INSERT INTO repository_trust VALUES (?, ?, ?, ?, ?, ?)").run("project-acme", digest("a"), "2026-09-30T12:00:00.000Z", "desktop", null, 1)
+
+    const trust = new SqliteRepositoryTrust(database)
+
+    expect(trust.find("project-acme")).toEqual({ projectId: "project-acme", trustedDigest: digest("a"), trustedAt: "2026-09-30T12:00:00.000Z", trustedBy: { client: "desktop" } })
+    expect(trust.record({ projectId: "project-acme", trustedDigest: digest("b"), trustedBy: { client: "desktop" }, gitFilterReviewDigest: digest("c") }).gitFilterReviewDigest).toBe(digest("c"))
+    expect(trust.find("project-acme")?.gitFilterReviewDigest).toBe(digest("c"))
+  })
+
+  // Every column is compared in full before grants are read, the new one too:
+  // a default would hand every row written without it a review digest.
+  it.each([
+    ["TEXT DEFAULT 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'"],
+    ["BLOB"],
+    ["TEXT NOT NULL DEFAULT ''"],
+  ])("yields no grant from a table whose review digest column is %s", (declaration) => {
+    const database = new DatabaseSync(":memory:")
+    database.exec(`
+      CREATE TABLE repository_trust (
+        project_id TEXT PRIMARY KEY,
+        trusted_digest TEXT NOT NULL,
+        trusted_at TEXT NOT NULL,
+        trusted_client TEXT NOT NULL,
+        trusted_client_id TEXT,
+        git_filters_reviewed INTEGER NOT NULL DEFAULT 0,
+        git_filter_review_digest ${declaration}
+      );
+      CREATE INDEX repository_trust_trusted_at ON repository_trust (trusted_at);
+    `)
+    database.prepare("INSERT INTO repository_trust (project_id, trusted_digest, trusted_at, trusted_client, trusted_client_id, git_filters_reviewed) VALUES (?, ?, ?, ?, ?, 1)")
+      .run("project-acme", digest("a"), "2026-09-30T12:00:00.000Z", "desktop", null)
+    const trust = new SqliteRepositoryTrust(database)
+
+    expect(trust.find("project-acme")).toBeUndefined()
+    expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
   })
 
   // A table an earlier daemon made, with no column for the acknowledgement:
@@ -71,8 +127,8 @@ describe("SqliteRepositoryTrust", () => {
     const trust = new SqliteRepositoryTrust(database)
 
     expect(trust.find("project-acme")).toEqual({ projectId: "project-acme", trustedDigest: digest("a"), trustedAt: "2026-09-30T12:00:00.000Z", trustedBy: { client: "desktop" } })
-    expect(trust.record({ projectId: "project-acme", trustedDigest: digest("b"), trustedBy: { client: "desktop" }, gitFiltersReviewed: true }).gitFiltersReviewed).toBe(true)
-    expect(trust.find("project-acme")?.gitFiltersReviewed).toBe(true)
+    expect(trust.record({ projectId: "project-acme", trustedDigest: digest("b"), trustedBy: { client: "desktop" }, gitFilterReviewDigest: digest("c") }).gitFilterReviewDigest).toBe(digest("c"))
+    expect(trust.find("project-acme")?.gitFilterReviewDigest).toBe(digest("c"))
   })
 
   it("survives reopening the same database", () => {

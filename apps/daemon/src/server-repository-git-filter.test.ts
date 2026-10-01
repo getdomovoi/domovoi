@@ -165,8 +165,9 @@ describe("repository.trust and the git filter acknowledgement", () => {
     expect(reply).toMatchObject({ result: { outcome: "trusted" } })
     expect(repositoryTrust.record).toHaveBeenCalledOnce()
     const recorded = repositoryTrust.record.mock.calls[0]![0]
-    if (reviewed) expect(recorded.gitFiltersReviewed).toBe(true)
-    else expect(recorded).not.toHaveProperty("gitFiltersReviewed")
+    // The grant keeps the digest of the block it reviewed (ruling Q265).
+    if (reviewed) expect(recorded.gitFilterReviewDigest).toBe(digest("b"))
+    else expect(recorded).not.toHaveProperty("gitFilterReviewDigest")
   })
 
   // The acknowledgement names the block the client fetched by its review

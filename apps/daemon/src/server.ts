@@ -7570,10 +7570,13 @@ export class DomovoiDaemon {
             "Domovoi granted no trust: the git filters this client showed are not the ones Domovoi reads now. Read tool.inventory again and show its git filters before trusting the repository.")
           return
         }
+        // The grant keeps the digest of the block it reviewed, and the gate
+        // runs the filters only while the block read then has it (ruling Q265).
         const gitFiltersReviewed = gitFilters?.reviewed === true && filters !== undefined
           && filters.unreadable === undefined && filters.omittedEntries === 0
         const record = () => store.record({
-          projectId: project.id, trustedDigest: config.configDigest, trustedBy, ...(gitFiltersReviewed ? { gitFiltersReviewed: true as const } : {}),
+          projectId: project.id, trustedDigest: config.configDigest, trustedBy,
+          ...(gitFiltersReviewed ? { gitFilterReviewDigest: filters.reviewDigest } : {}),
         })
         const repository = (grant: RepositoryTrustGrant | undefined) => ({
           projectId: project.id,

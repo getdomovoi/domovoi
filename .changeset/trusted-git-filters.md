@@ -16,7 +16,12 @@ changed since trust, or trust taken back while the operation runs refuses with
 `repositoryGitFilterErrorCode` and nothing runs. Every existing grant, and any grant from a client
 that does not acknowledge the filters, keeps them held back with a refusal that says to review and
 trust the repository again from an updated client; grants for repositories without filters behave
-as before. The trust store gains a column for the acknowledgement, 0 for the grants already in it.
+as before. The grant keeps the review digest of the git filter block it acknowledged, and the
+filters run only while the block read at the operation lists every filter and has that digest:
+the configuration digest does not cover the file that sets a filter, so settings moved to another
+file keep the configuration digest but hold the filters back until the repository is trusted
+again. The trust store gains columns for the acknowledgement and that digest, 0 and NULL for the
+grants already in it, and refuses a table with a foreign key or a trigger that names it.
 A driver's `filter.<driver>.required` is reviewed with its commands and pinned to the reviewed
 value; `tool.inventory` shows its effective state with each driver command, and counts rather
 than lists a command whose `required` value Git would not read as a boolean. A trusted filter runs as you, including a command that runs a file in the repository,
