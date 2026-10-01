@@ -642,6 +642,28 @@ describe("GitWorkspaceService", () => {
     expect(Buffer.byteLength(evidence.diff, "utf8")).toBeLessThanOrEqual(256 * 1_024)
   })
 
+  // Evidence reads in an isolated Git directory that drops the repository's
+  // diff settings; a driver's binary flag starts nothing and keeps a file's
+  // contents out of the diff, so it is carried.
+  it("keeps a file the repository's diff driver marks binary out of the evidence diff", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-evidence-binary-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await writeFile(join(repositoryPath, ".gitattributes"), "secret.txt diff=redact\n")
+    await writeFile(join(repositoryPath, "secret.txt"), "public\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", ["-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"])
+    await execute("git", ["-C", repositoryPath, "config", "diff.redact.binary", "true"])
+    await writeFile(join(repositoryPath, "secret.txt"), "sentinel-plaintext-value\n")
+
+    const evidence = await new GitWorkspaceService(join(scratch, "worktrees")).evidence(repositoryPath)
+
+    expect(evidence.files).toEqual([expect.objectContaining({ path: "secret.txt", binary: true })])
+    expect(evidence.diff).not.toContain("sentinel-plaintext-value")
+  })
+
   it("does not execute repository-configured text conversion commands", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-workspace-"))
     scratchDirectories.push(scratch)

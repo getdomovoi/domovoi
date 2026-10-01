@@ -903,12 +903,36 @@ async function hashIsolatedGit(isolated: IsolatedGit, arguments_: string[], sign
   return hash.digest("hex")
 }
 
+// The `diff.<driver>.binary` settings Git reads in the worktree, as `-c`
+// arguments for the evidence diffs in the isolated directory, which reads no
+// repository config. A driver marked binary keeps a file's contents out of a
+// diff and starts nothing; every other diff setting stays behind, and
+// external diffs and text conversion stay off. A driver name Git's `-c` could
+// not carry as written (an "=" or a control character) is left out.
+async function diffBinarySettings(worktreePath: string, signal?: AbortSignal): Promise<string[]> {
+  let output: string
+  try {
+    output = await rawGit(worktreePath, ["config", "-z", "--type=bool", "--get-regexp", String.raw`^diff\..+\.binary$`], signal)
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 1) return []
+    throw error
+  }
+  return output.split("\0").filter((record) => record !== "").flatMap((record) => {
+    const newline = record.indexOf("\n")
+    const key = newline === -1 ? record : record.slice(0, newline)
+    const value = newline === -1 ? "true" : record.slice(newline + 1)
+    if (key.includes("=") || /[\p{Cc}]/u.test(key) || (value !== "true" && value !== "false")) return []
+    return ["-c", `${key}=${value}`]
+  })
+}
+
 // The isolated directory's HEAD must already be the worktree's HEAD the
 // caller read: the status and diff compare against it.
 async function workspaceEvidenceFingerprint(
   worktreePath: string,
   isolated: IsolatedGit,
   head: string,
+  diffSettings: readonly string[],
   signal?: AbortSignal,
 ): Promise<{ headCommit: string; digest: string }> {
   const [baseCommit, status, diffHash] = await Promise.all([
@@ -916,6 +940,7 @@ async function workspaceEvidenceFingerprint(
     isolated.run(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"], { signal }).then((output) => output.trim()),
     hashIsolatedGit(isolated, [
       "--no-optional-locks",
+      ...diffSettings,
       "diff",
       "--binary",
       "--no-ext-diff",
@@ -1388,12 +1413,13 @@ export class GitWorkspaceService implements WorkspaceService {
   }
 
   async #evidence(worktreePath: string, isolated: IsolatedGit, signal: AbortSignal | undefined, includeRevertTargets: boolean): Promise<WorkspaceEvidence> {
+    const diffSettings = await diffBinarySettings(worktreePath, signal)
     for (let attempt = 0; attempt < maximumEvidenceAttempts; attempt += 1) {
       // Every observation compares against this commit; the fingerprints
       // read the worktree's HEAD again, so one that moved meanwhile retries.
       const baseCommit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
       await isolated.setHead(baseCommit)
-      const fingerprintBefore = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, signal)
+      const fingerprintBefore = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, diffSettings, signal)
       if (fingerprintBefore.headCommit !== baseCommit) continue
       const status = (await isolated.run([
         "--no-optional-locks",
@@ -1406,6 +1432,7 @@ export class GitWorkspaceService implements WorkspaceService {
       const [numstat, diff, basePaths] = await Promise.all([
         isolated.run([
           "--no-optional-locks",
+          ...diffSettings,
           "diff",
           baseCommit,
           "--numstat",
@@ -1418,6 +1445,7 @@ export class GitWorkspaceService implements WorkspaceService {
           isolated,
           [
             "--no-optional-locks",
+            ...diffSettings,
             "diff",
             "--no-ext-diff",
             "--no-textconv",
@@ -1430,7 +1458,7 @@ export class GitWorkspaceService implements WorkspaceService {
         ),
         includeRevertTargets ? pathsAtCommit(worktreePath, baseCommit, signal) : undefined,
       ])
-      const fingerprintAfter = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, signal)
+      const fingerprintAfter = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, diffSettings, signal)
       if (fingerprintBefore.digest !== fingerprintAfter.digest) continue
 
       const stats = parseNumstat(numstat)
