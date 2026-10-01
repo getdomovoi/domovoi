@@ -8264,6 +8264,9 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, fileTargetOtherNamesMessage)
           return
         }
+        // A standing rule stays with the open project: the snapshot accepts
+        // only rules for that project, so routing it by the session's waits
+        // for the snapshot to hold several projects.
         const project = this.#snapshot.project
         if (params.decision === "always-project" && !project) {
           this.#error(socket, request.id, internalError, "Approval has no open project")
@@ -9214,7 +9217,7 @@ export class DomovoiDaemon {
           forkedFrom: { sourceSessionId: source.id, checkpointId: checkpoint.id, checkpointCommit: checkpoint.commit,
             requestId: params.requestId, client: params.client, requestedRuntime: params.runtime },
         }
-        this.#recordSessionCreation(creationDraft, this.#snapshot.project?.path ?? source.workspacePath)
+        this.#recordSessionCreation(creationDraft, this.#projectForSession(source)?.path ?? source.workspacePath)
         let creatingWorkspace: Promise<{ path: string }> | undefined
         const workspace = await this.#withAbortTimeout(
           (signal) => {
@@ -9444,7 +9447,7 @@ export class DomovoiDaemon {
             ...(deliversPlan ? { workingPlan: boundaryPlan } : {}),
             capabilities: registeredAgent.capabilities,
             annotationVisualContext: this.#annotationVisualContext,
-            skillCatalog: this.#skillCatalogFor(this.#snapshot.project?.path),
+            skillCatalog: this.#skillCatalogFor(this.#projectForSession(session)?.path),
             requireTrustedSkills:
               session.runtime.permissionMode === "build" && session.runtime.auto,
             ...(params.skillSelection ? { skillSelection: params.skillSelection } : {}),
