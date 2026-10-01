@@ -1870,6 +1870,27 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     await refused.close()
   })
 
+  // Security review round 4 of #687: on Windows the server matches rules in
+  // any case, so a tool id that differs from one of its own, or from an
+  // allowed permission, only in case takes that name there.
+  it.each([
+    ["win32", "READ", "refused"],
+    ["win32", "Glob", "refused"],
+    ["win32", "Plan_Enter", "refused"],
+    ["darwin", "READ", "opened"],
+    ["linux", "Glob", "opened"],
+  ] as const)("on %s, treats a tool id %s by the server's case matching", async (platform, id, outcome) => {
+    const { client, factory } = harness()
+    client.tool.ids.mockResolvedValue({ data: [...openCodeBuiltInToolIds, id] })
+    const adapter = new OpenCodeSdkAdapter(factory, undefined, undefined, { platform })
+    const opened = adapter.startThread({ cwd: "/worktree", runtime: runtime("build") }).then(() => "opened", (error: Error) => {
+      expect(error.message).toContain(`tool named "${id}"`)
+      return "refused"
+    })
+    await expect(opened).resolves.toBe(outcome)
+    await adapter.close()
+  })
+
   it("opens a session whose tool servers and plugin tools take no such name", async () => {
     const { client, factory } = harness()
     client.mcp.status.mockResolvedValue({ data: { docs: { status: "connected" }, github: { status: "failed" } } })

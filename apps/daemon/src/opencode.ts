@@ -129,10 +129,20 @@ export type OpenCodeAdapterIdentity = {
 // The server's rule matching (packages/core/src/util/wildcard.ts at opencode
 // v1.18.32 and kilo v7.8.1): `*` is any run, `?` any one character, a
 // trailing " *" also matches nothing, and Windows matches in any case.
-function wildcardMatches(input: string, pattern: string): boolean {
+function wildcardMatches(input: string, pattern: string, platform: NodeJS.Platform): boolean {
   let escaped = pattern.replaceAll("\\", "/").replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")
   if (escaped.endsWith(" .*")) escaped = `${escaped.slice(0, -3)}( .*)?`
-  return new RegExp(`^${escaped}$`, process.platform === "win32" ? "si" : "s").test(input.replaceAll("\\", "/"))
+  return new RegExp(`^${escaped}$`, platform === "win32" ? "si" : "s").test(input.replaceAll("\\", "/"))
+}
+
+// A name as the server's rules compare it: in any case on Windows
+// (security review round 4 of #687).
+const ruleName = (name: string, platform: NodeJS.Platform) => (platform === "win32" ? name.toLowerCase() : name)
+
+export type OpenCodeAdapterOptions = {
+  // The platform the server runs on, whose rule matching the checks follow.
+  // The daemon's own; tests set it.
+  platform?: NodeJS.Platform
 }
 
 // The agents a session can reach from the primary agent it runs (security
@@ -140,7 +150,7 @@ function wildcardMatches(input: string, pattern: string): boolean {
 // start from it, which is any agent whose effective mode is not primary and
 // whose start the primary's task rule does not deny. An agent asked for that
 // the server does not list is undefined.
-function reachableAgents(agents: readonly unknown[], primary: string): Array<{ name: string; permission: unknown }> | undefined {
+function reachableAgents(agents: readonly unknown[], primary: string, platform: NodeJS.Platform): Array<{ name: string; permission: unknown }> | undefined {
   const listed = agents.flatMap((agent) => {
     const record = asRecord(agent)
     return typeof record?.name === "string" ? [{ name: record.name, mode: record.mode, permission: record.permission }] : []
@@ -148,7 +158,7 @@ function reachableAgents(agents: readonly unknown[], primary: string): Array<{ n
   const selected = listed.find((agent) => agent.name === primary)
   const rules = selected === undefined ? undefined : mergedRules(selected.permission)
   if (selected === undefined || rules === undefined) return selected === undefined ? undefined : [selected]
-  const starts = (name: string) => rules.findLast((rule) => wildcardMatches("task", rule.permission) && wildcardMatches(name, rule.pattern))?.action !== "deny"
+  const starts = (name: string) => rules.findLast((rule) => wildcardMatches("task", rule.permission, platform) && wildcardMatches(name, rule.pattern, platform))?.action !== "deny"
   return [selected, ...listed.filter((agent) => agent.name !== primary && agent.mode !== "primary" && starts(agent.name))]
 }
 
@@ -427,15 +437,18 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #failedRefusals = new Map<number, PendingApproval>()
   #nextApprovalId = 0
   #nextGeneration = 0
+  readonly #platform: NodeJS.Platform
 
   constructor(
     factory: OpenCodeFactory = defaultOpenCodeFactory,
     id: (after?: string) => string = nextOpenCodeMessageId,
     identity: OpenCodeAdapterIdentity = { providerId: "opencode", providerName: "OpenCode" },
+    options: OpenCodeAdapterOptions = {},
   ) {
     this.#factory = factory
     this.#id = id
     this.#identity = identity
+    this.#platform = options.platform ?? process.platform
   }
 
   async connect(): Promise<void> {
@@ -888,9 +901,12 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       if (!servers || !Array.isArray(ids) || !ids.every((id): id is string => typeof id === "string")) throw unreadable
       if (!Array.isArray(listedAgents)) throw unreadable
       agents = listedAgents
+      // Two ids the server's rules would read as one are a duplicate.
       const listed = new Set<string>()
+      const folded = new Set<string>()
       for (const id of ids) {
-        if (listed.has(id)) throw this.#unownedTool(id)
+        if (folded.has(ruleName(id, this.#platform))) throw this.#unownedTool(id)
+        folded.add(ruleName(id, this.#platform))
         listed.add(id)
       }
       const states = serverStatesOf(servers)
@@ -912,10 +928,12 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         )
       }
     }
-    const builtInToolIds = new Set(this.#identity.builtInToolIds ?? openCodeBuiltInToolIds)
-    const allowed = this.#identity.allowedPermissions ?? openCodeAllowedPermissions
+    // A tool id the server's rules would read as an allowed permission (in
+    // any case on Windows) must be exactly one of the server's own ids.
+    const ownToolIds = new Set(this.#identity.builtInToolIds ?? openCodeBuiltInToolIds)
+    const allowed = new Set([...this.#identity.allowedPermissions ?? openCodeAllowedPermissions].map((permission) => ruleName(permission, this.#platform)))
     for (const id of catalog.toolIds) {
-      if (!builtInToolIds.has(id) && allowed.has(id)) throw this.#unownedTool(id)
+      if (allowed.has(ruleName(id, this.#platform)) && !ownToolIds.has(id)) throw this.#unownedTool(id)
     }
     // Config this adapter does not see, an agent or mode block of the
     // person's, an organization's or a managed config, can still leave an
@@ -924,7 +942,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // judge calls, are checked by shape (unnamedToolAllow), for every agent
     // the session can reach from the primary agent it runs (reachableAgents).
     const primary = (this.#identity.agentName ?? ((agent: string) => agent))(openCodeAgentFor(runtime))
-    const reachable = reachableAgents(agents, primary)
+    const reachable = reachableAgents(agents, primary, this.#platform)
     if (reachable === undefined) {
       throw new UnownedToolError(`${name} does not list its ${primary} agent, so Domovoi cannot tell whether a tool could run there without approval.`)
     }
