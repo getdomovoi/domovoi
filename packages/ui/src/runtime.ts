@@ -11,28 +11,34 @@ const providerNames: Readonly<Record<string, string>> = {
   kilo: "Kilo Code",
 }
 
-export function selectRuntimeModel(runtime: Runtime, model: ProviderModel): Runtime {
+// `from` is the provider whose scale `runtime.reasoning` was chosen on. It is
+// the runtime's own provider except where a caller names the new provider
+// before its models arrive, as the launcher does.
+export function selectRuntimeModel(runtime: Runtime, model: ProviderModel, from: string = runtime.provider): Runtime {
   return {
     ...runtime,
     provider: model.provider,
     model: model.id,
-    reasoning: carriedEffort(runtime, model),
+    reasoning: carriedEffort(runtime.reasoning, from, model),
   }
 }
 
 // Desktop V2's effort on a model change. The level stays when the new model
 // reports it, read by its shared word, so claude-code's "think-hard" and
-// codex's "medium" are the same level. Otherwise it moves to the new model's
+// codex's "medium" are the same level. A raw id is kept first only on the
+// same provider: across providers the same id can name another level or none,
+// so the shared word decides before it. Otherwise it moves to the new model's
 // default, and only a model that names no default among its levels gets the
 // nearest level it reports. The daemon refuses a level the model does not
 // report, so a model that reports none keeps its default, the one value the
 // daemon accepts for it.
-function carriedEffort(runtime: Runtime, model: ProviderModel): string {
+function carriedEffort(reasoning: string, from: string, model: ProviderModel): string {
   const levels = model.supportedReasoningEfforts
-  if (levels.includes(runtime.reasoning)) return runtime.reasoning
-  const word = effortLevel(runtime.provider, runtime.reasoning).label
+  if (from === model.provider && levels.includes(reasoning)) return reasoning
+  const word = effortLevel(from, reasoning).label
   const same = word === undefined ? undefined : levels.find((id) => effortLevel(model.provider, id).label === word)
   if (same !== undefined) return same
+  if (levels.includes(reasoning)) return reasoning
   if (levels.length === 0 || levels.includes(model.defaultReasoningEffort)) return model.defaultReasoningEffort
   return nearestEffort(word, model.provider, levels) ?? levels[0] ?? model.defaultReasoningEffort
 }

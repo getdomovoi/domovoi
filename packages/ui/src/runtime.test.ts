@@ -66,6 +66,25 @@ describe("selectRuntimeModel", () => {
     })
   })
 
+  // A raw id means one level on one provider's scale and may mean another, or
+  // nothing, on the next, so across providers the shared word decides first.
+  it("prefers the shared word to a raw id the new provider also reports", () => {
+    const thinking: Runtime = { ...runtime, provider: "claude-code", reasoning: "think-hard" }
+    expect(selectRuntimeModel(thinking, { ...model(["think-hard", "medium"]), defaultReasoningEffort: "think-hard" })).toMatchObject({
+      provider: "codex",
+      reasoning: "medium",
+    })
+  })
+
+  // The launcher names the new provider before its models arrive, so the
+  // caller says which scale the current level was chosen on.
+  it("reads the level on the scale of the provider it came from", () => {
+    const named: Runtime = { ...runtime, provider: "codex", reasoning: "think-hard" }
+    expect(selectRuntimeModel(named, { ...model(["low", "medium"]), defaultReasoningEffort: "low" }, "claude-code")).toMatchObject({
+      reasoning: "medium",
+    })
+  })
+
   it("keeps the model default for a model that reports no levels", () => {
     expect(selectRuntimeModel(runtime, { ...model([]), defaultReasoningEffort: "none" })).toMatchObject({ reasoning: "none" })
   })
