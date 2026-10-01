@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { BotIcon, FileTextIcon, FilterIcon } from "lucide-react"
 
-import type { RepositoryTrustResult, RepositoryTrustState } from "@getdomovoi/protocol"
+import type { RepositoryTrust, RepositoryTrustResult, RepositoryTrustState } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Button } from "./components/ui/button"
@@ -40,18 +40,23 @@ type Outcome =
 // daemon answers that the configuration changed, nothing was trusted; the
 // sheet says so and the tab reads the files again, and trusting what they hold
 // now is the person's next decision, never a retry made for them.
+//
+// onTrusted hears of a grant, for a surface that opened the sheet to act on
+// it (a refused session): the repository as the daemon now records it.
 export function RepositoryTrustSheet({
   open,
   onOpenChange,
   inventory,
   onTrust,
   onReload,
+  onTrusted,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   inventory: ToolInventoryLoad
   onTrust: RepositoryTrustRequest
   onReload: () => void
+  onTrusted?: ((repository: RepositoryTrust) => void) | undefined
 }) {
   const [pending, setPending] = useState(false)
   const [outcome, setOutcome] = useState<Outcome | undefined>(undefined)
@@ -96,6 +101,7 @@ export function RepositoryTrustSheet({
       const result = await onTrust({ projectId: repository.projectId, configDigest: repository.configDigest })
       if (result.outcome === "trusted") {
         change(false)
+        onTrusted?.(result.repository)
       } else if (result.outcome === "config-changed") {
         setOutcome({ kind: "changed" })
       } else {
