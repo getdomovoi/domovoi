@@ -13,8 +13,11 @@ tablet credential cannot call it.
 
 Stored state that a newer Domovoi wrote with several active projects, meaning a stored project
 list naming another project, or a session or approval rule of another project with or without such
-a list, is not loaded, and is not moved aside as corrupt. In a database damaged elsewhere, it is
-refused before the database would be moved aside for salvage, so nothing is moved or written. The daemon does not start, says "Domovoi state at <path> was written by a newer
+a list, is not loaded, and is not moved aside as corrupt. The store reads it before opening the
+file for writing, from a private copy when the write-ahead log holds changes, so a refusal leaves
+the database, its log and its index as they were. In a database damaged elsewhere, it is refused
+before the database would be moved aside for salvage. The daemon does not start, says "Domovoi
+state at <path> was written by a newer
 Domovoi that keeps several projects open, and this daemon keeps one project open at a time. It was
 left as it is and this daemon did not start. Run the newer Domovoi again.", and leaves the stored
 rows as they are. A stored list naming only the open project is dropped when the state is read, so

@@ -1,5 +1,5 @@
 import { once } from "node:events"
-import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
+import { copyFile, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -149,6 +149,33 @@ describe("stored state with several active projects", () => {
     expect(() => new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine))).toThrow(MultiProjectWorkspaceStateError)
     expect((await readdir(scratch)).sort()).toEqual(entries)
     expect((await readFile(databasePath)).equals(bytes)).toBe(true)
+  })
+
+  // Ruling Q259: the newer state may still be in the write-ahead log. Opening
+  // the live files would checkpoint it into the main file and remove the log,
+  // so the state is read from a private copy and refused first.
+  it("is refused from a write-ahead log, with all three files left as they are", async () => {
+    const { scratch, databasePath } = await storedState({ ...base(), sessions: [sessionIn(projectA.id)] })
+    const writer = new DatabaseSync(databasePath)
+    writer.exec("PRAGMA wal_autocheckpoint = 0")
+    writer.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify({ ...base(), projects: [projectA, projectB], projectCap: 3, sessions: [sessionIn(projectB.id)] }))
+    const copyDirectory = await mkdtemp(join(scratch, "copy-"))
+    const copyPath = join(copyDirectory, "state.sqlite")
+    for (const suffix of ["", "-wal", "-shm"]) await copyFile(`${databasePath}${suffix}`, `${copyPath}${suffix}`)
+    writer.close()
+    const entries = (await readdir(copyDirectory)).sort()
+    expect(entries).toEqual(["state.sqlite", "state.sqlite-shm", "state.sqlite-wal"])
+    const before = await Promise.all(["", "-wal", "-shm"].map((suffix) => readFile(`${copyPath}${suffix}`)))
+    expect(before[1]!.length).toBeGreaterThan(0)
+
+    expect(() => new SqliteWorkspaceStore(copyPath, createEmptyWorkspace(machine))).toThrow(MultiProjectWorkspaceStateError)
+
+    expect((await readdir(copyDirectory)).sort()).toEqual(entries)
+    const after = await Promise.all(["", "-wal", "-shm"].map((suffix) => readFile(`${copyPath}${suffix}`)))
+    for (const [index, suffix] of ["", "-wal", "-shm"].entries()) {
+      expect(after[index]!.equals(before[index]!), `state.sqlite${suffix}`).toBe(true)
+    }
   })
 
   it("leaves salvage to a damaged database holding one project", async () => {

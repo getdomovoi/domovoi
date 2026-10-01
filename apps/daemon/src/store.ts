@@ -549,8 +549,8 @@ export function storedProtocolVersion(path: string): string | undefined {
 }
 
 // The stored workspace snapshot, read the same way and with the same limits,
-// for a file about to be moved aside as damaged: state with several projects
-// is refused before that (ruling Q258).
+// before the store opens the file: the protocol that wrote it and whether it
+// keeps several projects decide whether this daemon opens it at all.
 function storedSnapshotValue(path: string): unknown {
   return readStoredState(path, (database) => {
     const row = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as StoredWorkspace | undefined
@@ -1013,9 +1013,15 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
     this.path = path
     const manageDirectoryPermissions = options.manageDirectoryPermissions === true
-    const storedVersion = storedProtocolVersion(path)
-    const newerVersion = storedVersion === undefined ? undefined : newerStoredProtocol({ protocolVersion: storedVersion })
+    // The stored snapshot is read before the file is opened for writing, from
+    // the file as it is or from a private copy when the write-ahead log holds
+    // changes: opening the live files would checkpoint that log into the main
+    // file and remove it. State this daemon must not open is refused here,
+    // with nothing on disk changed (rulings Q257 to Q259).
+    const storedValue = storedSnapshotValue(path)
+    const newerVersion = newerStoredProtocol(storedValue)
     if (newerVersion !== undefined) throw refuseNewerStoredState(path, newerVersion)
+    if (keepsSeveralProjects(storedValue)) throw refuseSeveralProjects(path, storedValue)
     if (path !== ":memory:") prepareStatePath(path, manageDirectoryPermissions)
     let recovery: WorkspaceStoreRecovery | undefined
     let salvagedWorkspace: ReturnType<typeof migrateStoredWorkspace> | undefined
@@ -1028,10 +1034,8 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       // An operational failure is reported to the caller rather than repaired,
       // so a locked or unreadable file is never renamed aside.
       if (!isCorruption(error)) throw error
-      // Salvage keeps the workspace it can read. State with several projects
-      // is not this daemon's to keep, so it is refused before anything moves.
-      const intact = storedSnapshotValue(path)
-      if (keepsSeveralProjects(intact)) throw refuseSeveralProjects(path, intact)
+      // State with several projects was refused above, before anything moved,
+      // when the workspace row could be read.
       const quarantinedPath = quarantineDatabase(path)
       prepareStatePath(path, manageDirectoryPermissions)
       opened = openState(path, integrityCheckMaximumBytes)
