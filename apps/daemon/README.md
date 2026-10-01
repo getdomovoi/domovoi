@@ -579,7 +579,8 @@ code or settings the repository brings:
   operation, command, directory, affected files, tool server and whether it was a hard gate, as
   the card showed them when the report arrived, or say that the answer matched no card. Until the
   report is handled, an archive or an emergency stop does not deny that card but notes that it
-  was answered outside Domovoi, and a person's answer to it is refused. It then stops the server, which drops every approval the server kept in memory, and
+  was answered outside Domovoi, and a person's answer to it is refused, including one already
+  being saved, which then keeps no receipt and no standing rule. It then stops the server, which drops every approval the server kept in memory, and
   every other session on that server reconnects to a new server on its next message. The stopped
   session's provider session is never resumed: it continues only after you restart its provider,
   in a new provider session without its earlier conversation. An abort the server does not

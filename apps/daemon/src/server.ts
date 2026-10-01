@@ -638,6 +638,7 @@ function permissionViolation(runtime: Runtime, agent: AgentAdapter): string | un
 }
 
 const answeredElsewhereHoldReason = "An approval was answered outside Domovoi, so the queued send was held."
+const answeredElsewhereRefusal = "This request was answered outside Domovoi"
 
 // The facts of the card an outside answer was to, as the card showed them.
 // Each was settled, and any secret path hidden, when the card was made
@@ -8347,8 +8348,12 @@ export class DomovoiDaemon {
         // The provider already has an answer for it (round 6 of the Codex
         // review of #691, ruling Q271); the incident queued behind this
         // request records it and clears the card.
-        if (this.#approvalsAnsweredElsewhere.has(approval.id)) {
-          this.#error(socket, request.id, invalidParams, "This request was answered outside Domovoi")
+        // The mark can also land while this request waits below, during
+        // settlement, the checkpoint or the save; the final check is the
+        // pending predicate inside the save (round 7, ruling Q274).
+        const answeredOutside = () => this.#approvalsAnsweredElsewhere.has(approval.id)
+        if (answeredOutside()) {
+          this.#error(socket, request.id, invalidParams, answeredElsewhereRefusal)
           return
         }
         const session = this.#snapshot.sessions.find(
@@ -8551,7 +8556,13 @@ export class DomovoiDaemon {
           ...mergeSessionSnapshotSlice(latest, slice, approval.sessionId),
           approvalRules: withRule(latest.approvalRules),
         })
-        const stillPending = () => this.#snapshot.approvals.some((pending) => pending.id === approval.id)
+        // A card answered outside Domovoi is no longer pending for Domovoi's
+        // answer, so the decision, its receipt and any standing rule are kept
+        // only if no mark has landed by the point they are committed. A
+        // checkpoint taken above for the allow stays: it only records the
+        // worktree as it was, and its thread row is never committed.
+        const stillPending = () => !answeredOutside()
+          && this.#snapshot.approvals.some((pending) => pending.id === approval.id)
         let outcome = "cancelled" as "committed" | "cancelled" | "cancelled-after-write"
         try {
           await this.#serializeSnapshotPersistence(async () => {
@@ -8591,9 +8602,13 @@ export class DomovoiDaemon {
               this.#reportError("Domovoi could not save state after a cancelled approval decision", error)
             }
           }
-          this.#error(socket, request.id, invalidParams, "Approval does not exist")
+          this.#error(socket, request.id, invalidParams, answeredOutside() ? answeredElsewhereRefusal : "Approval does not exist")
           return
         }
+        // Committed: the card left the snapshot in the same synchronous run as
+        // the last pending check, and nothing below awaits before the agent is
+        // told, so no report can mark it in between (#receiveAnsweredElsewhere
+        // finds only shown cards). An await added here must recheck the mark.
         this.#activeAssistantItems.clear()
         if (approval.providerRequestId !== undefined && session) {
           try {

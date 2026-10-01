@@ -15,7 +15,8 @@ directory, affected files, tool server, hard gate), read when the report arrives
 answer matched no card. They are recorded even when an archive, a transfer or an emergency
 stop took the session before the report was handled; only a session still running is
 stopped. Until then the answered card gets no deny from an archive or an emergency stop, which
-note instead that it was answered outside Domovoi, and a person's answer to it is refused. The
+note instead that it was answered outside Domovoi, and a person's answer to it is refused,
+including one already being saved, so neither its receipt nor a standing rule is kept. The
 daemon then stops the server,
 so no approval it kept in memory stays in place, and every other session on it reconnects to a
 new server on its next message. An abort the server does not confirm also stops the server.

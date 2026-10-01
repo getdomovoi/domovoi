@@ -1,4 +1,7 @@
 import { once } from "node:events"
+import { mkdtempSync, realpathSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
@@ -8,6 +11,7 @@ import type { AgentAdapter, AgentEvent } from "./agents.js"
 import type { AuditLog } from "./audit-log.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
+import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForDaemon } from "./test-wait-for.js"
 import type { WorkspaceService } from "./workspace.js"
 
@@ -36,12 +40,12 @@ const answeredElsewhere = {
 const notice = "An approval in this session was answered outside Domovoi, so Domovoi stopped the session."
 const restarted = "Domovoi restarted the OpenCode server because an approval was answered outside Domovoi, so no approval it kept stays in place"
 
-function openCodeSession(): WorkspaceSnapshot {
+function openCodeSession(workspacePath: string): WorkspaceSnapshot {
   const snapshot = structuredClone(demoWorkspace)
   const session = snapshot.sessions.find((candidate) => candidate.id === sessionId)!
   session.runtime = { ...session.runtime, provider: "opencode", model: "anthropic/sonnet", permissionMode: "build", auto: false }
   session.state = "idle"
-  session.workspacePath = "/worktrees/session-billing"
+  session.workspacePath = workspacePath
   session.providerThreadId = threadId
   delete session.activeTurnId
   snapshot.approvals = []
@@ -68,7 +72,7 @@ function recordingAuditLog() {
   return { append, auditLog }
 }
 
-async function start() {
+async function start(workspacePath = "/worktrees/session-billing") {
   let emit: (event: AgentEvent) => void = () => {}
   const provider = {
     connect: vi.fn(async () => {}),
@@ -90,8 +94,9 @@ async function start() {
     archiveSessionWorkspace: vi.fn(async () => {}),
   } satisfies WorkspaceService
   const { append, auditLog } = recordingAuditLog()
+  const store = new SqliteWorkspaceStore(":memory:", openCodeSession(workspacePath))
   const daemon = new DomovoiDaemon({
-    port: 0, store: new SqliteWorkspaceStore(":memory:", openCodeSession()), auditLog,
+    port: 0, store, auditLog,
     agents: { opencode: provider }, workspaceService, errorSink: vi.fn(),
   })
   daemons.push(daemon)
@@ -117,7 +122,27 @@ async function start() {
   expect(sent.error?.message).toBeUndefined()
   emit({ type: "approval-requested", requestId: 41, threadId, turnId: "turn-billing", itemId: "call_build", command: "pnpm build" })
   await waitForDaemon(async () => expect((await snapshot()).approvals).toHaveLength(1))
-  return { provider, workspaceService, rpc, snapshot, session, append, emit: (event: AgentEvent) => emit(event) }
+  return { provider, workspaceService, store, rpc, snapshot, session, append, emit: (event: AgentEvent) => emit(event) }
+}
+
+const worktrees: string[] = []
+afterEach(async () => { await removeScratchDirectories(worktrees) })
+
+// A worktree on disk, so a command card settles to a resolved record and an
+// ordinary gate that can take a standing rule.
+function worktree(): string {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "domovoi-elsewhere-")))
+  worktrees.push(directory)
+  return directory
+}
+
+// A card that can take a standing rule, beside the one start() puts up.
+async function ruleCard({ snapshot, emit }: Started, workspace: string): Promise<Card> {
+  writeFileSync(join(workspace, "package.json"), JSON.stringify({ scripts: { show: "cat notes.txt" } }))
+  writeFileSync(join(workspace, "notes.txt"), "notes\n")
+  emit({ type: "approval-requested", requestId: 42, threadId, turnId: "turn-billing", itemId: "call_show", command: "pnpm run show" })
+  await waitForDaemon(async () => expect((await snapshot()).approvals).toHaveLength(2))
+  return (await snapshot()).approvals.find((approval) => approval.providerRequestId === 42)!
 }
 
 type Started = Awaited<ReturnType<typeof start>>
@@ -305,6 +330,69 @@ describe("an approval answered outside Domovoi", () => {
     expect(entry.detail).toBe(`reply=once ${auditFacts(card)}`)
     expect((await snapshot()).thread.filter((item) => item.kind === "receipt" && item.id.startsWith(`receipt-${card.id}`)))
       .toEqual([])
+  })
+
+  // Round 7 of the Codex review of #691, P2 (ruling Q274): the person's own
+  // answer to the same card is in flight when the report marks it. Nothing of
+  // the decision is saved and the provider is not told.
+  async function nothingDecided(context: Started, card: Card): Promise<void> {
+    const entry = await incidentEntry(context.append)
+    expect(entry.detail).toContain(`approval=${card.id}`)
+    expect(context.provider.resolveApproval).not.toHaveBeenCalledWith(42, expect.anything())
+    const after = await context.snapshot()
+    expect(after.thread.filter((item) => item.kind === "receipt" && item.id.startsWith(`receipt-${card.id}`))).toEqual([])
+    expect(after.thread.filter((item) => item.kind === "checkpoint" && item.label.endsWith("before an approved command")))
+      .toEqual([])
+    expect(after.approvalRules).toEqual([])
+    // Nor on disk.
+    const stored = context.store.load()
+    expect(stored.thread.filter((item) => item.kind === "receipt" && item.id.startsWith(`receipt-${card.id}`))).toEqual([])
+    expect(stored.approvalRules).toEqual([])
+  }
+
+  it("refuses the person's standing rule when the card is answered elsewhere during its checkpoint", async () => {
+    const workspace = worktree()
+    const context = await start(workspace)
+    const { workspaceService, rpc, emit } = context
+    const card = await ruleCard(context, workspace)
+    expect(card).toMatchObject({ risk: "normal", execution: { state: "resolved" } })
+    let releaseCheckpoint!: () => void
+    workspaceService.snapshot.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseCheckpoint = () => resolve({ commit: "c".repeat(40), changedFiles: [] })
+    }))
+    const decided = rpc("approval.resolve", { approvalId: card.id, decision: "always-project", revision: card.revision })
+    await waitForDaemon(() => expect(workspaceService.snapshot).toHaveBeenCalledOnce())
+
+    emit({ type: "approval-answered-elsewhere", threadId, turnId: "turn-billing", permissionId: "per_2", requestId: 42, reply: "once" })
+    releaseCheckpoint()
+
+    expect((await decided).error?.message).toBe("This request was answered outside Domovoi")
+    await nothingDecided(context, card)
+  })
+
+  it("refuses the person's standing rule when the card is answered elsewhere while the decision is saved", async () => {
+    const workspace = worktree()
+    const context = await start(workspace)
+    const { store, rpc, emit } = context
+    const card = await ruleCard(context, workspace)
+    const save = store.saveAsync.bind(store)
+    let held = false
+    let releaseSave!: () => void
+    vi.spyOn(store, "saveAsync").mockImplementation(async (written) => {
+      if (!held && written.approvalRules.length > 0) {
+        held = true
+        await new Promise<void>((resolve) => { releaseSave = resolve })
+      }
+      await save(written)
+    })
+    const decided = rpc("approval.resolve", { approvalId: card.id, decision: "always-project", revision: card.revision })
+    await waitForDaemon(() => expect(held).toBe(true))
+
+    emit({ type: "approval-answered-elsewhere", threadId, turnId: "turn-billing", permissionId: "per_2", requestId: 42, reply: "once" })
+    releaseSave()
+
+    expect((await decided).error?.message).toBe("This request was answered outside Domovoi")
+    await nothingDecided(context, card)
   })
 
   it("keeps the answered card's facts, and denies it no receipt, when an emergency stop clears the cards first", async () => {
