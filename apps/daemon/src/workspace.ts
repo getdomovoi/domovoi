@@ -741,6 +741,9 @@ export type GitWorkspaceServiceOptions = {
   // Runs once the filter gate of an operation on an existing session
   // worktree has decided, before the commands it guards: a test seam too.
   afterRepositoryFilterGate?: (worktreePath: string) => void | Promise<void>
+  // Runs once a restore's isolated reset has written the checkpoint into the
+  // files and the index, before the branch moves: a test seam.
+  afterRestoreReset?: () => void | Promise<void>
   // The project a gated path belongs to, with this machine's grant for it,
   // read at every call (repository-git-filter-gate.ts). Without it, every
   // repository filter stays held back.
@@ -1336,6 +1339,7 @@ export class GitWorkspaceService implements WorkspaceService {
   ]
   readonly #afterNewWorktreeScan?: GitWorkspaceServiceOptions["afterNewWorktreeScan"]
   readonly #afterRepositoryFilterGate?: GitWorkspaceServiceOptions["afterRepositoryFilterGate"]
+  readonly #afterRestoreReset?: GitWorkspaceServiceOptions["afterRestoreReset"]
   readonly #repositoryTrust?: GitWorkspaceServiceOptions["repositoryTrust"]
   readonly #gitVersion: () => Promise<string | undefined>
 
@@ -1346,6 +1350,7 @@ export class GitWorkspaceService implements WorkspaceService {
     this.#afterIgnoredArtifactValidation = options.afterIgnoredArtifactValidation
     this.#afterNewWorktreeScan = options.afterNewWorktreeScan
     this.#afterRepositoryFilterGate = options.afterRepositoryFilterGate
+    this.#afterRestoreReset = options.afterRestoreReset
     this.#repositoryTrust = options.repositoryTrust
     this.#gitVersion = options.gitVersion ?? installedGitVersionText
   }
@@ -2414,8 +2419,21 @@ export class GitWorkspaceService implements WorkspaceService {
       // isolated directory, then the branch with a ref command.
       await isolated.setHead(recovery.commit)
       await isolated.run(["reset", "--hard", "--quiet", checkpointCommit], { signal })
-      await git(worktreePath, ["update-ref", "-m", `reset: moving to ${checkpointCommit}`, "HEAD", checkpointCommit], signal)
-      await clearOperationState(worktreePath, signal)
+      await this.#afterRestoreReset?.()
+      // The files and the index now hold the checkpoint, so the branch is
+      // moved to it whatever the signal says, and the operation state reset
+      // --hard clears is cleared: stopping here would leave a worktree that
+      // disagrees with its branch.
+      try {
+        await git(worktreePath, ["update-ref", "-m", `reset: moving to ${checkpointCommit}`, "HEAD", checkpointCommit])
+      } catch (cause) {
+        throw new Error(
+          `Restore wrote checkpoint ${checkpointCommit.slice(0, 8)} into the worktree and its index, but could not move the branch `
+          + `from ${recovery.commit.slice(0, 8)} to it. The work from before the restore is in checkpoint ${recovery.commit.slice(0, 8)}.`,
+          { cause },
+        )
+      }
+      await clearOperationState(worktreePath)
       return { restoredCommit: checkpointCommit, recoveryCommit: recovery.commit }
     })
   }

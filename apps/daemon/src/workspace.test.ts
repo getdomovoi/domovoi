@@ -1011,6 +1011,32 @@ describe("GitWorkspaceService", () => {
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })
 
+  // Once the isolated reset has written the checkpoint into the files and
+  // the index, the branch is moved to it even when the operation is
+  // cancelled meanwhile, so the worktree, its index and its branch agree.
+  it("moves the branch to the restored checkpoint when a cancel lands after the files were reset", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-restore-cancel-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await writeFile(join(repositoryPath, "README.md"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", ["-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"])
+    const controller = new AbortController()
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), {
+      afterRestoreReset: () => controller.abort(new Error("Operation cancelled by emergency stop")),
+    })
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-cancel")
+    await writeFile(join(workspace.path, "README.md"), "later\n")
+
+    await service.restore(workspace.path, workspace.baseCommit, controller.signal).catch(() => undefined)
+
+    expect((await execute("git", ["-C", workspace.path, "rev-parse", "HEAD"])).stdout.trim()).toBe(workspace.baseCommit)
+    expect((await execute("git", ["-C", workspace.path, "status", "--porcelain"])).stdout).toBe("")
+    expect(await readFile(join(workspace.path, "README.md"), "utf8")).toBe("base\n")
+  })
+
   // The hard reset runs in an isolated Git directory, so the merge and
   // sequencer state it would clear in the worktree's own Git directory is
   // cleared there explicitly: a later commit must not pick up a stale parent.
