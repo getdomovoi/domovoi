@@ -6,6 +6,7 @@ import {
   repositoryGitConfigUnreadableReasons, repositoryGitFilterOperations, repositoryGitFilterScopes, type RepositoryGitFilterScope,
 } from "@getdomovoi/protocol"
 
+import { gitCommand } from "./git-command.js"
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { isStandardLfsFilterLine } from "./git-read-config.js"
 
@@ -143,11 +144,13 @@ export async function readGitFilterSettings(
 ): Promise<GitFilterSetting[]> {
   let output: string
   try {
-    output = (await execute("git", [
+    const env = gitEnvironment()
+    // No Git found reads as a Git that failed: git-failed below.
+    output = (await execute(gitCommand(env), [
       "-C", directory, ...inertRepositoryConfig,
       "config", "--show-scope", "--show-origin", "-z", "--get-regexp", filterKeyPattern,
     ], {
-      env: gitEnvironment(), encoding: "utf8", maxBuffer: maximumRepositoryGitConfigOutputBytes,
+      env, encoding: "utf8", maxBuffer: maximumRepositoryGitConfigOutputBytes,
       timeout: timeoutMs, killSignal: "SIGKILL", ...(signal ? { signal } : {}),
     })).stdout
   } catch (error) {

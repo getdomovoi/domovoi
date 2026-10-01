@@ -2,6 +2,8 @@ import { execFile, spawn } from "node:child_process"
 import { access } from "node:fs/promises"
 import { resolve } from "node:path"
 
+import { gitCommand } from "./git-command.js"
+
 // A read-only Git command still runs whatever programs Git is configured to
 // run: an fsmonitor helper, an external diff or textconv, a filter,
 // a signature verifier, or a post-index-change hook when git status rewrites
@@ -79,7 +81,15 @@ export function isStandardLfsFilterLine(key: string, value: string): boolean {
 // directory does (git-environment.ts).
 function run(directory: string, args: string[], env: NodeJS.ProcessEnv): Promise<string | undefined> {
   return new Promise((done) => {
-    execFile("git", ["-C", directory, ...args], { ...limits, env: { ...env, GIT_NO_LAZY_FETCH: "1" } }, (error, stdout) => {
+    let command: string
+    try {
+      command = gitCommand(env)
+    } catch {
+      // No Git found reads as a failed read: the caller fails closed.
+      done(undefined)
+      return
+    }
+    execFile(command, ["-C", directory, ...args], { ...limits, env: { ...env, GIT_NO_LAZY_FETCH: "1" } }, (error, stdout) => {
       done(error ? undefined : stdout)
     })
   })
@@ -118,6 +128,12 @@ export async function gitReadCanRunProgram(directory: string, env: NodeJS.Proces
 // with or without a .gitmodules file. The index is read as a stream and the
 // scan stops at the first gitlink; a failed or slow read counts as one.
 function hasGitlink(directory: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+  let command: string
+  try {
+    command = gitCommand(env)
+  } catch {
+    return Promise.resolve(true)
+  }
   return new Promise((done) => {
     let settled = false
     const finish = (found: boolean) => {
@@ -127,7 +143,7 @@ function hasGitlink(directory: string, env: NodeJS.ProcessEnv): Promise<boolean>
       child.kill()
       done(found)
     }
-    const child = spawn("git", ["-C", directory, "ls-files", "--stage", "-z"], { env: { ...env, GIT_NO_LAZY_FETCH: "1" }, stdio: ["ignore", "pipe", "ignore"] })
+    const child = spawn(command, ["-C", directory, "ls-files", "--stage", "-z"], { env: { ...env, GIT_NO_LAZY_FETCH: "1" }, stdio: ["ignore", "pipe", "ignore"] })
     const timer = setTimeout(() => finish(true), limits.timeout)
     let pending = ""
     child.stdout.setEncoding("utf8")

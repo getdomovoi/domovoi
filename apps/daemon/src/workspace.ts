@@ -7,6 +7,7 @@ import { promisify } from "node:util"
 
 import { maximumPreviewSourceBytes, type RepositoryGitFilterScope } from "@getdomovoi/protocol"
 
+import { gitCommand } from "./git-command.js"
 import {
   gitEnvironment, gitSupportsNoLazyFetch, inertRepositoryConfig, installedGitVersionText, trustedConfigScopes,
 } from "./git-environment.js"
@@ -936,8 +937,9 @@ async function git(
   environment: NodeJS.ProcessEnv = {},
 ): Promise<string> {
   signal?.throwIfAborted()
-  const result = await trackRestoreCommand(() => execute("git", gitArguments(repositoryPath, arguments_), {
-    env: { ...gitEnvironment(), ...environment },
+  const env = { ...gitEnvironment(), ...environment }
+  const result = await trackRestoreCommand(() => execute(gitCommand(env), gitArguments(repositoryPath, arguments_), {
+    env,
     encoding: "utf8",
     maxBuffer: maximumGitOutputBytes,
     signal,
@@ -989,8 +991,9 @@ async function gitDirectory(
   signal?: AbortSignal,
 ): Promise<string> {
   signal?.throwIfAborted()
-  const result = await execute("git", [`--git-dir=${directory}`, ...inertRepositoryConfig, ...arguments_], {
-    env: gitEnvironment(),
+  const env = gitEnvironment()
+  const result = await execute(gitCommand(env), [`--git-dir=${directory}`, ...inertRepositoryConfig, ...arguments_], {
+    env,
     encoding: "utf8",
     signal,
   })
@@ -1005,8 +1008,9 @@ async function rawGit(
   signal?: AbortSignal,
 ): Promise<string> {
   signal?.throwIfAborted()
-  const result = await trackRestoreCommand(() => execute("git", gitArguments(repositoryPath, arguments_), {
-    env: gitEnvironment(),
+  const env = gitEnvironment()
+  const result = await trackRestoreCommand(() => execute(gitCommand(env), gitArguments(repositoryPath, arguments_), {
+    env,
     encoding: "utf8",
     maxBuffer: maximumGitOutputBytes,
     signal,
@@ -1170,14 +1174,14 @@ async function transferWorktreeFingerprint(
   signal?.throwIfAborted()
   const [headCommit, listed, staged] = await Promise.all([
     git(worktreePath, ["-c", "core.fsmonitor=false", "rev-parse", "HEAD"], signal),
-    execute("git", gitArguments(worktreePath, [
+    execute(gitCommand(gitEnvironment()), gitArguments(worktreePath, [
       "ls-files",
       "-z",
       "--cached",
       "--others",
       "--exclude-standard",
     ]), { env: gitEnvironment(), encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
-    execute("git", gitArguments(worktreePath, [
+    execute(gitCommand(gitEnvironment()), gitArguments(worktreePath, [
       "ls-files",
       "--stage",
       "-z",
@@ -1723,7 +1727,7 @@ export class GitWorkspaceService implements WorkspaceService {
         })
         if (canonical) promoted.add(Buffer.from(relative(root, canonical).split(sep).join("/")).toString("hex"))
       }
-      const { stdout } = await execute("git", gitArguments(root, [
+      const { stdout } = await execute(gitCommand(gitEnvironment()), gitArguments(root, [
         "ls-files", "-z", "--others", "--ignored", "--exclude-standard",
       ]), { env: gitEnvironment(), encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal })
       let count = 0

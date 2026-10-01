@@ -7,6 +7,7 @@ import { promisify } from "node:util"
 import { publishFileDurably } from "@getdomovoi/credential-store"
 
 import { windowsTreeKill, type TaskkillSpawn } from "./claude-process.js"
+import { gitCommand } from "./git-command.js"
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { isStandardLfsFilterLine } from "./git-read-config.js"
 import type { GitFilterSetting } from "./repository-git-filters.js"
@@ -48,8 +49,11 @@ const execute = promisify(execFile)
 //   exact `git lfs install` line, or a trusted repository's reviewed one.
 // - It lives inside the repository's Git directory, so the person's
 //   `includeIf "gitdir:..."` conditions match as they do for the repository.
-//   It records its owner process first, and one an earlier daemon left
-//   behind is swept away before a new one is made (sweepStaleCheckouts).
+//   It records its owner process first. One an earlier operation left behind
+//   is removed, best effort, the next time an isolated Git directory is set
+//   up in the same repository (sweepStaleCheckouts), but kept while its owner
+//   process is alive, while it holds a .lock, or while it cannot be listed;
+//   a kept one with a lock may need removing by hand.
 //
 // Carried from the repository's config, as values only:
 // - The core settings that decide what Git writes or reads as changed
@@ -131,18 +135,21 @@ export function carriedRemoteUrl(url: string): boolean {
 let gitVersion: Promise<[number, number] | undefined> | undefined
 
 function installedGitVersion(): Promise<[number, number] | undefined> {
-  gitVersion ??= execute("git", ["--version"], { env: gitEnvironment(), encoding: "utf8" }).then(({ stdout }) => {
+  gitVersion ??= (async () => {
+    const env = gitEnvironment()
+    const { stdout } = await execute(gitCommand(env), ["--version"], { env, encoding: "utf8" })
     const match = /(\d+)\.(\d+)/u.exec(stdout)
     return match ? [Number(match[1]), Number(match[2])] as [number, number] : undefined
-  }, () => undefined)
+  })().catch(() => undefined)
   return gitVersion
 }
 
 // Reads from the worktree: `git config` and `git rev-parse` start no program
 // the repository's config names.
 async function worktreeGit(worktree: string, args: string[], signal?: AbortSignal): Promise<string> {
-  return (await execute("git", ["-C", worktree, ...inertRepositoryConfig, ...args], {
-    env: gitEnvironment(), encoding: "utf8", maxBuffer: 16 * 1024 * 1024, ...(signal ? { signal } : {}),
+  const env = gitEnvironment()
+  return (await execute(gitCommand(env), ["-C", worktree, ...inertRepositoryConfig, ...args], {
+    env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, ...(signal ? { signal } : {}),
   })).stdout
 }
 
@@ -317,7 +324,9 @@ export function runGitProcess(args: readonly string[], options: {
   beforeKill?: () => void
 }): PromiseWithChild<GitProcessResult> {
   const posix = process.platform !== "win32"
-  const child = spawn("git", [...args], {
+  // An absolute git.exe on Windows, never one in the worktree that is the cwd
+  // here (git-command.ts, ruling Q301).
+  const child = spawn(gitCommand(options.env), [...args], {
     cwd: options.cwd,
     env: options.env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -826,7 +835,9 @@ export async function checkOutIsolated(input: {
   }
   // A failure to remove the isolated directory never replaces the outcome
   // above: the caller decides from it whether the worktree is kept. One that
-  // keeps it notes the failure (ruling Q295).
+  // keeps it notes the failure (ruling Q295); for any other outcome the
+  // directory is left for the stale sweep, best effort, at the next isolated
+  // Git setup (see the note at the top of this file).
   try {
     await isolated.dispose()
   } catch (error) {

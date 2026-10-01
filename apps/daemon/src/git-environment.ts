@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process"
 import { join } from "node:path"
 
+import { gitCommand } from "./git-command.js"
+
 // How the daemon runs Git for its own bookkeeping, shared by workspace.ts and
 // the repository git filter reader so both read the configuration Git applies.
 
@@ -71,7 +73,15 @@ let installedVersion: Promise<string | undefined> | undefined
 // `git --version` as the daemon's Git prints it, read once.
 export function installedGitVersionText(): Promise<string | undefined> {
   installedVersion ??= new Promise((done) => {
-    execFile("git", ["--version"], { env: gitEnvironment(), timeout: 3_000 }, (error, stdout) => done(error ? undefined : stdout.trim()))
+    const env = gitEnvironment()
+    let command: string
+    try {
+      command = gitCommand(env)
+    } catch {
+      done(undefined)
+      return
+    }
+    execFile(command, ["--version"], { env, timeout: 3_000 }, (error, stdout) => done(error ? undefined : stdout.trim()))
   })
   return installedVersion
 }
