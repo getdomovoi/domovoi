@@ -577,7 +577,9 @@ code or settings the repository brings:
   with `approval-answered-elsewhere`, and records `provider.approval-answered-elsewhere` in the
   audit log. The audit entry and the session's notice name the card that was answered, with its
   operation, command, directory, affected files, tool server and whether it was a hard gate, as
-  the card showed them, or say that the answer matched no card. It then stops the server, which drops every approval the server kept in memory, and
+  the card showed them when the report arrived, or say that the answer matched no card. Until the
+  report is handled, an archive or an emergency stop does not deny that card but notes that it
+  was answered outside Domovoi, and a person's answer to it is refused. It then stops the server, which drops every approval the server kept in memory, and
   every other session on that server reconnects to a new server on its next message. The stopped
   session's provider session is never resumed: it continues only after you restart its provider,
   in a new provider session without its earlier conversation. An abort the server does not

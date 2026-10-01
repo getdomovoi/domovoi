@@ -117,7 +117,52 @@ async function start() {
   expect(sent.error?.message).toBeUndefined()
   emit({ type: "approval-requested", requestId: 41, threadId, turnId: "turn-billing", itemId: "call_build", command: "pnpm build" })
   await waitForDaemon(async () => expect((await snapshot()).approvals).toHaveLength(1))
-  return { provider, rpc, snapshot, session, append, emit: (event: AgentEvent) => emit(event) }
+  return { provider, workspaceService, rpc, snapshot, session, append, emit: (event: AgentEvent) => emit(event) }
+}
+
+type Started = Awaited<ReturnType<typeof start>>
+type Card = WorkspaceSnapshot["approvals"][number]
+
+const answeredNotDenied = "A request in this session was answered outside Domovoi, so Domovoi did not deny it."
+
+// A second card, with a reason, beside the one start() puts up.
+async function secondCard({ snapshot, emit }: Started): Promise<{ card: Card; other: Card }> {
+  emit({
+    type: "approval-requested", requestId: 42, threadId, turnId: "turn-billing", itemId: "call_clean",
+    command: "rm -rf dist", reason: "Clean the build output",
+  })
+  await waitForDaemon(async () => expect((await snapshot()).approvals).toHaveLength(2))
+  const approvals = (await snapshot()).approvals
+  return {
+    card: approvals.find((approval) => approval.providerRequestId === 42)!,
+    other: approvals.find((approval) => approval.providerRequestId === 41)!,
+  }
+}
+
+async function incidentEntry(append: Started["append"]) {
+  await waitForDaemon(() => expect(append).toHaveBeenCalledWith(expect.objectContaining({
+    action: "provider.approval-answered-elsewhere",
+  })))
+  const entries = append.mock.calls.map(([input]) => input).filter((input) => input.action === "provider.approval-answered-elsewhere")
+  expect(entries).toHaveLength(1)
+  return entries[0]!
+}
+
+function auditFacts(card: Card): string {
+  return [
+    `approval=${card.id}`,
+    `risk=${card.risk}`,
+    `operation=${JSON.stringify(card.operation)}`,
+    `command=${JSON.stringify(card.command)}`,
+    `directory=${JSON.stringify(card.directory)}`,
+    `affects=${JSON.stringify(card.affects)}`,
+  ].join(" ")
+}
+
+function noticeFacts(card: Card): string {
+  return `The answer was to the request "${card.operation}", command ${card.command}, in ${card.directory}. ${card.affects} ${
+    card.risk === "hard-gate" ? "It was a hard gate." : "It was not a hard gate."
+  }`
 }
 
 describe("an approval answered outside Domovoi", () => {
@@ -182,40 +227,113 @@ describe("an approval answered outside Domovoi", () => {
   // Codex review of #691 at a609034e, P2: with several cards up, the record
   // says which one was answered and what it asked, before the cards go.
   it("names the answered card and its facts in the notice and the audit entry", async () => {
-    const { snapshot, append, emit } = await start()
-    emit({
-      type: "approval-requested", requestId: 42, threadId, turnId: "turn-billing", itemId: "call_clean",
-      command: "rm -rf dist", reason: "Clean the build output",
-    })
-    await waitForDaemon(async () => expect((await snapshot()).approvals).toHaveLength(2))
-    const card = (await snapshot()).approvals.find((approval) => approval.providerRequestId === 42)!
-    const other = (await snapshot()).approvals.find((approval) => approval.providerRequestId === 41)!
+    const context = await start()
+    const { snapshot, emit } = context
+    const { card, other } = await secondCard(context)
 
     emit({ type: "approval-answered-elsewhere", threadId, turnId: "turn-billing", permissionId: "per_2", requestId: 42, reply: "always" })
 
-    await waitForDaemon(() => expect(append).toHaveBeenCalledWith(expect.objectContaining({
-      action: "provider.approval-answered-elsewhere",
-    })))
-    const entry = append.mock.calls.map(([input]) => input).find((input) => input.action === "provider.approval-answered-elsewhere")!
+    const entry = await incidentEntry(context.append)
     expect(entry.target).toBe("per_2")
-    expect(entry.detail).toBe([
-      "reply=always",
-      `approval=${card.id}`,
-      `risk=${card.risk}`,
-      `operation=${JSON.stringify(card.operation)}`,
-      `command=${JSON.stringify(card.command)}`,
-      `directory=${JSON.stringify(card.directory)}`,
-      `affects=${JSON.stringify(card.affects)}`,
-    ].join(" "))
+    expect(entry.detail).toBe(`reply=always ${auditFacts(card)}`)
     expect(entry.detail).not.toContain(other.id)
     const after = await snapshot()
     expect(after.approvals).toEqual([])
     const stoppedNotice = after.thread.find((item) => item.sessionId === sessionId && item.kind === "system" && item.body === notice)
-    expect(stoppedNotice?.kind === "system" ? stoppedNotice.detail : undefined).toContain(
-      `The answer was to the request "${card.operation}", command ${card.command}, in ${card.directory}. ${card.affects} ${
-        card.risk === "hard-gate" ? "It was a hard gate." : "It was not a hard gate."
-      }`,
-    )
+    expect(stoppedNotice?.kind === "system" ? stoppedNotice.detail : undefined).toContain(noticeFacts(card))
+  })
+
+  // Codex review of #691, round 6, P2 (ruling Q271): the card's facts are
+  // read when the report arrives. An archive or an emergency stop that clears
+  // the cards before the report is handled leaves them in the record, and
+  // gives the answered card no deny receipt: Domovoi did not deny it.
+  it("keeps the answered card's facts, and denies it no receipt, when an archive clears the cards first", async () => {
+    const context = await start()
+    const { provider, rpc, snapshot, emit } = context
+    const { card, other } = await secondCard(context)
+    let releaseDeny!: () => void
+    provider.resolveApproval.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseDeny = resolve }))
+    const archived = rpc("session.archive", { sessionId, client: "desktop" })
+    await waitForDaemon(() => expect(provider.resolveApproval).toHaveBeenCalledOnce())
+
+    emit({ type: "approval-answered-elsewhere", threadId, turnId: "turn-billing", permissionId: "per_2", requestId: 42, reply: "always" })
+    releaseDeny()
+    expect((await archived).error?.message).toBeUndefined()
+
+    const entry = await incidentEntry(context.append)
+    expect(entry.detail).toBe(`reply=always ${auditFacts(card)}`)
+    const after = await snapshot()
+    expect(after.thread).toContainEqual(expect.objectContaining({
+      sessionId, kind: "receipt", decision: "deny", operation: other.operation, explanation: "Session archived",
+    }))
+    expect(after.thread.filter((item) => item.kind === "receipt" && item.id.startsWith(`receipt-${card.id}-`))).toEqual([])
+    expect(provider.resolveApproval).not.toHaveBeenCalledWith(42, "deny")
+    expect(after.thread).toContainEqual(expect.objectContaining({
+      sessionId, kind: "system", body: answeredNotDenied, detail: expect.stringContaining(noticeFacts(card)),
+    }))
+    expect(after.thread).toContainEqual(expect.objectContaining({
+      sessionId, kind: "system", body: "An approval in this session was answered outside Domovoi.",
+      detail: expect.stringContaining(noticeFacts(card)),
+    }))
+  })
+
+  // The person's answer to the same card, sent before the report arrived and
+  // handled after it, is refused: the provider already has an answer, and a
+  // receipt would say the person decided what someone else did.
+  it("refuses a person's answer to a card already answered outside Domovoi", async () => {
+    const context = await start()
+    const { provider, workspaceService, rpc, snapshot, emit } = context
+    const { card, other } = await secondCard(context)
+    // An allow takes a checkpoint first; holding it holds the session's queue.
+    let releaseCheckpoint!: () => void
+    workspaceService.snapshot.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseCheckpoint = () => resolve({ commit: "c".repeat(40), changedFiles: [] })
+    }))
+    const first = rpc("approval.resolve", { approvalId: other.id, decision: "allow-once", revision: other.revision })
+    await waitForDaemon(() => expect(workspaceService.snapshot).toHaveBeenCalledOnce())
+    const second = rpc("approval.resolve", { approvalId: card.id, decision: "allow-once", revision: card.revision })
+    // Answered outside the queue, after the request above was queued.
+    expect((await rpc("permission.hardGates", {})).error).toBeUndefined()
+
+    emit({ type: "approval-answered-elsewhere", threadId, turnId: "turn-billing", permissionId: "per_2", requestId: 42, reply: "once" })
+    releaseCheckpoint()
+
+    expect((await first).error?.message).toBeUndefined()
+    expect((await second).error?.message).toBe("This request was answered outside Domovoi")
+    expect(provider.resolveApproval).not.toHaveBeenCalledWith(42, expect.anything())
+    const entry = await incidentEntry(context.append)
+    expect(entry.detail).toBe(`reply=once ${auditFacts(card)}`)
+    expect((await snapshot()).thread.filter((item) => item.kind === "receipt" && item.id.startsWith(`receipt-${card.id}`)))
+      .toEqual([])
+  })
+
+  it("keeps the answered card's facts, and denies it no receipt, when an emergency stop clears the cards first", async () => {
+    const context = await start()
+    const { provider, rpc, snapshot, emit } = context
+    const { card, other } = await secondCard(context)
+    // A pause holds the session's queue while the report waits behind it.
+    let releasePause!: () => void
+    provider.interruptTurn.mockImplementationOnce(() => new Promise<void>((resolve) => { releasePause = resolve }))
+    const paused = rpc("session.pause", { sessionId, client: "desktop" })
+    await waitForDaemon(() => expect(provider.interruptTurn).toHaveBeenCalledOnce())
+
+    emit({ type: "approval-answered-elsewhere", threadId, turnId: "turn-billing", permissionId: "per_2", requestId: 42, reply: "once" })
+    const stopped = await rpc("system.emergencyStop", { client: "desktop" })
+    expect(stopped.error?.message).toBeUndefined()
+    releasePause()
+    await paused
+
+    const entry = await incidentEntry(context.append)
+    expect(entry.detail).toBe(`reply=once ${auditFacts(card)}`)
+    const after = await snapshot()
+    expect(after.thread).toContainEqual(expect.objectContaining({
+      sessionId, kind: "receipt", decision: "deny", operation: other.operation, explanation: "Emergency stop",
+    }))
+    expect(after.thread.filter((item) => item.kind === "receipt" && item.id.startsWith(`receipt-${card.id}-`))).toEqual([])
+    expect(provider.resolveApproval).not.toHaveBeenCalledWith(42, "deny")
+    expect(after.thread).toContainEqual(expect.objectContaining({
+      sessionId, kind: "system", body: answeredNotDenied, detail: expect.stringContaining(noticeFacts(card)),
+    }))
   })
 
   it("says when the answered permission matched no card it was showing", async () => {

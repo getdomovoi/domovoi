@@ -1765,11 +1765,22 @@ export class DomovoiDaemon {
   // it, since the stop's own count would otherwise match once it finished.
   #emergencyStopGeneration = 0
   #approvalRequestGenerations = new WeakMap<AgentEvent, { generation: number; duringStop: boolean }>()
-  // The session an approval-answered-elsewhere report named when it arrived.
-  // The report can wait behind a mutation, such as an archive, that drops the
-  // provider thread before the report is handled, and the incident is still
-  // that session's (Codex review of #691 at a609034e, P1).
-  #answeredElsewhereSessions = new WeakMap<AgentEvent, string>()
+  // The session an approval-answered-elsewhere report named when it arrived,
+  // and the card it answered as the card stood then. The report can wait
+  // behind a mutation, such as an archive, that drops the provider thread and
+  // the cards before the report is handled, and the incident is still that
+  // session's and that card's (Codex review of #691 at a609034e, P1, and
+  // round 6, P2).
+  #answeredElsewhereReports = new WeakMap<
+    AgentEvent,
+    { sessionId: string; answered?: WorkspaceSnapshot["approvals"][number] }
+  >()
+  // Cards whose request was answered outside Domovoi, by card id. A cleanup
+  // that denies cards writes these no deny receipt and sends their provider
+  // no deny, and a person's answer to one is refused. An entry leaves once its
+  // incident is recorded and its card is gone, whichever comes last, so the
+  // map holds only reports still queued and cards still shown.
+  #approvalsAnsweredElsewhere = new Map<string, "queued" | "recorded">()
   // Snapshot and delta broadcasts held while a stop runs. The stop's own
   // notification goes out first, then one snapshot carries every change.
   #snapshotBroadcastHeld = false
@@ -2039,11 +2050,9 @@ export class DomovoiDaemon {
           this.#approvalRequestGenerations.set(event, { generation: this.#emergencyStopGeneration, duringStop: this.#emergencyStopInProgress })
         }
         if (event.type === "approval-answered-elsewhere") {
-          const owner = this.#snapshot.sessions.find((candidate) =>
-            candidate.runtime.provider === provider && candidate.providerThreadId === event.threadId)
-          if (owner) this.#answeredElsewhereSessions.set(event, owner.id)
-        }
-        if (event.type === "provider-disconnected") {
+          this.#receiveAnsweredElsewhere(provider, event)
+          this.#enqueueAnsweredElsewhere(provider, event)
+        } else if (event.type === "provider-disconnected") {
           void this.#enqueueMutation(() => this.#handleAgentEvent(provider, event))
         } else {
           void this.#mutations.enqueue(
@@ -2052,6 +2061,50 @@ export class DomovoiDaemon {
           )
         }
       }),
+    )
+  }
+
+  // Codex review of #691 at a609034e, P1, and round 6, P2 (ruling Q271): the
+  // session and the answered card are read when the report arrives, because
+  // an archive or an emergency stop can clear both before it is handled. The
+  // card is marked so that such a cleanup does not deny it: it was answered.
+  #receiveAnsweredElsewhere(
+    provider: string,
+    event: Extract<AgentEvent, { type: "approval-answered-elsewhere" }>,
+  ): void {
+    const owner = this.#snapshot.sessions.find((candidate) =>
+      candidate.runtime.provider === provider && candidate.providerThreadId === event.threadId)
+    if (!owner) return
+    const answered = event.requestId === undefined
+      ? undefined
+      : this.#snapshot.approvals.find((approval) =>
+          approval.sessionId === owner.id && approval.providerRequestId === event.requestId)
+    if (answered) this.#approvalsAnsweredElsewhere.set(answered.id, "queued")
+    this.#answeredElsewhereReports.set(event, {
+      sessionId: owner.id,
+      ...(answered ? { answered: structuredClone(answered) } : {}),
+    })
+  }
+
+  // An emergency stop cancels every queued mutation. The report is a record
+  // of what already happened, not work the stop prevents, so it is queued
+  // again behind the stop and recorded then. Only a daemon shutdown drops it.
+  #enqueueAnsweredElsewhere(
+    provider: string,
+    event: Extract<AgentEvent, { type: "approval-answered-elsewhere" }>,
+  ): void {
+    const report = this.#answeredElsewhereReports.get(event)
+    void this.#mutations.enqueue(
+      report ? `session:${report.sessionId}` : this.#resourceForAgentEvent(provider, event),
+      (signal) => this.#handleAgentEvent(provider, event, signal),
+      {
+        onCancelled: () => {
+          void this.#emergencyStopTail.then(() => {
+            if (this.#stopping || this.#stopped) return
+            this.#enqueueAnsweredElsewhere(provider, event)
+          })
+        },
+      },
     )
   }
 
@@ -8291,6 +8344,13 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Approval does not exist")
           return
         }
+        // The provider already has an answer for it (round 6 of the Codex
+        // review of #691, ruling Q271); the incident queued behind this
+        // request records it and clears the card.
+        if (this.#approvalsAnsweredElsewhere.has(approval.id)) {
+          this.#error(socket, request.id, invalidParams, "This request was answered outside Domovoi")
+          return
+        }
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === approval.sessionId,
         )
@@ -10917,6 +10977,9 @@ export class DomovoiDaemon {
     if (!next) return []
     const { removed, blockedIds } = next
     this.#snapshot.approvals = this.#snapshot.approvals.filter((approval) => !next.removedIds.has(approval.id))
+    for (const id of next.removedIds) {
+      if (this.#approvalsAnsweredElsewhere.get(id) === "recorded") this.#approvalsAnsweredElsewhere.delete(id)
+    }
     this.#snapshot.workingPlans = next.workingPlans
     this.#forgetDepartedFileApprovalTargets()
     for (const approval of removed) {
@@ -11111,6 +11174,10 @@ export class DomovoiDaemon {
 
     let approvalsDenied = 0
     for (const approval of this.#snapshot.approvals) {
+      if (this.#approvalsAnsweredElsewhere.has(approval.id)) {
+        this.#recordAnsweredElsewhereCard(approval, requestedAt)
+        continue
+      }
       try {
         if (approval.providerRequestId !== undefined) {
           this.#agents.require(
@@ -11886,6 +11953,15 @@ export class DomovoiDaemon {
     )
     const unresolvedApprovalIds = new Set<string>()
     for (const approval of approvals) {
+      if (this.#approvalsAnsweredElsewhere.has(approval.id)) {
+        // Another cleanup, such as an emergency stop, may have recorded it.
+        if (!this.#snapshot.approvals.some(({ id }) => id === approval.id)) continue
+        const answeredAt = new Date().toISOString()
+        this.#recordAnsweredElsewhereCard(approval, answeredAt)
+        this.#removeApprovals((candidate) => candidate.id === approval.id, answeredAt)
+        await this.#saveAgentState(false)
+        continue
+      }
       try {
         if (approval.providerRequestId !== undefined && !storedApprovalIds?.has(approval.id)) {
           await this.#agents.require(session.runtime.provider).resolveApproval(
@@ -12460,6 +12536,21 @@ export class DomovoiDaemon {
     if (broadcast) this.#broadcastSnapshot()
   }
 
+  // Round 6 of the Codex review of #691, P2 (ruling Q271): a cleanup that
+  // denies cards meets one whose request was answered outside Domovoi before
+  // the report was handled. The provider has its answer, so the card gets no
+  // deny and no deny receipt; the session says what became of it instead.
+  #recordAnsweredElsewhereCard(approval: WorkspaceSnapshot["approvals"][number], createdAt: string): void {
+    this.#snapshot.thread.push({
+      id: `system-${randomUUID()}`,
+      sessionId: approval.sessionId,
+      kind: "system",
+      body: "A request in this session was answered outside Domovoi, so Domovoi did not deny it.",
+      detail: answeredApprovalNotice(approval),
+      createdAt,
+    })
+  }
+
   // Q243 A: the adapter saw an approval reply it did not send and has already
   // stopped and unloaded the thread. The notice and the audit entry are
   // recorded for every session the report can be traced to (Codex review of
@@ -12472,18 +12563,27 @@ export class DomovoiDaemon {
     threadId: string,
     event: Extract<AgentEvent, { type: "approval-answered-elsewhere" }>,
   ): Promise<void> {
-    const ownerId = this.#answeredElsewhereSessions.get(event)
-    const session = this.#snapshot.sessions.find((candidate) => ownerId === undefined
+    const report = this.#answeredElsewhereReports.get(event)
+    // The incident is handled here. A card still shown after that, in a
+    // session this does not stop, stays marked until it is gone.
+    const answeredId = report?.answered?.id
+    if (answeredId !== undefined) this.#approvalsAnsweredElsewhere.set(answeredId, "recorded")
+    const forgetGoneCard = () => {
+      if (answeredId === undefined || this.#snapshot.approvals.some(({ id }) => id === answeredId)) return
+      this.#approvalsAnsweredElsewhere.delete(answeredId)
+    }
+    const session = this.#snapshot.sessions.find((candidate) => report === undefined
       ? candidate.runtime.provider === provider && candidate.providerThreadId === threadId
-      : candidate.id === ownerId)
-    if (!session) return
+      : candidate.id === report.sessionId)
+    if (!session) {
+      forgetGoneCard()
+      return
+    }
     const stoppedAt = new Date().toISOString()
-    // Read before the cards go (Codex review of #691 at a609034e, P2): the
-    // provider's permission id means nothing to the person, the card's facts do.
-    const answered = event.requestId === undefined
-      ? undefined
-      : this.#snapshot.approvals.find((approval) =>
-          approval.sessionId === session.id && approval.providerRequestId === event.requestId)
+    // The card as it stood when the report arrived (Codex review of #691 at
+    // a609034e, P2, and round 6, P2): the provider's permission id means
+    // nothing to the person, the card's facts do.
+    const answered = report?.answered
     const threadKey = providerThreadKey(provider, threadId)
     const live = !sessionIsReadOnly(session)
       && session.runtime.provider === provider
@@ -12506,6 +12606,7 @@ export class DomovoiDaemon {
       session.updatedAt = stoppedAt
       this.#removeApprovals((approval) => approval.sessionId === session.id, stoppedAt)
     }
+    forgetGoneCard()
     this.#snapshot.thread.push({
       id: `system-${randomUUID()}`,
       sessionId: session.id,
