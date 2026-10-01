@@ -7,6 +7,7 @@ the changes sheet, Revert to a checkpoint, Review what you have allowed, Move th
 another machine, Show all machines, Pair a phone or tablet and Read the audit log, beside the
 existing Take a checkpoint. Each opens a view the workspace already has: the sheet's Changes,
 Checkpoints or Rules tab, the machine menu on the active session, the machines screen, settings
-or the audit log. Ctrl+Shift+D (⌘⇧D on macOS) opens the changes sheet and Ctrl+Shift+M (⌘⇧M)
-shows all machines. A watching window cannot move a session or pair a device from the palette,
+or the audit log. In the desktop app, Ctrl+Shift+D (⌘⇧D on macOS) opens the changes sheet and
+Ctrl+Shift+M (⌘⇧M) shows all machines, and the palette names both. A browser window binds
+neither and leaves those keys to the browser. A watching window cannot move a session or pair a device from the palette,
 and both wait for the daemon to answer.

@@ -191,6 +191,7 @@ export function buildWorkspaceCommands({
   approvalRuleCount,
   moveSession,
   pairDevice,
+  shortcutsBound,
 }: {
   activeWorkspacePath?: string | undefined
   copyWorktreePath?: (() => void) | undefined
@@ -238,6 +239,10 @@ export function buildWorkspaceCommands({
   approvalRuleCount?: number | undefined
   moveSession?: (() => void) | undefined
   pairDevice?: (() => void) | undefined
+  // Whether the shell binds the changes and machines shortcuts. Ruling Q291 A
+  // (2026-10-01): only the desktop does, so a browser names no shortcut it
+  // would leave to the browser.
+  shortcutsBound?: boolean | undefined
 }): WorkspaceCommand[] {
   return [
     { id: "open-project", label: "Open project", section: "Project", keywords: ["folder", "repository"], icon: FolderOpenIcon, restoreFocus: false, run: openProject },
@@ -251,7 +256,7 @@ export function buildWorkspaceCommands({
     { id: "pause-all", label: "Pause everything", section: "Session", keywords: ["pause", "turn boundary"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: pauseAll },
     { id: "emergency-stop", label: "Emergency stop", section: "Session", keywords: ["kill", "stop", "emergency"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: emergencyStop },
     ...(openChanges ? [
-      { id: "open-changes", label: "Open the changes sheet", section: "Session" as const, keywords: ["diff", "files", "review"], icon: DiffIcon, shortcut: "mod+shift+D", run: openChanges },
+      { id: "open-changes", label: "Open the changes sheet", section: "Session" as const, keywords: ["diff", "files", "review"], icon: DiffIcon, ...(shortcutsBound ? { shortcut: "mod+shift+D" } : {}), run: openChanges },
     ] : []),
     ...(takeCheckpoint ? [
       { id: "take-checkpoint", label: "Take a checkpoint", section: "Session" as const, keywords: ["checkpoint", "save", "commit", "snapshot"], icon: GitCommitHorizontalIcon, detail: "manual", disabled: !connected || Boolean(checkpointBlocked), run: takeCheckpoint },
@@ -270,7 +275,7 @@ export function buildWorkspaceCommands({
     { id: "surface-workspace", label: "Agent workspace", section: "Navigate", keywords: ["chat", "thread"], icon: PanelTopIcon, run: () => setSurface("workspace") },
     { id: "surface-providers", label: "Provider settings", section: "Navigate", keywords: ["models", "credentials"], icon: SettingsIcon, run: () => setSurface("providers") },
     { id: "surface-skills", label: "Skills", section: "Navigate", keywords: ["capabilities", "agents"], icon: SparklesIcon, run: () => setSurface("skills") },
-    { id: "surface-fleet", label: "Show all machines", section: "Navigate", keywords: ["fleet", "machines", "devices", "pairing"], icon: ServerIcon, shortcut: "mod+shift+M", run: () => setSurface("fleet") },
+    { id: "surface-fleet", label: "Show all machines", section: "Navigate", keywords: ["fleet", "machines", "devices", "pairing"], icon: ServerIcon, ...(shortcutsBound ? { shortcut: "mod+shift+M" } : {}), run: () => setSurface("fleet") },
     ...(pairDevice ? [
       { id: "pair-device", label: "Pair a phone or tablet", section: "Navigate" as const, keywords: ["pairing", "phone", "tablet", "device"], icon: SmartphoneIcon, detail: "settings", disabled: !connected, run: pairDevice },
     ] : []),

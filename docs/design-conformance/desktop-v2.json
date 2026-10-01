@@ -1762,7 +1762,8 @@
         "2026-10-01 (ruling Q288 A): Open a pull request is left out until the git-from-app work lands; dock.changes-pr is blocked on protocol and claims its copy. No disabled placeholder is drawn.",
         "2026-10-01: Revert to a checkpoint draws no count. The design's meta (5 available) needs the checkpoint list, which the snapshot does not carry and the palette does not fetch. The command opens the Checkpoints tab.",
         "2026-10-01: Take a checkpoint keeps its existing action, which takes the checkpoint at once while the design's command opens the Checkpoints tab with its label field.",
-        "2026-10-01: the shell binds the two shortcuts the meta names (mod+shift+D opens the changes sheet, mod+shift+M shows all machines). Move this session to another machine opens the machine menu on the active session, the same route as a session row's Move, and the transfer dialog follows the choice of machine. Pair a phone or tablet opens settings, and is offered only in a desktop window on its own daemon, where the pairing card is. Rows carry icons where the design draws a coloured dot."
+        "2026-10-01 (ruling Q291 A): only the desktop app binds the two shortcuts the meta names (mod+shift+D opens the changes sheet, mod+shift+M shows all machines) and draws that meta. A browser window registers neither binding, leaves those keys to the browser, and shows both commands without the shortcut meta. The shell tells the two apart by its clientKind, the signal it already uses for the dock's first tab and the pairing card.",
+        "2026-10-01: Move this session to another machine opens the machine menu on the active session, the same route as a session row's Move, and the transfer dialog follows the choice of machine. Pair a phone or tablet opens settings, and is offered only in a desktop window on its own daemon, where the pairing card is. Rows carry icons where the design draws a coloured dot."
       ]
     },
     {

@@ -230,6 +230,7 @@ describe("v2 session commands", () => {
     approvalRuleCount: 4,
     moveSession: vi.fn(),
     pairDevice: vi.fn(),
+    shortcutsBound: true,
   })
 
   it("lists the design's commands in its order, with its labels and meta", () => {
@@ -261,6 +262,18 @@ describe("v2 session commands", () => {
     expect(supplied.moveSession).toHaveBeenCalledOnce()
     expect(supplied.pairDevice).toHaveBeenCalledOnce()
     expect(setSurface.mock.calls).toEqual([["fleet"], ["audit"]])
+  })
+
+  // Ruling Q291 A (2026-10-01): only the desktop binds the two shortcuts, so
+  // a shell that does not bind them gets the commands without the meta.
+  it("names no shortcut the shell does not bind", () => {
+    const commands = buildWorkspaceCommands({ ...base, ...openers(), shortcutsBound: false })
+    for (const id of ["open-changes", "surface-fleet"]) {
+      const command = commands.find((entry) => entry.id === id)
+      expect(command).toBeDefined()
+      expect(command?.shortcut).toBeUndefined()
+    }
+    expect(buildWorkspaceCommands(base).find(({ id }) => id === "surface-fleet")?.shortcut).toBeUndefined()
   })
 
   it("counts one rule in the singular", () => {

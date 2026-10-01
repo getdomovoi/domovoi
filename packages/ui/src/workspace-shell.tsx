@@ -501,6 +501,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const resolvedTheme = resolveAppearanceTheme(theme, colorSchemeQuery()?.matches ?? true)
   const commandPlatform: CommandPalettePlatform = windowBridge?.platform
     ?? (typeof navigator !== "undefined" && /Mac|iPhone|iPad/u.test(navigator.platform) ? "darwin" : "linux")
+  // Ruling Q291 A (2026-10-01): the changes and machines shortcuts are the
+  // desktop's alone. A browser keeps those keys, so the palette names neither.
+  const workspaceShortcutsBound = clientKind === "desktop"
   const setDockCollapsed = (collapsed: boolean) => {
     const activePanel = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
       ? document.activeElement.closest("[data-workspace-panel]")?.getAttribute("data-workspace-panel")
@@ -1017,6 +1020,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     } : {}),
     // The pairing card is in the desktop's own settings, for its own daemon.
     ...(clientKind === "desktop" && !attached ? { pairDevice: () => setSurface("providers") } : {}),
+    shortcutsBound: workspaceShortcutsBound,
     // Cmd+Enter on a machine starts a session there: attach to that daemon,
     // then open the launcher on it. The intent names the machine, and the
     // launcher opens only once that machine's snapshot is the one on screen;
@@ -1260,6 +1264,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // is left to the page.
   const hasSnapshot = Boolean(snapshot)
   useEffect(() => {
+    if (!workspaceShortcutsBound) return
     const onKeyDown = (event: KeyboardEvent) => {
       const shortcut = workspaceShortcut(event, commandPlatform)
       if (!shortcut || (shortcut === "changes" && !hasSnapshot)) return
@@ -1272,7 +1277,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     // openSheetTab and setSurface write through state setters, so the
     // listener does not go stale between renders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [commandPlatform, hasSnapshot])
+  }, [commandPlatform, hasSnapshot, workspaceShortcutsBound])
 
   useEffect(() => {
     if (!snapshot) return
