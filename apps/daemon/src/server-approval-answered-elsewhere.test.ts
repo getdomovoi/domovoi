@@ -179,6 +179,33 @@ describe("an approval answered outside Domovoi", () => {
     expect(provider.resumeThread).toHaveBeenCalledOnce()
   })
 
+  // Codex review of #691 at a609034e, P2: the adapter ends the turn before it
+  // reports the reply, so the turn's end holds the queued send first. The held
+  // row still says why.
+  it("says on the held queued send that an approval was answered outside Domovoi", async () => {
+    const { rpc, snapshot, emit } = await start()
+    const queued = await rpc("session.send", { sessionId, prompt: "then this", client: "desktop", delivery: "next-turn-replace" })
+    expect(queued.error?.message).toBeUndefined()
+    expect((await snapshot()).queuedSends?.map(({ state }) => state)).toEqual(["waiting"])
+
+    emit({
+      type: "turn-completed",
+      params: {
+        threadId,
+        turnId: "turn-billing",
+        turn: { id: "turn-billing", status: "failed", error: answeredElsewhere.message },
+        failure: answeredElsewhere,
+      },
+    })
+    emit({ type: "approval-answered-elsewhere", threadId, turnId: "turn-billing", permissionId: "per_1", reply: "once" })
+
+    await waitForDaemon(async () => expect((await snapshot()).thread).toContainEqual(expect.objectContaining({ sessionId, body: notice })))
+    expect((await snapshot()).queuedSends?.map(({ state, reason }) => ({ state, reason }))).toEqual([{
+      state: "held",
+      reason: "An approval was answered outside Domovoi, so the queued send was held.",
+    }])
+  })
+
   // Codex review of #691 at a609034e, P1: the report waits behind an archive
   // that drops the session's provider thread and makes it read-only. The
   // incident is still recorded against the session the thread belonged to

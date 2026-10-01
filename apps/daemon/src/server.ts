@@ -637,6 +637,8 @@ function permissionViolation(runtime: Runtime, agent: AgentAdapter): string | un
   return `${providerName} does not support enforceable Build auto`
 }
 
+const answeredElsewhereHoldReason = "An approval was answered outside Domovoi, so the queued send was held."
+
 function sessionReadOnlyMessage(
   session: WorkspaceSnapshot["sessions"][number] | undefined,
 ): string | undefined {
@@ -10755,8 +10757,14 @@ export class DomovoiDaemon {
         sessionId: session.id,
         projectId: session.projectId,
       })
-      if (failed) this.#holdQueuedSessionSend(session.id, "The provider turn failed before the queued boundary could release.")
-      else releaseQueuedSend = true
+      // The adapter ends a turn whose approval was answered elsewhere before it
+      // reports the reply, and a held send keeps the reason it was held with,
+      // so the hold says why here (Codex review of #691 at a609034e, P2).
+      if (failed) {
+        this.#holdQueuedSessionSend(session.id, failure?.kind === "approval-answered-elsewhere"
+          ? answeredElsewhereHoldReason
+          : "The provider turn failed before the queued boundary could release.")
+      } else releaseQueuedSend = true
     }
 
     session.updatedAt = createdAt
@@ -12449,7 +12457,7 @@ export class DomovoiDaemon {
       && session.providerThreadId === threadId
       && !this.#emergencyBlockedThreads.has(threadKey)
     if (live) {
-      this.#holdQueuedSessionSend(session.id, "An approval was answered outside Domovoi, so the queued send was held.")
+      this.#holdQueuedSessionSend(session.id, answeredElsewhereHoldReason)
       this.#flushCommandOutputStreams(session.id)
       for (const [key, run] of this.#approvedRuns) if (run.sessionId === session.id) this.#approvedRuns.delete(key)
       this.#loadedAgentThreads.delete(threadKey)
