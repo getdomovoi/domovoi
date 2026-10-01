@@ -161,6 +161,19 @@ the removal; it prints on stderr that lingering stays on and how to turn it off.
 install and removal do the same and return the outcome as `linger`; the desktop does not show it
 yet.
 
+`loginctl` is run by its bare name and found through `PATH`, as `systemctl` is: `PATH` is trusted
+for the Linux service commands. Every call passes the installing user's numeric uid, taken from
+the OS, never from `service.json`.
+
+The record is an ownership hint, not proof of who turned lingering on (security review of #698).
+`service.json` is a private file of the same user, and the record says what an install saw, not
+what has happened since. Two cases follow. A stale `true`, or one written into the file by hand,
+makes removal turn lingering off even when Domovoi did not turn on the lingering in force; this
+includes lingering turned off and on again by the person after the install, since a reinstall that
+finds it on keeps an earlier `true`. And a reinstall whose `loginctl` read fails records nothing,
+dropping an earlier `true`, so a later removal leaves on the lingering Domovoi did turn on. Either
+case only changes the installing user's own lingering.
+
 ## Windows crash supervision
 
 Decided 2026-09-17 (`SHIP-PLAN.md` S1.1): the limited-user `ONLOGON` task runs
