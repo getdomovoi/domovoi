@@ -100,8 +100,8 @@ Options:
   -h, --help       Show this help
   -v, --version    Show the installed version
   --service-config <path>  Run with the installed non-secret service configuration
-  --service-supervise <path>  Run the installed crash supervisor (WSL guest or Windows logon task)
-  --service-supervisor-stop <path>  Retire that supervisor and prove shutdown
+  --service-supervise <path>  Run the installed guest crash supervisor
+  --service-supervisor-stop <path>  Retire that guest supervisor and prove shutdown
 
 Environment:
   DOMOVOI_HOST                    Listener host (default: 127.0.0.1)
@@ -250,9 +250,7 @@ async function main() {
       executable: process.execPath, args: [...process.execArgv, entry, "--service-config", args[1]!],
     })
     if (record.state === "exhausted") {
-      // The Windows logon task runs this loop on the host (SHIP-PLAN S1.1).
-      const supervised = process.platform === "win32" ? "Daemon" : "Guest"
-      process.stderr.write(`${supervised} supervision exhausted after ${record.crashes} crashes and ${record.attemptCount} attempts. See the profile's supervisor.json and domovoid service status.\n`)
+      process.stderr.write(`Guest supervision exhausted after ${record.crashes} crashes and ${record.attemptCount} attempts. See the profile's supervisor.json and domovoid service status.\n`)
       process.exitCode = 1
     }
     return

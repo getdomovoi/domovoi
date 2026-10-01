@@ -11,10 +11,6 @@ const taskStateScript = "[Console]::Out.WriteLine('domovoi-task:' + [int]$task.S
 export type WindowsTaskRemovalPlan = {
   kind: "task"
   name: string
-  // Disables without stopping: a supervised task's loop is stopped through
-  // its own stop request first, since Task Scheduler's stop is not proved to
-  // end the daemon the loop started (install.ts).
-  disable?: ServiceCommand
   stop: ServiceCommand
   inspect: ServiceCommand
   remove: ServiceCommand
@@ -85,8 +81,8 @@ ${body}
 // schtasks /create cannot set these and registers Task Scheduler's defaults,
 // which Microsoft documents as a 72 hour execution limit, and battery rules
 // that keep a task from starting on battery and stop it when power is lost.
-// The logon task runs the supervisor loop and its daemon for the whole
-// session, so right after each /create this sets what the WSL task sets
+// The logon task runs the daemon for the whole session, and the defaults
+// would end it there, so right after each /create this sets what the WSL task sets
 // (wsl-task.ts) and registers the change in place (TASK_UPDATE, 4) under the
 // task's own principal and logon type, with no password.
 // https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-executiontimelimit
@@ -104,9 +100,6 @@ export function windowsTaskRemovalPlan(name: string): WindowsTaskRemovalPlan {
   const executable = windowsPowerShellPath()
   return {
     kind: "task", name,
-    disable: taskCommand(executable, name, `
-$task.Enabled = $false
-[Console]::Out.WriteLine('domovoi-task:' + [int]$task.State)`),
     // Disabling first also prevents queued/logon starts between stop and delete.
     // Stop can race normal exit; only SCHED_E_TASK_NOT_RUNNING is benign, and
     // even that must be followed by the same stopped-state proof.
@@ -142,17 +135,6 @@ export async function readWindowsTaskState(name: string, effects: Pick<ServiceEf
   // https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-state
   if (state === "missing" || state === "1" || state === "2" || state === "3" || state === "4") return state
   throw new Error(`Task Scheduler did not report a known task state (state ${state})`)
-}
-
-// Disables the task without stopping it, so no logon or queued start begins
-// while its supervisor loop is stopped. Missing means there is nothing to
-// disable; any other answer but a known state refuses.
-export async function disableWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<"disabled" | "missing"> {
-  if (plan.disable === undefined) throw new Error("This task plan has no disable step")
-  const state = await taskResult(plan.disable, effects, deadline)
-  if (state === "missing") return "missing"
-  if (state === "deleted" || state === "0") throw new Error(`Task Scheduler did not confirm a disabled task (state ${state})`)
-  return "disabled"
 }
 
 // Stops the task and waits until Task Scheduler reports it disabled and

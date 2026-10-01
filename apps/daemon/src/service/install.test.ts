@@ -163,15 +163,13 @@ describe("servicePlan", () => {
     expect(plan.commands[0]?.args).not.toContain("HIGHEST")
   })
 
-  // Decided 2026-09-17 (SHIP-PLAN S1.1): the logon task runs the supervisor
-  // loop, which runs the daemon with --service-config and restarts it.
   it("launches a script through Node rather than letting Windows pick an interpreter", () => {
     const plan = servicePlan(windowsScript)
     const target = plan.commands[0]?.args[plan.commands[0].args.indexOf("/tr") + 1]
-    expect(target).toBe('"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\Domovoi\\dist\\index.js" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"')
+    expect(target).toBe('"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\Domovoi\\dist\\index.js" --service-config "C:\\Users\\dl\\.domovoi\\service.json"')
   })
 
-  // The loop and its daemon run for the whole logon session. schtasks /create
+  // The daemon runs for the whole logon session. schtasks /create
   // keeps Task Scheduler's defaults, a 72 hour execution limit and stops on
   // battery, so a step right after it sets what the WSL task sets
   // (wsl-task.ts), before the task is run.
@@ -194,7 +192,7 @@ describe("servicePlan", () => {
   it("passes a real executable straight through", () => {
     const plan = servicePlan(windows)
     const target = plan.commands[0]?.args[plan.commands[0].args.indexOf("/tr") + 1]
-    expect(target).toBe('"C:\\Program Files\\Domovoi\\domovoid.exe" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"')
+    expect(target).toBe('"C:\\Program Files\\Domovoi\\domovoid.exe" --service-config "C:\\Users\\dl\\.domovoi\\service.json"')
   })
 
   it("refuses a script with no runtime to run it", () => {
@@ -431,7 +429,6 @@ describe("serviceRemovalPlan", () => {
       expect(serviceRemovalPlan({ platform: "win32" })).toEqual({
         kind: "task",
         name: "Domovoi daemon",
-        disable: { command, args: expect.any(Array) },
         stop: { command, args: expect.any(Array) },
         inspect: { command, args: expect.any(Array) },
         remove: { command, args: expect.any(Array) },
@@ -709,9 +706,7 @@ describe("runServiceCommand", () => {
     const launch = target.platform === "win32"
       ? vi.mocked(dependencies.run).mock.calls[0]?.[1].join(" ")
       : vi.mocked(dependencies.write).mock.calls.find(([path]) => !path.endsWith("service.json"))?.[1]
-    // The Windows task runs the supervisor loop, which passes --service-config
-    // to the daemon it starts.
-    expect(launch).toContain(target.platform === "win32" ? "--service-supervise" : "--service-config")
+    expect(launch).toContain("--service-config")
     expect(launch).toContain(configuration![0])
   })
 
@@ -777,74 +772,19 @@ describe("runServiceCommand", () => {
   })
 })
 
-// Decided 2026-09-17 (SHIP-PLAN S1.1): the Windows logon task runs the WSL
-// guest's supervisor loop. Status reads both the task and the loop's record;
-// every Task Scheduler and supervisor answer here is mocked.
-describe("Windows supervised task", () => {
-  beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
-  afterEach(() => { vi.unstubAllEnvs() })
+// A reinstall over the logon task Domovoi registered replaces it with the
+// schtasks under SystemRoot and lifts Task Scheduler's run limit and battery
+// stops before running it. Every Task Scheduler answer here is mocked.
+it("reinstalls over the logon task Domovoi registered, lifting its run limit before it runs", async () => {
+  vi.stubEnv("SystemRoot", "C:\\Windows")
   const configurationPath = "C:\\Users\\dl\\.domovoi\\service.json"
-  const supervised = { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\Program Files\\Domovoi\\dist\\index.js" --service-supervise "${configurationPath}"` }
-  function task(state: "1" | "3" | "4", supervisor: NonNullable<ServiceEffects["supervisorStatus"]>, action = supervised): ServiceEffects {
-    return effects({
-      readConfiguration: vi.fn(() => ({ ...windows.configuration, serviceRuntime: { executable: "C:\\Program Files\\nodejs\\node.exe", entry: "C:\\Program Files\\Domovoi\\dist\\index.js" } })),
-      supervisorStatus: supervisor,
-      capture: vi.fn(async (_command: string, args: string[]) => {
-        const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
-        if (script.includes("domovoi-task-action:")) return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ ...action, enabled: true, state: Number(state) })}\r\n` }
-        return { code: 0, stdout: `domovoi-task:${state}\r\n` }
-      }),
-    })
-  }
-  const running = { installed: null, running: true, detail: "daemon running; attempt 1; 0 crashes", supervising: true }
-
-  it("reports the daemon running only when the task runs and the loop's child runs", async () => {
-    const dependencies = task("4", vi.fn(async () => running))
-    await expect(serviceStatus(windows, dependencies)).resolves.toMatchObject({
-      installed: true, running: true, detail: "Domovoi daemon is running; daemon running; attempt 1; 0 crashes",
-    })
-    expect(dependencies.supervisorStatus).toHaveBeenCalledWith("C:\\Users\\dl")
-    const backoff = task("4", vi.fn(async () => ({ installed: null, running: false, detail: "child stopped; supervisor backing off 5000 ms; last exit code 1 at 2026-10-01T12:00:00.000Z", supervising: true })))
-    await expect(serviceStatus(windows, backoff)).resolves.toMatchObject({ installed: true, running: false })
+  const action = { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\Program Files\\Domovoi\\dist\\index.js" --service-config "${configurationPath}"`, enabled: true, state: 3 }
+  const dependencies = effects({
+    readConfiguration: vi.fn(() => ({ ...windows.configuration, serviceRuntime: { executable: "C:\\Program Files\\nodejs\\node.exe", entry: "C:\\Program Files\\Domovoi\\dist\\index.js" } })),
+    capture: vi.fn(async () => ({ code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}\r\n` })),
   })
-
-  it("exits 1 and says so when the loop exhausted its restarts", async () => {
-    const detail = "stopped; supervision exhausted after 4 crashes; last exit code 1 at 2026-10-01T12:00:21.000Z"
-    const stdout = vi.fn()
-    const dependencies = { ...task("3", vi.fn(async () => ({ installed: null, running: false, detail, supervising: false, supervisionFailure: "exhausted" as const }))),
-      platform: "win32", execPath: windows.execPath, home: windows.home, stdout, stderr: vi.fn() }
-    expect(await runServiceCommand(["service", "status"], dependencies)).toBe(1)
-    expect(stdout).toHaveBeenCalledWith(`installed, not running: Domovoi daemon is registered but not running; ${detail}\n`)
-  })
-
-  it("says when the loop has recorded no start yet", async () => {
-    await expect(serviceStatus(windows, task("4", vi.fn(async () => undefined)))).resolves.toMatchObject({
-      installed: true, running: false, detail: "Domovoi daemon is running; the supervisor has not recorded a start yet",
-    })
-  })
-
-  it("reads no supervisor record for a task installed before the supervisor", async () => {
-    const legacy = { ...supervised, arguments: supervised.arguments.replace("--service-supervise", "--service-config") }
-    const dependencies = task("4", vi.fn(async () => running), legacy)
-    await expect(serviceStatus(windows, dependencies)).resolves.toEqual({ installed: true, running: true, detail: "Domovoi daemon is running" })
-    expect(dependencies.supervisorStatus).not.toHaveBeenCalled()
-  })
-
-  it("refuses to install over a loop that is still supervising, before anything changes", async () => {
-    const dependencies = task("4", vi.fn(async () => running))
-    await expect(installService(windowsScript, dependencies)).rejects.toThrow(
-      "The Windows task \"Domovoi daemon\" still runs Domovoi's crash supervisor. Run domovoid service remove, then install again. Nothing was stopped or changed.",
-    )
-    expect(dependencies.claimProfile).not.toHaveBeenCalled()
-    expect(dependencies.write).not.toHaveBeenCalled()
-    expect(dependencies.run).not.toHaveBeenCalled()
-  })
-
-  it("installs over a supervised task whose loop has stopped", async () => {
-    const dependencies = task("3", vi.fn(async () => ({ installed: null, running: false, detail: "stopped (clean-exit); last exit code 0 at 2026-10-01T12:00:00.000Z", supervising: false })))
-    await expect(installService(windowsScript, dependencies)).resolves.toMatchObject({ kind: "task" })
-    expect(vi.mocked(dependencies.run).mock.calls.map(([command, args]) => command.endsWith("\\schtasks.exe") ? args[0] : "settings")).toEqual(["/create", "settings", "/run"])
-  })
+  await expect(installService(windowsScript, dependencies)).resolves.toMatchObject({ kind: "task" })
+  expect(vi.mocked(dependencies.run).mock.calls.map(([command, args]) => command === "C:\\Windows\\System32\\schtasks.exe" ? args[0] : "settings")).toEqual(["/create", "settings", "/run"])
 })
 
 // Decided 2026-09-17 (SHIP-PLAN S1.1): a Linux install turns lingering on and

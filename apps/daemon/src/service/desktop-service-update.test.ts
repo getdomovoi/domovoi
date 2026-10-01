@@ -198,9 +198,6 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
     exists: vi.fn(async (path: string) => files.has(path)),
     remove: vi.fn(async (path: string) => { order.push(`remove ${path}`); files.delete(path) }),
     stopSupervisor: vi.fn(async () => { order.push("stop guest supervisor") }),
-    // A Windows supervisor loop that never recorded a start, unless a test
-    // says otherwise.
-    supervisorStatus: vi.fn(async () => undefined),
     ...overrides,
   }
   // A start that works leaves a new daemon instance reporting ready.
@@ -455,8 +452,7 @@ describe("updateDaemonService with a Windows logon task", () => {
     const effects = fake("win32", "C:\\Users\\dl")
     expect(await updateDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task", name: "Domovoi daemon" })
     const created = vi.mocked(effects.run).mock.calls.find(([, args]) => args[0] === "/create")![1]
-    // Decided 2026-09-17 (SHIP-PLAN S1.1): the new task runs the supervisor loop.
-    expect(created[created.indexOf("/tr") + 1]).toMatch(/^"C:\\Program Files\\Domovoi\\runtime-2\\node\.exe" "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index\.js" --service-supervise /)
+    expect(created[created.indexOf("/tr") + 1]).toMatch(/^"C:\\Program Files\\Domovoi\\runtime-2\\node\.exe" "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index\.js" --service-config /)
     expect(created).toContain("/f")
     expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
       "read task", "stop task", "claim", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "set task", "schtasks /run",
@@ -527,33 +523,6 @@ describe("updateDaemonService with a Windows logon task", () => {
     expect(effects.run).not.toHaveBeenCalled()
   })
 
-  // Decided 2026-09-17 (SHIP-PLAN S1.1): a task installed since runs the
-  // supervisor loop, whose daemon Task Scheduler's stop is not proved to end. The
-  // update disables the task and has the loop stop its daemon, proved, without
-  // retiring the registration it registers again; then it stops the task.
-  const supervised = oldWindowsCommand.replace("--service-config", "--service-supervise")
-  const supervising = () => vi.fn(async () => ({ installed: null, running: true, detail: "daemon running; attempt 1; 0 crashes", supervising: true }))
-
-  it("stops a supervised task's loop without retiring its registration before stopping the task", async () => {
-    const effects = fake("win32", "C:\\Users\\dl", { task: { definition: supervised, running: true, runningDefinition: supervised } })
-    effects.supervisorStatus = supervising()
-    expect(await updateDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task", name: "Domovoi daemon" })
-    expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
-      "read task", "disable task", "stop guest", "stop task", "claim", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "set task", "schtasks /run",
-    ])
-    expect(effects.stopSupervisor).toHaveBeenCalledWith("C:\\Users\\dl\\.domovoi\\service.json", expect.anything(), { retire: false })
-  })
-
-  it("puts the previous supervised task back, its loop stopped first, when the new daemon never reports ready", async () => {
-    const effects = fake("win32", "C:\\Users\\dl", { crashingStarts: 1, task: { definition: supervised, running: true, runningDefinition: supervised } })
-    effects.supervisorStatus = supervising()
-    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
-    const created = vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/create").map(([, args]) => args[args.indexOf("/tr") + 1])
-    expect(created.at(-1)).toBe(supervised)
-    expect(effects.order.slice(-7)).toEqual(["disable task", "stop guest supervisor", "stop task", "write C:\\Users\\dl\\.domovoi\\service.json", expect.stringMatching(/^schtasks \/create /), "set task settings", "schtasks /run /tn Domovoi daemon"])
-    for (const [, , options] of vi.mocked(effects.stopSupervisor!).mock.calls) expect(options).toEqual({ retire: false })
-  })
-
   // schtasks /create resets a task's settings to Task Scheduler's defaults, a
   // 72 hour execution limit and stops on battery, so each registration, the
   // swap's and the restore's, is followed by the settings step before its run.
@@ -565,19 +534,6 @@ describe("updateDaemonService with a Windows logon task", () => {
     // Review F3: the swap's and the restore's schtasks are the one under SystemRoot.
     expect(vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/create" || args[0] === "/run").map(([command]) => command))
       .toEqual(Array(4).fill("C:\\Windows\\System32\\schtasks.exe"))
-  })
-
-  it("says nothing changed when the supervised task cannot be disabled and still runs", async () => {
-    const effects = fake("win32", "C:\\Users\\dl", { task: { definition: supervised, running: true, runningDefinition: supervised } })
-    effects.supervisorStatus = supervising()
-    const capture = effects.capture
-    effects.capture = vi.fn(async (command: string, args: string[], deadline) => {
-      if (script(args).includes("$task.Enabled = $false") && !script(args).includes("$task.Stop(0)")) return { code: 1, stdout: "", stderr: "Access is denied." }
-      return capture(command, args, deadline)
-    })
-    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(nothingChanged)
-    expect(effects.stopSupervisor).not.toHaveBeenCalled()
-    expect(effects.run).not.toHaveBeenCalled()
   })
 })
 

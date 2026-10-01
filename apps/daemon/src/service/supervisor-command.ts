@@ -90,10 +90,7 @@ async function releaseGuestSupervisorLease<T>(lease: FileLease, outcome: Promise
   return outcome.value
 }
 
-// platform: the host the loop runs on. Under the Windows logon task the loop
-// supervises the daemon itself, so the words say daemon rather than guest.
-export function readGuestSupervisorStatus(home: string, alive = guestProcessAlive, bootId = guestBootId, platform: string = process.platform): ServiceStatus | undefined {
-  const windows = platform === "win32"
+export function readGuestSupervisorStatus(home: string, alive = guestProcessAlive, bootId = guestBootId): ServiceStatus | undefined {
   let configuration: ServiceConfiguration | undefined
   try { configuration = configurationAt(join(home, ".domovoi/service.json")) } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
@@ -128,22 +125,19 @@ export function readGuestSupervisorStatus(home: string, alive = guestProcessAliv
       : record.state === "stopped" ? `stopped (${record.reason?.kind}); ${lastExit(record)}`
         : !loopAlive ? `stopped; supervisor is not alive; ${lastExit(record)}`
           : record.state === "backoff" ? `child stopped; supervisor backing off ${activeChild?.backoffMs} ms; ${lastExit(record)}`
-            : running ? `${windows ? "daemon" : "guest daemon"} running; attempt ${record.attemptCount}; ${record.crashes} crashes`
+            : running ? `guest daemon running; attempt ${record.attemptCount}; ${record.crashes} crashes`
               : `child stopped; supervisor ${record.state}; ${lastExit(record)}`
   const supervisionFailure = configuration === undefined ? "configuration-missing"
     : record.state === "exhausted" ? "exhausted" : record.state === "failed" ? "observation-failure" : undefined
-  const detail = configuration ? observed : `service configuration missing; ${windows ? "supervisor" : "guest"} evidence is not bound to an installed service; ${observed}`
-  // A live loop that has not stopped still starts children: a backoff ends in
-  // another launch. An install over it would race it (install.ts).
-  const supervising = loopAlive && !["stopped", "exhausted", "failed"].includes(record.state)
+  const detail = configuration ? observed : `service configuration missing; guest evidence is not bound to an installed service; ${observed}`
   // A guest record cannot establish whether the Windows registration exists.
-  return { installed: null, running, detail, supervising, ...(supervisionFailure === undefined ? {} : { supervisionFailure }) }
+  return { installed: null, running, detail, ...(supervisionFailure === undefined ? {} : { supervisionFailure }) }
 }
 
 // retire: removal's stop also retires the registration, so no loop for it
-// starts again before the task is deleted. An update's stop proves the same
+// starts again before the task is deleted. A WSL update's stop proves the same
 // shutdown, then clears that marker once, under the startup lease: the update
-// registers the same registration again, with the task disabled meanwhile.
+// registers the same registration again, with the old task disabled meanwhile.
 export async function stopGuestSupervisor(path: string, deadline: OperationDeadline, effects: {
   alive(identity: GuestProcessIdentity): boolean
   bootId?: () => string
@@ -192,10 +186,8 @@ export async function stopGuestSupervisor(path: string, deadline: OperationDeadl
   }
 }
 
-// Linux (the WSL guest) and Windows (the logon task, decided 2026-09-17,
-// SHIP-PLAN S1.1) both supply process birth identities (supervisor-process.ts).
 export async function runGuestSupervisor(path: string, entry: { executable: string; args: string[] }): Promise<SupervisorRecord> {
-  if (process.platform !== "linux" && process.platform !== "win32") throw new Error("The daemon supervisor requires Linux or Windows process birth identities")
+  if (process.platform !== "linux") throw new Error("The guest supervisor requires Linux process birth identities")
   const configuration = configurationAt(path)
   const home = profileLocation(configuration.homeDirectory, configuration.profileDirectory)
   const lease = claimGuestSupervisorLease(home)

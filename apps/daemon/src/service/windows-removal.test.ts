@@ -228,85 +228,6 @@ describe("Windows service removal", () => {
   })
 })
 
-// Decided 2026-09-17 (SHIP-PLAN S1.1): the task runs the supervisor loop.
-// Task Scheduler's stop is not proved to end the daemon the loop started,
-// so removal disables the task, has the loop stop its daemon and proves both
-// dead, and only then stops and deletes the task, as the WSL removal does.
-describe("Windows removal of a supervised task", () => {
-  const supervisedAction = { ...registeredAction, arguments: registeredAction.arguments.replace("--service-config", "--service-supervise") }
-  const record = { installed: null, running: true, detail: "daemon running; attempt 1; 0 crashes", supervising: true }
-
-  function supervisedManager() {
-    const { task, effects } = taskManager()
-    const order: string[] = []
-    const capture = effects.capture
-    effects.capture = vi.fn(async (command: string, args: string[], deadline: OperationDeadline) => {
-      const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
-      if (script.includes("domovoi-task-action:")) {
-        if (!task.registered) return { code: 0, stdout: "domovoi-task:missing\r\n" }
-        return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ ...supervisedAction, enabled: task.enabled, state: task.running ? 4 : task.enabled ? 3 : 1 })}\r\n` }
-      }
-      order.push(script.includes("$task.Stop(0)") ? "stop task" : script.includes("$task.Enabled = $false") ? "disable task"
-        : script.includes("DeleteTask") ? "delete task" : "inspect task")
-      return capture(command, args, deadline)
-    })
-    // The loop stops its daemon and exits, which ends the task's instance.
-    effects.supervisorStatus = vi.fn(async () => record)
-    effects.stopSupervisor = vi.fn(async (_path: string, _deadline: OperationDeadline, options?: { retire?: boolean }) => {
-      expect(task).toMatchObject({ enabled: false })
-      expect(options?.retire).not.toBe(false)
-      order.push("stop supervisor")
-      task.running = false
-    })
-    vi.mocked(effects.remove).mockImplementation(async () => { order.push("remove configuration") })
-    return { task, effects, order }
-  }
-
-  it("disables the task, proves the loop and its daemon stopped, then stops and deletes the task", async () => {
-    const { task, effects, order } = supervisedManager()
-    await removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)
-    expect(order).toEqual(["disable task", "stop supervisor", "stop task", "delete task", "remove configuration"])
-    expect(effects.stopSupervisor).toHaveBeenCalledWith(configurationPath, expect.any(OperationDeadline))
-    expect(task).toEqual({ registered: false, enabled: false, running: false })
-  })
-
-  it("skips the loop's stop when it never recorded a start", async () => {
-    const { effects, order } = supervisedManager()
-    effects.supervisorStatus = vi.fn(async () => undefined)
-    await removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)
-    expect(effects.stopSupervisor).not.toHaveBeenCalled()
-    expect(order).toEqual(["disable task", "stop task", "delete task", "remove configuration"])
-  })
-
-  it("keeps the task and configuration, and says the task may be disabled, when the stop cannot be proved", async () => {
-    const { task, effects, order } = supervisedManager()
-    effects.stopSupervisor = vi.fn(async () => { throw new Error("Supervisor stopped but its guest child is still alive; removal refused") })
-    await expect(removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)).rejects.toThrow(
-      /child is still alive; removal refused.*task "Domovoi daemon" may now be disabled.*schtasks \/change \/tn "Domovoi daemon" \/enable/s,
-    )
-    expect(order).toEqual(["disable task"])
-    expect(task.registered).toBe(true)
-    expect(effects.remove).not.toHaveBeenCalled()
-  })
-
-  it("refuses before any change when this caller cannot prove the loop stopped", async () => {
-    const { task, effects, order } = supervisedManager()
-    delete effects.stopSupervisor
-    await expect(removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)).rejects.toThrow("Windows supervisor shutdown proof is unavailable")
-    expect(order).toEqual([])
-    expect(task).toMatchObject({ registered: true, enabled: true })
-  })
-
-  it("asks no supervisor about a task installed before the supervisor", async () => {
-    const { effects } = taskManager()
-    effects.supervisorStatus = vi.fn(async () => record)
-    effects.stopSupervisor = vi.fn(async () => {})
-    await removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)
-    expect(effects.supervisorStatus).not.toHaveBeenCalled()
-    expect(effects.stopSupervisor).not.toHaveBeenCalled()
-  })
-})
-
 describe("refusals that never reach Task Scheduler", () => {
   const refusal = (effects: ServiceEffects): Promise<Error> => removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)
     .then(() => { throw new Error("the removal was expected to be refused") }, (error: unknown) => error as Error)
@@ -389,7 +310,7 @@ describe("Task Scheduler command boundary", () => {
   it("uses a noninteractive encoded script and quotes task names as data", () => {
     const name = "a'; throw 'not a command"
     const plan = windowsTaskRemovalPlan(name)
-    for (const command of [plan.disable!, plan.stop, plan.inspect, plan.remove]) {
+    for (const command of [plan.stop, plan.inspect, plan.remove]) {
       expect(command.command).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
       expect(command.args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
       const script = Buffer.from(command.args.at(-1)!, "base64").toString("utf16le")
@@ -403,10 +324,6 @@ describe("Task Scheduler command boundary", () => {
     expect(stop).toContain(".HResult -ne -2147216629")
     const remove = Buffer.from(plan.remove.args.at(-1)!, "base64").toString("utf16le")
     expect(remove.indexOf("if ([int]$task.State -ne 1)")).toBeLessThan(remove.indexOf("$folder.DeleteTask($name, 0)"))
-    // Disabling alone stops nothing: the supervisor loop is stopped next.
-    const disable = Buffer.from(plan.disable!.args.at(-1)!, "base64").toString("utf16le")
-    expect(disable).toContain("$task.Enabled = $false")
-    expect(disable).not.toContain("$task.Stop(")
   })
 })
 
