@@ -38,6 +38,43 @@ describe("SqliteRepositoryTrust", () => {
     expect(trust.find("project-beta")).toBeDefined()
   })
 
+  // A grant lets the daemon run the repository's git filters only when the
+  // client acknowledged showing them (repository.trust gitFilters).
+  it("records whether the grant reviewed the repository's git filters", () => {
+    const trust = new SqliteRepositoryTrust(new DatabaseSync(":memory:"))
+    const reviewed = trust.record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" }, gitFiltersReviewed: true })
+    const unreviewed = trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "web" } })
+
+    expect(reviewed.gitFiltersReviewed).toBe(true)
+    expect(trust.find("project-acme")).toEqual(reviewed)
+    expect(trust.find("project-beta")).toEqual(unreviewed)
+    expect(trust.find("project-beta")).not.toHaveProperty("gitFiltersReviewed")
+  })
+
+  // A table an earlier daemon made, with no column for the acknowledgement:
+  // its grants carry on for everything they covered, and none of them runs a
+  // git filter.
+  it("keeps the grants of an earlier table, none of them reviewing git filters", () => {
+    const database = new DatabaseSync(":memory:")
+    database.exec(`
+      CREATE TABLE repository_trust (
+        project_id TEXT PRIMARY KEY,
+        trusted_digest TEXT NOT NULL,
+        trusted_at TEXT NOT NULL,
+        trusted_client TEXT NOT NULL,
+        trusted_client_id TEXT
+      );
+      CREATE INDEX repository_trust_trusted_at ON repository_trust (trusted_at);
+    `)
+    database.prepare("INSERT INTO repository_trust VALUES (?, ?, ?, ?, ?)").run("project-acme", digest("a"), "2026-09-30T12:00:00.000Z", "desktop", null)
+
+    const trust = new SqliteRepositoryTrust(database)
+
+    expect(trust.find("project-acme")).toEqual({ projectId: "project-acme", trustedDigest: digest("a"), trustedAt: "2026-09-30T12:00:00.000Z", trustedBy: { client: "desktop" } })
+    expect(trust.record({ projectId: "project-acme", trustedDigest: digest("b"), trustedBy: { client: "desktop" }, gitFiltersReviewed: true }).gitFiltersReviewed).toBe(true)
+    expect(trust.find("project-acme")?.gitFiltersReviewed).toBe(true)
+  })
+
   it("survives reopening the same database", () => {
     const database = new DatabaseSync(":memory:")
     const recorded = new SqliteRepositoryTrust(database).record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })

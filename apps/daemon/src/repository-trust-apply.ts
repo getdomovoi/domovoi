@@ -153,10 +153,15 @@ export function heldBackUnder(config: RepositoryProviderConfig, trust: Repositor
 
 // The repository's git filters as the inventory reports them under `trust`:
 // the reader marks every one held back, and a trusted grant for the digest
-// read now runs them (P8 PR B, repository-git-filter-gate.ts), in every
-// session worktree that reads the same filters as the root.
-export function gitFiltersUnder(filters: ToolInventoryGitFilters, trust: RepositoryTrustState): ToolInventoryGitFilters {
-  if (trust.state !== "trusted") return filters
+// read now whose client reviewed the filters runs them (P8 PR B,
+// repository-git-filter-gate.ts), in every session worktree that reads the
+// same filters as the root.
+export function gitFiltersUnder(
+  filters: ToolInventoryGitFilters,
+  trust: RepositoryTrustState,
+  grant: RepositoryTrustGrant | undefined,
+): ToolInventoryGitFilters {
+  if (trust.state !== "trusted" || grant?.gitFiltersReviewed !== true) return filters
   return { ...filters, entries: filters.entries.map((entry) => ({ ...entry, heldBack: false })) }
 }
 

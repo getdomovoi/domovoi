@@ -124,12 +124,24 @@ export const repositoryTrustSchema = z.object({
   refineRepositoryTrustPin(repository.configDigest, repository.trust, context, ["trust"])
 })
 
+// gitFilters.reviewed: the client showed the person every git filter the
+// repository's own config sets (tool.inventory's repository.gitFilters, read
+// with the same configDigest, which covers the filters). Only a grant made
+// with it lets the daemon run those filters; one made without it, by an
+// older client or for a repository the client showed no filters for, keeps
+// them held back. The daemon records it only when that inventory listed
+// every filter (nothing omitted or unreadable).
+export const repositoryTrustGitFiltersAcknowledgementSchema = z.object({
+  reviewed: z.literal(true),
+}).strict()
+
 // configDigest is the digest the client showed the person. The daemon grants
 // trust only when it is still the repository's current digest.
 export const repositoryTrustParamsSchema = z.object({
   projectId: repositoryTrustProjectIdSchema,
   configDigest: repositoryConfigDigestSchema,
   client: repositoryTrustClientSchema,
+  gitFilters: repositoryTrustGitFiltersAcknowledgementSchema.optional(),
 }).strict()
 
 // config-changed: the configuration no longer matches the reviewed digest, so
@@ -201,8 +213,11 @@ export const repositoryGitFilterDriverNameSchema = inventoryText(maximumReposito
 // session.fork, a checkpoint, restore or file revert, or a transfer on either
 // machine. It names the drivers, never their commands, and the repository's
 // trust against the configuration digest of the refused worktree, read now,
-// so a client can offer the trust review. A trusted state means trust was
-// taken back or changed while the operation ran. At most
+// so a client can offer the trust review. A trusted state means the grant
+// was made without repository.trust gitFilters.reviewed (an older client),
+// so the filters stay held back until trust is given again from a client
+// that shows them, or that trust was taken back or changed while the
+// operation ran. At most
 // maximumRepositoryGitFilterDrivers are named, and omittedDrivers counts the
 // rest.
 export const maximumRepositoryGitFilterDrivers = 32

@@ -87,11 +87,15 @@ async function fixture() {
     commit: "8".repeat(40), createdAt: "2026-09-30T12:00:00.000Z",
   })
   const trust = { current: undefined as RepositoryTrustGrant | undefined }
-  const repositoryTrust: RepositoryTrustStore = { find: () => trust.current, record: vi.fn(), revoke: vi.fn() }
-  const config = { digest: digest("a"), fails: false }
+  const repositoryTrust = {
+    find: () => trust.current,
+    record: vi.fn((input: Parameters<RepositoryTrustStore["record"]>[0]): RepositoryTrustGrant => ({ ...input, trustedAt: "2026-09-30T12:00:00.000Z" })),
+    revoke: vi.fn(),
+  } satisfies RepositoryTrustStore
+  const config = { digest: digest("a"), fails: false, gitFilters: undefined as RepositoryProviderConfig["gitFilters"] }
   const repositoryProviderConfig = vi.fn(async (_root: string, _options: RepositoryProviderConfigOptions): Promise<RepositoryProviderConfig> => {
     if (config.fails) throw new Error("git config failed")
-    return { configDigest: config.digest, providers: [], trustRefusals: [], documents: {} }
+    return { configDigest: config.digest, providers: [], trustRefusals: [], documents: {}, ...(config.gitFilters ? { gitFilters: config.gitFilters } : {}) }
   })
   const workspaceService = {
     inspect: vi.fn(async (path: string) => ({ root: path, name: "acme", branch: "main", head: "a".repeat(40) })),
@@ -130,10 +134,40 @@ async function fixture() {
     client: "desktop", sessionId: "session-source", checkpointId: "checkpoint-fork", requestId: "fork-refused", runtime: claude,
   })
   const sessionIds = async () => ((await rpc("workspace.get", {})).result as WorkspaceSnapshot).sessions.map(({ id }) => id)
-  return { agents, trust, config, repositoryProviderConfig, workspaceService, store, create, fork, sessionIds, rpc }
+  return { agents, trust, config, repositoryProviderConfig, repositoryTrust, workspaceService, store, create, fork, sessionIds, rpc }
 }
 
 type Refusal = { error: { code: number; message: string; data?: unknown } }
+
+// A grant records that its client showed the git filters only when the
+// client says so and the read listed every filter; anything less keeps them
+// held back.
+describe("repository.trust and the git filter acknowledgement", () => {
+  const listed = {
+    files: [{ path: ".git/config", scope: "local" as const }],
+    entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt", file: ".git/config", scope: "local" as const, heldBack: true }],
+    omittedEntries: 0,
+  }
+
+  it.each([
+    ["the client showed every filter", { reviewed: true }, listed, true],
+    ["the client said nothing", undefined, listed, false],
+    ["an entry was past the cap", { reviewed: true }, { ...listed, omittedEntries: 1 }, false],
+    ["the config was unreadable", { reviewed: true }, { files: [], entries: [], omittedEntries: 0, unreadable: { reason: "too-large" as const } }, false],
+    ["the repository sets no filter", { reviewed: true }, undefined, false],
+  ])("records a reviewed grant only when %s", async (_label, gitFilters, inventory, reviewed) => {
+    const { config, repositoryTrust, rpc } = await fixture()
+    config.gitFilters = inventory
+
+    const reply = await rpc("repository.trust", { projectId, configDigest: digest("a"), client: "desktop", ...(gitFilters ? { gitFilters } : {}) })
+
+    expect(reply).toMatchObject({ result: { outcome: "trusted" } })
+    expect(repositoryTrust.record).toHaveBeenCalledOnce()
+    const recorded = repositoryTrust.record.mock.calls[0]![0]
+    if (reviewed) expect(recorded.gitFiltersReviewed).toBe(true)
+    else expect(recorded).not.toHaveProperty("gitFiltersReviewed")
+  })
+})
 
 describe("a session refused over a repository git filter", () => {
   it("answers session.create with the git filter code, the drivers and the trust read now, and keeps nothing", async () => {

@@ -420,6 +420,8 @@ const heldBackText: Readonly<Record<RepositoryFilterRefusalReason, string>> = {
   "config-changed": "The repository's configuration is not the one trusted on this machine, so Domovoi holds its filters back until it is reviewed again.",
   "cannot-trust": "The repository holds configuration Domovoi cannot trust, so its filters stay held back.",
   unreadable: "Domovoi could not read the repository's configuration to check its trust, so its filters stay held back.",
+  "filters-not-reviewed": "The repository is trusted on this machine, but its Git filters were not shown when it was trusted, so they stay "
+    + "held back. Review the repository and trust it again from an updated Domovoi client to let them run.",
 }
 
 const driversOf = (filters: readonly RepositoryGitFilter[]) => {

@@ -19,6 +19,10 @@ export type RepositoryTrustGrant = {
   trustedDigest: string
   trustedAt: string
   trustedBy: { client: RepositoryTrustGrantClient; clientId?: string }
+  // True when the client acknowledged showing the repository's git filters
+  // (repository.trust gitFilters.reviewed) and the daemon's read listed
+  // every one. Only such a grant runs them; absent means it does not.
+  gitFiltersReviewed?: true
 }
 
 export type RepositoryTrustGrantInput = Omit<RepositoryTrustGrant, "trustedAt">
@@ -35,6 +39,7 @@ type StoredRepositoryTrust = {
   trusted_at: string
   trusted_client: string
   trusted_client_id: string | null
+  git_filters_reviewed: number
 }
 
 // Checked against the protocol both ways, so a grant the protocol would refuse
@@ -54,6 +59,7 @@ function checkedGrant(grant: RepositoryTrustGrant): RepositoryTrustGrant {
     trustedDigest: state.trustedDigest,
     trustedAt: state.trustedAt,
     trustedBy: { client: state.trustedBy.client, ...(clientId === undefined ? {} : { clientId }) },
+    ...(grant.gitFiltersReviewed === true ? { gitFiltersReviewed: true as const } : {}),
   }
 }
 
@@ -61,13 +67,17 @@ function checkedGrant(grant: RepositoryTrustGrant): RepositoryTrustGrant {
 // key. Anything else under the name was not made here, so it yields no grant.
 // hidden 0 is an ordinary column; generated and hidden columns, which
 // table_info leaves out, are refused.
-const expectedColumns = [
+const earlierColumns = [
   { name: "project_id", pk: 1, hidden: 0 },
   { name: "trusted_digest", pk: 0, hidden: 0 },
   { name: "trusted_at", pk: 0, hidden: 0 },
   { name: "trusted_client", pk: 0, hidden: 0 },
   { name: "trusted_client_id", pk: 0, hidden: 0 },
 ]
+// git_filters_reviewed came later (P8 PR B). A table an earlier daemon made,
+// which passes every check with the earlier columns, gains it with 0: its
+// grants run no git filter.
+const expectedColumns = [...earlierColumns, { name: "git_filters_reviewed", pk: 0, hidden: 0 }]
 
 // The table's only indexes, sorted by name as the check compares them. Each
 // key query is a fixed literal: no name from the catalog is written into SQL.
@@ -107,12 +117,18 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
         trusted_digest TEXT NOT NULL,
         trusted_at TEXT NOT NULL,
         trusted_client TEXT NOT NULL,
-        trusted_client_id TEXT
+        trusted_client_id TEXT,
+        git_filters_reviewed INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS repository_trust_trusted_at
         ON repository_trust (trusted_at);
     `)
-    this.#usable = this.#tableIsOurs()
+    // An earlier daemon's table, and only one that passes every check with
+    // the earlier columns, gains the acknowledgement column, 0 for its grants.
+    if (this.#tableIsOurs(earlierColumns)) {
+      this.#database.exec("ALTER TABLE main.repository_trust ADD COLUMN git_filters_reviewed INTEGER NOT NULL DEFAULT 0")
+    }
+    this.#usable = this.#tableIsOurs(expectedColumns)
   }
 
   // One rowid table in the main schema, stored under exactly this name, with
@@ -130,13 +146,13 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
   // name finds a temporary index first. The trigger lookup reads both
   // catalogs, since a temporary trigger can fire on the main table; neither
   // catalog's name can be taken by another object.
-  #tableIsOurs(): boolean {
+  #tableIsOurs(columnsExpected: readonly { name: string; pk: number; hidden: number }[]): boolean {
     const tables = this.#database.prepare("PRAGMA table_list(repository_trust)").all() as Array<{ schema: string; name: string; type: string; ncol: number; wr: number }>
     const [table] = tables
-    if (tables.length !== 1 || table?.schema !== "main" || table.name !== "repository_trust" || table.type !== "table" || table.ncol !== expectedColumns.length || table.wr !== 0) return false
+    if (tables.length !== 1 || table?.schema !== "main" || table.name !== "repository_trust" || table.type !== "table" || table.ncol !== columnsExpected.length || table.wr !== 0) return false
     const columns = (this.#database.prepare("PRAGMA main.table_xinfo(repository_trust)").all() as Array<{ name: string; pk: number; hidden: number }>)
       .map(({ name, pk, hidden }) => ({ name, pk, hidden }))
-    if (JSON.stringify(columns) !== JSON.stringify(expectedColumns)) return false
+    if (JSON.stringify(columns) !== JSON.stringify(columnsExpected)) return false
     // Every index on the table, the primary key's included, compares its key
     // columns as bytes: a key declared COLLATE NOCASE would let one project's
     // grant answer for another project id that differs only in case.
@@ -197,6 +213,8 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
           client: row.trusted_client as RepositoryTrustGrantClient,
           ...(row.trusted_client_id === null ? {} : { clientId: row.trusted_client_id }),
         },
+        // Exactly 1 reviewed the filters; any other value did not.
+        ...(row.git_filters_reviewed === 1 ? { gitFiltersReviewed: true as const } : {}),
       })
     } catch {
       return undefined
@@ -219,15 +237,16 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
       this.#database
         .prepare(`
           INSERT INTO repository_trust (
-            project_id, trusted_digest, trusted_at, trusted_client, trusted_client_id
-          ) VALUES (?, ?, ?, ?, ?)
+            project_id, trusted_digest, trusted_at, trusted_client, trusted_client_id, git_filters_reviewed
+          ) VALUES (?, ?, ?, ?, ?, ?)
           ON CONFLICT(project_id) DO UPDATE SET
             trusted_digest = excluded.trusted_digest,
             trusted_at = excluded.trusted_at,
             trusted_client = excluded.trusted_client,
-            trusted_client_id = excluded.trusted_client_id
+            trusted_client_id = excluded.trusted_client_id,
+            git_filters_reviewed = excluded.git_filters_reviewed
         `)
-        .run(grant.projectId, grant.trustedDigest, grant.trustedAt, grant.trustedBy.client, grant.trustedBy.clientId ?? null)
+        .run(grant.projectId, grant.trustedDigest, grant.trustedAt, grant.trustedBy.client, grant.trustedBy.clientId ?? null, grant.gitFiltersReviewed === true ? 1 : 0)
       this.#trim()
       if (JSON.stringify(this.#read(grant.projectId)) !== JSON.stringify(grant)) throw new Error("The repository trust grant was not stored as written")
       this.#database.exec("RELEASE repository_trust_record")

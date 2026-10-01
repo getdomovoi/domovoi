@@ -7550,11 +7550,21 @@ export class DomovoiDaemon {
           })
           return
         }
-        const { configDigest } = params as RpcParams<"repository.trust">
+        const { configDigest, gitFilters } = params as RpcParams<"repository.trust">
         const config = await read(project.path, projectRootRead)
         // An emergency stop during the read cancelled this mutation: nothing is
         // recorded, and the catch below answers it as a cancelled operation.
         signal?.throwIfAborted()
+        // The grant runs the repository's git filters only when the client says
+        // it showed them, and this read listed every one: none omitted past a
+        // cap and none unreadable, so what was shown is all there is. Any other
+        // grant keeps them held back; a repository with none needs nothing.
+        const filters = config.gitFilters
+        const gitFiltersReviewed = gitFilters?.reviewed === true && filters !== undefined
+          && filters.unreadable === undefined && filters.omittedEntries === 0
+        const record = () => store.record({
+          projectId: project.id, trustedDigest: config.configDigest, trustedBy, ...(gitFiltersReviewed ? { gitFiltersReviewed: true as const } : {}),
+        })
         const repository = (grant: RepositoryTrustGrant | undefined) => ({
           projectId: project.id,
           configDigest: config.configDigest,
@@ -7566,7 +7576,7 @@ export class DomovoiDaemon {
           ? { outcome: "config-changed", repository: repository(store.find(project.id)) }
           : config.trustRefusals.length > 0
             ? { outcome: "cannot-trust", repository: repository(undefined) }
-            : { outcome: "trusted", repository: repository(store.record({ projectId: project.id, trustedDigest: config.configDigest, trustedBy })) }
+            : { outcome: "trusted", repository: repository(record()) }
         this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(outcome) })
         return
       }

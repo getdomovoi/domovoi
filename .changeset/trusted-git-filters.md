@@ -3,15 +3,22 @@
 ---
 
 A repository trusted on this machine now runs its own git filters. When the repository's
-configuration digest read at the call equals this machine's grant and nothing in it refuses trust,
-the filter definitions the grant reviewed run at session create and fork, a transfer arriving,
+configuration digest read at the call equals this machine's grant, the grant was made by a client
+that showed the filters (`repository.trust` `gitFilters.reviewed`, recorded only when the read
+listed every filter) and nothing in it refuses trust, the filter definitions the grant reviewed
+run at session create and fork, a transfer arriving,
 checkpoint, snapshot, restore, file revert, a transfer leaving and evidence. They run as the values
 the digest covers, passed as command-line config, so a change to the repository's config after
 that read changes nothing that runs. A session worktree that reads other filters than the project
 root (an `includeIf "onbranch:"` include, an edited `config.worktree`), a configuration that
 changed since trust, or trust taken back while the operation runs refuses with
-`repositoryGitFilterErrorCode` and nothing runs. A trusted filter runs as you, including a command
-that runs a file in the repository, which an agent's edit also changes.
+`repositoryGitFilterErrorCode` and nothing runs. Every existing grant, and any grant from a client
+that does not acknowledge the filters, keeps them held back with a refusal that says to review and
+trust the repository again from an updated client; grants for repositories without filters behave
+as before. The trust store gains a column for the acknowledgement, 0 for the grants already in it.
+A driver's `filter.<driver>.required` is reviewed with its commands and pinned to the reviewed
+value. A trusted filter runs as you, including a command that runs a file in the repository,
+which an agent's edit also changes.
 
 Checkpoint, snapshot, restore, file revert, transfer and evidence now run every Git command that
 reads or writes the worktree's files or index in the same temporary Git directory as a new

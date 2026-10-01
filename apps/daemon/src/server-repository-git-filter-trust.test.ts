@@ -131,9 +131,11 @@ async function fixture() {
     socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
   })
   expect(await rpc("system.hello", { client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken })).toHaveProperty("result")
-  const trustNow = async () => {
+  // `reviewed` false is a client that never showed the git filters.
+  const trustNow = async (reviewed = true) => {
     const { configDigest } = await readRepositoryProviderConfig(repositoryPath, projectRootRead)
-    expect(await rpc("repository.trust", { projectId, configDigest, client: "desktop" })).toMatchObject({ result: { outcome: "trusted" } })
+    expect(await rpc("repository.trust", { projectId, configDigest, client: "desktop", ...(reviewed ? { gitFilters: { reviewed: true } } : {}) }))
+      .toMatchObject({ result: { outcome: "trusted" } })
   }
   const inventory = async () => ((await rpc("tool.inventory", {})).result as ToolInventory).repository?.gitFilters?.entries.map(({ heldBack }) => heldBack)
   return { rpc, markers, trustNow, inventory, repositoryPath }
@@ -173,5 +175,20 @@ describe("a trusted repository's git filters through the daemon", () => {
     })
     expect(await markers()).toEqual(before)
     expect(await readFile(join(session.workspacePath!, "victim.txt"), "utf8")).toBe("AGAIN\n")
+  }, 30_000)
+
+  // A client that does not say it showed the git filters, an older one,
+  // grants trust for everything else, and the filters stay held back.
+  it("keeps the filters held back under a grant whose client did not show them", async () => {
+    const { rpc, markers, trustNow, inventory } = await fixture()
+    await trustNow(false)
+    expect(await inventory()).toEqual([true, true])
+
+    const refused = await rpc("session.create", { client: "desktop", title: "unreviewed", runtime: claude }) as { error: { code: number; message: string; data?: unknown } }
+
+    expect(refused.error.code).toBe(repositoryGitFilterErrorCode)
+    expect(refused.error.message).toContain("trust it again from an updated Domovoi client")
+    expect(repositoryGitFilterRefusalSchema.parse(refused.error.data)).toMatchObject({ projectId, drivers: [{ name: "agent", scope: "local" }] })
+    expect(await markers()).toEqual([])
   }, 30_000)
 })

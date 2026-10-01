@@ -137,6 +137,19 @@ describe("repository.trust", () => {
     expect(trustMethod.params.safeParse({ ...trustParams, projectId: "x".repeat(257) }).success).toBe(false)
   })
 
+  // A grant runs the repository's git filters only when the client says it
+  // showed them for review: an older client, which never shows them, omits
+  // the field, and the filters stay held back.
+  it("carries an acknowledgement that the client showed the repository's git filters", () => {
+    const acknowledged = { ...trustParams, gitFilters: { reviewed: true } }
+    expect(trustMethod.params.parse(acknowledged)).toEqual(acknowledged)
+    expect(trustMethod.params.safeParse({ ...trustParams, gitFilters: { reviewed: false } }).success).toBe(false)
+    expect(trustMethod.params.safeParse({ ...trustParams, gitFilters: {} }).success).toBe(false)
+    expect(trustMethod.params.safeParse({ ...trustParams, gitFilters: { reviewed: true, run: true } }).success).toBe(false)
+    expect(trustMethod.params.safeParse({ ...trustParams, gitFilters: true }).success).toBe(false)
+    expect(revokeMethod.params.safeParse({ ...revokeParams, gitFilters: { reviewed: true } }).success).toBe(false)
+  })
+
   it("refuses a phone, tablet or command-line grant", () => {
     for (const client of ["phone", "tablet", "cli"]) {
       expect(trustMethod.params.safeParse({ ...trustParams, client }).success, client).toBe(false)

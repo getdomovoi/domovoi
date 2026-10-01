@@ -3560,10 +3560,15 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     const markers = async () => (await readFile(marker, "utf8").catch(() => "")).split("\n").filter(Boolean)
     const state = { grant: undefined as RepositoryTrustGrant | undefined, generation: 0 }
     const projectId = "project-trusted"
-    const trust = async () => {
+    // A grant made by a client that showed the git filters for review, unless
+    // `reviewed` is false: an older client, or a grant made before filters ran.
+    const trust = async (reviewed = true) => {
       const config = await readRepositoryProviderConfig(repositoryPath, projectRootRead)
       expect(config.trustRefusals).toEqual([])
-      state.grant = { projectId, trustedDigest: config.configDigest, trustedAt: "2026-09-30T12:00:00.000Z", trustedBy: { client: "desktop" } }
+      state.grant = {
+        projectId, trustedDigest: config.configDigest, trustedAt: "2026-09-30T12:00:00.000Z", trustedBy: { client: "desktop" },
+        ...(reviewed ? { gitFiltersReviewed: true as const } : {}),
+      }
     }
     const revoke = () => {
       state.grant = undefined
@@ -3603,6 +3608,21 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     await trusted.revertFile(workspace.path, "victim.txt")
     expect(await victimIn(workspace.path)).toBe("BASE\n")
     expect((await markers()).filter((name) => name === "smudge").length).toBe(smudgesBeforeRestore + 2)
+  })
+
+  // A grant for the current digest whose client never showed the git filters
+  // (an older client, or a grant from before filters could run) keeps them
+  // held back until the repository is reviewed and trusted again.
+  it("refuses under a matching grant that did not review the git filters, and runs nothing", async () => {
+    const { repositoryPath, worktrees, markers, trust, service, projectId } = await trustedRepository("domovoi-trusted-unreviewed-")
+    await trust(false)
+
+    const refused = service().createSessionWorkspace(repositoryPath, "session-unreviewed")
+
+    await expect(refused).rejects.toMatchObject({ name: "RepositoryGitFilterRefusedError", reason: "filters-not-reviewed", projectId })
+    await expect(refused).rejects.toThrow("trust it again from an updated Domovoi client")
+    expect(await markers()).toEqual([])
+    await expect(lstat(join(worktrees, "session-unreviewed"))).rejects.toThrow()
   })
 
   it("refuses create when a reviewed filter's command changed after trust, and runs nothing", async () => {

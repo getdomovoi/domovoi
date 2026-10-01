@@ -59,7 +59,7 @@ export async function readToolInventory({ machine, project, grant, read = readRe
       root: redactInventoryPath(project.path),
       configDigest: config.configDigest,
       trust,
-      ...(config.gitFilters ? { gitFilters: gitFiltersUnder(config.gitFilters, trust) } : {}),
+      ...(config.gitFilters ? { gitFilters: gitFiltersUnder(config.gitFilters, trust, grant) } : {}),
     },
     providers: heldBackUnder(config, trust),
   }))

@@ -18,6 +18,9 @@ import type { RepositoryProviderConfigReader } from "./tool-inventory.js"
 // 2. W empty: nothing is added.
 // 3. Otherwise the project's grant on this machine, looked up now and never
 //    taken from an earlier answer (the #662 rule): none refuses not-trusted.
+//    A grant whose client never said it showed the git filters
+//    (gitFiltersReviewed, repository.trust gitFilters) refuses
+//    filters-not-reviewed, once step 4 finds it covers the configuration.
 // 4. The project root read now, as tool.inventory and the trust step read it
 //    (ruling Q145 A), with its own filters T: its digest must be the one the
 //    grant names and nothing in it may refuse trust, else the refusal says
@@ -62,7 +65,11 @@ export type RepositoryFilterTrustLookup = (anchor: string) => RepositoryFilterTr
 // configuration read now is not the one trusted, at the root or in the
 // worktree. cannot-trust: the root holds input trust cannot cover (ruling
 // Q121 A). unreadable: the root's configuration could not be read to compare.
-export type RepositoryFilterRefusalReason = "not-trusted" | "config-changed" | "cannot-trust" | "unreadable"
+// filters-not-reviewed: the grant covers the configuration, but its client
+// never said it showed the git filters (an older client, or a grant made
+// before filters could run), so they stay held back until trust is given
+// again from a client that shows them.
+export type RepositoryFilterRefusalReason = "not-trusted" | "config-changed" | "cannot-trust" | "unreadable" | "filters-not-reviewed"
 
 export type RepositoryFilterGate =
   | {
@@ -119,6 +126,7 @@ export async function repositoryFilterGate(input: {
   input.signal?.throwIfAborted()
   const trust = repositoryTrustState(config, grant)
   if (trust.state !== "trusted") return refuse(trust.reason === "cannot-trust" ? "cannot-trust" : "config-changed")
+  if (grant.gitFiltersReviewed !== true) return refuse("filters-not-reviewed")
   if (!sameFilters(filters, rootFilters)) return refuse("config-changed")
   const reviewed: Array<readonly [string, string]> = rootFilters.map(({ key, value }) => [key, value] as const)
   const requiredPins = new Map<string, string>()
