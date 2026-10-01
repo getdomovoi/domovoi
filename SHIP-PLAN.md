@@ -239,7 +239,7 @@ Parallel with Phase 0. Touches nothing the gates decide.
       the maintainer says so.
 - [x] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
       pre-auth) proven across restart. Landed as #374 (c8eb1a93).
-- [x] **S1.6 [CX + CC]** CLI to parity: install, status, pair, doctor, logs. `domovoid
+- [ ] **S1.6 [CX + CC]** CLI to parity: install, status, pair, doctor, logs. `domovoid
       service install` and `domovoid service status` are the daemon's
       (`apps/daemon/src/index.ts`). The user-facing `domovoi` binary is `apps/cli`: `pair` and
       `status` (95711761), `doctor` (83f1406d), `logs` (d81ef5c9), and `skill install <path>`,
@@ -247,7 +247,10 @@ Parallel with Phase 0. Touches nothing the gates decide.
       Q284 A): it needs a destination, overwrite rules and a trust step on the receiving
       machine, which is a new cross-machine RPC, so remote skill distribution is a later fleet
       feature (`docs/cli-parity-decision.md`). The 2026-09-10 note that no `domovoi` binary
-      existed was true when written and is superseded by `apps/cli`.
+      existed was true when written and is superseded by `apps/cli`. Still open on 2026-10-01:
+      install and service status are only on `domovoid`, `domovoi pair` cannot take the code
+      `domovoid pair` prints, and which `domovoid` commands move to `domovoi`, in which
+      package, is not yet decided.
 - [x] **S1.7 [CX]** The accounting and turn-record work lands here — it is daemon bookkeeping and it
       unblocks UI in Phase 3. Usage accounting (4359bcf9) and turn records (e7364720,
       84d90d50, 1991666a); the detail is under "From the work split" below.
@@ -2089,10 +2092,11 @@ open, read from this file on 2026-09-22: `S1.1`'s logon acceptance and the two 2
 policies, `S1.6`'s `skill push`, `S3.2`'s web app over the tailnet, `S3.4`'s pull-surface copy,
 and `S3.10`'s remaining conformance entries.
 
-On 2026-10-01 two of those closed: `S1.6` without `skill push`, which left M1 (Q284 A), and
-`S3.4`, whose copy the phone already carries (Q283 A). Open M1 items: `S1.1`'s logon acceptance
-and the two policies, `S3.2`'s web app over the tailnet, and `S3.10`. The trust gate pull
-requests of the audit fix program are in review alongside them.
+On 2026-10-01 `S3.4` closed, because the phone already carries its copy (Q283 A), and `skill
+push` left M1 (Q284 A). Open M1 items: `S1.1`'s logon acceptance and the two policies, `S1.6`'s
+move of install and status to `domovoi` and its pairing gap, `S3.2`'s web app over the tailnet,
+and `S3.10`. Most trust gate pull requests of the audit fix program have merged; the git-filter
+acknowledgement, the OpenCode and Kilo checks, and the outside-answer handling are in review.
 
 **Neither** adds a carrier by adding a branch. The transport list is the only place a new
 route goes.

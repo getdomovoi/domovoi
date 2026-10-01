@@ -14,8 +14,8 @@ records. It carries `pair`, `status`, `doctor`, `logs` and `skill install <path>
 
 On 2026-10-01 fetzy took `skill push` out of M1 (ruling Q284 A). It needs a destination,
 transfer and overwrite rules, and a trust step on the receiving machine, which is a new
-cross-machine RPC. Remote skill distribution is a later fleet feature, and S1.6 is complete
-with the five commands above.
+cross-machine RPC. Remote skill distribution is a later fleet feature. S1.6 stays open for the
+rest of its scope: install and service status, and the pairing gap below.
 
 No human command has moved off `domovoid`. Its help (`apps/daemon/src/index.ts`) still lists
 `pair`, `fleet-keychain`, `open`, `wsl list`, `secret`, `service install|status|remove`,
