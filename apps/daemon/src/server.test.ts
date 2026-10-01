@@ -98,7 +98,7 @@ import type { ArtifactWatcherOptions } from "./artifact-watcher.js"
 import { maximumPrintableArtifactDepth } from "./print-artifact.js"
 import { savedSettlementInput, settleApproval } from "./approval-settlement.js"
 import { resolveExecution } from "./execution-resolution.js"
-import { OpenCodeSdkAdapter, type OpenCodeClient, type OpenCodeEvent } from "./opencode.js"
+import { OpenCodeSdkAdapter, openCodeBuiltInToolIds, type OpenCodeClient, type OpenCodeEvent } from "./opencode.js"
 import {
   createSessionTransferPackage,
   prepareSessionTransferIntent,
@@ -12697,6 +12697,8 @@ describe("DomovoiDaemon", () => {
       },
       event: { subscribe: vi.fn(async () => ({ stream })) },
       postSessionIdPermissionsPermissionId: vi.fn(async () => ({ data: true })),
+      mcp: { status: vi.fn(async () => ({ data: {} })) },
+      tool: { ids: vi.fn(async () => ({ data: [...openCodeBuiltInToolIds] })) },
     } satisfies OpenCodeClient
     const adapter = new OpenCodeSdkAdapter(async () => ({ client, server: { close: vi.fn() } }), () => "turn-opencode")
     const store = { load: () => snapshot, save: vi.fn(), close: vi.fn() } satisfies WorkspaceStore

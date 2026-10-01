@@ -9,6 +9,7 @@ import {
   domovoiPermission,
   domovoiPlanLimits,
   openCodeBuiltInPermissions,
+  openCodeBuiltInToolIds,
   openCodeDefaultAllows,
   openCodeDefaultDenies,
   permissionActions,
@@ -55,6 +56,15 @@ export const kiloBuiltInPermissions: ReadonlySet<string> = new Set([
   "kilo_memory_recall",
   "kilo_memory_save",
 ])
+
+// The tools Kilo registers itself under Domovoi's embedded server, as its tool
+// ids list them (`kilo serve` 7.8.1, /experimental/tool/ids).
+export const kiloBuiltInToolIds: readonly string[] = [
+  ...openCodeBuiltInToolIds,
+  "plan_exit", "suggest", "goal_report", "goal", "board_read", "board_post", "kilo_memory_recall", "kilo_memory_save",
+  "kilo_local_recall", "background_process", "schedule_wakeup", "cancel_wakeup", "cron_create", "cron_list", "cron_delete",
+  "agent_manager_models", "notify_user", "send_file", "link_pr",
+]
 
 // The top-level block, which every agent block below starts with as well, so
 // a person's own "*" rule for an agent cannot open what it closes.

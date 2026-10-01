@@ -53,10 +53,14 @@ export type OpenCodeClient = {
   postSessionIdPermissionsPermissionId(
     options: MethodOptions<OpencodeSdkClient["postSessionIdPermissionsPermissionId"]>,
   ): Promise<OpenCodeResult<unknown>>
-  // The tool servers a directory knows, by name. Optional: without it an
-  // approval card names no tool server.
+  // The tool servers a directory knows, by name, and the ids of its tools
+  // other than tool servers'. Read before a session opens and before each
+  // prompt; without them no session opens (#refuseUnownedNames).
   mcp?: {
     status(options: MethodOptions<OpencodeSdkClient["mcp"]["status"]>): Promise<OpenCodeResult<unknown>>
+  }
+  tool?: {
+    ids(options: MethodOptions<OpencodeSdkClient["tool"]["ids"]>): Promise<OpenCodeResult<unknown>>
   }
 }
 
@@ -76,6 +80,15 @@ type OpenCodeCatalog = {
   default: Record<string, string>
 }
 
+// A tool that is not the server's own could ask under a permission the
+// embedded config names (#refuseUnownedNames).
+export class UnownedToolError extends Error {}
+
+// A tool server's name as its tools' keys start: OpenCode and Kilo turn every
+// UTF-16 unit outside [a-zA-Z0-9_-] into `_` (mcp/catalog.ts sanitize, a
+// non-Unicode /g replace).
+export const openCodeToolPrefixName = (name: string): string => name.replace(/[^a-zA-Z0-9_-]/g, "_")
+
 export type OpenCodeFactory = () => Promise<{
   client: OpenCodeClient
   server: { close(): void }
@@ -85,10 +98,19 @@ export type OpenCodeAdapterIdentity = {
   providerId: string
   providerName: string
   heldBackRepositoryFiles?: readonly string[]
-  // The permissions the server's own tools ask under. A card for one of them
-  // never names a tool server, whatever a server is called.
+  // The permissions the server's own tools ask under, the ids of the tools it
+  // registers itself, and the permissions the embedded config allows. A tool
+  // server whose tools could take one of those permissions, or a tool that is
+  // not the server's own but could ask under an allowed one, refuses the
+  // session (#refuseUnownedNames).
   builtInPermissions?: ReadonlySet<string>
+  builtInToolIds?: readonly string[]
+  allowedPermissions?: ReadonlySet<string>
 }
+
+// What a directory's instance was last read to hold: its tool servers by
+// name, and its tool ids.
+type ToolCatalog = { servers: readonly string[]; toolIds: ReadonlySet<string> }
 
 type Session = {
   threadId: string
@@ -117,8 +139,6 @@ type Session = {
 type DirectoryStream = {
   controller: AbortController
   threadIds: Set<string>
-  // The tool servers the directory's instance knows, once read.
-  toolServers?: readonly string[]
 }
 
 type PendingApproval = {
@@ -287,6 +307,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #sessions = new Map<string, Session>()
   #pendingSessionLoads = new Map<string, PendingSessionLoad>()
   #directories = new Map<string, DirectoryStream>()
+  // Each directory's tool catalog, as last read.
+  #catalogs = new Map<string, ToolCatalog>()
   #listeners = new Set<(event: AgentEvent) => void>()
   #pendingApprovals = new Map<number, PendingApproval>()
   #subagents = new SubagentRegistry()
@@ -370,6 +392,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
     await this.#refuseHeldBackRepositoryFiles(cwd)
     const client = await this.#client()
+    await this.#refuseUnownedNames(client, cwd)
     const action = `${this.#identity.providerName} session creation`
     const created = requireSession(
       unwrap(await client.session.create({
@@ -407,6 +430,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#pendingSessionLoads.set(threadId, pending)
     try {
       const client = await this.#client()
+      await this.#refuseUnownedNames(client, cwd)
       const action = `${this.#identity.providerName} session resume`
       const session = requireSession(
         unwrap(await client.session.get({
@@ -699,7 +723,6 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const directory: DirectoryStream = { controller, threadIds: new Set([threadId]) }
     this.#directories.set(cwd, directory)
     this.#sessions.set(threadId, session)
-    void this.#readToolServers(client, cwd, directory)
     void this.#consume(cwd, events.stream).then(
       () => this.#disconnect(cwd, controller, `${this.#identity.providerName} event stream connection closed`),
       (error: unknown) => this.#disconnect(
@@ -724,22 +747,68 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#emit({ type: "provider-disconnected", reason })
   }
 
-  // Reads the tool servers a directory knows, without holding the session's
-  // start for it. The server starts them as it answers, as the session's
-  // first prompt would. A card raised before the answer, or after a failed
-  // read, names no tool server.
-  async #readToolServers(client: OpenCodeClient, cwd: string, directory: DirectoryStream): Promise<void> {
-    if (!client.mcp) return
+  // A permission names no tool, so a tool that is not the server's own could
+  // ask under a permission the embedded config allows and run without a card
+  // (security review round 1 of #687). A tool server's tool asks under
+  // `<server>_<tool>` (opencode mcp/catalog.ts toolName), and a plugin's tool
+  // under whatever it names, its id by convention. Before a session opens and
+  // before each prompt this reads the directory's tool servers and tool ids
+  // (the server starts the person's tool servers as it answers, as the first
+  // prompt would) and refuses:
+  //   - a tool server whose tool key could be one of the server's own
+  //     permissions, compared in any case, as Windows matches rules;
+  //   - a tool id listed twice, or one the server does not register itself
+  //     that shares a name with a permission the config allows;
+  //   - when either cannot be read.
+  // A tool server or plugin added while a turn runs is checked at the next
+  // prompt. A plugin tool that asks under another name, or does not ask, is
+  // the person's own code and is not caught here.
+  async #refuseUnownedNames(client: OpenCodeClient, cwd: string): Promise<void> {
+    const name = this.#identity.providerName
+    const unreadable = new Error(
+      `Domovoi could not read ${name}'s tool servers and tools for this worktree, so it cannot tell whether a tool could run without approval. Try again.`,
+    )
+    if (!client.mcp || !client.tool) throw unreadable
+    let catalog: ToolCatalog
     try {
-      const servers = asRecord(unwrap(await client.mcp.status({
-        query: { directory: cwd },
-        signal: directory.controller.signal,
-        throwOnError: true,
-      }), `${this.#identity.providerName} tool server status`))
-      if (servers && this.#directories.get(cwd) === directory) directory.toolServers = Object.keys(servers)
-    } catch {
-      // Read failed: cards in this directory name no tool server.
+      const servers = asRecord(unwrap(await client.mcp.status({ query: { directory: cwd }, throwOnError: true }), `${name} tool server status`))
+      const ids = unwrap(await client.tool.ids({ query: { directory: cwd }, throwOnError: true }), `${name} tool ids`)
+      if (!servers || !Array.isArray(ids) || !ids.every((id): id is string => typeof id === "string")) throw unreadable
+      const listed = new Set<string>()
+      for (const id of ids) {
+        if (listed.has(id)) throw this.#unownedTool(id)
+        listed.add(id)
+      }
+      catalog = { servers: Object.keys(servers), toolIds: listed }
+    } catch (error) {
+      if (error instanceof UnownedToolError) throw error
+      throw unreadable
     }
+    this.#catalogs.set(cwd, catalog)
+    const builtInPermissions = [...this.#identity.builtInPermissions ?? openCodeBuiltInPermissions]
+    for (const server of catalog.servers) {
+      const prefix = `${openCodeToolPrefixName(server)}_`.toLowerCase()
+      const taken = builtInPermissions.filter((permission) => permission.toLowerCase().startsWith(prefix))
+      if (taken.length > 0) {
+        throw new UnownedToolError(
+          `${name} has a tool server named "${server}", whose tools could be named like ${name}'s own ${taken.join(", ")}, so a call to one could run without approval. `
+          + `Rename or turn off that tool server to use ${name} here.`,
+        )
+      }
+    }
+    const builtInToolIds = new Set(this.#identity.builtInToolIds ?? openCodeBuiltInToolIds)
+    const allowed = this.#identity.allowedPermissions ?? openCodeAllowedPermissions
+    for (const id of catalog.toolIds) {
+      if (!builtInToolIds.has(id) && allowed.has(id)) throw this.#unownedTool(id)
+    }
+  }
+
+  #unownedTool(id: string): UnownedToolError {
+    const name = this.#identity.providerName
+    return new UnownedToolError(
+      `${name} has a tool named "${id}" that is not one of its own but shares a name with one, so a call to it could run without approval. `
+      + `Remove or rename that tool to use ${name} here.`,
+    )
   }
 
   // The tool server whose tool asks under `permission`: the one server the
@@ -751,7 +820,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // tools.
   #toolServerOf(cwd: string, permission: string): string | undefined {
     if ((this.#identity.builtInPermissions ?? openCodeBuiltInPermissions).has(permission)) return undefined
-    const servers = this.#directories.get(cwd)?.toolServers ?? []
+    const servers = this.#catalogs.get(cwd)?.servers ?? []
     const matches = servers.filter((name) => permission.startsWith(`${name.replace(/[^a-zA-Z0-9_-]/gu, "_")}_`))
     return matches.length === 1 ? matches[0] : undefined
   }
@@ -804,6 +873,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   ): Promise<void> {
     await this.#refuseHeldBackRepositoryFiles(session.cwd)
     const client = await this.#client()
+    await this.#refuseUnownedNames(client, session.cwd)
     const model = openCodeModel(runtime.model)
     const system = await projectInstructions(session.cwd, "opencode")
     ensureSuccess(await client.session.promptAsync({
@@ -1348,7 +1418,13 @@ export const openCodeBuiltInPermissions: ReadonlySet<string> = new Set([
   "todowrite",
 ])
 
-export const permissionActions = <Action extends "allow" | "deny">(names: readonly string[], action: Action) => (
+// The tools OpenCode registers itself under Domovoi's embedded server, as its
+// tool ids list them (`opencode serve` 1.18.32, /experimental/tool/ids).
+export const openCodeBuiltInToolIds: readonly string[] = [
+  "invalid", "question", "bash", "read", "glob", "grep", "edit", "write", "task", "webfetch", "todowrite", "websearch", "skill", "apply_patch",
+]
+
+export const permissionActions =<Action extends "allow" | "deny">(names: readonly string[], action: Action) => (
   Object.fromEntries(names.map((name) => [name, action])) as Record<string, Action>
 )
 
@@ -1446,6 +1522,27 @@ export const domovoiOpenCodeConfig: Config = {
     ...Object.fromEntries(["compaction", "title", "summary"].map((name) => [name, { permission: { "*": "deny", ...askBeforeEdits } }])),
   } satisfies EmbeddedAgents) as NonNullable<Config["agent"]>,
 }
+
+// Every permission an embedded config allows in some agent, for any pattern,
+// read from the config itself: its top-level block, each agent block, and an
+// agent's legacy tools switched on.
+export function allowedPermissionNames(config: { permission?: unknown; agent?: unknown }): ReadonlySet<string> {
+  const allowed = new Set<string>()
+  const read = (block: unknown) => {
+    for (const [permission, action] of Object.entries(asRecord(block) ?? {})) {
+      const allows = action === "allow" || action === true || Object.values(asRecord(action) ?? {}).includes("allow")
+      if (permission !== "*" && allows) allowed.add(permission)
+    }
+  }
+  read(config.permission)
+  for (const agent of Object.values(asRecord(config.agent) ?? {})) {
+    read(asRecord(agent)?.permission)
+    read(asRecord(agent)?.tools)
+  }
+  return allowed
+}
+
+export const openCodeAllowedPermissions = allowedPermissionNames(domovoiOpenCodeConfig)
 
 const defaultOpenCodeFactory: OpenCodeFactory = async () => {
   const runtime = await createAuthenticatedEmbeddedRuntime({

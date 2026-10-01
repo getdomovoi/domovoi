@@ -9,12 +9,13 @@ import type { Runtime } from "@getdomovoi/protocol"
 
 import type { AgentEvent } from "./agents.js"
 import { KiloSdkAdapter } from "./kilo.js"
-import { domovoiKiloConfig } from "./kilo-runtime.js"
+import { domovoiKiloConfig, kiloBuiltInToolIds } from "./kilo-runtime.js"
 import {
   OpenCodeSdkAdapter,
   SubagentRegistry,
   domovoiOpenCodeConfig,
   openCodeAgentFor,
+  openCodeBuiltInToolIds,
   openCodeMessageId,
   OpenCodeMessageIdsExhaustedError,
   openCodeMessageOrder,
@@ -105,6 +106,10 @@ function harness() {
       subscribe: vi.fn(async () => ({ stream })),
     },
     postSessionIdPermissionsPermissionId: vi.fn(async () => ({ data: true })),
+    // The directory's tool servers and tool ids, read before a session opens
+    // and before each prompt: none of the person's, and OpenCode's own tools.
+    mcp: { status: vi.fn(async (_options?: unknown): Promise<{ data?: unknown }> => ({ data: {} })) },
+    tool: { ids: vi.fn(async (_options?: unknown): Promise<{ data?: unknown }> => ({ data: [...openCodeBuiltInToolIds] })) },
   } satisfies OpenCodeClient
   const server = { close: vi.fn() }
   const factory = vi.fn(async () => ({ client, server })) satisfies OpenCodeFactory
@@ -1242,7 +1247,7 @@ describe("subagents and current permission events", () => {
     const status = vi.fn(async (_options?: unknown) => ({
       data: {
         github: { status: "connected" }, git: { status: "connected" }, git_hub: { status: "failed" },
-        "my.docs": { status: "connected" }, doom: { status: "connected" }, board: { status: "connected" },
+        "my.docs": { status: "connected" },
       },
     }))
     const adapter = create(() => factory().then((runtime) => ({ ...runtime, client: { ...client, mcp: { status } } })))
@@ -1261,34 +1266,12 @@ describe("subagents and current permission events", () => {
     ask("dotted", "my_docs_search")
     ask("builtin", "doom_loop")
     ask("unknown", "slack_post")
-    // Kilo's own board tool; OpenCode has none, so there the board server's.
-    ask("board", "board_post")
-    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(7))
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(6))
     const approval = (itemId: string) => events.find((event) => event.type === "approval-requested" && event.itemId === itemId)
     expect(approval("call_issue")).toMatchObject({ tool: "github_create_issue", toolServer: { name: "github" } })
     expect(approval("call_only_git")).toMatchObject({ tool: "git_status", toolServer: { name: "git" } })
     expect(approval("call_dotted")).toMatchObject({ tool: "my_docs_search", toolServer: { name: "my.docs" } })
     for (const itemId of ["call_ambiguous", "call_builtin", "call_unknown"]) expect(approval(itemId)).not.toHaveProperty("toolServer")
-    if (_name === "Kilo") expect(approval("call_board")).not.toHaveProperty("toolServer")
-    else expect(approval("call_board")).toMatchObject({ toolServer: { name: "board" } })
-    await adapter.close()
-  })
-
-  it("raises the card without a tool server when the server list cannot be read", async () => {
-    const { client, factory, stream } = harness()
-    const status = vi.fn(async () => { throw new Error("no list") })
-    const adapter = new OpenCodeSdkAdapter(() => factory().then((runtime) => ({ ...runtime, client: { ...client, mcp: { status } } })))
-    const events: AgentEvent[] = []
-    adapter.onEvent((event) => events.push(event))
-    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
-    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Call tools", runtime: runtime("build") })
-    await waitForDaemon(() => expect(status).toHaveBeenCalled())
-    stream.emit({
-      type: "permission.asked",
-      properties: { id: "issue", sessionID: threadId, permission: "github_create_issue", patterns: ["*"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: "call_issue" } },
-    })
-    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", tool: "github_create_issue" })))
-    expect(events.find((event) => event.type === "approval-requested")).not.toHaveProperty("toolServer")
     await adapter.close()
   })
 
@@ -1728,6 +1711,98 @@ describe("subagents and current permission events", () => {
     })
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(events).not.toContainEqual(expect.objectContaining({ type: "approval-requested" }))
+    await adapter.close()
+  })
+})
+
+// Security review round 1 of #687: a permission name does not say which tool
+// asks under it. A tool server's tool asks under `<server>_<tool>`, and a
+// plugin's tool under whatever it names, so a tool that is not the server's
+// own could take a name the embedded config allows. Before a session opens
+// and before each prompt the adapter reads the directory's tool servers and
+// tool ids, and refuses when one could take such a name, or when it cannot
+// read them.
+describe("tools that could take a name OpenCode's own tools ask under", () => {
+  const adapters = [
+    ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory)],
+    ["Kilo", (factory: OpenCodeFactory) => new KiloSdkAdapter(factory)],
+  ] as const
+
+  it.each([
+    ["OpenCode", "plan", "plan_enter"],
+    ["OpenCode", "Plan", "plan_enter"],
+    ["OpenCode", "doom", "doom_loop"],
+    ["Kilo", "board", "board_post"],
+    ["Kilo", "kilo_memory", "kilo_memory_save"],
+    ["Kilo", "semantic", "semantic_search"],
+  ] as const)("refuses a %s session whose tool server %s could make %s", async (name, server, permission) => {
+    const { client, factory } = harness()
+    client.mcp.status.mockResolvedValue({ data: { docs: { status: "connected" }, [server]: { status: "connected" } } })
+    const adapter = adapters.find(([candidate]) => candidate === name)![1](factory)
+    const refusal = adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await expect(refusal).rejects.toThrow(`tool server named "${server}"`)
+    await expect(refusal).rejects.toThrow(permission)
+    expect(client.session.create).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it.each([
+    ["a second glob", [...openCodeBuiltInToolIds, "glob"]],
+    ["a list tool", [...openCodeBuiltInToolIds, "list"]],
+    ["a plan_enter tool", [...openCodeBuiltInToolIds, "plan_enter"]],
+  ] as const)("refuses a session with %s that is not OpenCode's own", async (_case, ids) => {
+    const { client, factory } = harness()
+    client.tool.ids.mockResolvedValue({ data: ids })
+    const adapter = new OpenCodeSdkAdapter(factory)
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow("not one of its own")
+    expect(client.session.create).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("knows Kilo's own tools and what Kilo's embedded config allows", async () => {
+    const { client, factory } = harness()
+    client.tool.ids.mockResolvedValue({ data: [...kiloBuiltInToolIds] })
+    const kilo = new KiloSdkAdapter(factory)
+    await expect(kilo.startThread({ cwd: "/worktree", runtime: runtime("build") })).resolves.toBe("open-session")
+    await kilo.close()
+
+    const other = harness()
+    other.client.tool.ids.mockResolvedValue({ data: [...kiloBuiltInToolIds, "semantic_search"] })
+    const refused = new KiloSdkAdapter(other.factory)
+    await expect(refused.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow(`tool named "semantic_search"`)
+    await refused.close()
+  })
+
+  it("opens a session whose tool servers and plugin tools take no such name", async () => {
+    const { client, factory } = harness()
+    client.mcp.status.mockResolvedValue({ data: { docs: { status: "connected" }, github: { status: "failed" } } })
+    client.tool.ids.mockResolvedValue({ data: [...openCodeBuiltInToolIds, "deploy", "docs_publish"] })
+    const adapter = new OpenCodeSdkAdapter(factory)
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).resolves.toBe("open-session")
+    await adapter.close()
+  })
+
+  it.each([
+    ["tool servers", "mcp"],
+    ["tool ids", "tool"],
+  ] as const)("refuses a session when its %s cannot be read", async (_case, part) => {
+    const { client, factory } = harness()
+    if (part === "mcp") client.mcp.status.mockRejectedValue(new Error("busy"))
+    else client.tool.ids.mockRejectedValue(new Error("busy"))
+    const adapter = new OpenCodeSdkAdapter(factory)
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow("could not read")
+    await expect(adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow("could not read")
+    expect(client.session.create).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("checks again before each prompt", async () => {
+    const { client, factory } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    client.mcp.status.mockResolvedValue({ data: { plan: { status: "connected" } } })
+    await expect(adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Hello", runtime: runtime("build") })).rejects.toThrow(`tool server named "plan"`)
+    expect(client.session.promptAsync).not.toHaveBeenCalled()
     await adapter.close()
   })
 })

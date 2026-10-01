@@ -561,7 +561,8 @@ code or settings the repository brings:
 - OpenCode and Kilo ask before every tool that is not one of their own. The embedded configuration
   starts its permissions with a `"*": "ask"` rule and then restates the server's own rules for its
   built-in tools, so each built-in tool keeps the action it had, and a call to a tool server's
-  tool, one of yours included, or to a plugin's tool raises an approval card. Kilo's explore
+  tool, one of yours included, raises an approval card. A plugin's tool asks only if the plugin
+  asks, under the name the plugin gives; it is your own code running in the server. Kilo's explore
   subagent used to have tool server tools hidden; it now sees them and asks before each call, and
   Kilo's plan agent asks before a tool that is not Kilo's own where it used to deny it. An
   allow rule in your own `permission` configuration still applies when your configuration lists
@@ -571,6 +572,13 @@ code or settings the repository brings:
   catch-all's place and asks; for Kilo the block is set under both `build` and `code`. A primary
   agent starts OpenCode's or Kilo's own `general` and `explore` subagents as before, and asks
   before it starts a subagent of yours, which runs by your own rules.
+  A rule names a permission, not a tool, and a tool server's tool asks under its server's name, `_`
+  and the tool's name. Before a session opens, and before each prompt, the daemon reads the tool
+  servers and tool ids the session directory knows, and refuses the session when a tool server's
+  name, in any case, could make the name one of OpenCode's or Kilo's own tools asks under (a server
+  named `plan` could make `plan_enter`), when a tool id appears twice, when a tool that is not the
+  server's own takes the name of a permission the embedded configuration allows, or when it cannot
+  read them. The refusal names the server or tool to rename or turn off.
   When a session's directory opens, the daemon reads the names of the tool servers that directory
   knows. A card names a tool's server only when exactly one of them could have made the tool's name
   (the server's name with characters outside letters, digits, `-` and `_` turned into `_`, then

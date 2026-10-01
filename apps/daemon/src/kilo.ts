@@ -1,9 +1,12 @@
 import {
   OpenCodeSdkAdapter,
+  allowedPermissionNames,
   nextOpenCodeMessageId,
   type OpenCodeFactory,
 } from "./opencode.js"
-import { kiloBuiltInPermissions } from "./kilo-runtime.js"
+import { domovoiKiloConfig, kiloBuiltInPermissions, kiloBuiltInToolIds } from "./kilo-runtime.js"
+
+const kiloAllowedPermissions = allowedPermissionNames(domovoiKiloConfig)
 
 export type KiloFactory = OpenCodeFactory
 
@@ -16,6 +19,8 @@ export class KiloSdkAdapter extends OpenCodeSdkAdapter {
       providerName: "Kilo",
       heldBackRepositoryFiles: kiloLegacyRepositoryFiles,
       builtInPermissions: kiloBuiltInPermissions,
+      builtInToolIds: kiloBuiltInToolIds,
+      allowedPermissions: kiloAllowedPermissions,
     })
   }
 }
