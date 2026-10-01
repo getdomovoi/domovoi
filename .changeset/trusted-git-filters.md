@@ -21,13 +21,21 @@ trusted or not. Commits are written with Git's plumbing, since `git commit` and 
 can run a clean filter. Those operations read the exact `git lfs install` lines as exempt and the
 Git LFS program settings as repository filters, as a new session's checkout does, and refuse
 while the repository's Git config cannot be read. Without trust, evidence still reads with the
-repository's filters treated as absent.
+repository's filters treated as absent; a diff driver's `diff.<driver>.binary` setting is carried,
+so a file the repository marks binary stays out of the evidence diff, and external diffs and text
+conversion stay off. A session bundle is written in that directory too, from object ids and with
+lazy fetching off, so a partial clone's missing blob fails the transfer instead of being fetched
+with the repository's own transport settings. Restore clears the merge, cherry-pick, revert and
+finished sequencer state `git reset --hard` clears, and refuses while a submodule has local
+changes, as a snapshot does. Push and fetch for a transfer allow only https, http, ssh, git and
+file transports, and refuse a remote whose address is anything else or that names a remote helper.
 
 Under trust, a filter runs in a process group of its own on macOS and Linux, and a timeout or an
-emergency stop ends the whole group, so nothing a filter started outlives its operation; a stopped
-session create leaves no worktree or branch behind. Taking trust back restarts no thread for a
-filter. Files already checked out under trust stay as they are, and archiving a session no longer
-refuses, since removing its worktree runs no filter.
+emergency stop ends the whole group. A process a filter started can leave that group, so after a
+kill the operation's descendants count as unknown: a session create stopped part way keeps its
+worktree and branch for recovery rather than deleting them under a writer that may still run.
+Taking trust back restarts no thread for a filter. Files already checked out under trust stay as
+they are, and archiving a session no longer refuses, since removing its worktree runs no filter.
 
 Checkpoint, restore, revert and `session.transfer` refused over a repository filter now answer
 with `repositoryGitFilterErrorCode` and its data, as `session.create` and `session.fork` do, and
