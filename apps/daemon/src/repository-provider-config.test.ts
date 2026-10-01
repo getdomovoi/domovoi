@@ -1751,7 +1751,7 @@ describe("readRepositoryProviderConfig: files it refuses", () => {
 // same bytes, as the digest trust pins to. Entries are marked by the policy
 // the caller gives.
 describe("readRepositoryProviderConfig: documents and held-back entries", () => {
-  it("returns the Claude Code and Codex documents parsed from the bytes it hashed", async () => {
+  it("returns the Claude Code, Codex, OpenCode and Kilo documents parsed from the bytes it hashed", async () => {
     const root = await scratch()
     const settings = { hooks: { SessionStart: [{ hooks: [{ type: "command", command: "./bootstrap.sh" }] }] }, env: { REGION: "eu" } }
     const servers = { mcpServers: { db: { command: "db-mcp", args: ["--port", "5432"] } } }
@@ -1767,6 +1767,7 @@ describe("readRepositoryProviderConfig: documents and held-back entries", () => 
       ".claude/settings.json": settings,
       ".mcp.json": servers,
       ".codex/config.toml": { sandbox_mode: "read-only", mcp_servers: { docs: { url: "https://mcp.example.com/mcp" } } },
+      "opencode.json": { mcp: { x: { type: "local", command: ["x"] } } },
     })
     await put(root, ".mcp.json", JSON.stringify({ mcpServers: {} }))
     const changed = await readRepositoryProviderConfig(root, { heldBack: false, documents: true })

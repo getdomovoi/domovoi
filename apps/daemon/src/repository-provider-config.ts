@@ -877,7 +877,7 @@ function parseFile(parser: Parser, bytes: Buffer): Parsed {
     case "claude-settings":
       return { state: "read", candidates: claudeSettings(document), document }
     case "opencode-config":
-      return { state: "read", candidates: openCodeConfig(document) }
+      return { state: "read", candidates: openCodeConfig(document), document }
     case "tui-config":
       // A TUI file loads plugins; its theme and key bindings run nothing.
       return { state: "read", candidates: pluginSpecs(document.plugin) }
@@ -922,14 +922,20 @@ function directoryCandidates(directory: ScopedDirectory, members: readonly strin
 export type RepositoryTrustRefusalReason = "nested-config" | "main-checkout-hooks" | "main-checkout-unknown" | "instructions-outside"
 export type RepositoryTrustRefusal = { provider: string; reason: RepositoryTrustRefusalReason; path: string }
 
-// The files a trusted session can load (slices P6b and P6c), each parsed from
-// the bytes this read hashed into configDigest, so what loads is what the
-// digest pins. A file absent, empty, refused or not parseable has none. They
+// The files a trusted session can load (slices P6b, P6c and P7), each parsed
+// from the bytes this read hashed into configDigest, so what loads is what
+// the digest pins: Claude Code's and Codex's, and every OpenCode and Kilo
+// config file. A file absent, empty, refused or not parseable has none. They
 // are the files as written, secrets included, so a read returns them only
 // when asked (`documents`); an inventory answer never holds them, though an
 // inventory read under a grant asks for them to mark what loads.
-export const repositoryConfigDocumentPaths = [".claude/settings.json", ".mcp.json", ".codex/config.toml"] as const
-export type RepositoryConfigDocuments = Partial<Record<typeof repositoryConfigDocumentPaths[number], Record<string, unknown>>>
+export const repositoryConfigDocumentPaths: readonly string[] = [
+  ".claude/settings.json",
+  ".mcp.json",
+  ".codex/config.toml",
+  ...new Set(repositoryProviderScopes.flatMap((scope) => scope.files.filter((file) => file.parser === "opencode-config").map((file) => file.path))),
+]
+export type RepositoryConfigDocuments = Partial<Record<string, Record<string, unknown>>>
 const documentPaths: ReadonlySet<string> = new Set(repositoryConfigDocumentPaths)
 
 export type RepositoryProviderConfig = {
