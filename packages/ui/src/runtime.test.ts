@@ -44,6 +44,32 @@ describe("selectRuntimeModel", () => {
     })
   })
 
+  // Desktop V2: the effort keeps its level when the new model reports the
+  // same level, read by its shared word rather than the raw value.
+  it("carries a level the new model reports under another value with the same word", () => {
+    const thinking: Runtime = { ...runtime, provider: "claude-code", reasoning: "think-hard" }
+    expect(selectRuntimeModel(thinking, { ...model(["low", "medium", "high"]), defaultReasoningEffort: "high" })).toMatchObject({
+      provider: "codex",
+      reasoning: "medium",
+    })
+  })
+
+  // Only a model that names no default among its levels falls back to the
+  // nearest level it reports.
+  it("moves to the nearest reported level when the model names no default among its levels", () => {
+    const max: Runtime = { ...runtime, provider: "opencode", reasoning: "max" }
+    expect(selectRuntimeModel(max, { ...model(["low", "medium", "high"]), defaultReasoningEffort: "none" })).toMatchObject({
+      reasoning: "high",
+    })
+    expect(selectRuntimeModel({ ...max, reasoning: "low" }, { ...model(["medium", "high"]), defaultReasoningEffort: "none" })).toMatchObject({
+      reasoning: "medium",
+    })
+  })
+
+  it("keeps the model default for a model that reports no levels", () => {
+    expect(selectRuntimeModel(runtime, { ...model([]), defaultReasoningEffort: "none" })).toMatchObject({ reasoning: "none" })
+  })
+
   it("requires a handoff only when the provider changes", () => {
     expect(requiresProviderHandoff(runtime, model([]))).toBe(false)
     expect(requiresProviderHandoff(runtime, { ...model([]), provider: "claude-code" })).toBe(true)

@@ -63,12 +63,21 @@ it("lists the levels the model reports, including ones the design does not name"
   expect(rows[1]!.textContent).toBe("xhigh")
 })
 
-it("says a level moved when a model change could not carry it", async () => {
+// The note names the model's default when the level moved there, and only
+// the level otherwise. Either way it holds until a level is picked.
+it("says a level moved to the model's default when a model change could not carry it", async () => {
   const user = userEvent.setup()
-  render(<EffortChip runtime={{ ...runtime, provider: "opencode", reasoning: "high" }} model={model("opencode", ["low", "high"], "high")} dropped={{ from: "Max", to: "High" }} pending={false} onSetRuntime={vi.fn()} />)
+  render(<EffortChip runtime={{ ...runtime, provider: "opencode", reasoning: "high" }} model={model("opencode", ["low", "high"], "high")} dropped={{ from: "Max", to: "High", toDefault: true }} pending={false} onSetRuntime={vi.fn()} />)
   await user.click(screen.getByRole("button", { name: "High" }))
-  expect(screen.getByText("opencode has no Max, so this moved to High when you changed model. It stays there.")).toBeTruthy()
+  expect(screen.getByText("opencode has no Max, so this moved to the model's default, High. It stays until you pick a level.")).toBeTruthy()
   expect(screen.queryByText(/A turn already in flight/)).toBeNull()
+})
+
+it("says a level moved to the nearest level when the model names no default", async () => {
+  const user = userEvent.setup()
+  render(<EffortChip runtime={{ ...runtime, provider: "opencode", reasoning: "high" }} model={model("opencode", ["low", "high"], "none")} dropped={{ from: "Max", to: "High", toDefault: false }} pending={false} onSetRuntime={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: "High" }))
+  expect(screen.getByText("opencode has no Max, so this moved to High. It stays until you pick a level.")).toBeTruthy()
 })
 
 it("locks the chip while a runtime update is pending", () => {
