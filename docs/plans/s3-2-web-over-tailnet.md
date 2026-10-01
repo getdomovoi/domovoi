@@ -403,7 +403,16 @@ the desktop's (`apps/daemon/src/local-daemon.ts` nonce and proof). What changes:
 The pasted root-bearer path (`pairBrowserDevice`, `daemon-pairing.ts:149-170`) moves the daemon's
 root credential into a browser. On a page served to another machine that sends the root
 credential off the execution machine, against the architecture rule that secrets stay there. Q5,
-answered A: off loopback the served app offers code pairing only (slice 6).
+answered A: off loopback the served app offers code pairing only. That lands in slice 2, before
+any slice that can serve beyond loopback (review F5, Q297).
+
+Older bundles: compatibility checks protocol major.minor only (section 1.1), so a bundle built
+before slice 2 on the same protocol minor would still load and would still offer the root-credential
+prompt off loopback. The install documents (slice 6) state that the bundle installed beside a
+daemon must come from a release that includes slice 2, and that an owner who kept an older bundle
+replaces it before serving over the tailnet. A daemon-side refusal of the root credential from
+non-loopback peers stays a separate owner question, because it would also affect the CLI over the
+tailnet.
 
 A web credential with `full` access is a full client: it can answer gates and, per ruling Q67, grant
 repository trust (`server.ts:2087-2104`). Served over the tailnet, that client can be on another
@@ -512,14 +521,20 @@ Each is one pull request, test first, with `pnpm typecheck`, `pnpm test`, `pnpm 
 1. **Bundle contract and loader** (Codex). `packages/protocol/src/web-bundle.ts` and test, its
    export, `apps/daemon/src/web-app-bundle.ts` and test, changeset. Pure modules: nothing serves
    yet and `server.ts` is untouched.
-2. **Web build writes the manifest; rpc URL from location** (Claude Code). The vite plugin and its
-   test, `apps/web/vite.config.ts`, `apps/web/src/rpc-url.ts` and test, `main.tsx`, the `sw.js` test,
-   changeset. Measures the real bundle and proposes the loader's bounds.
+2. **Web build writes the manifest; rpc URL from location; code-only pairing off loopback**
+   (Claude Code). The vite plugin and its test, `apps/web/vite.config.ts`, `apps/web/src/rpc-url.ts`
+   and test, `main.tsx`, the `sw.js` test, changeset. Measures the real bundle and proposes the
+   loader's bounds. Per Q5 (answered A), the app offers code pairing only when its origin is not
+   loopback: the root-credential action is not shown there, and the submission path refuses a
+   pasted root credential off loopback even if reached another way. Tests cover both. This lands
+   here, before slice 4, because slice 4 can already serve beyond loopback on a daemon whose TLS
+   listener is configured (review F5, Q297): no release may serve the root-credential prompt to
+   another machine.
 3. **HTTP module** (Codex). `apps/daemon/src/web-app-http.ts` and test against a bare `node:http`
    server. Still no `server.ts` change.
-4. **Wire it in** (Codex). `DOMOVOI_WEB_DIR` in `config.ts`, default resolution and loading in
-   `production-daemon.ts`, the startup line and help in `index.ts`, `webDirectory` in
-   `service/configuration.ts`, the `server.ts` option, field and hook, the loopback origin
+4. **Wire it in** (Codex). Lands only after slice 2 is merged. `DOMOVOI_WEB_DIR` in `config.ts`,
+   default resolution and loading in `production-daemon.ts`, the startup line and help in
+   `index.ts`, `webDirectory` in `service/configuration.ts`, the `server.ts` option, field and hook, the loopback origin
    admission (only the literal loopback origins, scheme included, and only with a loaded bundle;
    `null` stays refused), coexistence tests, README rows, changeset. After this the app is served
    on loopback.
@@ -530,13 +545,11 @@ Each is one pull request, test first, with `pnpm typecheck`, `pnpm test`, `pnpm 
    Origin on TLS written first; the TLS test certificate tests; the sandbox test. The section 2.4
    test is written first and must fail on `main`. After this the app works over the tailnet, and
    phone previews over the tailnet name may start working too.
-6. **Pairing copy off loopback** (Claude Code), per Q5 (answered A): the served app offers code
-   pairing only when its origin is not loopback.
-7. **Packaging and documents** (Claude Code for `scripts/`, the daemon owner for README). A
+6. **Packaging and documents** (Claude Code for `scripts/`, the daemon owner for README). A
    `domovoi-web-<version>.tar.gz` in `scripts/release-artifacts.mjs` with its line in `SHA256SUMS`;
    install steps in `docs/clean-machine-setup.md` and the tailnet section of `apps/mobile/README.md`;
-   A14 restated for the loopback case.
-8. **Checks** (owner and Claude Code). Section 5.2 run, then section 5.3 by the owner, then a
+   A14 restated for the loopback case; the bundle version requirement below.
+7. **Checks** (owner and Claude Code). Section 5.2 run, then section 5.3 by the owner, then a
    follow-up that ticks the `S3.2` line citing the squash shas.
 
 A default `webAppUrl` in `device.issueCode` (the served origin when the certificate names exactly
