@@ -35,6 +35,7 @@ const failure = (kind: ProviderFailure["kind"]): ProviderFailure => {
     "context-window-exceeded": { kind: "context-window-exceeded", action: "shorten-context", message: "Turn exceeded the model context window", retryable: false },
     transport: { kind: "transport", action: "retry", message: "Provider connection failed", retryable: true },
     unknown: { kind: "unknown", action: "retry", message: "Provider request failed", retryable: true },
+    "approval-answered-elsewhere": { kind: "approval-answered-elsewhere", action: "review-changes", message: "An approval was answered outside Domovoi", retryable: false },
   } as const satisfies Record<ProviderFailure["kind"], ProviderFailure>
   return failures[kind]
 }

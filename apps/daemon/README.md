@@ -552,6 +552,19 @@ code or settings the repository brings:
   `KILO_DISABLE_PROJECT_CONFIG=1`. Project `opencode.json`, `kilo.json`, `.opencode/`, `.kilo/`
   and `.kilocode/` configuration, plugins and MCP entries are not loaded, and no package install
   runs in those directories. Your global provider configuration still applies.
+- The OpenCode and Kilo servers listen on loopback and take a new random password at each start.
+  Both read that password only from their environment, so it is in each server's startup
+  environment. Every program a server starts (an approved command, a tool server, a language
+  server) runs as the same user and can read that environment (`ps eww` on macOS,
+  `/proc/<pid>/environ` on Linux), learn the password, and answer an approval itself. The daemon
+  records each approval reply before it sends it. When a server reports a reply the daemon did
+  not send, the daemon aborts the run, fails the session with `approval-answered-elsewhere`,
+  refuses every request still waiting, unloads the thread, and records
+  `provider.approval-answered-elsewhere` in the audit log. The next message resumes the thread.
+  Limits: the server lets the approved call run before the daemon hears of the reply, so one call
+  approved this way can run before the stop. The password stays readable by those programs for
+  as long as the server runs. The stop covers approval replies only, not other requests made with
+  the password.
 - Kilo still reads its legacy files from the session directory with that switch set: a
   `.kilo/mcp.json` or `.kilocode/mcp.json` starts its MCP servers, and a `.kilocodemodes` adds
   agents with their own permissions. The daemon refuses to open or continue a Kilo session in a

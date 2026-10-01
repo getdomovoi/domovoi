@@ -10,6 +10,7 @@ import {
 import type { ApprovalDecision, ProviderFailure, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent } from "./agents.js"
+import { approvalAnsweredElsewhereFailure as approvalAnsweredElsewhere } from "./provider-failures.js"
 import { normalizeProviderUsage } from "./usage.js"
 import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
 import { projectInstructions } from "./project-instructions.js"
@@ -132,16 +133,6 @@ type SentReply = {
   // The Domovoi thread the asking session belongs to, so an unload forgets it.
   threadId: string
 }
-
-// The embedded server's password is in its startup environment, which every
-// program the server starts can read as the same user, and nothing in the
-// reply says who sent it. A reply this adapter did not send stops the thread.
-const approvalAnsweredElsewhere = {
-  kind: "approval-answered-elsewhere",
-  action: "review-changes",
-  message: "An approval was answered outside Domovoi",
-  retryable: false,
-} as const satisfies ProviderFailure
 
 type SubagentTurn = {
   threadId: string
@@ -303,7 +294,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // Refusals the provider did not accept, by request id. They are sent again
   // when the card is answered or the thread's next turn starts or ends.
   #failedRefusals = new Map<number, PendingApproval>()
-  // Replies this adapter sent, by asking session and request (replyKey).
+  // Replies this adapter sent, by asking session and request (replyKey). The
+  // embedded server's password is in its startup environment, which every
+  // program the server starts can read as the same user, and nothing in a
+  // reply says who sent it; these records are how a reply is known as ours.
   #sentReplies = new Map<string, SentReply>()
   // Asking sessions this adapter sent a rejection to, with their thread. The
   // server then rejects that session's other requests itself, so a rejection

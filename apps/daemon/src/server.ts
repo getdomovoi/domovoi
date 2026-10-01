@@ -272,7 +272,7 @@ import {
 import type { ConfiguredSshTunnel } from "./transport-config.js"
 import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { advertisedTransports } from "./advertised-transports.js"
-import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
+import { approvalAnsweredElsewhereFailure, classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import {
   ArtifactWatcher,
   maximumArtifactFileBytes,
@@ -10034,6 +10034,11 @@ export class DomovoiDaemon {
     )
     if (!session) return
     if (sessionIsReadOnly(session)) return
+    // Handled before the turn check: the turn it names has already ended.
+    if (event.type === "approval-answered-elsewhere") {
+      await this.#stopSessionAnsweredElsewhere(provider, threadId, session, event)
+      return
+    }
     const reportedTurnId = turnIdForAgentEvent(event)
     const eventRecord = reportedTurnId ? this.#usageRecord(provider, threadId, reportedTurnId) : undefined
     const eventTurnId = eventRecord?.accounting?.providerTurnId ?? reportedTurnId
@@ -12336,6 +12341,46 @@ export class DomovoiDaemon {
     }
     await this.#persistSnapshot()
     if (broadcast) this.#broadcastSnapshot()
+  }
+
+  // Q243 A: the adapter saw an approval reply it did not send and has already
+  // stopped and unloaded the thread. The session fails with its own failure
+  // and keeps its provider thread, so the next send resumes it afresh.
+  async #stopSessionAnsweredElsewhere(
+    provider: string,
+    threadId: string,
+    session: WorkspaceSnapshot["sessions"][number],
+    event: Extract<AgentEvent, { type: "approval-answered-elsewhere" }>,
+  ): Promise<void> {
+    const stoppedAt = new Date().toISOString()
+    this.#holdQueuedSessionSend(session.id, "An approval was answered outside Domovoi, so the queued send was held.")
+    this.#flushCommandOutputStreams(session.id)
+    for (const [key, run] of this.#approvedRuns) if (run.sessionId === session.id) this.#approvedRuns.delete(key)
+    this.#loadedAgentThreads.delete(providerThreadKey(provider, threadId))
+    delete session.activeTurnId
+    session.state = "failed"
+    session.providerFailure = { ...approvalAnsweredElsewhereFailure }
+    session.updatedAt = stoppedAt
+    this.#removeApprovals((approval) => approval.sessionId === session.id, stoppedAt)
+    this.#snapshot.thread.push({
+      id: `system-${randomUUID()}`,
+      sessionId: session.id,
+      kind: "system",
+      body: "An approval in this session was answered outside Domovoi, so Domovoi stopped the session.",
+      detail: "A program on this machine that can read the provider server's password sent the answer, and the approved call may already have run. Review the session's changes before you send another message.",
+      createdAt: stoppedAt,
+    })
+    this.#appendAudit({
+      actor: { kind: "provider", provider, providerThreadId: threadId },
+      action: "provider.approval-answered-elsewhere",
+      outcome: "denied",
+      sessionId: session.id,
+      projectId: session.projectId,
+      ...(event.permissionId ? { target: event.permissionId } : {}),
+      detail: `reply=${event.reply}`,
+    })
+    this.#sessionHistory.invalidate(session.id)
+    await this.#flushAgentState()
   }
 
   async #quarantineProviderThread(
