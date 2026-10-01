@@ -139,3 +139,19 @@ it("names the drawer toggle with a tooltip that follows the drawer", async () =>
   view.rerender(<SessionsDrawerTrigger snapshot={demoWorkspace} open onOpenChange={vi.fn()} />)
   expect((await screen.findByRole("tooltip")).textContent).toBe("Hide sessions")
 })
+
+// jsdom has no layout, so this pins the class contract: the drawn 380px, capped
+// to the viewport less a margin, with notes free to wrap. The real widths are
+// checked in a browser at 320px and 360px.
+it("caps the stop menu to the viewport and lets its notes wrap", async () => {
+  const user = userEvent.setup()
+  render(<StopMenu connected pending={false} onPauseAll={vi.fn()} onEmergencyStop={vi.fn()} />)
+
+  await user.click(screen.getByRole("button", { name: "Stop everything" }))
+  const menu = await screen.findByRole("menu")
+  expect(menu.className).toContain("w-[380px]")
+  expect(menu.className).toContain("max-w-[calc(100vw-2rem)]")
+  const note = within(menu).getByText("Stops at the next turn boundary, nothing is killed.")
+  expect(note.className).not.toMatch(/truncate|whitespace-nowrap/)
+  expect(note.parentElement?.className).toContain("min-w-0")
+})

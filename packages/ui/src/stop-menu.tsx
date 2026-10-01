@@ -58,7 +58,10 @@ export function StopMenu({ connected, pending, disabled = false, onPauseAll, onE
             Stop everything, every machine
           </TooltipContent>
         </Tooltip>
-        <DropdownMenuContent align="end" sideOffset={7} className="w-[380px] overflow-hidden rounded-[14px] border border-danger-border p-0">
+        {/* 380px as drawn, capped to the viewport less 1rem a side so a phone
+            browser at 320px or 360px keeps the whole menu on screen; the
+            notes wrap inside it. */}
+        <DropdownMenuContent align="end" sideOffset={7} collisionPadding={16} className="w-[380px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-[14px] border border-danger-border p-0">
           <DropdownMenuLabel className="border-b border-border px-[13px] py-2.5 text-[10.5px] font-medium tracking-[.13em] text-faint">
             STOP EVERYTHING, ON EVERY MACHINE
           </DropdownMenuLabel>
