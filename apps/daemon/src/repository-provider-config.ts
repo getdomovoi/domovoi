@@ -1343,6 +1343,20 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
   }
 }
 
+// A driver's filter.<driver>.required as Git reads a boolean: true, yes and
+// on, or a nonzero integer, are true; false, no, off, the empty value and 0
+// are false; no value at all is unset. Git refuses any other text, and so
+// does this: undefined, and the entry is counted rather than listed. Integer
+// forms Git also accepts (hex, a k, m or g suffix) are refused here too.
+function gitRequiredState(value: string | undefined): "true" | "false" | "unset" | undefined {
+  if (value === undefined) return "unset"
+  const lower = value.toLowerCase()
+  if (lower === "true" || lower === "yes" || lower === "on") return "true"
+  if (lower === "false" || lower === "no" || lower === "off" || lower === "") return "false"
+  if (/^[-+]?[0-9]{1,18}$/u.test(value)) return Number(value) === 0 ? "false" : "true"
+  return undefined
+}
+
 // The filters as tool.inventory lists them: by the file that sets each one,
 // relative to the root when inside it and absolute otherwise, the command
 // redacted. Every entry is marked held back here; the inventory clears the
@@ -1370,10 +1384,17 @@ async function gitFilterInventory(rootPath: string, filters: readonly Repository
       }
       files.push({ path, scope: filter.scope })
     }
+    const driverCommand = filter.operation === "clean" || filter.operation === "smudge" || filter.operation === "process"
+    const required = driverCommand ? gitRequiredState(filter.required) : undefined
+    if (driverCommand && required === undefined) {
+      omittedEntries += 1
+      continue
+    }
     const entry = toolInventoryGitFilterEntrySchema.safeParse({
       driver: redactInventoryText(filter.driver, maximumRepositoryGitFilterDriverNameLength),
       operation: filter.operation,
       command: redactInventoryCommand(filter.value),
+      ...(required === undefined ? {} : { required }),
       file: path,
       scope: filter.scope,
       heldBack: true,

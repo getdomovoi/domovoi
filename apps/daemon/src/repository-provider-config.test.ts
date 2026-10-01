@@ -1972,9 +1972,9 @@ describe("readRepositoryProviderConfig: git filters", () => {
       files: [{ path: ".git/config", scope: "local" }, { path: included, scope: "local" }],
       entries: [
         // Cut at its first trigger, the assignment, as every inventory command is (ruling Q101 A).
-        { driver: "sops", operation: "smudge", command: "[REDACTED]", file: ".git/config", scope: "local", heldBack: true },
-        { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", file: ".git/config", scope: "local", heldBack: true },
-        { driver: "crypt", operation: "process", command: "git-crypt filter-process", file: included, scope: "local", heldBack: true },
+        { driver: "sops", operation: "smudge", command: "[REDACTED]", required: "unset", file: ".git/config", scope: "local", heldBack: true },
+        { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", required: "unset", file: ".git/config", scope: "local", heldBack: true },
+        { driver: "crypt", operation: "process", command: "git-crypt filter-process", required: "unset", file: included, scope: "local", heldBack: true },
       ],
       omittedEntries: 0,
     })
@@ -2050,8 +2050,43 @@ describe("readRepositoryProviderConfig: git filters", () => {
     const read = await readRepositoryProviderConfig(root, { heldBack: true })
     expect(read.gitFilters?.files).toEqual([{ path: ".git/config.worktree", scope: "worktree" }])
     expect(read.gitFilters?.entries).toEqual([
-      { driver: "crypt", operation: "smudge", command: "git-crypt smudge", file: ".git/config.worktree", scope: "worktree", heldBack: true },
+      { driver: "crypt", operation: "smudge", command: "git-crypt smudge", required: "unset", file: ".git/config.worktree", scope: "worktree", heldBack: true },
     ])
+  })
+
+  // The digest pins a driver's required setting, so the listed block shows its
+  // effective state with each of the driver's commands (ruling Q255). Git reads
+  // it as a boolean; a value Git would not read as one is counted, not listed.
+  it.each([
+    [undefined, "unset"],
+    ["true", "true"],
+    ["yes", "true"],
+    ["On", "true"],
+    ["1", "true"],
+    ["false", "false"],
+    ["no", "false"],
+    ["0", "false"],
+  ])("shows a driver's required setting %s as %s", async (value, state) => {
+    const root = await repository()
+    git(root, "config", "filter.crypt.smudge", "git-crypt smudge")
+    git(root, "config", "filter.crypt.clean", "git-crypt clean")
+    git(root, "config", "lfs.customtransfer.evil.path", "/tmp/evil-agent")
+    if (value !== undefined) git(root, "config", "filter.crypt.required", value)
+    const read = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(read.gitFilters?.entries.map(({ operation, required }) => [operation, required])).toEqual([
+      ["smudge", state], ["clean", state], ["lfs-transfer-path", undefined],
+    ])
+    expect(read.gitFilters?.omittedEntries).toBe(0)
+  })
+
+  it("counts a driver command whose required setting Git would not read as a boolean, and lists the rest", async () => {
+    const root = await repository()
+    git(root, "config", "filter.crypt.smudge", "git-crypt smudge")
+    git(root, "config", "filter.crypt.required", "maybe")
+    git(root, "config", "filter.sops.smudge", "sops --decrypt")
+    const read = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(read.gitFilters?.entries.map(({ driver, required }) => [driver, required])).toEqual([["sops", "unset"]])
+    expect(read.gitFilters?.omittedEntries).toBe(1)
   })
 
   it("lists a file the repository and the worktree config both include once per scope", async () => {

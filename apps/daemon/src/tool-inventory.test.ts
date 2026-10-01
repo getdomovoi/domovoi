@@ -45,7 +45,7 @@ describe("readToolInventory", () => {
   it("lists the repository's own git filters beside its trust, and nothing when it sets none", async () => {
     const gitFilters = {
       files: [{ path: ".git/config", scope: "local" as const }],
-      entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt /dev/stdin", file: ".git/config", scope: "local" as const, heldBack: true }],
+      entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt /dev/stdin", required: "unset" as const, file: ".git/config", scope: "local" as const, heldBack: true }],
       omittedEntries: 0,
     }
     const configDigest = `sha256:${"a".repeat(64)}`
@@ -66,7 +66,7 @@ describe("readToolInventory", () => {
   it("reports the git filters running only under a grant for the current digest that reviewed them", async () => {
     const gitFilters = {
       files: [{ path: ".git/config", scope: "local" as const }],
-      entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt /dev/stdin", file: ".git/config", scope: "local" as const, heldBack: true }],
+      entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt /dev/stdin", required: "unset" as const, file: ".git/config", scope: "local" as const, heldBack: true }],
       omittedEntries: 0,
     }
     const configDigest = `sha256:${"a".repeat(64)}`

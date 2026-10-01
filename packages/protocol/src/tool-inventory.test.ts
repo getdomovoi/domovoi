@@ -18,6 +18,7 @@ import {
   phoneAndTabletRpcMethods,
   repositoryGitConfigUnreadableReasons,
   repositoryGitFilterOperations,
+  repositoryGitFilterRequiredStates,
   rpcMethodAuthorizations,
   rpcMethodMutations,
   rpcMethods,
@@ -200,15 +201,31 @@ describe("tool inventory git filters", () => {
       { path: ".git/config.worktree", scope: "worktree" },
     ],
     entries: [
-      { driver: "sops", operation: "smudge", command: "sops --decrypt /dev/stdin", file: ".git/config", scope: "local", heldBack: true },
-      { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", file: ".git/config", scope: "local", heldBack: true },
-      { driver: "crypt", operation: "process", command: "git-crypt filter-process", file: ".git/config.worktree", scope: "worktree", heldBack: true },
+      { driver: "sops", operation: "smudge", command: "sops --decrypt /dev/stdin", required: "true", file: ".git/config", scope: "local", heldBack: true },
+      { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", required: "true", file: ".git/config", scope: "local", heldBack: true },
+      { driver: "crypt", operation: "process", command: "git-crypt filter-process", required: "unset", file: ".git/config.worktree", scope: "worktree", heldBack: true },
     ],
     omittedEntries: 0,
   }
   const inventory = (filters: unknown) => ({ ...sample, repository: { ...sample.repository, gitFilters: filters } })
   const parses = (filters: unknown) => toolInventorySchema.safeParse(inventory(filters)).success
   const entry = gitFilters.entries[0]!
+  const { required: _required, ...lfsEntry } = entry
+
+  // A driver's required setting decides whether Git stores unfiltered bytes
+  // when the filter fails, and the trust digest pins it: each driver command
+  // shows its effective state. A Git LFS setting has none.
+  it("shows each driver command's effective required state, and none for a Git LFS setting", () => {
+    expect(repositoryGitFilterRequiredStates).toEqual(["true", "false", "unset"])
+    for (const required of repositoryGitFilterRequiredStates) {
+      expect(parses({ ...gitFilters, entries: [{ ...entry, required }] }), required).toBe(true)
+    }
+    expect(parses({ ...gitFilters, entries: [lfsEntry] })).toBe(false)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, required: "yes" }] })).toBe(false)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, required: true }] })).toBe(false)
+    expect(parses({ ...gitFilters, entries: [{ ...lfsEntry, operation: "lfs-transfer-path" }] })).toBe(true)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, operation: "lfs-transfer-path" }] })).toBe(false)
+  })
 
   it("lists each driver the repository's own Git config sets, by the file that sets it", () => {
     expect(toolInventorySchema.parse(inventory(gitFilters))).toEqual(inventory(gitFilters))
@@ -227,7 +244,8 @@ describe("tool inventory git filters", () => {
       "lfs-transfer-path", "lfs-transfer-args", "lfs-standalone-agent", "lfs-extension-clean", "lfs-extension-smudge",
     ])
     for (const operation of repositoryGitFilterOperations) {
-      expect(parses({ ...gitFilters, entries: [{ ...entry, driver: "evil", operation }] }), operation).toBe(true)
+      const listed = operation.startsWith("lfs-") ? { ...lfsEntry, driver: "evil", operation } : { ...entry, driver: "evil", operation }
+      expect(parses({ ...gitFilters, entries: [listed] }), operation).toBe(true)
     }
   })
 

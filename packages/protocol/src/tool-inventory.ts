@@ -191,10 +191,19 @@ export const repositoryGitFilterOperations = [
   "lfs-transfer-path", "lfs-transfer-args", "lfs-standalone-agent", "lfs-extension-clean", "lfs-extension-smudge",
 ] as const
 
+// A driver command's effective filter.<driver>.required, as Git reads the
+// repository's own config: true makes a failing filter fail the Git command;
+// false or unset lets Git store or check out the unfiltered bytes. The trust
+// digest pins the value, so the reviewed block shows it. A value Git would
+// not read as a boolean is not listed: the entry is counted in omittedEntries.
+export const repositoryGitFilterRequiredStates = ["true", "false", "unset"] as const
+
 export const toolInventoryGitFilterEntrySchema = z.object({
   driver: repositoryGitFilterDriverNameSchema,
   operation: z.enum(repositoryGitFilterOperations),
   command: text(maximumToolInventoryCommandLength),
+  // Present exactly on clean, smudge and process: a Git LFS setting has none.
+  required: z.enum(repositoryGitFilterRequiredStates).optional(),
   // The file and the scope Git read it in: one included file can be read
   // from the repository's config and from a worktree's config.worktree.
   file: toolInventoryPathSchema,
@@ -231,6 +240,10 @@ export const toolInventoryGitFiltersSchema = z.object({
   }
   for (const [index, entry] of filters.entries.entries()) {
     if (!files.has(id(entry.file, entry.scope))) context.addIssue({ code: "custom", path: ["entries", index, "file"], message: "Entries come only from a listed file, in its scope" })
+    const driverCommand = entry.operation === "clean" || entry.operation === "smudge" || entry.operation === "process"
+    if (driverCommand !== (entry.required !== undefined)) {
+      context.addIssue({ code: "custom", path: ["entries", index, "required"], message: "A driver command shows its required state, and a Git LFS setting none" })
+    }
   }
 })
 

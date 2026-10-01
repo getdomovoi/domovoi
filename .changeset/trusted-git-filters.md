@@ -17,7 +17,8 @@ that does not acknowledge the filters, keeps them held back with a refusal that 
 trust the repository again from an updated client; grants for repositories without filters behave
 as before. The trust store gains a column for the acknowledgement, 0 for the grants already in it.
 A driver's `filter.<driver>.required` is reviewed with its commands and pinned to the reviewed
-value. A trusted filter runs as you, including a command that runs a file in the repository,
+value; `tool.inventory` shows its effective state with each driver command, and counts rather
+than lists a command whose `required` value Git would not read as a boolean. A trusted filter runs as you, including a command that runs a file in the repository,
 which an agent's edit also changes.
 
 Checkpoint, snapshot, restore, file revert, transfer and evidence now run every Git command that
