@@ -12,8 +12,8 @@ project switches to it after you confirm the sessions it stops." and changes not
 tablet credential cannot call it.
 
 Stored state that a newer Domovoi wrote with several active projects, meaning a stored project
-list naming another project, or a session or approval rule of another project beside such a list,
-is not loaded. The daemon does not start, says "Domovoi state at <path> was written by a newer
+list naming another project, or a session or approval rule of another project with or without such
+a list, is not loaded, and is not moved aside as corrupt. The daemon does not start, says "Domovoi state at <path> was written by a newer
 Domovoi that keeps several projects open, and this daemon keeps one project open at a time. It was
 left as it is and this daemon did not start. Run the newer Domovoi again.", and leaves the stored
 rows as they are. A stored list naming only the open project is dropped when the state is read, so

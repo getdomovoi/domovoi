@@ -470,14 +470,15 @@ export class MultiProjectWorkspaceStateError extends NewerWorkspaceStateError {
   }
 }
 
-// Stored state lists a project other than the focused one, or, beside a list,
-// holds a session or approval rule of another project. A snapshot without a
-// list is this daemon's own shape and is read as before.
+// Stored state lists a project other than the focused one, or holds a session
+// or approval rule of another project, with or without a list (ruling Q258).
+// Such state does not parse as this daemon's snapshot, and moving it aside as
+// corrupt would replace that project's work with the seed.
 function keepsSeveralProjects(value: unknown): boolean {
-  if (!isRecord(value) || !Array.isArray(value.projects)) return false
+  if (!isRecord(value)) return false
   const focused = isRecord(value.project) ? value.project.id : undefined
   const another = (projectId: unknown) => projectId !== focused
-  if (value.projects.some((project) => !isRecord(project) || another(project.id))) return true
+  if (Array.isArray(value.projects) && value.projects.some((project) => !isRecord(project) || another(project.id))) return true
   const records = (field: string): unknown[] => {
     const listed = value[field]
     return Array.isArray(listed) ? listed : []

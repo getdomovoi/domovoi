@@ -69,6 +69,10 @@ const severalProjects: ReadonlyArray<[string, Record<string, unknown>]> = [
   ["another active project alone", { ...base(), projects: [projectA, projectB], projectCap: 3 }],
   ["a session of a project the list leaves out", { ...base(), projects: [projectA], projectCap: 3, sessions: [sessionIn(projectB.id)] }],
   ["an approval rule of a project the list leaves out", { ...base(), projects: [projectA], projectCap: 3, approvalRules: [ruleIn(projectB.id)] }],
+  // Ruling Q258: without a list too. Such state does not parse as a snapshot,
+  // and must not be moved aside and replaced with the seed.
+  ["a session of another project, with no list", { ...base(), sessions: [sessionIn(projectB.id)] }],
+  ["an approval rule of another project, with no list", { ...base(), approvalRules: [ruleIn(projectB.id)] }],
 ]
 
 async function storedState(snapshot: Record<string, unknown>) {
