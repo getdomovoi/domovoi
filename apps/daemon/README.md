@@ -665,6 +665,18 @@ code or settings the repository brings:
   worktree and conversation are kept, and it can be switched to another provider, which starts a
   new thread there; the daemon holds no Cursor or Grok thread to stop. The switch is `acpProvidersTurnedOff` in
   `src/acp-providers.ts`.
+- Kilo is turned off. Kilo's embedded server answers `/permission/allow-everything`: a request
+  with the server password, which processes running as the same user can read from the Kilo
+  process environment, writes an allow-every-tool rule to the global `kilo.jsonc`. Kilo sends no
+  permission event when that happens, the rule survives a server restart, and Kilo's built-in
+  subagents then run commands and edits without asking. Domovoi cannot see the change, so it
+  cannot show an approval card before a tool runs. The daemon does not run `kilo` at all:
+  provider discovery reports Kilo as unable to start without running it, no Kilo adapter is
+  registered, so no Kilo server starts and no new session or switch onto Kilo is possible, and a
+  stored Kilo session is refused when it is continued. Its worktree and conversation are kept, and
+  it can be switched to another provider. The switch is `kiloTurnedOff` in
+  `src/kilo-turned-off.ts`, separate from the Cursor and Grok switch. The Kilo notes above apply
+  when it is turned back on.
 - Codex threads mark every path Codex consults for project trust as untrusted, so Codex loads
   nothing from the repository's `.codex` folder itself: no `config.toml`, `hooks.json` or
   `rules/*.rules`. The daemon refuses to open or continue a Codex session in a worktree that holds
