@@ -640,9 +640,14 @@ code or settings the repository brings:
   has already settled; otherwise it is read again later, or the abort's answer ends the turn as
   above. A stop of the whole thread (an approval answered elsewhere, a request the daemon cannot
   answer, a closed event stream) aborts the thread and its subagents and holds the turn until
-  every one of those aborts has settled and the stop has ended the turn with its own failure,
-  even when it joined an interrupt or a stop already under way: until then neither the run's
-  end nor a read ends the turn, and a new prompt or steer waits. With the session idle, the turn
+  every one of those aborts has settled, even when it joined an interrupt or a stop already
+  under way: until then neither the run's end nor a read ends the turn, and a new prompt or
+  steer waits, checking again after every wait. Stops that overlap end the turn once, when the
+  last of them has settled, with the first failure in this order: an approval answered
+  elsewhere, then a request the daemon cannot answer, then a closed event stream; a server stop's
+  own reason counts only when none of them settled with one. A prompt or steer still waiting when
+  its session is unloaded or the daemon's adapter closes is refused and not sent; that does not
+  show that the provider or anything it started has stopped. With the session idle, the turn
   ends by the newest
   assistant message after its prompt in the server's own order (time created, then id), whatever
   that message
@@ -756,8 +761,10 @@ code or settings the repository brings:
 
   A stop kills the server's process group on POSIX, or its process tree on Windows, and the
   daemon starts no other server for that provider until the stop is over and it has confirmed
-  that none of those processes is left. If it cannot confirm that, it keeps the stopped server,
-  stops it again on each new message, and refuses the message. On POSIX the refusal ends once no
+  that none of those processes is left. It waits 20 seconds for that confirmation, Windows tree
+  kill included, and counts a stop not confirmed by then as unconfirmed. If it cannot confirm
+  that, it keeps the stopped server, stops it again on each new message, waiting up to 20 seconds
+  again, and refuses the message. On POSIX the refusal ends once no
   process of the group is left. On Windows a stop is confirmed only when the first `taskkill /T`
   succeeds while the server's first process still runs and that process then exits. If that
   process exits before any `taskkill`, or a `taskkill` fails, a process it started may still run

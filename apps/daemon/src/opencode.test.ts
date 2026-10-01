@@ -2613,7 +2613,7 @@ describe("reconciling a turn with the server's own state", () => {
   })]
 
   async function reconciledTurn(setup?: (client: ReturnType<typeof harness>["client"]) => void) {
-    const { client, factory, stream } = harness()
+    const { client, factory, server, stream } = harness()
     setup?.(client)
     let next = 0
     const adapter = new OpenCodeSdkAdapter(factory, () => `msg_${++next}`)
@@ -2629,7 +2629,7 @@ describe("reconciling a turn with the server's own state", () => {
     const error = (message: string) => stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "UnknownError", data: { message } } } })
     const seen = () => stream.emit({ type: "message.updated", properties: { info: { id: turnId, sessionID: threadId, role: "user", time: { created: 10 } } } })
     const tick = (ms: number) => vi.advanceTimersByTimeAsync(ms)
-    return { adapter, client, events, stream, threadId, turnId, history, idle, error, seen, tick }
+    return { adapter, client, server, events, stream, threadId, turnId, history, idle, error, seen, tick }
   }
   afterEach(() => { vi.useRealTimers() })
 
@@ -2924,6 +2924,128 @@ describe("reconciling a turn with the server's own state", () => {
     if (cause === "outside") expect(end[0]).toMatchObject({ params: { failure: expect.anything() } })
     if (cause === "v2") expect(error).toContain("permission interface Domovoi does not answer")
     if (cause === "closed") expect(error).toContain("event stream")
+    await adapter.close()
+  })
+
+  // Security review round 12 of #687 (ruling Q304). Aborts answered one by
+  // one: each test sets which sessions' aborts wait for a manual answer.
+  function manualAborts(client: ReturnType<typeof harness>["client"]) {
+    const waiting = new Map<string, Array<(ok: boolean) => void>>()
+    client.session.abort.mockImplementation((...args: unknown[]) => {
+      const id = (args[0] as { path: { id: string } }).path.id
+      return new Promise<{ data: boolean }>((resolve, reject) => {
+        const answers = waiting.get(id) ?? []
+        answers.push((ok) => (ok ? resolve({ data: true }) : reject(new Error("abort refused"))))
+        waiting.set(id, answers)
+      })
+    })
+    return {
+      answer: (id: string, ok = true) => waiting.get(id)?.shift()?.(ok),
+      pending: (id: string) => waiting.get(id)?.length ?? 0,
+    }
+  }
+  const cause = (stream: EventStream, threadId: string, owner: "outside" | "v2" | "closed") => {
+    if (owner === "outside") stream.emit({ type: "permission.replied", properties: { sessionID: threadId, requestID: "per_elsewhere", reply: "once" } })
+    if (owner === "v2") stream.emit({ type: "permission.v2.asked", properties: { sessionID: threadId, id: "per_v2" } })
+    if (owner === "closed") stream.close()
+  }
+
+  // R12-1: a hold taken while the final readiness check already waits on a
+  // root abort still holds the prompt.
+  it.each([["outside"], ["v2"], ["closed"]] as const)("holds a steer whose last check is waiting on an abort when a %s stop begins", async (owner) => {
+    const { adapter, client, events, stream, threadId, turnId, seen, tick } = await reconciledTurn()
+    const aborts = manualAborts(client)
+    seen()
+    stream.emit({ type: "session.created", properties: { info: { id: "ses_child", parentID: threadId } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11 } } } })
+    await tick(0)
+    // The steer's catalog read is held, so its last check comes later.
+    let readCatalog!: () => void
+    client.mcp.status.mockImplementationOnce(() => new Promise((resolve) => { readCatalog = () => resolve({ data: {} }) }))
+    const steer = adapter.steerTurn(threadId, turnId, "More").then(() => "sent", (failure: Error) => failure.message)
+    await tick(10)
+    // A catalog stop: the root abort is pending when the steer's last check runs.
+    stream.emit({ type: "message.part.updated", properties: { part: { type: "tool", sessionID: threadId, messageID: "msg_5", callID: "c1", tool: "plan_enter", state: { status: "pending", input: {} } } } })
+    await tick(10)
+    expect(aborts.pending(threadId)).toBe(1)
+    readCatalog()
+    await tick(10)
+    // The thread-wide stop begins: it joins the root abort and aborts the child.
+    cause(stream, threadId, owner)
+    await tick(10)
+    expect(aborts.pending("ses_child")).toBe(1)
+    aborts.answer(threadId)
+    await tick(10)
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1)
+    aborts.answer("ses_child")
+    await tick(10)
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1)
+    expect(await steer).not.toBe("sent")
+    expect(turnEnds(events, turnId)).toHaveLength(1)
+    await adapter.close()
+  })
+
+  // R12-2: overlapping thread-wide stops end the turn once, when the last
+  // has settled, with the failure first in precedence: an approval answered
+  // elsewhere, then a request Domovoi cannot answer, then a closed stream.
+  it.each([
+    ["over the same pending root abort", false],
+    ["with a subagent adopted between them", true],
+  ] as const)("ends a turn stopped twice with the approval answered elsewhere, %s", async (_case, adopt) => {
+    const { adapter, client, events, stream, threadId, turnId, seen, tick } = await reconciledTurn()
+    const aborts = manualAborts(client)
+    seen()
+    cause(stream, threadId, "v2")
+    await tick(10)
+    if (adopt) stream.emit({ type: "session.created", properties: { info: { id: "ses_child", parentID: threadId } } })
+    await tick(0)
+    cause(stream, threadId, "outside")
+    await tick(10)
+    expect(aborts.pending(threadId)).toBe(1)
+    aborts.answer(threadId)
+    await tick(10)
+    if (adopt) {
+      expect(turnEnds(events, turnId)).toEqual([])
+      aborts.answer("ses_child")
+      await tick(10)
+    }
+    const end = turnEnds(events, turnId)
+    expect(end).toHaveLength(1)
+    expect(end[0]).toMatchObject({ params: { turn: { status: "failed" }, failure: expect.anything() } })
+    await adapter.close()
+  })
+
+  // R12-3: a server stop that never answers does not hold a send for ever.
+  it("rejects a held send when the adapter closes while the server stop is unanswered", async () => {
+    const { adapter, client, server, stream, threadId, turnId, seen, tick } = await reconciledTurn()
+    client.session.abort.mockRejectedValue(new Error("abort refused"))
+    server.stop.mockImplementation(() => new Promise(() => {}))
+    seen()
+    cause(stream, threadId, "v2")
+    const steer = adapter.steerTurn(threadId, turnId, "More").then(() => "sent", (failure: Error) => failure.message)
+    await tick(10)
+    expect(server.stop).toHaveBeenCalled()
+    await adapter.close()
+    await tick(100_000)
+    expect(await steer).not.toBe("sent")
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps an unconfirmed server stop recorded, so no other server starts, once its bound has passed", async () => {
+    const { adapter, client, server, stream, threadId, turnId, events, seen, tick } = await reconciledTurn()
+    client.session.abort.mockRejectedValue(new Error("abort refused"))
+    server.stop.mockImplementation(() => new Promise(() => {}))
+    seen()
+    cause(stream, threadId, "v2")
+    await tick(30_000)
+    expect(events).toContainEqual(expect.objectContaining({ type: "provider-disconnected", reason: expect.stringContaining("could not confirm that the server") }))
+    expect(turnEnds(events, turnId)).toHaveLength(1)
+    // The next connection stops the server again, within the same bound,
+    // and is refused while that stop is unconfirmed.
+    const connecting = adapter.connect().then(() => "connected", (failure: Error) => failure.message)
+    await tick(25_000)
+    expect(await connecting).toContain("could not confirm that the earlier")
+    expect(server.stop).toHaveBeenCalledTimes(2)
     await adapter.close()
   })
 

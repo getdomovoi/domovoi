@@ -107,6 +107,11 @@ const catalogReadTimeoutMs = 1_000
 // the abort as failed (#sendAbort).
 const abortAnswerTimeoutMs = 10_000
 
+// How long Domovoi waits for a stopped server to be confirmed gone, the
+// process group or tree and its own exit included, before it counts the stop
+// as unconfirmed (#retire).
+const serverStopConfirmMs = 20_000
+
 // A turn the events left open is settled from the server's own state
 // (#reconcile, security review round 9 of #687, ruling Q294): two seconds
 // after an idle or error that did not end it, or after an abort for it that
@@ -305,12 +310,19 @@ type Session = {
   // is applied only if this did not move while it ran (security review round
   // 10 of #687).
   activity: number
-  // Thread-wide stops under way (#holdThread): an approval answered
-  // elsewhere, a request Domovoi cannot answer, a closed event stream. Each
-  // aborts the thread and its subagents, then ends the turn with its own
-  // failure. Until each has, nothing else ends the turn and no prompt is
-  // sent (security review round 11 of #687).
-  threadStops: Set<Promise<void>>
+  // The thread-wide stops under way, as one record (#holdThread): an
+  // approval answered elsewhere, a request Domovoi cannot answer, a closed
+  // event stream. Each aborts the thread and its subagents and then settles
+  // with its failure. Until the last has settled, nothing else ends the turn
+  // and no prompt is sent; then the turn ends once, with the failure first
+  // in precedence (security review rounds 11 and 12 of #687).
+  threadStop?: ThreadStop
+  // Settles when the session is unloaded or dropped, or the adapter closes,
+  // so a prompt waiting on a stop or an abort is refused rather than kept
+  // waiting (#readyToSend). It says nothing about whether the provider, or
+  // anything it started, has stopped (security review round 12 of #687).
+  gone: Promise<void>
+  leave: () => void
   // The catalog checked before the prompt that started the active turn. Every
   // prompt, a steer's included, is checked before it is sent, but only the
   // prompt that starts a turn sets this, and the turn's tool calls, a
@@ -331,6 +343,25 @@ type Session = {
 type DirectoryStream = {
   controller: AbortController
   threadIds: Set<string>
+}
+
+// How a thread-wide stop fails the turn. The failure first in precedence
+// wins when stops overlap: an approval answered elsewhere (0), then a
+// request Domovoi cannot answer (1), then a closed event stream (2). A
+// server stop's own reason (#stopServer) counts only when no stop settled
+// with one of these.
+type StopOutcome = { rank: 0 | 1 | 2; error: string; failure?: ProviderFailure }
+
+// The thread-wide stops under way for one turn (#holdThread). Each owner
+// settles once, on its own, with its outcome; no owner waits for another,
+// so overlapping stops cannot wait on each other.
+type ThreadStop = {
+  turnId: string | undefined
+  owners: number
+  outcome?: StopOutcome
+  // Settles when the last owner has settled or the session is gone.
+  cleared: Promise<void>
+  clear: () => void
 }
 
 // An abort Domovoi sent to a provider session's run (#abortRun), recorded
@@ -935,7 +966,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#closed = true
     for (const directory of this.#directories.values()) directory.controller.abort()
     this.#directories.clear()
-    for (const session of this.#sessions.values()) this.#clearReconcile(session)
+    // A prompt waiting on a stop or an abort is refused (#readyToSend).
+    for (const session of [...this.#sessions.values()]) this.#dropSession(session)
     this.#sessions.clear()
     this.#subagents = new SubagentRegistry()
     this.#pendingApprovals.clear()
@@ -1040,6 +1072,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     runtime: Runtime,
     pending?: PendingSessionLoad,
   ): Promise<void> {
+    let leave!: () => void
+    const gone = new Promise<void>((resolve) => { leave = resolve })
     const session: Session = {
       threadId,
       cwd,
@@ -1049,7 +1083,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       steerTurnIds: new Map(),
       toolPhases: new Map(),
       activity: 0,
-      threadStops: new Set(),
+      gone,
+      leave,
     }
     const existing = this.#directories.get(cwd)
     if (existing) {
@@ -1096,40 +1131,78 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#directories.delete(cwd)
     const sessions = [...this.#sessions.values()].filter((session) => session.cwd === cwd)
     for (const session of sessions) this.#refusePendingFor(session.threadId)
-    const releases = sessions.map((session) => this.#holdThread(session))
+    const settles = sessions.map((session) => this.#holdThread(session))
+    let outcome: StopOutcome | undefined
     void Promise.all(sessions.map((session) => this.#abortThread(session))).then(async (confirmed) => {
       if (!confirmed.every(Boolean)) {
         await this.#stopServer(this.#unconfirmedStopReason())
         return
       }
-      for (const session of sessions) {
+      outcome = { rank: 2, error: reason }
+      for (const [index, session] of sessions.entries()) {
         if (this.#sessions.get(session.threadId) !== session) continue
-        this.#complete(session, "failed", reason)
+        settles[index]!(outcome)
         this.#forgetSubagents(session.threadId)
         this.#forgetReplies(session.threadId)
-        this.#sessions.delete(session.threadId)
+        this.#dropSession(session)
       }
       this.#emit({ type: "provider-disconnected", reason })
     }).finally(() => {
-      for (const release of releases) release()
+      for (const settle of settles) settle(outcome)
     })
   }
 
-  // Holds the thread's turn for a thread-wide stop until the returned
-  // release: the root abort's answer, a read of the server's state and the
-  // run's own end do not end it, and a prompt waits (security review round 11
-  // of #687). The stop's owner ends the turn with its own failure before it
-  // releases. A turn still open then is read from the server again.
-  #holdThread(session: Session): () => void {
-    let release!: () => void
-    const stop = new Promise<void>((resolve) => { release = resolve })
-    session.threadStops.add(stop)
-    this.#clearReconcile(session)
-    return () => {
-      if (!session.threadStops.delete(stop)) return
-      release()
-      if (session.threadStops.size === 0 && session.activeTurnId !== undefined) this.#scheduleReconcile(session, session.activeTurnId)
+  // Registers a thread-wide stop of the session's turn and returns how its
+  // owner settles it, once, with its failure or none (security review rounds
+  // 11 and 12 of #687). While any stop is registered, the root abort's
+  // answer, a read of the server's state and the run's own end do not end
+  // the turn, and a prompt waits (#readyToSend). When the last registered
+  // owner settles, the turn ends once with the failure first in precedence
+  // (StopOutcome); with none, a turn still open is read from the server.
+  // Owners never wait for each other.
+  #holdThread(session: Session): (outcome?: StopOutcome) => void {
+    let stop = session.threadStop
+    if (!stop) {
+      let clear!: () => void
+      const cleared = new Promise<void>((resolve) => { clear = resolve })
+      stop = { turnId: session.activeTurnId, owners: 0, cleared, clear }
+      session.threadStop = stop
     }
+    const held = stop
+    held.owners += 1
+    this.#clearReconcile(session)
+    let settled = false
+    return (outcome) => {
+      if (settled) return
+      settled = true
+      if (outcome && (!held.outcome || outcome.rank < held.outcome.rank)) held.outcome = outcome
+      held.owners -= 1
+      if (held.owners > 0 || session.threadStop !== held) return
+      this.#endThreadStop(session, held)
+      if (session.activeTurnId !== undefined && this.#sessions.get(session.threadId) === session) this.#scheduleReconcile(session, session.activeTurnId)
+    }
+  }
+
+  // Ends the stop record: the turn it concerns, if still open, fails with
+  // the best recorded failure. Called when the last owner settles, and when
+  // the session is unloaded or dropped first.
+  #endThreadStop(session: Session, stop: ThreadStop): void {
+    if (session.threadStop === stop) delete session.threadStop
+    const outcome = stop.outcome
+    if (outcome && stop.turnId !== undefined && session.activeTurnId === stop.turnId) {
+      this.#complete(session, "failed", outcome.error, outcome.failure)
+    }
+    stop.clear()
+  }
+
+  // The session leaves the adapter: a stop under way ends its turn with what
+  // it recorded, and a prompt waiting on it is refused (#readyToSend). This
+  // releases waiters only; it does not show that the provider stopped.
+  #dropSession(session: Session): void {
+    if (session.threadStop) this.#endThreadStop(session, session.threadStop)
+    this.#clearReconcile(session)
+    if (this.#sessions.get(session.threadId) === session) this.#sessions.delete(session.threadId)
+    session.leave()
   }
 
   // An unloaded thread hears no more replies, so what was recorded for its
@@ -1342,9 +1415,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #unloadSession(session: Session): void {
     this.#refusePendingFor(session.threadId)
     this.#forgetSubagents(session.threadId)
-    this.#clearReconcile(session)
     this.#forgetReplies(session.threadId)
-    this.#sessions.delete(session.threadId)
+    this.#dropSession(session)
     this.#runAborts.delete(session.threadId)
     const directory = this.#directories.get(session.cwd)
     if (!directory) return
@@ -1358,16 +1430,30 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // goes out while the server is still taking one (security review round 7
   // of #687). An abort the server did not answer fails the prompt with the
   // stop's reason, and a prompt whose turn ended meanwhile is not sent.
+  //
+  // Every wait is followed by every check again (security review round 12
+  // of #687): a thread-wide stop registered while this waited on an abort
+  // holds the prompt too (#holdThread), and a session that is unloaded or
+  // dropped, or an adapter that closes, refuses it rather than leave it
+  // waiting. Being let go says nothing about whether the provider stopped.
   async #readyToSend(session: Session, turnId: string): Promise<void> {
-    // A thread-wide stop under way ends the turn or unloads the thread
-    // first (#holdThread); what is left is checked below.
-    while (session.threadStops.size > 0) await Promise.all(session.threadStops)
-    const record = this.#runAborts.get(session.threadId)
-    if (record?.pending && !await record.settled) {
-      throw new Error(`${record.reason} ${this.#unconfirmed()} Domovoi did not send this prompt.`)
-    }
-    if (session.activeTurnId !== turnId || this.#sessions.get(session.threadId) !== session) {
-      throw new Error(`${this.#identity.providerName} turn is no longer active`)
+    for (;;) {
+      if (this.#closed) throw new Error(`${this.#identity.providerName} adapter closed`)
+      if (session.activeTurnId !== turnId || this.#sessions.get(session.threadId) !== session) {
+        throw new Error(`${this.#identity.providerName} turn is no longer active`)
+      }
+      const stop = session.threadStop
+      if (stop) {
+        await Promise.race([stop.cleared, session.gone])
+        continue
+      }
+      const record = this.#runAborts.get(session.threadId)
+      if (record?.pending) {
+        const answered = await Promise.race([record.settled, session.gone.then(() => true)])
+        if (!answered) throw new Error(`${record.reason} ${this.#unconfirmed()} Domovoi did not send this prompt.`)
+        continue
+      }
+      return
     }
   }
 
@@ -1754,7 +1840,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       // A thread-wide stop under way ends the turn with its own failure,
       // whatever stop or interrupt it joined (#holdThread).
       const entry = record.turns.get(active)
-      if (session.threadStops.size === 0 && entry && (entry.ends === "stop" || (entry.ends === "interrupt" && answered))) {
+      if (!session.threadStop && entry && (entry.ends === "stop" || (entry.ends === "interrupt" && answered))) {
         this.#complete(session, "failed", answered ? entry.reason : `${entry.reason} ${this.#unconfirmed()}`)
       }
       // The turn is still open: an interrupt or a thread stop whose abort
@@ -1762,8 +1848,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       // or an abort that made a read stale. What the run published meanwhile
       // is read back from the server (security review rounds 9 and 11 of
       // #687, ruling Q294). A thread-wide stop under way reads it, if need
-      // be, once it releases the turn.
-      if (session.activeTurnId === active && session.threadStops.size === 0) this.#scheduleReconcile(session, active)
+      // be, once its last owner settles.
+      if (session.activeTurnId === active && !session.threadStop) this.#scheduleReconcile(session, active)
       return answered
     })
     return record
@@ -1849,7 +1935,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const turnId = session.activeTurnId
     const turn = session.activeTurn
     if (turnId === undefined || !turn?.seen) return
-    if (this.#runAborts.get(session.threadId)?.turns.has(turnId) || session.threadStops.size > 0) return
+    if (this.#runAborts.get(session.threadId)?.turns.has(turnId) || session.threadStop) return
     if (turn.reply ? !turn.reply.done : turn.error === undefined) return
     const error = turn.reply?.error ?? turn.error
     if (error === undefined) this.#complete(session, "completed")
@@ -1905,8 +1991,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
     // A pending abort holds the turn; its settling schedules this again.
     // A pending abort concerning the turn, or a thread-wide stop under way,
-    // holds it; its settling or release schedules this again.
-    const held = () => this.#runAborts.get(session.threadId)?.turns.has(turnId) === true || session.threadStops.size > 0
+    // holds it; its settling, or its last owner's, schedules this again.
+    const held = () => this.#runAborts.get(session.threadId)?.turns.has(turnId) === true || session.threadStop !== undefined
     if (held()) {
       this.#clearReconcile(session)
       return
@@ -2138,12 +2224,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       if (pending.providerSessionId === sessionId && pending.permissionId === requestId) this.#failedRefusals.delete(id)
     }
     this.#refusePendingFor(session.threadId)
-    const release = this.#holdThread(session)
+    const settle = this.#holdThread(session)
+    const outcome: StopOutcome = { rank: 0, error: approvalAnsweredElsewhere.message, failure: approvalAnsweredElsewhere }
     void this.#abortThread(session, sessionId).then(async (confirmed) => {
-      if (this.#sessions.get(session.threadId) === session) {
-        this.#complete(session, "failed", approvalAnsweredElsewhere.message, approvalAnsweredElsewhere)
-        this.#unloadSession(session)
-      }
+      // Settled before the unload: the turn ends with this failure now, or,
+      // if another stop is still registered, when the unload drops it.
+      settle(outcome)
+      if (this.#sessions.get(session.threadId) === session) this.#unloadSession(session)
       this.#emit({
         type: "approval-answered-elsewhere",
         threadId: session.threadId,
@@ -2161,7 +2248,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       await this.#stopServer(confirmed
         ? `Domovoi restarted the ${name} server because an approval was answered outside Domovoi, so no approval it kept stays in place`
         : this.#unconfirmedStopReason())
-    }).finally(release)
+    }).finally(() => settle(outcome))
   }
 
   // A v2 permission request is answered through an interface Domovoi does not
@@ -2174,19 +2261,18 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const session = this.#sessions.get(threadId)
     if (!session || session.cwd !== cwd || session.stopping) return
     const name = this.#identity.providerName
-    const release = this.#holdThread(session)
+    const settle = this.#holdThread(session)
+    const outcome: StopOutcome = {
+      rank: 1,
+      error: `${name} asked for an approval through a permission interface Domovoi does not answer, so Domovoi stopped the turn`,
+    }
     void this.#abortThread(session, sessionId).then(async (confirmed) => {
       if (!confirmed) {
         await this.#stopServer(this.#unconfirmedStopReason())
         return
       }
-      if (this.#sessions.get(session.threadId) !== session) return
-      this.#complete(
-        session,
-        "failed",
-        `${name} asked for an approval through a permission interface Domovoi does not answer, so Domovoi stopped the turn`,
-      )
-    }).finally(release)
+      settle(outcome)
+    }).finally(() => settle(outcome))
   }
 
   // Aborts the thread's run and every subagent run it is known to have, and
@@ -2223,7 +2309,14 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#directories.clear()
     this.#pendingApprovals.clear()
     this.#failedRefusals.clear()
-    for (const session of this.#sessions.values()) this.#complete(session, "failed", reason)
+    for (const session of [...this.#sessions.values()]) {
+      // A thread-wide stop that already settled with its failure keeps it
+      // (StopOutcome precedence); otherwise the turn fails with this reason.
+      const recorded = session.threadStop?.outcome
+      if (recorded) this.#complete(session, "failed", recorded.error, recorded.failure)
+      else this.#complete(session, "failed", reason)
+      this.#dropSession(session)
+    }
     this.#sessions.clear()
     this.#subagents = new SubagentRegistry()
     this.#sentReplies.clear()
@@ -2243,9 +2336,18 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
   // Stops a server and keeps it until it is confirmed gone. A stop already
   // under way is shared rather than repeated. Resolves true once it is gone.
+  // The wait for that confirmation is bounded (security review round 12 of
+  // #687): on Windows the tree kill has no deadline of its own. A stop not
+  // confirmed in time counts as unconfirmed, so the server stays recorded
+  // and no other server starts; the next message stops it again.
   #retire(server: OpenCodeServer): Promise<boolean> {
     this.#retiredServer = server
-    this.#retiring ??= server.stop().catch(() => false).then((stopped) => {
+    const name = this.#identity.providerName
+    this.#retiring ??= settlesWithin(
+      server.stop(),
+      serverStopConfirmMs,
+      `${name} server stop was not confirmed within ${serverStopConfirmMs / 1000} seconds`,
+    ).catch(() => false).then((stopped) => {
       if (stopped && this.#retiredServer === server) this.#retiredServer = undefined
     }).finally(() => {
       this.#retiring = undefined
