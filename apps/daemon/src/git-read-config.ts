@@ -81,15 +81,18 @@ export function isStandardLfsFilterLine(key: string, value: string): boolean {
 // directory does (git-environment.ts).
 function run(directory: string, args: string[], env: NodeJS.ProcessEnv): Promise<string | undefined> {
   return new Promise((done) => {
+    // One environment object, built once, for the resolver and the child:
+    // a spread drops inherited keys, PATH among them (ruling Q305).
+    const childEnv = { ...env, GIT_NO_LAZY_FETCH: "1" }
     let command: string
     try {
-      command = gitCommand(env)
+      command = gitCommand(childEnv)
     } catch {
       // No Git found reads as a failed read: the caller fails closed.
       done(undefined)
       return
     }
-    execFile(command, ["-C", directory, ...args], { ...limits, env: { ...env, GIT_NO_LAZY_FETCH: "1" } }, (error, stdout) => {
+    execFile(command, ["-C", directory, ...args], { ...limits, env: childEnv }, (error, stdout) => {
       done(error ? undefined : stdout)
     })
   })
@@ -128,9 +131,11 @@ export async function gitReadCanRunProgram(directory: string, env: NodeJS.Proces
 // with or without a .gitmodules file. The index is read as a stream and the
 // scan stops at the first gitlink; a failed or slow read counts as one.
 function hasGitlink(directory: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+  // The same object for the resolver and the child (ruling Q305).
+  const childEnv = { ...env, GIT_NO_LAZY_FETCH: "1" }
   let command: string
   try {
-    command = gitCommand(env)
+    command = gitCommand(childEnv)
   } catch {
     return Promise.resolve(true)
   }
@@ -143,7 +148,7 @@ function hasGitlink(directory: string, env: NodeJS.ProcessEnv): Promise<boolean>
       child.kill()
       done(found)
     }
-    const child = spawn(command, ["-C", directory, "ls-files", "--stage", "-z"], { env: { ...env, GIT_NO_LAZY_FETCH: "1" }, stdio: ["ignore", "pipe", "ignore"] })
+    const child = spawn(command, ["-C", directory, "ls-files", "--stage", "-z"], { env: childEnv, stdio: ["ignore", "pipe", "ignore"] })
     const timer = setTimeout(() => finish(true), limits.timeout)
     let pending = ""
     child.stdout.setEncoding("utf8")

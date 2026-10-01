@@ -1172,20 +1172,23 @@ async function transferWorktreeFingerprint(
   signal?: AbortSignal,
 ): Promise<{ headCommit: string; digest: string }> {
   signal?.throwIfAborted()
+  // One environment for the resolver and both children (ruling Q305).
+  const env = gitEnvironment()
+  const command = gitCommand(env)
   const [headCommit, listed, staged] = await Promise.all([
     git(worktreePath, ["-c", "core.fsmonitor=false", "rev-parse", "HEAD"], signal),
-    execute(gitCommand(gitEnvironment()), gitArguments(worktreePath, [
+    execute(command, gitArguments(worktreePath, [
       "ls-files",
       "-z",
       "--cached",
       "--others",
       "--exclude-standard",
-    ]), { env: gitEnvironment(), encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
-    execute(gitCommand(gitEnvironment()), gitArguments(worktreePath, [
+    ]), { env, encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
+    execute(command, gitArguments(worktreePath, [
       "ls-files",
       "--stage",
       "-z",
-    ]), { env: gitEnvironment(), encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
+    ]), { env, encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
   ])
   const paths = utf8GitPaths(Buffer.from(listed.stdout))
   const gitlinks = indexedGitlinks(Buffer.from(staged.stdout))
@@ -1727,9 +1730,11 @@ export class GitWorkspaceService implements WorkspaceService {
         })
         if (canonical) promoted.add(Buffer.from(relative(root, canonical).split(sep).join("/")).toString("hex"))
       }
-      const { stdout } = await execute(gitCommand(gitEnvironment()), gitArguments(root, [
+      // One environment for the resolver and the child (ruling Q305).
+      const env = gitEnvironment()
+      const { stdout } = await execute(gitCommand(env), gitArguments(root, [
         "ls-files", "-z", "--others", "--ignored", "--exclude-standard",
-      ]), { env: gitEnvironment(), encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal })
+      ]), { env, encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal })
       let count = 0
       let start = 0
       // NUL framing also counts filenames containing newlines or non-UTF-8
