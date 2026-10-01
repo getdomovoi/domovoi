@@ -144,7 +144,7 @@ describe("windowsGitStop", () => {
     const taskkill = fakeTaskkill()
     const stop = windowsGitStop(fakeGit({ exitCode: null, signalCode: null }), () => taskkill as unknown as ChildProcess)
     stop.stop()
-    expect(taskkill.listenerCount("exit")).toBe(1)
+    expect(taskkill.listenerCount("exit")).toBeGreaterThan(0)
 
     stop.cancel()
 
@@ -152,6 +152,37 @@ describe("windowsGitStop", () => {
     expect(taskkill.listenerCount("exit")).toBe(0)
     // A failed kill reports an error event; nothing crashes on it.
     expect(() => taskkill.emit("error", new Error("kill failed"))).not.toThrow()
+  })
+
+  // The bound is the taskkill's own, so it holds even when Git closes and the
+  // command settles first (ruling Q281).
+  it("ends a taskkill still running at its own bound, with no one else asking", () => {
+    vi.useFakeTimers()
+    try {
+      const taskkill = fakeTaskkill()
+      windowsGitStop(fakeGit({ exitCode: null, signalCode: null }), () => taskkill as unknown as ChildProcess).stop()
+      vi.advanceTimersByTime(gitTeardownTimeoutMs - 1)
+      expect(taskkill.kill).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(1)
+      expect(taskkill.kill).toHaveBeenCalledOnce()
+      expect(taskkill.listenerCount("exit")).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("leaves a taskkill that exits before its bound alone", () => {
+    vi.useFakeTimers()
+    try {
+      const taskkill = fakeTaskkill()
+      windowsGitStop(fakeGit({ exitCode: null, signalCode: null }), () => taskkill as unknown as ChildProcess).stop()
+      taskkill.exitCode = 0
+      taskkill.emit("exit", 0, null)
+      vi.advanceTimersByTime(gitTeardownTimeoutMs)
+      expect(taskkill.kill).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("leaves a taskkill that already finished alone at the bound", () => {

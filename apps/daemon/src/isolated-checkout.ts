@@ -256,6 +256,12 @@ export function windowsGitStop(
 ): { stop(): void; cancel(): void } {
   let taskkill: ChildProcess | undefined
   const exited = (spawned: Pick<ChildProcess, "exitCode" | "signalCode">) => spawned.exitCode !== null || spawned.signalCode !== null
+  const cancel = () => {
+    if (taskkill === undefined || exited(taskkill)) return
+    taskkill.removeAllListeners()
+    taskkill.on("error", () => {})
+    taskkill.kill()
+  }
   return {
     stop() {
       if (child.pid === undefined || exited(child)) return
@@ -263,13 +269,16 @@ export function windowsGitStop(
       void windowsTreeKill(child.pid, (command, args, options) => (taskkill = run(command, args, options))).catch(() => {
         if (!exited(child)) child.kill("SIGKILL")
       })
+      // The taskkill's own bound, which holds whether or not the command
+      // settles first (ruling Q281): Git can close its pipes while taskkill
+      // still runs, and nothing else would end it then.
+      const started = taskkill
+      if (started === undefined) return
+      const bound = setTimeout(cancel, gitTeardownTimeoutMs)
+      bound.unref?.()
+      started.once("exit", () => clearTimeout(bound))
     },
-    cancel() {
-      if (taskkill === undefined || exited(taskkill)) return
-      taskkill.removeAllListeners()
-      taskkill.on("error", () => {})
-      taskkill.kill()
-    },
+    cancel,
   }
 }
 
