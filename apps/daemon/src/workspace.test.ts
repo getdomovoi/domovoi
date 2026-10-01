@@ -2070,6 +2070,38 @@ describe("GitWorkspaceService session refs", () => {
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })
 
+  // Git starts git-remote-<helper> for a `<helper>::` URL or a remote's vcs
+  // setting. Push and fetch allow only the transports a session transfer
+  // uses, and refuse a remote whose URL names any other. The stand-in helper
+  // is an extensionless script, which Git for Windows does not run (as for
+  // the fake git-lfs, ruling Q225).
+  it.skipIf(process.platform === "win32").each([
+    ["a helper URL", (git: (...args: string[]) => Promise<unknown>) => git("remote", "add", "probe", "probe::payload")],
+    ["a vcs setting", async (git: (...args: string[]) => Promise<unknown>) => {
+      await git("remote", "add", "probe", "https://example.invalid/remote.git")
+      await git("config", "remote.probe.vcs", "probe")
+    }],
+  ])("launches no remote helper the repository names through %s on push or fetch", async (_label, configure) => {
+    const { scratch, service, workspace, checkpoint } = await sessionWithRemote("domovoi-ref-helper-")
+    const repositoryPath = join(scratch, "project")
+    const markerPath = join(scratch, "helper-launched").replaceAll("\\", "/")
+    const bin = join(scratch, "bin")
+    await mkdir(bin)
+    await writeFile(join(bin, "git-remote-probe"), `#!/bin/sh\necho launched >> "${markerPath}"\nexit 1\n`, { mode: 0o755 })
+    await configure((...args: string[]) => execute("git", ["-C", repositoryPath, ...args]))
+    const previousPath = process.env.PATH
+    process.env.PATH = `${bin}:${previousPath ?? ""}`
+    try {
+      await expect(service.pushSessionRef(workspace.path, "probe", "session-1")).rejects.toThrow()
+      const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
+      await expect(target.restoreSessionFromRef(repositoryPath, "probe", "session-2", checkpoint.commit)).rejects.toThrow()
+    } finally {
+      process.env.PATH = previousPath
+    }
+
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+  })
+
   it("pushes the session checkpoint to the remote the caller named", async () => {
     const { service, workspace, checkpoint, remotePath } = await sessionWithRemote("domovoi-ref-")
 

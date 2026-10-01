@@ -11,7 +11,7 @@ import { maximumPreviewSourceBytes, type RepositoryGitFilterScope } from "@getdo
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
-import { checkOutIsolated, openIsolatedGit, type IsolatedGit } from "./isolated-checkout.js"
+import { carriedRemoteUrl, checkOutIsolated, openIsolatedGit, type IsolatedGit } from "./isolated-checkout.js"
 import {
   repositoryFilterGate,
   type RepositoryFilterGate,
@@ -405,6 +405,44 @@ async function configEntries(
   return entries
 }
 
+const transferProtocols = ["https", "http", "ssh", "git", "file"] as const
+
+// Whether a session transfer pushes to or fetches from this address: the
+// forms a checkout carries (carriedRemoteUrl: https, http, ssh, git or an
+// scp-like address), a file:// URL, or a local path. A `<helper>::` address,
+// any other scheme, a control character or a leading "-" is refused.
+export function transferRemoteUrl(url: string): boolean {
+  if (carriedRemoteUrl(url)) return true
+  if (url === "" || /[\p{Cc}]/u.test(url) || url.includes("::") || url.startsWith("-")) return false
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//u.exec(url)
+  return scheme === null || scheme[1]!.toLowerCase() === "file"
+}
+
+export class RepositoryRemoteRefusedError extends RepositoryConfigRefusedError {
+  constructor(remote: string) {
+    super(
+      `The remote "${shownName(remote)}" has an address or a remote helper Domovoi does not push to or fetch from. `
+      + "A session transfer uses https, http, ssh and git remotes, file:// URLs and local paths only.",
+    )
+    this.name = "RepositoryRemoteRefusedError"
+  }
+}
+
+// Refuses a remote whose effective fetch or push address a transfer does not
+// use, or which names a remote helper through its vcs setting. The addresses
+// are read as Git resolves them, URL rewrites included.
+async function refuseRemoteAddresses(repositoryPath: string, remote: string, signal?: AbortSignal): Promise<void> {
+  const addresses = [
+    ...(await git(repositoryPath, ["remote", "get-url", "--all", "--", remote], signal)).split("\n"),
+    ...(await git(repositoryPath, ["remote", "get-url", "--push", "--all", "--", remote], signal)).split("\n"),
+  ]
+  const vcs = await git(repositoryPath, ["config", "--get-all", `remote.${remote}.vcs`], signal).catch((error: { code?: unknown }) => {
+    if (error.code === 1) return ""
+    throw error
+  })
+  if (vcs !== "" || addresses.some((address) => !transferRemoteUrl(address))) throw new RepositoryRemoteRefusedError(remote)
+}
+
 // Push and fetch run the commands these settings name, or send the repository
 // somewhere else. The repository's own values are replaced by the person's
 // (global or system) or by Git's defaults; a URL rewrite or proxy command it
@@ -416,7 +454,15 @@ async function repositoryTransportOverrides(repositoryPath: string, signal?: Abo
   const untrusted = entries.filter(({ scope }) => !trustedConfigScopes.has(scope))
   const refused = untrusted.filter(({ key }) => key.includes("=") || /^(core\.gitproxy|url\..*\.(insteadof|pushinsteadof))$/u.test(key))
   if (refused.length > 0) throw new RepositoryTransportRefusedError(refused)
-  const overrides = ["-c", "protocol.ext.allow=never", "-c", "push.gpgSign=false"]
+  // Only the transports a session transfer uses: https, http, ssh and git
+  // remotes, and file for a remote on a local path and for a bundle. Every
+  // other transport, ext:: and any `<helper>::` address or remote vcs
+  // setting that would start git-remote-<helper>, is refused by Git.
+  const overrides = [
+    "-c", "protocol.allow=never",
+    ...transferProtocols.flatMap((protocol) => ["-c", `protocol.${protocol}.allow=always`]),
+    "-c", "push.gpgSign=false",
+  ]
   for (const key of new Set(untrusted.map(({ key }) => key))) {
     const trusted = entries
       .filter((entry) => entry.key === key && trustedConfigScopes.has(entry.scope))
@@ -1817,6 +1863,7 @@ export class GitWorkspaceService implements WorkspaceService {
       if (!remotes.split("\n").map((name) => name.trim()).includes(remote)) {
         throw new Error(`Repository has no remote named ${remote}`)
       }
+      await refuseRemoteAddresses(worktreePath, remote, signal)
       return { commit: await this.#checkpointedHead(worktreePath, isolated, signal), transport }
     })
 
@@ -1869,6 +1916,7 @@ export class GitWorkspaceService implements WorkspaceService {
     const ref = `refs/domovoi/sessions/${sessionId}`
     const checkpointRefs = uniqueCheckpointCommits(checkpointCommits).map(checkpointRef)
     const transport = await repositoryTransportOverrides(repositoryPath, operationSignal)
+    await refuseRemoteAddresses(repositoryPath, remote, operationSignal)
     await git(repositoryPath, [
       ...transport,
       "fetch",
