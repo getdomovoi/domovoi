@@ -88,8 +88,16 @@ export function createFixtureHandlers(state, connectionId = randomUUID()) {
     }),
     // An empty list is the fixture's honest answer: this machine has no
     // installed skills or discovered models, and inventing some would draw
-    // rows nobody can act on.
-    "skill.list": () => [],
+    // rows nobody can act on. A call naming a project that is not active is
+    // refused, as the daemon refuses it. The snapshot lists its active
+    // projects in `projects`, from the demo workspace it was seeded with.
+    "skill.list": (params) => {
+      const active = snapshot().projects ?? []
+      if (params.projectId !== undefined && !active.some((project) => project.id === params.projectId)) {
+        throw new FixtureRefusal(invalidParams, "That project is not open.")
+      }
+      return []
+    },
     "runtime.models": () => [],
   }
 }
