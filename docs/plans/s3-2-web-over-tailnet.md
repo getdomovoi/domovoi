@@ -110,7 +110,8 @@ these hold:
 | a listed path collides with a daemon route: `rpc`, `healthz`, anything under `artifacts/` | a bundle cannot shadow the socket, the health probe or preview access |
 | a listed extension is outside a fixed table (`.html .js .css .svg .png .ico .webmanifest .woff2`) | content type comes from the table, never from the file |
 | any path component under the real root is a symlink, or the leaf is not a regular file | symlink refusal; the root itself may be a symlink the owner configured, resolved once with `realpath` |
-| the real root is inside the profile directory (which holds `worktrees/`) | agent-written files must never be served as the app (section 3.4) |
+| the real root is inside the profile directory (which holds `worktrees/`), or holds it | agent-written files must never be served as the app (section 3.4); a pathname policy, see there |
+| the manifest or a listed file has more than one hard link | its other name can be anywhere on the volume, `worktrees/` included (review F3, Q297) |
 | on POSIX, the root, a directory under it, the manifest or a listed file is owned by an account other than the daemon's effective uid or root, or is writable by group or others | mode bits alone do not keep another account out: an owner keeps write and chmod rights whatever the mode. Never `fs.access(W_OK)`, which answers for the daemon's account only (review F1, Q297) |
 | on POSIX, a directory above the real root, up to `/`, is owned by another account, or is writable by group or others without the sticky bit | whoever can replace an ancestor can replace the root (review F1, Q297) |
 | a file's size or SHA-256 differs from the manifest | partial or mismatched copy |
@@ -313,7 +314,12 @@ carries a `sandbox` directive without `allow-same-origin`. The alternative, a se
 the app, was Q1's option B; the owner chose the shared origin (A).
 
 The web root must also never hold agent output. It is configured by the owner, outside the
-profile's `worktrees/`, and the loader refuses a root inside the profile directory.
+profile's `worktrees/`. The loader refuses a root whose real path overlaps the profile directory's
+(either inside the other), and any manifest or listed file with a second hard link (`nlink` above
+1), since that name can sit anywhere on the volume. This is a pathname policy, not physical
+isolation (review F3, Q297): a bind mount or another alias of the profile that is not a symbolic
+link shows profile files under an unrelated path and is not detected. A trusted install location
+is the supported contract.
 
 ### 3.5 Origin allow-list changes, and why
 

@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { constants, type BigIntStats } from "node:fs"
-import { chmod, lstat, mkdir, mkdtemp, open, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, link, lstat, mkdir, mkdtemp, open, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -402,6 +402,18 @@ describe("refusals", () => {
         const fileSystem = reporting("/", { uid: otherAccount })
         expect(refusal(await load(root, { fileSystem }))).toEqual({ state: "invalid", reason: "ancestor-owner-untrusted", path: "/" })
       })
+    })
+
+    it("refuses a listed file with another hard link, even outside the root", async () => {
+      const root = await bundle()
+      await link(join(root, "index.html"), join(await directory(), "index.html"))
+      expect(refusal(await load(root))).toEqual({ state: "invalid", reason: "hard-link", path: "index.html" })
+    })
+
+    it("refuses a manifest with another hard link", async () => {
+      const root = await bundle()
+      await link(join(root, "domovoi-web.json"), join(await directory(), "domovoi-web.json"))
+      expect(refusal(await load(root))).toEqual({ state: "invalid", reason: "hard-link", path: "domovoi-web.json" })
     })
 
     it("refuses the profile reached through a symbolic link", async () => {

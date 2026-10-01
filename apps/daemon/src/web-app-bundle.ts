@@ -60,6 +60,7 @@ export type WebAppBundleInvalidReason =
   | "manifest-too-large"
   | "manifest-not-json"
   | "symbolic-link"
+  | "hard-link"
   | "not-a-directory"
   | "not-regular-file"
   | "file-missing"
@@ -85,7 +86,11 @@ export type WebAppBundleOptions = {
   // The configured directory, absolute.
   root: string
   // Agent-written files live under the profile (worktrees/), and must never be
-  // served as the app, so a root that overlaps it is refused.
+  // served as the app, so a root whose real path overlaps the profile's is
+  // refused, and so is any file with a second hard link. That is a pathname
+  // policy: a bind mount or another alias that is not a link can show profile
+  // files under an unrelated path, and is not detected. A trusted install
+  // location is the supported contract.
   profileDirectory: string
   daemonProtocolVersion?: string
   fileSystem?: WebAppBundleFileSystem
@@ -240,6 +245,9 @@ class BundleReader {
       if (!opened.isFile() || !sameEntry(opened, entry)) throw new Refusal("file-changed", listed)
       if (!trustedOwner(opened)) throw new Refusal("owner-untrusted", listed)
       if (writableByOthers(opened)) throw new Refusal("file-writable", listed)
+      // A second name for the file can sit anywhere on the volume, the
+      // profile's worktrees included, where a path check cannot see it.
+      if (opened.nlink > 1n) throw new Refusal("hard-link", listed)
       const identity = `${opened.dev}:${opened.ino}`
       if (this.#files.has(identity)) throw new Refusal("duplicate-file", listed)
       this.#files.add(identity)
