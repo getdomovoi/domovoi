@@ -103,8 +103,14 @@ async function syncDirectory(path: string): Promise<void> {
 // directory has to be flushed too. Every whole-file replace in the repository
 // goes through here; eslint refuses a bare rename import elsewhere so the
 // second half cannot be forgotten again.
-export async function publishFileDurably(staging: string, path: string): Promise<void> {
+//
+// `renamed`, when given, runs once the rename is done and before the
+// directory is flushed, so a caller that owned `staging` by its name knows it
+// no longer does, even when the flush then fails. A failed rename never calls
+// it: the rename did not happen.
+export async function publishFileDurably(staging: string, path: string, renamed?: () => void): Promise<void> {
   await rename(staging, path)
+  renamed?.()
   await syncDirectory(dirname(path))
 }
 

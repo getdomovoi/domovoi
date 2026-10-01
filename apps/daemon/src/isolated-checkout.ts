@@ -661,9 +661,11 @@ export class IndexChangedError extends Error {
 // Once the rename is done the lock's name is no longer this function's:
 // another Git can take it at once, so it is never removed after that, and a
 // failure then (the directory flush) is an index published with its
-// durability unconfirmed (ruling Q281). Before the rename the lock is this
-// function's own, recognised by its file: it is removed and the directory
-// flushed, so a power loss cannot bring it back.
+// durability unconfirmed (ruling Q281). The publish step itself says when the
+// rename is done (ruling Q295); the file now at the index path proves
+// nothing, since another Git can replace it at once. Only when the rename is
+// known not to have happened is the lock still this function's: it is
+// removed and the directory flushed, so a power loss cannot bring it back.
 export async function publishUnderIndexLock(
   path: string,
   bytes: () => Promise<Buffer>,
@@ -680,29 +682,20 @@ export async function publishUnderIndexLock(
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return "locked"
     throw error
   }
-  let ours: { dev: number; ino: number } | undefined
   let renamed = false
   let declined = false
   let failure: { error: unknown } | undefined
   try {
-    ours = await handle.stat()
     if (await proceed()) {
       await handle.writeFile(await bytes())
       await handle.sync()
       await handle.close()
-      await publish(lock, path)
-      renamed = true
+      await publish(lock, path, () => { renamed = true })
     } else {
       declined = true
     }
   } catch (error) {
     failure = { error }
-    // Whether the rename happened before the failure: the index is then this
-    // function's file.
-    if (ours !== undefined) {
-      const now = await fs.lstat(path).catch(() => undefined)
-      renamed = now !== undefined && now.dev === ours.dev && now.ino === ours.ino
-    }
   } finally {
     await handle.close().catch(() => undefined)
   }

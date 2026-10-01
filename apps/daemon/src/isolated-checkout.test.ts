@@ -212,8 +212,8 @@ describe("publishUnderIndexLock", () => {
   // unconfirmed (ruling Q281).
   it("never removes the lock's name after its rename, and reports a failed flush as unconfirmed durability", async () => {
     const { path, lock } = await file()
-    const publish = async (staging: string, target: string) => {
-      await publishFileDurably(staging, target)
+    const publish = async (staging: string, target: string, renamed?: () => void) => {
+      await publishFileDurably(staging, target, renamed)
       await writeFile(lock, "another writer's", { flag: "wx" })
       throw new Error("directory flush failed")
     }
@@ -223,6 +223,36 @@ describe("publishUnderIndexLock", () => {
     await expect(failing).rejects.toThrow(`Domovoi published the index at ${path}, but could not confirm it is durable: directory flush failed`)
     expect(await readFile(path, "utf8")).toBe("new")
     expect(await readFile(lock, "utf8")).toBe("another writer's")
+  })
+
+  // The file at the index path proves nothing about the rename: another Git
+  // can replace the index between the rename and the failed flush. The
+  // publish step itself says when the rename is done (ruling Q295), and the
+  // lock's name is never removed after that.
+  it("keeps another writer's lock when that writer replaced the index between the rename and a failed flush", async () => {
+    const { path, lock } = await file()
+    const publish = async (staging: string, target: string, renamed?: () => void) => {
+      await publishFileDurably(staging, target, renamed)
+      await writeFile(`${path}.other`, "another writer's index")
+      await publishFileDurably(`${path}.other`, path)
+      await writeFile(lock, "another writer's", { flag: "wx" })
+      throw new Error("directory flush failed")
+    }
+
+    const failing = publishUnderIndexLock(path, async () => Buffer.from("new"), undefined, { publish })
+
+    await expect(failing).rejects.toThrow(`Domovoi published the index at ${path}, but could not confirm it is durable`)
+    expect(await readFile(lock, "utf8")).toBe("another writer's")
+  })
+
+  // A failed rename is known not to have happened: only then is the lock
+  // still this function's to remove.
+  it("removes its own lock when the rename itself fails", async () => {
+    const { path, lock } = await file()
+    const publish = async () => { throw new Error("rename failed") }
+    await expect(publishUnderIndexLock(path, async () => Buffer.from("new"), undefined, { publish })).rejects.toThrow("rename failed")
+    await expect(lstat(lock)).rejects.toThrow()
+    expect(await readFile(path, "utf8")).toBe("old")
   })
 
   // Removing its own lock is flushed through the directory too, so a power
