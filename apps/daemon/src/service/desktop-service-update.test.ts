@@ -27,6 +27,8 @@ import { launchdPlist, systemdUnit } from "./units.js"
 import { publishFirst, runServiceUpdate, trackInFlight } from "./update-outcome.js"
 import { installedWslTask } from "./wsl-registration.js"
 import { wslUpdateIntentPath } from "./wsl-install.js"
+import { stopGuestSupervisor, supervisorConfigurationDigest } from "./supervisor-command.js"
+import { readSupervisorStopRequest, writeSupervisorRecord } from "./supervisor-record.js"
 
 // Ruled 2026-09-23: "Update the service" swaps the running service to the
 // runtime the app now ships, in place, on each platform. Nothing here runs a
@@ -680,6 +682,39 @@ describe("updateDaemonService with a WSL guest service (ruled B)", () => {
       )
       expect(effects.order).toEqual([])
     }
+  })
+
+  // The update registers the same registration again, so the guest loop it
+  // stopped must not stay retired: runGuestSupervisor refuses a loop for a
+  // registration whose stop request names it. This drives the real stop and
+  // its marker in a temporary profile; only process liveness is answered.
+  it("leaves the guest registration startable after stopping its loop", async () => {
+    const home = await mkdtemp(join(tmpdir(), "domovoi-wsl-update-"))
+    try {
+      const configuration: ServiceConfiguration = {
+        ...createServiceConfiguration({}, { platform: "linux", homeDirectory: home, workingDirectory: home }),
+        registrationId, serviceRuntime: oldRecord,
+        wsl: wslConfiguration().wsl!,
+      }
+      const { mkdirSync, writeFileSync } = await import("node:fs")
+      mkdirSync(join(home, ".domovoi"), { mode: 0o700 })
+      writeFileSync(join(home, ".domovoi", "service.json"), serializeServiceConfiguration(configuration), { mode: 0o600 })
+      const at = "2026-10-01T12:00:00.000Z"
+      writeSupervisorRecord(home, {
+        version: 1, supervisorId: "7c9e6679-7425-40de-944b-e07fc1f90ae7", registrationId,
+        configurationDigest: supervisorConfigurationDigest(configuration),
+        loop: { pid: 100, start: "1000", bootId: "6c4fce1c-cb9d-46a6-9403-3c355b06a8d4" },
+        startedAt: at, updatedAt: at, state: "running", attemptCount: 1, crashes: 0, reason: null,
+        attempts: [{ number: 1, startedAt: at, child: { pid: 101, start: "1001", bootId: "6c4fce1c-cb9d-46a6-9403-3c355b06a8d4" },
+          exit: null, backoffMs: 0, backoffEndedAt: null, backoffOutcome: null }],
+      })
+      const effects = fake("linux", home, {}, configuration)
+      effects.stopSupervisor = vi.fn((path: string, deadline: OperationDeadline, options?: { retire?: boolean }) =>
+        stopGuestSupervisor(path, deadline, { alive: () => false, wait: async () => {} }, options))
+      await updateDaemonService({ runtime }, effects)
+      expect(effects.stopSupervisor).toHaveBeenCalledOnce()
+      expect(readSupervisorStopRequest(home)).toBeUndefined()
+    } finally { await rm(home, { recursive: true, force: true }) }
   })
 
   it("says nothing changed when the guest shutdown cannot be proved", async () => {

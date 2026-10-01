@@ -19,3 +19,6 @@ whose loop still runs is refused with the remedy. A task installed earlier keeps
 replaced at the next install or update. Each registration then lifts Task Scheduler's default
 72 hour execution limit and battery stops, as the WSL task does, so the loop is not ended after
 three days or on battery.
+
+Updating a WSL guest service from the app no longer retires the registration it registers again,
+so the new guest loop, or a restored one, starts instead of refusing as stopped for removal.
