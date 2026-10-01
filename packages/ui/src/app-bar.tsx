@@ -17,6 +17,12 @@ import { StopMenu } from "./stop-menu"
 import { usageTodayRefreshDelayMs, usageTodayWindow } from "./session-usage"
 import { StatusDot } from "./status-dot"
 import { type DesktopWindowBridge, type WorkspaceWindowDecoration } from "./desktop-platform"
+import { cn } from "./lib/utils"
+import { titlebarTipClassName } from "./titlebar-tip"
+
+// v2's titlebar icons (topBtnStyle) sit at muted-foreground and lift to the
+// foreground on hover, so the row reads as quiet chrome around the title.
+const titlebarIconClassName = "electron-no-drag size-7 shrink-0 text-muted-foreground hover:text-foreground"
 
 function WindowControls({ bridge }: { bridge: DesktopWindowBridge }) {
   if (bridge.platform === "darwin") return null
@@ -100,15 +106,15 @@ export function AppBar({
         className="electron-drag flex h-[var(--shell-titlebar)] shrink-0 items-center gap-3 border-b border-border bg-background px-[14px]"
         style={leadingInset > 0 ? { paddingLeft: leadingInset } : undefined}
       >
-      <DomovoiMark reduced className="size-5 shrink-0 text-primary" />
+      <DomovoiMark reduced className="size-[22px] shrink-0 text-primary" />
       {sessionsDrawer ? <span className="electron-no-drag inline-flex items-center">{sessionsDrawer}</span> : null}
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon-sm" className="electron-no-drag size-7 shrink-0" aria-label="New session" disabled={watching || !onNewSession} onClick={onNewSession}>
+          <Button variant="ghost" size="icon-sm" className={titlebarIconClassName} aria-label="New session" disabled={watching || !onNewSession} onClick={onNewSession}>
             <PlusIcon className="size-4" />
           </Button>
         </TooltipTrigger>
-        <TooltipContent side="bottom">New session · {newSessionShortcut}</TooltipContent>
+        <TooltipContent side="bottom" sideOffset={7} showArrow={false} className={titlebarTipClassName}>New session · {newSessionShortcut}</TooltipContent>
       </Tooltip>
       <div className="flex min-w-0 flex-1 justify-center">
         <Button
@@ -130,10 +136,17 @@ export function AppBar({
           watching only
         </div>
       ) : null}
+      {/* v2 draws the chip as a bordered pill with no fill, and turns the chip
+          itself to danger while its machine is unreachable, not only the dot
+          inside it. Ghost rather than outline: outline's dark-mode fill and
+          border would override both. */}
       <Button
-        variant="outline"
+        variant="ghost"
         size="sm"
-        className="electron-no-drag h-7 shrink-0 rounded-full px-2.5 font-normal"
+        className={cn(
+          "electron-no-drag h-7 shrink-0 rounded-full border-border px-2.5 font-normal",
+          !connected && "border-danger-border bg-danger-background",
+        )}
         aria-label={`Machines: ${snapshot?.machine.name ?? "daemon"}`}
         disabled={!onOpenMachines}
         onClick={onOpenMachines}
@@ -143,16 +156,21 @@ export function AppBar({
         <span className="text-[10.5px] text-faint">{transport}</span>
       </Button>
       <StopMenu connected={connected} pending={emergencyStopPending} disabled={watching} onPauseAll={onPauseAll} onEmergencyStop={onEmergencyStop} />
-      <Button variant="ghost" size="icon-sm" className="electron-no-drag size-7 shrink-0" aria-label="Settings" disabled={!onOpenSettings} onClick={onOpenSettings}>
-        <SettingsIcon className="size-4" />
-      </Button>
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon-sm" className="electron-no-drag size-7 shrink-0" aria-label={theme === "dark" ? "Use light theme" : "Use dark theme"} disabled={watching || !onToggleTheme} onClick={onToggleTheme}>
+          <Button variant="ghost" size="icon-sm" className={titlebarIconClassName} aria-label="Settings" disabled={!onOpenSettings} onClick={onOpenSettings}>
+            <SettingsIcon className="size-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={7} showArrow={false} className={titlebarTipClassName}>Settings</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button variant="ghost" size="icon-sm" className={titlebarIconClassName} aria-label={theme === "dark" ? "Use light theme" : "Use dark theme"} disabled={watching || !onToggleTheme} onClick={onToggleTheme}>
             {theme === "dark" ? <MoonIcon className="size-4" /> : <SunIcon className="size-4" />}
           </Button>
         </TooltipTrigger>
-        <TooltipContent side="bottom">{appearanceLabel}</TooltipContent>
+        <TooltipContent side="bottom" sideOffset={7} showArrow={false} className={titlebarTipClassName}>{appearanceLabel}</TooltipContent>
       </Tooltip>
       {emergencyStopMessage ? (
         <span role={emergencyStopError ? "alert" : "status"} aria-live={emergencyStopError ? "assertive" : "polite"} className="sr-only">
