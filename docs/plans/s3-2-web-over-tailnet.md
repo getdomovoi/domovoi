@@ -319,11 +319,15 @@ permissions-policy: camera=(), microphone=(), geolocation=()
 
 | Class | Paths | Header |
 | --- | --- | --- |
-| entry | `index.html`, `manifest.webmanifest`, `sw.js`, `icons/*` | `cache-control: no-cache`, strong `ETag` from the manifest digest, `If-None-Match` answers 304 |
-| hashed | `assets/*` (vite content-hashed names) | `cache-control: private, max-age=31536000, immutable` |
+| entry | everything not hashed: `index.html`, `manifest.webmanifest`, `sw.js`, `icons/*`, and any file under `assets/` whose name lacks the content hash (for example `assets/app.js`) | `cache-control: no-cache`, strong `ETag` from the manifest digest, `If-None-Match` answers 304 |
+| hashed | under `assets/` and named as Vite names content-hashed files, `<name>-<hash>.<ext>` with an eight-character base64url hash (`[A-Za-z0-9_-]`, Vite 8.3's default; `apps/web/vite.config.ts` sets no file-name pattern) holding at least one uppercase letter or digit, for example `assets/index-B0V_-a_P.js` | `cache-control: private, max-age=31536000, immutable` |
 | state page, 404, 405 | | `cache-control: no-store` |
 
-`index.html` revalidates on every load, so a new bundle reaches the next reload. Hashed assets
+The class is decided by the loader from the name, never by location alone: a stable name under
+`assets/` cached for a year would keep stale JavaScript after a bundle update. The uppercase or
+digit rule keeps a word such as `app-settings.js` out of the hashed class; a real hash without one
+is only revalidated, the safe side. `index.html` revalidates on every load, so a new bundle reaches
+the next reload. Hashed assets
 never go stale because a new bundle names new files. A tab left open across a daemon upgrade keeps
 its old JavaScript until reloaded; if the protocol minor changed, the existing mismatch copy tells
 the person to reload (`apps/web/src/daemon-pairing.ts:126-131`). `apps/web/public/sw.js` has no

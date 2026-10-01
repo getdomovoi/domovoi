@@ -148,12 +148,47 @@ describe("a valid bundle", () => {
     expect(result.files.get("/sw.js")!.cacheClass).toBe("entry")
     expect(result.files.get("/manifest.webmanifest")!.contentType).toBe("application/manifest+json")
     const script = result.files.get("/assets/index-abc123.js")!
-    expect(script.cacheClass).toBe("hashed")
+    // Six characters after the name is not Vite's eight-character hash.
+    expect(script.cacheClass).toBe("entry")
     expect(script.contentType).toBe("text/javascript; charset=utf-8")
     expect(result.files.has("/domovoi-web.json")).toBe(false)
     expect(result.files.has("/unlisted.js")).toBe(false)
     expect(Object.isFrozen(index)).toBe(true)
     expect(Object.isFrozen(result)).toBe(true)
+  })
+
+  it("caches for good only assets whose names carry Vite's content hash", async () => {
+    // Names from a real apps/web build: Vite writes assets/<name>-<8 base64url characters>.<ext>.
+    const files: Record<string, string> = {
+      "index.html": "<!doctype html>",
+      "assets/index-B0V_-a_P.js": "a",
+      "assets/terminal-CJjg_sal.js": "b",
+      "assets/index-B06OcQ6n.css": "c",
+      "assets/instrument-sans-latin-wght-normal-BbzFLZTg.woff2": "d",
+      "assets/app.js": "e",
+      "assets/app-settings.js": "f",
+      "assets/index-abc123.js": "g",
+      "assets/index-B0V_-a_P9.js": "h",
+      "icons/icon-B0V_-a_P.png": "i",
+    }
+    const result = await load(await bundle(files))
+    if (result.state !== "loaded") throw new Error(`expected loaded, got ${JSON.stringify(result)}`)
+    const classes = Object.fromEntries([...result.files].map(([path, file]) => [path, file.cacheClass]))
+    expect(classes).toEqual({
+      "/index.html": "entry",
+      "/assets/index-B0V_-a_P.js": "hashed",
+      "/assets/terminal-CJjg_sal.js": "hashed",
+      "/assets/index-B06OcQ6n.css": "hashed",
+      "/assets/instrument-sans-latin-wght-normal-BbzFLZTg.woff2": "hashed",
+      // Stable names under assets/ are revalidated, so a new bundle reaches the next load.
+      "/assets/app.js": "entry",
+      // Eight lowercase letters read as a word, not a hash; the safe side is to revalidate.
+      "/assets/app-settings.js": "entry",
+      "/assets/index-abc123.js": "entry",
+      "/assets/index-B0V_-a_P9.js": "entry",
+      // Outside assets/ nothing is cached for good, whatever the name.
+      "/icons/icon-B0V_-a_P.png": "entry",
+    })
   })
 
   it("serves what was read, not what the disk holds later", async () => {

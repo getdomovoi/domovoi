@@ -60,6 +60,21 @@ export type LoadedWebAppFile = {
   cacheClass: "entry" | "hashed"
 }
 
+// Vite (8.3, apps/web/vite.config.ts sets no file-name pattern) writes
+// assets/<name>-<hash>.<ext> with an eight-character base64url hash, which
+// can itself contain "-" or "_" (index-B0V_-a_P.js). A file is cached for
+// good only under assets/ and with that shape, and only when the hash holds
+// an uppercase letter or a digit: a stable name such as app-settings.js has
+// the shape too, and a stale copy of a stable name is the failure this
+// avoids. A real hash with neither is merely revalidated, the safe side.
+const contentHashedName = /-(?=[A-Za-z0-9_-]{0,7}[A-Z0-9])[A-Za-z0-9_-]{8}\.[a-z0-9]+(?![\s\S])/
+
+function webAppCacheClass(listed: string): "entry" | "hashed" {
+  if (!listed.startsWith("assets/")) return "entry"
+  const name = listed.slice(listed.lastIndexOf("/") + 1)
+  return contentHashedName.test(name) ? "hashed" : "entry"
+}
+
 export type WebAppBundleInvalidReason =
   | WebBundleManifestRefusal
   | "root-unreadable"
@@ -374,7 +389,7 @@ export async function loadWebAppBundle(options: WebAppBundleOptions): Promise<We
         contentType: webBundleContentType(listed)!,
         sha256,
         etag: `"${sha256}"`,
-        cacheClass: listed.startsWith("assets/") ? "hashed" : "entry",
+        cacheClass: webAppCacheClass(listed),
       }))
     }
     return frozen({ state: "loaded", root, version: manifest.version, protocolVersion: manifest.protocolVersion, files })
