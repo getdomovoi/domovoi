@@ -190,6 +190,10 @@ describe("Rules daemon support", () => {
     })
     expect(store.load().approvals).toEqual([])
     expect(agent.resolveApproval).not.toHaveBeenCalled()
+    // A provider's record about a session names that session's project.
+    expect(store.auditLog.query({ action: "provider.policy-refused" }).entries).toEqual([
+      expect.objectContaining({ sessionId: snapshot.sessions[0]!.id, projectId: snapshot.sessions[0]!.projectId }),
+    ])
     expect((await rpc(socket, "approval.resolve", { approvalId: refusal!.id, decision: "allow-once", revision: 0, client: "cli" })).error)
       .toMatchObject({ code: -32602, message: "Approval does not exist" })
     expect((await rpc(socket, "session.history", {
