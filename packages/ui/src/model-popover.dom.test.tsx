@@ -139,6 +139,29 @@ it("asks before changing to another model, and switches here on that answer", as
   expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ provider: "codex", model: "gpt-5.3-codex" }))
 })
 
+// Desktop V2 carries the effort across a model change when the new model
+// reports the same level, by its shared word, and otherwise moves it to the
+// new model's default rather than to the nearest level.
+it("carries the effort's level across harnesses by its word, and moves it to the default otherwise", async () => {
+  const user = userEvent.setup()
+  const onChange = vi.fn()
+  const codex = { ...model("codex", "gpt-5.3-codex", "Authenticated here."), supportedReasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "low" }
+  const onListModels = vi.fn(async (provider: string) => provider === "codex" ? [codex] : catalogs[provider] ?? [])
+  const view = render(popover({ onChange, onListModels, runtime: { ...runtime, reasoning: "think-hard" } }))
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
+  await settle()
+  await user.click(screen.getByRole("option", { name: "gpt-5.3-codex, codex" }))
+  await user.click(screen.getByRole("button", { name: "Switch here" }))
+  expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ provider: "codex", model: "gpt-5.3-codex", reasoning: "medium" }))
+
+  view.rerender(popover({ onChange, onListModels, runtime: { ...runtime, reasoning: "max" } }))
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
+  await settle()
+  await user.click(screen.getByRole("option", { name: "gpt-5.3-codex, codex" }))
+  await user.click(screen.getByRole("button", { name: "Switch here" }))
+  expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ provider: "codex", model: "gpt-5.3-codex", reasoning: "low" }))
+})
+
 it("draws the signed next-boundary switch note when no turn is running", async () => {
   const user = userEvent.setup()
   render(popover())

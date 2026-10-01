@@ -159,8 +159,10 @@ export function EffortChip({
 }: {
   runtime: Runtime
   model: ProviderModel | undefined
-  // Set when a model change could not carry the effort and moved it.
-  dropped?: { from: string, to: string } | undefined
+  // Set when a model change could not carry the effort and moved it;
+  // toDefault when it moved to the new model's default rather than to the
+  // nearest level.
+  dropped?: { from: string, to: string, toDefault: boolean } | undefined
   pending: boolean
   onSetRuntime: (runtime: Runtime) => void
 }) {
@@ -221,7 +223,9 @@ export function EffortChip({
         </DropdownMenuRadioGroup>
         <p className={cn("m-0 border-t px-3 py-2.5 text-[11px] leading-normal", dropped ? "bg-warn-background text-warn-foreground" : "text-muted-foreground")}>
           {dropped
-            ? `${provider} has no ${dropped.from}, so this moved to ${dropped.to} when you changed model. It stays there.`
+            ? dropped.toDefault
+              ? `${provider} has no ${dropped.from}, so this moved to the model's default, ${dropped.to}. It stays until you pick a level.`
+              : `${provider} has no ${dropped.from}, so this moved to ${dropped.to}. It stays until you pick a level.`
             : "Applies from the next turn. A turn already in flight keeps the effort it started with."}
         </p>
       </DropdownMenuContent>
