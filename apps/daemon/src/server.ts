@@ -1629,7 +1629,10 @@ export class DomovoiDaemon {
   #repositoryProviderConfig: RepositoryProviderConfigReader | undefined
   #repositoryTrust: RepositoryTrustStore | undefined
   #profileDirectory: string
-  #fileSkillCatalog: { projectPath: string | undefined; catalog: FileSkillCatalog } | undefined
+  // One file catalog per project path, undefined for no project. A catalog
+  // checks its files and trust keys again at every listing, so one kept from
+  // an earlier visit to a project reads that project as it is now.
+  readonly #fileSkillCatalogs = new Map<string | undefined, FileSkillCatalog>()
   #workspaceAbort = new AbortController()
   #emergencyBlockedThreads = new Set<string>()
   #failedEmergencyThreads = new Set<string>()
@@ -5099,16 +5102,22 @@ export class DomovoiDaemon {
 
   #skillCatalogFor(projectPath: string | undefined): SkillCatalog {
     if (this.#skillCatalog) return this.#skillCatalog
-    if (!this.#fileSkillCatalog || this.#fileSkillCatalog.projectPath !== projectPath) {
-      this.#fileSkillCatalog = {
-        projectPath,
-        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath, this.#profileDirectory), this.#skillReviews, {
-          trustPath: this.#skillTrustPath,
-          report: (detail) => this.#errorSink({ context: "skill-trust", detail }),
-        }),
-      }
+    let catalog = this.#fileSkillCatalogs.get(projectPath)
+    if (!catalog) {
+      catalog = new FileSkillCatalog(skillRoots(homedir(), projectPath, this.#profileDirectory), this.#skillReviews, {
+        trustPath: this.#skillTrustPath,
+        report: (detail) => this.#errorSink({ context: "skill-trust", detail }),
+      })
+      this.#fileSkillCatalogs.set(projectPath, catalog)
     }
-    return this.#fileSkillCatalog.catalog
+    return catalog
+  }
+
+  // A review is kept for the skill, not the project, and no catalog's file
+  // check sees it change, so every kept catalog lists again after one.
+  #invalidateSkillCatalogs(): void {
+    if (this.#skillCatalog instanceof FileSkillCatalog) this.#skillCatalog.invalidate()
+    for (const catalog of this.#fileSkillCatalogs.values()) catalog.invalidate()
   }
 
   async #ensureAgentConnected(provider = "codex"): Promise<AgentAdapter> {
@@ -7579,7 +7588,7 @@ export class DomovoiDaemon {
           (candidate) => candidate.projectId !== project.id || candidate.skillId !== current.id,
         )
         this.#snapshot.skillEnablements.push(review)
-        if (catalog instanceof FileSkillCatalog) catalog.invalidate()
+        this.#invalidateSkillCatalogs()
         changed = true
       }
 
@@ -7626,7 +7635,7 @@ export class DomovoiDaemon {
         } else {
           reviews.revoke(current.id)
         }
-        if (catalog instanceof FileSkillCatalog) catalog.invalidate()
+        this.#invalidateSkillCatalogs()
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
