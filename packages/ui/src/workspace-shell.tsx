@@ -12,6 +12,9 @@ import type {
   ClientKind,
   PermissionMode,
   ProjectSwitchConfirmation,
+  RepositoryGitFilterRefusal,
+  RpcParams,
+  Runtime,
   SkillSummary,
   SkillInventorySource,
   SessionUsage,
@@ -58,6 +61,8 @@ import { type ProviderSecretStatus } from "./provider-settings"
 import type { LocalDaemonDescription } from "./settings-shell"
 import type { SkillsSurfaceTab } from "./skills-surface"
 import type { ToolInventoryLoad } from "./tool-inventory-view"
+import { SessionRefusalCard } from "./session-refusal-card"
+import { gitFilterRefusalFrom } from "./session-refusal"
 import { lazySurface, prefetchWhenIdle, SurfaceCodeReload } from "./lazy-surface"
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
@@ -227,6 +232,11 @@ function serviceOutcomeMovesDaemon(action: "install" | "remove" | "update", outc
   if (outcome.daemon === "restarted" || outcome.daemon === "attached") return true
   return outcome.service !== null && serviceChangedBy(action, outcome.service)
 }
+
+// A request that starts a new session, kept so a refused one can be made again.
+type SessionStartAttempt =
+  | { kind: "create"; title: string; runtime: Runtime }
+  | { kind: "fork"; input: Omit<RpcParams<"session.fork">, "client"> }
 
 export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
@@ -573,15 +583,45 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // the first, and the pane has no other way to tell them apart.
   // The history row forks at the session's current runtime. Choosing a
   // different provider or model is the thread dialog's job, not a row's.
+  // A new session the daemon refused over a repository git filter is drawn in
+  // the thread as a refusal card, with the request that was refused so the
+  // person can make it again after trust. Starting it again is always theirs
+  // to press (ruling Q202 A). Every other failure goes back to its caller.
+  const [startRefusal, setStartRefusal] = useState<{
+    id: number
+    refusal: RepositoryGitFilterRefusal
+    attempt: SessionStartAttempt
+  } | null>(null)
+  const startRefusals = useRef(0)
+  const startSession = async (attempt: SessionStartAttempt) => {
+    try {
+      if (attempt.kind === "create") await createSession(attempt.title, attempt.runtime)
+      else await forkSession(attempt.input)
+      setStartRefusal(null)
+    } catch (cause) {
+      const refusal = gitFilterRefusalFrom(cause)
+      if (!refusal) throw cause
+      startRefusals.current += 1
+      setStartRefusal({ id: startRefusals.current, refusal, attempt })
+    }
+  }
+  // A fork's request id names one attempt, so the retry carries a new one.
+  const startAgain = (attempt: SessionStartAttempt) => startSession(attempt.kind === "fork"
+    ? { kind: "fork", input: { ...attempt.input, requestId: `fork-${globalThis.crypto.randomUUID()}` } }
+    : attempt)
+  // The card belongs to the thread it was drawn in: another session, project
+  // or machine replaces it.
+  const refusalScope = `${attached?.machineId ?? ""}\u0000${snapshot?.project?.id ?? ""}\u0000${snapshot?.activeSessionId ?? ""}`
+  useEffect(() => { setStartRefusal(null) }, [refusalScope])
   const forkFromCheckpoint = (checkpointId: string) => {
     const active = snapshot ? activeSession(snapshot) : undefined
     if (!active) return
-    void forkSession({
+    void startSession({ kind: "fork", input: {
       sessionId: active.id,
       checkpointId,
       runtime: active.runtime,
       requestId: `fork-${globalThis.crypto.randomUUID()}`,
-    })
+    } })
   }
   // The v2 sheet gives checkpoints a tab of their own, so the affordances that
   // name Checkpoints open that tab. History keeps its category focus for the
@@ -1613,7 +1653,29 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} surface={windowBridge ? "desktop" : "web"} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntime} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSheet={() => openDockTab("changes")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34">{startRefusal ? (
+                <main className="flex h-full min-w-0 flex-col overflow-y-auto bg-background">
+                  <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 pt-6 pb-14">
+                    <SessionRefusalCard
+                      key={startRefusal.id}
+                      refusal={startRefusal.refusal}
+                      repository={snapshot.project?.name ?? "this repository"}
+                      machine={snapshot.machine.name}
+                      loadInventory={(signal) => getToolInventory({ signal })}
+                      // As on the Tools tab: desktop or web, never watching (ruling Q67).
+                      onTrust={!watching && (clientKind === "desktop" || clientKind === "web")
+                        ? (params: { projectId: string; configDigest: string }) => trustRepository({ ...params, client: clientKind })
+                        : undefined}
+                      onOpenTools={() => {
+                        setSkillsTab("tools")
+                        setSurface("skills")
+                      }}
+                      onStartAgain={() => startAgain(startRefusal.attempt)}
+                      onClose={() => setStartRefusal(null)}
+                    />
+                  </div>
+                </main>
+              ) : <Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} surface={windowBridge ? "desktop" : "web"} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={(input) => startSession({ kind: "fork", input })} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntime} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSheet={() => openDockTab("changes")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} />}</ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces(<Button ref={dockUnpinButtonRef} variant="ghost" size="icon-sm" className="size-7 flex-none rounded-full bg-accent text-primary" aria-pressed aria-label="Unpin" onClick={() => setDockPinned(false)}><PinIcon className="size-[15px]" /></Button>, true)}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (
@@ -1671,7 +1733,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             : "build"}
           onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
           onOpenProject={openProjectSafely}
-          onCreateSession={createSession}
+          onCreateSession={(title, runtime) => startSession({ kind: "create", title, runtime })}
           onListModels={listModels}
           recentSessions={snapshot.sessions}
           onResumeSession={(sessionId) => {
