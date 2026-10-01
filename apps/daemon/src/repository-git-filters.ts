@@ -155,15 +155,15 @@ export async function readGitFilterSettings(
     const record = fields[index + 2]!
     if (!trustedConfigScopes.has(scope) && !repositoryScopes.has(scope)) throw new RepositoryGitConfigUnreadableError("git-failed")
     const newline = record.indexOf("\n")
+    const file = origin.startsWith("file:") ? resolve(directory, origin.slice("file:".length)) : undefined
     // A key with no value is a config error for a filter or a program Git
-    // LFS would start: Git or git-lfs stops before running anything.
-    if (newline === -1) continue
-    settings.push({
-      scope,
-      key: record.slice(0, newline),
-      value: record.slice(newline + 1),
-      origin: origin.startsWith("file:") ? resolve(directory, origin.slice("file:".length)) : undefined,
-    })
+    // LFS would start: Git or git-lfs stops before running anything. A
+    // driver's `required` written alone is boolean true.
+    if (newline === -1) {
+      if (/^filter\..+\.required$/u.test(record)) settings.push({ scope, key: record, value: "true", origin: file })
+      continue
+    }
+    settings.push({ scope, key: record.slice(0, newline), value: record.slice(newline + 1), origin: file })
   }
   return settings
 }

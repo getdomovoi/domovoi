@@ -33,6 +33,13 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
+// A launched Git command. descendantsEnded, when the launcher can tell,
+// resolves true once every process the command started is known to have
+// ended: a command run in its own process group that was ended whole and then
+// found empty (isolated-checkout.ts). A killed command without it leaves its
+// descendants' liveness unknown.
+export type TrackedCommand<T> = PromiseWithChild<T> & { descendantsEnded?: Promise<boolean> }
+
 export class RestoreLeaseRecoveryError extends Error {
   constructor(path: string, reason: string, cause?: unknown) {
     super(`Session worktree already exists or its restore claim is held at ${path}. ${reason}. Preserve the worktree; stop Domovoi and its supervisor before inspecting an unresolved claim.`, { cause })
@@ -99,22 +106,25 @@ export class RestoreOperationLease {
     }
   }
 
-  command<T>(launch: () => PromiseWithChild<T>): Promise<T> {
+  command<T>(launch: () => TrackedCommand<T>): Promise<T> {
     const pending = this.#command(launch)
     this.#commands.add(pending)
     void pending.then(() => this.#commands.delete(pending), () => this.#commands.delete(pending))
     return pending
   }
 
-  async #command<T>(launch: () => PromiseWithChild<T>): Promise<T> {
+  async #command<T>(launch: () => TrackedCommand<T>): Promise<T> {
     if (this.#owner.descendantsUnknown) throw new Error("Git descendant liveness is unknown after an interrupted command")
     if (this.#owner.starting + this.#owner.children.length >= 32) throw new Error("Too many restore subprocesses")
     this.#owner.starting++
     await this.#publish()
-    let pending: PromiseWithChild<T> | undefined
+    let pending: TrackedCommand<T> | undefined
     let closed: Promise<void> | undefined
     let pid: number | undefined
     let outcome: { value: T } | { error: unknown }
+    // Set when the command was killed or aborted: its descendants are then
+    // unknown unless the launcher confirms they all ended.
+    let interrupted = false
     try {
       pending = launch()
       // Observe the result at once: the child can exit while its PID record
@@ -123,7 +133,7 @@ export class RestoreOperationLease {
       // execFile can reject on abort before its child closes. Keep both the
       // operation lease and durable child identity until actual settlement.
       closed = new Promise<void>((resolve) => pending!.child.once("close", (_code, signal) => {
-        if (signal || pending!.child.killed) this.#owner.descendantsUnknown = true
+        if (signal || pending!.child.killed) interrupted = true
         resolve()
       }))
       pid = pending.child.pid
@@ -132,15 +142,16 @@ export class RestoreOperationLease {
       await this.#publish()
       outcome = await settled
       if ("error" in outcome && outcome.error instanceof Error && outcome.error.name === "AbortError") {
-        this.#owner.descendantsUnknown = true
+        interrupted = true
       }
     } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") this.#owner.descendantsUnknown = true
+      if (error instanceof Error && error.name === "AbortError") interrupted = true
       outcome = { error }
     }
     // Observe a spawn rejection even if publishing its PID failed first.
     await pending?.catch(() => undefined)
     await closed
+    if (interrupted && !(await pending?.descendantsEnded?.catch(() => false) ?? false)) this.#owner.descendantsUnknown = true
     if (!pending) this.#owner.starting--
     if (pid !== undefined) this.#owner.children = this.#owner.children.filter((child) => child !== pid)
     let recordFailure: { error: unknown } | undefined
@@ -184,6 +195,6 @@ export class RestoreOperationLease {
   }
 }
 
-export function trackRestoreCommand<T>(launch: () => PromiseWithChild<T>): Promise<T> {
+export function trackRestoreCommand<T>(launch: () => TrackedCommand<T>): Promise<T> {
   return currentLease.getStore()?.command(launch) ?? launch()
 }

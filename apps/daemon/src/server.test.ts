@@ -9654,7 +9654,7 @@ describe("DomovoiDaemon", () => {
     expect(checkpointAborted).toBe(true)
 
     workspaceService.checkpoint.mockRejectedValueOnce(
-      new RepositoryFilterRefusedError([{ scope: "local", key: "filter.crypt.clean" }]),
+      new RepositoryFilterRefusedError([{ scope: "local", key: "filter.crypt.clean", driver: "crypt", operation: "clean", value: "crypt clean", origin: undefined }]),
     )
     const refusedCheckpoint = await rpc("checkpoint.create", {
       sessionId,

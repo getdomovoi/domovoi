@@ -1,23 +1,27 @@
-import { execFile } from "node:child_process"
+import { execFile, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
 import { isAbsolute, join, resolve } from "node:path"
 import { promisify } from "node:util"
 
-import { gitEnvironment, inertRepositoryConfig } from "./git-environment.js"
+import { windowsTreeKill } from "./claude-process.js"
+import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { isStandardLfsFilterLine } from "./git-read-config.js"
 import type { GitFilterSetting } from "./repository-git-filters.js"
-import { trackRestoreCommand } from "./workspace-restore-lease.js"
+import { trackRestoreCommand, type TrackedCommand } from "./workspace-restore-lease.js"
 
 const execute = promisify(execFile)
 
-// Checks a new session worktree out without Git or git-lfs reading any of the
-// repository's own config (ruling Q223). The repository's config can name a
-// program anywhere Git or git-lfs looks during a checkout: a filter, but also
-// core.sshCommand, core.askPass or a credential helper git-lfs starts to fetch
-// an object, core.fsmonitor, and whatever else a later version reads. Pinning
-// keys one by one cannot keep up, so the checkout runs in a temporary Git
-// directory of its own:
+// Runs the Git commands that can start a program (a checkout, staging, a
+// status or diff that reads files, a reset) without Git or git-lfs reading
+// any of the repository's own config (ruling Q223 for a new session's
+// checkout; P8 PR B for checkpoint, snapshot, restore, revert, transfer and
+// evidence on an existing session worktree). The repository's config can name
+// a program anywhere Git or git-lfs looks: a filter, but also core.sshCommand,
+// core.askPass or a credential helper git-lfs starts to fetch an object,
+// core.fsmonitor, and whatever else a later version reads. Pinning keys one by
+// one cannot keep up, so the commands run in a temporary Git directory of
+// their own:
 //
 // - Its config is Git's global and system config, which Git reads as always,
 //   and the values below, passed as command-line config. No repository,
@@ -25,21 +29,32 @@ const execute = promisify(execFile)
 //   git-lfs, which reads its config through `git config`.
 // - It has no hooks (core.hooksPath points nowhere, and it was made without
 //   a template) and core.fsmonitor is off.
-// - It uses the repository's own object store (GIT_OBJECT_DIRECTORY): the
-//   commit is read from it, and a blob a partial clone fetches lands in it.
-// - Its info/ holds a copy of the repository's info/attributes and, when
-//   sparse checkout is on, the new worktree's sparse-checkout patterns. They
-//   are data: attributes can only select a filter driver the isolated config
-//   defines, which is the person's own or the exact `git lfs install` line.
+// - It uses the repository's own object store (GIT_OBJECT_DIRECTORY): commits
+//   and trees are read from it, and a blob staged, or one a partial clone
+//   fetches, lands in it.
+// - Its HEAD is whatever commit a command is given (`head`), detached: it has
+//   no refs of its own, so a command that would move a ref moves nothing of
+//   the repository's, and the caller moves the repository's refs itself with
+//   plain ref commands, which start no program.
+// - Its index is the isolated directory's own (a new session's checkout,
+//   copied into the worktree afterwards) or the session worktree's own, read
+//   and written in place under Git's usual index lock.
+// - Its info/ holds copies of the repository's info/attributes and
+//   info/exclude and, when sparse checkout is on, the worktree's
+//   sparse-checkout patterns. They are data: attributes can only select a
+//   filter driver the isolated config defines, which is the person's own, the
+//   exact `git lfs install` line, or a trusted repository's reviewed one.
 // - It lives inside the repository's Git directory, so the person's
 //   `includeIf "gitdir:..."` conditions match as they do for the repository.
 //   It records its owner process first, and one an earlier daemon left
 //   behind is swept away before a new one is made (sweepStaleCheckouts).
 //
 // Carried from the repository's config, as values only:
-// - The core settings that decide what the checkout writes (carriedCoreKeys):
-//   line endings, symlinks, case and Unicode handling, file modes, NTFS and
-//   HFS path protection, long paths, encoding round trips, sparse checkout.
+// - The core settings that decide what Git writes or reads as changed
+//   (carriedCoreKeys): line endings, symlinks, case and Unicode handling, file
+//   modes, NTFS and HFS path protection, long paths, encoding round trips,
+//   sparse checkout, the ignore and attribute files it names, stat checks and
+//   shared-repository permissions. A path one of them names is read as data.
 // - lfs.storage, resolved against the repository's Git directory and
 //   defaulting to its lfs/ folder, so git-lfs uses the repository's own store.
 // - The exact `git lfs install` lines the repository sets (ruling Q207 A).
@@ -56,25 +71,34 @@ const execute = promisify(execFile)
 // - For a partial clone, extensions.partialClone (written to the isolated
 //   config file, where Git reads extensions) with the named remote's promisor
 //   and partialclonefilter.
+// Under a trusted grant, the reviewed filter definitions are added, as the
+// values the grant's digest covers (repository-git-filter-gate.ts).
 // Not carried: url.*.insteadOf and pushInsteadOf, every other transport
 // setting, and extensions other than the object format and partialClone.
 // Transports are limited to https, http, ssh and git (protocol.allow never
 // for the rest), at least as strict as Git's defaults.
-// The index is written without split index, untracked cache or sparse index,
-// so it can be copied into the new worktree, which is then an ordinary linked
-// worktree of the repository.
+// The index is written without split index, untracked cache or sparse index:
+// their extra files would live in the temporary directory and go with it.
+//
+// Every command runs in a process group of its own on POSIX, and a cancelled
+// one (a timeout, an emergency stop) ends with the whole group, so a filter
+// it started, and what that filter started, ends with it (rulings Q102 A and
+// Q104 A). Windows has no process groups; there the process tree is ended
+// with taskkill (ruling Q103 A).
 
 const carriedCoreKeys = [
   "core.autocrlf", "core.eol", "core.safecrlf", "core.symlinks", "core.ignorecase", "core.precomposeunicode",
   "core.filemode", "core.protectntfs", "core.protecthfs", "core.longpaths", "core.checkroundtripencoding",
-  "core.sparsecheckout", "core.sparsecheckoutcone",
+  "core.sparsecheckout", "core.sparsecheckoutcone", "core.excludesfile", "core.attributesfile",
+  "core.trustctime", "core.checkstat", "core.sharedrepository",
 ] as const
 const carriedPattern = `^(${[...carriedCoreKeys, "lfs.storage", "lfs.url", "lfs.pushurl", "extensions.partialclone"]
   .map((key) => key.replaceAll(".", String.raw`\.`)).join("|")}|remote\\..+\\.(url|pushurl|lfsurl|promisor|partialclonefilter))$`
 const allowedProtocols = ["https", "http", "ssh", "git"]
 const safeRemoteName = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u
+const maximumOutputBytes = 32 * 1024 * 1024
 
-// Inherited variables that would point the checkout at another directory,
+// Inherited variables that would point a command at another directory,
 // object store or attribute source than the ones set here.
 const droppedEnvironment = [
   "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_ATTR_SOURCE",
@@ -112,8 +136,8 @@ function installedGitVersion(): Promise<[number, number] | undefined> {
   return gitVersion
 }
 
-// Reads from the new worktree: `git config` and `git rev-parse` start no
-// program the repository's config names.
+// Reads from the worktree: `git config` and `git rev-parse` start no program
+// the repository's config names.
 async function worktreeGit(worktree: string, args: string[], signal?: AbortSignal): Promise<string> {
   return (await execute("git", ["-C", worktree, ...inertRepositoryConfig, ...args], {
     env: gitEnvironment(), encoding: "utf8", maxBuffer: 16 * 1024 * 1024, ...(signal ? { signal } : {}),
@@ -199,25 +223,169 @@ async function sweepStaleCheckouts(commonDirectory: string): Promise<void> {
   }
 }
 
-export async function checkOutIsolated(input: {
-  worktree: string
-  commit: string
-  // The new worktree's filter settings as the scan read them: the source of
-  // the exact `git lfs install` lines the repository sets.
-  settings: readonly GitFilterSetting[]
+export type GitProcessResult = { code: number | null; signal: NodeJS.Signals | null; stderr: string }
+
+function abortError(signal: AbortSignal): Error {
+  const error = new Error("The operation was aborted", { cause: signal.reason })
+  error.name = "AbortError"
+  return error
+}
+
+// Whether a process group ended by SIGKILL has no member left, probed with
+// signal 0, which delivers nothing: a group id taken again meanwhile can only
+// make the answer "still running". Members the kill reached are reaped by
+// their new parent within moments.
+async function processGroupEmptied(groupId: number): Promise<boolean> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      process.kill(-groupId, 0)
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH"
+    }
+    await new Promise((wait) => setTimeout(wait, 20))
+  }
+  return false
+}
+
+// Runs one Git command in a process group of its own (POSIX), feeding its
+// output to onStdout, which can stop it. A cancelled or stopped command is
+// ended with its whole group, and only while Git has not been reaped: until
+// then no other group can take its id, so the signal reaches only processes
+// this command started. descendantsEnded then says whether the group was seen
+// empty afterwards (workspace-restore-lease.ts). On Windows the process tree
+// is ended instead, and nothing is confirmed.
+export function runGitProcess(args: readonly string[], options: {
+  env: NodeJS.ProcessEnv
+  cwd: string
   signal?: AbortSignal | undefined
-}): Promise<void> {
-  const { worktree, commit, settings, signal } = input
+  onStdout?: (chunk: Buffer, stop: () => void) => void
+}): TrackedCommand<GitProcessResult> {
+  const posix = process.platform !== "win32"
+  const child = spawn("git", [...args], {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: posix,
+    windowsHide: true,
+  })
+  let groupEnded = false
+  const end = () => {
+    if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return
+    if (!posix) {
+      void windowsTreeKill(child.pid).catch(() => { child.kill("SIGKILL") })
+      return
+    }
+    try {
+      process.kill(-child.pid, "SIGKILL")
+      groupEnded = true
+    } catch {
+      child.kill("SIGKILL")
+    }
+  }
+  const descendantsEnded = new Promise<boolean>((resolveEnded) => {
+    child.once("close", () => resolveEnded(groupEnded && child.pid !== undefined ? processGroupEmptied(child.pid) : false))
+    child.once("error", () => resolveEnded(false))
+  })
+  const { signal } = options
+  const promise = new Promise<GitProcessResult>((resolvePromise, reject) => {
+    const errors: Buffer[] = []
+    let errorBytes = 0
+    let settled = false
+    const finish = () => {
+      settled = true
+      signal?.removeEventListener("abort", end)
+    }
+    signal?.addEventListener("abort", end, { once: true })
+    if (signal?.aborted) end()
+    child.stdout.on("data", (chunk: Buffer) => options.onStdout?.(chunk, end))
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (errorBytes >= 16_384) return
+      const captured = chunk.subarray(0, 16_384 - errorBytes)
+      errors.push(captured)
+      errorBytes += captured.length
+    })
+    child.once("error", (error) => {
+      if (settled) return
+      finish()
+      reject(error)
+    })
+    child.once("close", (code, closeSignal) => {
+      if (settled) return
+      finish()
+      if (signal?.aborted) {
+        reject(abortError(signal))
+        return
+      }
+      resolvePromise({ code, signal: closeSignal, stderr: Buffer.concat(errors).toString("utf8").trim() })
+    })
+  }) as TrackedCommand<GitProcessResult>
+  promise.child = child
+  promise.descendantsEnded = descendantsEnded
+  return promise
+}
+
+// A Git command that exited with an error, shaped as execFile's are: `code`
+// is the exit status, so callers that read exit 1 as "nothing matched" can.
+function gitFailure(result: GitProcessResult): Error {
+  return Object.assign(new Error(result.stderr || `git exited with ${result.code ?? result.signal ?? "no status"}`), {
+    code: result.code ?? undefined,
+    signal: result.signal ?? undefined,
+    stderr: result.stderr,
+  })
+}
+
+export type IsolatedGitRun = {
+  // An index file other than the one this isolated directory uses.
+  index?: string | undefined
+  // The command's own signal, or null to run it with none (a cleanup that
+  // must still happen after a cancel). The isolated directory's by default.
+  signal?: AbortSignal | null | undefined
+}
+
+export type IsolatedGit = {
+  // The temporary Git directory, and the worktree's own index file.
+  readonly gitDirectory: string
+  readonly worktreeIndex: string
+  // Puts `commit` at the isolated HEAD, detached, for the commands after it:
+  // a status or reset compares against it. Commands running meanwhile read
+  // either the old HEAD or the new one, never a partial file.
+  setHead(commit: string): Promise<void>
+  // Runs Git and returns its output untrimmed.
+  run(args: readonly string[], options?: IsolatedGitRun): Promise<string>
+  // Runs Git, handing its output to onStdout as it arrives.
+  stream(args: readonly string[], onStdout: (chunk: Buffer, stop: () => void) => void, options?: IsolatedGitRun): Promise<GitProcessResult>
+  dispose(): Promise<void>
+}
+
+export async function openIsolatedGit(input: {
+  worktree: string
+  // The worktree's filter settings as the gate read them: the source of the
+  // exact `git lfs install` lines the repository sets.
+  settings: readonly GitFilterSetting[]
+  // A trusted repository's reviewed filter definitions, as key and value.
+  reviewed?: ReadonlyArray<readonly [string, string]> | undefined
+  // Read and write the session worktree's own index (an operation on an
+  // existing session); otherwise the isolated directory's own.
+  worktreeIndex: boolean
+  // Runs before every command and throws to stop it: trust lapsed since the
+  // gate that allowed the reviewed definitions.
+  beforeCommand?: (() => void) | undefined
+  signal?: AbortSignal | undefined
+}): Promise<IsolatedGit> {
+  const { worktree, settings, signal } = input
   // One rev-parse answers each on its own line, in the order asked.
-  const [commonDirectory, infoAttributes, sparseCheckout, index, objectFormat] = (await worktreeGit(worktree, [
+  const [commonDirectory, infoAttributes, infoExclude, sparseCheckout, index, objectFormat] = (await worktreeGit(worktree, [
     "rev-parse", "--path-format=absolute", "--git-common-dir",
-    "--git-path", "info/attributes", "--git-path", "info/sparse-checkout", "--git-path", "index", "--show-object-format",
+    "--git-path", "info/attributes", "--git-path", "info/exclude", "--git-path", "info/sparse-checkout",
+    "--git-path", "index", "--show-object-format",
   ], signal)).split("\n").map((line) => resolveLine(worktree, line))
-  if (!commonDirectory || !infoAttributes || !sparseCheckout || !index || !objectFormat) throw new Error("Git did not name the new worktree's directories")
+  if (!commonDirectory || !infoAttributes || !infoExclude || !sparseCheckout || !index || !objectFormat) {
+    throw new Error("Git did not name the worktree's directories")
+  }
   const carried = await carriedSettings(worktree, signal)
   const last = (key: string) => carried.filter(([name]) => name === key).at(-1)?.[1]
 
-  const pins: Array<[string, string]> = []
+  const pins: Array<readonly [string, string]> = []
   for (const key of carriedCoreKeys) {
     const value = last(key)
     if (value !== undefined) pins.push([key, value])
@@ -225,7 +393,7 @@ export async function checkOutIsolated(input: {
   const storage = last("lfs.storage")
   pins.push(["lfs.storage", storage === undefined || storage === "" ? join(commonDirectory, "lfs") : isAbsolute(storage) ? storage : resolve(commonDirectory, storage)])
   for (const setting of settings) {
-    if (!["system", "global", "unknown"].includes(setting.scope) && isStandardLfsFilterLine(setting.key, setting.value)) pins.push([setting.key, setting.value])
+    if (!trustedConfigScopes.has(setting.scope) && isStandardLfsFilterLine(setting.key, setting.value)) pins.push([setting.key, setting.value])
   }
   for (const key of ["lfs.url", "lfs.pushurl"]) {
     const value = last(key)
@@ -258,6 +426,7 @@ export async function checkOutIsolated(input: {
 
   pins.push(["protocol.allow", "never"], ...allowedProtocols.map((protocol): [string, string] => [`protocol.${protocol}.allow`, "always"]))
   pins.push(["core.splitindex", "false"], ["core.untrackedcache", "false"], ["index.sparse", "false"])
+  pins.push(...input.reviewed ?? [])
 
   await sweepStaleCheckouts(commonDirectory)
   const gitDirectory = join(commonDirectory, `domovoi-checkout-${randomUUID()}`)
@@ -280,34 +449,91 @@ export async function checkOutIsolated(input: {
       ? "[core]\n\trepositoryformatversion = 0\n\tbare = false\n"
       : `[core]\n\trepositoryformatversion = 1\n\tbare = false\n[extensions]\n${extensions.join("")}`)
     await copyIfPresent(infoAttributes, join(gitDirectory, "info", "attributes"))
+    await copyIfPresent(infoExclude, join(gitDirectory, "info", "exclude"))
     if (last("core.sparsecheckout") === "true") await copyIfPresent(sparseCheckout, join(gitDirectory, "info", "sparse-checkout"))
+  } catch (error) {
+    await fs.rm(gitDirectory, { recursive: true, force: true })
+    throw error
+  }
 
-    const env: NodeJS.ProcessEnv = gitEnvironment()
-    for (const name of droppedEnvironment) delete env[name]
-    env.GIT_DIR = gitDirectory
-    env.GIT_WORK_TREE = worktree
-    env.GIT_OBJECT_DIRECTORY = join(commonDirectory, "objects")
-    pins.forEach(([key, value], position) => {
-      env[`GIT_CONFIG_KEY_${position}`] = key
-      env[`GIT_CONFIG_VALUE_${position}`] = value
-    })
-    env.GIT_CONFIG_COUNT = String(pins.length)
+  const environment: NodeJS.ProcessEnv = gitEnvironment()
+  for (const name of droppedEnvironment) delete environment[name]
+  environment.GIT_DIR = gitDirectory
+  environment.GIT_WORK_TREE = worktree
+  environment.GIT_OBJECT_DIRECTORY = join(commonDirectory, "objects")
+  if (input.worktreeIndex) environment.GIT_INDEX_FILE = index
+  pins.forEach(([key, value], position) => {
+    environment[`GIT_CONFIG_KEY_${position}`] = key
+    environment[`GIT_CONFIG_VALUE_${position}`] = value
+  })
+  environment.GIT_CONFIG_COUNT = String(pins.length)
+
+  const launch = async (args: readonly string[], options: IsolatedGitRun, onStdout: (chunk: Buffer, stop: () => void) => void) => {
+    input.beforeCommand?.()
+    const commandSignal = options.signal === null ? undefined : options.signal ?? signal
+    commandSignal?.throwIfAborted()
+    const env = options.index === undefined ? environment : { ...environment, GIT_INDEX_FILE: options.index }
+    return trackRestoreCommand(() => runGitProcess([...inertRepositoryConfig, ...args], { env, cwd: worktree, signal: commandSignal, onStdout }))
+  }
+
+  return {
+    gitDirectory,
+    worktreeIndex: index,
+    async setHead(commit) {
+      if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(commit)) throw new Error("A detached HEAD names a commit")
+      const staged = join(gitDirectory, `HEAD.domovoi-${randomUUID()}`)
+      await fs.writeFile(staged, `${commit}\n`)
+      await fs.rename(staged, join(gitDirectory, "HEAD"))
+    },
+    async run(args, options = {}) {
+      const chunks: Buffer[] = []
+      let size = 0
+      let overflowed = false
+      const result = await launch(args, options, (chunk, stop) => {
+        size += chunk.length
+        if (size > maximumOutputBytes) {
+          overflowed = true
+          stop()
+          return
+        }
+        chunks.push(chunk)
+      })
+      if (overflowed) throw Object.assign(new Error("Git printed more than Domovoi reads"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" })
+      if (result.code !== 0) throw gitFailure(result)
+      return Buffer.concat(chunks).toString("utf8")
+    },
+    stream: (args, onStdout, options = {}) => launch(args, options, onStdout),
+    dispose: () => fs.rm(gitDirectory, { recursive: true, force: true }),
+  }
+}
+
+// Checks a new session worktree out of `commit` in an isolated Git directory
+// and makes the result the new worktree's own index (ruling Q223).
+export async function checkOutIsolated(input: {
+  worktree: string
+  commit: string
+  // The new worktree's filter settings as the scan read them.
+  settings: readonly GitFilterSetting[]
+  reviewed?: ReadonlyArray<readonly [string, string]> | undefined
+  beforeCommand?: (() => void) | undefined
+  signal?: AbortSignal | undefined
+}): Promise<void> {
+  const { commit } = input
+  const isolated = await openIsolatedGit({ ...input, worktreeIndex: false })
+  try {
     const version = await installedGitVersion()
     // Git 2.40 and later read in-tree attributes from the commit alone, not a
     // .gitattributes planted in the new worktree before the checkout. Older Git
     // falls back to such a file, which can still only select a driver the
     // isolated config defines.
     const attributeSource = version !== undefined && (version[0] > 2 || (version[0] === 2 && version[1] >= 40)) ? [`--attr-source=${commit}`] : []
-    signal?.throwIfAborted()
-    await trackRestoreCommand(() => execute("git", [...inertRepositoryConfig, ...attributeSource, "read-tree", "--reset", "-u", commit], {
-      cwd: worktree, env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, ...(signal ? { signal } : {}),
-    }))
+    await isolated.run([...attributeSource, "read-tree", "--reset", "-u", commit])
     // The index names the files just written with their stat data, so the new
     // worktree reads as clean without hashing, and filtering, them again.
-    const staged = `${index}.domovoi-${randomUUID()}`
-    await fs.copyFile(join(gitDirectory, "index"), staged)
-    await fs.rename(staged, index)
+    const staged = `${isolated.worktreeIndex}.domovoi-${randomUUID()}`
+    await fs.copyFile(join(isolated.gitDirectory, "index"), staged)
+    await fs.rename(staged, isolated.worktreeIndex)
   } finally {
-    await fs.rm(gitDirectory, { recursive: true, force: true })
+    await isolated.dispose()
   }
 }

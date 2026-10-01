@@ -11,10 +11,14 @@ import { maximumPreviewSourceBytes, type RepositoryGitFilterScope } from "@getdo
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
-import { checkOutIsolated } from "./isolated-checkout.js"
+import { checkOutIsolated, openIsolatedGit, type IsolatedGit } from "./isolated-checkout.js"
 import {
-  readGitFilterSettings, readRepositoryGitFilters, repositoryGitFilters, type GitFilterSetting, type RepositoryGitFilter,
-} from "./repository-git-filters.js"
+  repositoryFilterGate,
+  type RepositoryFilterGate,
+  type RepositoryFilterRefusalReason,
+  type RepositoryFilterTrustLookup,
+} from "./repository-git-filter-gate.js"
+import type { RepositoryGitFilter } from "./repository-git-filters.js"
 import { RestoreOperationLease, trackRestoreCommand } from "./workspace-restore-lease.js"
 
 const execute = promisify(execFile)
@@ -245,11 +249,11 @@ export class SubmoduleChangesRefusedError extends Error {
 
 // Whether any submodule has changed tracked content or untracked files: the
 // M or U in the submodule field ("S<c><m><u>") of a porcelain v2 record.
-async function submoduleHasLocalChanges(worktreePath: string, signal?: AbortSignal): Promise<boolean> {
+async function submoduleHasLocalChanges(isolated: IsolatedGit, signal?: AbortSignal): Promise<boolean> {
   // No optional locks: status must not refresh the index the agent shares.
-  const status = await git(worktreePath, [
+  const status = (await isolated.run([
     "--no-optional-locks", "status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--untracked-files=no",
-  ], signal)
+  ], { signal })).trim()
   const records = status.split("\0")
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index]!
@@ -270,27 +274,62 @@ const shownName = (name: string) => redactInventoryText(name, inventoryFieldCaps
 const shownSettings = (entries: readonly { scope: string; key: string }[]) =>
   entries.map(({ scope, key }) => `${redactInventoryText(key, inventoryFieldCaps.detail)} in ${scope} Git config`).join(", ")
 
+// Why the filters stay held back, by the gate's reason
+// (repository-git-filter-gate.ts). The trust sheet's own copy comes with the
+// client (P11b); this is the daemon's plain account.
+const heldBackText: Readonly<Record<RepositoryFilterRefusalReason, string>> = {
+  "not-trusted": "Domovoi runs a filter a repository's own Git config sets only once that repository is trusted on this machine.",
+  "config-changed": "The repository's configuration is not the one trusted on this machine, so Domovoi holds its filters back until it is reviewed again.",
+  "cannot-trust": "The repository holds configuration Domovoi cannot trust, so its filters stay held back.",
+  unreadable: "Domovoi could not read the repository's configuration to check its trust, so its filters stay held back.",
+}
+
+const driversOf = (filters: readonly RepositoryGitFilter[]) => {
+  const seen = new Set<string>()
+  return filters.flatMap(({ driver, scope }) => {
+    const id = `${scope}\0${driver}`
+    if (seen.has(id)) return []
+    seen.add(id)
+    return [{ name: driver, scope }]
+  })
+}
+
+const filterNames = (filters: readonly RepositoryGitFilter[]) => [...new Set(filters.map(({ driver }) => driver))]
+
+// A checkpoint, snapshot, restore, revert or transfer of a session worktree
+// refused: Git would run a filter the repository's own config sets, and the
+// repository's trust on this machine does not cover it (or a new session's
+// worktree, in RepositoryGitFilterRefusedError below). Nothing ran. drivers
+// names each driver once per scope; settings are the filters as the refused
+// command's worktree read them, commands included, for the refusal's digest,
+// never sent, stored or logged. projectId names the project the gate looked
+// trust up for, when the path belonged to one.
 export class RepositoryFilterRefusedError extends RepositoryConfigRefusedError {
   readonly filters: readonly string[]
+  readonly drivers: readonly { name: string; scope: RepositoryGitFilterScope }[]
+  readonly settings: readonly RepositoryGitFilter[]
+  readonly reason: RepositoryFilterRefusalReason
+  readonly projectId: string | undefined
 
-  constructor(entries: readonly { scope: string; key: string }[]) {
-    const filters = [...new Set(entries.map(({ key }) => key.slice("filter.".length, key.lastIndexOf("."))))]
-    const settings = shownSettings(entries)
+  constructor(filters: readonly RepositoryGitFilter[], options: { reason?: RepositoryFilterRefusalReason; projectId?: string | undefined } = {}) {
+    const reason = options.reason ?? "not-trusted"
     super(
-      `This repository's own Git config sets the filter ${filters.map((name) => `"${shownName(name)}"`).join(", ")} (${settings}). `
-      + "Checkpoint, restore, revert, archive and transfer would run its command, and Domovoi does not run "
-      + "commands a repository's own config supplies until that repository can be trusted. "
+      `This repository's own Git config sets the filter ${filterNames(filters).map((name) => `"${shownName(name)}"`).join(", ")} (${shownSettings(filters)}). `
+      + `Checkpoint, restore, revert and transfer would run its command. ${heldBackText[reason]} Nothing ran. `
       + "Filters from your global or system Git config still run.",
     )
     this.name = "RepositoryFilterRefusedError"
-    this.filters = filters
+    this.filters = filterNames(filters)
+    this.drivers = driversOf(filters)
+    this.settings = filters
+    this.reason = reason
+    this.projectId = options.projectId
   }
 }
 
 // A new session worktree (session.create, session.fork or a transfer arriving)
 // was not checked out: Git, reading config as that worktree reads it, would
-// run a filter the repository's own config sets. drivers names each driver
-// once per scope.
+// run a filter the repository's own config sets.
 //
 // The cleanup state, each part as it was reached: worktreeRemoved, the new
 // worktree is gone (true when none was made); false when taking it away
@@ -310,34 +349,22 @@ function cleanupText(cleanup: NewWorktreeCleanup): string {
 }
 
 export class RepositoryGitFilterRefusedError extends RepositoryFilterRefusedError {
-  readonly drivers: readonly { name: string; scope: RepositoryGitFilterScope }[]
   readonly worktreeRemoved: boolean
   readonly branchRemoved: boolean | undefined
-  // The filter settings as the refused checkout read them, commands
-  // included: for the refusal's digest, never sent, stored or logged.
-  readonly settings: readonly RepositoryGitFilter[]
 
-  constructor(filters: readonly RepositoryGitFilter[], cleanup: NewWorktreeCleanup) {
-    // The base class names each driver from a filter.<driver>.<op> key; an lfs
-    // setting's driver is its agent or extension name. The message is replaced below.
-    super(filters.map(({ scope, driver, operation }) => ({ scope, key: `filter.${driver}.${operation}` })))
-    const names = [...new Set(filters.map(({ driver }) => driver))]
-    this.message = `This repository's own Git config sets the filter ${names.map((name) => `"${shownName(name)}"`).join(", ")} (${shownSettings(filters)}). `
-      + "Checking it out for this session would run its command, and Domovoi does not run a filter a repository's "
-      + "own Git config sets. Nothing ran. "
+  constructor(
+    filters: readonly RepositoryGitFilter[],
+    cleanup: NewWorktreeCleanup,
+    options: { reason?: RepositoryFilterRefusalReason; projectId?: string | undefined } = {},
+  ) {
+    super(filters, options)
+    this.message = `This repository's own Git config sets the filter ${filterNames(filters).map((name) => `"${shownName(name)}"`).join(", ")} (${shownSettings(filters)}). `
+      + `Checking it out for this session would run its command. ${heldBackText[this.reason]} Nothing ran. `
       + cleanupText(cleanup)
       + "Filters from your global or system Git config still run."
     this.worktreeRemoved = cleanup.worktreeRemoved
     this.branchRemoved = cleanup.branchRemoved
-    this.settings = filters
     this.name = "RepositoryGitFilterRefusedError"
-    const seen = new Set<string>()
-    this.drivers = filters.flatMap(({ driver, scope }) => {
-      const id = `${scope}\0${driver}`
-      if (seen.has(id)) return []
-      seen.add(id)
-      return [{ name: driver, scope }]
-    })
   }
 }
 
@@ -408,41 +435,6 @@ async function repositoryTransportOverrides(repositoryPath: string, signal?: Abo
   return overrides
 }
 
-async function repositoryFilterSettings(
-  repositoryPath: string,
-  signal?: AbortSignal,
-): Promise<{ scope: string; key: string }[]> {
-  let output: string
-  try {
-    output = await git(repositoryPath, [
-      "config", "--show-scope", "-z", "--get-regexp", String.raw`^filter\..+\.(clean|smudge|process)$`,
-    ], signal)
-  } catch (error) {
-    if ((error as { code?: unknown }).code === 1) return []
-    throw error
-  }
-  const fields = output.split("\0")
-  const entries: { scope: string; key: string }[] = []
-  for (let index = 0; index + 1 < fields.length; index += 2) {
-    const scope = fields[index]!
-    const key = fields[index + 1]!.split("\n")[0]!
-    if (!trustedConfigScopes.has(scope)) entries.push({ scope, key })
-  }
-  return entries
-}
-
-async function refuseRepositoryFilters(repositoryPath: string, signal?: AbortSignal): Promise<void> {
-  const entries = await repositoryFilterSettings(repositoryPath, signal)
-  if (entries.length > 0) throw new RepositoryFilterRefusedError(entries)
-}
-
-// Before a new session worktree is added: refuse with nothing made when the
-// checkout it is added from already reads a repository filter.
-async function refuseRepositoryGitFilters(directory: string, signal?: AbortSignal): Promise<void> {
-  const filters = await readRepositoryGitFilters(directory, signal)
-  if (filters.length > 0) throw new RepositoryGitFilterRefusedError(filters, { worktreeRemoved: true, branchRemoved: undefined })
-}
-
 // Takes away the new worktree, then the branch this operation made, and says
 // which of the two it reached. It takes no signal: a cancelled operation still
 // takes away what it made. `worktree remove --force` skips the clean check,
@@ -463,18 +455,27 @@ async function discardNewWorktree(repositoryPath: string, path: string, madeBran
   }
 }
 
-// Evidence only reads what the worktree shows, so a repository-set filter is
-// treated as absent there: the file view may show a filtered file as changed,
-// and nothing is stored.
-async function repositoryFiltersSwitchedOff(repositoryPath: string, signal?: AbortSignal): Promise<string[]> {
-  const entries = await repositoryFilterSettings(repositoryPath, signal)
-  const names = new Set(entries.map(({ key }) => key.slice("filter.".length, key.lastIndexOf("."))))
-  return [...names].flatMap((name) => [
-    "-c", `filter.${name}.clean=`,
-    "-c", `filter.${name}.smudge=`,
-    "-c", `filter.${name}.process=`,
-    "-c", `filter.${name}.required=false`,
-  ])
+// Records the work in the index as a commit on HEAD. Any Git command that
+// writes the index can run a clean filter: it compares a racily clean file's
+// contents before writing. So the tree is written through the isolated
+// directory, and the commit and the branch with plumbing that reads no index
+// (`git commit` also refreshes the index first). Hooks are inert and nothing
+// is signed, as for every daemon commit.
+async function commitIndex(
+  worktreePath: string,
+  isolated: IsolatedGit,
+  parent: string | undefined,
+  message: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const tree = (await isolated.run(["write-tree"], { signal })).trim()
+  const commit = await git(worktreePath, [
+    "-c", "user.name=Domovoi", "-c", "user.email=domovoi@localhost", "-c", "commit.gpgsign=false",
+    "commit-tree", "--no-gpg-sign", tree, ...(parent === undefined ? [] : ["-p", parent]), "-m", message,
+  ], signal)
+  // An empty old value requires that the branch does not exist yet.
+  await git(worktreePath, ["update-ref", "-m", `commit: ${message}`, "HEAD", commit, parent ?? ""], signal)
+  return commit
 }
 
 export class WorkspaceEvidenceUnstableError extends Error {
@@ -491,6 +492,13 @@ export type GitWorkspaceServiceOptions = {
   // Runs once a new session worktree's config has been read, before it is
   // checked out or taken away: a test seam for what can happen in between.
   afterNewWorktreeScan?: (worktreePath: string) => void | Promise<void>
+  // Runs once the filter gate of an operation on an existing session
+  // worktree has decided, before the commands it guards: a test seam too.
+  afterRepositoryFilterGate?: (worktreePath: string) => void | Promise<void>
+  // The project a gated path belongs to, with this machine's grant for it,
+  // read at every call (repository-git-filter-gate.ts). Without it, every
+  // repository filter stays held back.
+  repositoryTrust?: RepositoryFilterTrustLookup
 }
 
 export interface WorkspaceService {
@@ -659,24 +667,6 @@ async function git(
   return result.stdout.trim()
 }
 
-// Git run against a separate index file, so a snapshot never touches the
-// index the person and the agent share. Output is returned untrimmed.
-async function gitWithIndex(
-  repositoryPath: string,
-  indexPath: string,
-  arguments_: string[],
-  signal?: AbortSignal,
-): Promise<string> {
-  signal?.throwIfAborted()
-  const result = await trackRestoreCommand(() => execute("git", gitArguments(repositoryPath, arguments_), {
-    env: { ...gitEnvironment(), GIT_INDEX_FILE: indexPath },
-    encoding: "utf8",
-    maxBuffer: maximumGitOutputBytes,
-    signal,
-  }))
-  return result.stdout
-}
-
 type IndexSnapshot = { path: string; head: string | undefined; bytes: Buffer | undefined }
 
 async function currentHead(worktreePath: string, signal?: AbortSignal): Promise<string | undefined> {
@@ -834,80 +824,67 @@ async function boundedGit(
   })
 }
 
-async function hashGit(
-  repositoryPath: string,
+// Git's output in an isolated directory, cut at maximumBytes with a marker.
+async function boundedIsolatedGit(
+  isolated: IsolatedGit,
   arguments_: string[],
+  maximumBytes: number,
   signal?: AbortSignal,
-): Promise<string> {
-  signal?.throwIfAborted()
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn("git", gitArguments(repositoryPath, arguments_), {
-      env: gitEnvironment(),
-      stdio: ["ignore", "pipe", "pipe"],
-    })
-    const hash = createHash("sha256")
-    const errors: Buffer[] = []
-    let capturedErrorBytes = 0
-    let settled = false
-    const abort = () => child.kill()
-    signal?.addEventListener("abort", abort, { once: true })
-    child.stdout.on("data", (chunk: Buffer) => hash.update(chunk))
-    child.stderr.on("data", (chunk: Buffer) => {
-      if (capturedErrorBytes >= 16_384) return
-      const captured = chunk.subarray(0, 16_384 - capturedErrorBytes)
-      errors.push(captured)
-      capturedErrorBytes += captured.length
-    })
-    child.once("error", (error) => {
-      if (settled) return
-      settled = true
-      signal?.removeEventListener("abort", abort)
-      reject(error)
-    })
-    child.once("close", (code) => {
-      if (settled) return
-      settled = true
-      signal?.removeEventListener("abort", abort)
-      if (signal?.aborted) {
-        reject(signal.reason)
-        return
-      }
-      if (code !== 0) {
-        reject(new Error(Buffer.concat(errors).toString("utf8").trim() || `git exited with ${code}`))
-        return
-      }
-      resolvePromise(hash.digest("hex"))
-    })
-  })
+): Promise<{ output: string; truncated: boolean }> {
+  const output: Buffer[] = []
+  let capturedBytes = 0
+  let truncated = false
+  const result = await isolated.stream(arguments_, (chunk, stop) => {
+    const remaining = maximumBytes - capturedBytes
+    if (remaining > 0) {
+      const captured = chunk.subarray(0, remaining)
+      output.push(captured)
+      capturedBytes += captured.length
+    }
+    if (chunk.length > remaining && !truncated) {
+      truncated = true
+      stop()
+    }
+  }, { signal })
+  if (result.code !== 0 && !truncated) throw new Error(result.stderr || `git exited with ${result.code ?? result.signal}`)
+  let text = Buffer.concat(output).toString("utf8")
+  if (truncated) {
+    const marker = "…\n"
+    while (Buffer.byteLength(`${text}${marker}`, "utf8") > maximumBytes) {
+      text = text.slice(0, -1)
+    }
+    text += marker
+  }
+  return { output: text, truncated }
 }
 
+// The sha256 of Git's output in an isolated directory.
+async function hashIsolatedGit(isolated: IsolatedGit, arguments_: string[], signal?: AbortSignal): Promise<string> {
+  const hash = createHash("sha256")
+  const result = await isolated.stream(arguments_, (chunk) => hash.update(chunk), { signal })
+  if (result.code !== 0) throw new Error(result.stderr || `git exited with ${result.code ?? result.signal}`)
+  return hash.digest("hex")
+}
+
+// The isolated directory's HEAD must already be the worktree's HEAD the
+// caller read: the status and diff compare against it.
 async function workspaceEvidenceFingerprint(
   worktreePath: string,
+  isolated: IsolatedGit,
+  head: string,
   signal?: AbortSignal,
-  filtersOff: readonly string[] = [],
 ): Promise<{ headCommit: string; digest: string }> {
-  const fingerprintConfig = [
-    "-c",
-    "core.fsmonitor=false",
-    ...filtersOff,
-  ]
   const [baseCommit, status, diffHash] = await Promise.all([
-    git(worktreePath, [...fingerprintConfig, "rev-parse", "HEAD"], signal),
-    git(worktreePath, [
-      ...fingerprintConfig,
-      "status",
-      "--porcelain=v2",
-      "-z",
-      "--untracked-files=all",
-    ], signal),
-    hashGit(worktreePath, [
-      ...fingerprintConfig,
+    git(worktreePath, ["rev-parse", "HEAD"], signal),
+    isolated.run(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"], { signal }).then((output) => output.trim()),
+    hashIsolatedGit(isolated, [
+      "--no-optional-locks",
       "diff",
       "--binary",
       "--no-ext-diff",
       "--no-textconv",
       "--no-color",
-      "HEAD",
+      head,
       "--",
     ], signal),
   ])
@@ -1136,6 +1113,8 @@ export class GitWorkspaceService implements WorkspaceService {
     "afterIgnoredArtifactValidation"
   ]
   readonly #afterNewWorktreeScan?: GitWorkspaceServiceOptions["afterNewWorktreeScan"]
+  readonly #afterRepositoryFilterGate?: GitWorkspaceServiceOptions["afterRepositoryFilterGate"]
+  readonly #repositoryTrust?: GitWorkspaceServiceOptions["repositoryTrust"]
 
   constructor(worktreeRoot: string, options: GitWorkspaceServiceOptions = {}) {
     this.worktreeRoot = resolve(worktreeRoot)
@@ -1143,54 +1122,110 @@ export class GitWorkspaceService implements WorkspaceService {
     this.#afterCheckpointStaging = options.afterCheckpointStaging
     this.#afterIgnoredArtifactValidation = options.afterIgnoredArtifactValidation
     this.#afterNewWorktreeScan = options.afterNewWorktreeScan
+    this.#afterRepositoryFilterGate = options.afterRepositoryFilterGate
+    this.#repositoryTrust = options.repositoryTrust
+  }
+
+  #gate(anchor: string, worktree: string, signal?: AbortSignal): Promise<RepositoryFilterGate> {
+    return repositoryFilterGate({ worktree, anchor, trust: this.#repositoryTrust, signal })
+  }
+
+  // Refuses the rest of an operation once trust lapsed since its gate opened:
+  // a revoke between the gate and a command it guards.
+  #confirm(gate: RepositoryFilterGate): (() => void) | undefined {
+    if (!gate.open || gate.reviewed.length === 0) return undefined
+    return () => {
+      const lapsed = gate.confirm()
+      if (lapsed !== undefined) throw new RepositoryFilterRefusedError(gate.filters, { reason: lapsed, projectId: gate.projectId })
+    }
+  }
+
+  // Runs `work` on an existing session worktree through an isolated Git
+  // directory (isolated-checkout.ts) after its filter gate. A refused gate
+  // refuses the operation; evidence, which stores nothing, reads with the
+  // repository's filters absent instead ("filters-off"). `anchor` is the path
+  // the caller named, which the trust lookup maps to its project.
+  async #isolated<T>(
+    anchor: string,
+    worktree: string,
+    signal: AbortSignal | undefined,
+    work: (isolated: IsolatedGit) => Promise<T>,
+    whenRefused: "refuse" | "filters-off" = "refuse",
+  ): Promise<T> {
+    const gate = await this.#gate(anchor, worktree, signal)
+    if (!gate.open && whenRefused === "refuse") throw new RepositoryFilterRefusedError(gate.filters, { reason: gate.reason, projectId: gate.projectId })
+    await this.#afterRepositoryFilterGate?.(worktree)
+    const isolated = await openIsolatedGit({
+      worktree, settings: gate.settings, reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true, beforeCommand: this.#confirm(gate), signal,
+    })
+    try {
+      return await work(isolated)
+    } finally {
+      await isolated.dispose()
+    }
+  }
+
+  // Before a new session worktree is added: refuse with nothing made when the
+  // checkout it is added from already reads a filter its trust does not cover.
+  async #refuseBeforeAdding(anchor: string, directory: string, signal?: AbortSignal): Promise<void> {
+    const gate = await this.#gate(anchor, directory, signal)
+    if (!gate.open) {
+      throw new RepositoryGitFilterRefusedError(gate.filters, { worktreeRemoved: true, branchRemoved: undefined }, { reason: gate.reason, projectId: gate.projectId })
+    }
   }
 
   // A worktree added with --no-checkout holds no file yet, so nothing has run.
   // A scan of the checkout it was added from is not enough: an includeIf
   // "onbranch:" include applies to the new branch only, and `worktree add`
-  // copies the source worktree's config.worktree. So Git's config is read as
-  // the new worktree reads it, and the worktree is checked out only when that
-  // sets no repository filter. Otherwise it is taken away, with the branch this
-  // operation made (madeBranch), and refused.
+  // copies the source worktree's config.worktree. So the filter gate reads
+  // Git's config as the new worktree reads it, and the worktree is checked out
+  // only when the gate allows what that config sets: nothing, or a trusted
+  // repository's reviewed filters exactly. Otherwise it is taken away, with
+  // the branch this operation made (madeBranch), and refused (ruling Q3 A).
   //
   // The checkout itself runs in an isolated Git directory that reads none of
   // the repository's config (isolated-checkout.ts, ruling Q223), so config
   // written after the scan, and any repository key that would make Git or
-  // git-lfs start a program, runs nothing. That made redundant, and removed:
-  // the per-driver pins of the checkout (git-checkout-pins.ts) and the re-read
-  // after it that refused a session whose settings changed meanwhile (ruling
-  // Q221 A). The scan stays: a repository filter is still refused and named
-  // before anything is checked out (ruling Q3 A).
+  // git-lfs start a program, runs nothing; under trust only the reviewed
+  // values the gate read are added.
   //
   // The checkout is of `commit` itself, and the new branch is set back to it
   // afterwards, so a branch moved in between checks out nothing else.
   async #checkOutNewWorktree(
+    anchor: string,
     repositoryPath: string,
     path: string,
     commit: string,
     madeBranch: string | undefined,
     signal?: AbortSignal,
   ): Promise<void> {
-    let settings: GitFilterSetting[]
+    let gate: RepositoryFilterGate
     try {
-      settings = await readGitFilterSettings(path, signal)
-      const filters = repositoryGitFilters(settings)
+      gate = await this.#gate(anchor, path, signal)
       await this.#afterNewWorktreeScan?.(path)
-      if (filters.length > 0) {
-        throw new RepositoryGitFilterRefusedError(filters, await discardNewWorktree(repositoryPath, path, madeBranch))
+      if (!gate.open) {
+        throw new RepositoryGitFilterRefusedError(gate.filters, await discardNewWorktree(repositoryPath, path, madeBranch), {
+          reason: gate.reason, projectId: gate.projectId,
+        })
       }
     } catch (error) {
       if (!(error instanceof RepositoryGitFilterRefusedError)) await discardNewWorktree(repositoryPath, path, madeBranch)
       throw error
     }
     // A checkout that fails (a required filter of the person's own that
-    // fails, a missing object, a cancel) leaves no worktree or branch behind:
-    // the caller's creation promise rejects and never names one to remove.
+    // fails, a missing object, a cancel, trust revoked meanwhile) leaves no
+    // worktree or branch behind: the caller's creation promise rejects and
+    // never names one to remove.
     try {
-      await checkOutIsolated({ worktree: path, commit, settings, signal })
+      await checkOutIsolated({
+        worktree: path, commit, settings: gate.settings, reviewed: gate.open ? gate.reviewed : [], beforeCommand: this.#confirm(gate), signal,
+      })
       await git(path, ["update-ref", "HEAD", commit], signal)
     } catch (error) {
-      await discardNewWorktree(repositoryPath, path, madeBranch)
+      const cleanup = await discardNewWorktree(repositoryPath, path, madeBranch)
+      if (error instanceof RepositoryFilterRefusedError) {
+        throw new RepositoryGitFilterRefusedError(error.settings, cleanup, { reason: error.reason, projectId: error.projectId })
+      }
       throw error
     }
   }
@@ -1222,7 +1257,7 @@ export class GitWorkspaceService implements WorkspaceService {
       throw new Error("Session id is not safe for a worktree")
     }
     const repository = await this.inspect(repositoryPath, signal)
-    await refuseRepositoryGitFilters(repository.root, signal)
+    await this.#refuseBeforeAdding(repositoryPath, repository.root, signal)
     const path = join(this.worktreeRoot, sessionId)
     const branch = `domovoi/${sessionId}`
     await mkdir(this.worktreeRoot, { recursive: true })
@@ -1230,7 +1265,7 @@ export class GitWorkspaceService implements WorkspaceService {
     // Retain its commit before creating the worktree so a ref failure leaves no worktree behind.
     await git(repository.root, ["update-ref", `refs/domovoi/checkpoints/${repository.head}`, repository.head], signal)
     await git(repository.root, ["worktree", "add", "--no-checkout", "-b", branch, path, repository.head], signal)
-    await this.#checkOutNewWorktree(repository.root, path, repository.head, branch, signal)
+    await this.#checkOutNewWorktree(repositoryPath, repository.root, path, repository.head, branch, signal)
     return { path, branch, baseCommit: repository.head }
   }
 
@@ -1281,7 +1316,7 @@ export class GitWorkspaceService implements WorkspaceService {
     }
 
     const repository = await this.inspect(sourceWorktreePath, signal)
-    await refuseRepositoryGitFilters(repository.root, signal)
+    await this.#refuseBeforeAdding(sourceWorktreePath, repository.root, signal)
     await mkdir(this.worktreeRoot, { recursive: true })
     let existingBranchCommit: string | undefined
     try {
@@ -1303,51 +1338,54 @@ export class GitWorkspaceService implements WorkspaceService {
         : ["worktree", "add", "--no-checkout", "-b", branch, path, checkpointCommit],
       signal,
     )
-    await this.#checkOutNewWorktree(repository.root, path, checkpointCommit, existingBranchCommit ? undefined : branch, signal)
+    await this.#checkOutNewWorktree(sourceWorktreePath, repository.root, path, checkpointCommit, existingBranchCommit ? undefined : branch, signal)
     return { path: await realpath(path), branch, baseCommit: checkpointCommit }
   }
 
+  // Evidence reads what the worktree shows and stores nothing, so a filter
+  // its trust does not cover is treated as absent there, not refused: the
+  // file view may show a filtered file as changed. Under a grant the reviewed
+  // filters read the files as a checkpoint would store them.
   async evidence(worktreePath: string, signal?: AbortSignal, includeRevertTargets = false): Promise<WorkspaceEvidence> {
-    const filtersOff = await repositoryFiltersSwitchedOff(worktreePath, signal)
+    return this.#isolated(worktreePath, worktreePath, signal, (isolated) => this.#evidence(worktreePath, isolated, signal, includeRevertTargets), "filters-off")
+  }
+
+  async #evidence(worktreePath: string, isolated: IsolatedGit, signal: AbortSignal | undefined, includeRevertTargets: boolean): Promise<WorkspaceEvidence> {
     for (let attempt = 0; attempt < maximumEvidenceAttempts; attempt += 1) {
-      const fingerprintBefore = await workspaceEvidenceFingerprint(worktreePath, signal, filtersOff)
-      const [baseCommit, status] = await Promise.all([
-        git(worktreePath, ["-c", "core.fsmonitor=false", "rev-parse", "HEAD"], signal),
-        git(worktreePath, [
-          "-c",
-          "core.fsmonitor=false",
-          ...filtersOff,
-          "status",
-          "--porcelain=v2",
-          "-z",
-          "--untracked-files=all",
-        ], signal),
-      ])
+      // Every observation compares against this commit; the fingerprints
+      // read the worktree's HEAD again, so one that moved meanwhile retries.
+      const baseCommit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
+      await isolated.setHead(baseCommit)
+      const fingerprintBefore = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, signal)
+      if (fingerprintBefore.headCommit !== baseCommit) continue
+      const status = (await isolated.run([
+        "--no-optional-locks",
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--untracked-files=all",
+      ], { signal })).trim()
       await this.#afterEvidenceObservation?.("status")
       const [numstat, diff, basePaths] = await Promise.all([
-        git(worktreePath, [
-          "-c",
-          "core.fsmonitor=false",
-          ...filtersOff,
+        isolated.run([
+          "--no-optional-locks",
           "diff",
-          "HEAD",
+          baseCommit,
           "--numstat",
           "-z",
           "--no-renames",
           "--no-textconv",
           "--",
-        ], signal),
-        boundedGit(
-          worktreePath,
+        ], { signal }).then((output) => output.trim()),
+        boundedIsolatedGit(
+          isolated,
           [
-            "-c",
-            "core.fsmonitor=false",
-            ...filtersOff,
+            "--no-optional-locks",
             "diff",
             "--no-ext-diff",
             "--no-textconv",
             "--no-color",
-            "HEAD",
+            baseCommit,
             "--",
           ],
           maximumEvidenceDiffBytes,
@@ -1355,7 +1393,7 @@ export class GitWorkspaceService implements WorkspaceService {
         ),
         includeRevertTargets ? pathsAtCommit(worktreePath, baseCommit, signal) : undefined,
       ])
-      const fingerprintAfter = await workspaceEvidenceFingerprint(worktreePath, signal, filtersOff)
+      const fingerprintAfter = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, signal)
       if (fingerprintBefore.digest !== fingerprintAfter.digest) continue
 
       const stats = parseNumstat(numstat)
@@ -1580,36 +1618,29 @@ export class GitWorkspaceService implements WorkspaceService {
   }
 
   async checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint> {
-    await refuseRepositoryFilters(worktreePath, signal)
+    return this.#isolated(worktreePath, worktreePath, signal, (isolated) => this.#checkpoint(worktreePath, label, isolated, signal))
+  }
+
+  // Stages the whole worktree through the isolated directory, where only the
+  // filters its gate allowed can run, then commits the index with plumbing
+  // that reads no file.
+  async #checkpoint(worktreePath: string, label: string, isolated: IsolatedGit, signal?: AbortSignal): Promise<Checkpoint> {
     // A failed checkpoint must leave the index exactly as it found it,
     // including anything the person had staged themselves.
     const index = await snapshotIndex(worktreePath, signal)
     let changedFiles: string[]
     try {
-      await git(worktreePath, ["add", "--all"], signal)
+      if (index.head !== undefined) await isolated.setHead(index.head)
+      await isolated.run(["add", "--all"], { signal })
       await this.#afterCheckpointStaging?.()
-      const names = await rawGit(worktreePath, ["diff", "--cached", "--name-only", "-z"], signal)
+      const names = await isolated.run(["--no-optional-locks", "diff", "--cached", "--name-only", "-z"], { signal })
       changedFiles = names.split("\0").filter(Boolean)
-      if (changedFiles.length > 0) {
-        await git(worktreePath, [
-          "-c",
-          "user.name=Domovoi",
-          "-c",
-          "user.email=domovoi@localhost",
-          "-c",
-          "commit.gpgsign=false",
-          "commit",
-          "--no-verify",
-          "-m",
-          `chore(domovoi): checkpoint ${label}`,
-        ], signal)
-      }
+      if (changedFiles.length > 0) await commitIndex(worktreePath, isolated, index.head, `chore(domovoi): checkpoint ${label}`, signal)
     } catch (error) {
-      // A deadline can land after the commit itself did. The index then
-      // already matches the new HEAD, and the old one would read as reverting it.
+      // A deadline can land after the commit itself did. The index is then
+      // the new HEAD's tree, and the old one would read as reverting it.
       const head = await currentHead(worktreePath).catch(() => undefined)
-      if (head !== undefined && head !== index.head) await git(worktreePath, ["reset", "-q"]).catch(() => undefined)
-      else await restoreIndex(index).catch(() => undefined)
+      if (head === undefined || head === index.head) await restoreIndex(index).catch(() => undefined)
       throw error
     }
     const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
@@ -1622,33 +1653,39 @@ export class GitWorkspaceService implements WorkspaceService {
   // they were, so an agent mid-turn sees nothing. The temporary index starts as
   // a copy of the shared one, so files tracked despite an ignore rule stay in.
   async snapshot(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint> {
-    await refuseRepositoryFilters(worktreePath, signal)
-    if (await submoduleHasLocalChanges(worktreePath, signal)) throw new SubmoduleChangesRefusedError()
+    return this.#isolated(worktreePath, worktreePath, signal, (isolated) => this.#snapshot(worktreePath, label, isolated, signal))
+  }
+
+  async #snapshot(worktreePath: string, label: string, isolated: IsolatedGit, signal?: AbortSignal): Promise<Checkpoint> {
+    const head = await currentHead(worktreePath, signal)
+    if (head !== undefined) await isolated.setHead(head)
+    if (await submoduleHasLocalChanges(isolated, signal)) throw new SubmoduleChangesRefusedError()
     const sharedIndex = resolve(worktreePath, await git(worktreePath, ["rev-parse", "--git-path", "index"], signal))
     const temporaryIndex = resolve(
       worktreePath,
       await git(worktreePath, ["rev-parse", "--git-path", `domovoi-snapshot-${randomUUID()}.index`], signal),
     )
-    const head = await currentHead(worktreePath, signal)
     try {
       try {
         await copyFile(sharedIndex, temporaryIndex)
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-        if (head !== undefined) await gitWithIndex(worktreePath, temporaryIndex, ["read-tree", head], signal)
+        if (head !== undefined) await isolated.run(["read-tree", head], { index: temporaryIndex, signal })
       }
-      await gitWithIndex(worktreePath, temporaryIndex, ["add", "--all"], signal)
+      // Every command that reads or writes the temporary index runs in the
+      // isolated directory: writing an index can run a clean filter.
+      await isolated.run(["add", "--all"], { index: temporaryIndex, signal })
       await this.#afterCheckpointStaging?.()
       // Against the HEAD captured above, not whatever HEAD is now: the agent may
       // commit meanwhile, and the snapshot's parent is the captured one.
-      const names = await gitWithIndex(worktreePath, temporaryIndex, head === undefined
+      const names = await isolated.run(head === undefined
         ? ["ls-files", "-z"]
-        : ["diff", "--cached", "--no-renames", "--name-only", "-z", head, "--"], signal)
+        : ["--no-optional-locks", "diff", "--cached", "--no-renames", "--name-only", "-z", head, "--"], { index: temporaryIndex, signal })
       const changedFiles = names.split("\0").filter(Boolean)
       let commit = head
       if (commit === undefined || changedFiles.length > 0) {
-        const tree = (await gitWithIndex(worktreePath, temporaryIndex, ["write-tree"], signal)).trim()
-        commit = (await gitWithIndex(worktreePath, temporaryIndex, [
+        const tree = (await isolated.run(["write-tree"], { index: temporaryIndex, signal })).trim()
+        commit = await git(worktreePath, [
           "-c",
           "user.name=Domovoi",
           "-c",
@@ -1661,7 +1698,7 @@ export class GitWorkspaceService implements WorkspaceService {
           ...(head === undefined ? [] : ["-p", head]),
           "-m",
           `chore(domovoi): checkpoint ${label}`,
-        ], signal)).trim()
+        ], signal)
       }
       await git(worktreePath, ["update-ref", checkpointRef(commit), commit], signal)
       return { commit, changedFiles }
@@ -1709,14 +1746,15 @@ export class GitWorkspaceService implements WorkspaceService {
     // A remote name that begins with a dash would be read as an option by git.
     if (!safeRemoteName.test(remote)) throw new Error("Remote name is not safe")
 
-    await refuseRepositoryFilters(worktreePath, signal)
-    const transport = await repositoryTransportOverrides(worktreePath, signal)
-    const remotes = await git(worktreePath, ["remote"], signal)
-    if (!remotes.split("\n").map((name) => name.trim()).includes(remote)) {
-      throw new Error(`Repository has no remote named ${remote}`)
-    }
+    const { commit, transport } = await this.#isolated(worktreePath, worktreePath, signal, async (isolated) => {
+      const transport = await repositoryTransportOverrides(worktreePath, signal)
+      const remotes = await git(worktreePath, ["remote"], signal)
+      if (!remotes.split("\n").map((name) => name.trim()).includes(remote)) {
+        throw new Error(`Repository has no remote named ${remote}`)
+      }
+      return { commit: await this.#checkpointedHead(worktreePath, isolated, signal), transport }
+    })
 
-    const commit = await this.#checkpointedHead(worktreePath, signal)
     const ref = `refs/domovoi/sessions/${sessionId}`
     const checkpointRefs = await verifiedCheckpointRefs(
       worktreePath,
@@ -1757,7 +1795,7 @@ export class GitWorkspaceService implements WorkspaceService {
       ? signal
       : expectedCommitOrSignal ?? signal
     if (!safeSessionId.test(sessionId)) throw new Error("Session id is not safe for a worktree")
-    await refuseRepositoryFilters(repositoryPath, operationSignal)
+    await this.#refuseBeforeAdding(repositoryPath, repositoryPath, operationSignal)
     if (!safeRemoteName.test(remote)) throw new Error("Remote name is not safe")
     if (expectedCommit !== undefined && !/^[a-f0-9]{40}$/u.test(expectedCommit)) {
       throw new Error("Expected remote session commit is invalid")
@@ -1787,8 +1825,10 @@ export class GitWorkspaceService implements WorkspaceService {
     await mkdir(this.worktreeRoot, { recursive: true })
     const held = await this.sessionHeadCommit(sessionId, operationSignal)
     if (held !== undefined) {
-      await refuseRepositoryFilters(path, operationSignal)
-      const status = await git(path, ["status", "--porcelain"], operationSignal)
+      const status = await this.#isolated(repositoryPath, path, operationSignal, async (isolated) => {
+        await isolated.setHead(held)
+        return (await isolated.run(["--no-optional-locks", "status", "--porcelain"], { signal: operationSignal })).trim()
+      })
       if (held !== commit || status.length > 0) throw new SessionWorktreeExistsError()
       await git(path, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], operationSignal)
       return { path, branch, baseCommit: commit }
@@ -1802,14 +1842,17 @@ export class GitWorkspaceService implements WorkspaceService {
     }
 
     await git(repositoryPath, ["worktree", "add", "--no-checkout", "-b", branch, path, commit], operationSignal)
-    await this.#checkOutNewWorktree(repositoryPath, path, commit, branch, operationSignal)
+    await this.#checkOutNewWorktree(repositoryPath, repositoryPath, path, commit, branch, operationSignal)
     // The transferred checkpoint stays restorable here, as it does when a
     // session arrives as a bundle.
     await git(path, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], operationSignal)
     return { path, branch, baseCommit: commit }
   }
 
-  async #checkpointedHead(worktreePath: string, signal?: AbortSignal): Promise<string> {
+  // A bundle or a pushed ref carries commits, so anything not committed would
+  // be left behind on the source. The session must be at a checkpoint before
+  // it travels. The status reads files, so it runs in the isolated directory.
+  async #checkpointedHead(worktreePath: string, isolated: IsolatedGit, signal?: AbortSignal): Promise<string> {
     const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
     let durableCommit: string | undefined
     try {
@@ -1820,7 +1863,8 @@ export class GitWorkspaceService implements WorkspaceService {
     } catch {
       signal?.throwIfAborted()
     }
-    const status = await git(worktreePath, ["status", "--porcelain"], signal)
+    await isolated.setHead(commit)
+    const status = (await isolated.run(["--no-optional-locks", "status", "--porcelain"], { signal })).trim()
     if (durableCommit !== commit || status.length > 0) {
       throw new Error("Session worktree has work that is not checkpointed")
     }
@@ -1842,27 +1886,11 @@ export class GitWorkspaceService implements WorkspaceService {
       throw new Error("Bundle path must not traverse")
     }
     const resolved = resolve(bundlePath)
-    await refuseRepositoryFilters(worktreePath, signal)
     if (sinceCommit !== undefined && !/^[a-f0-9]{40}$/.test(sinceCommit)) {
       throw new Error("Bundle base commit is invalid")
     }
 
-    const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
-    // A bundle carries commits, so anything not committed would be left behind
-    // on the source. The session must be at a checkpoint before it travels.
-    let durableCommit: string | undefined
-    try {
-      durableCommit = await git(worktreePath, [
-        "rev-parse",
-        `refs/domovoi/checkpoints/${commit}^{commit}`,
-      ], signal)
-    } catch {
-      signal?.throwIfAborted()
-    }
-    const status = await git(worktreePath, ["status", "--porcelain"], signal)
-    if (durableCommit !== commit || status.length > 0) {
-      throw new Error("Session worktree has work that is not checkpointed")
-    }
+    const commit = await this.#isolated(worktreePath, worktreePath, signal, (isolated) => this.#checkpointedHead(worktreePath, isolated, signal))
 
     const checkpointRefs = await verifiedCheckpointRefs(
       worktreePath,
@@ -1986,7 +2014,7 @@ export class GitWorkspaceService implements WorkspaceService {
     options: SessionBundleRestoreOptions,
     signal?: AbortSignal,
   ): Promise<SessionWorkspace> {
-    await refuseRepositoryFilters(options.repositoryPath, signal)
+    await this.#refuseBeforeAdding(options.repositoryPath, options.repositoryPath, signal)
     const repository = await this.inspect(options.repositoryPath, signal)
     const path = join(this.worktreeRoot, sessionId)
     const branch = `domovoi/${sessionId}`
@@ -2038,19 +2066,23 @@ export class GitWorkspaceService implements WorkspaceService {
       // already owns. Uncommitted target work is never this transfer's to drop.
       const held = await this.sessionHeadCommit(sessionId, signal)
       if (held !== undefined) {
-        await refuseRepositoryFilters(path, signal)
-        const [status, worktreeCommon, repositoryCommon] = await Promise.all([
-          git(path, ["status", "--porcelain"], signal),
-          git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal),
-          git(repository.root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal),
-        ])
-        if (
-          status.length > 0
-          || await realpath(worktreeCommon) !== await realpath(repositoryCommon)
-        ) {
-          throw new SessionWorktreeExistsError()
-        }
-        await git(path, ["checkout", "--quiet", "-B", branch, arrived], signal)
+        // `checkout -B <branch> <arrived>` in two parts: the files and the
+        // index through the isolated directory, where only filters the gate
+        // allowed run, then the branch and HEAD with ref commands. The
+        // worktree is clean, so a hard reset changes what checkout would.
+        await this.#isolated(options.repositoryPath, path, signal, async (isolated) => {
+          const [worktreeCommon, repositoryCommon] = await Promise.all([
+            git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal),
+            git(repository.root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal),
+          ])
+          if (await realpath(worktreeCommon) !== await realpath(repositoryCommon)) throw new SessionWorktreeExistsError()
+          await isolated.setHead(held)
+          const status = (await isolated.run(["status", "--porcelain"], { signal })).trim()
+          if (status.length > 0) throw new SessionWorktreeExistsError()
+          await isolated.run(["reset", "--hard", "--quiet", arrived], { signal })
+        })
+        await git(path, ["update-ref", "-m", `checkout: moving to ${branch}`, `refs/heads/${branch}`, arrived], signal)
+        await git(path, ["symbolic-ref", "HEAD", `refs/heads/${branch}`], signal)
         await installCheckpointRefs()
         return { path, branch, baseCommit: arrived }
       }
@@ -2074,7 +2106,7 @@ export class GitWorkspaceService implements WorkspaceService {
         }
         throw error
       }
-      await this.#checkOutNewWorktree(repository.root, path, arrived, branch, signal)
+      await this.#checkOutNewWorktree(options.repositoryPath, repository.root, path, arrived, branch, signal)
       await installCheckpointRefs()
       return { path, branch, baseCommit: arrived }
     } finally {
@@ -2088,23 +2120,28 @@ export class GitWorkspaceService implements WorkspaceService {
     if (!/^[a-f0-9]{40}$/.test(commit)) {
       throw new Error("Checkpoint commit is invalid")
     }
-    await refuseRepositoryFilters(worktreePath, signal)
-    let checkpointCommit: string
-    try {
-      checkpointCommit = await git(worktreePath, [
-        "rev-parse",
-        `refs/domovoi/checkpoints/${commit}^{commit}`,
-      ], signal)
-    } catch {
-      signal?.throwIfAborted()
-      throw new Error("Commit is not a Domovoi checkpoint")
-    }
-    if (checkpointCommit !== commit) {
-      throw new Error("Commit is not a Domovoi checkpoint")
-    }
-    const recovery = await this.checkpoint(worktreePath, "before restore", signal)
-    await git(worktreePath, ["reset", "--hard", checkpointCommit], signal)
-    return { restoredCommit: checkpointCommit, recoveryCommit: recovery.commit }
+    return this.#isolated(worktreePath, worktreePath, signal, async (isolated) => {
+      let checkpointCommit: string
+      try {
+        checkpointCommit = await git(worktreePath, [
+          "rev-parse",
+          `refs/domovoi/checkpoints/${commit}^{commit}`,
+        ], signal)
+      } catch {
+        signal?.throwIfAborted()
+        throw new Error("Commit is not a Domovoi checkpoint")
+      }
+      if (checkpointCommit !== commit) {
+        throw new Error("Commit is not a Domovoi checkpoint")
+      }
+      const recovery = await this.#checkpoint(worktreePath, "before restore", isolated, signal)
+      // `reset --hard` in two parts: the files and the index through the
+      // isolated directory, then the branch with a ref command.
+      await isolated.setHead(recovery.commit)
+      await isolated.run(["reset", "--hard", "--quiet", checkpointCommit], { signal })
+      await git(worktreePath, ["update-ref", "-m", `reset: moving to ${checkpointCommit}`, "HEAD", checkpointCommit], signal)
+      return { restoredCommit: checkpointCommit, recoveryCommit: recovery.commit }
+    })
   }
 
   // Reverting one file discards uncommitted work, so the recovery checkpoint is
@@ -2120,50 +2157,55 @@ export class GitWorkspaceService implements WorkspaceService {
     if (!isWorktreeRelativePath(path)) {
       throw new Error("File path must stay inside the session worktree")
     }
-    await refuseRepositoryFilters(worktreePath, signal)
-    const pathspec = `:(literal)${path}`
-    const baseCommit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
-    if (expectedBaseCommit !== undefined && baseCommit !== expectedBaseCommit) {
-      throw new FileRevertTargetChangedError()
-    }
-    const status = await git(worktreePath, [
-      "status",
-      "--porcelain",
-      "-z",
-      "--untracked-files=all",
-      "--",
-      pathspec,
-    ], signal)
-    if (status.length === 0) throw new Error("File has no changes to revert")
-
-    let tracked = true
-    try {
-      await git(worktreePath, ["cat-file", "-e", `${baseCommit}:${path}`], signal)
-    } catch {
-      signal?.throwIfAborted()
-      tracked = false
-    }
-
-    const recovery = await this.checkpoint(worktreePath, `before revert ${path}`, signal)
-    // The checkpoint moved HEAD onto the work being reverted. Putting HEAD back
-    // keeps the session where it was, and leaves the recovery commit reachable
-    // only through its durable checkpoint ref.
-    try {
-      await git(worktreePath, ["reset", "--soft", baseCommit], signal)
-      if (tracked) {
-        await git(worktreePath, ["checkout", baseCommit, "--", pathspec], signal)
-      } else {
-        await git(worktreePath, ["rm", "--force", "--quiet", "--", pathspec], signal)
+    return this.#isolated(worktreePath, worktreePath, signal, async (isolated) => {
+      const pathspec = `:(literal)${path}`
+      const baseCommit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
+      if (expectedBaseCommit !== undefined && baseCommit !== expectedBaseCommit) {
+        throw new FileRevertTargetChangedError()
       }
-    } catch (cause) {
-      throw new FileRevertIncompleteError(recovery.commit, { cause })
-    }
-    return {
-      path,
-      outcome: tracked ? "restored" : "removed",
-      baseCommit,
-      recoveryCommit: recovery.commit,
-    }
+      await isolated.setHead(baseCommit)
+      const status = (await isolated.run([
+        "status",
+        "--porcelain",
+        "-z",
+        "--untracked-files=all",
+        "--",
+        pathspec,
+      ], { signal })).trim()
+      if (status.length === 0) throw new Error("File has no changes to revert")
+
+      let tracked = true
+      try {
+        await isolated.run(["cat-file", "-e", `${baseCommit}:${path}`], { signal })
+      } catch {
+        signal?.throwIfAborted()
+        tracked = false
+      }
+
+      const recovery = await this.#checkpoint(worktreePath, `before revert ${path}`, isolated, signal)
+      // The checkpoint moved HEAD onto the work being reverted. Putting HEAD back
+      // keeps the session where it was, and leaves the recovery commit reachable
+      // only through its durable checkpoint ref. As `reset --soft`, it leaves
+      // the index and the files alone; the file itself then changes through
+      // the isolated directory.
+      try {
+        await git(worktreePath, ["update-ref", "-m", `reset: moving to ${baseCommit}`, "HEAD", baseCommit], signal)
+        await isolated.setHead(baseCommit)
+        if (tracked) {
+          await isolated.run(["checkout", baseCommit, "--", pathspec], { signal })
+        } else {
+          await isolated.run(["rm", "--force", "--quiet", "--", pathspec], { signal })
+        }
+      } catch (cause) {
+        throw new FileRevertIncompleteError(recovery.commit, { cause })
+      }
+      return {
+        path,
+        outcome: tracked ? "restored" as const : "removed" as const,
+        baseCommit,
+        recoveryCommit: recovery.commit,
+      }
+    })
   }
 
   async removeSessionWorkspace(worktreePath: string, signal?: AbortSignal): Promise<void> {
@@ -2193,10 +2235,12 @@ export class GitWorkspaceService implements WorkspaceService {
   }
 
 
+  // `worktree remove --force` skips the clean check, so it runs no filter and
+  // nothing here is refused: a session whose archive checkpoint was taken can
+  // finish archiving after its repository's trust was revoked.
   async archiveSessionWorkspace(worktreePath: string, signal?: AbortSignal): Promise<void> {
     const resolved = await this.#resolveManagedWorktree(worktreePath, signal)
     if (!resolved) return
-    await refuseRepositoryFilters(resolved.path, signal)
     await gitDirectory(
       resolved.commonDirectory,
       ["worktree", "remove", "--force", resolved.path],
