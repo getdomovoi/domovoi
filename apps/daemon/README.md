@@ -554,7 +554,10 @@ code or settings the repository brings:
   runs in those directories. Your global provider configuration still applies. Skills under
   `.claude/skills` and `.agents/skills` still load with that switch set. The tool inventory lists
   every OpenCode and Kilo entry from those files and folders as held back, and those skills as
-  loading.
+  loading. Each embedded server takes a random password for its local API from its environment.
+  OpenCode 1.18 passes its whole environment, that password included, to every local tool server
+  it starts, and the daemon has no setting that removes it; a tool server of yours could use it to
+  answer that server's approval prompts. Kilo 7.8 removes it from a tool server's environment.
 - OpenCode and Kilo ask before every tool that is not one of their own. The embedded configuration
   starts its permissions with a `"*": "ask"` rule and then restates the server's own rules for its
   built-in tools, so each built-in tool keeps the action it had, and a call to a tool server's
