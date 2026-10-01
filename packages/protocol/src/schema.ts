@@ -95,7 +95,22 @@ export const providerModelSchema = z.object({
 })
 export const providerModelsSchema = z.array(providerModelSchema)
 
-export const providerFailureSchema = z.discriminatedUnion("kind", [
+// The schema is typed by this name so declaration output refers to it rather
+// than spelling the union out in every session, snapshot and result that
+// carries it; spelled out, it takes rpcMethods past what the compiler will
+// serialize (TS7056). The annotation below checks that what the schema reads
+// fits it.
+export type ProviderFailure =
+  | { kind: "authentication-expired"; action: "sign-in"; message: "Provider authentication expired"; retryable: false }
+  | { kind: "rate-limit"; action: "retry"; message: "Provider rate limit reached"; retryable: true }
+  | { kind: "quota-exhausted"; action: "check-quota"; message: "Provider quota is exhausted"; retryable: false }
+  | { kind: "model-unavailable"; action: "change-model"; message: "Selected model is unavailable"; retryable: false }
+  | { kind: "context-window-exceeded"; action: "shorten-context"; message: "Turn exceeded the model context window"; retryable: false }
+  | { kind: "transport"; action: "retry"; message: "Provider connection failed"; retryable: true }
+  | { kind: "unknown"; action: "retry"; message: "Provider request failed"; retryable: true }
+  | { kind: "approval-answered-elsewhere"; action: "review-changes"; message: "An approval was answered outside Domovoi"; retryable: false }
+
+const providerFailureUnion = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("authentication-expired"), action: z.literal("sign-in"), message: z.literal("Provider authentication expired"), retryable: z.literal(false) }),
   z.object({ kind: z.literal("rate-limit"), action: z.literal("retry"), message: z.literal("Provider rate limit reached"), retryable: z.literal(true) }),
   z.object({ kind: z.literal("quota-exhausted"), action: z.literal("check-quota"), message: z.literal("Provider quota is exhausted"), retryable: z.literal(false) }),
@@ -103,7 +118,12 @@ export const providerFailureSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("context-window-exceeded"), action: z.literal("shorten-context"), message: z.literal("Turn exceeded the model context window"), retryable: z.literal(false) }),
   z.object({ kind: z.literal("transport"), action: z.literal("retry"), message: z.literal("Provider connection failed"), retryable: z.literal(true) }),
   z.object({ kind: z.literal("unknown"), action: z.literal("retry"), message: z.literal("Provider request failed"), retryable: z.literal(true) }),
+  // The provider server reported an approval reply that Domovoi did not send,
+  // so the daemon stopped the session. Something that could read the server's
+  // credential answered it, and the approved call may already have run.
+  z.object({ kind: z.literal("approval-answered-elsewhere"), action: z.literal("review-changes"), message: z.literal("An approval was answered outside Domovoi"), retryable: z.literal(false) }),
 ])
+export const providerFailureSchema: z.ZodType<ProviderFailure, ProviderFailure> = providerFailureUnion
 
 export const providerRuntimeStatusSchema = z.enum([
   "ready",
@@ -1315,6 +1335,5 @@ export type WorkingPlanProviderSync = z.infer<typeof workingPlanProviderSyncSche
 export type WorkingPlan = z.infer<typeof workingPlanSchema>
 export type Annotation = z.infer<typeof annotationSchema>
 export type ProviderModel = z.infer<typeof providerModelSchema>
-export type ProviderFailure = z.infer<typeof providerFailureSchema>
 export type ProviderRuntime = z.infer<typeof providerRuntimeSchema>
 export type WorkspaceSnapshot = z.infer<typeof workspaceSnapshotSchema>
