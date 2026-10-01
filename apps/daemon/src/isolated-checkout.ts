@@ -1,6 +1,6 @@
 import { execFile, spawn, type PromiseWithChild } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { lstatSync, promises as fs, type Stats } from "node:fs"
+import { promises as fs } from "node:fs"
 import { isAbsolute, join, resolve } from "node:path"
 import { promisify } from "node:util"
 
@@ -476,42 +476,33 @@ export async function openIsolatedGit(input: {
     commandSignal?.throwIfAborted()
     const indexed = options.index === undefined ? environment : { ...environment, GIT_INDEX_FILE: options.index }
     const env = options.offline === true ? offline(indexed) : indexed
-    // Git killed while it holds the index lock cannot remove it. The lock is
-    // this command's when it was absent before the command started and is
-    // there when the kill is sent, while Git still runs and holds it; once Git
-    // has been reaped, that same file (inode and modification time) is
-    // removed. Any other lock is left, and a failure says so.
+    // Git killed while it holds the index lock cannot remove it, and Domovoi
+    // cannot tell that a lock found afterwards is that Git's: another Git can
+    // have taken the path over in the meantime (ruling Q255). So once the
+    // killed Git has been reaped, a lock that is there stays there, the
+    // command fails, and the error names the lock for the person to remove.
     const lock = `${options.index ?? (input.worktreeIndex ? index : join(gitDirectory, "index"))}.lock`
-    const lockedBefore = await fs.lstat(lock).then(() => true, () => false)
-    let lockAtKill: Stats | undefined
-    const beforeKill = () => {
-      if (lockedBefore) return
-      try {
-        lockAtKill = lstatSync(lock)
-      } catch {
-        lockAtKill = undefined
-      }
+    let killed = false
+    const beforeKill = () => { killed = true }
+    const lockLeft = async (): Promise<string | undefined> => {
+      const present = await fs.lstat(lock).then(() => true, () => false)
+      return present ? `Git's index lock at ${lock} remains after Domovoi stopped Git. Remove it once no Git command is running in this worktree.` : undefined
     }
-    const settle = async (): Promise<string | undefined> => {
-      const now = await fs.lstat(lock).catch(() => undefined)
-      if (now === undefined) return undefined
-      if (lockAtKill !== undefined && now.dev === lockAtKill.dev && now.ino === lockAtKill.ino && now.mtimeMs === lockAtKill.mtimeMs) {
-        const removed = await fs.unlink(lock).then(() => true, () => false)
-        if (removed) return undefined
-      }
-      return `Git's index lock at ${lock} was left in place: Domovoi could not tell that the stopped command made it.`
-    }
+    let result: GitProcessResult
     try {
-      const result = await trackRestoreCommand(() => runGitProcess([...inertRepositoryConfig, ...args], { env, cwd: worktree, signal: commandSignal, onStdout, beforeKill }))
-      if (lockAtKill !== undefined) await settle()
-      return result
+      result = await trackRestoreCommand(() => runGitProcess([...inertRepositoryConfig, ...args], { env, cwd: worktree, signal: commandSignal, onStdout, beforeKill }))
     } catch (error) {
-      if (lockAtKill !== undefined || commandSignal?.aborted === true) {
-        const left = await settle()
+      if (killed || commandSignal?.aborted === true) {
+        const left = await lockLeft()
         if (left !== undefined && error instanceof Error) error.message = `${error.message}. ${left}`
       }
       throw error
     }
+    if (killed) {
+      const left = await lockLeft()
+      if (left !== undefined) throw new Error(left)
+    }
+    return result
   }
 
   return {
