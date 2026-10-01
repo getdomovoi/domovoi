@@ -156,8 +156,8 @@ describe("a trusted repository's git filters through the daemon", () => {
     expect(await rpc("checkpoint.create", { sessionId: session.id, label: "trusted", client: "desktop" })).toHaveProperty("result")
     expect(await markers()).toContain("clean")
 
-    // Revoke stops no thread for a filter: nothing a filter starts outlives
-    // the Git command that started it (P8 plan section 4).
+    // Revoke stops no thread for a filter: a filter loads into no agent
+    // thread, and runs only within a Git command (P8 plan section 4).
     expect(await rpc("repository.revokeTrust", { projectId, client: "desktop" })).toMatchObject({ result: { threads: [] } })
     expect(await inventory()).toEqual([true, true])
     await writeFile(join(session.workspacePath!, "victim.txt"), "AGAIN\n")
