@@ -165,6 +165,14 @@ describe("a call that names a project", () => {
       expect(named, method).toHaveProperty("result")
       expect(named.result, method).toEqual((await call(method, {})).result)
     }
+    // A revision nobody retained answers unavailable, and the answer names
+    // the revision only, not the project the call named.
+    const revision = { id: "skill-0123456789ab", contentDigest: digest }
+    const unavailable = { ...revision, state: "unavailable", reason: "not-retained" }
+    expect((await call("skill.reviewRevision", revision)).result).toEqual(unavailable)
+    const namedRevision = await call("skill.reviewRevision", { ...revision, projectId })
+    expect(namedRevision.error).toBeUndefined()
+    expect(namedRevision.result).toEqual(unavailable)
     const created = await call("session.create", { ...projectScoped[0]![1], projectId })
     expect(errorOf(created)?.message).not.toBe(projectNotOpenRefusal)
   })

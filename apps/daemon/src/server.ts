@@ -7611,8 +7611,11 @@ export class DomovoiDaemon {
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
+          // Built from the revision's own fields: the params may also name
+          // the project, which the strict result does not carry.
           result: rpcMethods[method].result.parse(revision ?? {
-            ...params,
+            id: params.id,
+            contentDigest: params.contentDigest,
             state: "unavailable",
             reason: "not-retained",
           }),
@@ -7766,7 +7769,7 @@ export class DomovoiDaemon {
         }
         let installed
         try {
-          installed = await catalog.install(params)
+          installed = await catalog.install({ source: params.source, scope: params.scope, sourceDigest: params.sourceDigest })
         } catch (error) {
           if (error instanceof SkillInstallError) {
             this.#error(socket, request.id, skillInstallErrorCode, error.message, error.refusal)
