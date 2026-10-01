@@ -94,6 +94,9 @@ function saved(platform: string, home: string): ServiceConfiguration {
   }
 }
 
+// schtasks runs from its path under SystemRoot (review F3); fakes name it short.
+const tool = (command: string) => command === "C:\\Windows\\System32\\schtasks.exe" ? "schtasks" : command
+
 // The PowerShell a Task Scheduler step runs, decoded, so a fake can answer it.
 function script(args: readonly string[]): string {
   const encoded = args[args.indexOf("-EncodedCommand") + 1]
@@ -153,7 +156,7 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
     write: vi.fn(async (path: string, contents: string) => { order.push(`write ${path}`); files.set(path, contents) }),
     run: vi.fn(async (command: string, args: string[]) => {
       // The step after /create that lifts the 72 hour limit and battery stops.
-      order.push(script(args).includes("ExecutionTimeLimit = 'PT0S'") ? "set task settings" : `${command} ${args.join(" ")}`)
+      order.push(script(args).includes("ExecutionTimeLimit = 'PT0S'") ? "set task settings" : `${tool(command)} ${args.join(" ")}`)
       if (args[0] === "bootout") agentLoaded = false
       if (args[0] === "bootstrap") {
         agentLoaded = true
@@ -557,8 +560,11 @@ describe("updateDaemonService with a Windows logon task", () => {
   it("sets the execution limit and battery settings after every registration", async () => {
     const effects = fake("win32", "C:\\Users\\dl", { crashingStarts: 1 })
     await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
-    const steps = vi.mocked(effects.run).mock.calls.map(([command, args]) => command === "schtasks" ? args[0] : script(args).includes("ExecutionTimeLimit = 'PT0S'") ? "settings" : command)
+    const steps = vi.mocked(effects.run).mock.calls.map(([command, args]) => tool(command) === "schtasks" ? args[0] : script(args).includes("ExecutionTimeLimit = 'PT0S'") ? "settings" : command)
     expect(steps).toEqual(["/create", "settings", "/run", "/create", "settings", "/run"])
+    // Review F3: the swap's and the restore's schtasks are the one under SystemRoot.
+    expect(vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/create" || args[0] === "/run").map(([command]) => command))
+      .toEqual(Array(4).fill("C:\\Windows\\System32\\schtasks.exe"))
   })
 
   it("says nothing changed when the supervised task cannot be disabled and still runs", async () => {

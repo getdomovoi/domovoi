@@ -91,7 +91,8 @@ describe("distributed service CLI", () => {
       // A Windows install first asks Task Scheduler whether a task of the same
       // name exists (security review round 3), so the launch command is the
       // /create call's, not the first manager call's.
-      const create = commands.find(({ command, args }) => command === "schtasks" && args[0] === "/create")
+      // schtasks is named by its path under SystemRoot (review F3).
+      const create = commands.find(({ command, args }) => command.endsWith("\\System32\\schtasks.exe") && args[0] === "/create")
       const launch = process.platform === "win32"
         ? create!.args[create!.args.indexOf("/tr") + 1]!
         : await within(() => readFile(process.platform === "darwin"

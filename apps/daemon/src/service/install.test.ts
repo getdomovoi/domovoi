@@ -103,6 +103,21 @@ function command(overrides: Partial<ServiceCommandDependencies> = {}): ServiceCo
 describe("servicePlan", () => {
   // The Windows plan names PowerShell under SystemRoot for its settings step.
   beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
+
+  // Review F3: a bare schtasks is looked up in the working directory first on
+  // Windows, so a repository could supply its own. Every schtasks call names
+  // the one under SystemRoot, as PowerShell and taskkill already do.
+  it("runs schtasks from the Windows directory, never by a searched name", () => {
+    vi.stubEnv("SystemRoot", "D:\\Windows")
+    const plan = servicePlan(windowsScript)
+    expect(plan.commands.filter(({ args }) => args[0] === "/create" || args[0] === "/run").map(({ command }) => command))
+      .toEqual(["D:\\Windows\\System32\\schtasks.exe", "D:\\Windows\\System32\\schtasks.exe"])
+    for (const root of ["", "Windows", "\\\\host\\Windows"]) {
+      vi.stubEnv("SystemRoot", root)
+      expect(() => servicePlan(windowsScript)).toThrow("SystemRoot must name the absolute local Windows directory")
+    }
+  })
+
   it("refuses an overlong Windows command before any files or manager calls", async () => {
     const dependencies = effects()
     await expect(installService({
@@ -142,7 +157,7 @@ describe("servicePlan", () => {
     const plan = servicePlan(windows)
     expect(plan.kind).toBe("task")
     expect(plan.commands[0]).toMatchObject({
-      command: "schtasks",
+      command: "C:\\Windows\\System32\\schtasks.exe",
       args: expect.arrayContaining(["/create", "/ru", "dl", "/rl", "LIMITED", "/sc", "onlogon"]),
     })
     expect(plan.commands[0]?.args).not.toContain("HIGHEST")
@@ -162,7 +177,7 @@ describe("servicePlan", () => {
   // (wsl-task.ts), before the task is run.
   it("lifts the execution limit and battery stops before running the task", () => {
     const plan = servicePlan(windowsScript)
-    expect(plan.commands.map(({ command, args }) => command === "schtasks" ? args[0] : command)).toEqual([
+    expect(plan.commands.map(({ command, args }) => command.endsWith("\\schtasks.exe") ? args[0] : command)).toEqual([
       "/create", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "/run",
     ])
     const settings = plan.commands[1]!
@@ -543,7 +558,7 @@ describe("serviceStatus", () => {
     // The ownership read, then the state read; neither is schtasks text.
     expect(dependencies.capture).toHaveBeenCalledTimes(2)
     for (const [command, args] of vi.mocked(dependencies.capture).mock.calls) {
-      expect(command).not.toBe("schtasks")
+      expect(command).not.toMatch(/schtasks/i)
       expect(Buffer.from(args.at(-1)!, "base64").toString("utf16le")).not.toMatch(/\$task\.Enabled\s*=|\$task\.Stop|DeleteTask/)
     }
     expect(dependencies.run).not.toHaveBeenCalled()
@@ -828,7 +843,7 @@ describe("Windows supervised task", () => {
   it("installs over a supervised task whose loop has stopped", async () => {
     const dependencies = task("3", vi.fn(async () => ({ installed: null, running: false, detail: "stopped (clean-exit); last exit code 0 at 2026-10-01T12:00:00.000Z", supervising: false })))
     await expect(installService(windowsScript, dependencies)).resolves.toMatchObject({ kind: "task" })
-    expect(vi.mocked(dependencies.run).mock.calls.map(([command, args]) => command === "schtasks" ? args[0] : "settings")).toEqual(["/create", "settings", "/run"])
+    expect(vi.mocked(dependencies.run).mock.calls.map(([command, args]) => command.endsWith("\\schtasks.exe") ? args[0] : "settings")).toEqual(["/create", "settings", "/run"])
   })
 })
 

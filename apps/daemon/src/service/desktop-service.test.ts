@@ -4,6 +4,7 @@ import { ProfileAlreadyOwnedError } from "../profile-lease.js"
 import {
   DaemonServiceRuntimeMissingError,
   installDaemonService,
+  readDaemonServiceRuntimeCopy,
   readDaemonServiceRuntimeVersion,
   readDaemonServiceStatus,
   removeDaemonService,
@@ -231,7 +232,15 @@ describe("readDaemonServiceRuntimeVersion", () => {
     const capture = vi.fn(async () => ({ code: 0, stdout: xml }))
     await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture, readConfiguration: saved("win32", "C:\\Users\\dana") }))
       .resolves.toEqual({ installed: true, version: "0.9.2" })
-    expect(capture).toHaveBeenCalledWith("schtasks", ["/query", "/tn", "Domovoi daemon", "/xml"], expect.anything())
+    // Review F3: the schtasks under SystemRoot, never one found by name.
+    expect(capture).toHaveBeenCalledWith("C:\\Windows\\System32\\schtasks.exe", ["/query", "/tn", "Domovoi daemon", "/xml"], expect.anything())
+  })
+
+  it("reads the runtime copy through the schtasks under SystemRoot", async () => {
+    vi.stubEnv("SystemRoot", "D:\\Windows")
+    const capture = vi.fn(async () => ({ code: 0, stdout: "<Task></Task>" }))
+    await readDaemonServiceRuntimeCopy({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture, readConfiguration: saved("win32", "C:\\Users\\dana") })
+    expect(capture).toHaveBeenCalledWith("D:\\Windows\\System32\\schtasks.exe", ["/query", "/tn", "Domovoi daemon", "/xml"], expect.anything())
   })
 
   // Security review round 3 of #577: the desktop stages under the selected
@@ -717,7 +726,8 @@ function managerFake(platform: "darwin" | "linux" | "win32", start: {
       return text === undefined ? undefined : parseServiceConfiguration(text)
     }),
     run: vi.fn(async (command: string, args: string[]) => {
-      const line = `${command} ${args[0]}`
+      // schtasks runs from its path under SystemRoot (review F3), named short here.
+      const line = `${command === "C:\\Windows\\System32\\schtasks.exe" ? "schtasks" : command} ${args[0]}`
       ran.push(line)
       if (start.failing === args[0] && failuresLeft > 0) {
         failuresLeft -= 1

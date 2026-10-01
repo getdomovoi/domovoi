@@ -18,7 +18,7 @@ import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
 import { launchdPlist, launchdPlistProgram, systemdUnit, systemdUnitProgram } from "./units.js"
 import { isRecordedServiceProgram } from "./restore-target.js"
-import { disableWindowsTask, readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, windowsTaskSettingsCommand, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
+import { disableWindowsTask, readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsSchtasksPath, windowsTaskRemovalPlan, windowsTaskSettingsCommand, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
 import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, within, type InFlight, type ServiceSwap } from "./update-outcome.js"
 import { readLocalOwnerRecord, type LocalOwnerRecord } from "../local-owner-record.js"
 import { readGuestSupervisorStatus } from "./supervisor-command.js"
@@ -352,7 +352,8 @@ export function servicePlan({
       kind: "task",
       commands: [
         {
-          command: "schtasks",
+          // Under SystemRoot, never a schtasks found by name (review F3).
+          command: windowsSchtasksPath(),
           args: [
             "/create",
             "/tn",
@@ -370,7 +371,7 @@ export function servicePlan({
         },
         // No 72 hour limit or battery stops for the loop (windows-task.ts).
         windowsTaskSettingsCommand(displayName),
-        { command: "schtasks", args: ["/run", "/tn", displayName] },
+        { command: windowsSchtasksPath(), args: ["/run", "/tn", displayName] },
       ],
     }
   }
@@ -577,7 +578,7 @@ async function loadPreviousAgent(target: ServiceTarget, plan: ServicePlan, previ
 // to and including it leaves the manager on what it ran before; after it, the
 // new definition is the registered one.
 function registersDefinition({ command, args }: ServiceCommand): boolean {
-  return (command === "schtasks" && args[0] === "/create")
+  return (win32.basename(command).toLowerCase() === "schtasks.exe" && args[0] === "/create")
     || (command === "launchctl" && args[0] === "bootstrap")
     || (command === "systemctl" && args.includes("daemon-reload"))
 }
@@ -1588,6 +1589,14 @@ export async function runServiceCommand(
   }
 }
 
+// Review F3: a Windows tool named by its drive path (schtasks.exe and
+// PowerShell under SystemRoot) runs from its own directory, not the caller's,
+// which may be a repository. A bare name keeps the caller's directory: the
+// Linux and macOS managers resolve through PATH, which is trusted.
+function managerDirectory(command: string): { cwd?: string } {
+  return /^[A-Za-z]:\\/.test(command) ? { cwd: win32.dirname(command) } : {}
+}
+
 export function nodeServiceEffects(options: { userHomeDirectory?: string } = {}): ServiceEffects {
   return {
     readConfiguration: (home, platform) => {
@@ -1623,14 +1632,14 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
       const { execFile } = await import("node:child_process")
       deadline.throwIfExpired()
       await new Promise<void>((resolve, reject) => {
-        execFile(command, args, { signal: deadline.signal, timeout: Math.ceil(deadline.remainingMs()), killSignal: "SIGKILL" }, (error) => (error ? reject(error) : resolve()))
+        execFile(command, args, { ...managerDirectory(command), signal: deadline.signal, timeout: Math.ceil(deadline.remainingMs()), killSignal: "SIGKILL" }, (error) => (error ? reject(error) : resolve()))
       })
     },
     capture: async (command, args, deadline) => {
       const { execFile } = await import("node:child_process")
       deadline.throwIfExpired()
       return new Promise<CapturedRun>((resolve) => {
-        execFile(command, args, { signal: deadline.signal, timeout: Math.ceil(deadline.remainingMs()), killSignal: "SIGKILL" }, (error, stdout, stderr) => {
+        execFile(command, args, { ...managerDirectory(command), signal: deadline.signal, timeout: Math.ceil(deadline.remainingMs()), killSignal: "SIGKILL" }, (error, stdout, stderr) => {
           const failure = error as (Error & { code?: unknown }) | null
           const code = typeof failure?.code === "number" ? failure.code : failure ? 1 : 0
           resolve({

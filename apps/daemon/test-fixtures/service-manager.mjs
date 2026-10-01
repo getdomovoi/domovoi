@@ -15,7 +15,9 @@ os.userInfo = () => ({ ...user, homedir: process.env.DOMOVOI_TEST_SERVICE_HOME ?
 let held = false
 childProcess.execFile = (command, args, options, callback) => {
   const powershell = command.endsWith("\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
-  if (!["systemctl", "launchctl", "schtasks", "loginctl"].includes(command) && !powershell) {
+  // schtasks is named by its path under SystemRoot, never by a bare name.
+  const schtasks = (name) => name.endsWith("\\System32\\schtasks.exe")
+  if (!["systemctl", "launchctl", "loginctl"].includes(command) && !powershell && !schtasks(command)) {
     throw new Error(`Unexpected install subprocess: ${command}`)
   }
   appendFileSync(process.env.DOMOVOI_TEST_MANAGER_LOG, `${JSON.stringify({ command, args })}\n`)
@@ -35,8 +37,8 @@ childProcess.execFile = (command, args, options, callback) => {
   let created
   for (const line of readFileSync(process.env.DOMOVOI_TEST_MANAGER_LOG, "utf8").split("\n").filter(Boolean)) {
     const entry = JSON.parse(line)
-    if ((entry.command === "schtasks" && entry.args[0] === "/create") || (entry.command === "launchctl" && entry.args[0] === "bootstrap")) registered = true
-    if (entry.command === "schtasks" && entry.args[0] === "/create") created = entry.args[entry.args.indexOf("/tr") + 1]
+    if ((schtasks(entry.command) && entry.args[0] === "/create") || (entry.command === "launchctl" && entry.args[0] === "bootstrap")) registered = true
+    if (schtasks(entry.command) && entry.args[0] === "/create") created = entry.args[entry.args.indexOf("/tr") + 1]
     if (decode(entry).includes("$folder.DeleteTask(") || (entry.command === "launchctl" && entry.args[0] === "bootout")) registered = false
     if (entry.command === "loginctl" && entry.args[0] === "enable-linger") lingering = true
     if (entry.command === "loginctl" && entry.args[0] === "disable-linger") lingering = false

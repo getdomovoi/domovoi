@@ -34,15 +34,27 @@ export class WindowsTaskRemovalError extends Error {
   }
 }
 
-export function windowsPowerShellPath(): string {
-  // A bare executable name searches cwd before PATH on Windows. The project
-  // directory must never be able to supply the service-management executable.
-  // Missing or drive-relative SystemRoot must not turn this back into a search.
+// A bare executable name searches cwd before PATH on Windows. The project
+// directory must never be able to supply the service-management executable.
+// Missing or drive-relative SystemRoot must not turn this back into a search.
+// SystemRoot itself is trusted: the inherited environment names the Windows
+// directory.
+function windowsSystemRoot(): string {
   const root = process.env.SystemRoot
   if (root === undefined || !/^[A-Za-z]:[\\/]/.test(root) || root.includes("\0")) {
     throw new Error("SystemRoot must name the absolute local Windows directory before querying or removing a service")
   }
-  return win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+  return root
+}
+
+export function windowsPowerShellPath(): string {
+  return win32.join(windowsSystemRoot(), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+}
+
+// Review F3: schtasks by bare name could run a schtasks.exe from the working
+// directory, a repository included. Every call names this one.
+export function windowsSchtasksPath(): string {
+  return win32.join(windowsSystemRoot(), "System32", "schtasks.exe")
 }
 
 function taskCommand(executable: string, name: string, body: string): ServiceCommand {

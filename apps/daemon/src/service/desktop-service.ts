@@ -28,6 +28,7 @@ import { withinServiceDeadline } from "./deadline.js"
 import { DaemonServiceUpdateError, publishFirst, runServiceUpdate, trackInFlight } from "./update-outcome.js"
 import { prepareWslUpdate } from "./wsl-install.js"
 import type { LingerInstallOutcome, LingerRemovalOutcome } from "./linger.js"
+import { windowsSchtasksPath } from "./windows-task.js"
 
 export { DaemonServiceUpdateError, type DaemonServiceUpdateOutcome } from "./update-outcome.js"
 
@@ -427,7 +428,8 @@ export async function readDaemonServiceRuntimeVersion(
   if (reader.platform === "win32") {
     const deadline = OperationDeadline.start(10_000)
     try {
-      const queried = await reader.capture("schtasks", ["/query", "/tn", loginServiceTaskName, "/xml"], deadline)
+      // Under SystemRoot, never a schtasks found by name (review F3).
+      const queried = await reader.capture(windowsSchtasksPath(), ["/query", "/tn", loginServiceTaskName, "/xml"], deadline)
       definition = queried.code === 0 ? queried.stdout : undefined
     } finally {
       deadline.clear()
@@ -466,7 +468,7 @@ export async function readDaemonServiceRuntimeCopy(
   if (reader.platform === "win32") {
     const deadline = OperationDeadline.start(10_000)
     try {
-      const queried = await reader.capture("schtasks", ["/query", "/tn", loginServiceTaskName, "/xml"], deadline)
+      const queried = await reader.capture(windowsSchtasksPath(), ["/query", "/tn", loginServiceTaskName, "/xml"], deadline)
       if (queried.code === 0) definition = queried.stdout
       else if (!isMissingServiceFailure("win32", queried)) throw new Error(`schtasks could not read the login service: ${queried.stderr?.trim() || `exit code ${queried.code}`}`)
     } finally {

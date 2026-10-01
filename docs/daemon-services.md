@@ -242,6 +242,10 @@ and [RegisteredTask.State](https://learn.microsoft.com/en-us/windows/win32/tasks
 The Windows path uses the built-in Windows PowerShell Task Scheduler COM interface, not localized
 `schtasks /query` text. The executable is resolved beneath the absolute local `SystemRoot`, never
 from the project directory or `PATH`; a missing or relative OS directory refuses before spawning.
+Since the security review of #698 (F3) the same holds for `schtasks.exe` at install, update,
+restore and in the desktop's runtime readers, which named it bare before, so a repository's own
+`schtasks.exe` could have run. Both tools also run from their own directory, not the caller's.
+`SystemRoot` itself is trusted, as the environment that names the Windows directory.
 It runs noninteractively without a profile, elevation, execution-policy
 bypass, or a task password. Missing or blocked PowerShell refuses removal; there is no delete-only
 fallback. Disable, stop, status observations, deletion, and configuration cleanup share the same
