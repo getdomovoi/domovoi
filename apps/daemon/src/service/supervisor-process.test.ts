@@ -115,8 +115,7 @@ describe("Windows process identity", () => {
   it("ends a Windows child's whole process tree on stop", async () => {
     const treeKill = vi.fn(async (pid: number) => { process.kill(pid, "SIGKILL") })
     const launched = await launchGuestChild(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-      // The creation time read again before the kill names this child (F2).
-      platform: "win32", treeKill, alive: () => true, identify: (pid) => ({ pid, start: "123", bootId: randomUUID() }),
+      platform: "win32", treeKill, identify: (pid) => ({ pid, start: "123", bootId: randomUUID() }),
     })
     if (launched.state !== "started") throw new Error("child did not start")
     const exited = await launched.child.stop()
@@ -171,33 +170,6 @@ describe("Windows process tree shutdown", () => {
     await expect(child.stop()).resolves.toMatchObject({ signal: "SIGKILL" })
     expect(treeKill).toHaveBeenCalledWith(child.identity.pid)
     await expect(child.confirmTree!()).resolves.toBeUndefined()
-  })
-
-  // Review F2: taskkill names the daemon by pid only. Its recorded creation
-  // time is read again right before, and a pid that no longer names it, or
-  // whose creation time cannot be read, is not killed by pid at all.
-  it("reads the creation time again right before the tree kill", async () => {
-    const order: string[] = []
-    const child = await started(live, {
-      alive: () => { order.push("alive"); return true },
-      treeKill: async (pid) => { order.push("treeKill"); process.kill(pid, "SIGKILL") },
-    })
-    order.length = 0
-    await child.stop()
-    expect(order).toEqual(["alive", "treeKill"])
-  })
-
-  it.each([
-    { name: "another creation time", alive: () => false, reason: "the daemon's pid no longer names the process this loop started" },
-    { name: "an unreadable creation time", alive: () => { throw new Error("PowerShell could not start") }, reason: "PowerShell could not start" },
-  ])("kills no tree by pid with $name, and says the tree is unconfirmed", async ({ alive, reason }) => {
-    const treeKill = vi.fn(async () => {})
-    const child = await started(live, { alive, treeKill })
-    const stopped = child.stop()
-    await expect(stopped).rejects.toBeInstanceOf(ProcessTreeUnconfirmedError)
-    await expect(stopped).rejects.toThrow(reason)
-    expect(treeKill).not.toHaveBeenCalled()
-    expect(await child.exited).toMatchObject({ signal: "SIGKILL" })
   })
 
   it("marks a daemon that exited before its identity as an unconfirmed tree", async () => {

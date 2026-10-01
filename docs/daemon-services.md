@@ -217,14 +217,6 @@ launch (`EXITED_BEFORE_IDENTITY`) and counted as a crash, once its exit is obser
 unconfirmed. A stop ends the daemon's whole process tree with `taskkill /T /F`; nothing relies on
 Task Scheduler's own stop to end the processes the loop started, which is not proved.
 
-`taskkill` takes a pid, and Node offers no process handle to pass it instead (security review of
-#698, F2). Right before the kill, the daemon's creation time is read again; a pid that no longer
-names the daemon this loop started, or whose creation time cannot be read, is not killed, and the
-tree is recorded as unconfirmed. Known limit: between that read and `taskkill` opening the pid,
-the daemon can exit, Node can release its handle, and Windows can give the pid to another
-process, whose tree `taskkill` would then end. The re-read narrows that window; it does not close
-it. A job object that owns the daemon's tree, the same follow-up crash restart waits for, would.
-
 `domovoid service status` reads the task's state and the loop's record:
 `installed, running: Domovoi daemon is running; daemon running; attempt 1; 0 crashes`, and exits 1
 when supervision is exhausted or refused. A task installed before this change still runs the
