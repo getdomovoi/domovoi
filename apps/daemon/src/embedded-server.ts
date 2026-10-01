@@ -1,7 +1,8 @@
-import { spawn, type ChildProcess } from "node:child_process"
+import { spawn } from "node:child_process"
 import { randomBytes } from "node:crypto"
+import type { Duplex, Readable } from "node:stream"
 
-import { windowsTreeKill } from "./claude-process.js"
+import { claudeKeeperSource, windowsTreeKill } from "./claude-process.js"
 
 export type EmbeddedServer = {
   url: string
@@ -31,18 +32,6 @@ type EmbeddedClientOptions = {
   baseUrl: string
   headers: Record<string, string>
 }
-
-type SpawnServer = (
-  command: string,
-  args: string[],
-  options: {
-    env: NodeJS.ProcessEnv
-    stdio: ["ignore", "pipe", "pipe"]
-    detached: boolean
-    shell: boolean
-    windowsHide: true
-  },
-) => ChildProcess
 
 // How long a stop waits to see the server's processes gone.
 const stopConfirmMs = 5_000
@@ -93,65 +82,39 @@ export async function createAuthenticatedEmbeddedRuntime<TClient>({
   }
 }
 
+// A started server process, however it is held.
+type Launched = {
+  stdout: Readable | null
+  stderr: Readable | null
+  processGroup: number | undefined
+  stop(): Promise<boolean>
+  // Settles, with how it ended, once the server has exited or could not start.
+  ended: Promise<string>
+}
+
 // Starts `command serve` the way the provider SDKs do (opencode
 // sdk/js/src/server.ts:22-100), and waits for the line that starts with
 // `banner` to say where it listens. Unlike the SDKs' servers, this one can be
-// stopped with confirmation (Codex review of #691, P1): on POSIX it leads its
-// own process group, and a stop kills the group, an approved command or a
-// tool server it started included. On Windows taskkill ends its process tree.
-// A process that left the group (setsid) or the tree is beyond a stop.
+// stopped with confirmation (Codex review of #691, P1). On POSIX it runs under
+// a keeper that leads its process group (launchKept); on Windows taskkill
+// ends its process tree. A process that left the group (setsid) or the tree is
+// beyond a stop.
 export function embeddedServerCommand(
   command: string,
   banner: string,
-  spawnServer: SpawnServer = spawn,
 ): (options: EmbeddedServerOptions) => Promise<EmbeddedServer> {
-  return (options) => startEmbeddedServer(command, banner, options, spawnServer)
+  return (options) => startEmbeddedServer(command, banner, options)
 }
 
 function startEmbeddedServer(
   command: string,
   banner: string,
   options: EmbeddedServerOptions,
-  spawnServer: SpawnServer,
 ): Promise<EmbeddedServer> {
-  const windows = process.platform === "win32"
-  const child = spawnServer(command, ["serve", `--hostname=${options.hostname}`, `--port=${options.port}`], {
-    env: { ...process.env, ...options.environment },
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: !windows,
-    // npm installs a .cmd shim on Windows, which only a shell runs. The
-    // arguments are fixed and carry no secret.
-    shell: windows,
-    windowsHide: true,
-  })
-  let exited = false
-  const exit = new Promise<void>((resolve) => {
-    const ended = () => {
-      exited = true
-      resolve()
-    }
-    child.once("exit", ended)
-    child.once("error", ended)
-  })
-  const stop = async (): Promise<boolean> => {
-    const pid = child.pid
-    if (pid === undefined) return true
-    if (windows) {
-      if (exited) return true
-      try {
-        await windowsTreeKill(pid)
-      } catch {
-        return false
-      }
-      return settlesBefore(exit, stopConfirmMs)
-    }
-    try {
-      process.kill(-pid, "SIGKILL")
-    } catch (error) {
-      if (!processMissing(error)) return false
-    }
-    return groupGone(pid, stopConfirmMs)
-  }
+  const args = ["serve", `--hostname=${options.hostname}`, `--port=${options.port}`]
+  const env = { ...process.env, ...options.environment }
+  const launched = process.platform === "win32" ? launchDirect(command, args, env) : launchKept(command, args, env)
+  const { stop } = launched
 
   return new Promise((resolve, reject) => {
     let output = ""
@@ -167,7 +130,7 @@ function startEmbeddedServer(
       () => fail(`${command} server did not start listening within ${options.timeout} ms`),
       options.timeout,
     )
-    child.stdout?.on("data", (chunk: Buffer) => {
+    launched.stdout?.on("data", (chunk: Buffer) => {
       if (settled) return
       output += chunk.toString()
       for (const line of output.split("\n")) {
@@ -179,23 +142,140 @@ function startEmbeddedServer(
         }
         settled = true
         clearTimeout(timer)
-        resolve({ url, ...(child.pid !== undefined ? { processGroup: child.pid } : {}), close: () => void stop(), stop })
+        resolve({
+          url,
+          ...(launched.processGroup !== undefined ? { processGroup: launched.processGroup } : {}),
+          close: () => void stop(),
+          stop,
+        })
         return
       }
     })
-    child.stderr?.on("data", (chunk: Buffer) => {
+    launched.stderr?.on("data", (chunk: Buffer) => {
       if (!settled) output += chunk.toString()
     })
-    child.once("exit", (code: number | null, signal: NodeJS.Signals | null) => {
-      fail(`${command} server exited with ${code === null ? `signal ${String(signal)}` : `code ${code}`} before it listened`)
-    })
-    child.once("error", (error: Error) => fail(`${command} server could not start: ${error.message}`))
+    void launched.ended.then((how) => fail(`${command} server ${how} before it listened`))
   })
 }
 
-// The group is gone once signalling it finds no process. A process that still
-// exists but cannot be signalled (another user's) counts as still there.
-async function groupGone(pid: number, timeoutMs: number): Promise<boolean> {
+// POSIX: the server runs under the keeper Domovoi holds Claude's process group
+// with (claudeKeeperSource, Q108; Codex review of #691, round 2). The keeper
+// leads the group and starts the server inside it, so the group's id stays
+// reserved while the keeper lives, and the group is only ever killed from
+// inside it with kill(0): by the keeper when the server exits, whether a stop
+// asked for that or not, or when Domovoi asks; and by the keeper's sentinel
+// once the keeper has gone. Domovoi never sends the group a signal by its id,
+// which once the group is empty could name another. It only checks, with
+// signal 0, whether any process is left. The server inherits the keeper's
+// stdio, which are Domovoi's pipes, and gets the environment and arguments
+// Domovoi sends on the keeper's control pipe; the keeper's own is empty.
+function launchKept(command: string, args: string[], env: NodeJS.ProcessEnv): Launched {
+  const keeper = spawn(process.execPath, ["-e", claudeKeeperSource], {
+    env: {},
+    stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
+    detached: true,
+    windowsHide: true,
+  })
+  const pid = keeper.pid
+  const pipes = keeper.stdio as unknown as Array<Duplex | null | undefined>
+  const control = pipes[3]
+  const sentinel = pipes[4]
+  control?.on("error", () => {})
+  sentinel?.on("error", () => {})
+  sentinel?.resume()
+  let keeperExited = pid === undefined
+  const keeperExit = new Promise<void>((resolve) => {
+    if (keeperExited) resolve()
+    keeper.once("exit", () => {
+      keeperExited = true
+      resolve()
+    })
+  })
+  keeper.on("error", () => {})
+  let how = "ended when the process that holds its process group ended"
+  let buffered = ""
+  control?.setEncoding("utf8")
+  control?.on("data", (text: string) => {
+    buffered += text
+    for (let newline = buffered.indexOf("\n"); newline >= 0; newline = buffered.indexOf("\n")) {
+      how = keeperReport(buffered.slice(0, newline)) ?? how
+      buffered = buffered.slice(newline + 1)
+    }
+  })
+  if (control?.writable) control.write(`${JSON.stringify({ spawn: { command, args, env } })}\n`)
+  // Once every pipe has closed, the server's last output has arrived too.
+  const ended = new Promise<string>((resolve) => keeper.once("close", () => resolve(how)))
+
+  let gone = false
+  const stop = async (): Promise<boolean> => {
+    if (gone || pid === undefined) return true
+    if (!keeperExited) {
+      if (control?.writable) control.write(`${JSON.stringify({ kill: true })}\n`)
+    } else if (sentinel?.writable) {
+      sentinel.write("kill\n")
+    }
+    if (!await settlesBefore(keeperExit, stopConfirmMs)) return false
+    if (!await groupEmpty(pid, stopConfirmMs)) return false
+    gone = true
+    return true
+  }
+  return { stdout: keeper.stdout, stderr: keeper.stderr, processGroup: pid, stop, ended }
+}
+
+// How the server ended, from one line the keeper wrote: {"exit":{code,signal}}
+// or {"error":{message}}. Anything else says nothing.
+function keeperReport(line: string): string | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(line)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined
+  const report = parsed as Record<string, unknown>
+  const exit = typeof report.exit === "object" && report.exit !== null ? report.exit as Record<string, unknown> : undefined
+  if (exit) return typeof exit.code === "number" ? `exited with code ${exit.code}` : `exited with signal ${String(exit.signal)}`
+  const error = typeof report.error === "object" && report.error !== null ? report.error as Record<string, unknown> : undefined
+  if (!error) return undefined
+  // The keeper is shared with Claude, and names Claude in the one failure it
+  // reports on its own.
+  const message = typeof error.message === "string" ? error.message : "the keeper gave no reason"
+  return `could not start: ${message.replace("Claude's process group", "its process group")}`
+}
+
+// Windows has no process groups: the server is started directly, through a
+// shell because npm installs a .cmd shim, and a stop is taskkill on its tree
+// while Node still holds its handle, so its pid cannot name another process.
+// The arguments are fixed and carry no secret.
+function launchDirect(command: string, args: string[], env: NodeJS.ProcessEnv): Launched {
+  const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"], shell: true, windowsHide: true })
+  let exited = false
+  const ended = new Promise<string>((resolve) => {
+    child.once("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+      exited = true
+      resolve(code === null ? `exited with signal ${String(signal)}` : `exited with code ${code}`)
+    })
+    child.once("error", (error: Error) => {
+      exited = true
+      resolve(`could not start: ${error.message}`)
+    })
+  })
+  const stop = async (): Promise<boolean> => {
+    const pid = child.pid
+    if (pid === undefined || exited) return true
+    try {
+      await windowsTreeKill(pid)
+    } catch {
+      return false
+    }
+    return settlesBefore(ended.then(() => {}), stopConfirmMs)
+  }
+  return { stdout: child.stdout, stderr: child.stderr, processGroup: child.pid, stop, ended }
+}
+
+// The group is empty once signal 0 finds no process in it. A process that
+// still exists but cannot be signalled (another user's) counts as still there.
+async function groupEmpty(pid: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     try {

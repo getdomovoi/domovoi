@@ -152,6 +152,53 @@ setInterval(() => {}, 1000)`
     })
   })
 
+  // Codex review of #691, round 2, P2: once the group's processes are gone
+  // its id can name another group. Domovoi never sends a group a signal by
+  // its id; the group is killed from inside it (the keeper of Q108).
+  it("never sends the server's group a signal by number", async () => {
+    const { command, report } = await fixture(listening)
+    const kill = vi.spyOn(process, "kill")
+    try {
+      const server = await embeddedServerCommand(command, "fixture server listening")({
+        hostname: "127.0.0.1", port: 0, timeout: 10_000, environment: { FIXTURE_REPORT: report },
+      })
+      await expect(server.stop()).resolves.toBe(true)
+      server.close()
+      await expect(server.stop()).resolves.toBe(true)
+
+      const byNumber = kill.mock.calls.filter(([pid, signal]) => pid < 0 && signal !== 0)
+      expect(byNumber).toEqual([])
+    } finally {
+      kill.mockRestore()
+    }
+  })
+
+  it("ends what the server started when the server exits on its own, and signals nothing after", async () => {
+    const { command, report } = await fixture(`
+const { spawn } = require("node:child_process")
+const { writeFileSync } = require("node:fs")
+const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })
+writeFileSync(process.env.FIXTURE_REPORT, JSON.stringify({ server: process.pid, helper: helper.pid }))
+console.log("fixture server listening on http://127.0.0.1:4567")
+setTimeout(() => process.exit(0), 200)`)
+    const server = await embeddedServerCommand(command, "fixture server listening")({
+      hostname: "127.0.0.1", port: 0, timeout: 10_000, environment: { FIXTURE_REPORT: report },
+    })
+    const facts = JSON.parse(await readFile(report, "utf8")) as { server: number, helper: number }
+
+    await waitForDaemon(() => {
+      expect(alive(facts.server)).toBe(false)
+      expect(alive(facts.helper)).toBe(false)
+    })
+    const kill = vi.spyOn(process, "kill")
+    try {
+      await expect(server.stop()).resolves.toBe(true)
+      expect(kill.mock.calls.filter(([pid, signal]) => pid < 0 && signal !== 0)).toEqual([])
+    } finally {
+      kill.mockRestore()
+    }
+  })
+
   it("refuses a server that exits before it listens, with what it said", async () => {
     const { command } = await fixture(`console.error("no provider configured"); process.exit(3)`)
 
