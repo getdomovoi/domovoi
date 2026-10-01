@@ -570,18 +570,25 @@ code or settings the repository brings:
   tool, one of yours included, raises an approval card. A plugin's tool asks only if the plugin
   asks, under the name the plugin gives; it is your own code running in the server. Kilo's explore
   subagent used to have tool server tools hidden; it now sees them and asks before each call, and
-  Kilo's plan agent asks before a tool that is not Kilo's own where it used to deny it. An
-  allow rule in your own `permission` configuration still applies when your configuration lists
-  it after a `"*"` rule of its own; without one, the catch-all comes after your rule and asks.
+  Kilo's plan agent asks before a tool that is not Kilo's own where it used to deny it. In the
+  agents a session runs, the embedded agent blocks come after your own top-level rules and set
+  the rules they restate as Domovoi sets them. An allow rule of yours for a tool that is not the
+  server's own asks instead when it sits in your top-level `permission` block, since every agent
+  block's catch-all comes after it, and refuses the session when it lands after that catch-all
+  (see below).
   Every agent block the embedded configuration sets starts with the same catch-all and restates
   the defaults after it, so a `"*"` rule in your own block for one of those agents takes the
   catch-all's place and asks; for Kilo the block is set under both `build` and `code`. The primary
   agents' blocks are set under the deprecated `mode` key as well, because the servers merge a
   `mode` block into its agent after every other config, so your own `mode` block cannot replace
-  them either. Before a session opens and before each prompt the daemon also reads every agent's
-  merged rules from the server and refuses the session, naming the agent, when one a session runs
-  would allow a tool no rule names; this covers config the daemon does not read, such as an
-  organization's or a managed config, and a wildcard rule of yours placed after `"*"`. A primary
+  them either. Before a session opens and before each prompt the daemon also reads the merged
+  rules of every agent a session can reach from the server, in the order the server judges them,
+  and checks their shape: the last rule for every tool and every argument (`"*"`) must ask or
+  deny, and every allow rule after it must name one of OpenCode's or Kilo's own permissions
+  literally. Otherwise it refuses the session, naming the agent and the rule: a wildcard allow
+  such as `mcp_*`, and an allow for a named tool of yours that is not the server's own, refuse
+  too. This covers config the daemon does not read, such as an organization's or a managed
+  config. A primary
   agent starts OpenCode's or Kilo's own `general` and `explore` subagents as before, and asks
   before it starts a subagent of yours, which runs by your own rules.
   A rule names a permission, not a tool, and a tool server's tool asks under its server's name, `_`

@@ -1893,32 +1893,54 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     await adapter.close()
   })
 
-  // Security review round 2 of #687: config this adapter does not see (an
-  // agent or mode block of the person's, an organization or managed config)
-  // could still leave an agent a session runs allowing a tool it does not
-  // name. The agents' merged rules are read and checked too.
+  // Security review rounds 2 and 3 of #687: config this adapter does not see
+  // (an agent or mode block of the person's, an organization or managed
+  // config) could leave an agent a session runs allowing a tool that is not
+  // the server's own. Each such agent's merged rules are read and checked by
+  // shape: the last rule for every tool and every pattern must ask or deny,
+  // and every allow after it must name one of the server's own permissions
+  // literally. Any other allow, a wildcard or a named tool of the person's,
+  // refuses the session.
+  const ask = (permission: string, pattern = "*") => ({ permission, pattern, action: "ask" })
+  const allow = (permission: string, pattern = "*") => ({ permission, pattern, action: "allow" })
+  const agentsWith = (rules: unknown[], name = "build") => ({ data: [
+    { name, mode: "primary", permission: rules },
+    { name: "general", mode: "subagent", permission: [ask("*")] },
+  ] })
+
   it.each([
-    ["OpenCode", "build"],
-    ["Kilo", "code"],
-    ["OpenCode", "general"],
-  ] as const)("refuses a %s session whose %s agent allows a tool it does not name", async (name, agent) => {
+    ["OpenCode", "build", [ask("*"), allow("*")], "does not ask before"],
+    ["Kilo", "code", [ask("*"), allow("*")], "does not ask before"],
+    ["OpenCode", "build", [ask("*"), allow("mcp_*")], `allows "mcp_*"`],
+    ["OpenCode", "build", [ask("*"), allow("github_create_issue")], `allows "github_create_issue"`],
+    ["OpenCode", "build", [ask("*"), allow("gl?b")], `allows "gl?b"`],
+    ["OpenCode", "build", [ask("*"), { permission: "*", pattern: "src/*", action: "allow" }], `allows "*"`],
+    ["OpenCode", "build", [allow("*")], "does not ask before"],
+    ["OpenCode", "build", [ask("bash")], "does not ask before"],
+    ["OpenCode", "build", [ask("*"), { permission: "glob", pattern: "*", action: "maybe" }], "rule Domovoi cannot read"],
+    ["OpenCode", "general", [ask("*"), allow("docs_*")], `allows "docs_*"`],
+  ] as const)("refuses a %s session whose %s agent has rules %j", async (name, agent, rules, message) => {
     const { client, factory } = harness()
-    client.app.agents.mockResolvedValue({ data: [
-      { name: agent, permission: [{ permission: "*", pattern: "*", action: "ask" }, { permission: "*", pattern: "*", action: "allow" }] },
-      { name: "plan", permission: [{ permission: "*", pattern: "*", action: "ask" }] },
-    ] })
+    client.app.agents.mockResolvedValue(agent === "general"
+      ? { data: [{ name: "build", mode: "primary", permission: [ask("*")] }, { name: "general", mode: "subagent", permission: rules }] }
+      : agentsWith([...rules], agent))
     const adapter = adapters.find(([candidate]) => candidate === name)![1](factory)
-    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow(`${agent} agent allows a tool it does not name`)
+    const refusal = adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await expect(refusal).rejects.toThrow(`${agent} agent`)
+    await expect(refusal).rejects.toThrow(message)
     expect(client.session.create).not.toHaveBeenCalled()
     await adapter.close()
   })
 
-  it("lets a person's own rule for a named tool stand, and checks only agents a session runs", async () => {
+  it("lets the server's own permissions be allowed after the catch-all, and anything before it", async () => {
     const { client, factory } = harness()
-    client.app.agents.mockResolvedValue({ data: [
-      { name: "build", permission: [{ permission: "*", pattern: "*", action: "ask" }, { permission: "github_*", pattern: "*", action: "allow" }] },
-      { name: "reviewer", permission: [{ permission: "*", pattern: "*", action: "allow" }] },
-    ] })
+    client.app.agents.mockResolvedValue(agentsWith([
+      allow("*"), allow("mcp_*"), allow("github_create_issue"),
+      ask("*"),
+      allow("read"), { permission: "read", pattern: "*.env", action: "ask" }, allow("glob"), allow("task", "general"),
+      allow("external_directory", "/tool-output/*"), allow("bash", "git log *"), allow("edit", ".opencode/plans/*.md"),
+      ask("docs_*"), { permission: "secret_*", pattern: "*", action: "deny" },
+    ]))
     const adapter = new OpenCodeSdkAdapter(factory)
     await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).resolves.toBe("open-session")
     await adapter.close()
