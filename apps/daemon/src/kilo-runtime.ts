@@ -1,6 +1,7 @@
 import type { Config } from "@kilocode/sdk"
 
 import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
+import { requireTestedVersion, type TestedVersion } from "./embedded-version.js"
 import {
   askBeforeEdits,
   builtInSubagents,
@@ -55,6 +56,8 @@ export const kiloBuiltInPermissions: ReadonlySet<string> = new Set([
   "recall",
   "kilo_memory_recall",
   "kilo_memory_save",
+  // Named by Kilo's orchestrator agent (embedded-provider-contract.test.ts).
+  "todoread",
 ])
 
 // The tools Kilo registers itself under Domovoi's embedded server, as its tool
@@ -127,7 +130,12 @@ export const domovoiKiloConfig: Config = {
   mode: kiloAgentBlocks.mode as NonNullable<Config["mode"]>,
 }
 
+// The Kilo release the permission names, tool ids and rule shapes here were
+// read from, and the minor line accepted (embedded-version.ts).
+export const testedKilo: TestedVersion = { command: "kilo", providerName: "Kilo", line: "7.8", tested: "7.8.1" }
+
 export const createDefaultKiloRuntime: OpenCodeFactory = async () => {
+  await requireTestedVersion(testedKilo)
   const sdkPackage = "@kilocode/sdk"
   const { createKiloClient, createKiloServer } = await import(sdkPackage)
   const runtime = await createAuthenticatedEmbeddedRuntime({

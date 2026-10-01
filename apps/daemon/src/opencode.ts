@@ -12,6 +12,7 @@ import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/proto
 import type { AgentAdapter, AgentEvent } from "./agents.js"
 import { normalizeProviderUsage } from "./usage.js"
 import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
+import { requireTestedVersion, type TestedVersion } from "./embedded-version.js"
 import { projectInstructions } from "./project-instructions.js"
 
 type OpenCodeResult<T> = { data?: T; error?: unknown }
@@ -1878,7 +1879,12 @@ export function allowedPermissionNames(config: { permission?: unknown; agent?: u
 
 export const openCodeAllowedPermissions = allowedPermissionNames(domovoiOpenCodeConfig)
 
+// The OpenCode release the permission names, tool ids and rule shapes here
+// were read from, and the minor line accepted (embedded-version.ts).
+export const testedOpenCode: TestedVersion = { command: "opencode", providerName: "OpenCode", line: "1.18", tested: "1.18.32" }
+
 const defaultOpenCodeFactory: OpenCodeFactory = async () => {
+  await requireTestedVersion(testedOpenCode)
   const runtime = await createAuthenticatedEmbeddedRuntime({
     passwordEnvironment: "OPENCODE_SERVER_PASSWORD",
     usernameEnvironment: "OPENCODE_SERVER_USERNAME",

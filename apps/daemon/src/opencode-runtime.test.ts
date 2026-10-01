@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 const spawnedEnvironments = vi.hoisted(() => [] as Array<Record<string, string | undefined>>)
+// The executable versions the default factories read, by command. No test
+// here runs `opencode` or `kilo`.
+const versions = vi.hoisted(() => ({ read: vi.fn(async (command: string): Promise<string> => (command === "kilo" ? "7.8.1" : "1.18.33")) }))
 
 function fakeServerModule() {
   return {
@@ -32,12 +35,21 @@ vi.mock("@kilocode/sdk", () => {
   const fake = fakeServerModule()
   return { createKiloServer: fake.startServer, createKiloClient: fake.createClient }
 })
+vi.mock("./embedded-version.js", async (original) => {
+  const actual = await original<typeof import("./embedded-version.js")>()
+  return {
+    ...actual,
+    readExecutableVersion: versions.read,
+    requireTestedVersion: (expected: Parameters<typeof actual.requireTestedVersion>[0]) => actual.requireTestedVersion(expected, versions.read),
+  }
+})
 
 const { KiloSdkAdapter } = await import("./kilo.js")
 const { OpenCodeSdkAdapter } = await import("./opencode.js")
 
 afterEach(() => {
   spawnedEnvironments.splice(0)
+  versions.read.mockClear()
 })
 
 describe("embedded provider servers", () => {
@@ -53,6 +65,24 @@ describe("embedded provider servers", () => {
     expect(spawnedEnvironments).toHaveLength(1)
     expect(spawnedEnvironments[0]?.[flag]).toBe("1")
     expect(process.env[flag]).toBe(before)
+    await adapter.close()
+  })
+
+  // Security review round 4 of #687 (P2): the permission and tool lists are
+  // tied to the server versions they were read from, and the SDKs start the
+  // executable found on PATH. The default factories read its version first
+  // and start nothing outside the tested minor line.
+  it.each([
+    ["OpenCode", "opencode", "1.19.0", "1.18", () => new OpenCodeSdkAdapter()],
+    ["OpenCode", "opencode", "1.17.9", "1.18", () => new OpenCodeSdkAdapter()],
+    ["Kilo", "kilo", "7.9.0", "7.8", () => new KiloSdkAdapter()],
+  ] as const)("refuses to start %s (%s %s) at an untested version", async (_name, command, found, line, create) => {
+    versions.read.mockImplementation(async (asked: string) => (asked === command ? found : "0.0.0"))
+    const adapter = create()
+    await expect(adapter.connect()).rejects.toThrow(found)
+    await expect(create().connect()).rejects.toThrow(`${line}.`)
+    expect(spawnedEnvironments).toHaveLength(0)
+    expect(versions.read).toHaveBeenCalledWith(command)
     await adapter.close()
   })
 })
