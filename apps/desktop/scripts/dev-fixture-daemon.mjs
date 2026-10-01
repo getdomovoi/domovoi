@@ -16,6 +16,13 @@ const methodNotFound = -32601
 const invalidParams = -32602
 const internalError = -32603
 
+// The daemon states its active projects and cap in every snapshot it sends. It
+// keeps one project open at a time, so the list is the open project alone and
+// the cap is 1, and the fixture says the same.
+function withProjects(snapshot) {
+  return { ...snapshot, projects: snapshot.project ? [snapshot.project] : [], projectCap: 1 }
+}
+
 export function createFixtureState(seed = demoWorkspace) {
   let snapshot = structuredClone(seed)
   return {
@@ -35,11 +42,12 @@ export function createFixtureState(seed = demoWorkspace) {
 // the daemon would and answer with the snapshot the protocol says they answer
 // with, so the client's own state machine is exercised.
 export function createFixtureHandlers(state, connectionId = randomUUID()) {
-  const snapshot = () => state.snapshot()
+  const snapshot = () => withProjects(state.snapshot())
   const activate = (sessionId) => {
     const known = snapshot().sessions.some((session) => session.id === sessionId)
     if (!known) throw new FixtureRefusal(invalidParams, `No fixture session ${sessionId}`)
-    return state.patch({ activeSessionId: sessionId })
+    state.patch({ activeSessionId: sessionId })
+    return snapshot()
   }
   return {
     "system.hello": () => ({
@@ -88,8 +96,14 @@ export function createFixtureHandlers(state, connectionId = randomUUID()) {
     }),
     // An empty list is the fixture's honest answer: this machine has no
     // installed skills or discovered models, and inventing some would draw
-    // rows nobody can act on.
-    "skill.list": () => [],
+    // rows nobody can act on. A call naming a project that is not open is
+    // refused, as the daemon refuses it.
+    "skill.list": (params) => {
+      if (params.projectId !== undefined && !snapshot().projects.some((project) => project.id === params.projectId)) {
+        throw new FixtureRefusal(invalidParams, "That project is not open.")
+      }
+      return []
+    },
     "runtime.models": () => [],
   }
 }

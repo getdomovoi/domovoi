@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { credentialShapeAt } from "./credential-backstop.js"
+import { projectIdSchema } from "./identifiers.js"
 import { inventoryText, toolInventoryPathSchema } from "./inventory-text.js"
 import {
   refineRepositoryTrustPin, repositoryGitFilterDriverNameSchema, repositoryGitFilterScopeSchema, repositoryTrustStateSchema,
@@ -262,9 +263,13 @@ export const toolInventoryGitFiltersSchema = z.object({
 export const toolInventoryEnvelopeReserveBytes = 4 * 1_024
 export const maximumToolInventoryBytes = 256 * 1_024 - toolInventoryEnvelopeReserveBytes
 
+// projectId names the project whose repository to read; left out, the daemon
+// reads the focused project's.
+export const toolInventoryParamsSchema = z.object({ projectId: projectIdSchema.optional() }).strict()
+
 export const toolInventorySchema = wireRule(z.object({
   machine: skillInventoryMachineSchema,
-  // The open repository. configDigest covers its provider configuration files,
+  // The requested project's repository. configDigest covers its provider configuration files,
   // present or absent, so a trust decision pins to what the client was shown;
   // trust is this machine's trust in it against that digest.
   repository: z.object({

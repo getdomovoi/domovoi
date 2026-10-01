@@ -177,7 +177,9 @@ describe("tool inventory", () => {
 
   it("is an observe, read-only method", () => {
     expect(rpcMethods["tool.inventory"].params.safeParse({}).success).toBe(true)
-    expect(rpcMethods["tool.inventory"].params.safeParse({ projectId: "x" }).success).toBe(false)
+    // J31 S1: a request may name the project; nothing else.
+    expect(rpcMethods["tool.inventory"].params.safeParse({ projectId: "x" }).success).toBe(true)
+    expect(rpcMethods["tool.inventory"].params.safeParse({ path: "/x" }).success).toBe(false)
     expect(rpcMethods["tool.inventory"].result).toBe(toolInventorySchema)
     expect(rpcMethodAuthorizations["tool.inventory"]).toBe("observe")
     expect(rpcMethodMutations["tool.inventory"]).toBe("read-only")
