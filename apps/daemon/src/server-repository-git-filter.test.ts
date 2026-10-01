@@ -145,16 +145,17 @@ type Refusal = { error: { code: number; message: string; data?: unknown } }
 describe("repository.trust and the git filter acknowledgement", () => {
   const listed = {
     files: [{ path: ".git/config", scope: "local" as const }],
-    entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt", file: ".git/config", scope: "local" as const, heldBack: true }],
+    entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt", required: "unset" as const, file: ".git/config", scope: "local" as const, heldBack: true }],
     omittedEntries: 0,
+    reviewDigest: digest("b"),
   }
+  const shown = { reviewed: true, reviewDigest: digest("b") }
 
   it.each([
-    ["the client showed every filter", { reviewed: true }, listed, true],
+    ["the client showed every filter", shown, listed, true],
     ["the client said nothing", undefined, listed, false],
-    ["an entry was past the cap", { reviewed: true }, { ...listed, omittedEntries: 1 }, false],
-    ["the config was unreadable", { reviewed: true }, { files: [], entries: [], omittedEntries: 0, unreadable: { reason: "too-large" as const } }, false],
-    ["the repository sets no filter", { reviewed: true }, undefined, false],
+    ["an entry was past the cap", shown, { ...listed, omittedEntries: 1 }, false],
+    ["the config was unreadable", shown, { files: [], entries: [], omittedEntries: 0, reviewDigest: digest("b"), unreadable: { reason: "too-large" as const } }, false],
   ])("records a reviewed grant only when %s", async (_label, gitFilters, inventory, reviewed) => {
     const { config, repositoryTrust, rpc } = await fixture()
     config.gitFilters = inventory
@@ -166,6 +167,26 @@ describe("repository.trust and the git filter acknowledgement", () => {
     const recorded = repositoryTrust.record.mock.calls[0]![0]
     if (reviewed) expect(recorded.gitFiltersReviewed).toBe(true)
     else expect(recorded).not.toHaveProperty("gitFiltersReviewed")
+  })
+
+  // The acknowledgement names the block the client fetched by its review
+  // digest; the daemon's own read must give the same one, or nothing is
+  // granted (ruling Q255). A client that never fetched the block, or fetched
+  // another one, cannot acknowledge it.
+  it.each([
+    ["names another block", listed],
+    ["acknowledges filters the repository does not set", undefined],
+  ])("grants nothing when the acknowledgement %s", async (_label, inventory) => {
+    const { config, repositoryTrust, rpc } = await fixture()
+    config.gitFilters = inventory
+
+    const reply = await rpc("repository.trust", {
+      projectId, configDigest: digest("a"), client: "desktop", gitFilters: { reviewed: true, reviewDigest: digest("c") },
+    }) as Refusal
+
+    expect(reply.error.code).toBe(-32602)
+    expect(reply.error.message).toContain("tool.inventory")
+    expect(repositoryTrust.record).not.toHaveBeenCalled()
   })
 })
 

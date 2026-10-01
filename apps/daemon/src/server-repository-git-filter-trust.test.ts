@@ -133,22 +133,28 @@ async function fixture() {
     socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
   })
   expect(await rpc("system.hello", { client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken })).toHaveProperty("result")
-  // `reviewed` false is a client that never showed the git filters.
+  const filterBlock = async () => ((await rpc("tool.inventory", {})).result as ToolInventory).repository?.gitFilters
+  // `reviewed` false is a client that never showed the git filters. One that
+  // did names the block it fetched from tool.inventory by its review digest.
   const trustNow = async (reviewed = true) => {
     const { configDigest } = await readRepositoryProviderConfig(repositoryPath, projectRootRead)
-    expect(await rpc("repository.trust", { projectId, configDigest, client: "desktop", ...(reviewed ? { gitFilters: { reviewed: true } } : {}) }))
+    const reviewDigest = (await filterBlock())?.reviewDigest
+    expect(await rpc("repository.trust", { projectId, configDigest, client: "desktop", ...(reviewed ? { gitFilters: { reviewed: true, reviewDigest } } : {}) }))
       .toMatchObject({ result: { outcome: "trusted" } })
   }
-  const inventory = async () => ((await rpc("tool.inventory", {})).result as ToolInventory).repository?.gitFilters?.entries.map(({ heldBack }) => heldBack)
-  return { rpc, markers, trustNow, inventory, repositoryPath }
+  const inventory = async () => (await filterBlock())?.entries.map(({ heldBack }) => heldBack)
+  return { rpc, markers, trustNow, inventory, filterBlock, repositoryPath }
 }
 
 describe("a trusted repository's git filters through the daemon", () => {
   it("runs them at create and checkpoint under a grant, and refuses with the git filter code after revoke", async () => {
-    const { rpc, markers, trustNow, inventory } = await fixture()
+    const { rpc, markers, trustNow, inventory, filterBlock } = await fixture()
     expect(await inventory()).toEqual([true, true])
+    const shown = (await filterBlock())?.reviewDigest
     await trustNow()
     expect(await inventory()).toEqual([false, false])
+    // The review digest covers what the block lists, not whether it runs.
+    expect((await filterBlock())?.reviewDigest).toBe(shown)
 
     const created = await rpc("session.create", { client: "desktop", title: "trusted", runtime: claude })
     expect(created).toHaveProperty("result")

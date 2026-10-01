@@ -130,9 +130,13 @@ export const repositoryTrustSchema = z.object({
 // with it lets the daemon run those filters; one made without it, by an
 // older client or for a repository the client showed no filters for, keeps
 // them held back. The daemon records it only when that inventory listed
-// every filter (nothing omitted or unreadable).
+// every filter (nothing omitted or unreadable). reviewDigest is that block's
+// reviewDigest as the client received it: the daemon recomputes it from its
+// own read and grants nothing when the two differ, so the acknowledgement
+// covers the exact block the client fetched.
 export const repositoryTrustGitFiltersAcknowledgementSchema = z.object({
   reviewed: z.literal(true),
+  reviewDigest: skillContentDigestSchema,
 }).strict()
 
 // configDigest is the digest the client showed the person. The daemon grants

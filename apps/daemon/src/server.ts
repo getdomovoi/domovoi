@@ -7560,6 +7560,16 @@ export class DomovoiDaemon {
         // cap and none unreadable, so what was shown is all there is. Any other
         // grant keeps them held back; a repository with none needs nothing.
         const filters = config.gitFilters
+        // The acknowledgement names the block the client fetched by its review
+        // digest. For the configuration read now, a digest other than this
+        // read's means the client did not show this block: nothing is granted
+        // (ruling Q255). A stale configDigest is answered as config-changed
+        // below instead.
+        if (gitFilters !== undefined && configDigest === config.configDigest && gitFilters.reviewDigest !== filters?.reviewDigest) {
+          this.#error(socket, request.id, invalidParams,
+            "Domovoi granted no trust: the git filters this client showed are not the ones Domovoi reads now. Read tool.inventory again and show its git filters before trusting the repository.")
+          return
+        }
         const gitFiltersReviewed = gitFilters?.reviewed === true && filters !== undefined
           && filters.unreadable === undefined && filters.omittedEntries === 0
         const record = () => store.record({

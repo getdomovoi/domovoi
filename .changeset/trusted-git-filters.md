@@ -5,7 +5,8 @@
 A repository trusted on this machine now runs its own git filters. When the repository's
 configuration digest read at the call equals this machine's grant, the grant was made by a client
 that showed the filters (`repository.trust` `gitFilters.reviewed`, recorded only when the read
-listed every filter) and nothing in it refuses trust, the filter definitions the grant reviewed
+listed every filter; a `reviewDigest` other than the one the daemon's own read gives grants
+nothing) and nothing in it refuses trust, the filter definitions the grant reviewed
 run at session create and fork, a transfer arriving,
 checkpoint, snapshot, restore, file revert, a transfer leaving and evidence. They run as the values
 the digest covers, passed as command-line config, so a change to the repository's config after

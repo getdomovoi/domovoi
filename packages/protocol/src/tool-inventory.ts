@@ -227,6 +227,12 @@ export const toolInventoryGitFiltersSchema = z.object({
   omittedEntries: z.number().int().nonnegative().max(1_000_000),
   // Present when the config could not be read: nothing is listed or counted.
   unreadable: z.object({ reason: z.enum(repositoryGitConfigUnreadableReasons) }).strict().optional(),
+  // The daemon's digest over exactly this block as listed: files, entries
+  // with their required state, file and scope, the omitted count and the
+  // unreadable reason, but not heldBack, which follows the grant. A client
+  // that showed the block sends it back in repository.trust's gitFilters, and
+  // the daemon grants the filters only when its own read gives the same one.
+  reviewDigest: skillContentDigestSchema,
 }).strict().superRefine((filters, context) => {
   if (filters.unreadable && (filters.files.length > 0 || filters.entries.length > 0 || filters.omittedEntries > 0)) {
     context.addIssue({ code: "custom", path: ["unreadable"], message: "Unreadable config lists nothing" })

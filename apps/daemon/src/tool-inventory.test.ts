@@ -47,6 +47,7 @@ describe("readToolInventory", () => {
       files: [{ path: ".git/config", scope: "local" as const }],
       entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt /dev/stdin", required: "unset" as const, file: ".git/config", scope: "local" as const, heldBack: true }],
       omittedEntries: 0,
+      reviewDigest: `sha256:${"b".repeat(64)}`,
     }
     const configDigest = `sha256:${"a".repeat(64)}`
     const project = { id: "project-acme", path: "/code/acme" }
@@ -68,6 +69,7 @@ describe("readToolInventory", () => {
       files: [{ path: ".git/config", scope: "local" as const }],
       entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt /dev/stdin", required: "unset" as const, file: ".git/config", scope: "local" as const, heldBack: true }],
       omittedEntries: 0,
+      reviewDigest: `sha256:${"b".repeat(64)}`,
     }
     const configDigest = `sha256:${"a".repeat(64)}`
     const project = { id: "project-acme", path: "/code/acme" }
