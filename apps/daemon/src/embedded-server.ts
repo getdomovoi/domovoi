@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import type { Duplex, Readable } from "node:stream"
 
@@ -11,6 +11,8 @@ export type EmbeddedServer = {
    * on POSIX, its process tree's root on Windows.
    */
   processGroup?: number
+  /** What processGroup names: a POSIX process group, or a Windows process tree. */
+  processKind?: "group" | "tree"
   /** Starts a stop and does not wait for it. */
   close(): void
   /**
@@ -87,6 +89,7 @@ type Launched = {
   stdout: Readable | null
   stderr: Readable | null
   processGroup: number | undefined
+  processKind: "group" | "tree"
   stop(): Promise<boolean>
   // Settles, with how it ended, once the server has exited or could not start.
   ended: Promise<string>
@@ -102,18 +105,30 @@ type Launched = {
 export function embeddedServerCommand(
   command: string,
   banner: string,
+  windows: WindowsLaunch = {},
 ): (options: EmbeddedServerOptions) => Promise<EmbeddedServer> {
-  return (options) => startEmbeddedServer(command, banner, options)
+  return (options) => startEmbeddedServer(command, banner, options, windows)
+}
+
+// What starts and ends a server on Windows. Tests give their own, so the
+// Windows path runs on any machine without starting a real server.
+export type WindowsLaunch = {
+  platform?: NodeJS.Platform
+  spawn?: (command: string, args: string[], options: SpawnOptions) => ChildProcess
+  killTree?: (pid: number) => Promise<void>
 }
 
 function startEmbeddedServer(
   command: string,
   banner: string,
   options: EmbeddedServerOptions,
+  windows: WindowsLaunch,
 ): Promise<EmbeddedServer> {
   const args = ["serve", `--hostname=${options.hostname}`, `--port=${options.port}`]
   const env = { ...process.env, ...options.environment }
-  const launched = process.platform === "win32" ? launchDirect(command, args, env) : launchKept(command, args, env)
+  const launched = (windows.platform ?? process.platform) === "win32"
+    ? launchDirect(command, args, env, windows)
+    : launchKept(command, args, env)
   const { stop } = launched
 
   return new Promise((resolve, reject) => {
@@ -144,7 +159,9 @@ function startEmbeddedServer(
         clearTimeout(timer)
         resolve({
           url,
-          ...(launched.processGroup !== undefined ? { processGroup: launched.processGroup } : {}),
+          ...(launched.processGroup !== undefined
+            ? { processGroup: launched.processGroup, processKind: launched.processKind }
+            : {}),
           close: () => void stop(),
           stop,
         })
@@ -219,7 +236,7 @@ function launchKept(command: string, args: string[], env: NodeJS.ProcessEnv): La
     gone = true
     return true
   }
-  return { stdout: keeper.stdout, stderr: keeper.stderr, processGroup: pid, stop, ended }
+  return { stdout: keeper.stdout, stderr: keeper.stderr, processGroup: pid, processKind: "group", stop, ended }
 }
 
 // How the server ended, from one line the keeper wrote: {"exit":{code,signal}}
@@ -244,33 +261,55 @@ function keeperReport(line: string): string | undefined {
 }
 
 // Windows has no process groups: the server is started directly, through a
-// shell because npm installs a .cmd shim, and a stop is taskkill on its tree
-// while Node still holds its handle, so its pid cannot name another process.
-// The arguments are fixed and carry no secret.
-function launchDirect(command: string, args: string[], env: NodeJS.ProcessEnv): Launched {
-  const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"], shell: true, windowsHide: true })
-  let exited = false
+// shell because npm installs a .cmd shim, and a stop is taskkill /T on its
+// tree. The arguments are fixed and carry no secret.
+//
+// The root's exit says nothing of its tree: a process the server started can
+// outlive it, and taskkill /T finds nothing below a root that has exited, whose
+// pid may by then name another process. So the tree is tracked apart from the
+// root, as for Claude (spawnClaudeProcess, Q111 B; Codex review of #691,
+// round 3, Q266). A stop is confirmed only by a taskkill that succeeded while
+// the root ran, followed by the root's exit. A root that exits before that,
+// on its own or after a taskkill that failed, leaves its tree unconfirmed for
+// good: every later stop fails, and the stopped server keeps blocking the next
+// one. A taskkill that failed while the root still runs is tried again by the
+// next stop, through the pid Node still holds.
+function launchDirect(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  { spawn: start = spawn, killTree = windowsTreeKill }: WindowsLaunch,
+): Launched {
+  const child = start(command, args, { env, stdio: ["ignore", "pipe", "pipe"], shell: true, windowsHide: true })
+  let tree: "running" | "killing" | "killed" | "unconfirmed" = "running"
+  let killing: Promise<void> | undefined
   const ended = new Promise<string>((resolve) => {
     child.once("exit", (code: number | null, signal: NodeJS.Signals | null) => {
-      exited = true
+      if (tree === "running") tree = "unconfirmed"
       resolve(code === null ? `exited with signal ${String(signal)}` : `exited with code ${code}`)
     })
+    // Only a process that never started ends with an error.
     child.once("error", (error: Error) => {
-      exited = true
-      resolve(`could not start: ${error.message}`)
+      if (child.pid === undefined) resolve(`could not start: ${error.message}`)
     })
   })
+  let rootExited = false
+  void ended.then(() => { rootExited = true })
   const stop = async (): Promise<boolean> => {
     const pid = child.pid
-    if (pid === undefined || exited) return true
-    try {
-      await windowsTreeKill(pid)
-    } catch {
-      return false
+    if (pid === undefined) return true
+    if (tree === "running") {
+      tree = "killing"
+      killing = killTree(pid).then(
+        () => { tree = "killed" },
+        () => { tree = rootExited ? "unconfirmed" : "running" },
+      )
     }
+    if (killing) await killing
+    if (tree !== "killed") return false
     return settlesBefore(ended.then(() => {}), stopConfirmMs)
   }
-  return { stdout: child.stdout, stderr: child.stderr, processGroup: child.pid, stop, ended }
+  return { stdout: child.stdout, stderr: child.stderr, processGroup: child.pid, processKind: "tree", stop, ended }
 }
 
 // The group is empty once signal 0 finds no process in it. A process that

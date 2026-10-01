@@ -1,6 +1,9 @@
+import type { ChildProcess } from "node:child_process"
+import { EventEmitter } from "node:events"
 import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { PassThrough } from "node:stream"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -218,5 +221,82 @@ setInterval(() => {}, 1000)`)
     })).rejects.toThrow(/did not start listening within 500 ms/u)
     const facts = JSON.parse(await readFile(report, "utf8")) as { server: number }
     await waitForDaemon(() => expect(alive(facts.server)).toBe(false))
+  })
+})
+
+// Codex review of #691, round 3, P1 (Q266): on Windows a server's root can
+// exit while a process it started runs on, so a root's exit says nothing of
+// its tree. A stop is confirmed only by a tree kill that succeeded and the
+// root's exit after it. A root that exited before any tree kill succeeded,
+// on its own or after a failed one, leaves the tree unconfirmed for good, as
+// for Claude (claude-process.ts, Q111 B). Run on every platform with a fake
+// root, so no server starts.
+describe("embeddedServerCommand on Windows", () => {
+  function fakeRoot(pid = 4321) {
+    return Object.assign(new EventEmitter(), {
+      pid,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: vi.fn(),
+    })
+  }
+
+  async function startedOnWindows(killTree: (pid: number) => Promise<void>) {
+    const root = fakeRoot()
+    const start = embeddedServerCommand("opencode", "opencode server listening", {
+      platform: "win32",
+      spawn: vi.fn(() => root as unknown as ChildProcess),
+      killTree,
+    })
+    const pending = start({ hostname: "127.0.0.1", port: 0, timeout: 10_000, environment: {} })
+    root.stdout.write("opencode server listening on http://127.0.0.1:4096\n")
+    return { root, server: await pending }
+  }
+
+  it("confirms a stop only after a tree kill that succeeded and the root's exit", async () => {
+    const held: { root?: ReturnType<typeof fakeRoot> } = {}
+    const killTree = vi.fn(async () => { held.root!.emit("exit", 1, null) })
+    const started = await startedOnWindows(killTree)
+    held.root = started.root
+
+    await expect(started.server.stop()).resolves.toBe(true)
+    expect(killTree).toHaveBeenCalledWith(4321)
+  })
+
+  it("stays unconfirmed when the tree kill failed and the root then exited", async () => {
+    const killTree = vi.fn(async () => { throw new Error("taskkill exited with status 1") })
+    const { root, server } = await startedOnWindows(killTree)
+
+    await expect(server.stop()).resolves.toBe(false)
+    // The root exits; a process it started may still run.
+    root.emit("exit", 0, null)
+
+    await expect(server.stop()).resolves.toBe(false)
+    await expect(server.stop()).resolves.toBe(false)
+    // Its pid can name another process once it has exited, so it is never killed by it.
+    expect(killTree).toHaveBeenCalledOnce()
+  })
+
+  it("stays unconfirmed when the root exited before any stop", async () => {
+    const killTree = vi.fn(async () => {})
+    const { root, server } = await startedOnWindows(killTree)
+
+    root.emit("exit", 0, null)
+
+    await expect(server.stop()).resolves.toBe(false)
+    expect(killTree).not.toHaveBeenCalled()
+  })
+
+  it("tries the tree kill again while the root still runs", async () => {
+    const held: { root?: ReturnType<typeof fakeRoot> } = {}
+    const killTree = vi.fn()
+      .mockRejectedValueOnce(new Error("taskkill exited with status 128"))
+      .mockImplementationOnce(async () => { held.root!.emit("exit", 1, null) })
+    const started = await startedOnWindows(killTree)
+    held.root = started.root
+
+    await expect(started.server.stop()).resolves.toBe(false)
+    await expect(started.server.stop()).resolves.toBe(true)
+    expect(killTree).toHaveBeenCalledTimes(2)
   })
 })

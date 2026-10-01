@@ -75,7 +75,7 @@ type OpenCodeCatalog = {
   default: Record<string, string>
 }
 
-type OpenCodeServer = Pick<EmbeddedServer, "close" | "stop" | "processGroup">
+type OpenCodeServer = Pick<EmbeddedServer, "close" | "stop" | "processGroup" | "processKind">
 
 export type OpenCodeFactory = () => Promise<{
   client: OpenCodeClient
@@ -1281,12 +1281,16 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     return this.#retiring.then(() => this.#retiredServer !== server)
   }
 
+  // Ending the programs alone is not always enough: on Windows a tree that
+  // could not be confirmed stays unconfirmed, and only a restart, which
+  // forgets the stopped server, clears it (Codex review of #691, round 3).
   #retiredServerRefusal(server: OpenCodeServer): string {
     const name = this.#identity.providerName
-    const group = server.processGroup === undefined ? "" : ` (process group ${server.processGroup})`
+    const kind = server.processKind ?? "group"
+    const group = server.processGroup === undefined ? "" : ` (process ${kind} ${server.processGroup})`
     return `Domovoi could not confirm that the earlier ${name} server and the programs it started have ended, `
       + `so it starts no other ${name} server. Each new message checks again. To continue sooner, end those `
-      + `programs${group} or restart Domovoi.`
+      + `programs${group}, then restart Domovoi.`
   }
 
   #receiveTool(session: Session, turnId: string, part: Record<string, unknown>): void {

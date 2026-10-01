@@ -586,9 +586,13 @@ code or settings the repository brings:
   A stop kills the server's process group on POSIX, or its process tree on Windows, and the
   daemon starts no other server for that provider until the stop is over and it has confirmed
   that none of those processes is left. If it cannot confirm that, it keeps the stopped server,
-  stops it again on each new message, and refuses the message until the processes are gone. The
-  refusal names the process group. To continue sooner, end those programs yourself, or restart
-  Domovoi, which forgets the stopped server and starts a new one.
+  stops it again on each new message, and refuses the message. On POSIX the refusal ends once no
+  process of the group is left. On Windows a stop is confirmed only when `taskkill /T` succeeds
+  while the server's first process still runs and that process then exits: once that process
+  has exited without such a kill, on its own or after a `taskkill` that failed, a process it
+  started may still run and nothing can find it, so the stop stays unconfirmed for good. The
+  refusal names the process group or tree. To continue, end those programs yourself, then
+  restart Domovoi, which forgets the stopped server and starts a new one.
 
   Limits:
   - The server runs the approved call before the daemon hears of the reply, so whatever was

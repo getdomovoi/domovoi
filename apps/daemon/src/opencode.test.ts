@@ -1,13 +1,17 @@
 import { waitForDaemon } from "./test-wait-for.js"
+import type { ChildProcess } from "node:child_process"
+import { EventEmitter } from "node:events"
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { PassThrough } from "node:stream"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
 import type { AgentEvent } from "./agents.js"
+import { embeddedServerCommand } from "./embedded-server.js"
 import { KiloSdkAdapter } from "./kilo.js"
 import { domovoiKiloConfig } from "./kilo-runtime.js"
 import {
@@ -2256,6 +2260,57 @@ describe("approval replies Domovoi did not send", () => {
     await adapter.close()
   })
 
+  // Codex review of #691, round 3, P1 (Q266): on Windows a root that exited
+  // after its tree kill failed may have left a process running, so the
+  // stopped server stays unconfirmed and no other server starts.
+  it("starts no other Windows server once a failed tree kill is followed by the root's exit", async () => {
+    const { client, stream } = harness()
+    const roots: Array<EventEmitter & { stdout: PassThrough }> = []
+    const killTree = vi.fn(async () => { throw new Error("taskkill exited with status 1") })
+    const start = embeddedServerCommand("opencode", "opencode server listening", {
+      platform: "win32",
+      spawn: () => {
+        const root = Object.assign(new EventEmitter(), {
+          pid: 5000 + roots.length, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+        })
+        roots.push(root)
+        return root as unknown as ChildProcess
+      },
+      killTree,
+    })
+    const factory = vi.fn(async () => {
+      const pending = start({ hostname: "127.0.0.1", port: 0, timeout: 10_000, environment: {} })
+      roots.at(-1)!.stdout.write("opencode server listening on http://127.0.0.1:4096\n")
+      return { client, server: await pending }
+    }) satisfies OpenCodeFactory
+    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Build it", runtime: runtime("build") })
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "per_1", sessionID: threadId, permission: "bash", patterns: ["pnpm test"], metadata: { command: "pnpm test" }, always: [], tool: { messageID: "msg_1", callID: "call_1" } },
+    })
+    await waitForDaemon(() => expect(events.some((event) => event.type === "approval-requested")).toBe(true))
+    stream.emit({ type: "permission.replied", properties: { sessionID: threadId, requestID: "per_1", reply: "once" } })
+    await waitForDaemon(() => expect(events.some((event) => event.type === "provider-disconnected")).toBe(true))
+    expect(killTree).toHaveBeenCalledOnce()
+
+    // The root exits; what it started may still run.
+    roots[0]!.emit("exit", 0, null)
+
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") }))
+      .rejects.toThrow("so it starts no other OpenCode server")
+    // Windows has process trees, not groups, and only a restart clears one
+    // that cannot be confirmed.
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") }))
+      .rejects.toThrow("To continue sooner, end those programs (process tree 5000), then restart Domovoi.")
+    expect(factory).toHaveBeenCalledOnce()
+    expect(killTree).toHaveBeenCalledOnce()
+    await adapter.close()
+  })
+
   it("refuses another server while the stopped one may still run, and stops it again on each attempt", async () => {
     const { adapter, factory, server, ask, reply, approvals } = await askedTurn()
     server.stop.mockResolvedValueOnce(false).mockResolvedValueOnce(false)
@@ -2266,7 +2321,7 @@ describe("approval replies Domovoi did not send", () => {
 
     const refusal = "Domovoi could not confirm that the earlier OpenCode server and the programs it started have ended, "
       + "so it starts no other OpenCode server. Each new message checks again. To continue sooner, end those programs "
-      + "(process group 4242) or restart Domovoi."
+      + "(process group 4242), then restart Domovoi."
     await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow(refusal)
     expect(server.stop).toHaveBeenCalledTimes(2)
     expect(factory).toHaveBeenCalledOnce()
