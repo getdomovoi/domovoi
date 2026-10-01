@@ -1891,6 +1891,27 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     await adapter.close()
   })
 
+  // Security review round 5 of #687 (P3): the server compares in any case
+  // with a RegExp "i" flag and no "u" flag, which reads "Σ" and "ς" as one
+  // name, though their lower cases ("σ" and "ς") differ.
+  it.each([
+    ["win32", ["Σ", "ς"], "refused"],
+    ["win32", ["ς", "Σ"], "refused"],
+    ["win32", ["deploy", "DEPLOY"], "refused"],
+    ["darwin", ["Σ", "ς"], "opened"],
+    ["linux", ["deploy", "DEPLOY"], "opened"],
+  ] as const)("on %s, treats plugin tool ids %j as duplicates by the server's matcher", async (platform, ids, outcome) => {
+    const { client, factory } = harness()
+    client.tool.ids.mockResolvedValue({ data: [...openCodeBuiltInToolIds, ...ids] })
+    const adapter = new OpenCodeSdkAdapter(factory, undefined, undefined, { platform })
+    const opened = adapter.startThread({ cwd: "/worktree", runtime: runtime("build") }).then(() => "opened", (error: Error) => {
+      expect(error.message).toContain(`tool named "${ids[1]}"`)
+      return "refused"
+    })
+    await expect(opened).resolves.toBe(outcome)
+    await adapter.close()
+  })
+
   it("opens a session whose tool servers and plugin tools take no such name", async () => {
     const { client, factory } = harness()
     client.mcp.status.mockResolvedValue({ data: { docs: { status: "connected" }, github: { status: "failed" } } })

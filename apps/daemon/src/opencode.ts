@@ -140,9 +140,16 @@ function wildcardMatches(input: string, pattern: string, platform: NodeJS.Platfo
   return new RegExp(`^${escaped}$`, platform === "win32" ? "si" : "s").test(input.replaceAll("\\", "/"))
 }
 
-// A name as the server's rules compare it: in any case on Windows
-// (security review round 4 of #687).
-const ruleName = (name: string, platform: NodeJS.Platform) => (platform === "win32" ? name.toLowerCase() : name)
+// Whether the server's rules read two names as one. On Windows its matcher
+// compares in any case with a RegExp "i" flag and no "u" flag, whose case
+// folding is not toLowerCase: "Σ" and "ς" match though their lower cases
+// differ (security review rounds 4 and 5 of #687). Elsewhere names match
+// exactly.
+function sameRuleName(a: string, b: string, platform: NodeJS.Platform): boolean {
+  if (platform !== "win32") return a === b
+  // Every special character of the name is escaped, as the server escapes it.
+  return new RegExp(`^${a.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i").test(b)
+}
 
 export type OpenCodeAdapterOptions = {
   // The platform the server runs on, whose rule matching the checks follow.
@@ -908,10 +915,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       agents = listedAgents
       // Two ids the server's rules would read as one are a duplicate.
       const listed = new Set<string>()
-      const folded = new Set<string>()
       for (const id of ids) {
-        if (folded.has(ruleName(id, this.#platform))) throw this.#unownedTool(id)
-        folded.add(ruleName(id, this.#platform))
+        if ([...listed].some((seen) => sameRuleName(seen, id, this.#platform))) throw this.#unownedTool(id)
         listed.add(id)
       }
       const states = serverStatesOf(servers)
@@ -936,9 +941,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // A tool id the server's rules would read as an allowed permission (in
     // any case on Windows) must be exactly one of the server's own ids.
     const ownToolIds = new Set(this.#identity.builtInToolIds ?? openCodeBuiltInToolIds)
-    const allowed = new Set([...this.#identity.allowedPermissions ?? openCodeAllowedPermissions].map((permission) => ruleName(permission, this.#platform)))
+    const allowed = [...this.#identity.allowedPermissions ?? openCodeAllowedPermissions]
     for (const id of catalog.toolIds) {
-      if (allowed.has(ruleName(id, this.#platform)) && !ownToolIds.has(id)) throw this.#unownedTool(id)
+      if (ownToolIds.has(id)) continue
+      if (allowed.some((permission) => sameRuleName(permission, id, this.#platform))) throw this.#unownedTool(id)
     }
     // Config this adapter does not see, an agent or mode block of the
     // person's, an organization's or a managed config, can still leave an
