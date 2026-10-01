@@ -14,7 +14,7 @@ describe("StopMenu", () => {
     render(<StopMenu connected pending={false} onPauseAll={onPauseAll} onEmergencyStop={onEmergencyStop} />)
 
     await user.click(screen.getByRole("button", { name: "Stop everything" }))
-    expect(screen.getByText("Stops at the next turn boundary. Nothing is killed.")).toBeTruthy()
+    expect(screen.getByText("Stops at the next turn boundary, nothing is killed.")).toBeTruthy()
     expect(screen.getByText("Kills processes now. Half-written files stay half-written.")).toBeTruthy()
 
     await user.click(screen.getByRole("menuitem", { name: /Pause everything/ }))

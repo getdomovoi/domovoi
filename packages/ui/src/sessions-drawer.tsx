@@ -9,9 +9,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
 import { StatusDot } from "./status-dot"
 import { groupSessions, type SessionGroupId } from "./session-groups"
 import { cn } from "./lib/utils"
+import { titlebarTipClassName } from "./titlebar-tip"
 
 // v2 takes the sessions list out of the permanent sidebar and puts it behind a
 // button in the top bar. When open it is a column beside the thread at the
@@ -43,22 +45,34 @@ export function SessionsDrawerTrigger({
   const groups = groupSessions(snapshot)
   const needsYou = groups.find((group) => group.id === "needs-you")?.sessions.length ?? 0
   const total = groups.reduce((count, group) => count + group.sessions.filter((session) => !session.archived).length, 0)
+  // The badge points at the drawer from outside it; with the drawer open the
+  // NEEDS YOU group says the same thing, so v2 draws the badge only while
+  // closed. The count stays in the label either way.
   return (
-    <button
-      type="button"
-      aria-label={`${open ? "Hide sessions" : "Sessions"} ${total}${needsYou > 0 ? `, ${needsYou} needs you` : ""}`}
-      aria-expanded={open}
-      aria-controls="sessions-drawer"
-      onClick={() => onOpenChange(!open)}
-      className={cn(
-        "relative flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
-        open && "bg-accent text-foreground",
-        className,
-      )}
-    >
-      <PanelLeftIcon className="size-4" />
-      {needsYou > 0 ? <span className="absolute top-[3px] right-[3px] size-[7px] rounded-full bg-destructive ring-2 ring-background" /> : null}
-    </button>
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={`${open ? "Hide sessions" : "Sessions"} ${total}${needsYou > 0 ? `, ${needsYou} needs you` : ""}`}
+            aria-expanded={open}
+            aria-controls="sessions-drawer"
+            onClick={() => onOpenChange(!open)}
+            className={cn(
+              "relative flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+              open && "bg-accent text-foreground",
+              className,
+            )}
+          >
+            <PanelLeftIcon className="size-4" />
+            {needsYou > 0 && !open ? <span data-needs-you-badge="" className="absolute top-[3px] right-[3px] size-[7px] rounded-full bg-destructive ring-2 ring-background" /> : null}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={7} showArrow={false} className={titlebarTipClassName}>
+          {open ? "Hide sessions" : "Sessions"}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }
 

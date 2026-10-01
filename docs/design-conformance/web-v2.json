@@ -34,8 +34,11 @@
         "Domovoi"
       ],
       "evidence": [
-        "<DomovoiMark reduced className=\"size-5 shrink-0 text-primary\"",
+        "<DomovoiMark reduced className=\"size-[22px] shrink-0 text-primary\"",
         "Use dark theme"
+      ],
+      "notes": [
+        "2026-10-01 (S3.10 slice 1): the shared app bar draws the mark at 22px, which the Web v2 markStyle also draws."
       ]
     },
     {

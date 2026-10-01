@@ -74,7 +74,10 @@
         "Domovoi"
       ],
       "evidence": [
-        "<DomovoiMark reduced className=\"size-5 shrink-0 text-primary\""
+        "<DomovoiMark reduced className=\"size-[22px] shrink-0 text-primary\""
+      ],
+      "notes": [
+        "2026-10-01 (S3.10 slice 1): drawn at the design's 22px rather than 20px. The working animation in `states` is not drawn by the titlebar template; markStyle is static."
       ]
     },
     {
@@ -86,9 +89,17 @@
         "open: tooltip Hide sessions",
         "red badge when a session needs you"
       ],
+      "copy": [
+        "Hide sessions"
+      ],
       "evidence": [
         "Hide sessions",
-        "aria-label=\"Sessions\""
+        "aria-label=\"Sessions\"",
+        "{open ? \"Hide sessions\" : \"Sessions\"}",
+        "needsYou > 0 && !open ? <span data-needs-you-badge"
+      ],
+      "notes": [
+        "2026-10-01 (S3.10 slice 1): the tooltip names the toggle as drawn, and the badge shows only while the drawer is closed (drawerBadgeStyle: fleetAlert && !drawerOpen). Pinned in packages/ui/src/titlebar-v2.dom.test.tsx."
       ]
     },
     {
@@ -97,6 +108,9 @@
       "where": "titlebar, after the drawer toggle",
       "states": [
         "tooltip New session · ⌘N"
+      ],
+      "copy": [
+        "New session ·"
       ],
       "evidence": [
         "New session · "
@@ -121,6 +135,9 @@
       "states": [
         "access = watching"
       ],
+      "copy": [
+        "watching only"
+      ],
       "evidence": [
         "watching only"
       ]
@@ -135,7 +152,11 @@
       ],
       "evidence": [
         "Machines: ",
-        "Disconnected from"
+        "Disconnected from",
+        "!connected && \"border-danger-border bg-danger-background"
+      ],
+      "notes": [
+        "2026-10-01 (S3.10 slice 1): offline now turns the chip itself to danger border and background (machineChipStyle), not only its dot."
       ]
     },
     {
@@ -147,10 +168,23 @@
         "open: two rows, each a label and a note"
       ],
       "copy": [
-        "STOP EVERYTHING, ON EVERY MACHINE"
+        "STOP EVERYTHING, ON EVERY MACHINE",
+        "Stop everything, every machine",
+        "Pause everything",
+        "Stops at the next turn boundary, nothing is killed.",
+        "Emergency stop",
+        "Kills processes now. Half-written files stay half-written."
       ],
       "evidence": [
-        "Stop everything"
+        "Stop everything",
+        "<OctagonXIcon className=\"size-4\" />",
+        "Stop everything, every machine",
+        "STOP EVERYTHING, ON EVERY MACHINE",
+        "Stops at the next turn boundary, nothing is killed.",
+        "Kills processes now. Half-written files stay half-written."
+      ],
+      "notes": [
+        "2026-10-01 (S3.10 slice 1): was a labelled ghost button with the visible text Stop everything and a menu with no heading. Now the 28px octagon icon named by its tooltip, and the 380px danger-bordered menu headed STOP EVERYTHING, ON EVERY MACHINE with a dot, label and note per row, in the design's words. Pinned in packages/ui/src/titlebar-v2.dom.test.tsx."
       ]
     },
     {
@@ -161,7 +195,11 @@
         "Settings"
       ],
       "evidence": [
-        "aria-label=\"Settings\""
+        "aria-label=\"Settings\"",
+        "className={titlebarTipClassName}>Settings</TooltipContent>"
+      ],
+      "notes": [
+        "2026-10-01 (S3.10 slice 1): the gear now carries the drawn tooltip. Every titlebar tooltip is the design's card (topTipStyle) rather than the primitive's inverted chip."
       ]
     },
     {
@@ -171,6 +209,10 @@
       "states": [
         "dark: Light appearance",
         "light: Dark appearance"
+      ],
+      "copy": [
+        "Light appearance",
+        "Dark appearance"
       ],
       "evidence": [
         "Light appearance",
@@ -2405,11 +2447,6 @@
       "started 14:02 · running 1m 09s",
       "started 13:41 · stalled at 14:06",
       "started 14:02 · 4m 18s",
-      "Hide sessions",
-      "New session ·",
-      "Dark appearance",
-      "Light appearance",
-      "Stop everything, every machine",
       "Pause session",
       "Restart provider thread",
       "titles and summaries, every machine",
@@ -2794,7 +2831,6 @@
       "Reply, or steer the plan",
       "Also cover the claim-expiry case in replay.spec.ts",
       "queued, sends when this turn ends",
-      "watching only",
       "No sends, approvals, terminal or writes. Reads stream as normal.",
       "Archived, so the daemon accepts reads only.",
       "Free plan: this route carries reads only.",
@@ -2810,10 +2846,6 @@
       "Final checkpoint, then the worktree is removed. The branch is kept.",
       "Restart the provider thread",
       "Same worktree, fresh context with the model.",
-      "Pause everything",
-      "Stops at the next turn boundary, nothing is killed.",
-      "Emergency stop",
-      "Kills processes now. Half-written files stay half-written.",
       "On an API key the chip shows the cost",
       "bills the key's owner; Domovoi adds nothing.",
       "An OAuth connection is already paid for, so the chip carries the window rather than a price that would read as zero. Two windows run at once and the ring shows the tighter one.",
