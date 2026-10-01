@@ -36,6 +36,13 @@ const droppedGitEnvironment = new Set([
   "GIT_EDITOR",
 ])
 
+// Daemon git runs offline too: in a partial clone a missing object fails
+// the command instead of being fetched from the promisor remote the
+// repository's config names, with that config's own transport settings
+// (core.sshCommand, a credential helper). Only the isolated Git directory
+// (isolated-checkout.ts), which carries the filtered transports and none of
+// the repository's transport config, takes this variable away and may fetch.
+// Git before 2.45 ignores it.
 export function gitEnvironment(): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {}
   for (const [name, value] of Object.entries(process.env)) {
@@ -43,6 +50,7 @@ export function gitEnvironment(): NodeJS.ProcessEnv {
     if (droppedGitEnvironment.has(upper) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/u.test(upper)) continue
     environment[name] = value
   }
+  environment.GIT_NO_LAZY_FETCH = "1"
   return environment
 }
 

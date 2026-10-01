@@ -74,9 +74,12 @@ export function isStandardLfsFilterLine(key: string, value: string): boolean {
   return allowedKey.startsWith("filter.") && Object.hasOwn(standardLfsFilter, allowedKey) && standardLfsFilter[allowedKey] === value
 }
 
+// These reads touch config, the index and paths, never an object; they run
+// offline all the same, as every daemon git command outside the isolated
+// directory does (git-environment.ts).
 function run(directory: string, args: string[], env: NodeJS.ProcessEnv): Promise<string | undefined> {
   return new Promise((done) => {
-    execFile("git", ["-C", directory, ...args], { ...limits, env }, (error, stdout) => {
+    execFile("git", ["-C", directory, ...args], { ...limits, env: { ...env, GIT_NO_LAZY_FETCH: "1" } }, (error, stdout) => {
       done(error ? undefined : stdout)
     })
   })
@@ -124,7 +127,7 @@ function hasGitlink(directory: string, env: NodeJS.ProcessEnv): Promise<boolean>
       child.kill()
       done(found)
     }
-    const child = spawn("git", ["-C", directory, "ls-files", "--stage", "-z"], { env, stdio: ["ignore", "pipe", "ignore"] })
+    const child = spawn("git", ["-C", directory, "ls-files", "--stage", "-z"], { env: { ...env, GIT_NO_LAZY_FETCH: "1" }, stdio: ["ignore", "pipe", "ignore"] })
     const timer = setTimeout(() => finish(true), limits.timeout)
     let pending = ""
     child.stdout.setEncoding("utf8")

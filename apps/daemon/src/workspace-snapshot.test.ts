@@ -257,6 +257,36 @@ describe("GitWorkspaceService.snapshot", () => {
       expect(await ran()).toBe(false)
     })
 
+    // A submodule whose HEAD names an object it lacks, and whose own config
+    // makes it a partial clone with a promisor remote and a core.sshCommand:
+    // reading that HEAD must not fetch the object through the submodule's
+    // transport. The read runs offline, and the operation is refused.
+    it.each(["restore", "snapshot", "checkpoint"] as const)("fetches nothing through a submodule's own promisor when %s reads it", async (operation) => {
+      const { service, path, scratch } = await withSubmodule()
+      const checkpoint = await service.checkpoint(path, "before")
+      await writeFile(join(path, "tracked.txt"), "later edit\n")
+      const markerPath = join(scratch, "submodule-transport-ran").replaceAll("\\", "/")
+      const payload = join(scratch, "payload.sh").replaceAll("\\", "/")
+      await writeFile(payload, `echo ran >> "${markerPath}"\nexit 1\n`)
+      const submodule = join(path, "vendor", "library")
+      const subGit = (...args: string[]) => execute("git", ["-C", submodule, ...args])
+      await subGit("config", "core.repositoryformatversion", "1")
+      await subGit("config", "extensions.partialClone", "origin")
+      await subGit("config", "remote.origin.promisor", "true")
+      await subGit("config", "remote.origin.url", "ssh://git@example.invalid/library.git")
+      await subGit("config", "core.sshCommand", `sh ${payload}`)
+      // The branch now names a commit this submodule does not have.
+      const branch = (await subGit("rev-parse", "--path-format=absolute", "--git-path", "refs/heads/main")).stdout.trim()
+      await writeFile(branch, `${"1".repeat(40)}\n`)
+
+      const attempt = operation === "restore"
+        ? service.restore(path, checkpoint.commit)
+        : operation === "snapshot" ? service.snapshot(path, "while the agent runs") : service.checkpoint(path, "after")
+
+      await expect(attempt).rejects.toThrow()
+      await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+    })
+
     it("records a repository whose submodule is clean", async () => {
       const { service, path } = await withSubmodule()
       const snapshot = await service.snapshot(path, "before approved command")

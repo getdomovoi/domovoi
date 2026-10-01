@@ -693,6 +693,54 @@ describe("GitWorkspaceService", () => {
     expect(evidence.diff).not.toContain("sentinel-plaintext-value")
   })
 
+  // Evidence with revert targets lists the commit's whole tree. In a partial
+  // clone a tree it lacks is fetched only through the isolated directory,
+  // with the person's own transport settings, never through the
+  // repository's own core.sshCommand. The person's ssh here is `false`, so
+  // the test reaches no network.
+  it("lists revert targets without fetching a missing tree through the repository's own transport", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-evidence-tree-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    const git = (...args: string[]) => execute("git", ["-C", repositoryPath, ...args])
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await git("config", "core.autocrlf", "false")
+    await mkdir(join(repositoryPath, "sub"))
+    await writeFile(join(repositoryPath, "sub", "nested.txt"), "nested\n")
+    await writeFile(join(repositoryPath, "top.txt"), "top\n")
+    await git("add", ".")
+    await git("-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial")
+    // The index's cached trees let status and diff skip the subtree; listing
+    // the whole tree needs it.
+    const subtree = (await git("rev-parse", "HEAD:sub")).stdout.trim()
+    await rm(join(repositoryPath, ".git", "objects", subtree.slice(0, 2), subtree.slice(2)))
+    const markerPath = join(scratch, "transport-ran").replaceAll("\\", "/")
+    const payload = join(scratch, "payload.sh").replaceAll("\\", "/")
+    await writeFile(payload, `echo ran >> "${markerPath}"\nexit 1\n`)
+    await git("config", "core.repositoryformatversion", "1")
+    await git("config", "extensions.partialClone", "origin")
+    await git("config", "remote.origin.promisor", "true")
+    await git("config", "remote.origin.url", "ssh://git@example.invalid/project.git")
+    await git("config", "core.sshCommand", `sh ${payload}`)
+    await writeFile(join(repositoryPath, "top.txt"), "changed\n")
+    const home = join(scratch, "home")
+    await mkdir(home)
+    await writeFile(join(home, ".gitconfig"), "[core]\n\tsshCommand = false\n")
+    const previous = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
+    process.env.HOME = home
+    process.env.XDG_CONFIG_HOME = join(home, ".config")
+    try {
+      await new GitWorkspaceService(join(scratch, "worktrees")).evidence(repositoryPath, undefined, true).catch(() => undefined)
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+  })
+
   it("does not execute repository-configured text conversion commands", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-workspace-"))
     scratchDirectories.push(scratch)

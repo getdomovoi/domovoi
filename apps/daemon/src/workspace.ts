@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process"
+import { execFile } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { constants } from "node:fs"
 import { chmod, copyFile, lstat, mkdir, open, readFile, readlink, realpath, rm, unlink, writeFile } from "node:fs/promises"
@@ -287,16 +287,70 @@ export class SubmoduleFilterRefusedError extends RepositoryConfigRefusedError {
   }
 }
 
+// A checked-out submodule that is a partial clone by its own Git config. The
+// `git status` staging runs in it could fetch a missing object through the
+// promisor remote that config names, with that config's own transport
+// settings, which no trust covers.
+export class SubmodulePromisorRefusedError extends RepositoryConfigRefusedError {
+  constructor(submodule: string) {
+    super(
+      `The submodule "${redactInventoryText(submodule, inventoryFieldCaps.detail)}" is a partial clone with a promisor remote `
+      + "in its own Git config. Reading it could fetch a missing object through that remote with the submodule's own "
+      + "transport settings, which no trust covers, so Domovoi does not read it. Nothing ran.",
+    )
+    this.name = "SubmodulePromisorRefusedError"
+  }
+}
+
+const promisorSettingPattern = String.raw`^(extensions\.partialclone|remote\..+\.promisor)$`
+
+// Whether a repository's config makes it a partial clone: an
+// extensions.partialClone, or a remote marked promisor. Reading the config
+// runs nothing.
+async function hasPromisor(repositoryPath: string, signal?: AbortSignal): Promise<boolean> {
+  let output: string
+  try {
+    output = await rawGit(repositoryPath, ["config", "-z", "--get-regexp", promisorSettingPattern], signal)
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 1) return false
+    throw error
+  }
+  return output.split("\0").filter((record) => record !== "").some((record) => {
+    const newline = record.indexOf("\n")
+    const key = newline === -1 ? record : record.slice(0, newline)
+    const value = newline === -1 ? "true" : record.slice(newline + 1)
+    return key.startsWith("extensions.") ? value !== "" : !/^(false|no|off|0)$/iu.test(value)
+  })
+}
+
 // Refuses while any checked-out submodule, at any depth, sets a filter in
-// its own Git config. Reading that config runs nothing. A submodule whose
-// config cannot be read fails the caller.
-async function refuseSubmoduleFilters(top: string, worktreePath: string = top, signal?: AbortSignal, depth = 0): Promise<void> {
+// its own Git config, or is a partial clone by it: staging the superproject
+// runs a `git status` in each, under that config. Reading the config runs
+// nothing. A submodule whose config cannot be read fails the caller.
+async function refuseSubmoduleConfig(top: string, worktreePath: string = top, signal?: AbortSignal, depth = 0): Promise<void> {
   for (const submodule of await checkedOutSubmodules(worktreePath, signal)) {
     if (depth >= maximumSubmoduleDepth) throw new Error("Submodules nest deeper than Domovoi reads")
+    const shown = relative(top, submodule).split(sep).join("/")
     const filters = repositoryGitFilters(await readGitFilterSettings(submodule, signal))
-    if (filters.length > 0) throw new SubmoduleFilterRefusedError(relative(top, submodule).split(sep).join("/"), filters)
-    await refuseSubmoduleFilters(top, submodule, signal, depth + 1)
+    if (filters.length > 0) throw new SubmoduleFilterRefusedError(shown, filters)
+    if (await hasPromisor(submodule, signal)) throw new SubmodulePromisorRefusedError(shown)
+    await refuseSubmoduleConfig(top, submodule, signal, depth + 1)
   }
+}
+
+// A submodule's HEAD commit, read offline (gitEnvironment): undefined while
+// its branch is unborn. A HEAD that names a commit the submodule does not
+// have fails the caller rather than being fetched.
+async function submoduleHead(submodule: string, signal?: AbortSignal): Promise<string | undefined> {
+  const named = await git(submodule, ["rev-parse", "-q", "--verify", "HEAD"], signal).catch(() => "")
+  if (named === "") return undefined
+  try {
+    await git(submodule, ["cat-file", "-e", `${named}^{commit}`], signal)
+  } catch (error) {
+    signal?.throwIfAborted()
+    throw new Error("A submodule's HEAD names a commit it does not have", { cause: error })
+  }
+  return named
 }
 
 // Whether any checked-out submodule, at any depth, has changed tracked
@@ -321,7 +375,7 @@ async function submoduleHasLocalChanges(worktreePath: string, signal?: AbortSign
 async function submoduleWorktreeChanged(submodule: string, signal?: AbortSignal): Promise<boolean> {
   const isolated = await openIsolatedGit({ worktree: submodule, settings: await readGitFilterSettings(submodule, signal), worktreeIndex: true, signal })
   try {
-    const head = await currentHead(submodule, signal)
+    const head = await submoduleHead(submodule, signal)
     if (head !== undefined) await isolated.setHead(head)
     // No optional locks: status must not refresh the index the agent shares.
     const status = await isolated.run([
@@ -873,11 +927,14 @@ async function restoreIndex(snapshot: IndexSnapshot): Promise<void> {
   await publishFileDurably(staging, snapshot.path)
 }
 
-async function pathsAtCommit(worktreePath: string, commit: string, signal?: AbortSignal): Promise<Set<string>> {
+// The commit's whole tree, read in the isolated directory: in a partial clone
+// a tree the repository lacks is fetched there, with the person's own
+// transport settings, never through the repository's own config.
+async function pathsAtCommit(isolated: IsolatedGit, commit: string, signal?: AbortSignal): Promise<Set<string>> {
   // NUL delimiters preserve spaces, tabs and newlines. Read the complete tree
   // under git's output/deadline bounds; a failed read must never mean absent.
-  const tree = await boundedGit(
-    worktreePath,
+  const tree = await boundedIsolatedGit(
+    isolated,
     ["ls-tree", "-r", "-z", "--name-only", "--full-tree", commit],
     maximumGitOutputBytes,
     signal,
@@ -931,73 +988,6 @@ async function rawGit(
     signal,
   }))
   return result.stdout
-}
-
-async function boundedGit(
-  repositoryPath: string,
-  arguments_: string[],
-  maximumBytes: number,
-  signal?: AbortSignal,
-): Promise<{ output: string; truncated: boolean }> {
-  signal?.throwIfAborted()
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn("git", gitArguments(repositoryPath, arguments_), {
-      env: gitEnvironment(),
-      stdio: ["ignore", "pipe", "pipe"],
-    })
-    const output: Buffer[] = []
-    const errors: Buffer[] = []
-    let capturedBytes = 0
-    let truncated = false
-    let settled = false
-    const abort = () => child.kill()
-    signal?.addEventListener("abort", abort, { once: true })
-    child.stdout.on("data", (chunk: Buffer) => {
-      const remaining = maximumBytes - capturedBytes
-      if (remaining > 0) {
-        const captured = chunk.subarray(0, remaining)
-        output.push(captured)
-        capturedBytes += captured.length
-      }
-      if (chunk.length > remaining && !truncated) {
-        truncated = true
-        child.stdout.destroy()
-        child.kill()
-      }
-    })
-    child.stderr.on("data", (chunk: Buffer) => {
-      const captured = errors.reduce((total, value) => total + value.length, 0)
-      if (captured < 16_384) errors.push(chunk.subarray(0, 16_384 - captured))
-    })
-    child.once("error", (error) => {
-      if (settled) return
-      settled = true
-      signal?.removeEventListener("abort", abort)
-      reject(error)
-    })
-    child.once("close", (code) => {
-      if (settled) return
-      settled = true
-      signal?.removeEventListener("abort", abort)
-      if (signal?.aborted) {
-        reject(signal.reason)
-        return
-      }
-      if (code !== 0 && !truncated) {
-        reject(new Error(Buffer.concat(errors).toString("utf8").trim() || `git exited with ${code}`))
-        return
-      }
-      let text = Buffer.concat(output).toString("utf8")
-      if (truncated) {
-        const marker = "…\n"
-        while (Buffer.byteLength(`${text}${marker}`, "utf8") > maximumBytes) {
-          text = text.slice(0, -1)
-        }
-        text += marker
-      }
-      resolvePromise({ output: text, truncated })
-    })
-  })
 }
 
 // Git's output in an isolated directory, cut at maximumBytes with a marker.
@@ -1358,7 +1348,7 @@ export class GitWorkspaceService implements WorkspaceService {
     if (!gate.open && whenRefused === "refuse") throw new RepositoryFilterRefusedError(gate.filters, { reason: gate.reason, projectId: gate.projectId })
     // Evidence keeps out of submodule worktrees (--ignore-submodules=dirty);
     // every other operation may stage, which looks into each one.
-    if (whenRefused === "refuse") await refuseSubmoduleFilters(worktree, worktree, signal)
+    if (whenRefused === "refuse") await refuseSubmoduleConfig(worktree, worktree, signal)
     await this.#afterRepositoryFilterGate?.(worktree)
     const isolated = await openIsolatedGit({
       worktree, settings: gate.settings, reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true, beforeCommand: this.#confirm(gate), signal,
@@ -1607,7 +1597,7 @@ export class GitWorkspaceService implements WorkspaceService {
           maximumEvidenceDiffBytes,
           signal,
         ),
-        includeRevertTargets ? pathsAtCommit(worktreePath, baseCommit, signal) : undefined,
+        includeRevertTargets ? pathsAtCommit(isolated, baseCommit, signal) : undefined,
       ])
       const fingerprintAfter = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, diffSettings, signal)
       if (fingerprintBefore.digest !== fingerprintAfter.digest) continue
