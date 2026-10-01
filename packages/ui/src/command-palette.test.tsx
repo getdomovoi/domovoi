@@ -8,6 +8,8 @@ import {
   commandPaletteShortcut,
   rankWorkspaceCommands,
   restoreCommandPaletteFocus,
+  shortcutLabel,
+  workspaceShortcut,
   type WorkspaceCommand,
 } from "./command-palette"
 import { openDesktopPath, type DesktopWindowBridge } from "./desktop-platform"
@@ -191,6 +193,122 @@ describe("buildWorkspaceCommands", () => {
     })
 
     expect(commands.find(({ id }) => id === "open-in-editor")?.label).toBe("Open externally")
+  })
+})
+
+// Desktop V2's palette (paletteGroups, COMMANDS): the session commands it
+// draws, with its labels and meta. Ruling Q288 A (2026-10-01) leaves out
+// "Run a migration on this machine" and "Open a pull request".
+describe("v2 session commands", () => {
+  const base = {
+    connected: true,
+    emergencyStopPending: false,
+    hasProject: true,
+    openProject: vi.fn(),
+    newSession: vi.fn(),
+    pauseAll: vi.fn(),
+    emergencyStop: vi.fn(),
+    reconnect: vi.fn(),
+    setSurface: vi.fn(),
+  }
+  const designIds = [
+    "open-changes",
+    "take-checkpoint",
+    "revert-checkpoint",
+    "review-rules",
+    "move-session",
+    "surface-fleet",
+    "pair-device",
+    "surface-audit",
+  ]
+  const openers = () => ({
+    openChanges: vi.fn(),
+    takeCheckpoint: vi.fn(),
+    checkpointBlocked: false,
+    revertToCheckpoint: vi.fn(),
+    reviewRules: vi.fn(),
+    approvalRuleCount: 4,
+    moveSession: vi.fn(),
+    pairDevice: vi.fn(),
+  })
+
+  it("lists the design's commands in its order, with its labels and meta", () => {
+    const commands = buildWorkspaceCommands({ ...base, ...openers() })
+    expect(commands
+      .filter(({ id }) => designIds.includes(id))
+      .map(({ id, label, detail, shortcut }) => ({ id, label, detail, shortcut })))
+      .toEqual([
+        { id: "open-changes", label: "Open the changes sheet", detail: undefined, shortcut: "mod+shift+D" },
+        { id: "take-checkpoint", label: "Take a checkpoint", detail: "manual", shortcut: undefined },
+        { id: "revert-checkpoint", label: "Revert to a checkpoint", detail: undefined, shortcut: undefined },
+        { id: "review-rules", label: "Review what you have allowed", detail: "4 rules", shortcut: undefined },
+        { id: "move-session", label: "Move this session to another machine", detail: "handoff", shortcut: undefined },
+        { id: "surface-fleet", label: "Show all machines", detail: undefined, shortcut: "mod+shift+M" },
+        { id: "pair-device", label: "Pair a phone or tablet", detail: "settings", shortcut: undefined },
+        { id: "surface-audit", label: "Read the audit log", detail: "on this machine", shortcut: undefined },
+      ])
+  })
+
+  it("runs each command through the opener the shell supplies", () => {
+    const supplied = openers()
+    const setSurface = vi.fn()
+    const commands = buildWorkspaceCommands({ ...base, ...supplied, setSurface })
+    for (const id of designIds) commands.find((command) => command.id === id)?.run()
+    expect(supplied.openChanges).toHaveBeenCalledOnce()
+    expect(supplied.takeCheckpoint).toHaveBeenCalledOnce()
+    expect(supplied.revertToCheckpoint).toHaveBeenCalledOnce()
+    expect(supplied.reviewRules).toHaveBeenCalledOnce()
+    expect(supplied.moveSession).toHaveBeenCalledOnce()
+    expect(supplied.pairDevice).toHaveBeenCalledOnce()
+    expect(setSurface.mock.calls).toEqual([["fleet"], ["audit"]])
+  })
+
+  it("counts one rule in the singular", () => {
+    const commands = buildWorkspaceCommands({ ...base, ...openers(), approvalRuleCount: 1 })
+    expect(commands.find(({ id }) => id === "review-rules")?.detail).toBe("1 rule")
+  })
+
+  it("offers no session command the shell cannot run, and neither ruled-out command", () => {
+    const ids = buildWorkspaceCommands(base).map(({ id }) => id)
+    for (const id of ["open-changes", "revert-checkpoint", "review-rules", "move-session", "pair-device"]) {
+      expect(ids).not.toContain(id)
+    }
+    const labels = buildWorkspaceCommands({ ...base, ...openers() }).map(({ label }) => label)
+    expect(labels).not.toContain("Run a migration on this machine")
+    expect(labels).not.toContain("Open a pull request")
+  })
+
+  it("locks the commands that need the daemon while it is not answering", () => {
+    const commands = buildWorkspaceCommands({ ...base, ...openers(), connected: false })
+    const disabled = (id: string) => commands.find((command) => command.id === id)?.disabled ?? false
+    expect(disabled("move-session")).toBe(true)
+    expect(disabled("pair-device")).toBe(true)
+    expect(disabled("open-changes")).toBe(false)
+    expect(disabled("revert-checkpoint")).toBe(false)
+    expect(disabled("review-rules")).toBe(false)
+  })
+
+  it("still finds the machines and audit screens by their old names", () => {
+    const commands = buildWorkspaceCommands(base)
+    expect(rankWorkspaceCommands(commands, "fleet").map(({ id }) => id)).toContain("surface-fleet")
+    expect(rankWorkspaceCommands(commands, "audit").map(({ id }) => id)).toContain("surface-audit")
+  })
+})
+
+describe("workspace shortcuts", () => {
+  it("opens the changes sheet and the machines screen with the platform's modifier and Shift", () => {
+    expect(workspaceShortcut({ key: "D", metaKey: true, ctrlKey: false, altKey: false, shiftKey: true }, "darwin")).toBe("changes")
+    expect(workspaceShortcut({ key: "M", metaKey: false, ctrlKey: true, altKey: false, shiftKey: true }, "linux")).toBe("machines")
+    expect(workspaceShortcut({ key: "m", metaKey: false, ctrlKey: true, altKey: false, shiftKey: true }, "win32")).toBe("machines")
+    expect(workspaceShortcut({ key: "D", metaKey: false, ctrlKey: true, altKey: false, shiftKey: true }, "darwin")).toBeNull()
+    expect(workspaceShortcut({ key: "d", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false }, "darwin")).toBeNull()
+    expect(workspaceShortcut({ key: "M", metaKey: true, ctrlKey: false, altKey: true, shiftKey: true }, "darwin")).toBeNull()
+    expect(workspaceShortcut({ key: "K", metaKey: true, ctrlKey: false, altKey: false, shiftKey: true }, "darwin")).toBeNull()
+  })
+
+  it("draws a shortcut the way the design's K() does", () => {
+    expect(shortcutLabel("mod+shift+D", "darwin")).toBe("⌘⇧D")
+    expect(shortcutLabel("mod+shift+M", "linux")).toBe("Ctrl+Shift+M")
   })
 })
 

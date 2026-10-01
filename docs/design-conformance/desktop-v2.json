@@ -1735,25 +1735,35 @@
         "Review what you have allowed",
         "Show all machines",
         "Pair a phone or tablet",
-        "Read the audit log"
+        "Read the audit log",
+        "on this machine"
       ],
       "evidence": [
-        "Run a migration on this machine",
-        "Open the changes sheet",
-        "Revert to a checkpoint",
-        "Review what you have allowed",
-        "Show all machines",
-        "Pair a phone or tablet",
-        "Read the audit log"
-      ],
-      "presence": [
         "Search commands",
-        "sessions, machines, commands, skills"
+        "sessions, machines, commands, skills",
+        "label: \"Open the changes sheet\"",
+        "shortcut: \"mod+shift+D\"",
+        "label: \"Take a checkpoint\"",
+        "detail: \"manual\"",
+        "label: \"Revert to a checkpoint\"",
+        "label: \"Review what you have allowed\"",
+        "approvalRuleCount === 1 ? \"rule\" : \"rules\"",
+        "label: \"Move this session to another machine\"",
+        "detail: \"handoff\"",
+        "label: \"Show all machines\"",
+        "shortcut: \"mod+shift+M\"",
+        "label: \"Pair a phone or tablet\"",
+        "detail: \"settings\"",
+        "label: \"Read the audit log\"",
+        "detail: \"on this machine\""
       ],
-      "partial": {
-        "since": "2026-09-26",
-        "reason": "the design lists ten commands in its data script; seven of them are not commands anywhere in the implementation, which offers its own list"
-      }
+      "notes": [
+        "2026-10-01 (S3.10 slice 2, ruling Q288 A): Run a migration on this machine is left out. It is the mockup's sample session acting through the palette, not a command. Its copy stays claimed here so the gate keeps reading it, and no disabled placeholder is drawn.",
+        "2026-10-01 (ruling Q288 A): Open a pull request is left out until the git-from-app work lands; dock.changes-pr is blocked on protocol and claims its copy. No disabled placeholder is drawn.",
+        "2026-10-01: Revert to a checkpoint draws no count. The design's meta (5 available) needs the checkpoint list, which the snapshot does not carry and the palette does not fetch. The command opens the Checkpoints tab.",
+        "2026-10-01: Take a checkpoint keeps its existing action, which takes the checkpoint at once while the design's command opens the Checkpoints tab with its label field.",
+        "2026-10-01: the shell binds the two shortcuts the meta names (mod+shift+D opens the changes sheet, mod+shift+M shows all machines). Move this session to another machine opens the machine menu on the active session, the same route as a session row's Move, and the transfer dialog follows the choice of machine. Pair a phone or tablet opens settings, and is offered only in a desktop window on its own daemon, where the pairing card is. Rows carry icons where the design draws a coloured dot."
+      ]
     },
     {
       "id": "palette.other-machines",
@@ -2454,7 +2464,6 @@
       "wsl-ubuntu-24, unreachable",
       "needs approval",
       "branch pushed",
-      "on this machine",
       "SESSIONS ON THIS MACHINE",
       "Step 3 needs the migration applied. PROD_DATABASE_URL was set in the environment, so I aimed at it and the daemon stopped me. I have not retried and I will not, since the refusal is a policy rather than a question.",
       "The handler processes the event before it records it, so a retry replays every side effect. I am adding a replay table with a unique claim on the event id and moving each handler to claim-then-commit.",
