@@ -196,13 +196,15 @@ export const repositoryGitFilterScopeSchema = z.enum(repositoryGitFilterScopes)
 export const maximumRepositoryGitFilterDriverNameLength = 256
 export const repositoryGitFilterDriverNameSchema = inventoryText(maximumRepositoryGitFilterDriverNameLength)
 
-// The data of a session.create, session.fork or transfer refusal because
-// checking the repository out would run a filter its own Git config sets. It
-// names the drivers, never their commands, and the repository's trust against
-// its current configuration digest, so a client can offer the trust review. A
-// trusted state means the grant covers the digest and the daemon still held
-// the filter back. At most maximumRepositoryGitFilterDrivers are named, and
-// omittedDrivers counts the rest.
+// The data of a refusal because Git would run a filter the repository's own
+// Git config sets and this machine's trust does not cover it: session.create,
+// session.fork, a checkpoint, restore or file revert, or a transfer on either
+// machine. It names the drivers, never their commands, and the repository's
+// trust against the configuration digest of the refused worktree, read now,
+// so a client can offer the trust review. A trusted state means trust was
+// taken back or changed while the operation ran. At most
+// maximumRepositoryGitFilterDrivers are named, and omittedDrivers counts the
+// rest.
 export const maximumRepositoryGitFilterDrivers = 32
 export const repositoryGitFilterRefusalSchema = z.object({
   kind: z.literal("repository-git-filter"),

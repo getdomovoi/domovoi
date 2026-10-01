@@ -50,8 +50,9 @@ export function gitEnvironment(): NodeJS.ProcessEnv {
 // person set in their global or system config is their own tool (Git LFS). One
 // the repository's own config sets can point at a file the agent edits, and
 // switching it off would change what a checkpoint stores (git-crypt plaintext),
-// so the actions that would run it are refused until repositories can be
-// trusted.
+// so the actions that would run it are refused unless the repository is
+// trusted on this machine, and then run only its reviewed definitions
+// (repository-git-filter-gate.ts).
 // "unknown" is config git ships itself, such as Apple Git's credential helper.
 // "command" is left out: the daemon's own -c settings name no filter or
 // helper, and an inherited one is dropped with the environment above.
