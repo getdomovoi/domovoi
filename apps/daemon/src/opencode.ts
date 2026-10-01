@@ -1312,6 +1312,11 @@ function ensureSuccess(result: OpenCodeResult<unknown>, action: string): void {
 //   - each agent's own allows and denies, in this config's agent blocks.
 // task and todowrite are restated only in the primary agents' blocks: a
 // subagent whose rules name neither is denied both by its session, as before.
+// The person's own per-agent rules are merged into this config's block for
+// that agent, after the top-level block, so every agent block starts with its
+// own catch-all too and restates the defaults after it; a person's "*" rule
+// for that agent takes the catch-all's place and value (security review round
+// 1 of #687).
 // Every agent, the built-in subagents the task tool starts included, asks
 // before it edits, runs a command, fetches or leaves the project. A subagent
 // keeps only its parent's deny rules, so a per-agent "ask" does not reach it.
@@ -1326,7 +1331,7 @@ export const askBeforeEdits = {
 } as const
 
 // The read rules the servers' defaults give every agent.
-const defaultReads = { "*": "allow", "*.env": "ask", "*.env.*": "ask", "*.env.example": "allow" } as const
+export const defaultReads = { "*": "allow", "*.env": "ask", "*.env.*": "ask", "*.env.example": "allow" } as const
 
 // The built-in tools OpenCode's defaults allow and deny. Kilo adds its own
 // (kilo-runtime.ts).
@@ -1374,12 +1379,21 @@ export const domovoiAskAgent = {
     question: true,
   },
   permission: {
+    // The tools block above starts with "*": deny; stating it here keeps a
+    // person's own "*" for this agent from replacing it.
+    "*": "deny",
     edit: "deny",
     bash: "deny",
     webfetch: "allow",
     external_directory: "deny",
   },
 } as const
+
+// Which subagents a primary agent starts without a card: the server's own
+// general and explore. A subagent of the person's own runs by its own rules,
+// which may allow what this config asks about, so starting it asks.
+export const builtInSubagents = { "*": "ask", general: "allow", explore: "allow" } as const
+export const planSubagents = { "*": "ask", general: "deny", explore: "allow" } as const
 
 // What Plan may not do, on top of its built-in rules.
 export const domovoiPlanLimits = {
@@ -1407,22 +1421,23 @@ export const domovoiOpenCodeConfig: Config = {
     "domovoi-ask": domovoiAskAgent,
     plan: {
       permission: {
+        ...domovoiAgentPermission,
         question: "allow",
         plan_exit: "allow",
-        task: { "*": "allow", general: "deny" },
+        task: planSubagents,
         todowrite: "allow",
         ...domovoiPlanLimits,
       },
     },
     build: {
-      permission: { question: "allow", plan_enter: "allow", task: "allow", todowrite: "allow", ...askBeforeEdits },
+      permission: { ...domovoiAgentPermission, question: "allow", plan_enter: "allow", task: builtInSubagents, todowrite: "allow" },
     },
     "domovoi-auto": {
       mode: "primary",
       description: "Domovoi automatic build mode",
-      permission: { task: "allow", todowrite: "allow", ...askBeforeEdits },
+      permission: { ...domovoiAgentPermission, task: builtInSubagents, todowrite: "allow" },
     },
-    general: { permission: { todowrite: "deny" } },
+    general: { permission: { ...domovoiAgentPermission, todowrite: "deny" } },
     explore: {
       permission: { "*": "deny", grep: "allow", glob: "allow", list: "allow", websearch: "allow", read: "allow", ...askBeforeEdits },
     },

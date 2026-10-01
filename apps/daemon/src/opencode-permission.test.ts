@@ -94,7 +94,9 @@ function openCodeAgents(config: EmbeddedConfig): Record<string, Rule[]> {
   return builtIn
 }
 
-function kiloAgents(config: EmbeddedConfig, ownServers: readonly string[]): Record<string, Rule[]> {
+// vscodeNotebooks: Kilo runs as the VS Code client (KILO_CLIENT=vscode) with
+// experimental.native_notebook_tools on, which adds asks to its defaults.
+function kiloAgents(config: EmbeddedConfig, ownServers: readonly string[], vscodeNotebooks = false): Record<string, Rule[]> {
   const bash: Record<string, Action> = { "*": "ask", "ls *": "allow", "*|*": "deny" }
   const readOnlyBash: Record<string, Action> = { ...bash, "*": "deny" }
   const exploreBash: Record<string, Action> = { ...readOnlyBash, "gh *": "deny" }
@@ -104,7 +106,11 @@ function kiloAgents(config: EmbeddedConfig, ownServers: readonly string[]): Reco
       "*": "allow", doom_loop: "ask", external_directory: { "*": "ask", "/tool-output/*": "allow" },
       suggest: "deny", question: "deny", plan_enter: "deny", plan_exit: "deny", repo_clone: "deny", repo_overview: "deny", read: envReads,
     }),
-    ...rules({ bash, board_read: "allow", board_post: "allow", recall: "ask", kilo_memory_recall: "ask", kilo_memory_save: "ask" }),
+    ...rules({
+      bash, board_read: "allow", board_post: "allow", recall: "ask",
+      ...(vscodeNotebooks ? { notebook_read: "ask", notebook_edit: "ask", notebook_execute: "ask", browser_open: "ask" } : {}),
+      kilo_memory_recall: "ask", kilo_memory_save: "ask",
+    }),
   ]
   const user = rules(config.permission)
   const guarded = ["bash", "task", "notebook_edit", "notebook_execute", "write", "agent_manager", "repo_clone"]
@@ -145,8 +151,11 @@ function kiloAgents(config: EmbeddedConfig, ownServers: readonly string[]): Reco
       external_directory: { "*": "ask", "/tool-output/*": "allow" },
     }), ...user, ...rules({ bash: exploreBash }), ...denies(user)],
   }
-  for (const [configured, agent] of Object.entries(config.agent ?? {})) {
-    const name = configured === "build" ? "code" : configured
+  // preprocessConfig reads a "build" block as "code"; of two blocks that name
+  // the same agent, the later one replaces the earlier.
+  const preprocessed: Record<string, AgentConfig | undefined> = {}
+  for (const [configured, agent] of Object.entries(config.agent ?? {})) preprocessed[configured === "build" ? "code" : configured] = agent
+  for (const [name, agent] of Object.entries(preprocessed)) {
     const block = agentBlock(agent)
     let ruleset = [...(agents[name] ?? [...defaults, ...user]), ...block]
     if (name === "plan") ruleset = [...ruleset, ...planEdit, ...editRestrictions(user), ...editRestrictions(block)]
@@ -192,47 +201,99 @@ const patternsOf = (permission: string) => patterns[permission] ?? ["*"]
 const ownServer = "docs"
 const otherTools = ["docs_search", "github_create_issue", "customtool"]
 
+// The person's own config merged under the embedded one, as the servers merge
+// config sources (remeda mergeDeep: the earlier source's keys keep their
+// place, a later source's value wins, its new keys come last).
+type Merged = Record<string, unknown>
+const isPlain = (value: unknown): value is Merged => typeof value === "object" && value !== null && !Array.isArray(value)
+function mergeDeep(target: Merged, source: Merged): Merged {
+  const output: Merged = { ...target }
+  for (const [key, value] of Object.entries(source)) {
+    const current = output[key]
+    output[key] = isPlain(current) && isPlain(value) ? mergeDeep(current, value) : value
+  }
+  return output
+}
+const underPerson = (person: Merged, config: unknown) => mergeDeep(person, config as Merged) as EmbeddedConfig
+
+// The rules a call is judged by in each agent a Domovoi session runs: its four
+// primary agents and OpenCode's own compaction, title and summary agents by
+// their own rules, and the subagents the task tool starts from the primary
+// agent with their session's rules added. Kilo's ask, debug and orchestrator
+// agents are primary, so no Domovoi session reaches them, and Kilo denies
+// everything to its own compaction, title and summary agents whatever the
+// config says.
+const subagents = ["general", "explore"]
+const judged = (agents: Record<string, Rule[]>, primary: string) => Object.fromEntries(Object.entries(agents).map(([agent, ruleset]) => [
+  agent,
+  subagents.includes(agent) ? [...ruleset, ...subagentSession(agents[primary]!, ruleset)] : ruleset,
+]))
+
+function expectBuiltInsKept(builtIns: readonly string[], was: Record<string, Rule[]>, is: Record<string, Rule[]>) {
+  expect(Object.keys(is)).toEqual(Object.keys(was))
+  for (const agent of Object.keys(was)) {
+    for (const permission of builtIns) {
+      for (const pattern of patternsOf(permission)) {
+        expect(`${agent} ${permission} ${pattern}: ${evaluate(permission, pattern, is[agent]!)}`)
+          .toBe(`${agent} ${permission} ${pattern}: ${evaluate(permission, pattern, was[agent]!)}`)
+      }
+    }
+  }
+}
+
 const cases = [
-  ["OpenCode", openCodeBuiltIns, openCodeAgents(before), openCodeAgents(domovoiOpenCodeConfig as EmbeddedConfig), "build"],
-  ["Kilo", kiloBuiltIns, kiloAgents(before, [ownServer]), kiloAgents(domovoiKiloConfig as EmbeddedConfig, [ownServer]), "code"],
+  ["OpenCode", openCodeBuiltIns, (config: EmbeddedConfig) => openCodeAgents(config), domovoiOpenCodeConfig, "build"],
+  ["Kilo", kiloBuiltIns, (config: EmbeddedConfig) => kiloAgents(config, [ownServer]), domovoiKiloConfig, "code"],
 ] as const
 
-describe.each(cases)("%s permissions under the embedded config", (name, builtIns, old, now, primary) => {
-  // The rules a call is judged by in each agent a Domovoi session runs: its
-  // four primary agents and OpenCode's own compaction, title and summary
-  // agents by their own rules, and the subagents the task tool starts from the
-  // primary agent with their session's rules added. Kilo's ask, debug and
-  // orchestrator agents are primary, so no Domovoi session reaches them, and
-  // Kilo denies everything to its own compaction, title and summary agents
-  // whatever the config says.
-  const subagents = ["general", "explore"]
-  const judged = (agents: Record<string, Rule[]>) => Object.fromEntries(Object.entries(agents).map(([agent, ruleset]) => [
-    agent,
-    subagents.includes(agent) ? [...ruleset, ...subagentSession(agents[primary]!, ruleset)] : ruleset,
-  ]))
-  const was = judged(old)
-  const is = judged(now)
+describe.each(cases)("%s permissions under the embedded config", (name, builtIns, model, config, primary) => {
+  const was = judged(model(before), primary)
+  const is = judged(model(config as EmbeddedConfig), primary)
 
   it("keeps every built-in tool's action for every agent a session runs", () => {
-    expect(Object.keys(is)).toEqual(Object.keys(was))
+    expectBuiltInsKept(builtIns, was, is)
+  })
+
+  // Security review round 1 of #687: a person's own per-agent "*" rule is
+  // merged into this config's agent block, after the top-level catch-all.
+  // Every agent block holds its own catch-all, which takes that key's place.
+  it("asks before an unnamed tool whatever the person's own rules allow", () => {
+    const agentNames = [...Object.keys(was), "build"]
+    const person = {
+      permission: { "*": "allow" },
+      agent: Object.fromEntries(agentNames.map((agent) => [agent, { permission: { "*": "allow" } }])),
+    }
+    const opened = judged(model(underPerson(person, config)), primary)
     for (const agent of Object.keys(was)) {
-      for (const permission of builtIns) {
-        for (const pattern of patternsOf(permission)) {
-          expect(`${agent} ${permission} ${pattern}: ${evaluate(permission, pattern, is[agent]!)}`)
-            .toBe(`${agent} ${permission} ${pattern}: ${evaluate(permission, pattern, was[agent]!)}`)
-        }
+      for (const tool of otherTools) {
+        expect(`${agent} ${tool}: ${evaluate(tool, "*", opened[agent]!)}`).not.toBe(`${agent} ${tool}: allow`)
       }
+    }
+    // A subagent of the person's own, with their own "*" rule, starts only
+    // after a card; the built-in subagents start as before.
+    for (const agent of [primary, "domovoi-auto", "plan"]) {
+      expect(`${agent} task reviewer: ${evaluate("task", "reviewer", opened[agent]!)}`).toBe(`${agent} task reviewer: ask`)
     }
   })
 
+  // Kilo names its build agent code and reads a "build" block as "code"; a
+  // person's own "code" block coming after must not replace this config's.
+  it("keeps the catch-all when the person's own block names an agent another way", () => {
+    const person = { agent: { build: { permission: { "*": "allow" } }, code: { permission: { "*": "allow" } } } }
+    const opened = judged(model(underPerson(person, config)), primary)
+    expect(evaluate("customtool", "*", opened[primary]!)).toBe("ask")
+  })
+
   // Kilo re-applies every deny an explore block names after the block, so its
-  // catch-all deny cannot be restated there: a tool server's tool, hidden from
-  // Kilo's explore subagent before, now asks there.
+  // catch-all deny cannot be restated there, and its plan block starts with
+  // the asking catch-all so a person's "*" for plan cannot open it: a tool
+  // that is not Kilo's own, denied in those two before (a tool server the
+  // person did not configure, in plan), now asks there.
   it("asks before a tool server's or plugin's tool that used to run without asking", () => {
     for (const agent of Object.keys(was)) {
       for (const tool of otherTools) {
         const before = evaluate(tool, "*", was[agent]!)
-        const expected = before === "allow" || (name === "Kilo" && agent === "explore") ? "ask" : before
+        const expected = before === "allow" || (name === "Kilo" && (agent === "explore" || agent === "plan")) ? "ask" : before
         expect(`${agent} ${tool}: ${evaluate(tool, "*", is[agent]!)}`).toBe(`${agent} ${tool}: ${expected}`)
       }
     }
@@ -240,6 +301,7 @@ describe.each(cases)("%s permissions under the embedded config", (name, builtIns
     expect(evaluate("docs_search", "*", is.plan!)).toBe("ask")
   })
 })
+
 
 describe("the embedded config's own shape", () => {
   it.each([

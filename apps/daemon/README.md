@@ -562,9 +562,15 @@ code or settings the repository brings:
   starts its permissions with a `"*": "ask"` rule and then restates the server's own rules for its
   built-in tools, so each built-in tool keeps the action it had, and a call to a tool server's
   tool, one of yours included, or to a plugin's tool raises an approval card. Kilo's explore
-  subagent used to have tool server tools hidden; it now sees them and asks before each call. An
+  subagent used to have tool server tools hidden; it now sees them and asks before each call, and
+  Kilo's plan agent asks before a tool that is not Kilo's own where it used to deny it. An
   allow rule in your own `permission` configuration still applies when your configuration lists
   it after a `"*"` rule of its own; without one, the catch-all comes after your rule and asks.
+  Every agent block the embedded configuration sets starts with the same catch-all and restates
+  the defaults after it, so a `"*"` rule in your own block for one of those agents takes the
+  catch-all's place and asks; for Kilo the block is set under both `build` and `code`. A primary
+  agent starts OpenCode's or Kilo's own `general` and `explore` subagents as before, and asks
+  before it starts a subagent of yours, which runs by your own rules.
   When a session's directory opens, the daemon reads the names of the tool servers that directory
   knows. A card names a tool's server only when exactly one of them could have made the tool's name
   (the server's name with characters outside letters, digits, `-` and `_` turned into `_`, then

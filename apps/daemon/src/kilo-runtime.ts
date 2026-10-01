@@ -3,6 +3,8 @@ import type { Config } from "@kilocode/sdk"
 import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
 import {
   askBeforeEdits,
+  builtInSubagents,
+  defaultReads,
   domovoiAskAgent,
   domovoiPermission,
   domovoiPlanLimits,
@@ -10,6 +12,7 @@ import {
   openCodeDefaultAllows,
   openCodeDefaultDenies,
   permissionActions,
+  planSubagents,
   requireOpenCodeClient,
   type EmbeddedAgents,
   type OpenCodeFactory,
@@ -50,41 +53,59 @@ export const kiloBuiltInPermissions: ReadonlySet<string> = new Set([
   "kilo_memory_save",
 ])
 
-// What Kilo's explore subagent may use before the person's rules; every other
-// tool the catch-all would open is denied again by name.
+// The top-level block, which every agent block below starts with as well, so
+// a person's own "*" rule for an agent cannot open what it closes.
+const kiloPermission = domovoiPermission(kiloDefaultAllows, kiloDefaultDenies)
+const kiloCode = { ...kiloPermission, question: "allow", suggest: "allow", plan_enter: "allow", task: builtInSubagents, todowrite: "allow" } as const
+
+// Kilo's plan and explore agents deny every tool they do not name before the
+// person's rules. Their blocks start with the catch-all, which asks, then
+// restate what each allows and deny every other built-in tool by name, so
+// only a tool that is not Kilo's own moves, from deny to ask.
+const deniedBuiltIns = (allowed: ReadonlySet<string>) => permissionActions(
+  [...kiloBuiltInPermissions].filter((name) => !allowed.has(name)),
+  "deny",
+)
+const kiloPlanAllows: ReadonlySet<string> = new Set([
+  "glob", "grep", "list", "question", "plan_exit", "suggest", "skill", "websearch", "semantic_search", "board_read", "board_post", "open_plan",
+])
 const kiloExploreAllows: ReadonlySet<string> = new Set(["glob", "grep", "list", "skill", "websearch", "semantic_search", "board_read", "board_post"])
-const kiloExploreDenies = [
-  ...kiloDefaultAllows.filter((name) => !kiloExploreAllows.has(name)),
-  "recall",
-  "kilo_memory_recall",
-  "kilo_memory_save",
-]
 
 export const domovoiKiloConfig: Config = {
   autoupdate: false,
-  permission: domovoiPermission(kiloDefaultAllows, kiloDefaultDenies),
+  permission: kiloPermission,
   agent: ({
     "domovoi-ask": domovoiAskAgent,
     plan: {
       permission: {
-        question: "allow",
-        plan_exit: "allow",
-        suggest: "allow",
-        task: { "*": "allow", general: "deny" },
-        todowrite: "deny",
+        "*": "ask",
+        ...deniedBuiltIns(new Set([...kiloPlanAllows, ...Object.keys(domovoiPlanLimits)])),
+        read: defaultReads,
+        ...permissionActions([...kiloPlanAllows], "allow"),
+        task: planSubagents,
         ...domovoiPlanLimits,
       },
     },
-    build: {
-      permission: { question: "allow", suggest: "allow", plan_enter: "allow", task: "allow", todowrite: "allow", ...askBeforeEdits },
-    },
+    // Kilo reads a "build" block as its code agent's, and of two blocks for
+    // one agent the later replaces the earlier, so both names carry the block
+    // and a person's own block under either name cannot replace it.
+    build: { permission: kiloCode },
+    code: { permission: kiloCode },
     "domovoi-auto": {
       mode: "primary",
       description: "Domovoi automatic build mode",
-      permission: { task: "allow", todowrite: "allow", ...askBeforeEdits },
+      permission: { ...kiloPermission, task: builtInSubagents, todowrite: "allow" },
     },
-    general: { permission: { todowrite: "deny" } },
-    explore: { permission: { read: "allow", ...permissionActions(kiloExploreDenies, "deny") } },
+    general: { permission: { ...kiloPermission, todowrite: "deny" } },
+    explore: {
+      permission: {
+        "*": "ask",
+        ...deniedBuiltIns(new Set([...kiloExploreAllows, ...Object.keys(askBeforeEdits)])),
+        read: "allow",
+        ...permissionActions([...kiloExploreAllows], "allow"),
+        ...askBeforeEdits,
+      },
+    },
   } satisfies EmbeddedAgents) as NonNullable<Config["agent"]>,
 }
 
