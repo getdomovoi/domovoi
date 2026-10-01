@@ -11,6 +11,10 @@ const taskStateScript = "[Console]::Out.WriteLine('domovoi-task:' + [int]$task.S
 export type WindowsTaskRemovalPlan = {
   kind: "task"
   name: string
+  // Disables without stopping: a supervised task's loop is stopped through
+  // its own stop request first, since Task Scheduler's stop ends the loop's
+  // process and not the daemon it started (install.ts).
+  disable?: ServiceCommand
   stop: ServiceCommand
   inspect: ServiceCommand
   remove: ServiceCommand
@@ -70,6 +74,9 @@ export function windowsTaskRemovalPlan(name: string): WindowsTaskRemovalPlan {
   const executable = windowsPowerShellPath()
   return {
     kind: "task", name,
+    disable: taskCommand(executable, name, `
+$task.Enabled = $false
+[Console]::Out.WriteLine('domovoi-task:' + [int]$task.State)`),
     // Disabling first also prevents queued/logon starts between stop and delete.
     // Stop can race normal exit; only SCHED_E_TASK_NOT_RUNNING is benign, and
     // even that must be followed by the same stopped-state proof.
@@ -105,6 +112,17 @@ export async function readWindowsTaskState(name: string, effects: Pick<ServiceEf
   // https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-state
   if (state === "missing" || state === "1" || state === "2" || state === "3" || state === "4") return state
   throw new Error(`Task Scheduler did not report a known task state (state ${state})`)
+}
+
+// Disables the task without stopping it, so no logon or queued start begins
+// while its supervisor loop is stopped. Missing means there is nothing to
+// disable; any other answer but a known state refuses.
+export async function disableWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<"disabled" | "missing"> {
+  if (plan.disable === undefined) throw new Error("This task plan has no disable step")
+  const state = await taskResult(plan.disable, effects, deadline)
+  if (state === "missing") return "missing"
+  if (state === "deleted" || state === "0") throw new Error(`Task Scheduler did not confirm a disabled task (state ${state})`)
+  return "disabled"
 }
 
 // Stops the task and waits until Task Scheduler reports it disabled and

@@ -322,7 +322,98 @@ it.runIf(process.platform === "linux")("runs a real child and records its clean 
   expect(guestProcessAlive(record.attempts[0]!.child!)).toBe(false)
 })
 
-it.runIf(process.platform === "linux")("refuses a retired registration before another child can launch", async () => {
+// Decided 2026-09-17 (SHIP-PLAN S1.1): the same loop supervises the daemon
+// under the Windows logon task. These run the real loop and real children on
+// the Linux and Windows CI legs.
+const supervisedHost = process.platform === "linux" || process.platform === "win32"
+// Windows reads each creation time through PowerShell, which takes seconds on
+// a CI runner.
+const realBudget = process.platform === "win32" ? 60_000 : 15_000
+
+async function untilRecord(home: string, deadline: OperationDeadline, ready: (record: SupervisorRecord) => boolean): Promise<SupervisorRecord> {
+  for (;;) {
+    deadline.throwIfExpired()
+    const record = readSupervisorRecord(home)
+    if (record && ready(record)) return record
+    await delay(25)
+  }
+}
+
+// A child that runs until the test drops a file, then exits with its code.
+function signalledChild(home: string): { executable: string; args: string[] } {
+  const script = `const fs = require("fs"); const path = require("path"); const dir = ${JSON.stringify(home)};
+setInterval(() => { for (const [name, code] of [["crash", 3], ["clean", 0]]) { const file = path.join(dir, name);
+if (fs.existsSync(file)) { fs.rmSync(file); process.exit(code) } } }, 25)`
+  return { executable: process.execPath, args: ["-e", script] }
+}
+
+it.runIf(supervisedHost)("restarts a real crashed child after its backoff and stops at a clean exit", async () => {
+  const f = fixture()
+  const deadline = OperationDeadline.start(realBudget)
+  try {
+    const running = runGuestSupervisor(f.path, signalledChild(f.home))
+    void running.catch(() => {})
+    await untilRecord(f.home, deadline, (record) => record.state === "running" && record.attemptCount === 1)
+    writeFileSync(join(f.home, "crash"), "")
+    await untilRecord(f.home, deadline, (record) => record.state === "running" && record.attemptCount === 2)
+    writeFileSync(join(f.home, "clean"), "")
+    const record = await running
+    expect(record).toMatchObject({ state: "stopped", attemptCount: 2, crashes: 1, reason: { kind: "clean-exit" } })
+    expect(record.attempts[0]).toMatchObject({ exit: { kind: "crash", code: 3 }, backoffMs: 1000, backoffOutcome: "completed" })
+    expect(record.attempts[1]!.exit).toMatchObject({ kind: "clean", code: 0 })
+    for (const attempt of record.attempts) expect(guestProcessAlive(attempt.child!)).toBe(false)
+  } finally {
+    deadline.clear()
+    // A failed assertion must not leave a child polling: a clean exit ends
+    // the child and the loop, without a stop that would run taskkill.exe.
+    writeFileSync(join(f.home, "clean"), "")
+  }
+}, realBudget + 5_000)
+
+// An update re-registers the same registration, so its stop must not retire
+// it; removal's must.
+it.each([
+  { options: undefined, retired: true },
+  { options: { retire: false }, retired: false },
+])("a proven stop with $options leaves the registration retired: $retired", async ({ options, retired }) => {
+  const f = fixture()
+  writeSupervisorRecord(f.home, { ...f.record, state: "stopped", reason: { kind: "deliberate-stop", at: f.record.updatedAt } })
+  const deadline = OperationDeadline.start(1000)
+  try {
+    await stopGuestSupervisor(f.path, deadline, { alive: () => false, wait: async () => {} }, options)
+    expect(readSupervisorStopRequest(f.home) !== undefined).toBe(retired)
+  } finally { deadline.clear() }
+})
+
+it.each([
+  { state: "running", alive: true, supervising: true },
+  { state: "backoff", alive: true, supervising: true },
+  { state: "backoff", alive: false, supervising: false },
+  { state: "stopped", alive: true, supervising: false },
+] as const)("says whether a loop still supervises: $state, loop alive $alive", ({ state, alive, supervising }) => {
+  const f = fixture()
+  if (state === "running") {
+    f.record.state = "running"; f.record.crashes = 0
+    f.record.attempts[0]!.exit = null; f.record.attempts[0]!.backoffMs = 0
+  } else if (state === "stopped") {
+    f.record.state = "stopped"; f.record.reason = { kind: "deliberate-stop", at: f.record.updatedAt }
+  }
+  writeSupervisorRecord(f.home, f.record)
+  expect(readGuestSupervisorStatus(f.home, () => alive)).toMatchObject({ supervising })
+})
+
+it("words a Windows record for the daemon itself, not a guest", () => {
+  const f = fixture()
+  f.record.state = "running"; f.record.crashes = 0
+  f.record.attempts[0]!.exit = null; f.record.attempts[0]!.backoffMs = 0
+  writeSupervisorRecord(f.home, f.record)
+  expect(readGuestSupervisorStatus(f.home, () => true, guestBootId, "win32")?.detail).toBe("daemon running; attempt 1; 0 crashes")
+  rmSync(f.path)
+  expect(readGuestSupervisorStatus(f.home, () => true, guestBootId, "win32")?.detail)
+    .toBe("service configuration missing; supervisor evidence is not bound to an installed service; daemon running; attempt 1; 0 crashes")
+})
+
+it.runIf(supervisedHost)("refuses a retired registration before another child can launch", async () => {
   const f = fixture()
   writeSupervisorStopRequest(f.home, f.record)
   await expect(runGuestSupervisor(f.path, { executable: process.execPath, args: ["-e", "process.exit(0)"] }))
@@ -330,7 +421,7 @@ it.runIf(process.platform === "linux")("refuses a retired registration before an
   expect(readSupervisorRecord(f.home)).toBeUndefined()
 })
 
-it.runIf(process.platform === "linux")("refuses a recorded live child even when its loop is dead", async () => {
+it.runIf(supervisedHost)("refuses a recorded live child even when its loop is dead", async () => {
   const f = fixture()
   f.record.attempts[0]!.child = guestProcessIdentity(process.pid)
   writeSupervisorRecord(f.home, f.record)
@@ -339,7 +430,7 @@ it.runIf(process.platform === "linux")("refuses a recorded live child even when 
   expect(readSupervisorRecord(f.home)?.supervisorId).toBe(f.record.supervisorId)
 })
 
-it.runIf(process.platform === "linux")("refuses another loop after an unobservable launch", async () => {
+it.runIf(supervisedHost)("refuses another loop after an unobservable launch", async () => {
   const f = fixture()
   f.record.state = "starting"; f.record.crashes = 0
   f.record.loop.bootId = guestBootId()
@@ -363,6 +454,7 @@ it.runIf(process.platform === "linux")("starts a fresh loop after an unfinished 
   expect(record.loop.bootId).toBe(guestBootId())
 })
 
+// Linux only: on Windows the loop's stop runs taskkill.exe, which no test runs.
 it.runIf(process.platform === "linux")("a corrupt stop request stops the real child and refuses further supervision", async () => {
   const f = fixture()
   const running = runGuestSupervisor(f.path, { executable: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"] })
@@ -386,4 +478,4 @@ it.runIf(process.platform === "linux")("a corrupt stop request stops the real ch
     if (record) writeSupervisorStopRequest(f.home, record)
     await completed
   }
-})
+}, realBudget + 5_000)

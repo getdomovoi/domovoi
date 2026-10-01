@@ -30,18 +30,23 @@ childProcess.execFile = (command, args, options, callback) => {
   // Lingering (service/linger.ts) is off until this log records an
   // enable-linger with no later disable-linger. The account's own is never read.
   let lingering = false
+  // The command the last /create registered, read back as Task Scheduler
+  // reports an action: the quoted program, then its arguments.
+  let created
   for (const line of readFileSync(process.env.DOMOVOI_TEST_MANAGER_LOG, "utf8").split("\n").filter(Boolean)) {
     const entry = JSON.parse(line)
     if ((entry.command === "schtasks" && entry.args[0] === "/create") || (entry.command === "launchctl" && entry.args[0] === "bootstrap")) registered = true
+    if (entry.command === "schtasks" && entry.args[0] === "/create") created = entry.args[entry.args.indexOf("/tr") + 1]
     if (decode(entry).includes("$folder.DeleteTask(") || (entry.command === "launchctl" && entry.args[0] === "bootout")) registered = false
     if (entry.command === "loginctl" && entry.args[0] === "enable-linger") lingering = true
     if (entry.command === "loginctl" && entry.args[0] === "disable-linger") lingering = false
   }
-  const action = {
-    path: `"${process.execPath}"`,
-    arguments: `"${process.argv[1]}" --service-config "${path.win32.join(home, ".domovoi", "service.json")}"`,
-    enabled: true, state: 1,
-  }
+  const [program, ...rest] = (created ?? "").split("\" ")
+  const action = created === undefined
+    ? { path: `"${process.execPath}"`, arguments: `"${process.argv[1]}" --service-config "${path.win32.join(home, ".domovoi", "service.json")}"` }
+    : { path: `${program}"`, arguments: rest.join("\" ") }
+  action.enabled = true
+  action.state = 1
   const printed = command === "launchctl" && args[0] === "print"
   const output = powershell
     ? !registered && !script.includes("$folder.DeleteTask(")

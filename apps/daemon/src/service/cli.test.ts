@@ -99,7 +99,9 @@ describe("distributed service CLI", () => {
           : join(home, ".config", "systemd", "user", "domovoid.service"), "utf8"))
       expect(launch).toContain(cliPath)
       expect(launch).toContain(process.execPath)
-      expect(launch).toContain("--service-config")
+      // The Windows task runs the supervisor loop (SHIP-PLAN S1.1), which
+      // starts the daemon with --service-config.
+      expect(launch).toContain(process.platform === "win32" ? "--service-supervise" : "--service-config")
       expect(launch).toContain(configPath)
       // Decided 2026-09-17 (SHIP-PLAN S1.1): the Linux install turned the
       // shim's lingering on and recorded it. The shim answers loginctl.

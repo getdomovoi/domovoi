@@ -18,7 +18,7 @@ import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
 import { launchdPlist, launchdPlistProgram, systemdUnit, systemdUnitProgram } from "./units.js"
 import { isRecordedServiceProgram } from "./restore-target.js"
-import { readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
+import { disableWindowsTask, readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
 import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, within, type InFlight, type ServiceSwap } from "./update-outcome.js"
 import { readLocalOwnerRecord, type LocalOwnerRecord } from "../local-owner-record.js"
 import { readGuestSupervisorStatus } from "./supervisor-command.js"
@@ -62,7 +62,9 @@ export type CapturedRun = { code: number; stdout: string; stderr?: string }
 
 export type ServiceEffects = {
   readConfiguration?: (home: string, platform: string) => ServiceConfiguration | undefined
-  stopSupervisor?: (path: string, deadline: OperationDeadline) => Promise<unknown>
+  // Stops the supervisor loop for this service.json and proves it and its
+  // children dead. retire: false keeps the registration startable (an update).
+  stopSupervisor?: (path: string, deadline: OperationDeadline, options?: { retire?: boolean }) => Promise<unknown>
   claimServiceOperation: () => ReturnType<typeof claimServiceOperation>
   claimProfile: (homeDirectory: ProfileLocation) => ProfileLease
   registeredProfile?: (home: string, platform: string) => ProfileLocation | undefined
@@ -87,6 +89,8 @@ export type ServiceStatus = {
   running: boolean
   detail: string
   supervisionFailure?: "exhausted" | "observation-failure" | "configuration-missing"
+  // A supervisor loop is alive and has not stopped, so it may launch again.
+  supervising?: boolean
 }
 
 // A quote or a control character would let a value break out of the file or
@@ -328,7 +332,11 @@ export function servicePlan({
       if (path?.includes("%")) throw new WindowsTaskPercentSignError(path)
       if (path?.includes("$(")) throw new WindowsTaskArgumentVariableError(path)
     }
-    const taskCommand = `${windowsTaskCommand(execPath, runtime)} --service-config "${assertExecutable(configurationFile.path, "the service configuration")}"`
+    // Decided 2026-09-17 (SHIP-PLAN S1.1): the task runs the supervisor loop
+    // the WSL guest runs (supervisor-command.ts). The loop starts the daemon
+    // with --service-config and restarts it after a crash, with backoff and a
+    // recorded exhaustion, instead of leaving it down until the next logon.
+    const taskCommand = `${windowsTaskCommand(execPath, runtime)} ${supervisedTaskFlag} "${assertExecutable(configurationFile.path, "the service configuration")}"`
     for (const path of [runtime, execPath, configurationFile.path]) {
       if (path !== undefined && !plainWindowsPath(path)) throw new WindowsTaskPathError(path)
     }
@@ -488,7 +496,7 @@ export class DaemonServiceHandoffError extends Error {
   }
 }
 
-type InstallEffects = Pick<ServiceEffects, "write" | "read" | "run" | "capture" | "exists" | "claimProfile" | "remove" | "registeredProfile" | "readOwner" | "readConfiguration">
+type InstallEffects = Pick<ServiceEffects, "write" | "read" | "run" | "capture" | "exists" | "claimProfile" | "remove" | "registeredProfile" | "readOwner" | "readConfiguration" | "supervisorStatus">
 
 // Security review round 3 (#574): what the service files held before this
 // install, so a manager that refuses the new definition leaves the record
@@ -708,9 +716,19 @@ async function installWithDeadline(
   // Security review round 3 (#574): schtasks /create /f replaces a task of
   // the same name, so a task Domovoi did not register refuses the install, by
   // the same check status and removal use, before anything changes.
-  if (target.platform === "win32" && !target.configuration.wsl
-    && await windowsTaskOwner(assertHome(target.home), effects, deadline) === "other") {
-    throw new WindowsTaskNotDomovoiError(displayName)
+  if (target.platform === "win32" && !target.configuration.wsl) {
+    const home = assertHome(target.home)
+    const owner = await windowsTaskOwner(home, effects, deadline)
+    if (owner === "other") throw new WindowsTaskNotDomovoiError(displayName)
+    // A live loop keeps starting the daemon with whatever service.json says,
+    // while the new task's own loop could not take its lease. Its stop belongs
+    // to removal, which proves it; a loop that has stopped is replaced.
+    if (owner === "supervised") {
+      const supervisorStatus = effects.supervisorStatus
+      if (!supervisorStatus) throw new Error("Windows supervisor status is unavailable")
+      const supervisor = await withinServiceDeadline(deadline, async () => supervisorStatus(home))
+      if (supervisor?.supervising === true) throw new WindowsTaskSupervisingError(displayName)
+    }
   }
   const commands = [...await launchdCommandsBeforeInstall(target, plan, effects, deadline), ...plan.commands]
   const previousFiles = await readPreviousFiles(plan, effects, deadline)
@@ -848,30 +866,72 @@ function plainWindowsPath(path: string | undefined): boolean {
 
 const legacyDaemonEntry = /\\(?:@getdomovoi|apps)\\daemon\\dist\\index\.js$/i
 
-export function isDomovoiTaskAction(action: Pick<WindowsTaskAction, "path" | "arguments">, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): boolean {
+// The flag a logon task's action passes before service.json: the supervisor
+// loop since 2026-10-01 (SHIP-PLAN S1.1), the daemon itself before. A task an
+// earlier install registered stays recognised, removable and updatable.
+const supervisedTaskFlag = "--service-supervise"
+type TaskFlag = typeof supervisedTaskFlag | "--service-config"
+
+function taskActionParts(action: Pick<WindowsTaskAction, "path" | "arguments">): { program: string; entry: string; flag: TaskFlag; saved: string } | undefined {
   // Task Scheduler may report the program with the quotes schtasks was given.
   const program = /^"([^"]*)"$/.exec(action.path)?.[1] ?? action.path
-  const quoted = /^"([^"]*)" --service-config "([^"]*)"$/.exec(action.arguments)
-  if (!quoted) return false
-  const [, entry = "", saved = ""] = quoted
+  const quoted = /^"([^"]*)" (--service-config|--service-supervise) "([^"]*)"$/.exec(action.arguments)
+  if (!quoted) return undefined
+  const [, entry = "", flag, saved = ""] = quoted
+  return { program, entry, flag: flag as TaskFlag, saved }
+}
+
+export function isDomovoiTaskAction(action: Pick<WindowsTaskAction, "path" | "arguments">, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): boolean {
+  const parts = taskActionParts(action)
+  if (!parts) return false
+  const { program, entry, saved } = parts
   if (saved !== configurationPath || !plainWindowsPath(program) || !plainWindowsPath(entry)) return false
   if (recorded) return program === recorded.executable && entry === recorded.entry
   return win32.basename(program).toLowerCase() === "node.exe" && legacyDaemonEntry.test(entry)
 }
 
+// "supervised": Domovoi's task runs the supervisor loop. Its daemon is the
+// loop's child, which Task Scheduler's stop does not end.
 async function windowsTaskOwner(
   home: string,
   effects: Pick<ServiceEffects, "capture" | "readConfiguration">,
   deadline: OperationDeadline,
-): Promise<"missing" | "domovoi" | "other"> {
+): Promise<"missing" | "domovoi" | "supervised" | "other"> {
   const action = await readWindowsTaskAction(displayName, effects, deadline)
   if (action === "missing") return "missing"
   if (!effects.readConfiguration) throw new Error("checking who registered the Windows task needs the saved service configuration")
   const saved = effects.readConfiguration(home, "win32")
-  return saved !== undefined && isDomovoiTaskAction(action, serviceConfigurationPath(home, "win32"), saved.serviceRuntime) ? "domovoi" : "other"
+  if (saved === undefined || !isDomovoiTaskAction(action, serviceConfigurationPath(home, "win32"), saved.serviceRuntime)) return "other"
+  return taskActionParts(action)?.flag === supervisedTaskFlag ? "supervised" : "domovoi"
 }
 
-export type ServiceUpdateEffects = Pick<ServiceEffects, "write" | "read" | "run" | "capture" | "exists" | "claimProfile" | "claimServiceOperation" | "readOwner">
+// Text proposed 2026-10-01, not yet ruled.
+export class WindowsTaskSupervisingError extends Error {
+  constructor(readonly taskName: string) {
+    super(`The Windows task "${taskName}" still runs Domovoi's crash supervisor. Run domovoid service remove, then install again. Nothing was stopped or changed.`)
+    this.name = "WindowsTaskSupervisingError"
+  }
+}
+
+// The supervised task's loop, stopped through its own stop request and
+// proved stopped with its daemon before Task Scheduler stops or deletes the
+// task: Task Scheduler's stop ends the loop's process, not the daemon it
+// started. A loop that never recorded a start has no daemon to stop.
+// retire: false for an update, which registers the same registration again.
+async function stopSupervisedTask(
+  home: string,
+  effects: Pick<ServiceEffects, "supervisorStatus" | "stopSupervisor">,
+  deadline: OperationDeadline,
+  options: { retire: boolean },
+): Promise<void> {
+  const { supervisorStatus, stopSupervisor } = effects
+  if (!supervisorStatus || !stopSupervisor) throw new Error("Windows supervisor shutdown proof is unavailable")
+  if (await withinServiceDeadline(deadline, async () => supervisorStatus(home)) === undefined) return
+  const path = serviceConfigurationPath(home, "win32")
+  await withinServiceDeadline(deadline, () => options.retire ? stopSupervisor(path, deadline) : stopSupervisor(path, deadline, { retire: false }))
+}
+
+export type ServiceUpdateEffects = Pick<ServiceEffects, "write" | "read" | "run" | "capture" | "exists" | "claimProfile" | "claimServiceOperation" | "readOwner" | "supervisorStatus" | "stopSupervisor">
 
 export type ServiceUpdateWaits = {
   // How long a stopped service's daemon has to let the profile go.
@@ -888,13 +948,14 @@ export type ServiceUpdateWaits = {
 // never registered again (security review rounds 2 and 3). Task Scheduler may
 // report the program with the quotes schtasks was given, so one pair is
 // dropped.
+// The flag is kept as read, so a restore registers a task from before the
+// supervisor as it was.
 function domovoiTaskCommand(action: WindowsTaskAction, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): string | undefined {
-  const execPath = /^"([^"]*)"$/.exec(action.path)?.[1] ?? action.path
-  const quoted = /^"([^"]*)" --service-config "([^"]*)"$/.exec(action.arguments)
-  if (!quoted) return undefined
-  const [, entry = "", saved = ""] = quoted
-  const program = { execPath, args: [entry, "--service-config", saved] }
-  if (!isRecordedServiceProgram(program, { paths: "win32", flag: "--service-config", configurationPath }, recorded)) return undefined
+  const parts = taskActionParts(action)
+  if (!parts) return undefined
+  const { program: execPath, entry, flag, saved } = parts
+  const program = { execPath, args: [entry, flag, saved] }
+  if (!isRecordedServiceProgram(program, { paths: "win32", flag, configurationPath }, recorded)) return undefined
   // Security review round 5: a failed step registers this command again, so
   // it must pass the refusals an install applies to a new one. A recorded
   // path with %, $( or a form Windows would not report refuses the update
@@ -904,7 +965,7 @@ function domovoiTaskCommand(action: WindowsTaskAction, configurationPath: string
   } catch (cause) {
     throw new DaemonServiceUpdateError("nothing-changed", cause)
   }
-  return `"${execPath}" "${entry}" --service-config "${configurationPath}"`
+  return `"${execPath}" "${entry}" ${flag} "${configurationPath}"`
 }
 
 // The install's refusals for one Windows task path (security review rounds
@@ -1108,12 +1169,30 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
       ...command,
       args: command.args.map((arg, index) => command.args[index - 1] === "/tr" ? previousCommand : arg),
     })
+    // Decided 2026-09-17 (SHIP-PLAN S1.1): the new task runs the supervisor
+    // loop, and so may the previous one. A supervised task is disabled and its
+    // loop stops the daemon, proved, before Task Scheduler stops the task,
+    // whose stop ends the loop's process and not the daemon. The registration
+    // is not retired: the update registers it again.
+    if (!effects.supervisorStatus || !effects.stopSupervisor) {
+      throw new DaemonServiceUpdateError("nothing-changed", new Error("Windows supervisor shutdown proof is unavailable"))
+    }
+    const home = assertHome(target.home)
+    const stopTask = async (deadline: OperationDeadline, supervised: boolean) => {
+      const removal = windowsTaskRemovalPlan(displayName)
+      if (supervised) {
+        await disableWindowsTask(removal, effects, deadline)
+        await stopSupervisedTask(home, effects, deadline, { retire: false })
+      }
+      await stopWindowsTask(removal, effects, deadline)
+    }
+    const supervisedBefore = taskActionParts(previous)?.flag === supervisedTaskFlag
     const stoppedInstance = currentInstance(readOwner, profile)
     let wroteNew = false
     return {
       swap: async (deadline) => {
         try {
-          await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
+          await stopTask(deadline, supervisedBefore)
         } catch (cause) {
           // A refused stop may have changed nothing: the task still enabled,
           // running the command it ran before. Then the service was left as
@@ -1138,8 +1217,9 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
       restore: async (deadline) => {
         // Whatever instance the swap left running is stopped first: Task
         // Scheduler ignores a run while one runs, and a late start of the new
-        // runtime must not pass for the previous service.
-        await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
+        // runtime must not pass for the previous service. The swap registers
+        // a supervised task, so its loop is stopped as one.
+        await stopTask(deadline, true)
         if (wroteNew) await writeIn(deadline)(plan.configuration.path, previousConfiguration)
         await startIn(deadline)(restoreCommands)
       },
@@ -1149,7 +1229,7 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
 
 // A service that was never installed is not an error to remove: the end state
 // the caller asked for is the one they get either way.
-type RemovalEffects = Pick<ServiceEffects, "run" | "capture" | "remove" | "exists" | "claimProfile" | "removalSnapshot" | "writeRemovalReceipt" | "claimServiceOperation" | "readConfiguration">
+type RemovalEffects = Pick<ServiceEffects, "run" | "capture" | "remove" | "exists" | "claimProfile" | "removalSnapshot" | "writeRemovalReceipt" | "claimServiceOperation" | "readConfiguration" | "supervisorStatus" | "stopSupervisor">
 type ServiceRemovalResult = ServiceRemovalPlan & {
   profileRecovery: "recorded" | "operator-confirmation-required" | "proof-unavailable" | "not-needed"
   profileRecoveryDetail?: string
@@ -1174,8 +1254,10 @@ async function removeWithDeadline(
   deadline.throwIfExpired()
   // Read before anything is stopped, so a task Domovoi did not register is
   // left running and registered.
-  if (plan.kind === "task" && await windowsTaskOwner(home, effects, deadline) === "other") {
-    throw new WindowsTaskNotDomovoiError(displayName)
+  const owner = plan.kind === "task" ? await windowsTaskOwner(home, effects, deadline) : undefined
+  if (owner === "other") throw new WindowsTaskNotDomovoiError(displayName)
+  if (owner === "supervised" && (!effects.supervisorStatus || !effects.stopSupervisor)) {
+    throw new Error("Windows supervisor shutdown proof is unavailable")
   }
   // Decided 2026-09-17 (SHIP-PLAN S1.1): read before anything changes. Only a
   // record that Domovoi turned lingering on turns it off; a configuration that
@@ -1211,6 +1293,18 @@ async function removeWithDeadline(
   let managerStopped = true
   if (plan.kind === "task") {
     progress.managerHoldsDeadline = true
+    // Decided 2026-09-17 (SHIP-PLAN S1.1): a supervised task is disabled, so no
+    // start begins, and its loop stops the daemon and is proved dead with it
+    // (and retired), before Task Scheduler stops and deletes the task. The
+    // loop is stopped even if the task disappeared meanwhile.
+    if (owner === "supervised") {
+      try {
+        await disableWindowsTask(plan, effects, deadline)
+        await stopSupervisedTask(home, effects, deadline, { retire: true })
+      } catch (cause) {
+        throw new WindowsTaskRemovalError(plan.name, cause, { stopIssued: true })
+      }
+    }
     managerStopped = await removeWindowsTask(plan, effects, deadline) === "removed"
     progress.managerHoldsDeadline = false
   }
@@ -1350,19 +1444,30 @@ async function statusWithDeadline(
   }
 
   if (target.platform === "win32") {
-    if (await windowsTaskOwner(assertHome(target.home), effects, deadline) === "other") {
+    const home = assertHome(target.home)
+    const owner = await windowsTaskOwner(home, effects, deadline)
+    if (owner === "other") {
       // Text ruled 2026-09-25.
       return { installed: false, running: false, detail: `a task named ${displayName} exists, but Domovoi did not register it` }
     }
     const state = await readWindowsTaskState(displayName, effects, deadline)
     const installed = state !== "missing"
-    const running = state === "4"
+    const taskRunning = state === "4"
+    const task = installed
+      ? `${displayName} is ${taskRunning ? "running" : "registered but not running"}`
+      : `no logon task named ${displayName}`
+    if (owner !== "supervised") return { installed, running: taskRunning, detail: task }
+    // A running task is the supervisor loop; only its record says whether the
+    // daemon it starts runs, crashed and waits, or exhausted its restarts.
+    const supervisorStatus = effects.supervisorStatus
+    if (!supervisorStatus) throw new Error("Windows supervisor status is unavailable")
+    const supervisor = await withinServiceDeadline(deadline, async () => supervisorStatus(home))
     return {
       installed,
-      running,
-      detail: installed
-        ? `${displayName} is ${running ? "running" : "registered but not running"}`
-        : `no logon task named ${displayName}`,
+      running: taskRunning && supervisor?.running === true,
+      detail: `${task}; ${supervisor?.detail ?? "the supervisor has not recorded a start yet"}`,
+      ...(supervisor?.supervisionFailure === undefined ? {} : { supervisionFailure: supervisor.supervisionFailure }),
+      ...(supervisor?.supervising === undefined ? {} : { supervising: supervisor.supervising }),
     }
   }
 
@@ -1472,7 +1577,8 @@ export async function runServiceCommand(
     const installed = status.installed ? "installed" : "not installed"
     const running = status.running ? "running" : "not running"
     dependencies.stdout(`${installed}, ${running}: ${status.detail}\n`)
-    return status.installed ? 0 : 1
+    // Exhausted or refused supervision is a failure even with the task there.
+    return status.installed && status.supervisionFailure === undefined ? 0 : 1
   } catch (error) {
     dependencies.stderr(`${error instanceof Error ? error.message : String(error)}\n`)
     return 1
@@ -1485,7 +1591,7 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
       try { return parseServiceConfiguration(readLocalProfileFile(serviceConfigurationPath(home, platform), 64 * 1024)) }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error }
     },
-    stopSupervisor: stopGuestSupervisor,
+    stopSupervisor: (path, deadline, options) => stopGuestSupervisor(path, deadline, undefined, options),
     // Manager names are per OS user, not per caller-selected HOME or profile.
     // An alternate shell HOME must not create a second lock for the same job.
     // The override isolates tests from the operator's actual service lock.

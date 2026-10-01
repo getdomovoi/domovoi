@@ -135,7 +135,8 @@ describe("installDaemonService", () => {
     const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime\\daemon\\index.js" }
     expect(await installDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task", name: "Domovoi daemon" })
     const created = vi.mocked(effects.run).mock.calls.find(([, args]) => args[0] === "/create")![1]
-    expect(created[created.indexOf("/tr") + 1]).toMatch(/^"C:\\Program Files\\Domovoi\\runtime\\node\.exe" "C:\\Program Files\\Domovoi\\runtime\\daemon\\index\.js" --service-config /)
+    // Decided 2026-09-17 (SHIP-PLAN S1.1): the task runs the supervisor loop.
+    expect(created[created.indexOf("/tr") + 1]).toMatch(/^"C:\\Program Files\\Domovoi\\runtime\\node\.exe" "C:\\Program Files\\Domovoi\\runtime\\daemon\\index\.js" --service-supervise /)
   })
 })
 
@@ -223,8 +224,10 @@ describe("readDaemonServiceRuntimeVersion", () => {
       .resolves.toEqual({ installed: true, version: "0.10.0-rc.1" })
   })
 
-  it("names the staged runtime version a Windows logon task runs", async () => {
-    const xml = "<Task><Actions><Exec><Command>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab\\node\\node.exe\"</Command><Arguments>\"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab\\daemon\\dist\\index.js\" --service-config \"C:\\Users\\dana\\.domovoi\\service.json\"</Arguments></Exec></Actions></Task>"
+  // A task from before 2026-10-01 runs the daemon; one since runs the
+  // supervisor loop (SHIP-PLAN S1.1). Both name the staged runtime.
+  it.each(["--service-config", "--service-supervise"])("names the staged runtime version a Windows logon task runs with %s", async (flag) => {
+    const xml = `<Task><Actions><Exec><Command>"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab\\node\\node.exe"</Command><Arguments>"C:\\Users\\dana\\.domovoi\\runtime\\0.9.2\\0123456789ab\\daemon\\dist\\index.js" ${flag} "C:\\Users\\dana\\.domovoi\\service.json"</Arguments></Exec></Actions></Task>`
     const capture = vi.fn(async () => ({ code: 0, stdout: xml }))
     await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture, readConfiguration: saved("win32", "C:\\Users\\dana") }))
       .resolves.toEqual({ installed: true, version: "0.9.2" })
@@ -449,7 +452,7 @@ describe("security review round 1: the Windows task command", () => {
     const extensionless = { ...windowsRuntime, daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime\\daemon\\domovoid" }
     await installDaemonService({ runtime: extensionless }, effects)
     expect(createdTaskCommand(effects)).toBe(
-      `"${extensionless.nodePath}" "${extensionless.daemonEntryPath}" --service-config "${windowsConfigurationPath}"`,
+      `"${extensionless.nodePath}" "${extensionless.daemonEntryPath}" --service-supervise "${windowsConfigurationPath}"`,
     )
   })
 })
