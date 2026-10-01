@@ -9,6 +9,8 @@ export const sessionSnapshotTransferPolicy = {
   protocolVersion: "preserve",
   machine: "preserve",
   project: "preserve",
+  projects: "preserve",
+  projectCap: "preserve",
   sessions: "session-slice",
   activeSessionId: "preserve",
   approvals: "session-slice",

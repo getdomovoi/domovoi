@@ -234,6 +234,16 @@ test("names every notification the daemon sends", () => {
   assert.deepEqual([...sent].sort(), Object.keys(protocol.notificationMethods).sort())
 })
 
+// The daemon's RPC writer sends error data only of the kinds in its map, so
+// the record covers every kind in that map.
+test("records every kind of error data the daemon sends", () => {
+  const writer = readFileSync(join(root, "apps/daemon/src/response-message.ts"), "utf8")
+  const map = /const errorDataSchemas = \{([\s\S]*?)\} as const/.exec(writer)?.[1] ?? ""
+  const sent = [...map.matchAll(/:\s*(\w+Schema),/g)].map((match) => match[1])
+  assert.ok(sent.length > 0, "the daemon's error data map was not found")
+  assert.deepEqual([...sent].sort(), [...errorDataSchemas].sort())
+})
+
 test("keeps the current build within its release rule", async () => {
   const versions = readdirSync(join(root, wireReleasesPath))
     .map((name) => /^(\d+\.\d+\.\d+)\.json$/.exec(name)?.[1]).filter(Boolean)

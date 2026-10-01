@@ -14,6 +14,8 @@ describe("session snapshot slice", () => {
   it("classifies every workspace key as session-owned or deliberately preserved", () => {
     const everyOptionalKey = workspaceSnapshotSchema.parse({
       ...structuredClone(demoWorkspace),
+      projects: [demoWorkspace.project!],
+      projectCap: 1,
       queuedSends: [],
       historyTruncated: true,
     })
@@ -25,6 +27,8 @@ describe("session snapshot slice", () => {
       protocolVersion: "preserve",
       machine: "preserve",
       project: "preserve",
+      projects: "preserve",
+      projectCap: "preserve",
       sessions: "session-slice",
       activeSessionId: "preserve",
       approvals: "session-slice",
