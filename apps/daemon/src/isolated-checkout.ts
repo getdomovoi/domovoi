@@ -578,6 +578,15 @@ export async function openIsolatedGit(input: {
   }
 }
 
+// An index lock that was there before Domovoi went to write the index: its
+// owner is unknown, so neither the lock nor the index under it is touched.
+export class IndexLockHeldError extends Error {
+  constructor(readonly lock: string) {
+    super(`Git's index lock at ${lock} was already there, so Domovoi left the index as it was. Remove the lock once no Git command is running in this worktree`)
+    this.name = "IndexLockHeldError"
+  }
+}
+
 // Writes `bytes` over `path` the way Git writes an index: into `path`.lock,
 // created exclusively, synced, then renamed over the file (ruling Q276).
 // `proceed` runs once the lock is held, while no Git can write the file, and
@@ -648,10 +657,11 @@ export async function checkOutIsolated(input: {
     const attributeSource = version !== undefined && (version[0] > 2 || (version[0] === 2 && version[1] >= 40)) ? [`--attr-source=${commit}`] : []
     await isolated.run([...attributeSource, "read-tree", "--reset", "-u", commit])
     // The index names the files just written with their stat data, so the new
-    // worktree reads as clean without hashing, and filtering, them again.
-    const staged = `${isolated.worktreeIndex}.domovoi-${randomUUID()}`
-    await fs.copyFile(join(isolated.gitDirectory, "index"), staged)
-    await fs.rename(staged, isolated.worktreeIndex)
+    // worktree reads as clean without hashing, and filtering, them again. It
+    // is written as Git writes one, under the worktree's index.lock created
+    // exclusively; a lock already there refuses, the index as it was.
+    const published = await publishUnderIndexLock(isolated.worktreeIndex, () => fs.readFile(join(isolated.gitDirectory, "index")))
+    if (published === "locked") throw new IndexLockHeldError(`${isolated.worktreeIndex}.lock`)
   } finally {
     await isolated.dispose()
   }

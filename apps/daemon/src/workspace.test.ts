@@ -3397,6 +3397,31 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await readFile(join(workspace.path, "victim.txt"), "utf8")).toBe("base\n")
   })
 
+  // The new worktree's index is written as Git writes one, under its lock
+  // created exclusively (ruling Q276). A lock already there, whoever holds it,
+  // refuses the checkout with the index as it was; the worktree stays for
+  // recovery, since removing it would take the lock away from its owner.
+  it("refuses to write the new worktree's index past a lock already there, and names the lock", async () => {
+    const { repositoryPath, worktrees, branches } = await filteredRepository("domovoi-create-held-lock-")
+    const lock = join(repositoryPath, ".git", "worktrees", "session-held-lock", "index.lock")
+    let indexBefore: string | undefined
+    const service = new GitWorkspaceService(worktrees, {
+      afterNewWorktreeScan: async () => {
+        indexBefore = await readFile(lock.slice(0, -".lock".length), "base64").catch(() => undefined)
+        await writeFile(lock, "held")
+      },
+    })
+
+    const error = await service.createSessionWorkspace(repositoryPath, "session-held-lock").then(() => undefined, (failure: unknown) => failure)
+
+    expect(error).toMatchObject({ name: "NewWorktreeKeptError" })
+    expect((error as Error).message).toContain(`Git's index lock at ${lock} was already there`)
+    expect(await readFile(lock, "utf8")).toBe("held")
+    expect(await readFile(lock.slice(0, -".lock".length), "base64").catch(() => undefined)).toBe(indexBefore)
+    expect((await lstat(join(worktrees, "session-held-lock"))).isDirectory()).toBe(true)
+    expect(await branches()).toBe("domovoi/session-held-lock")
+  })
+
   // The install lines alone are exempt; what they would make git-lfs start is not.
   it("refuses a session whose exempt Git LFS lines would start a transfer agent the repository names", async () => {
     const { repositoryPath, worktrees, git, branches } = await filteredRepository("domovoi-create-lfs-agent-")

@@ -12,7 +12,9 @@ import {
 } from "./git-environment.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
-import { carriedRemoteUrl, checkOutIsolated, openIsolatedGit, publishUnderIndexLock, runGitProcess, type IsolatedGit } from "./isolated-checkout.js"
+import {
+  carriedRemoteUrl, checkOutIsolated, IndexLockHeldError, openIsolatedGit, publishUnderIndexLock, runGitProcess, type IsolatedGit,
+} from "./isolated-checkout.js"
 import {
   repositoryFilterGate,
   type RepositoryFilterGate,
@@ -496,10 +498,10 @@ function cleanupText(cleanup: NewWorktreeCleanup): string {
 // was added, with its branch, and the record of the session's creation is
 // kept for recovery.
 export class NewWorktreeKeptError extends Error {
-  constructor(cause: unknown) {
+  constructor(cause: unknown, why = "a process the stopped checkout started may still be running") {
     super(
       `${cause instanceof Error ? cause.message : "The checkout stopped"}. The new worktree was partly checked out and stays `
-      + "where it was added, with its branch, kept for recovery: a process the stopped checkout started may still be running.",
+      + `where it was added, with its branch, kept for recovery: ${why}.`,
       { cause },
     )
     this.name = "NewWorktreeKeptError"
@@ -1456,6 +1458,8 @@ export class GitWorkspaceService implements WorkspaceService {
       // something may still write to the worktree. It is not deleted under
       // such a writer: it stays, with its branch, for recovery.
       if (signal?.aborted === true || (error instanceof Error && error.name === "AbortError")) throw new NewWorktreeKeptError(error)
+      // Removing the worktree would take a lock whose owner is unknown with it.
+      if (error instanceof IndexLockHeldError) throw new NewWorktreeKeptError(error, "a Git command Domovoi cannot account for may hold its index lock")
       const cleanup = await discardNewWorktree(repositoryPath, path, madeBranch)
       if (error instanceof RepositoryFilterRefusedError) {
         throw new RepositoryGitFilterRefusedError(error.settings, cleanup, { reason: error.reason, projectId: error.projectId })
