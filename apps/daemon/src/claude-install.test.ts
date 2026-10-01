@@ -58,10 +58,12 @@ describe("resolveClaudeSdkExecutable elsewhere", () => {
 
 describe("claudeInstallProblem", () => {
   it("asks for the Claude Code version the SDK was built against, or newer", () => {
-    expect(claudeMinimumVersion).toBe("2.1.263")
+    expect(claudeMinimumVersion).toBe("2.1.281")
     expect(claudeInstallProblem({ command: "claude", version: "2.1.100", platform: "darwin" }))
-      .toBe("Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100.")
-    for (const version of ["2.1.263", "2.1.280", "2.2.0", "3.0.0", undefined]) {
+      .toBe("Update Claude Code to 2.1.281 or newer. The claude on this machine is 2.1.100.")
+    expect(claudeInstallProblem({ command: "claude", version: "2.1.280", platform: "darwin" }))
+      .toBe("Update Claude Code to 2.1.281 or newer. The claude on this machine is 2.1.280.")
+    for (const version of ["2.1.281", "2.1.290", "2.2.0", "3.0.0", undefined]) {
       expect(claudeInstallProblem({ command: "claude", version, platform: "darwin" }), String(version)).toBeUndefined()
     }
   })
@@ -70,14 +72,14 @@ describe("claudeInstallProblem", () => {
   // it. Only a resolved script (.cmd, .bat, .ps1, or a path with no extension)
   // is a shim.
   it("does not call a bare claude a shim on Windows", () => {
-    expect(claudeInstallProblem({ command: "claude", version: "2.1.280", platform: "win32" })).toBeUndefined()
-    expect(claudeInstallProblem({ command: "C:\\npm\\claude", version: "2.1.280", platform: "win32" })).toMatch(/script shim/)
+    expect(claudeInstallProblem({ command: "claude", version: "2.1.290", platform: "win32" })).toBeUndefined()
+    expect(claudeInstallProblem({ command: "C:\\npm\\claude", version: "2.1.290", platform: "win32" })).toMatch(/script shim/)
   })
 
   it("names a Windows shim the SDK cannot start", () => {
-    expect(claudeInstallProblem({ command: "C:\\npm\\claude.cmd", version: "2.1.280", platform: "win32" }))
+    expect(claudeInstallProblem({ command: "C:\\npm\\claude.cmd", version: "2.1.290", platform: "win32" }))
       .toMatch(/C:\\npm\\claude\.cmd .*native claude\.exe/)
-    expect(claudeInstallProblem({ command: "C:\\Claude\\claude.exe", version: "2.1.280", platform: "win32" })).toBeUndefined()
+    expect(claudeInstallProblem({ command: "C:\\Claude\\claude.exe", version: "2.1.290", platform: "win32" })).toBeUndefined()
   })
 })
 
