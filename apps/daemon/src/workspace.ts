@@ -1892,6 +1892,12 @@ export class GitWorkspaceService implements WorkspaceService {
       changedFiles = names.split("\0").filter(Boolean)
       if (changedFiles.length > 0) await commitIndex(worktreePath, isolated, index.head, `chore(domovoi): checkpoint ${label}`, signal)
     } catch (error) {
+      // A lock a killed command left may be another Git's now (ruling Q265):
+      // the index under it is not put back, and the error says so.
+      if (isolated.indexLocksLeft.length > 0) {
+        if (error instanceof Error) error.message = `${error.message} Domovoi did not put back the index it saved, since a Git it cannot account for may hold that lock.`
+        throw error
+      }
       // A deadline can land after the commit itself did. The index is then
       // the new HEAD's tree, and the old one would read as reverting it.
       const head = await currentHead(worktreePath).catch(() => undefined)
@@ -1957,8 +1963,16 @@ export class GitWorkspaceService implements WorkspaceService {
       }
       await git(worktreePath, ["update-ref", checkpointRef(commit), commit], signal)
       return { commit, changedFiles }
+    } catch (error) {
+      if (isolated.indexLocksLeft.includes(`${temporaryIndex}.lock`) && error instanceof Error) {
+        error.message = `${error.message} Domovoi left the temporary index ${temporaryIndex} in place with it.`
+      }
+      throw error
     } finally {
-      for (const path of [temporaryIndex, `${temporaryIndex}.lock`]) {
+      // A lock a killed command left may be another Git's now (ruling Q265):
+      // it and the index under it stay.
+      const locked = isolated.indexLocksLeft.includes(`${temporaryIndex}.lock`)
+      for (const path of locked ? [] : [temporaryIndex, `${temporaryIndex}.lock`]) {
         await unlink(path).catch((error: NodeJS.ErrnoException) => {
           if (error.code !== "ENOENT") throw error
         })

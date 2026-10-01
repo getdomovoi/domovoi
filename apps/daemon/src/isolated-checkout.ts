@@ -1,7 +1,7 @@
 import { execFile, spawn, type PromiseWithChild } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
-import { isAbsolute, join, resolve } from "node:path"
+import { isAbsolute, join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
 
 import { windowsTreeKill } from "./claude-process.js"
@@ -219,6 +219,9 @@ async function sweepStaleCheckouts(commonDirectory: string): Promise<void> {
     if (!info?.isDirectory()) continue
     const owner = await checkoutOwner(path)
     if (owner === undefined ? Date.now() - info.mtimeMs < staleCheckoutAgeMs : processAlive(owner)) continue
+    // One holding an index lock stays: a killed checkout leaves it so, and
+    // Domovoi cannot tell no other Git holds the lock (ruling Q265).
+    if (await fs.lstat(join(path, "index.lock")).then(() => true, () => false)) continue
     await fs.rm(path, { recursive: true, force: true }).catch(() => undefined)
   }
 }
@@ -342,6 +345,9 @@ export type IsolatedGit = {
   run(args: readonly string[], options?: IsolatedGitRun): Promise<string>
   // Runs Git, handing its output to onStdout as it arrives.
   stream(args: readonly string[], onStdout: (chunk: Buffer, stop: () => void) => void, options?: IsolatedGitRun): Promise<GitProcessResult>
+  // Index locks a killed command left, which Domovoi cannot tell are its own:
+  // nothing may rewrite the index under one or remove it (ruling Q265).
+  readonly indexLocksLeft: readonly string[]
   dispose(): Promise<void>
 }
 
@@ -470,6 +476,12 @@ export async function openIsolatedGit(input: {
     return next
   }
 
+  const indexLocksLeft: string[] = []
+  const insideGitDirectory = (path: string) => {
+    const inside = relative(gitDirectory, path)
+    return inside !== "" && !inside.startsWith("..") && !isAbsolute(inside)
+  }
+
   const launch = async (args: readonly string[], options: IsolatedGitRun, onStdout: (chunk: Buffer, stop: () => void) => void) => {
     input.beforeCommand?.()
     const commandSignal = options.signal === null ? undefined : options.signal ?? signal
@@ -481,12 +493,18 @@ export async function openIsolatedGit(input: {
     // have taken the path over in the meantime (ruling Q255). So once the
     // killed Git has been reaped, a lock that is there stays there, the
     // command fails, and the error names the lock for the person to remove.
+    // The lock is listed in indexLocksLeft, so the caller neither rewrites the
+    // index under it nor removes it (ruling Q265), and dispose keeps this
+    // directory when the lock is in it.
     const lock = `${options.index ?? (input.worktreeIndex ? index : join(gitDirectory, "index"))}.lock`
     let killed = false
     const beforeKill = () => { killed = true }
     const lockLeft = async (): Promise<string | undefined> => {
       const present = await fs.lstat(lock).then(() => true, () => false)
-      return present ? `Git's index lock at ${lock} remains after Domovoi stopped Git. Remove it once no Git command is running in this worktree.` : undefined
+      if (!present) return undefined
+      if (!indexLocksLeft.includes(lock)) indexLocksLeft.push(lock)
+      return `Git's index lock at ${lock} remains after Domovoi stopped Git. Remove it once no Git command is running in this worktree.`
+        + (insideGitDirectory(lock) ? ` Domovoi left the temporary Git directory ${gitDirectory} in place with it.` : "")
     }
     let result: GitProcessResult
     try {
@@ -532,7 +550,12 @@ export async function openIsolatedGit(input: {
       return Buffer.concat(chunks).toString("utf8")
     },
     stream: (args, onStdout, options = {}) => launch(args, options, onStdout),
-    dispose: () => fs.rm(gitDirectory, { recursive: true, force: true }),
+    indexLocksLeft,
+    // A directory holding a lock whose owner is unknown stays, lock and all.
+    dispose: async () => {
+      if (indexLocksLeft.some(insideGitDirectory)) return
+      await fs.rm(gitDirectory, { recursive: true, force: true })
+    },
   }
 }
 

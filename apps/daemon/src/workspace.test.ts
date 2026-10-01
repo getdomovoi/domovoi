@@ -1,7 +1,7 @@
 import { execFile, type ChildProcess } from "node:child_process"
 import { createServer } from "node:http"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -3160,6 +3160,25 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     await expect(lstat(dead)).rejects.toThrow()
   })
 
+  // A killed checkout leaves its directory with an index lock whose owner
+  // Domovoi cannot know (ruling Q265); a later sweep leaves it too.
+  it("keeps an old checkout directory that holds an index lock, whatever its owner", async () => {
+    const { repositoryPath, worktrees } = await filteredRepository("domovoi-create-sweep-locked-")
+    const locked = join(repositoryPath, ".git", "domovoi-checkout-00000000-0000-4000-8000-000000000005")
+    const exited = await new Promise<number>((resolvePid, reject) => {
+      const child = execFile(process.execPath, ["-e", ""])
+      child.once("error", reject)
+      child.once("exit", () => resolvePid(child.pid!))
+    })
+    await mkdir(join(locked, "objects"), { recursive: true })
+    await writeFile(join(locked, "domovoi-owner"), JSON.stringify({ pid: exited, startedAt: "2026-09-30T00:00:00.000Z" }))
+    await writeFile(join(locked, "index.lock"), "")
+
+    await new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, "session-sweep-locked")
+
+    expect((await lstat(join(locked, "index.lock"))).isFile()).toBe(true)
+  })
+
   it("runs no repository core.fsmonitor command while it checks a session out", async () => {
     const { repositoryPath, payload, worktrees, git, ran } = await filteredRepository("domovoi-create-fsmonitor-")
     await git("config", "core.fsmonitor", `sh ${payload}`)
@@ -3925,7 +3944,9 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     const trusted = service()
     const workspace = await trusted.createSessionWorkspace(repositoryPath, "session-hang-lock")
     await writeFile(join(workspace.path, "work.hang"), "agent work\n")
-    const lock = `${resolve(workspace.path, (await run("-C", workspace.path, "rev-parse", "--git-path", "index")).stdout.trim())}.lock`
+    const index = resolve(workspace.path, (await run("-C", workspace.path, "rev-parse", "--git-path", "index")).stdout.trim())
+    const lock = `${index}.lock`
+    const indexBefore = await lstat(index)
     const controller = new AbortController()
 
     const checkpoint = trusted.checkpoint(workspace.path, "hang", controller.signal)
@@ -3939,6 +3960,60 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect((error as Error).message).toContain(`Git's index lock at ${lock} remains`)
     expect((error as Error).message).toContain("Remove it once no Git command is running in this worktree")
     expect((await lstat(lock)).isFile()).toBe(true)
+    // Nor does the checkpoint put back the index it saved (ruling Q265): a Git
+    // that took the lock over may be writing it. Putting it back would
+    // publish a new file under the index's name.
+    expect((error as Error).message).toContain("did not put back the index it saved")
+    expect((await lstat(index)).ino).toBe(indexBefore.ino)
+  }, 30_000)
+
+  // A snapshot's temporary index is written under its own lock. After a
+  // kill that lock and the index stay, and the error names them.
+  it.skipIf(!processGroups)("leaves a killed snapshot's temporary index and its lock, and names them in the error", async () => {
+    const { repositoryPath, trust, service, waitForPids } = await hangingRepository("domovoi-trusted-hang-snapshot-", "process")
+    await trust()
+    const trusted = service()
+    const workspace = await trusted.createSessionWorkspace(repositoryPath, "session-hang-snapshot")
+    await writeFile(join(workspace.path, "work.hang"), "agent work\n")
+    const gitDirectory = resolve(workspace.path, (await run("-C", workspace.path, "rev-parse", "--git-dir")).stdout.trim())
+    const snapshotFiles = async () => (await readdir(gitDirectory)).filter((name) => name.startsWith("domovoi-snapshot-")).sort()
+    const controller = new AbortController()
+
+    const snapshot = trusted.snapshot(workspace.path, "hang", controller.signal)
+    const outcome = snapshot.then(() => undefined, (error: unknown) => error)
+    expect(await waitForPids()).toHaveLength(2)
+    controller.abort(new Error("Snapshot timed out"))
+
+    const error = await outcome
+    const left = await snapshotFiles()
+    expect(left).toHaveLength(2)
+    const lock = join(gitDirectory, left.find((name) => name.endsWith(".lock"))!)
+    expect((error as Error).message).toContain(`Git's index lock at ${lock} remains`)
+    expect((error as Error).message).toContain(`left the temporary index ${lock.slice(0, -".lock".length)} in place`)
+  }, 30_000)
+
+  // A new session's checkout writes its index in a private Git directory.
+  // After a kill there, the directory and the lock in it stay.
+  it.skipIf(!processGroups)("leaves a killed checkout's private Git directory and its index lock, and names them in the error", async () => {
+    const { repositoryPath, trust, service, waitForPids, allGone } = await hangingRepository("domovoi-trusted-hang-private-", "smudge")
+    await trust()
+    const commonDirectory = join(repositoryPath, ".git")
+    const controller = new AbortController()
+
+    const creating = service().createSessionWorkspace(repositoryPath, "session-hang-private", controller.signal)
+    const outcome = creating.then(() => undefined, (error: unknown) => error)
+    const pids = await waitForPids()
+    controller.abort(new Error("Operation cancelled by emergency stop"))
+
+    const error = await outcome as Error & { errors?: unknown[] }
+    expect(await allGone(pids)).toBe(true)
+    const [checkout, ...others] = (await readdir(commonDirectory)).filter((name) => name.startsWith("domovoi-checkout-"))
+    expect(others).toEqual([])
+    const lock = join(commonDirectory, checkout!, "index.lock")
+    expect((await lstat(lock)).isFile()).toBe(true)
+    const messages = [error.message, ...(error.errors ?? []).map((cause) => (cause as Error).message)].join("\n")
+    expect(messages).toContain(`Git's index lock at ${lock} remains`)
+    expect(messages).toContain(`left the temporary Git directory ${join(commonDirectory, checkout!)} in place`)
   }, 30_000)
 
   // An emptied process group does not prove that every process a filter
