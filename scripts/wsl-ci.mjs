@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { execFile } from "node:child_process"
+import { execFile, spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { createWriteStream } from "node:fs"
 import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises"
@@ -34,6 +34,10 @@ const execute = promisify(execFile)
 // Scheduler's documented minimum retry interval is 60 seconds, and only the
 // first native run measures the full path. The fixture prints phase times.
 export const defaultBudgets = { provision: 300_000, runtime: 300_000, proofs: 240_000, service: 300_000, cleanup: 60_000 }
+// Killing the keep-alive gets this share of the cleanup budget, so a wsl.exe
+// that will not exit still leaves time to terminate and unregister the guest.
+export const keepAliveStopMs = 10_000
+const keepAliveMarker = "domovoi-ci-keepalive-ready"
 
 function text(bytes) {
   if (typeof bytes === "string") return bytes
@@ -110,6 +114,42 @@ export function assertWslServiceReport(report) {
   assertExactReport(report, requiredWslServiceProofs, "WSL service proof", "supervisor test")
 }
 
+// A long-lived child the caller must kill. `ready` settles when its output
+// contains the marker and rejects if it exits first; `exited` never rejects.
+// Unreferenced, so a child that survives its kill cannot hold the job open
+// after cleanup has reported it. At most 64 KiB of output is retained.
+export function startAttached(command, args, { readyMarker }) {
+  const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true })
+  let output = ""
+  let status
+  let markReady
+  let refuse
+  const ready = new Promise((resolve, reject) => { markReady = resolve; refuse = reject })
+  // Awaited only while provisioning. A later exit must not become an
+  // unhandled rejection; the caller reads `exited` for that.
+  ready.catch(() => {})
+  const exited = new Promise((resolve) => {
+    const settle = (description) => {
+      if (status !== undefined) return
+      status = description
+      refuse(new Error(`${command} exited before it was ready: ${description}; ${output || "(no output)"}`))
+      resolve(description)
+    }
+    child.once("error", (error) => settle(`error ${error.message}`))
+    child.once("exit", (code, signal) => settle(`code ${code}, signal ${signal}`))
+  })
+  const keep = (bytes) => {
+    output = (output + text(bytes)).slice(-65_536)
+    if (output.includes(readyMarker)) markReady()
+  }
+  child.stdout.on("data", keep)
+  child.stderr.on("data", keep)
+  child.unref()
+  child.stdout.unref?.()
+  child.stderr.unref?.()
+  return { ready, exited, output: () => output, kill: () => { child.kill("SIGKILL") } }
+}
+
 const nodeEffects = {
   createStaging: () => mkdtemp(join(tmpdir(), "domovoi-wsl-ci-")),
   removeStaging: rm,
@@ -126,6 +166,7 @@ const nodeEffects = {
       throw new Error(`${command} failed: ${output || error.message}`, { cause: error })
     }
   },
+  start: startAttached,
   readReport: async (path) => JSON.parse(await readFile(path, "utf8")),
   log: (line) => process.stdout.write(`${line}\n`),
 }
@@ -133,7 +174,7 @@ const nodeEffects = {
 // Only the dedicated job calls this entry. A host without WSL 2 fails here,
 // never takes the normal suite's optional native-test gate. Effects are the
 // same boundary exercised by the failure/timeout tests, not an alternate path.
-export async function runWslCi({ platform = process.platform, effects = nodeEffects, budgets = defaultBudgets } = {}) {
+export async function runWslCi({ platform = process.platform, effects = nodeEffects, budgets = defaultBudgets, keepAliveStop = keepAliveStopMs } = {}) {
   if (platform !== "win32") throw new Error("WSL native CI requires a Windows host with working WSL 2 and nested virtualization")
   const distribution = `domovoi-ci-${randomUUID()}`
   budgets = { ...defaultBudgets, ...budgets }
@@ -141,6 +182,8 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
   let created
   let staging
   let installAttempted = false
+  let keepAlive
+  let keepAliveExit
   let failure
   let report
   let serviceReport
@@ -158,7 +201,8 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
   const run = (deadline, command, args, options = {}) => deadline.run(() =>
     effects.run(command, args, { ...options, signal: deadline.signal }))
   const wsl = (deadline, args) => run(deadline, "wsl.exe", args)
-  const linux = (deadline, args) => wsl(deadline, ["-d", distribution, "-u", "root", "--exec", ...args])
+  const guest = (args) => ["-d", distribution, "-u", "root", "--exec", ...args]
+  const linux = (deadline, args) => wsl(deadline, guest(args))
 
   try {
     await phase("provision", budgets.provision, async (deadline) => {
@@ -182,9 +226,19 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
       const kernel = (await linux(deadline, ["uname", "-r"])).trim()
       assert.match(kernel, /microsoft.*WSL2/i, "The required distribution did not start a WSL 2 kernel; check hosted-runner nested virtualization")
       effects.log(`WSL guest kernel: ${kernel}`)
-      // Keep the guest running between probes. This finite process belongs to
-      // the disposable distro; cleanup terminates it even when proofs fail.
-      await linux(deadline, ["sh", "-c", "nohup sleep 600 </dev/null >/dev/null 2>&1 &"])
+      // Keep the guest running between probes. WSL 2 stops a distro once no
+      // wsl.exe session is attached (instanceIdleTimeout), whatever still runs
+      // inside it, so a backgrounded sleep from a finished --exec call let the
+      // guest stop before the proofs on 2026-09-30. Hold one attached wsl.exe
+      // child instead. Its sleep is bounded by the remaining phase budgets; the
+      // stopped-distro proof ends it deliberately, and cleanup kills it on
+      // success and failure alike.
+      const seconds = Math.ceil((budgets.runtime + budgets.proofs + budgets.service + budgets.cleanup) / 1000)
+      keepAlive = (effects.start ?? nodeEffects.start)("wsl.exe",
+        guest(["sh", "-c", `echo ${keepAliveMarker} && exec sleep ${seconds}`]), { readyMarker: keepAliveMarker })
+      keepAlive.exited.then((status) => { keepAliveExit = status })
+      await deadline.run(() => keepAlive.ready)
+      effects.log(`WSL keep-alive attached for at most ${seconds} seconds`)
     })
     await phase("guest runtime", budgets.runtime, async (deadline) => {
       const archive = join(staging, "node.tar.xz")
@@ -198,6 +252,10 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
         checkout, "/opt/domovoi-ci-daemon"]))
     })
     await phase("native proofs", budgets.proofs, async (deadline) => {
+      // Name a lost keep-alive here, not as a Stopped guest inside Vitest.
+      if (keepAliveExit !== undefined) {
+        throw new Error(`WSL keep-alive exited before the native proofs: ${keepAliveExit}; ${keepAlive.output() || "(no output)"}`)
+      }
       const reportPath = join(staging, "native.json")
       const vitestCli = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs")
       try {
@@ -253,6 +311,16 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
     try {
       await phase("cleanup", budgets.cleanup, async (deadline) => {
         const errors = []
+        if (keepAlive) {
+          // Its own bound inside the cleanup budget. A wsl.exe that outlives
+          // its kill is an error, and terminate and unregister still run.
+          let stop
+          try {
+            stop = bootstrapDeadline(keepAliveStop, `WSL keep-alive did not exit within ${keepAliveStop} ms of its kill`, deadline)
+            keepAlive.kill()
+            await stop.run(() => keepAlive.exited)
+          } catch (error) { errors.push(error) } finally { stop?.clear() }
+        }
         if (installAttempted) {
           // Unregister even when terminate refuses. Both attempts share this
           // cleanup budget and never remove another invocation's distro.
