@@ -579,8 +579,10 @@ code or settings the repository brings:
   named `plan` could make `plan_enter`), when a tool id appears twice, when a tool that is not the
   server's own takes the name of a permission the embedded configuration allows, or when it cannot
   read them. The refusal names the server or tool to rename or turn off.
-  When a session's directory opens, the daemon reads the names of the tool servers that directory
-  knows. A card names a tool's server only when exactly one of them could have made the tool's name
+  A card for a tool those reads cannot place waits up to a second while the daemon reads the
+  directory's tool servers again; a read that fails or takes longer leaves that card without a
+  server, and the next such card reads again. A card names a tool's server only when exactly one
+  of them could have made the tool's name
   (the server's name with each UTF-16 unit outside letters, digits, `-` and `_` turned into `_`,
   then `_` and the tool's name), never for a tool the directory lists among its tool ids (OpenCode's
   or Kilo's own, or a plugin's), and then it offers no Always.

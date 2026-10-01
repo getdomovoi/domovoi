@@ -1275,6 +1275,68 @@ describe("subagents and current permission events", () => {
     await adapter.close()
   })
 
+  // Security review round 1 of #687 (P2): a card for a tool the catalog cannot
+  // place waits for the directory's tool servers to be read again, for a
+  // bounded time, and a read that fails is tried again for the next card.
+  it("reads the tool servers again before raising a card the catalog cannot place", async () => {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Call tools", runtime: runtime("build") })
+    const ask = (id: string, permission: string) => stream.emit({
+      type: "permission.asked",
+      properties: { id, sessionID: threadId, permission, patterns: ["*"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: `call_${id}` } },
+    })
+    // A server the directory gained after the prompt's read; the first read
+    // for its card fails, the next card's succeeds.
+    client.mcp.status.mockRejectedValueOnce(new Error("busy"))
+    client.mcp.status.mockResolvedValue({ data: { github: { status: "connected" } } })
+    ask("first", "github_create_issue")
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(1))
+    expect(events.find((event) => event.type === "approval-requested")).not.toHaveProperty("toolServer")
+    ask("second", "github_close_issue")
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(2))
+    expect(events.filter((event) => event.type === "approval-requested")[1]).toMatchObject({ itemId: "call_second", toolServer: { name: "github" } })
+    await adapter.close()
+  })
+
+  it("raises the card without a tool server once the read has taken too long", async () => {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Call tools", runtime: runtime("build") })
+    client.mcp.status.mockImplementation(() => new Promise(() => {}))
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "slow", sessionID: threadId, permission: "github_create_issue", patterns: ["*"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: "call_slow" } },
+    })
+    // The read is bounded at one second; the card comes within a few.
+    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", itemId: "call_slow" })), { timeout: 5_000 })
+    expect(events.find((event) => event.type === "approval-requested")).not.toHaveProperty("toolServer")
+    await adapter.close()
+  })
+
+  it("raises a card for one of the server's own permissions without reading again", async () => {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Fetch", runtime: runtime("build") })
+    const reads = client.mcp.status.mock.calls.length
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "fetch", sessionID: threadId, permission: "webfetch", patterns: ["https://example.test"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: "call_fetch" } },
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", itemId: "call_fetch" })))
+    expect(client.mcp.status.mock.calls.length).toBe(reads)
+    await adapter.close()
+  })
+
   // Security review round 1 of #687 (P2): the card's tool server comes from
   // the directory's catalog. A tool listed among the tool ids is a plugin's
   // or the server's own, never a tool server's, and a server's name is made a

@@ -80,6 +80,9 @@ type OpenCodeCatalog = {
   default: Record<string, string>
 }
 
+// How long a card waits for its directory's tool servers to be read again.
+const catalogReadTimeoutMs = 1_000
+
 // A tool that is not the server's own could ask under a permission the
 // embedded config names (#refuseUnownedNames).
 export class UnownedToolError extends Error {}
@@ -307,8 +310,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #sessions = new Map<string, Session>()
   #pendingSessionLoads = new Map<string, PendingSessionLoad>()
   #directories = new Map<string, DirectoryStream>()
-  // Each directory's tool catalog, as last read.
+  // Each directory's tool catalog, as last read, and a read of its tool
+  // servers a card is waiting on.
   #catalogs = new Map<string, ToolCatalog>()
+  #catalogReads = new Map<string, Promise<void>>()
   #listeners = new Set<(event: AgentEvent) => void>()
   #pendingApprovals = new Map<number, PendingApproval>()
   #subagents = new SubagentRegistry()
@@ -803,6 +808,47 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
   }
 
+  // Whether a card for `permission` could name a tool server the catalog does
+  // not know yet: not one of the server's own permissions or tool ids, and
+  // not placed on exactly one known server (security review round 1 of #687:
+  // a card must not go out without the attribution a read would give).
+  #mayNeedFreshCatalog(cwd: string, permission: string): boolean {
+    if ((this.#identity.builtInPermissions ?? openCodeBuiltInPermissions).has(permission)) return false
+    const catalog = this.#catalogs.get(cwd)
+    return catalog === undefined || (!catalog.toolIds.has(permission) && this.#toolServerOf(cwd, permission) === undefined)
+  }
+
+  // Reads the directory's tool servers again, waiting at most a second, so a
+  // card names a server added since the last read. A read already running is
+  // shared. A failed or slow read leaves the catalog as it was, and the next
+  // card that needs it reads again.
+  #refreshToolServers(cwd: string): Promise<void> {
+    const running = this.#catalogReads.get(cwd)
+    if (running) return running
+    const read = (async () => {
+      const client = this.#runtime?.client
+      const catalog = this.#catalogs.get(cwd)
+      if (!client?.mcp || catalog === undefined) return
+      try {
+        const servers = asRecord(unwrap(await client.mcp.status({
+          query: { directory: cwd },
+          signal: AbortSignal.timeout(catalogReadTimeoutMs),
+          throwOnError: true,
+        }), `${this.#identity.providerName} tool server status`))
+        if (servers && this.#catalogs.get(cwd) === catalog) this.#catalogs.set(cwd, { ...catalog, servers: Object.keys(servers) })
+      } catch {
+        // The card goes out without a tool server; the next one reads again.
+      }
+    })()
+    // The answer may never come; the card does not wait past the bound.
+    const bounded = Promise.race([read, new Promise<void>((resolve) => setTimeout(resolve, catalogReadTimeoutMs).unref())])
+      .finally(() => {
+        if (this.#catalogReads.get(cwd) === bounded) this.#catalogReads.delete(cwd)
+      })
+    this.#catalogReads.set(cwd, bounded)
+    return bounded
+  }
+
   #unownedTool(id: string): UnownedToolError {
     const name = this.#identity.providerName
     return new UnownedToolError(
@@ -1026,26 +1072,32 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       const request = permissionRequest(event.type, properties, this.#identity.providerName)
       if (!request) return
       const requestId = ++this.#nextApprovalId
-      const toolServer = request.tool === undefined ? undefined : this.#toolServerOf(cwd, request.tool)
       this.#pendingApprovals.set(requestId, {
         providerSessionId: sessionId,
         cwd,
         permissionId: request.permissionId,
         ...(subagentTurn ? { subagentTurn, generation: session.generation } : {}),
       })
-      this.#emit({
-        type: "approval-requested",
-        requestId,
-        threadId: session.threadId,
-        turnId,
-        ...(request.itemId ? { itemId: request.itemId } : {}),
-        command: request.command,
-        cwd,
-        ...(request.path ? { path: request.path } : {}),
-        ...(request.tool !== undefined ? { tool: request.tool } : {}),
-        ...(toolServer !== undefined ? { toolServer: { name: toolServer } } : {}),
-        ...(request.reason ? { reason: request.reason } : {}),
-      })
+      const raise = () => {
+        // Answered or refused while the catalog was read: nothing to show.
+        if (!this.#pendingApprovals.has(requestId)) return
+        const toolServer = request.tool === undefined ? undefined : this.#toolServerOf(cwd, request.tool)
+        this.#emit({
+          type: "approval-requested",
+          requestId,
+          threadId: session.threadId,
+          turnId,
+          ...(request.itemId ? { itemId: request.itemId } : {}),
+          command: request.command,
+          cwd,
+          ...(request.path ? { path: request.path } : {}),
+          ...(request.tool !== undefined ? { tool: request.tool } : {}),
+          ...(toolServer !== undefined ? { toolServer: { name: toolServer } } : {}),
+          ...(request.reason ? { reason: request.reason } : {}),
+        })
+      }
+      if (request.tool === undefined || !this.#mayNeedFreshCatalog(cwd, request.tool)) raise()
+      else void this.#refreshToolServers(cwd).then(raise)
       return
     }
     // A subagent finishing or failing ends its task tool call, not the turn.
