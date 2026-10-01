@@ -312,10 +312,14 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // program the server starts can read as the same user, and nothing in a
   // reply says who sent it; these records are how a reply is known as ours.
   #sentReplies = new Map<string, SentReply>()
-  // Asking sessions this adapter sent a rejection to, with their thread. The
-  // server then rejects that session's other requests itself, so a rejection
-  // there that was not recorded is the server's, and refuses nothing more.
-  #rejectedSessions = new Map<string, string>()
+  // A rejection the server takes rejects every other request of the same
+  // session that is waiting then (opencode permission/index.ts:129-138, kilo
+  // :322-331). The requests Domovoi knew to be waiting when it sent one, by
+  // replyKey, with the rejection that covers them (origin) and their thread.
+  // A rejection of one of them is the server's; it refuses nothing more. They
+  // are dropped when the rejection does not go through and when the turn ends
+  // (Codex review of #691, P3).
+  #cascadeRejections = new Map<string, { origin: string; threadId: string }>()
   #nextApprovalId = 0
   #nextGeneration = 0
 
@@ -566,7 +570,12 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // An approval the server ignores is not recorded, so none it reports is ours.
     if (!pending.interactiveOnly || response === "reject") this.#sentReplies.set(key, record)
     else this.#sentReplies.delete(key)
-    if (response === "reject") this.#rejectedSessions.set(pending.providerSessionId, threadId)
+    if (response === "reject") {
+      for (const waiting of this.#pendingApprovals.values()) {
+        if (waiting.providerSessionId !== pending.providerSessionId || waiting.permissionId === pending.permissionId) continue
+        this.#cascadeRejections.set(replyKey(waiting.providerSessionId, waiting.permissionId), { origin: key, threadId })
+      }
+    }
     void this.#client().then(async (client) => {
       unwrap(await client.postSessionIdPermissionsPermissionId({
         path: { id: pending.providerSessionId, permissionID: pending.permissionId },
@@ -600,6 +609,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // is dropped, so a later reply for the request counts as someone else's,
   // and one that already arrived was someone else's.
   #replyFailed(key: string, record: SentReply): void {
+    // A rejection the server did not take rejected nothing else either.
+    for (const [covered, cascade] of this.#cascadeRejections) {
+      if (cascade.origin === key) this.#cascadeRejections.delete(covered)
+    }
     if (this.#sentReplies.get(key) !== record) return
     this.#sentReplies.delete(key)
     if (!record.eventSeen) return
@@ -629,7 +642,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#pendingApprovals.clear()
     this.#failedRefusals.clear()
     this.#sentReplies.clear()
-    this.#rejectedSessions.clear()
+    this.#cascadeRejections.clear()
     this.#runtime?.server.close()
     this.#runtime = undefined
     await this.#connection
@@ -788,8 +801,12 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // sessions is dropped.
   #forgetReplies(threadId: string): void {
     for (const [key, sent] of this.#sentReplies) if (sent.threadId === threadId) this.#sentReplies.delete(key)
-    for (const [sessionId, owner] of this.#rejectedSessions) {
-      if (owner === threadId) this.#rejectedSessions.delete(sessionId)
+    this.#forgetCascadeRejections(threadId)
+  }
+
+  #forgetCascadeRejections(threadId: string): void {
+    for (const [key, cascade] of this.#cascadeRejections) {
+      if (cascade.threadId === threadId) this.#cascadeRejections.delete(key)
     }
   }
 
@@ -1063,12 +1080,17 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const reply: ProviderReply = value === "once" || value === "always" || value === "reject" ? value : "unknown"
     const key = replyKey(sessionId, requestId)
     const sent = requestId ? this.#sentReplies.get(key) : undefined
+    // Checked first: Domovoi's own rejection of a request the server has just
+    // rejected for it is then refused, and that refusal must not stop the thread.
+    if (reply === "reject" && this.#cascadeRejections.delete(key)) {
+      this.#sentReplies.delete(key)
+      return
+    }
     if (sent?.response === reply) {
       if (sent.state === "accepted") this.#sentReplies.delete(key)
       else sent.eventSeen = true
       return
     }
-    if (!sent && reply === "reject" && this.#rejectedSessions.has(sessionId)) return
     this.#stopForReplyElsewhere(session, sessionId, requestId, reply)
   }
 
@@ -1165,6 +1187,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #complete(session: Session, status: "completed" | "failed", error?: string, failure?: ProviderFailure): void {
     const turnId = session.activeTurnId
     if (!turnId) return
+    // Before the refusals below, whose own rejections may still cover others.
+    this.#forgetCascadeRejections(session.threadId)
     this.#emit({
       type: "turn-completed",
       params: {

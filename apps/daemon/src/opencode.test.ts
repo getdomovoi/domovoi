@@ -1802,8 +1802,8 @@ describe("SubagentRegistry tombstones", () => {
 // sits in its startup environment, which any program it starts as the same
 // user can read. A permission.replied that Domovoi did not send therefore
 // stops the session. The only replies Domovoi treats as its own are the ones
-// it recorded before sending, plus the rejections the server adds for the same
-// session after a rejection Domovoi sent.
+// the server accepted from it, plus the rejections the server adds, after a
+// rejection Domovoi sent, for the requests waiting then in that turn.
 describe("approval replies Domovoi did not send", () => {
   const answeredElsewhere = {
     kind: "approval-answered-elsewhere",
@@ -1972,6 +1972,46 @@ describe("approval replies Domovoi did not send", () => {
 
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed" })))
     expect(stopped(events)).toEqual([])
+    await adapter.close()
+  })
+
+  // Codex review of #691, P3: the server's own rejections follow Domovoi's at
+  // once, for the requests waiting then. The exception covers those requests
+  // and ends with the turn.
+  it("stops on a rejection in a later turn after Domovoi rejected one in an earlier turn", async () => {
+    const { adapter, client, events, stream, threadId, ask, reply, approvals } = await askedTurn()
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+    adapter.resolveApproval(1, "deny")
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledOnce())
+    reply("per_1", "reject")
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(1))
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    ask("per_3")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(2))
+
+    reply("per_3", "reject")
+
+    await waitForDaemon(() => expect(stopped(events)).toEqual([
+      expect.objectContaining({ threadId, permissionId: "per_3", reply: "reject" }),
+    ]))
+    await adapter.close()
+  })
+
+  it("stops on a rejection of a request that was not waiting when Domovoi sent its rejection", async () => {
+    const { adapter, client, events, threadId, ask, reply, approvals } = await askedTurn()
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+    adapter.resolveApproval(1, "deny")
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledOnce())
+    reply("per_1", "reject")
+
+    reply("per_9", "reject")
+
+    await waitForDaemon(() => expect(stopped(events)).toEqual([
+      expect.objectContaining({ threadId, permissionId: "per_9", reply: "reject" }),
+    ]))
     await adapter.close()
   })
 
