@@ -33,6 +33,7 @@ function client() {
       abort: vi.fn(async () => ({ data: true })),
       promptAsync: vi.fn(async () => ({ data: undefined })),
       messages: vi.fn(async (_options?: unknown): Promise<{ data: unknown; response?: Response }> => ({ data: [] })),
+      status: vi.fn(async (_options?: unknown): Promise<{ data?: unknown }> => ({ data: {} })),
     },
     event: { subscribe: vi.fn(async () => ({ stream })) },
     postSessionIdPermissionsPermissionId: vi.fn(async () => ({ data: true })),

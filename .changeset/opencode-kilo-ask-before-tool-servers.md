@@ -15,4 +15,7 @@ aborts that run, and the approval is refused. A turn now ends only on an idle af
 has completed or failed, so an aborted run's idles no longer end a later turn; a stopped or
 interrupted turn ends when the abort is answered. Aborts to a session go out one at a time, an
 abort not answered within ten seconds counts as failed, and a new prompt waits for a pending abort.
-A finished tool's report no longer aborts a turn.
+A finished tool's report no longer aborts a turn. A turn whose end the events do not show, such as
+one whose replies follow automatic compaction or whose setup failed, is settled from the server's
+session status and messages two seconds after an idle, error or failed abort; a busy session
+settles nothing, and reads that keep failing end the turn after thirty seconds.

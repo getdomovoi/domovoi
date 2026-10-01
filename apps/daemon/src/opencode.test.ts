@@ -120,6 +120,8 @@ function harness() {
       abort: vi.fn(async () => ({ data: true })),
       promptAsync: vi.fn(async () => ({ data: undefined })),
       messages: vi.fn(async (_options?: unknown): Promise<{ data: unknown; response?: Response }> => ({ data: [] })),
+      // The servers' GET /session/status: only sessions that are not idle.
+      status: vi.fn(async (_options?: unknown): Promise<{ data?: unknown }> => ({ data: {} })),
     },
     event: {
       subscribe: vi.fn(async () => ({ stream })),
@@ -2572,6 +2574,186 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     client.mcp.status.mockResolvedValue({ data: { plan: { status: "connected" } } })
     await expect(adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Hello", runtime: runtime("build") })).rejects.toThrow(`tool server named "plan"`)
     expect(client.session.promptAsync).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+})
+
+// Security review round 9 of #687 (ruling Q294): a turn whose run ended with
+// no event that ends it (compaction replies, a handler error after the last
+// idle, an error before the prompt was recorded, an unfinished reply, or
+// evidence held while an abort that then failed was pending) is settled from
+// the server's own state: GET /session/status and GET /session/{id}/message,
+// read two seconds after the idle, error or failed abort, and retried for up
+// to thirty seconds. A busy session settles nothing.
+describe("reconciling a turn with the server's own state", () => {
+  type Message = { info: Record<string, unknown>; parts: unknown[] }
+  const user = (id: string, created: number): Message => ({ info: { id, role: "user", time: { created } }, parts: [] })
+  const reply = (id: string, parentID: string, created: number, end: { completed?: boolean; error?: string } = { completed: true }): Message => ({
+    info: {
+      id, role: "assistant", parentID,
+      time: { created, ...(end.completed ? { completed: created + 1 } : {}) },
+      ...(end.error ? { error: { name: "UnknownError", data: { message: end.error } } } : {}),
+    },
+    parts: [],
+  })
+  const turnEnds = (events: AgentEvent[], turnId: string) => events.filter((event) => event.type === "turn-completed" && event.params.turnId === turnId)
+  const ended = (status: string, error?: string) => [expect.objectContaining({
+    params: expect.objectContaining({ turn: expect.objectContaining({ status, ...(error === undefined ? {} : { error: expect.stringContaining(error) }) }) }),
+  })]
+
+  async function reconciledTurn(setup?: (client: ReturnType<typeof harness>["client"]) => void) {
+    const { client, factory, stream } = harness()
+    setup?.(client)
+    let next = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `msg_${++next}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Work", runtime: runtime("build") })
+    // Everything after setup runs on fake timers, so the reconcile delays,
+    // retries and the abort bound are counted exactly.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    const history = (messages: Message[]) => client.session.messages.mockResolvedValue({ data: messages })
+    const idle = () => stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    const error = (message: string) => stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "UnknownError", data: { message } } } })
+    const seen = () => stream.emit({ type: "message.updated", properties: { info: { id: turnId, sessionID: threadId, role: "user", time: { created: 10 } } } })
+    const tick = (ms: number) => vi.advanceTimersByTimeAsync(ms)
+    return { adapter, client, events, stream, threadId, turnId, history, idle, error, seen, tick }
+  }
+  afterEach(() => { vi.useRealTimers() })
+
+  it("ends a turn whose replies answer compaction messages, not its prompt", async () => {
+    const { adapter, events, stream, threadId, turnId, history, idle, seen, tick } = await reconciledTurn()
+    seen()
+    // Automatic compaction before the first reply: a generated user message,
+    // its summary, a generated continuation and the reply to it.
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_6", sessionID: threadId, role: "assistant", parentID: "msg_5", time: { created: 12, completed: 13 } } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_8", sessionID: threadId, role: "assistant", parentID: "msg_7", time: { created: 14, completed: 15 } } } })
+    idle()
+    history([user(turnId, 10), user("msg_5", 11), reply("msg_6", "msg_5", 12), user("msg_7", 13), reply("msg_8", "msg_7", 14)])
+    await tick(1_900)
+    expect(turnEnds(events, turnId)).toEqual([])
+    await tick(200)
+    expect(turnEnds(events, turnId)).toEqual(ended("completed"))
+    await adapter.close()
+  })
+
+  it("fails a turn whose handler error comes after the last idle", async () => {
+    const { adapter, events, turnId, history, idle, error, seen, tick } = await reconciledTurn()
+    seen()
+    idle()
+    error("storage busy")
+    history([user(turnId, 10)])
+    await tick(2_100)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "storage busy"))
+    await adapter.close()
+  })
+
+  it("fails a turn whose prompt the server never recorded, once that holds for the retry bound", async () => {
+    const { adapter, events, turnId, history, idle, error, tick } = await reconciledTurn()
+    error("could not resolve the prompt's files")
+    idle()
+    history([])
+    await tick(10_000)
+    expect(turnEnds(events, turnId)).toEqual([])
+    await tick(25_000)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "never recorded"))
+    await adapter.close()
+  })
+
+  it("fails a turn whose recorded prompt has no reply and no error only once that holds for the retry bound", async () => {
+    const { adapter, events, turnId, history, idle, seen, tick } = await reconciledTurn()
+    seen()
+    idle()
+    history([user(turnId, 10)])
+    await tick(10_000)
+    expect(turnEnds(events, turnId)).toEqual([])
+    await tick(25_000)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "without a reply"))
+    await adapter.close()
+  })
+
+  it("fails a turn whose reply the server left unfinished while idle", async () => {
+    const { adapter, events, stream, threadId, turnId, history, idle, error, seen, tick } = await reconciledTurn()
+    seen()
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11 } } } })
+    error("setup failed")
+    idle()
+    history([user(turnId, 10), reply("msg_5", turnId, 11, {})])
+    await tick(2_100)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "unfinished"))
+    await adapter.close()
+  })
+
+  it.each([
+    ["fails", true, 0],
+    ["goes unanswered", false, 10_000],
+  ] as const)("ends an interrupted turn from the server's state when its abort %s after the run finished", async (_case, refuse, wait) => {
+    const { adapter, client, events, stream, threadId, turnId, history, idle, seen, tick } = await reconciledTurn()
+    let reject!: (error: Error) => void
+    client.session.abort.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail }))
+    seen()
+    const interrupt = adapter.interruptTurn(threadId, turnId).then(() => "answered", (failure: Error) => failure.message)
+    await tick(0)
+    // The run finishes on its own while the abort is pending.
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11, completed: 12 } } } })
+    idle()
+    history([user(turnId, 10), reply("msg_5", turnId, 11)])
+    await tick(100)
+    expect(turnEnds(events, turnId)).toEqual([])
+    if (refuse) reject(new Error("abort refused"))
+    await tick(wait)
+    expect(await interrupt).toContain("could not confirm")
+    expect(turnEnds(events, turnId)).toEqual([])
+    await tick(2_100)
+    expect(turnEnds(events, turnId)).toEqual(ended("completed"))
+    await adapter.close()
+  })
+
+  it("ends a turn held by a thread stop whose session deletion failed", async () => {
+    const { adapter, client, events, stream, threadId, turnId, history, idle, seen, tick } = await reconciledTurn((setup) => {
+      setup.session.delete.mockRejectedValueOnce(new Error("busy"))
+    })
+    let answer!: () => void
+    client.session.abort.mockImplementationOnce(() => new Promise((resolve) => { answer = () => resolve({ data: true }) }))
+    seen()
+    const stop = adapter.stopThread(threadId).then(() => "stopped", (failure: Error) => failure.message)
+    await tick(0)
+    // The run finishes on its own while the stop's abort is pending.
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11, completed: 12 } } } })
+    idle()
+    history([user(turnId, 10), reply("msg_5", turnId, 11)])
+    await tick(100)
+    expect(turnEnds(events, turnId)).toEqual([])
+    answer()
+    await tick(0)
+    expect(await stop).toContain("busy")
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    await tick(2_100)
+    expect(turnEnds(events, turnId)).toEqual(ended("completed"))
+    await adapter.close()
+  })
+
+  it("never ends a new turn on an old run's idle while the server reports the session busy", async () => {
+    const { adapter, client, events, threadId, turnId, history, idle, tick } = await reconciledTurn()
+    client.session.status.mockResolvedValue({ data: { [threadId]: { type: "busy" } } })
+    history([])
+    idle()
+    await tick(60_000)
+    expect(client.session.status).toHaveBeenCalled()
+    expect(turnEnds(events, turnId)).toEqual([])
+    await adapter.close()
+  })
+
+  it("fails the turn, saying the run's end is unconfirmed, when the server cannot be read for the retry bound", async () => {
+    const { adapter, client, events, turnId, idle, seen, tick } = await reconciledTurn()
+    client.session.status.mockRejectedValue(new Error("connection refused"))
+    seen()
+    idle()
+    await tick(20_000)
+    expect(turnEnds(events, turnId)).toEqual([])
+    await tick(30_000)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "could not confirm how"))
     await adapter.close()
   })
 })

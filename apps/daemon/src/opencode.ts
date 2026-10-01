@@ -45,8 +45,19 @@ export type OpenCodeClient = {
     messages(options: {
       path: { id: string }
       query: { directory: string; limit?: number; before?: string }
+      signal?: AbortSignal
       throwOnError: true
     }): Promise<OpenCodeResult<unknown> & { response?: Response }>
+    // GET /session/status (SDK `session.status`; opencode SDK 1.18.32 and
+    // kilo SDK 7.7.9, SessionStatusResponses): each session that is not idle,
+    // by id, as `{ type: "busy" }` or `{ type: "retry", ... }`. The servers
+    // drop a session from it when it goes idle (SessionStatus.set in opencode
+    // 1.18.32/1.18.33 and kilo 7.8.1), so an absent session is idle.
+    status(options: {
+      query: { directory: string }
+      signal?: AbortSignal
+      throwOnError: true
+    }): Promise<OpenCodeResult<unknown>>
   }
   event: {
     subscribe(options?: MethodOptions<OpencodeSdkClient["event"]["subscribe"]>): Promise<unknown>
@@ -91,6 +102,16 @@ const catalogReadTimeoutMs = 1_000
 // How long Domovoi waits for the server to answer an abort before it treats
 // the abort as failed (#sendAbort).
 const abortAnswerTimeoutMs = 10_000
+
+// A turn the events left open is settled from the server's own state
+// (#reconcile, security review round 9 of #687, ruling Q294): two seconds
+// after an idle or error that did not end it, or after an abort for it that
+// failed, and again after a failed or inconclusive read 1, 2, 4, 8 and 15
+// seconds later (thirty seconds in all) before Domovoi gives up. Each read
+// is bounded at five seconds.
+const reconcileDelayMs = 2_000
+const reconcileRetryDelaysMs = [1_000, 2_000, 4_000, 8_000, 15_000] as const
+const reconcileReadTimeoutMs = 5_000
 
 // What a turn aborted for a tool change says of the abort: a stated limit,
 // not a gate (#watchToolCall).
@@ -267,6 +288,10 @@ type Session = {
     reply?: { done: boolean; error?: string }
     error?: string
   }
+  // A read of the server's state scheduled for the active turn (#reconcile).
+  // `retries` counts the reads that failed or settled nothing for want of
+  // the prompt.
+  reconcile?: { turnId: string; timer: ReturnType<typeof setTimeout>; retries: number }
   // The catalog checked before the prompt that started the active turn. Every
   // prompt, a steer's included, is checked before it is sent, but only the
   // prompt that starts a turn sets this, and the turn's tool calls, a
@@ -780,6 +805,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#closed = true
     for (const directory of this.#directories.values()) directory.controller.abort()
     this.#directories.clear()
+    for (const session of this.#sessions.values()) this.#clearReconcile(session)
     this.#sessions.clear()
     this.#subagents = new SubagentRegistry()
     this.#pendingApprovals.clear()
@@ -1136,6 +1162,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #unloadSession(session: Session): void {
     this.#refusePendingFor(session.threadId)
     this.#forgetSubagents(session.threadId)
+    this.#clearReconcile(session)
     this.#sessions.delete(session.threadId)
     this.#runAborts.delete(session.threadId)
     const directory = this.#directories.get(session.cwd)
@@ -1396,9 +1423,18 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       const turn = session.activeTurn
       // Before the turn's own messages, an error is an earlier run's.
       if (turn?.seen) turn.error = errorMessage(asRecord(properties.error), this.#identity.providerName)
+      // An error never ends a turn by itself: it can come after the run's
+      // last idle, or before the prompt was recorded (security review round
+      // 9 of #687). The server's own state settles it.
+      if (session.activeTurnId !== undefined) this.#scheduleReconcile(session, session.activeTurnId)
       return
     }
-    if (event.type === "session.idle") this.#turnEndOn(session)
+    if (event.type === "session.idle") {
+      this.#turnEndOn(session)
+      // An idle that did not end the turn: an earlier run's, or one whose
+      // end the events do not show (#reconcile).
+      if (session.activeTurnId !== undefined) this.#scheduleReconcile(session, session.activeTurnId)
+    }
   }
 
   // A tool server added while a turn runs (the server's POST /mcp, which
@@ -1508,6 +1544,12 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       if (session && entry && (entry.ends === "stop" || (entry.ends === "interrupt" && answered))) {
         this.#complete(session, "failed", answered ? entry.reason : `${entry.reason} ${this.#unconfirmed()}`)
       }
+      // The abort held the turn's end, and the turn is still open: an
+      // interrupt or a thread stop whose abort failed or went unanswered, or
+      // a thread stop whose deletion may yet fail. What the run published
+      // meanwhile is read back from the server (security review round 9 of
+      // #687, ruling Q294).
+      if (session && entry && active !== undefined && session.activeTurnId === active) this.#scheduleReconcile(session, active)
       return answered
     })
     return record
@@ -1596,6 +1638,189 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const error = turn.reply?.error ?? turn.error
     if (error === undefined) this.#complete(session, "completed")
     else this.#complete(session, "failed", error)
+  }
+
+  // Schedules a read of the server's own state for the active turn
+  // (#reconcile). A read already scheduled for the turn is kept, so repeats
+  // coalesce.
+  #scheduleReconcile(session: Session, turnId: string, delay: number = reconcileDelayMs): void {
+    if (session.activeTurnId !== turnId || this.#closed) return
+    if (session.reconcile?.turnId === turnId) return
+    this.#clearReconcile(session)
+    session.reconcile = {
+      turnId,
+      retries: 0,
+      timer: setTimeout(() => { void this.#reconcile(session, turnId) }, delay),
+    }
+  }
+
+  #clearReconcile(session: Session): void {
+    if (session.reconcile) clearTimeout(session.reconcile.timer)
+    delete session.reconcile
+  }
+
+  // Settles a turn the events left open from the server's own state
+  // (security review round 9 of #687, ruling Q294). The events cannot always
+  // end it: automatic compaction before the first reply makes user messages
+  // of the server's own, and the replies name those as their parents; the
+  // prompt handler publishes a setup failure's error after the run's last
+  // idle, or before the prompt is recorded; a reply's setup can fail without
+  // completing it; and an end that came while an abort that then failed was
+  // pending ends nothing. An idle or error that ended no turn, or such an
+  // abort, schedules this read two seconds later. A prompt the idle session
+  // does not hold yet, or holds with no reply and no error seen, is read
+  // again until the bound before the turn fails: the server can still be
+  // preparing it.
+  //
+  // A session the server reports busy settles nothing: a run is going, and
+  // its own end will be seen, so an earlier run's idle cannot end a later
+  // turn this way. With the session idle, the turn ends by its prompt's
+  // record (its user message, whose id Domovoi chose) and the newest
+  // assistant message created after it, whatever that message's parent, so
+  // compaction and continuation replies count. Tool calls are still held to
+  // the turn by parent identity alone (#receiveTool).
+  async #reconcile(session: Session, turnId: string): Promise<void> {
+    const current = () => this.#sessions.get(session.threadId) === session && session.activeTurnId === turnId && !this.#closed
+    const scheduled = session.reconcile
+    if (!scheduled || scheduled.turnId !== turnId) return
+    if (!current()) {
+      this.#clearReconcile(session)
+      return
+    }
+    // A pending abort holds the turn; its settling schedules this again.
+    if (this.#runAborts.get(session.threadId)?.turns.has(turnId)) {
+      this.#clearReconcile(session)
+      return
+    }
+    const name = this.#identity.providerName
+    let outcome: TurnOutcome | "busy" | { inconclusive: string }
+    try {
+      outcome = await this.#readTurnOutcome(session, turnId)
+    } catch (error) {
+      console.error(`Domovoi could not read how a ${name} run ended`, error)
+      outcome = { inconclusive: `Domovoi could not read ${name}'s session, so it could not confirm how the run ended, and ended the turn.` }
+    }
+    if (session.reconcile !== scheduled) return
+    if (!current()) {
+      this.#clearReconcile(session)
+      return
+    }
+    if (outcome === "busy") {
+      this.#clearReconcile(session)
+      return
+    }
+    if ("inconclusive" in outcome) {
+      // A failed read, or an idle session that does not yet show the run (a
+      // prompt the server is still preparing, or a run not yet started):
+      // read again, up to the bound, then end the turn with the reason.
+      const delay = reconcileRetryDelaysMs[scheduled.retries]
+      if (delay !== undefined) {
+        scheduled.retries += 1
+        scheduled.timer = setTimeout(() => { void this.#reconcile(session, turnId) }, delay)
+        return
+      }
+      this.#clearReconcile(session)
+      this.#complete(session, "failed", outcome.inconclusive)
+      return
+    }
+    this.#clearReconcile(session)
+    if (outcome.status === "completed") this.#complete(session, "completed")
+    else this.#complete(session, "failed", outcome.error)
+  }
+
+  // The server's account of how the turn's run ended: "busy" while a run is
+  // going, inconclusive (with the reason to end the turn once that holds to
+  // the bound) when the idle session does not hold the turn's prompt, or
+  // holds it with no reply and no error was seen. Throws when a read fails.
+  async #readTurnOutcome(session: Session, turnId: string): Promise<TurnOutcome | "busy" | { inconclusive: string }> {
+    const client = await this.#client()
+    const name = this.#identity.providerName
+    const statuses = asRecord(unwrap(await client.session.status({
+      query: { directory: session.cwd },
+      signal: AbortSignal.timeout(reconcileReadTimeoutMs),
+      throwOnError: true,
+    }), `${name} session status`))
+    if (!statuses) throw new Error(`${name} answered the session status with something else`)
+    const status = asRecord(statuses[session.threadId])?.type
+    if (status !== undefined && status !== "idle") return "busy"
+    const messages = await this.#messagesFromPrompt(client, session, turnId)
+    if (messages === undefined) return { inconclusive: `${name} never recorded this turn's prompt, and its session is idle, so Domovoi ended the turn.` }
+    const promptCreated = createdAt(messages.prompt)
+    let newest: Record<string, unknown> | undefined
+    for (const info of messages.others) {
+      if (info.role !== "assistant") continue
+      const created = createdAt(info)
+      // Created after the prompt: by time when both say, else by id order
+      // (the servers' ids and Domovoi's ascend together).
+      const after = promptCreated !== undefined && created !== undefined
+        ? created >= promptCreated
+        : typeof info.id === "string" && info.id > turnId
+      if (!after) continue
+      if (!newest || (createdAt(newest) ?? 0) <= (created ?? 0)) newest = info
+    }
+    if (!newest) {
+      // The last session error seen after the turn's own prompt says why.
+      // Without one, the run may not have started yet.
+      const error = session.activeTurn?.error
+      return error !== undefined
+        ? { status: "failed", error }
+        : { inconclusive: `${name} ended the run without a reply, so Domovoi ended the turn.` }
+    }
+    const failure = asRecord(newest.error)
+    if (failure) return { status: "failed", error: errorMessage(failure, name) }
+    if (typeof asRecord(newest.time)?.completed !== "number") {
+      return { status: "failed", error: `${name} left the turn's reply unfinished, and its session is idle, so Domovoi ended the turn.` }
+    }
+    return { status: "completed" }
+  }
+
+  // The turn's prompt and the session's other messages from its newest page
+  // back to the prompt (GET /session/{id}/message, SDK `session.messages`,
+  // paged backwards as for a resume and within the same bounds). Undefined
+  // when the history does not hold the prompt.
+  async #messagesFromPrompt(
+    client: OpenCodeClient,
+    session: Session,
+    turnId: string,
+  ): Promise<{ prompt: Record<string, unknown>; others: Array<Record<string, unknown>> } | undefined> {
+    const signal = AbortSignal.timeout(reconcileReadTimeoutMs)
+    const collected: Array<Record<string, unknown>> = []
+    const infosOf = (result: OpenCodeResult<unknown>) => this.#historyMessages(result).flatMap((message) => {
+      const info = asRecord(asRecord(message)?.info)
+      return info ? [info] : []
+    })
+    const found = () => {
+      const prompt = collected.find((info) => info.id === turnId)
+      return prompt ? { prompt, others: collected.filter((info) => info !== prompt) } : undefined
+    }
+    let before: string | undefined
+    for (let page = 0; page < maximumHistoryPages; page += 1) {
+      const result = await client.session.messages({
+        path: { id: session.threadId },
+        query: { directory: session.cwd, limit: historyPageSize, ...(before === undefined ? {} : { before }) },
+        signal,
+        throwOnError: true,
+      })
+      const infos = infosOf(result)
+      collected.push(...infos)
+      const hit = found()
+      if (hit) return hit
+      const next = result.response?.headers.get("x-next-cursor") ?? undefined
+      if (!next) {
+        if (infos.length < historyPageSize) return undefined
+        // A full page without a cursor: the whole history at once, as a
+        // resume reads it (#greatestInWholeHistory).
+        collected.splice(0, collected.length, ...infosOf(await client.session.messages({
+          path: { id: session.threadId },
+          query: { directory: session.cwd },
+          signal,
+          throwOnError: true,
+        })))
+        return found()
+      }
+      before = next
+    }
+    return undefined
   }
 
   // A run the server started outside any Domovoi turn, such as a steer it
@@ -1702,6 +1927,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     })
     delete session.activeTurnId
     delete session.activeTurn
+    this.#clearReconcile(session)
     session.toolPhases.clear()
     session.steerTurnIds.clear()
     // A subagent's request cannot outlive the turn that started it. Refuse it
@@ -1798,6 +2024,15 @@ function filePath(input: Record<string, unknown>): string | undefined {
     if (typeof input[key] === "string") return input[key]
   }
   return undefined
+}
+
+// How a turn's run ended, read from the server (#reconcile).
+type TurnOutcome = { status: "completed" } | { status: "failed"; error: string }
+
+// A message's `time.created`, in milliseconds, when it has one.
+function createdAt(info: Record<string, unknown>): number | undefined {
+  const created = asRecord(info.time)?.created
+  return typeof created === "number" ? created : undefined
 }
 
 function errorMessage(error: Record<string, unknown> | undefined, providerName: string): string {

@@ -595,9 +595,27 @@ code or settings the repository brings:
   an answer to its prompt or to one of its steers, has completed or failed, or, for a run that
   failed before any reply, after an error that came after its own prompt. An idle or error before
   the turn's own messages ends nothing, so an aborted run's end, however many idles it brings,
-  never ends a later turn. A new prompt waits for a pending abort's answer; if the server does not
-  answer within ten seconds, that prompt fails with the reason the run was stopped and is not
-  sent. The status answer names nothing else about a server, so one replaced
+  never ends a later turn by itself. The events do not always show a turn's end: automatic
+  compaction before the first reply makes user messages of the server's own, whose replies do not
+  name the turn's prompt; a failure while the server prepares the run can report its error after
+  the run's last idle, or before the prompt is recorded; a reply's setup can fail without
+  finishing it; and an end that arrives while an interrupt's or a thread stop's abort is pending
+  ends nothing then. So two seconds after an idle or error that ended no turn, or after such an
+  abort fails or the thread stop's deletion may have, the daemon reads the server's own state
+  (its session status and the session's messages). A session the server reports busy settles
+  nothing, so an earlier run's idle never ends a later turn this way. With the session idle, the
+  turn ends by the newest assistant message created after its prompt, whatever that message
+  answers: completed if it finished without an error, failed with its error, or failed as
+  unfinished. Compaction replies end a turn this way, not through what they answer; tool calls
+  are still held to a turn only through its prompt and steers. With no reply, the turn fails with
+  the last error seen after its prompt. A prompt the server has not recorded, or a recorded prompt
+  with no reply and no error, is read again for up to thirty seconds, since the server may still
+  be preparing it, and then the turn fails saying so. A read that fails is retried for up to
+  thirty seconds (after 1, 2, 4, 8 and 15 seconds, each read bounded at five), and then the turn
+  fails saying the daemon could not confirm how the run ended. A new prompt waits for a pending
+  abort's answer; if the server does not answer within ten seconds, that prompt fails with the
+  reason the run was stopped and is not sent. The status answer names nothing else about a server,
+  so one replaced
   under the same name with the same status is not seen; its tools still ask, since a server whose
   name could make one of the allowed names is refused before the prompt. The next prompt refuses a
   server whose tools could be named like OpenCode's or Kilo's own. This check is a stated limit,
