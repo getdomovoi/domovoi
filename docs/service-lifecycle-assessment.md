@@ -70,9 +70,10 @@ has the printed text and failure handling.
   written. The `native` WSL workflow exercises none of it beyond the shared
   loop's Linux path. Owed: a native proof that a registered supervised task
   restarts a crashed daemon and exhausts, removal of a live supervised task,
-  the Task Scheduler settings (`schtasks /create` keeps its defaults, which
-  Microsoft documents as a 72 hour execution limit; battery settings unread),
-  and the actual logon acceptance above.
+  a native read-back of the task settings (a step after each `schtasks
+  /create` sets `ExecutionTimeLimit` `PT0S` and both battery rules false, as
+  the WSL task does, replacing the documented 72 hour default; only the
+  generated script is tested), and the actual logon acceptance above.
 
 The accepted scope is Unix acceptance, two status-reporting fixes, and Windows
 and WSL lifecycle decisions. Existing Unix adapters already install, supervise

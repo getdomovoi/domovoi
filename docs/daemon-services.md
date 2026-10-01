@@ -166,7 +166,16 @@ daemon itself. The loop starts the daemon with `--service-config`, restarts it a
 1, 5 and 15 second backoffs, and after a fourth crash records exhaustion in
 `<profile>/supervisor.json` and exits 1 with `Daemon supervision exhausted after 4 crashes and 4
 attempts.` A clean exit or a deliberate stop does not restart. The task is still created by
-`schtasks /create /sc onlogon /rl LIMITED` with that tool's default settings.
+`schtasks /create /sc onlogon /rl LIMITED`, which cannot set a task's run limit or battery rules
+and leaves Task Scheduler's defaults: a 72 hour execution limit, as Microsoft documents it, and
+battery rules that stop the task. The loop and its daemon would end there. So after every
+`/create`, at install, update and an update's restore, a PowerShell step through the Task Scheduler
+COM interface sets what the WSL task sets: `ExecutionTimeLimit` `PT0S` (no limit),
+`DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries` false. It registers the change in place
+(`TASK_UPDATE`) under the task's own principal and logon type, with no password, before the task
+is run. A failure there fails the install after the task was registered, as any step after
+`/create` does. Tests check the generated script only; Task Scheduler has not been seen to accept
+it.
 
 Windows has no `/proc`, so the loop identifies a process by its pid and its creation time, a UTC
 `FILETIME` read from `Win32_Process` through PowerShell under `SystemRoot`, and the boot by the

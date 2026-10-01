@@ -101,6 +101,8 @@ function command(overrides: Partial<ServiceCommandDependencies> = {}): ServiceCo
 }
 
 describe("servicePlan", () => {
+  // The Windows plan names PowerShell under SystemRoot for its settings step.
+  beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
   it("refuses an overlong Windows command before any files or manager calls", async () => {
     const dependencies = effects()
     await expect(installService({
@@ -152,6 +154,26 @@ describe("servicePlan", () => {
     const plan = servicePlan(windowsScript)
     const target = plan.commands[0]?.args[plan.commands[0].args.indexOf("/tr") + 1]
     expect(target).toBe('"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\Domovoi\\dist\\index.js" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"')
+  })
+
+  // The loop and its daemon run for the whole logon session. schtasks /create
+  // keeps Task Scheduler's defaults, a 72 hour execution limit and stops on
+  // battery, so a step right after it sets what the WSL task sets
+  // (wsl-task.ts), before the task is run.
+  it("lifts the execution limit and battery stops before running the task", () => {
+    const plan = servicePlan(windowsScript)
+    expect(plan.commands.map(({ command, args }) => command === "schtasks" ? args[0] : command)).toEqual([
+      "/create", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "/run",
+    ])
+    const settings = plan.commands[1]!
+    expect(settings.args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
+    const script = Buffer.from(settings.args.at(-1)!, "base64").toString("utf16le")
+    expect(script).toContain("$name = 'Domovoi daemon'")
+    for (const line of ["$definition.Settings.ExecutionTimeLimit = 'PT0S'", "$definition.Settings.DisallowStartIfOnBatteries = $false", "$definition.Settings.StopIfGoingOnBatteries = $false"]) {
+      expect(script).toContain(line)
+    }
+    // TASK_UPDATE (4), under the task's own principal and logon type.
+    expect(script).toContain("$folder.RegisterTaskDefinition($name, $definition, 4, $definition.Principal.UserId, $null, [int]$definition.Principal.LogonType, $null)")
   })
 
   it("passes a real executable straight through", () => {
@@ -806,7 +828,7 @@ describe("Windows supervised task", () => {
   it("installs over a supervised task whose loop has stopped", async () => {
     const dependencies = task("3", vi.fn(async () => ({ installed: null, running: false, detail: "stopped (clean-exit); last exit code 0 at 2026-10-01T12:00:00.000Z", supervising: false })))
     await expect(installService(windowsScript, dependencies)).resolves.toMatchObject({ kind: "task" })
-    expect(vi.mocked(dependencies.run).mock.calls.map(([, args]) => args[0])).toEqual(["/create", "/run"])
+    expect(vi.mocked(dependencies.run).mock.calls.map(([command, args]) => command === "schtasks" ? args[0] : "settings")).toEqual(["/create", "settings", "/run"])
   })
 })
 

@@ -833,7 +833,8 @@ describe("security review round 3", () => {
   it("reinstalls over the task Domovoi registered", async () => {
     const fake = managerFake("win32", { files: { [windowsConfigurationPath]: oldWindowsConfiguration }, task: oldWindowsTask })
     await installDaemonService({ runtime: windowsRuntime }, fake.effects)
-    expect(fake.ran).toEqual(["schtasks /create", "schtasks /run"])
+    // The PowerShell step between them lifts the 72 hour limit and battery stops.
+    expect(fake.ran).toEqual(["schtasks /create", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo", "schtasks /run"])
   })
 
   // Finding 4: a job still loaded from Domovoi's plist, but not running,

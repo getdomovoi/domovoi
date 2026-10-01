@@ -150,7 +150,8 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
     }),
     write: vi.fn(async (path: string, contents: string) => { order.push(`write ${path}`); files.set(path, contents) }),
     run: vi.fn(async (command: string, args: string[]) => {
-      order.push(`${command} ${args.join(" ")}`)
+      // The step after /create that lifts the 72 hour limit and battery stops.
+      order.push(script(args).includes("ExecutionTimeLimit = 'PT0S'") ? "set task settings" : `${command} ${args.join(" ")}`)
       if (args[0] === "bootout") agentLoaded = false
       if (args[0] === "bootstrap") {
         agentLoaded = true
@@ -453,7 +454,7 @@ describe("updateDaemonService with a Windows logon task", () => {
     expect(created[created.indexOf("/tr") + 1]).toMatch(/^"C:\\Program Files\\Domovoi\\runtime-2\\node\.exe" "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index\.js" --service-supervise /)
     expect(created).toContain("/f")
     expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
-      "read task", "stop task", "claim", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "schtasks /run",
+      "read task", "stop task", "claim", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "set task", "schtasks /run",
     ])
   })
 
@@ -466,7 +467,7 @@ describe("updateDaemonService with a Windows logon task", () => {
     const publish = vi.fn(async () => { effects.order.push("publish") })
     await updateDaemonService({ runtime: windowsRuntime, staged: { runtime: staged, publish } }, effects)
     expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
-      "read task", "stop task", "claim", "publish", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "schtasks /run",
+      "read task", "stop task", "claim", "publish", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "set task", "schtasks /run",
     ])
   })
 
@@ -483,7 +484,7 @@ describe("updateDaemonService with a Windows logon task", () => {
     )
     const restoredTask = vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/create").at(-1)![1]
     expect(restoredTask[restoredTask.indexOf("/tr") + 1]).toBe("\"C:\\Program Files\\Domovoi\\runtime-1\\node.exe\" \"C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js\" --service-config \"C:\\Users\\dl\\.domovoi\\service.json\"")
-    expect(effects.order.slice(-2)).toEqual([expect.stringMatching(/^schtasks \/create /), "schtasks /run /tn Domovoi daemon"])
+    expect(effects.order.slice(-3)).toEqual([expect.stringMatching(/^schtasks \/create /), "set task settings", "schtasks /run /tn Domovoi daemon"])
   })
 
   // Review of 77c28291 (P1): a task held running through the stop wait ran
@@ -533,7 +534,7 @@ describe("updateDaemonService with a Windows logon task", () => {
     effects.supervisorStatus = supervising()
     expect(await updateDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task", name: "Domovoi daemon" })
     expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
-      "read task", "disable task", "stop guest", "stop task", "claim", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "schtasks /run",
+      "read task", "disable task", "stop guest", "stop task", "claim", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "set task", "schtasks /run",
     ])
     expect(effects.stopSupervisor).toHaveBeenCalledWith("C:\\Users\\dl\\.domovoi\\service.json", expect.anything(), { retire: false })
   })
@@ -544,8 +545,18 @@ describe("updateDaemonService with a Windows logon task", () => {
     await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
     const created = vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/create").map(([, args]) => args[args.indexOf("/tr") + 1])
     expect(created.at(-1)).toBe(supervised)
-    expect(effects.order.slice(-6)).toEqual(["disable task", "stop guest supervisor", "stop task", "write C:\\Users\\dl\\.domovoi\\service.json", expect.stringMatching(/^schtasks \/create /), "schtasks /run /tn Domovoi daemon"])
+    expect(effects.order.slice(-7)).toEqual(["disable task", "stop guest supervisor", "stop task", "write C:\\Users\\dl\\.domovoi\\service.json", expect.stringMatching(/^schtasks \/create /), "set task settings", "schtasks /run /tn Domovoi daemon"])
     for (const [, , options] of vi.mocked(effects.stopSupervisor!).mock.calls) expect(options).toEqual({ retire: false })
+  })
+
+  // schtasks /create resets a task's settings to Task Scheduler's defaults, a
+  // 72 hour execution limit and stops on battery, so each registration, the
+  // swap's and the restore's, is followed by the settings step before its run.
+  it("sets the execution limit and battery settings after every registration", async () => {
+    const effects = fake("win32", "C:\\Users\\dl", { crashingStarts: 1 })
+    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
+    const steps = vi.mocked(effects.run).mock.calls.map(([command, args]) => command === "schtasks" ? args[0] : script(args).includes("ExecutionTimeLimit = 'PT0S'") ? "settings" : command)
+    expect(steps).toEqual(["/create", "settings", "/run", "/create", "settings", "/run"])
   })
 
   it("says nothing changed when the supervised task cannot be disabled and still runs", async () => {
@@ -691,7 +702,7 @@ describe("review round 2 probes", () => {
     const effects = fake("win32", "C:\\Users\\dl", { lateReadyMs: 60 })
     await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
     expect(effects.task.runningDefinition).toBe(oldWindowsCommand)
-    expect(effects.order.slice(-4)).toEqual(["stop task", "write C:\\Users\\dl\\.domovoi\\service.json", expect.stringMatching(/^schtasks \/create /), "schtasks /run /tn Domovoi daemon"])
+    expect(effects.order.slice(-5)).toEqual(["stop task", "write C:\\Users\\dl\\.domovoi\\service.json", expect.stringMatching(/^schtasks \/create /), "set task settings", "schtasks /run /tn Domovoi daemon"])
   })
 
   // W1 (round 2, then round 3): the stop is refused while the old task runs.

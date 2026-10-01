@@ -70,6 +70,24 @@ ${body}
   }
 }
 
+// schtasks /create cannot set these and registers Task Scheduler's defaults,
+// which Microsoft documents as a 72 hour execution limit, and battery rules
+// that keep a task from starting on battery and stop it when power is lost.
+// The logon task runs the supervisor loop and its daemon for the whole
+// session, so right after each /create this sets what the WSL task sets
+// (wsl-task.ts) and registers the change in place (TASK_UPDATE, 4) under the
+// task's own principal and logon type, with no password.
+// https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-executiontimelimit
+export function windowsTaskSettingsCommand(name: string): ServiceCommand {
+  return taskCommand(windowsPowerShellPath(), name, `
+$definition = $task.Definition
+$definition.Settings.ExecutionTimeLimit = 'PT0S'
+$definition.Settings.DisallowStartIfOnBatteries = $false
+$definition.Settings.StopIfGoingOnBatteries = $false
+$null = $folder.RegisterTaskDefinition($name, $definition, 4, $definition.Principal.UserId, $null, [int]$definition.Principal.LogonType, $null)
+[Console]::Out.WriteLine('domovoi-task:' + [int]$folder.GetTask($name).State)`)
+}
+
 export function windowsTaskRemovalPlan(name: string): WindowsTaskRemovalPlan {
   const executable = windowsPowerShellPath()
   return {
