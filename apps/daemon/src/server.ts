@@ -643,10 +643,14 @@ const answeredElsewhereRefusal = "This request was answered outside Domovoi"
 // The facts of the card an outside answer was to, as the card showed them.
 // Each was settled, and any secret path hidden, when the card was made
 // (approval-settlement.ts); the audit log redacts its detail again on append.
-// No card means the answer matched none the session was showing.
+// No card means the answer matched none the session was showing. The match
+// is made only against the cards shown when the report arrived
+// (match=currently-shown, round 8, ruling Q279): a card Domovoi had already
+// decided is gone from them, so its own answer may have gone out first.
 function answeredApprovalAuditFacts(approval: WorkspaceSnapshot["approvals"][number] | undefined): string {
-  if (approval === undefined) return "approval=none"
+  if (approval === undefined) return "match=currently-shown approval=none"
   return [
+    "match=currently-shown",
     `approval=${approval.id}`,
     `risk=${approval.risk}`,
     `operation=${JSON.stringify(approval.operation)}`,
@@ -658,7 +662,9 @@ function answeredApprovalAuditFacts(approval: WorkspaceSnapshot["approvals"][num
 }
 
 function answeredApprovalNotice(approval: WorkspaceSnapshot["approvals"][number] | undefined): string {
-  if (approval === undefined) return "The answer matched no request Domovoi was showing in this session."
+  if (approval === undefined) {
+    return "The answer matched no request Domovoi was showing in this session. A Domovoi decision may already have been saved or sent before this report; its acceptance was not confirmed."
+  }
   return [
     `The answer was to the request "${approval.operation}", command ${approval.command}, in ${approval.directory}.`,
     approval.affects,
@@ -8552,25 +8558,28 @@ export class DomovoiDaemon {
             ? "idle"
             : "active"
         }
+        // Round 8 of the Codex review of #691, P2 (ruling Q279): this write
+        // can still be refused after it reaches disk, and its undo can fail,
+        // so it never carries the standing rule. The rule is saved on its own
+        // once the decision is committed (below). A refused decision whose
+        // undo fails leaves at most its receipt and checkpoint row in the
+        // state file, never an active rule; the next whole-snapshot save that
+        // lands drops them, since memory never held them.
         const decided = (latest: WorkspaceSnapshot, slice: WorkspaceSnapshot) => workspaceSnapshotSchema.parse({
           ...mergeSessionSnapshotSlice(latest, slice, approval.sessionId),
-          approvalRules: withRule(latest.approvalRules),
+          approvalRules: latest.approvalRules,
         })
         // A card answered outside Domovoi is no longer pending for Domovoi's
-        // answer, so the decision, its receipt and any standing rule are kept
-        // only if no mark has landed by the point they are committed. A
-        // checkpoint taken above for the allow stays: it only records the
-        // worktree as it was, and its thread row is never committed.
+        // answer, so the decision and its receipt are kept only if no mark
+        // has landed by the point they are committed. A checkpoint taken
+        // above for the allow stays: it only records the worktree as it was,
+        // and its thread row is never committed.
         const stillPending = () => !answeredOutside()
           && this.#snapshot.approvals.some((pending) => pending.id === approval.id)
         let outcome = "cancelled" as "committed" | "cancelled" | "cancelled-after-write"
         try {
           await this.#serializeSnapshotPersistence(async () => {
             if (!stillPending()) return
-            undecided.replacedBy = new Map(this.#snapshot.approvalRules.map((rule) => [
-              rule.id,
-              "replacedByRuleId" in rule ? rule.replacedByRuleId : undefined,
-            ]))
             const persisted = decided(this.#snapshot, candidate)
             if (this.#store.saveAsync) await this.#store.saveAsync(persisted)
             else this.#store.save(persisted)
@@ -8605,10 +8614,85 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, answeredOutside() ? answeredElsewhereRefusal : "Approval does not exist")
           return
         }
+        // Puts the card back as it was before this decision.
+        const undo = (snapshot: WorkspaceSnapshot) => {
+          snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId && item.id !== approvedCheckpoint?.id)
+          this.#approvalLedger.restore(
+            snapshot.approvals,
+            undecided.approval,
+            (restored) => this.#approvalWorkspace(restored),
+          )
+          if (newRule) {
+            snapshot.approvalRules = snapshot.approvalRules
+              .filter((rule) => rule.id !== newRule.id)
+              .map((rule) => {
+                if (!("replacedByRuleId" in rule) || rule.replacedByRuleId !== newRule.id) return rule
+                const { replacedByRuleId: _replaced, ...restored } = rule
+                const previous = undecided.replacedBy.get(rule.id)
+                return previous === undefined ? restored : { ...restored, replacedByRuleId: previous }
+              })
+          }
+          snapshot.workingPlans = snapshot.workingPlans.map((plan) =>
+            structuredClone(undecided.plans.find((original) => original.sessionId === plan.sessionId)) ?? plan)
+          const undecidedSession = snapshot.sessions.find((candidateSession) => candidateSession.id === approval.sessionId)
+          if (undecidedSession && undecided.sessionState !== undefined) undecidedSession.state = undecided.sessionState
+        }
+        // Undoes the decision in memory and saves that; answers whether the
+        // save landed.
+        const rollBack = async (): Promise<boolean> => {
+          const rolledBack = structuredClone(this.#snapshot)
+          undo(rolledBack)
+          workspaceSnapshotSchema.parse(rolledBack)
+          undo(this.#snapshot)
+          this.#sessionHistory.invalidate(approval.sessionId)
+          try {
+            await this.#persistSnapshot()
+            return true
+          } catch (rollbackError) {
+            this.#reportError("Domovoi could not save the undone approval decision", rollbackError)
+            return false
+          }
+        }
         // Committed: the card left the snapshot in the same synchronous run as
-        // the last pending check, and nothing below awaits before the agent is
-        // told, so no report can mark it in between (#receiveAnsweredElsewhere
-        // finds only shown cards). An await added here must recheck the mark.
+        // the last pending check, and #receiveAnsweredElsewhere finds only
+        // shown cards, so no report can mark it from here on.
+        //
+        // The standing rule is saved only now, and is active in memory only
+        // once it is on disk (ruling Q279). If it cannot be saved, the
+        // decision is undone and the agent is not told, as when the decision
+        // itself cannot be saved; an undo that cannot be saved either leaves
+        // the receipt and checkpoint row in the state file, never the rule.
+        if (newRule) {
+          try {
+            await this.#serializeSnapshotPersistence(async () => {
+              // The links this rule replaces, as they stand when it is applied,
+              // so an undo gives back another decision's link made since.
+              undecided.replacedBy = new Map(this.#snapshot.approvalRules.map((rule) => [
+                rule.id,
+                "replacedByRuleId" in rule ? rule.replacedByRuleId : undefined,
+              ]))
+              const ruled = workspaceSnapshotSchema.parse({
+                ...this.#snapshot,
+                approvalRules: withRule(this.#snapshot.approvalRules),
+              })
+              if (this.#store.saveAsync) await this.#store.saveAsync(ruled)
+              else this.#store.save(ruled)
+              this.#snapshot.approvalRules = withRule(this.#snapshot.approvalRules)
+            })
+            this.#persistenceSucceeded()
+          } catch (error) {
+            this.#persistenceFailed(error)
+            this.#reportError("Domovoi could not save a standing rule", error)
+            await rollBack()
+            this.#error(
+              socket,
+              request.id,
+              daemonPersistenceUnavailableErrorCode,
+              "Domovoi could not save this decision, so the agent was not told",
+            )
+            return
+          }
+        }
         this.#activeAssistantItems.clear()
         if (approval.providerRequestId !== undefined && session) {
           try {
@@ -8619,37 +8703,7 @@ export class DomovoiDaemon {
               )
           } catch (error) {
             this.#reportError("Domovoi could not pass an approval decision to the agent", error)
-            const undo = (snapshot: WorkspaceSnapshot) => {
-              snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId && item.id !== approvedCheckpoint?.id)
-              this.#approvalLedger.restore(
-                snapshot.approvals,
-                undecided.approval,
-                (restored) => this.#approvalWorkspace(restored),
-              )
-              if (newRule) {
-                snapshot.approvalRules = snapshot.approvalRules
-                  .filter((rule) => rule.id !== newRule.id)
-                  .map((rule) => {
-                    if (!("replacedByRuleId" in rule) || rule.replacedByRuleId !== newRule.id) return rule
-                    const { replacedByRuleId: _replaced, ...restored } = rule
-                    const previous = undecided.replacedBy.get(rule.id)
-                    return previous === undefined ? restored : { ...restored, replacedByRuleId: previous }
-                  })
-              }
-              snapshot.workingPlans = snapshot.workingPlans.map((plan) =>
-                structuredClone(undecided.plans.find((original) => original.sessionId === plan.sessionId)) ?? plan)
-              const undecidedSession = snapshot.sessions.find((candidateSession) => candidateSession.id === approval.sessionId)
-              if (undecidedSession && undecided.sessionState !== undefined) undecidedSession.state = undecided.sessionState
-            }
-            const rolledBack = structuredClone(this.#snapshot)
-            undo(rolledBack)
-            workspaceSnapshotSchema.parse(rolledBack)
-            undo(this.#snapshot)
-            this.#sessionHistory.invalidate(approval.sessionId)
-            try {
-              await this.#persistSnapshot()
-            } catch (rollbackError) {
-              this.#reportError("Domovoi could not save the undone approval decision", rollbackError)
+            if (!await rollBack()) {
               this.#error(
                 socket,
                 request.id,

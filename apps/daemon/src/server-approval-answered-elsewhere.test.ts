@@ -5,7 +5,13 @@ import { join } from "node:path"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
-import { demoWorkspace, protocolVersion, workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import {
+  daemonPersistenceUnavailableErrorCode,
+  demoWorkspace,
+  protocolVersion,
+  workspaceSnapshotSchema,
+  type WorkspaceSnapshot,
+} from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent } from "./agents.js"
 import type { AuditLog } from "./audit-log.js"
@@ -24,10 +30,19 @@ import type { WorkspaceService } from "./workspace.js"
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
+const scratch: string[] = []
 afterEach(async () => {
+  vi.restoreAllMocks()
   for (const socket of sockets.splice(0)) socket.terminate()
   await Promise.all(daemons.splice(0).map((daemon) => daemon.stop()))
+  await removeScratchDirectories(scratch)
 })
+
+function scratchDirectory(): string {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "domovoi-elsewhere-")))
+  scratch.push(directory)
+  return directory
+}
 
 const sessionId = "session-billing"
 const threadId = "ses_billing"
@@ -72,7 +87,9 @@ function recordingAuditLog() {
   return { append, auditLog }
 }
 
-async function start(workspacePath = "/worktrees/session-billing") {
+// `storePath` puts the state in a SQLite file, so what reached disk can be
+// read back through a second connection; otherwise it stays in memory.
+async function start({ workspacePath = "/worktrees/session-billing", storePath = ":memory:" } = {}) {
   let emit: (event: AgentEvent) => void = () => {}
   const provider = {
     connect: vi.fn(async () => {}),
@@ -94,7 +111,7 @@ async function start(workspacePath = "/worktrees/session-billing") {
     archiveSessionWorkspace: vi.fn(async () => {}),
   } satisfies WorkspaceService
   const { append, auditLog } = recordingAuditLog()
-  const store = new SqliteWorkspaceStore(":memory:", openCodeSession(workspacePath))
+  const store = new SqliteWorkspaceStore(storePath, openCodeSession(workspacePath))
   const daemon = new DomovoiDaemon({
     port: 0, store, auditLog,
     agents: { opencode: provider }, workspaceService, errorSink: vi.fn(),
@@ -125,15 +142,20 @@ async function start(workspacePath = "/worktrees/session-billing") {
   return { provider, workspaceService, store, rpc, snapshot, session, append, emit: (event: AgentEvent) => emit(event) }
 }
 
-const worktrees: string[] = []
-afterEach(async () => { await removeScratchDirectories(worktrees) })
-
 // A worktree on disk, so a command card settles to a resolved record and an
-// ordinary gate that can take a standing rule.
-function worktree(): string {
-  const directory = realpathSync(mkdtempSync(join(tmpdir(), "domovoi-elsewhere-")))
-  worktrees.push(directory)
-  return directory
+// ordinary gate that can take a standing rule, and a state file beside it.
+function onDisk(): { workspacePath: string; storePath: string } {
+  return { workspacePath: scratchDirectory(), storePath: join(scratchDirectory(), "state.sqlite") }
+}
+
+// What a daemon started on this state file would load.
+async function reopened(storePath: string): Promise<WorkspaceSnapshot> {
+  const store = new SqliteWorkspaceStore(storePath, demoWorkspace)
+  try {
+    return store.load()
+  } finally {
+    await store.close()
+  }
 }
 
 // A card that can take a standing rule, beside the one start() puts up.
@@ -143,6 +165,11 @@ async function ruleCard({ snapshot, emit }: Started, workspace: string): Promise
   emit({ type: "approval-requested", requestId: 42, threadId, turnId: "turn-billing", itemId: "call_show", command: "pnpm run show" })
   await waitForDaemon(async () => expect((await snapshot()).approvals).toHaveLength(2))
   return (await snapshot()).approvals.find((approval) => approval.providerRequestId === 42)!
+}
+
+// The save that carries the person's decision on this card.
+function decisionWrite(written: WorkspaceSnapshot, card: Card): boolean {
+  return written.thread.some((item) => item.kind === "receipt" && item.id.startsWith(`receipt-${card.id}-`))
 }
 
 type Started = Awaited<ReturnType<typeof start>>
@@ -173,8 +200,11 @@ async function incidentEntry(append: Started["append"]) {
   return entries[0]!
 }
 
+// Round 8, ruling Q279: the entry says the match was made against the cards
+// shown when the report arrived.
 function auditFacts(card: Card): string {
   return [
+    "match=currently-shown",
     `approval=${card.id}`,
     `risk=${card.risk}`,
     `operation=${JSON.stringify(card.operation)}`,
@@ -221,7 +251,7 @@ describe("an approval answered outside Domovoi", () => {
       sessionId,
       projectId: (await session()).projectId,
       target: "per_1",
-      detail: "reply=once approval=none",
+      detail: "reply=once match=currently-shown approval=none",
     })
     const stopped = await session()
     expect(stopped.state).toBe("failed")
@@ -335,7 +365,7 @@ describe("an approval answered outside Domovoi", () => {
   // Round 7 of the Codex review of #691, P2 (ruling Q274): the person's own
   // answer to the same card is in flight when the report marks it. Nothing of
   // the decision is saved and the provider is not told.
-  async function nothingDecided(context: Started, card: Card): Promise<void> {
+  async function nothingDecided(context: Started, card: Card, storePath: string): Promise<void> {
     const entry = await incidentEntry(context.append)
     expect(entry.detail).toContain(`approval=${card.id}`)
     expect(context.provider.resolveApproval).not.toHaveBeenCalledWith(42, expect.anything())
@@ -344,17 +374,17 @@ describe("an approval answered outside Domovoi", () => {
     expect(after.thread.filter((item) => item.kind === "checkpoint" && item.label.endsWith("before an approved command")))
       .toEqual([])
     expect(after.approvalRules).toEqual([])
-    // Nor on disk.
-    const stored = context.store.load()
+    // Nor in the state file, as a daemon started on it would read it.
+    const stored = await reopened(storePath)
     expect(stored.thread.filter((item) => item.kind === "receipt" && item.id.startsWith(`receipt-${card.id}`))).toEqual([])
     expect(stored.approvalRules).toEqual([])
   }
 
   it("refuses the person's standing rule when the card is answered elsewhere during its checkpoint", async () => {
-    const workspace = worktree()
-    const context = await start(workspace)
+    const paths = onDisk()
+    const context = await start(paths)
     const { workspaceService, rpc, emit } = context
-    const card = await ruleCard(context, workspace)
+    const card = await ruleCard(context, paths.workspacePath)
     expect(card).toMatchObject({ risk: "normal", execution: { state: "resolved" } })
     let releaseCheckpoint!: () => void
     workspaceService.snapshot.mockImplementationOnce(() => new Promise((resolve) => {
@@ -367,19 +397,19 @@ describe("an approval answered outside Domovoi", () => {
     releaseCheckpoint()
 
     expect((await decided).error?.message).toBe("This request was answered outside Domovoi")
-    await nothingDecided(context, card)
+    await nothingDecided(context, card, paths.storePath)
   })
 
   it("refuses the person's standing rule when the card is answered elsewhere while the decision is saved", async () => {
-    const workspace = worktree()
-    const context = await start(workspace)
+    const paths = onDisk()
+    const context = await start(paths)
     const { store, rpc, emit } = context
-    const card = await ruleCard(context, workspace)
+    const card = await ruleCard(context, paths.workspacePath)
     const save = store.saveAsync.bind(store)
     let held = false
     let releaseSave!: () => void
     vi.spyOn(store, "saveAsync").mockImplementation(async (written) => {
-      if (!held && written.approvalRules.length > 0) {
+      if (!held && decisionWrite(written, card)) {
         held = true
         await new Promise<void>((resolve) => { releaseSave = resolve })
       }
@@ -392,7 +422,71 @@ describe("an approval answered outside Domovoi", () => {
     releaseSave()
 
     expect((await decided).error?.message).toBe("This request was answered outside Domovoi")
-    await nothingDecided(context, card)
+    await nothingDecided(context, card, paths.storePath)
+  })
+
+  // Round 8 of the Codex review of #691, P2 (ruling Q279): the write that
+  // can still be undone carries the decision but never its standing rule.
+  // When the undo and every later save fail, a daemon started on the state
+  // file finds at most a receipt, never a rule that would answer for it.
+  it("leaves no standing rule in the state file when a refused decision cannot be undone", async () => {
+    const paths = onDisk()
+    const context = await start(paths)
+    const { store, rpc, emit } = context
+    const card = await ruleCard(context, paths.workspacePath)
+    const save = store.saveAsync.bind(store)
+    let held = false
+    let failing = false
+    let releaseSave!: () => void
+    vi.spyOn(store, "saveAsync").mockImplementation(async (written) => {
+      if (failing) throw new Error("disk full")
+      if (!held && decisionWrite(written, card)) {
+        held = true
+        await new Promise<void>((resolve) => { releaseSave = resolve })
+        await save(written)
+        // The undo of this write and the incident's save both fail.
+        failing = true
+        return
+      }
+      await save(written)
+    })
+    const decided = rpc("approval.resolve", { approvalId: card.id, decision: "always-project", revision: card.revision })
+    await waitForDaemon(() => expect(held).toBe(true))
+
+    emit({ type: "approval-answered-elsewhere", threadId, turnId: "turn-billing", permissionId: "per_2", requestId: 42, reply: "once" })
+    releaseSave()
+
+    expect((await decided).error?.message).toBe("This request was answered outside Domovoi")
+    await incidentEntry(context.append)
+    expect(context.provider.resolveApproval).not.toHaveBeenCalledWith(42, expect.anything())
+    expect((await context.snapshot()).approvalRules).toEqual([])
+    expect((await reopened(paths.storePath)).approvalRules).toEqual([])
+  })
+
+  it("keeps no standing rule, and tells the agent nothing, when the rule cannot be saved after the decision", async () => {
+    const paths = onDisk()
+    const context = await start(paths)
+    const { store, rpc } = context
+    const card = await ruleCard(context, paths.workspacePath)
+    const save = store.saveAsync.bind(store)
+    let decisionSaved = false
+    vi.spyOn(store, "saveAsync").mockImplementation(async (written) => {
+      if (decisionSaved) throw new Error("disk full")
+      if (decisionWrite(written, card)) decisionSaved = true
+      await save(written)
+    })
+
+    const decided = await rpc("approval.resolve", { approvalId: card.id, decision: "always-project", revision: card.revision })
+
+    expect(decided.error).toEqual({
+      code: daemonPersistenceUnavailableErrorCode,
+      message: "Domovoi could not save this decision, so the agent was not told",
+    })
+    expect(context.provider.resolveApproval).not.toHaveBeenCalledWith(42, expect.anything())
+    const after = await context.snapshot()
+    expect(after.approvalRules).toEqual([])
+    expect(after.approvals.map(({ id }) => id)).toContain(card.id)
+    expect((await reopened(paths.storePath)).approvalRules).toEqual([])
   })
 
   it("keeps the answered card's facts, and denies it no receipt, when an emergency stop clears the cards first", async () => {
@@ -432,11 +526,14 @@ describe("an approval answered outside Domovoi", () => {
     await waitForDaemon(() => expect(append).toHaveBeenCalledWith(expect.objectContaining({
       action: "provider.approval-answered-elsewhere",
       target: "per_unseen",
-      detail: "reply=once approval=none",
+      detail: "reply=once match=currently-shown approval=none",
     })))
     const stoppedNotice = (await snapshot()).thread.find((item) => item.sessionId === sessionId && item.kind === "system" && item.body === notice)
-    expect(stoppedNotice?.kind === "system" ? stoppedNotice.detail : undefined)
-      .toContain("The answer matched no request Domovoi was showing in this session.")
+    // Round 8, ruling Q279: a card already decided is no longer shown, so the
+    // notice does not claim Domovoi's own answer never went out.
+    expect(stoppedNotice?.kind === "system" ? stoppedNotice.detail : undefined).toContain(
+      "The answer matched no request Domovoi was showing in this session. A Domovoi decision may already have been saved or sent before this report; its acceptance was not confirmed.",
+    )
   })
 
   // Codex review of #691 at a609034e, P2: the adapter ends the turn before it
@@ -509,7 +606,7 @@ describe("an approval answered outside Domovoi", () => {
     expect(append).toHaveBeenCalledWith(expect.objectContaining({
       action: "provider.approval-answered-elsewhere",
       target: "per_late",
-      detail: "reply=always approval=none",
+      detail: "reply=always match=currently-shown approval=none",
     }))
   })
 })

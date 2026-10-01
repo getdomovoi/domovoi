@@ -577,10 +577,17 @@ code or settings the repository brings:
   with `approval-answered-elsewhere`, and records `provider.approval-answered-elsewhere` in the
   audit log. The audit entry and the session's notice name the card that was answered, with its
   operation, command, directory, affected files, tool server and whether it was a hard gate, as
-  the card showed them when the report arrived, or say that the answer matched no card. Until the
-  report is handled, an archive or an emergency stop does not deny that card but notes that it
-  was answered outside Domovoi, and a person's answer to it is refused, including one already
-  being saved, which then keeps no receipt and no standing rule. It then stops the server, which drops every approval the server kept in memory, and
+  the card showed them when the report arrived, or say that the answer matched no card. The
+  match is made only against the cards shown when the report arrived, and the entry says so
+  (`match=currently-shown`): when it matched none, the notice adds that a Domovoi decision may
+  already have been saved or sent before the report and that its acceptance was not confirmed.
+  Until the report is handled, an archive or an emergency stop does not deny that card but notes
+  that it was answered outside Domovoi, and a person's answer to it is refused, including one
+  already being saved, which then keeps no receipt and no standing rule. A standing rule is
+  saved only after the decision that makes it is committed, and is active only once it is on
+  disk. A refused decision whose undo cannot be saved can leave its receipt and checkpoint row in
+  the state file, never an active standing rule; the next save that lands removes them. It then
+  stops the server, which drops every approval the server kept in memory, and
   every other session on that server reconnects to a new server on its next message. The stopped
   session's provider session is never resumed: it continues only after you restart its provider,
   in a new provider session without its earlier conversation. An abort the server does not

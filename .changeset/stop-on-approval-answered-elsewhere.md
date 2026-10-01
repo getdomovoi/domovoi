@@ -12,11 +12,16 @@ aborts the session's runs and waits for the server to confirm, fails the session
 `provider.approval-answered-elsewhere` in the audit log. The audit entry and the session's
 notice name the answered card and its facts as the card showed them (operation, command,
 directory, affected files, tool server, hard gate), read when the report arrives, or say the
-answer matched no card. They are recorded even when an archive, a transfer or an emergency
+answer matched no card. The audit entry says the match was made against the cards shown then
+(`match=currently-shown`); when none matched, the notice adds that a Domovoi decision may
+already have been saved or sent and that its acceptance was not confirmed. They are recorded even when an archive, a transfer or an emergency
 stop took the session before the report was handled; only a session still running is
 stopped. Until then the answered card gets no deny from an archive or an emergency stop, which
 note instead that it was answered outside Domovoi, and a person's answer to it is refused,
-including one already being saved, so neither its receipt nor a standing rule is kept. The
+including one already being saved, so neither its receipt nor a standing rule is kept. A
+standing rule is now saved only after the decision that makes it is committed, so a refused
+decision whose undo cannot be saved leaves at most its receipt and checkpoint row in the state
+file, never an active rule, and the next save that lands removes them. The
 daemon then stops the server,
 so no approval it kept in memory stays in place, and every other session on it reconnects to a
 new server on its next message. An abort the server does not confirm also stops the server.
