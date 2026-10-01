@@ -13,6 +13,8 @@ Domovoi prefers a provider's subscription CLI when that CLI already supplies the
 | OpenCode | OpenCode SDK | No | The SDK already owns the coding loop. |
 | Kilo | Kilo SDK | No | The SDK already owns the coding loop. |
 
+The daemon does not run Cursor, Grok or Kilo for now. Cursor and Grok load MCP servers, hooks and permission rules from the repository they work in. Kilo's server can switch on a rule that allows every tool and sends Domovoi no event when that happens. The adapters are kept; [the daemon README](../apps/daemon/README.md) names the switches.
+
 OpenAI, Anthropic, and OpenRouter keys may be stored in the execution machine's OS keychain. Key storage does not imply that a direct adapter exists. Domovoi never falls back to plaintext files, returns key material through RPC, or sends keys through a client or relay.
 
 ## Re-evaluation gate

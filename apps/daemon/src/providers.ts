@@ -8,6 +8,7 @@ import {
   acpProvidersTurnedOff,
 } from "./acp-providers.js"
 import { claudeInstallProblem } from "./claude-install.js"
+import { kiloTurnedOff, kiloTurnedOffReason } from "./kilo-turned-off.js"
 import { resolveCommandPath } from "./tool-path.js"
 
 export type ProviderDetection = Omit<ProviderRuntime, "sessionCapable">
@@ -32,19 +33,26 @@ export interface ProviderProbe {
   readonly searchPath?: string | undefined
 }
 
+// Which turned-off rulings are in force. Each has its own switch, so turning
+// one provider group back on leaves the other off.
+export type TurnedOffSwitches = Readonly<{ acp: boolean; kilo: boolean }>
+
+const turnedOffByDefault: TurnedOffSwitches = { acp: acpProvidersTurnedOff, kilo: kiloTurnedOff }
+
 type ProviderDefinition = {
   id: string
   commands: string[]
   authArgs?: string[]
   authStatus?: (result: CommandResult) => ProviderDetection["status"]
-  // Why the daemon does not run this provider while ACP providers are turned
-  // off; the detection then carries it as its problem and nothing is run.
-  turnedOff?: string
+  // Why the daemon does not run this provider while its ruling's switch is
+  // on; the detection then carries the reason as its problem and nothing is
+  // run.
+  turnedOff?: Readonly<{ ruling: keyof TurnedOffSwitches; reason: string }>
 }
 
-function turnedOff(provider: string): { turnedOff?: string } {
+function turnedOff(provider: string): Pick<ProviderDefinition, "turnedOff"> {
   const name = acpProviderNames[provider]
-  return name !== undefined ? { turnedOff: acpProviderTurnedOffReason(name) } : {}
+  return name !== undefined ? { turnedOff: { ruling: "acp", reason: acpProviderTurnedOffReason(name) } } : {}
 }
 
 const definitions: ProviderDefinition[] = [
@@ -85,12 +93,13 @@ const definitions: ProviderDefinition[] = [
     commands: ["kilo"],
     authArgs: ["auth", "list"],
     authStatus: credentialListAuthStatus,
+    turnedOff: { ruling: "kilo", reason: kiloTurnedOffReason },
   },
 ]
 
-function turnedOffDetection(definition: ProviderDefinition, off: boolean): ProviderDetection | undefined {
-  if (!off || definition.turnedOff === undefined) return undefined
-  return { id: definition.id, command: definition.commands[0]!, status: "unknown", problem: definition.turnedOff }
+function turnedOffDetection(definition: ProviderDefinition, switches: TurnedOffSwitches): ProviderDetection | undefined {
+  if (definition.turnedOff === undefined || !switches[definition.turnedOff.ruling]) return undefined
+  return { id: definition.id, command: definition.commands[0]!, status: "unknown", problem: definition.turnedOff.reason }
 }
 
 // What a turned-off provider is detected as, without running anything, or
@@ -99,10 +108,10 @@ function turnedOffDetection(definition: ProviderDefinition, off: boolean): Provi
 // provider was on is never served before the first probe finishes.
 export function turnedOffProviderDetection(
   provider: string,
-  off: boolean = acpProvidersTurnedOff,
+  switches: TurnedOffSwitches = turnedOffByDefault,
 ): ProviderDetection | undefined {
   const definition = definitions.find(({ id }) => id === provider)
-  return definition ? turnedOffDetection(definition, off) : undefined
+  return definition ? turnedOffDetection(definition, switches) : undefined
 }
 
 // With a tool PATH the probe resolves each candidate to an absolute path
@@ -112,21 +121,26 @@ export function turnedOffProviderDetection(
 export type CliProviderProbeOptions = {
   path?: string | undefined
   platform?: NodeJS.Platform | undefined
-  // Defaults to acpProvidersTurnedOff; tests of the turned-on path pass false.
+  // Default to acpProvidersTurnedOff and kiloTurnedOff; tests of the
+  // turned-on path pass false.
   acpProvidersTurnedOff?: boolean | undefined
+  kiloTurnedOff?: boolean | undefined
 }
 
 export class CliProviderProbe implements ProviderProbe {
   readonly #run: ProviderCommandRunner
   readonly #path: string | undefined
   readonly #platform: NodeJS.Platform
-  readonly #acpProvidersTurnedOff: boolean
+  readonly #turnedOff: TurnedOffSwitches
 
   constructor(run: ProviderCommandRunner = runProviderCommand, options: CliProviderProbeOptions = {}) {
     this.#run = run
     this.#path = options.path
     this.#platform = options.platform ?? process.platform
-    this.#acpProvidersTurnedOff = options.acpProvidersTurnedOff ?? acpProvidersTurnedOff
+    this.#turnedOff = {
+      acp: options.acpProvidersTurnedOff ?? turnedOffByDefault.acp,
+      kilo: options.kiloTurnedOff ?? turnedOffByDefault.kilo,
+    }
   }
 
   get searchPath(): string | undefined {
@@ -143,7 +157,7 @@ export class CliProviderProbe implements ProviderProbe {
   }
 
   async #inspect(definition: ProviderDefinition, signal?: AbortSignal): Promise<ProviderDetection> {
-    const turnedOff = turnedOffDetection(definition, this.#acpProvidersTurnedOff)
+    const turnedOff = turnedOffDetection(definition, this.#turnedOff)
     if (turnedOff) return turnedOff
     // The Claude Agent SDK starts only the native claude.exe on Windows, so
     // readiness looks for it before the npm shims.
