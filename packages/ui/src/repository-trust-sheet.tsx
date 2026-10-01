@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { BotIcon, FileTextIcon } from "lucide-react"
+import { BotIcon, FileTextIcon, FilterIcon } from "lucide-react"
 
 import type { RepositoryTrustResult, RepositoryTrustState } from "@getdomovoi/protocol"
 
@@ -10,12 +10,17 @@ import { cn } from "./lib/utils"
 import {
   countWord,
   cutAtCredential,
+  gitConfigUnreadableText,
+  gitFilterCount,
+  gitFilterGroups,
+  gitFilterScopeLabel,
   repositoryFileGroups,
   repositoryHeldBack,
   repositoryName,
   reviewCounts,
   toolKindLabel,
   toolSourceLabel,
+  type GitFilterGroup,
   type RepositoryFileGroup,
 } from "./tool-inventory-model"
 import { eyebrow, GrantedWhere, kindIcon, mono, omittedText, TrustRefusals } from "./tool-inventory-parts"
@@ -59,6 +64,8 @@ export function RepositoryTrustSheet({
     ? outcome.trust
     : repository?.trust.state === "untrusted" && repository.trust.reason === "cannot-trust" ? repository.trust : undefined
   const groups = loaded ? repositoryFileGroups(loaded) : []
+  const gitGroups = loaded ? gitFilterGroups(loaded) : []
+  const gitFilters = repository?.gitFilters
   // "None of it has run" holds only when the daemon holds back every entry
   // the repository brings; an agent whose files it does not hold back loads
   // them already.
@@ -67,10 +74,12 @@ export function RepositoryTrustSheet({
   // Entries the daemon left out to fit its answer, and files it could not
   // read, are still covered by the digest, so a grant would approve what
   // nobody saw: no trust is offered until every entry can be listed and every
-  // file read (ruling Q219 A).
-  const notShown = omitted.reduce((total, provider) => total + provider.omittedEntries, 0)
+  // file read (ruling Q219 A). The repository's Git config is one of them.
+  const gitOmitted = gitFilters?.omittedEntries ?? 0
+  const notShown = omitted.reduce((total, provider) => total + provider.omittedEntries, 0) + gitOmitted
   const unreadable = groups.filter((group) => group.file.state === "unreadable").map((group) => group.file.path)
-  const incomplete = notShown > 0 || unreadable.length > 0
+  const gitUnreadable = gitFilters?.unreadable
+  const incomplete = notShown > 0 || unreadable.length > 0 || gitUnreadable !== undefined
   const offerTrust = repository !== undefined && refused === undefined && inventory.state === "loaded" && !incomplete
   const canTrust = offerTrust && !pending
 
@@ -137,6 +146,7 @@ export function RepositoryTrustSheet({
               <AlertTitle>This list is not complete</AlertTitle>
               <AlertDescription>
                 {unreadable.map((path) => <p key={path} className="m-0">{`${path} could not be read. Trust is not offered until it can be read.`}</p>)}
+                {gitUnreadable ? <p className="m-0">{`The repository's Git config could not be read: ${gitConfigUnreadableText[gitUnreadable.reason]}. Trust is not offered until it can be read.`}</p> : null}
                 {notShown > 0 ? <p className="m-0">{`${notShown} ${notShown === 1 ? "entry is" : "entries are"} not shown. Trust is not offered until every entry can be listed.`}</p> : null}
               </AlertDescription>
             </Alert>
@@ -157,9 +167,13 @@ export function RepositoryTrustSheet({
           {repository ? (
             <>
               {groups.map((group) => <FileGroup key={group.file.path} group={group} />)}
+              {gitGroups.map((group) => <GitFilterFileGroup key={group.key} group={group} />)}
               {omitted.map((provider) => (
                 <p key={provider.provider} className="m-0 rounded-lg border border-dashed px-3.5 py-2.5 text-[11.5px] text-muted-foreground">{`${provider.provider}: ${omittedText(provider.omittedEntries)}`}</p>
               ))}
+              {gitOmitted > 0 ? (
+                <p className="m-0 rounded-lg border border-dashed px-3.5 py-2.5 text-[11.5px] text-muted-foreground">{`Git filters: ${gitOmitted} more ${gitOmitted === 1 ? "entry was" : "entries were"} left out of this list.`}</p>
+              ) : null}
               <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg bg-sidebar px-3.5 py-2.5">
                 <span className={eyebrow}>Config digest</span>
                 <span className={cn(mono, "text-[10.5px] break-all text-strong")}>{repository.configDigest}</span>
@@ -171,7 +185,7 @@ export function RepositoryTrustSheet({
               <ul className="m-0 flex list-disc flex-col gap-1.5 pl-5 text-[11.5px] leading-[1.55] text-muted-foreground">
                 <li>Trusted, its hooks run and its tool servers start as you, with your file and network access, when a session opens and before any tool call asks.</li>
                 <li>Trust is for this machine and this repository only.</li>
-                <li>{pinnedText(groups.length)}</li>
+                <li>{pinnedText(groups.length + gitGroups.length)}</li>
                 <li>Trust does not skip a gate, and its allow rules cannot either. Reads outside the worktree and gated actions still ask.</li>
                 <li>If they change while this is open, nothing is trusted and the review reloads.</li>
               </ul>
@@ -198,6 +212,40 @@ export function RepositoryTrustSheet({
 function pinnedText(files: number): string {
   const which = files === 1 ? "this file" : `these ${countWord(files)} files`
   return `It is pinned to one digest of ${which}. Any change, an agent's edit included, holds it back again.`
+}
+
+// One Git config file in one scope, with each filter driver it sets. The
+// repository's .gitattributes decides which files a driver runs on; the
+// inventory does not carry those patterns, so the group names none.
+function GitFilterFileGroup({ group }: { group: GitFilterGroup }) {
+  return (
+    <div role="group" aria-label={group.path} className="overflow-hidden rounded-xl border bg-card">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3.5 py-2.5">
+        <FileTextIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <span className={cn(mono, "text-[12px] font-medium break-all")}>{group.path}</span>
+        <span className="text-[11.5px] text-muted-foreground">{gitFilterScopeLabel[group.scope]}</span>
+        <span className="flex-1" />
+        <span className="text-[11px] text-faint">{gitFilterCount(group)}</span>
+      </div>
+      <ul className="m-0 list-none p-0">
+        {group.drivers.map((driver) => (
+          <li key={driver.key} className="flex flex-wrap items-start gap-x-3 gap-y-1 border-t px-3.5 py-[9px]">
+            <FilterIcon className="mt-px size-4 shrink-0 text-muted-foreground" aria-hidden />
+            <span className="w-[84px] shrink-0 text-[11.5px] text-muted-foreground">Filter driver</span>
+            <div className="flex min-w-0 flex-1 basis-64 flex-col gap-1">
+              <span className={cn(mono, "text-[11.5px] break-all text-strong")}>{driver.driver}</span>
+              <span className={cn(mono, "text-[10.5px] break-all text-faint")}>{driver.detail}</span>
+              {driver.detail.includes("[REDACTED]") || driver.driver.includes("[REDACTED]")
+                ? <span className="text-[11px] text-faint">Cut at a credential. Domovoi shows no secret.</span>
+                : null}
+            </div>
+          </li>
+        ))}
+      </ul>
+      {/* Trust pins the driver's command, not the file it runs (ruling Q205 A). */}
+      <p className="m-0 border-t px-3.5 py-2.5 text-[11px] leading-[1.55] text-muted-foreground">A filter driver runs its command whenever Git checks out or stages a file. If the command runs a file in this repository, it runs whatever that file holds, an agent's edit included.</p>
+    </div>
+  )
 }
 
 function FileGroup({ group }: { group: RepositoryFileGroup }) {

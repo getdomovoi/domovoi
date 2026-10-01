@@ -21,6 +21,8 @@ import { RepositoryTrustSheet, type RepositoryTrustRequest } from "./repository-
 import {
   allHeldBackText,
   fromRepository,
+  gitFilterCount,
+  gitFilterGroups,
   heldBackLabel,
   incompleteReason,
   kindCounts,
@@ -154,7 +156,11 @@ function HeldBackCard({ inventory, name, onReview }: { inventory: ToolInventory;
   const trust = inventory.repository?.trust
   if (trust?.state !== "untrusted" || trust.reason !== "not-trusted") return null
   const files = repositoryFileGroups(inventory)
-  if (files.length === 0) return null
+  // The repository's Git config counts as one of its config files: a filter
+  // it sets is held back like a hook, and an unreadable one blocks trust.
+  const gitGroups = gitFilterGroups(inventory)
+  const gitUnreadable = inventory.repository?.gitFilters?.unreadable !== undefined
+  if (files.length === 0 && gitGroups.length === 0 && !gitUnreadable) return null
   const { held, total } = repositoryHeldBack(inventory)
   const heldBack = held > 0 || total === 0
   return (
@@ -178,6 +184,18 @@ function HeldBackCard({ inventory, name, onReview }: { inventory: ToolInventory;
             <span className="text-[11.5px] text-muted-foreground">{group.file.state === "unreadable" ? "not read" : kindCounts(group.rows) || "no entries"}</span>
           </li>
         ))}
+        {gitGroups.map((group) => (
+          <li key={group.key} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t px-[15px] py-[9px]">
+            <span className={cn(mono, "min-w-0 flex-1 basis-48 text-[11px] break-all text-strong")}>{group.path}</span>
+            <span className="text-[11.5px] text-muted-foreground">{gitFilterCount(group)}</span>
+          </li>
+        ))}
+        {gitUnreadable ? (
+          <li className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t px-[15px] py-[9px]">
+            <span className="min-w-0 flex-1 basis-48 text-[11.5px] text-strong">Git config</span>
+            <span className="text-[11.5px] text-muted-foreground">not read</span>
+          </li>
+        ) : null}
       </ul>
       <div className="flex flex-wrap items-center gap-3 border-t px-[15px] py-2.5">
         {onReview ? <Button size="sm" onClick={onReview}>Review and trust</Button> : <GrantedWhere />}

@@ -1,9 +1,12 @@
 import type {
+  repositoryGitConfigUnreadableReasons,
+  RepositoryGitFilterScope,
   RepositoryTrustRefusal,
   RepositoryTrustState,
   ToolInventory,
   ToolInventoryEntry,
   ToolInventoryFile,
+  ToolInventoryGitFilterEntry,
   ToolInventoryProvider,
   ToolInventorySource,
 } from "@getdomovoi/protocol"
@@ -280,10 +283,74 @@ export function reviewCounts(group: RepositoryFileGroup): string {
     .join(" · ")
 }
 
-// How many of the repository's rows the daemon holds back, of all of them.
+// How many of the repository's rows the daemon holds back, of all of them. A
+// git filter's command counts as one entry, as tool.inventory lists it.
 export function repositoryHeldBack(inventory: ToolInventory): { held: number; total: number } {
   const rows = inventory.providers.flatMap((provider) => providerRows(provider).filter((row) => fromRepository(row.file.source)))
-  return { held: rows.filter((row) => row.start === "held").length, total: rows.length }
+  const filters = inventory.repository?.gitFilters?.entries ?? []
+  return {
+    held: rows.filter((row) => row.start === "held").length + filters.filter((entry) => entry.heldBack).length,
+    total: rows.length + filters.length,
+  }
+}
+
+// A git filter driver runs a command whenever Git checks a file out or stages
+// it, for every agent, so its file is no agent's. Git reads one file in each
+// scope it is included from, and the review shows it once per scope.
+export const gitFilterScopeLabel: Record<RepositoryGitFilterScope, string> = {
+  local: "local git config",
+  worktree: "worktree git config",
+  command: "command-line git config",
+}
+
+export type GitFilterDriverRow = {
+  key: string
+  driver: string
+  // Each operation the file sets for the driver, with its redacted command:
+  // "smudge sops -d · clean sops -e".
+  detail: string
+}
+
+export type GitFilterGroup = {
+  key: string
+  path: string
+  scope: RepositoryGitFilterScope
+  drivers: GitFilterDriverRow[]
+}
+
+export function gitFilterGroups(inventory: ToolInventory): GitFilterGroup[] {
+  const filters = inventory.repository?.gitFilters
+  if (!filters) return []
+  return filters.files.map(({ path, scope }) => {
+    const drivers = new Map<string, { entries: ToolInventoryGitFilterEntry[] }>()
+    for (const entry of filters.entries) {
+      if (entry.file !== path || entry.scope !== scope) continue
+      const driver = drivers.get(entry.driver) ?? { entries: [] }
+      driver.entries.push(entry)
+      drivers.set(entry.driver, driver)
+    }
+    return {
+      key: `${scope}\u0000${path}`,
+      path,
+      scope,
+      drivers: [...drivers.entries()].map(([driver, { entries }]) => ({
+        key: `${scope}\u0000${path}\u0000${driver}`,
+        driver,
+        detail: entries.map((entry) => `${entry.operation} ${entry.command}`).join(" · "),
+      })),
+    }
+  })
+}
+
+export function gitFilterCount(group: GitFilterGroup): string {
+  return plural(group.drivers.length, "filter driver", "filter drivers")
+}
+
+// Why the repository's Git config could not be read, worded.
+type RepositoryGitConfigUnreadableReason = (typeof repositoryGitConfigUnreadableReasons)[number]
+export const gitConfigUnreadableText: Record<RepositoryGitConfigUnreadableReason, string> = {
+  "too-large": "its filter settings are larger than Domovoi reads",
+  "git-failed": "git config failed",
 }
 
 // The daemon's reader cuts a text at the first credential trigger and writes

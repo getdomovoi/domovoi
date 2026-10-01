@@ -9,6 +9,7 @@ import {
   type RepositoryTrustState,
   type ToolInventory,
   type ToolInventoryEntry,
+  type ToolInventoryGitFilters,
   type ToolInventoryProvider,
 } from "@getdomovoi/protocol"
 
@@ -388,6 +389,103 @@ describe("trust review sheet", () => {
     expect(within(open).getByRole("button", { name: "Trust for this machine" })).toBeTruthy()
     expect(onTrust).toHaveBeenCalledOnce()
     expect(onRetry).not.toHaveBeenCalled()
+  })
+})
+
+// The repository's own Git config sets a filter driver: tool.inventory lists
+// each driver's commands by the file and scope Git read them in.
+const sopsFilters: ToolInventoryGitFilters = {
+  files: [{ path: ".git/config", scope: "local" }],
+  entries: [
+    { driver: "sops", operation: "smudge", command: "sops -d", file: ".git/config", scope: "local", heldBack: true },
+    { driver: "sops", operation: "clean", command: "sops -e", file: ".git/config", scope: "local", heldBack: true },
+  ],
+  omittedEntries: 0,
+}
+
+function withGitFilters(value: ToolInventory, gitFilters: ToolInventoryGitFilters): ToolInventory {
+  return toolInventorySchema.parse({ ...value, repository: { ...value.repository, gitFilters } })
+}
+
+describe("git filters in the review", () => {
+  it("lists the filter's config file in the held back card, with its count", () => {
+    show(withGitFilters(inventory(), sopsFilters), { onTrust: vi.fn() })
+
+    expect(within(heldCard()).getAllByRole("listitem").map((file) => file.textContent)).toEqual([
+      ".mcp.json2 tool servers",
+      ".claude/settings.json2 hooks · 1 plugin · 1 env entry · 1 rule",
+      ".git/config1 filter driver",
+    ])
+  })
+
+  it("offers trust for a repository whose only config is a git filter", async () => {
+    const none = claude({ files: [{ path: ".mcp.json", source: "repository-file", state: "absent" }], entries: [] })
+    show(withGitFilters(inventory(notTrusted, [none]), sopsFilters), { onTrust: vi.fn() })
+
+    const card = heldCard()
+    expect(within(card).getByText("Its hooks, tool servers, plugins, env, rules and git filter do not load for any agent.")).toBeTruthy()
+    const { sheet } = await openSheet()
+    expect(within(sheet).getByText("Everything this repository would run for any agent here. None of it has run.")).toBeTruthy()
+    expect(within(sheet).getByRole("button", { name: "Trust for this machine" })).toBeTruthy()
+    expect(within(sheet).getByText("It is pinned to one digest of this file. Any change, an agent's edit included, holds it back again.")).toBeTruthy()
+  })
+
+  it("shows a group per git config file and scope, each driver with its operations and redacted commands", async () => {
+    const filters: ToolInventoryGitFilters = {
+      files: [{ path: ".git/config", scope: "local" }, { path: ".git/worktrees/w1/config.worktree", scope: "worktree" }],
+      entries: [
+        ...sopsFilters.entries,
+        { driver: "crypt", operation: "process", command: "./bin/crypt --token [REDACTED]", file: ".git/worktrees/w1/config.worktree", scope: "worktree", heldBack: true },
+      ],
+      omittedEntries: 0,
+    }
+    show(withGitFilters(inventory(), filters), { onTrust: vi.fn() })
+    const { sheet } = await openSheet()
+
+    const local = within(sheet).getByRole("group", { name: ".git/config" })
+    expect(within(local).getByText("local git config")).toBeTruthy()
+    expect(within(local).getByText("1 filter driver")).toBeTruthy()
+    expect(within(local).getByText("Filter driver")).toBeTruthy()
+    expect(within(local).getByText("sops")).toBeTruthy()
+    expect(within(local).getByText("smudge sops -d · clean sops -e")).toBeTruthy()
+    // A trusted filter runs whatever its command names (ruling Q205 A).
+    expect(within(local).getByText("A filter driver runs its command whenever Git checks out or stages a file. If the command runs a file in this repository, it runs whatever that file holds, an agent's edit included.")).toBeTruthy()
+
+    const worktree = within(sheet).getByRole("group", { name: ".git/worktrees/w1/config.worktree" })
+    expect(within(worktree).getByText("worktree git config")).toBeTruthy()
+    expect(within(worktree).getByText("crypt")).toBeTruthy()
+    expect(within(worktree).getByText("process ./bin/crypt --token [REDACTED]")).toBeTruthy()
+    expect(within(worktree).getByText("Cut at a credential. Domovoi shows no secret.")).toBeTruthy()
+
+    expect(within(sheet).getByText("It is pinned to one digest of these four files. Any change, an agent's edit included, holds it back again.")).toBeTruthy()
+  })
+
+  it("offers no trust while the repository's Git config could not be read", async () => {
+    const onTrust = vi.fn<Trust>()
+    show(withGitFilters(inventory(), { files: [], entries: [], omittedEntries: 0, unreadable: { reason: "git-failed" } }), { onTrust })
+
+    expect(within(heldCard()).getAllByRole("listitem").at(-1)?.textContent).toBe("Git confignot read")
+    const { sheet } = await openSheet()
+    expect(within(sheet).queryByRole("button", { name: "Trust for this machine" })).toBeNull()
+    expect(within(sheet).getByText("This list is not complete")).toBeTruthy()
+    expect(within(sheet).getByText("The repository's Git config could not be read: git config failed. Trust is not offered until it can be read.")).toBeTruthy()
+    expect(onTrust).not.toHaveBeenCalled()
+  })
+
+  it("offers no trust while git filter entries are left out of the list", async () => {
+    show(withGitFilters(inventory(), { ...sopsFilters, omittedEntries: 2 }), { onTrust: vi.fn() })
+    const { sheet } = await openSheet()
+
+    expect(within(sheet).queryByRole("button", { name: "Trust for this machine" })).toBeNull()
+    expect(within(sheet).getByText("2 entries are not shown. Trust is not offered until every entry can be listed.")).toBeTruthy()
+    expect(within(sheet).getByText("Git filters: 2 more entries were left out of this list.")).toBeTruthy()
+  })
+
+  it("counts the filter's commands among the entries held back", async () => {
+    const provider = claude({ entries: entries().map((entry) => entry.file === ".mcp.json" ? entry : { ...entry, heldBack: false }) })
+    show(withGitFilters(inventory(notTrusted, [provider]), sopsFilters), { onTrust: vi.fn() })
+
+    expect(within(heldCard()).getByText("4 of 9 entries from this repository are held back. The rest load.")).toBeTruthy()
   })
 })
 
