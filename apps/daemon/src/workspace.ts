@@ -13,7 +13,7 @@ import {
 } from "./git-environment.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
-import { carriedRemoteUrl, checkOutIsolated, openIsolatedGit, type IsolatedGit } from "./isolated-checkout.js"
+import { carriedRemoteUrl, checkOutIsolated, openIsolatedGit, runGitProcess, type IsolatedGit } from "./isolated-checkout.js"
 import {
   repositoryFilterGate,
   type RepositoryFilterGate,
@@ -755,7 +755,16 @@ export type GitWorkspaceServiceOptions = {
   // `git --version` as the daemon's Git prints it, for the lazy-fetch check
   // (refuseLazyFetch). The installed Git's by default; a test seam.
   gitVersion?: () => Promise<string | undefined>
+  // The deadline of each session ref push; sessionRefTransferTimeoutMs by
+  // default. A test seam.
+  sessionRefTransferTimeoutMs?: number
 }
+
+// A session ref push talks to a remote that may never answer: Git for Windows
+// was seen to hang on a push to git daemon's receive-pack (ruling Q265). Each
+// push is stopped after this long, whether or not the caller gave a signal.
+// Ten minutes leaves room for a large first push over a slow link.
+export const sessionRefTransferTimeoutMs = 10 * 60 * 1000
 
 // On a Git that ignores GIT_NO_LAZY_FETCH, refuses a repository or worktree
 // that is a partial clone by its own effective config, before any command
@@ -1346,8 +1355,10 @@ export class GitWorkspaceService implements WorkspaceService {
   readonly #afterRestoreReset?: GitWorkspaceServiceOptions["afterRestoreReset"]
   readonly #repositoryTrust?: GitWorkspaceServiceOptions["repositoryTrust"]
   readonly #gitVersion: () => Promise<string | undefined>
+  readonly #sessionRefTransferTimeoutMs: number
 
   constructor(worktreeRoot: string, options: GitWorkspaceServiceOptions = {}) {
+    this.#sessionRefTransferTimeoutMs = options.sessionRefTransferTimeoutMs ?? sessionRefTransferTimeoutMs
     this.worktreeRoot = resolve(worktreeRoot)
     this.#afterEvidenceObservation = options.afterEvidenceObservation
     this.#afterCheckpointStaging = options.afterCheckpointStaging
@@ -2036,7 +2047,7 @@ export class GitWorkspaceService implements WorkspaceService {
     // advertises an incomplete session transfer. This does not require the
     // remote to support atomic pushes.
     if (checkpointRefs.length > 0) {
-      await git(worktreePath, [
+      await this.#boundedPush(worktreePath, [
         ...transport,
         "push",
         "--",
@@ -2044,8 +2055,31 @@ export class GitWorkspaceService implements WorkspaceService {
         ...checkpointRefs.map((checkpoint) => `${checkpoint}:${checkpoint}`),
       ], signal)
     }
-    await git(worktreePath, [...transport, "push", "--", remote, `${commit}:${ref}`], signal)
+    await this.#boundedPush(worktreePath, [...transport, "push", "--", remote, `${commit}:${ref}`], signal)
     return { ref, commit, remote }
+  }
+
+  // One push, stopped at the transfer deadline as well as by the caller's
+  // signal, so a remote that never answers cannot hold it forever. It runs
+  // as an isolated command does (runGitProcess): a stop ends its process
+  // group, or on Windows its process tree, where git.exe is a launcher whose
+  // child would otherwise keep the push, and its output pipes, open.
+  async #boundedPush(worktreePath: string, arguments_: string[], signal?: AbortSignal): Promise<void> {
+    const deadline = AbortSignal.timeout(this.#sessionRefTransferTimeoutMs)
+    try {
+      const result = await trackRestoreCommand(() => runGitProcess(gitArguments(worktreePath, arguments_), {
+        env: gitEnvironment(), cwd: worktreePath, signal: signal === undefined ? deadline : AbortSignal.any([signal, deadline]),
+      }))
+      if (result.code !== 0) {
+        throw Object.assign(new Error(result.stderr || `git push exited with ${result.code ?? result.signal ?? "no status"}`), {
+          code: result.code ?? undefined, stderr: result.stderr,
+        })
+      }
+    } catch (error) {
+      if (!deadline.aborted || signal?.aborted === true) throw error
+      const seconds = Math.ceil(this.#sessionRefTransferTimeoutMs / 1000)
+      throw new Error(`git push did not finish within ${seconds} seconds, so Domovoi stopped it. Check that the remote answers, then try again.`, { cause: error })
+    }
   }
 
   // The target side of the opt-in path: the session arrives through the remote

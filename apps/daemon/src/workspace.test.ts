@@ -1,5 +1,6 @@
 import { execFile, type ChildProcess } from "node:child_process"
 import { createServer } from "node:http"
+import { createServer as createNetServer, type AddressInfo, type Socket } from "node:net"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -72,6 +73,8 @@ async function stopGitDaemon(daemon: ChildProcess): Promise<void> {
 // run 36835693928: each such test ran into its 30 s timeout). A session ref
 // push and its restore run the same Git commands on every platform, so these
 // cases run on macOS and Linux only. Fetching from git daemon works on Windows.
+// The push's own deadline, which stops such a hang in the product, is tested
+// on every platform ("stops a push the remote never answers at its deadline").
 const gitDaemonPushes = process.platform !== "win32"
 
 // A shared remote served over git:// by a local git daemon for the test's
@@ -2420,6 +2423,31 @@ describe("GitWorkspaceService session refs", () => {
     await expect(service.pushSessionRef(workspace.path, "origin", "session-1"))
       .rejects.toThrow("Session worktree has work that is not checkpointed")
   })
+
+  // A remote that accepts the connection and never answers, as a stuck
+  // receive-pack does (ruling Q265): the push is stopped at its deadline even
+  // when the caller gives no signal. This runs on every platform, Windows
+  // included, where the git daemon push cases above are skipped.
+  it("stops a push the remote never answers at its deadline", async () => {
+    const { scratch, workspace, repositoryPath } = await sessionWithRemote("domovoi-ref-silent-")
+    const held: Socket[] = []
+    const silent = createNetServer((socket) => { held.push(socket) })
+    await new Promise<void>((listening) => silent.listen(0, "127.0.0.1", listening))
+    try {
+      const { port } = silent.address() as AddressInfo
+      await execute("git", ["-C", repositoryPath, "remote", "set-url", "origin", `git://127.0.0.1:${port}/remote.git`])
+      const bounded = new GitWorkspaceService(join(scratch, "worktrees"), { sessionRefTransferTimeoutMs: 1_000 })
+      const started = Date.now()
+
+      await expect(bounded.pushSessionRef(workspace.path, "origin", "session-1"))
+        .rejects.toThrow("did not finish within 1 seconds")
+      expect(Date.now() - started).toBeLessThan(20_000)
+      expect(held.length).toBeGreaterThan(0)
+    } finally {
+      for (const socket of held) socket.destroy()
+      await new Promise<void>((closed) => silent.close(() => closed()))
+    }
+  }, 30_000)
 })
 
 describe("GitWorkspaceService session ref restore", () => {
