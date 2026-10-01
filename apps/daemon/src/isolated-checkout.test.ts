@@ -1,4 +1,4 @@
-import type { ChildProcess } from "node:child_process"
+import { execFileSync, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -7,7 +7,9 @@ import { join } from "node:path"
 import { publishFileDurably } from "@getdomovoi/credential-store"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { gitTeardownTimeoutMs, publishUnderIndexLock, runGitProcess, windowsGitStop } from "./isolated-checkout.js"
+import {
+  checkOutIsolated, gitTeardownTimeoutMs, IndexChangedError, publishUnderIndexLock, runGitProcess, windowsGitStop,
+} from "./isolated-checkout.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const scratchDirectories: string[] = []
@@ -317,5 +319,69 @@ describe("publishUnderIndexLock", () => {
     })
     await expect(failing).rejects.toThrow(`read failed. Domovoi could not remove its own index lock at ${lock}`)
     expect(await readFile(path, "utf8")).toBe("old")
+  })
+})
+
+// A new worktree whose index another Git wrote is kept for recovery
+// (ruling Q281). A cleanup that fails afterwards, removing the checkout's own
+// lock or its isolated directory, must not turn that into a failure the
+// caller cleans up by removing the worktree (ruling Q295).
+describe("checkOutIsolated after the index changed", () => {
+  async function addedWorktree() {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-checkout-kept-"))
+    scratchDirectories.push(scratch)
+    const repository = join(scratch, "project")
+    const worktree = join(scratch, "worktree")
+    const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8", stdio: "pipe" })
+    git("init", "-q", "--initial-branch=main", repository)
+    await writeFile(join(repository, "base.txt"), "base\n")
+    git("-C", repository, "add", ".")
+    git("-C", repository, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-qm", "initial")
+    const commit = git("-C", repository, "rev-parse", "HEAD").trim()
+    git("-C", repository, "worktree", "add", "-q", "--no-checkout", "-b", "domovoi/kept", worktree, commit)
+    // Another Git wrote the new worktree's index after it was added.
+    await writeFile(join(worktree, "late.txt"), "late\n")
+    git("-C", worktree, "add", "late.txt")
+    const index = join(repository, ".git", "worktrees", "worktree", "index")
+    return { repository, worktree, commit, index }
+  }
+
+  it("keeps the changed-index decision when removing its own lock is not flushed", async () => {
+    const { worktree, commit, index } = await addedWorktree()
+    const before = await readFile(index)
+
+    const error = await checkOutIsolated({
+      worktree, commit, settings: [], initialIndex: undefined,
+      indexIo: { syncDirectory: async () => { throw new Error("flush failed") } },
+    }).then(() => undefined, (failure: unknown) => failure)
+
+    expect(error).toBeInstanceOf(IndexChangedError)
+    expect((error as Error).message).toContain("flush failed")
+    expect((await readFile(index)).equals(before)).toBe(true)
+  })
+
+  // POSIX, not as root: a read-only Git directory makes removing the isolated
+  // directory in it fail.
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("keeps the changed-index decision when its isolated directory cannot be removed", async () => {
+    const { repository, worktree, commit, index } = await addedWorktree()
+    const before = await readFile(index)
+    const commonDirectory = join(repository, ".git")
+    let locked = false
+    try {
+      const error = await checkOutIsolated({
+        worktree, commit, settings: [], initialIndex: undefined,
+        beforeCommand: () => {
+          if (locked) return
+          locked = true
+          execFileSync("chmod", ["a-w", commonDirectory])
+        },
+      }).then(() => undefined, (failure: unknown) => failure)
+
+      expect(error).toBeInstanceOf(IndexChangedError)
+      expect((error as Error).message).toContain("could not remove")
+    } finally {
+      await chmod(commonDirectory, 0o755)
+    }
+    expect((await readFile(index)).equals(before)).toBe(true)
   })
 })

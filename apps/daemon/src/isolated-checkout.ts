@@ -623,9 +623,22 @@ export async function openIsolatedGit(input: {
   }
 }
 
+// An index Domovoi left as it found it, and the worktree with it, for
+// recovery. A cleanup that fails afterwards (its own lock's removal not
+// flushed, its isolated directory not removed) is noted here and does not
+// replace the decision to keep (ruling Q295).
+export class IndexKeptError extends Error {
+  readonly cleanupFailures: unknown[] = []
+
+  noteCleanupFailure(failure: unknown): void {
+    this.cleanupFailures.push(failure)
+    this.message = `${this.message}. Cleanup afterwards also failed: ${failure instanceof Error ? failure.message : String(failure)}`
+  }
+}
+
 // An index lock that was there before Domovoi went to write the index: its
 // owner is unknown, so neither the lock nor the index under it is touched.
-export class IndexLockHeldError extends Error {
+export class IndexLockHeldError extends IndexKeptError {
   constructor(readonly lock: string) {
     super(`Git's index lock at ${lock} was already there, so Domovoi left the index as it was. Remove the lock once no Git command is running in this worktree`)
     this.name = "IndexLockHeldError"
@@ -642,7 +655,7 @@ export async function readIndexFile(path: string): Promise<Buffer | undefined> {
 
 // An index another Git wrote after Domovoi read it, and before Domovoi went to
 // write it: that Git's index is kept as it is.
-export class IndexChangedError extends Error {
+export class IndexChangedError extends IndexKeptError {
   constructor(readonly path: string) {
     super(`The index at ${path} changed since the worktree was added, so Domovoi left it as another Git wrote it`)
     this.name = "IndexChangedError"
@@ -707,17 +720,28 @@ export async function publishUnderIndexLock(
   const removed = await fs.unlink(lock).then(() => true, (error: NodeJS.ErrnoException) => error.code === "ENOENT")
   if (!removed) {
     const left = `Domovoi could not remove its own index lock at ${lock}. Remove it once no Git command is running in this worktree.`
-    if (failure === undefined) throw new Error(left)
-    throw new AggregateError([failure.error], `${message(failure.error)}. ${left}`)
+    throw new IndexLockCleanupError(declined, failure === undefined ? [] : [failure.error], failure === undefined ? left : `${message(failure.error)}. ${left}`)
   }
   try {
     await flush(dirname(lock))
   } catch (error) {
-    if (failure === undefined) throw error
-    throw new AggregateError([failure.error, error], `${message(failure.error)}. Removing its own index lock was not flushed: ${message(error)}`, { cause: error })
+    const unflushed = `Removing its own index lock at ${lock} was not flushed: ${message(error)}`
+    throw new IndexLockCleanupError(declined, failure === undefined ? [error] : [failure.error, error],
+      failure === undefined ? unflushed : `${message(failure.error)}. ${unflushed}`, error)
   }
   if (failure !== undefined) throw failure.error
   return declined ? "declined" : "published"
+}
+
+// Removing this function's own lock, after it declined or failed before the
+// rename, did not finish. `declined` keeps the caller's decision: the check
+// under the lock found the index changed, and nothing was written (ruling
+// Q295).
+export class IndexLockCleanupError extends AggregateError {
+  constructor(readonly declined: boolean, errors: unknown[], message: string, cause?: unknown) {
+    super(errors, message, cause === undefined ? undefined : { cause })
+    this.name = "IndexLockCleanupError"
+  }
 }
 
 // The index is in place, but flushing its directory failed: a power loss
@@ -754,9 +778,12 @@ export async function checkOutIsolated(input: {
   // The new worktree's index file as it was when the worktree was added
   // (undefined: none). The checkout publishes only over that same file.
   initialIndex: Buffer | undefined
+  // The index publish's file steps; a test seam.
+  indexIo?: Parameters<typeof publishUnderIndexLock>[3]
 }): Promise<void> {
   const { commit, initialIndex } = input
   const isolated = await openIsolatedGit({ ...input, worktreeIndex: false })
+  let outcome: { error: unknown } | undefined
   try {
     const version = await installedGitVersion()
     // Git 2.40 and later read in-tree attributes from the commit alone, not a
@@ -772,13 +799,33 @@ export async function checkOutIsolated(input: {
     // the lock the index must still be the file it was when the worktree was
     // added, byte for byte: another Git that wrote it since, and finished,
     // holds no lock, and its index is kept (ruling Q281).
-    const published = await publishUnderIndexLock(isolated.worktreeIndex, () => fs.readFile(join(isolated.gitDirectory, "index")), async () => {
-      const now = await readIndexFile(isolated.worktreeIndex)
-      return now === undefined || initialIndex === undefined ? now === initialIndex : now.equals(initialIndex)
-    })
+    let published: Awaited<ReturnType<typeof publishUnderIndexLock>>
+    try {
+      published = await publishUnderIndexLock(isolated.worktreeIndex, () => fs.readFile(join(isolated.gitDirectory, "index")), async () => {
+        const now = await readIndexFile(isolated.worktreeIndex)
+        return now === undefined || initialIndex === undefined ? now === initialIndex : now.equals(initialIndex)
+      }, input.indexIo)
+    } catch (error) {
+      if (!(error instanceof IndexLockCleanupError) || !error.declined) throw error
+      const changed = new IndexChangedError(isolated.worktreeIndex)
+      changed.noteCleanupFailure(error)
+      throw changed
+    }
     if (published === "locked") throw new IndexLockHeldError(`${isolated.worktreeIndex}.lock`)
     if (published === "declined") throw new IndexChangedError(isolated.worktreeIndex)
-  } finally {
-    await isolated.dispose()
+  } catch (error) {
+    outcome = { error }
   }
+  // A failure to remove the isolated directory never replaces the outcome
+  // above: the caller decides from it whether the worktree is kept. One that
+  // keeps it notes the failure (ruling Q295).
+  try {
+    await isolated.dispose()
+  } catch (error) {
+    if (outcome === undefined) throw error
+    if (outcome.error instanceof IndexKeptError) {
+      outcome.error.noteCleanupFailure(new Error(`Domovoi could not remove its temporary Git directory ${isolated.gitDirectory}: ${error instanceof Error ? error.message : String(error)}`, { cause: error }))
+    }
+  }
+  if (outcome !== undefined) throw outcome.error
 }
