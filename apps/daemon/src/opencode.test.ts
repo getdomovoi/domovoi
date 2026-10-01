@@ -2260,13 +2260,20 @@ describe("approval replies Domovoi did not send", () => {
     await adapter.close()
   })
 
-  // Codex review of #691, round 3, P1 (Q266): on Windows a root that exited
-  // after its tree kill failed may have left a process running, so the
-  // stopped server stays unconfirmed and no other server starts.
-  it("starts no other Windows server once a failed tree kill is followed by the root's exit", async () => {
+  // Codex review of #691, rounds 3 and 4, P1 (Q266): on Windows a process can
+  // leave the tree taskkill would find, so once a tree kill has failed the
+  // stopped server stays unconfirmed, whether its root has exited or still
+  // runs. It is never killed again, and no other server starts.
+  it.each([
+    ["after the root exits", true],
+    ["while the root still runs", false],
+  ])("starts no other Windows server once a tree kill failed, %s", async (_case, rootExits) => {
     const { client, stream } = harness()
     const roots: Array<EventEmitter & { stdout: PassThrough }> = []
-    const killTree = vi.fn(async () => { throw new Error("taskkill exited with status 1") })
+    // A second tree kill would succeed and end the root.
+    const killTree = vi.fn()
+      .mockRejectedValueOnce(new Error("taskkill exited with status 1"))
+      .mockImplementation(async () => { roots[0]!.emit("exit", 1, null) })
     const start = embeddedServerCommand("opencode", "opencode server listening", {
       platform: "win32",
       spawn: () => {
@@ -2297,8 +2304,8 @@ describe("approval replies Domovoi did not send", () => {
     await waitForDaemon(() => expect(events.some((event) => event.type === "provider-disconnected")).toBe(true))
     expect(killTree).toHaveBeenCalledOnce()
 
-    // The root exits; what it started may still run.
-    roots[0]!.emit("exit", 0, null)
+    // The root exits, or runs on; either way what it started may still run.
+    if (rootExits) roots[0]!.emit("exit", 0, null)
 
     await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") }))
       .rejects.toThrow("so it starts no other OpenCode server")

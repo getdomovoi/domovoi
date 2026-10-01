@@ -287,16 +287,20 @@ describe("embeddedServerCommand on Windows", () => {
     expect(killTree).not.toHaveBeenCalled()
   })
 
-  it("tries the tree kill again while the root still runs", async () => {
+  // Codex review of #691, round 4 (Q266): between two attempts a process can
+  // leave the tree taskkill would find, so the first failed taskkill leaves
+  // the stop unconfirmed for good, even while the root still runs.
+  it("never tries the tree kill again once it failed, even while the root still runs", async () => {
     const held: { root?: ReturnType<typeof fakeRoot> } = {}
     const killTree = vi.fn()
       .mockRejectedValueOnce(new Error("taskkill exited with status 128"))
-      .mockImplementationOnce(async () => { held.root!.emit("exit", 1, null) })
+      .mockImplementation(async () => { held.root!.emit("exit", 1, null) })
     const started = await startedOnWindows(killTree)
     held.root = started.root
 
     await expect(started.server.stop()).resolves.toBe(false)
-    await expect(started.server.stop()).resolves.toBe(true)
-    expect(killTree).toHaveBeenCalledTimes(2)
+    await expect(started.server.stop()).resolves.toBe(false)
+    await expect(started.server.stop()).resolves.toBe(false)
+    expect(killTree).toHaveBeenCalledOnce()
   })
 })

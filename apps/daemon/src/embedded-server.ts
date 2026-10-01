@@ -268,12 +268,13 @@ function keeperReport(line: string): string | undefined {
 // outlive it, and taskkill /T finds nothing below a root that has exited, whose
 // pid may by then name another process. So the tree is tracked apart from the
 // root, as for Claude (spawnClaudeProcess, Q111 B; Codex review of #691,
-// round 3, Q266). A stop is confirmed only by a taskkill that succeeded while
-// the root ran, followed by the root's exit. A root that exits before that,
-// on its own or after a taskkill that failed, leaves its tree unconfirmed for
-// good: every later stop fails, and the stopped server keeps blocking the next
-// one. A taskkill that failed while the root still runs is tried again by the
-// next stop, through the pid Node still holds.
+// rounds 3 and 4, Q266). A stop is confirmed only by the first taskkill
+// succeeding while the root ran, followed by the root's exit. A root that
+// exits before any taskkill, or any taskkill that fails, leaves the tree
+// unconfirmed for good, even while the root still runs: between two attempts
+// a process can leave the tree taskkill would find. Every later stop fails
+// without running taskkill again, and the stopped server keeps blocking the
+// next one until Domovoi restarts.
 function launchDirect(
   command: string,
   args: string[],
@@ -293,8 +294,6 @@ function launchDirect(
       if (child.pid === undefined) resolve(`could not start: ${error.message}`)
     })
   })
-  let rootExited = false
-  void ended.then(() => { rootExited = true })
   const stop = async (): Promise<boolean> => {
     const pid = child.pid
     if (pid === undefined) return true
@@ -302,7 +301,7 @@ function launchDirect(
       tree = "killing"
       killing = killTree(pid).then(
         () => { tree = "killed" },
-        () => { tree = rootExited ? "unconfirmed" : "running" },
+        () => { tree = "unconfirmed" },
       )
     }
     if (killing) await killing
