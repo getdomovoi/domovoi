@@ -12698,7 +12698,10 @@ describe("DomovoiDaemon", () => {
       event: { subscribe: vi.fn(async () => ({ stream })) },
       postSessionIdPermissionsPermissionId: vi.fn(async () => ({ data: true })),
     } satisfies OpenCodeClient
-    const adapter = new OpenCodeSdkAdapter(async () => ({ client, server: { close: vi.fn() } }), () => "turn-opencode")
+    const adapter = new OpenCodeSdkAdapter(
+      async () => ({ client, server: { close: vi.fn(), stop: vi.fn(async () => true) } }),
+      () => "turn-opencode",
+    )
     const store = { load: () => snapshot, save: vi.fn(), close: vi.fn() } satisfies WorkspaceStore
     const daemon = new DomovoiDaemon({ port: 0, store, agents: { opencode: adapter }, workspaceService: checkpointingWorkspace() })
     running.push(daemon)

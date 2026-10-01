@@ -3,9 +3,16 @@ import type { ApprovalRule } from "@getdomovoi/protocol"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 
-type InactiveRule = Extract<ApprovalRule, { status: "inactive" }>
+// A rule pending delivery was never in force, so it is not a retired rule.
+// The daemon keeps one only in its state file until the agent has the
+// decision that makes it (ruling Q285), and lists none here.
+type RetiredRule = Exclude<Extract<ApprovalRule, { status: "inactive" }>, { inactiveReason: "pending-delivery" }>
 
-const inactiveReasonCopy: Record<InactiveRule["inactiveReason"], string> = {
+function isRetired(rule: ApprovalRule): rule is RetiredRule {
+  return rule.status === "inactive" && rule.inactiveReason !== "pending-delivery"
+}
+
+const inactiveReasonCopy: Record<RetiredRule["inactiveReason"], string> = {
   revoked: "This approval was revoked. It no longer pre-approves requests.",
   "legacy-text-only": "This approval matched command text only. It was deactivated and needs explicit reapproval.",
   "unsupported-record-version": "This approval was recorded in a format this daemon no longer reads. It needs explicit reapproval.",
@@ -25,7 +32,7 @@ function retiredLabel(inactivatedAt: string): string {
 
 export function PermissionRuleSettings({ rules }: { rules: readonly ApprovalRule[] }) {
   const active = rules.filter((rule) => rule.status === "active")
-  const retired = rules.filter((rule) => rule.status === "inactive")
+  const retired = rules.filter(isRetired)
 
   return (
     <>
@@ -50,11 +57,11 @@ export function PermissionRuleSettings({ rules }: { rules: readonly ApprovalRule
                   <div className="flex flex-col gap-1 py-3">
                     <span className="font-machine text-[12px] text-muted-foreground line-through">{rule.command}</span>
                     <span className="text-[11px] leading-relaxed text-warning">
-                      {rule.status === "inactive" ? inactiveReasonCopy[rule.inactiveReason] : null}
+                      {inactiveReasonCopy[rule.inactiveReason]}
                     </span>
                     <span className="text-[10.5px] text-faint">
                       {ruleCreatedLabel(rule)}
-                      {rule.status === "inactive" ? ` · ${retiredLabel(rule.inactivatedAt)}` : ""}
+                      {` · ${retiredLabel(rule.inactivatedAt)}`}
                     </span>
                   </div>
                 </li>
