@@ -2171,6 +2171,12 @@ export class GitWorkspaceService implements WorkspaceService {
       if (checkpointCommit !== commit) {
         throw new Error("Commit is not a Domovoi checkpoint")
       }
+      // The recovery checkpoint records a submodule by its commit and the
+      // reset leaves its files alone, so a submodule's local changes would
+      // survive the restore unrecorded: refused, as a snapshot refuses them.
+      const head = await currentHead(worktreePath, signal)
+      if (head !== undefined) await isolated.setHead(head)
+      if (await submoduleHasLocalChanges(isolated, signal)) throw new SubmoduleChangesRefusedError()
       const recovery = await this.#checkpoint(worktreePath, "before restore", isolated, signal)
       // `reset --hard` in two parts: the files and the index through the
       // isolated directory, then the branch with a ref command.

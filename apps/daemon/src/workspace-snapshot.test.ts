@@ -226,5 +226,22 @@ describe("GitWorkspaceService.snapshot", () => {
       expect((await readdir((await gitOut(path, "rev-parse", "--absolute-git-dir")).trim())).sort()).toEqual(gitDirectory)
       expect(await gitOut(path, "for-each-ref", "refs/domovoi/checkpoints")).toBe("")
     })
+
+    // A restore's hard reset runs without the repository's submodule.recurse,
+    // and its recovery checkpoint cannot hold a submodule's local changes, so
+    // restore refuses them as snapshot does.
+    it("refuses a restore while the submodule has local changes, and changes nothing", async () => {
+      const { service, path } = await withSubmodule()
+      const checkpoint = await service.checkpoint(path, "clean submodule")
+      await writeFile(join(path, "tracked.txt"), "later edit\n")
+      await writeFile(join(path, "vendor", "library", "lib.txt"), "dirty\n")
+      const head = (await gitOut(path, "rev-parse", "HEAD")).trim()
+
+      await expect(service.restore(path, checkpoint.commit)).rejects.toBeInstanceOf(SubmoduleChangesRefusedError)
+
+      expect((await gitOut(path, "rev-parse", "HEAD")).trim()).toBe(head)
+      expect(await readFile(join(path, "tracked.txt"), "utf8")).toBe("later edit\n")
+      expect(await readFile(join(path, "vendor", "library", "lib.txt"), "utf8")).toBe("dirty\n")
+    })
   })
 })
