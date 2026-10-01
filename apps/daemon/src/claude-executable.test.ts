@@ -104,9 +104,9 @@ describe("the Claude executable", () => {
     const adapter = new ClaudeAgentSdkAdapter()
 
     await expect(adapter.startThread({ cwd: directory, runtime }))
-      .rejects.toThrow("Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100.")
+      .rejects.toThrow("Update Claude Code to 2.1.281 or newer. The claude on this machine is 2.1.100.")
     await expect(adapter.resumeThread({ threadId: "11111111-1111-4111-8111-111111111111", cwd: directory, runtime }))
-      .rejects.toThrow("Update Claude Code to 2.1.263 or newer")
+      .rejects.toThrow("Update Claude Code to 2.1.281 or newer")
     expect(sdk.query).not.toHaveBeenCalled()
   })
 })

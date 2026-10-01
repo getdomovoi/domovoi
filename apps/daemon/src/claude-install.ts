@@ -6,11 +6,11 @@ import { promisify } from "node:util"
 import { resolveCommandPathSync } from "./tool-path.js"
 
 // The Claude Agent SDK passes the flags of the Claude Code it was built
-// against, which its package.json names as `claudeCodeVersion` (2.1.263 for
-// SDK 0.3.263). An older claude can reject them, so that is the floor. A test
+// against, which its package.json names as `claudeCodeVersion` (2.1.281 for
+// SDK 0.3.281). An older claude can reject them, so that is the floor. A test
 // compares this with the installed SDK's package.json, so an SDK bump that
 // leaves it behind fails.
-export const claudeMinimumVersion = "2.1.263"
+export const claudeMinimumVersion = "2.1.281"
 
 const notInstalled = "Claude Code is not installed: no claude executable was found on the tool PATH"
 
