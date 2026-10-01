@@ -16,7 +16,6 @@ const observedAt = "2026-09-06T00:00:00.000Z"
 const transport = { kind: "local", endpoint: "ws://127.0.0.1:49812/rpc", authenticated: true } as const
 const target = { ...workspaceSnapshot(), machine: { ...workspaceSnapshot().machine, id: machineId, name: "Studio" } }
 if (target.project) target.project = { ...target.project, machineId }
-if (target.project) target.projects = [target.project]
 const machine: FleetMachine = {
   id: machineId, label: "Studio", platform: "linux", arch: "x64", version: "0.0.1", protocolVersion,
   connection: "direct", health: "healthy", self: false, capabilities: ["sessions", "terminals", "skills"],

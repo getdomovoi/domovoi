@@ -132,6 +132,14 @@ describe("the active project list", () => {
     expect(stored).not.toHaveProperty("projects")
     expect(workspaceSnapshotForClient(createEmptyWorkspace(demoWorkspace.machine)).projects).toEqual([])
   })
+
+  // The open project is the one the daemon acts on, so the list it states is
+  // that project alone, whatever list a stored snapshot carried.
+  it("states the open project alone while one project is open at a time", () => {
+    const stored = structuredClone(demoWorkspace)
+    stored.projects = [demoWorkspace.project!, { ...demoWorkspace.project!, id: "project-other", path: "/Users/dev/src/other" }]
+    expect(workspaceSnapshotForClient(stored).projects).toEqual([demoWorkspace.project])
+  })
 })
 
 describe("a call that names a project", () => {

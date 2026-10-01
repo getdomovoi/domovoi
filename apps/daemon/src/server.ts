@@ -77,7 +77,6 @@ import {
   type RpcResult,
   type RpcMethod,
   type SessionHistoryPage,
-  workspaceProjects,
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
   type SessionTurn,
@@ -987,14 +986,14 @@ export class ActiveAssistantItemCache {
 }
 
 // Every snapshot a client receives states the active projects and the cap.
-// The stored snapshot holds one project and no list (J31 S1); the list is
-// derived here, the one place snapshots are built for clients.
+// The daemon keeps one project open (J31 S1), so the list is that project
+// alone. It is built here, the one place snapshots are built for clients.
 export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
   const thread = boundedClientThread(snapshot.thread, snapshot.activeSessionId)
   const historyTruncated = thread.length < snapshot.thread.length
   return {
     ...snapshot,
-    projects: workspaceProjects(snapshot),
+    projects: snapshot.project ? [snapshot.project] : [],
     projectCap: activeProjectCap,
     thread,
     ...(historyTruncated ? { historyTruncated: true } : {}),

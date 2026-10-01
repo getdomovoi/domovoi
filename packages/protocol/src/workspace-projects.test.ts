@@ -70,11 +70,6 @@ describe("workspace projects", () => {
     expect(workspaceProjects(parsed)).toEqual([focused, second])
   })
 
-  it("demonstrates the list in the demo workspace", () => {
-    expect(demoWorkspace.projects).toEqual([demoWorkspace.project])
-    expect(workspaceSnapshotSchema.safeParse(demoWorkspace).success).toBe(true)
-  })
-
   it("requires every session to belong to an active project", () => {
     const snapshot = twoProjects()
     snapshot.projects = [focused]
