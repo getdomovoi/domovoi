@@ -2003,6 +2003,72 @@ describe("approval replies Domovoi did not send", () => {
     await adapter.close()
   })
 
+  // Codex review of #691, P1: a record is an intent until the server accepts
+  // the answer. The server takes one answer per request and refuses the rest,
+  // so an answer it accepted is the one its reply event reports.
+  it("treats a matching reply as external when Domovoi's own answer did not go through", async () => {
+    const { adapter, client, events, threadId, ask, reply, approvals } = await askedTurn()
+    client.postSessionIdPermissionsPermissionId.mockRejectedValueOnce(new Error("connection reset"))
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+    adapter.resolveApproval(1, "allow-once")
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledOnce())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    reply("per_1", "once")
+
+    await waitForDaemon(() => expect(stopped(events)).toEqual([
+      expect.objectContaining({ threadId, permissionId: "per_1", reply: "once" }),
+    ]))
+    await adapter.close()
+  })
+
+  it("stops when the reply arrived while Domovoi's own answer was being refused", async () => {
+    const { adapter, client, events, stream, threadId, ask, approvals } = await askedTurn()
+    // Something else answered first: the server reports that reply, then
+    // refuses Domovoi's answer because the request is gone.
+    client.postSessionIdPermissionsPermissionId.mockImplementationOnce(async () => {
+      stream.emit({ type: "permission.replied", properties: { sessionID: threadId, requestID: "per_1", reply: "once" } })
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      throw new Error("Permission request not found: per_1")
+    })
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+
+    adapter.resolveApproval(1, "allow-once")
+
+    await waitForDaemon(() => expect(stopped(events)).toEqual([
+      expect.objectContaining({ threadId, permissionId: "per_1", reply: "once" }),
+    ]))
+    await adapter.close()
+  })
+
+  // Kilo ignores an approval of a skill shell batch or a sandbox escalation
+  // unless the reply says a person gave it interactively, which the reply
+  // Domovoi sends cannot say. Domovoi's approval of one never takes effect, so
+  // an approval the server reports for one is never Domovoi's.
+  it.each(["skillShell", "sandboxEscalation"])("never counts a Kilo approval of a %s request as its own", async (flag) => {
+    const { adapter, client, events, stream, threadId, reply, approvals } = await askedTurn(adapters[1][1])
+    stream.emit({
+      type: "permission.asked",
+      properties: {
+        id: "per_1", sessionID: threadId, permission: "bash", patterns: ["pnpm test"],
+        metadata: { command: "pnpm test", [flag]: true }, always: [], tool: { messageID: "msg_1", callID: "call_per_1" },
+      },
+    })
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+    adapter.resolveApproval(1, "allow-once")
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledOnce())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    reply("per_1", "once")
+
+    await waitForDaemon(() => expect(stopped(events)).toEqual([
+      expect.objectContaining({ threadId, permissionId: "per_1", reply: "once" }),
+    ]))
+    await adapter.close()
+  })
+
   it("ignores a reply for a session it does not hold", async () => {
     const { adapter, client, events, reply } = await askedTurn()
 

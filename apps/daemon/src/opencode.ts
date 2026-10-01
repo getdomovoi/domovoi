@@ -122,16 +122,29 @@ type PendingApproval = {
   // Its approval ends with that turn.
   subagentTurn?: SubagentTurn
   generation?: number
+  // Kilo ignores an approval of a skill shell batch or a sandbox escalation
+  // unless the reply says a person gave it interactively, which the legacy
+  // reply Domovoi sends cannot say. An approval of one is never Domovoi's.
+  interactiveOnly?: true
 }
 
 type ProviderReply = "once" | "always" | "reject" | "unknown"
 
-// A reply this adapter sent, recorded before it is sent: the server publishes
-// permission.replied before it answers the request that caused it.
+// A reply this adapter sent. It is recorded before it is sent, because the
+// server publishes permission.replied before it answers the request that
+// caused it, but it counts as Domovoi's only once the server has accepted it:
+// the server takes one answer per request and refuses every later one, so the
+// answer it accepted is the one its event reports. Until then it is an intent.
 type SentReply = {
   response: "once" | "reject"
   // The Domovoi thread the asking session belongs to, so an unload forgets it.
   threadId: string
+  providerSessionId: string
+  permissionId: string
+  state: "sending" | "accepted"
+  // A matching reply event that arrived while the answer was being sent. It
+  // is Domovoi's if the server accepts the answer, and someone else's if not.
+  eventSeen?: true
 }
 
 type SubagentTurn = {
@@ -542,7 +555,17 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // causes can arrive before the request that caused it is answered.
     const threadId = pending.subagentTurn?.threadId ?? this.#subagents.neverLinkedThread(pending.providerSessionId)
       ?? pending.providerSessionId
-    this.#sentReplies.set(replyKey(pending.providerSessionId, pending.permissionId), { response, threadId })
+    const key = replyKey(pending.providerSessionId, pending.permissionId)
+    const record: SentReply = {
+      response,
+      threadId,
+      providerSessionId: pending.providerSessionId,
+      permissionId: pending.permissionId,
+      state: "sending",
+    }
+    // An approval the server ignores is not recorded, so none it reports is ours.
+    if (!pending.interactiveOnly || response === "reject") this.#sentReplies.set(key, record)
+    else this.#sentReplies.delete(key)
     if (response === "reject") this.#rejectedSessions.set(pending.providerSessionId, threadId)
     void this.#client().then(async (client) => {
       unwrap(await client.postSessionIdPermissionsPermissionId({
@@ -551,8 +574,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         body: { response },
         throwOnError: true,
       }), `${this.#identity.providerName} permission response`)
-    }).catch((error: unknown) => {
+    }).then(() => this.#replyAccepted(key, record), (error: unknown) => {
       console.error(`Domovoi could not resolve a ${this.#identity.providerName} permission`, error)
+      this.#replyFailed(key, record)
       // A subagent's refusal must not be lost, or the subagent waits on it.
       const owner = pending.subagentTurn ? this.#sessions.get(pending.subagentTurn.threadId) : undefined
       const stillLoaded = owner !== undefined && owner.generation === pending.generation
@@ -562,6 +586,25 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         this.#failedRefusals.set(requestId, pending)
       }
     })
+  }
+
+  // The server accepted the answer, so the reply it reports for this request
+  // is Domovoi's: one that already arrived is settled, a later one will be.
+  #replyAccepted(key: string, record: SentReply): void {
+    if (this.#sentReplies.get(key) !== record) return
+    if (record.eventSeen) this.#sentReplies.delete(key)
+    else record.state = "accepted"
+  }
+
+  // The answer did not go through, or nothing says whether it did. The record
+  // is dropped, so a later reply for the request counts as someone else's,
+  // and one that already arrived was someone else's.
+  #replyFailed(key: string, record: SentReply): void {
+    if (this.#sentReplies.get(key) !== record) return
+    this.#sentReplies.delete(key)
+    if (!record.eventSeen) return
+    const session = this.#sessions.get(record.threadId)
+    if (session) this.#stopForReplyElsewhere(session, record.providerSessionId, record.permissionId, record.response)
   }
 
   #retryFailedRefusals(threadId: string): void {
@@ -959,6 +1002,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         cwd,
         permissionId: request.permissionId,
         ...(subagentTurn ? { subagentTurn, generation: session.generation } : {}),
+        ...(interactiveOnly(properties) ? { interactiveOnly: true as const } : {}),
       })
       this.#emit({
         type: "approval-requested",
@@ -999,11 +1043,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
   // `requestID` and `reply` are what current servers send (opencode 1.18,
   // kilo 7.8); `permissionID` and `response` are the older shape. A reply is
-  // this adapter's only when it recorded that same reply for that request
-  // before sending it (Q246 A), or when it is a rejection the server added for
-  // a session this adapter had sent a rejection to. Anything else stops the
-  // thread the asking session belongs to (Q247 A), including a reply that
-  // names no request: nothing in it says it was this adapter's.
+  // this adapter's only when it sent that same reply for that request and the
+  // server accepted it (Q246 A, Codex review of #691), or when it is a
+  // rejection the server added for a session this adapter had sent a
+  // rejection to. A matching reply that arrives while the answer is still
+  // being sent waits for the server's answer. Anything else stops the thread
+  // the asking session belongs to (Q247 A), including a reply that names no
+  // request: nothing in it says it was this adapter's.
   #receiveReply(cwd: string, sessionId: string, properties: Record<string, unknown>): void {
     const threadId = this.#subagents.get(sessionId)?.threadId
       ?? this.#subagents.neverLinkedThread(sessionId)
@@ -1018,7 +1064,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const key = replyKey(sessionId, requestId)
     const sent = requestId ? this.#sentReplies.get(key) : undefined
     if (sent?.response === reply) {
-      this.#sentReplies.delete(key)
+      if (sent.state === "accepted") this.#sentReplies.delete(key)
+      else sent.eventSeen = true
       return
     }
     if (!sent && reply === "reject" && this.#rejectedSessions.has(sessionId)) return
@@ -1210,6 +1257,13 @@ function permissionRequest(
     // A permission with no name is still a provider tool, never shell text.
     ...(shell || edit !== undefined ? {} : { tool: kind || "unknown" }),
   }
+}
+
+// kilo 7.8 permission/index.ts:295-304: a skill shell batch or a sandbox
+// escalation takes only a reply marked interactive.
+function interactiveOnly(properties: Record<string, unknown>): boolean {
+  const metadata = asRecord(properties.metadata)
+  return metadata?.skillShell === true || metadata?.sandboxEscalation === true
 }
 
 function replyKey(sessionId: string, requestId: string): string {
