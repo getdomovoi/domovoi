@@ -241,9 +241,15 @@ function expectBuiltInsKept(builtIns: readonly string[], was: Record<string, Rul
   }
 }
 
+// Kilo's notebook and browser tools, which its defaults allow outside VS Code
+// and ask for in it: the embedded config asks for them everywhere, so they
+// are checked apart from the other built-in tools.
+const kiloConditionalTools = ["notebook_read", "notebook_edit", "notebook_execute", "browser_open"]
+const kiloAlwaysBuiltIns = kiloBuiltIns.filter((name) => !kiloConditionalTools.includes(name))
+
 const cases = [
   ["OpenCode", openCodeBuiltIns, (config: EmbeddedConfig) => openCodeAgents(config), domovoiOpenCodeConfig, "build"],
-  ["Kilo", kiloBuiltIns, (config: EmbeddedConfig) => kiloAgents(config, [ownServer]), domovoiKiloConfig, "code"],
+  ["Kilo", kiloAlwaysBuiltIns, (config: EmbeddedConfig) => kiloAgents(config, [ownServer]), domovoiKiloConfig, "code"],
 ] as const
 
 describe.each(cases)("%s permissions under the embedded config", (name, builtIns, model, config, primary) => {
@@ -310,5 +316,27 @@ describe("the embedded config's own shape", () => {
   ] as const)("puts %s's catch-all first, so every rule after it still applies", (_name, config) => {
     const permission = config.permission as Record<string, unknown> | undefined
     expect(Object.entries(permission ?? {})[0]).toEqual(["*", "ask"])
+  })
+})
+
+// Security review round 1 of #687: Kilo's own defaults ask for its notebook
+// and browser tools when it runs as the VS Code client with native notebook
+// tools on, and the embedded config must not allow them there.
+describe("Kilo as the VS Code client with native notebook tools", () => {
+  it("keeps every built-in tool's action, notebook and browser asks included", () => {
+    const was = judged(kiloAgents(before, [ownServer], true), "code")
+    const is = judged(kiloAgents(domovoiKiloConfig as EmbeddedConfig, [ownServer], true), "code")
+    expectBuiltInsKept(kiloBuiltIns, was, is)
+    for (const tool of kiloConditionalTools) expect(evaluate(tool, "*", is.code!), tool).toBe("ask")
+  })
+
+  it("asks for them outside VS Code too, where Kilo's defaults would allow them", () => {
+    const is = judged(kiloAgents(domovoiKiloConfig as EmbeddedConfig, [ownServer]), "code")
+    for (const agent of ["code", "domovoi-auto", "general"]) {
+      for (const tool of kiloConditionalTools) expect(`${agent} ${tool}: ${evaluate(tool, "*", is[agent]!)}`).toBe(`${agent} ${tool}: ask`)
+    }
+    for (const agent of ["plan", "explore"]) {
+      for (const tool of kiloConditionalTools) expect(`${agent} ${tool}: ${evaluate(tool, "*", is[agent]!)}`).toBe(`${agent} ${tool}: deny`)
+    }
   })
 })

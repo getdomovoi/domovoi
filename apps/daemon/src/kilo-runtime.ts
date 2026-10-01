@@ -25,15 +25,17 @@ import {
 // its defaults also deny suggest, repo_clone and repo_overview; its build
 // agent is named code; and it appends every deny its explore block names
 // after that block, so a catch-all deny cannot be restated there.
+// Only the tools Kilo's defaults allow whatever the client and config. Kilo
+// asks for its notebook tools as the VS Code client with
+// experimental.native_notebook_tools on, and for browser_open as the VS Code
+// client (kilocode/agent/index.ts prepare), so those four are not restated:
+// the catch-all asks for them everywhere (security review round 1 of #687).
+export const kiloConditionalAsks = ["notebook_read", "notebook_edit", "notebook_execute", "browser_open"] as const
 export const kiloDefaultAllows = [
   ...openCodeDefaultAllows,
   "semantic_search",
   "open_plan",
   "agent_manager",
-  "notebook_read",
-  "notebook_edit",
-  "notebook_execute",
-  "browser_open",
   "board_read",
   "board_post",
   "goal",
@@ -48,6 +50,7 @@ export const kiloBuiltInPermissions: ReadonlySet<string> = new Set([
   ...openCodeBuiltInPermissions,
   ...kiloDefaultAllows,
   ...kiloDefaultDenies,
+  ...kiloConditionalAsks,
   "recall",
   "kilo_memory_recall",
   "kilo_memory_save",
