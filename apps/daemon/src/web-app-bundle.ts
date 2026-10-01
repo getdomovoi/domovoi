@@ -19,13 +19,23 @@ import {
 //
 // The whole bundle is refused when any check fails; there is no partial load.
 // The root may be a link the owner configured: it is resolved once with
-// realpath. Under the real root nothing is followed. Every directory between
-// the root and a file is checked with lstat before the file is opened and
-// again after it is read, and must still be the same directory. The file is
-// opened with O_NOFOLLOW where the platform has it (Windows does not) and
-// O_NONBLOCK, so a FIFO swapped in cannot hold the open, and the open
-// descriptor must be the regular file lstat saw. Who may change the tree,
-// and the access-control-list limit, are stated at trustedOwner below.
+// realpath. Below it, every directory between the root and a file is checked
+// with lstat before the file is opened and again after it is read, and must
+// be the same directory both times. The file is opened with O_NOFOLLOW where
+// the platform has it (Windows does not) and O_NONBLOCK, so a FIFO swapped in
+// cannot hold the open, and the open descriptor must be the regular file
+// lstat saw. A link found at any of those checks is refused.
+//
+// That is narrower than link-free traversal (review F2, Q297). Every call
+// re-resolves a pathname from the root; Node has no openat2 or other lookup
+// anchored to a checked directory handle, and O_NOFOLLOW covers only the last
+// component. A directory swapped for a link and back between two checks is
+// not seen, and on Windows a link to the same file passes. With the owner
+// checks at trustedOwner, only the daemon's own account or root can make that
+// change, so a race by that account is a trusted-account limit, not one this
+// loader defends. Whatever the traversal, every byte kept has the size and
+// SHA-256 the parsed manifest lists. Who may change the tree, and the
+// access-control-list limit, are stated at trustedOwner below.
 
 // The file-system calls the loader makes, so a test can swap a file between
 // two of them.

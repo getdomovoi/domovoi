@@ -109,7 +109,7 @@ these hold:
 | a listed path is not a plain relative path: empty, `.` or `..` segments, backslash, NUL, leading `/`, `//` | traversal is impossible by construction, not by a check at request time |
 | a listed path collides with a daemon route: `rpc`, `healthz`, anything under `artifacts/` | a bundle cannot shadow the socket, the health probe or preview access |
 | a listed extension is outside a fixed table (`.html .js .css .svg .png .ico .webmanifest .woff2`) | content type comes from the table, never from the file |
-| any path component under the real root is a symlink, or the leaf is not a regular file | symlink refusal; the root itself may be a symlink the owner configured, resolved once with `realpath` |
+| a path component under the real root is a symlink when checked, or the leaf is not a regular file | symlink refusal; the root itself may be a symlink the owner configured, resolved once with `realpath`. What these checks prove is stated below the table |
 | the real root is inside the profile directory (which holds `worktrees/`), or holds it | agent-written files must never be served as the app (section 3.4); a pathname policy, see there |
 | the manifest or a listed file has more than one hard link | its other name can be anywhere on the volume, `worktrees/` included (review F3, Q297) |
 | on POSIX, the root, a directory under it, the manifest or a listed file is owned by an account other than the daemon's effective uid or root, or is writable by group or others | mode bits alone do not keep another account out: an owner keeps write and chmod rights whatever the mode. Never `fs.access(W_OK)`, which answers for the daemon's account only (review F1, Q297) |
@@ -118,7 +118,16 @@ these hold:
 | file count, per-file size or total size exceeds a bound | memory bound; bounds set from a measured build with headroom, like the coverage floors |
 
 Leaves are opened with `O_NOFOLLOW` where the platform has it and read through that descriptor, so
-a symlink swapped in at the leaf during the load is refused rather than followed.
+a symlink swapped in at the leaf during the load is refused rather than followed. Each directory
+between the root and a file is checked with `lstat` before the open and after the read and must be
+the same directory both times.
+
+Stated limit (review F2, Q297): this is not link-free traversal. Every call re-resolves a pathname;
+Node has no `openat2` or other lookup anchored to a checked directory handle, and `O_NOFOLLOW`
+covers only the last component (Windows has neither). A directory swapped for a link and back
+between two checks is not seen. With the ownership checks below, only the daemon's own account or
+root can change the bundle tree, so a race by that account is a trusted-account limit. The digests
+still bind every byte kept to the manifest that was parsed.
 
 Stated limit (review F1, Q297): access control lists are not read. macOS ACLs and Windows ACLs can
 grant another account rights the mode bits do not show, and on Windows neither ownership nor mode
