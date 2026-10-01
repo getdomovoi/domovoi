@@ -209,6 +209,10 @@ Scheduler stops and deletes the task: that Task Scheduler's stop also ends the d
 started is not proved, so it is not relied on. A loop that never recorded a start has no daemon to
 stop. A failed proof keeps the task,
 disabled, and the configuration, as any failure after the stop step does.
+Limit: that error's advice to re-enable the task with `schtasks /change` does not hold for a
+supervised task whose stop request was already written. The request retires the registration, so
+a re-enabled task's loop refuses to start; reinstalling, which assigns a new registration, or
+retrying the removal does work.
 See [schtasks delete](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-delete)
 and [RegisteredTask.State](https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-state).
 
