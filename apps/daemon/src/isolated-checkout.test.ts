@@ -117,9 +117,9 @@ describe("runGitProcess", () => {
 
 // Windows has no process groups: a stop runs taskkill /T on the direct Git.
 // Once that Git has been seen to exit its PID can belong to another process,
-// so no taskkill runs then (ruling Q276), and a taskkill still running at the
-// teardown bound is ended with its listeners gone. Runs on every platform
-// with a fake Git and a fake taskkill.
+// so no taskkill runs then (ruling Q276). A taskkill that runs past its bound
+// is a failure, as one that exits with an error is (ruling Q295). Runs on
+// every platform with a fake Git and a fake taskkill.
 describe("windowsGitStop", () => {
   const fakeGit = (state: { exitCode: number | null; signalCode: NodeJS.Signals | null }) => ({ pid: 4_242, ...state, kill: vi.fn(() => true) })
   const fakeTaskkill = () => Object.assign(new EventEmitter(), { exitCode: null as number | null, signalCode: null, kill: vi.fn(() => true) })
@@ -142,58 +142,58 @@ describe("windowsGitStop", () => {
     expect(run.mock.calls[0]![1]).toEqual(["/PID", "4242", "/T", "/F"])
   })
 
-  it("ends a taskkill still running at the teardown bound and removes its listeners", () => {
-    const taskkill = fakeTaskkill()
-    const stop = windowsGitStop(fakeGit({ exitCode: null, signalCode: null }), () => taskkill as unknown as ChildProcess)
-    stop.stop()
-    expect(taskkill.listenerCount("exit")).toBeGreaterThan(0)
-
-    stop.cancel()
-
-    expect(taskkill.kill).toHaveBeenCalledOnce()
-    expect(taskkill.listenerCount("exit")).toBe(0)
-    // A failed kill reports an error event; nothing crashes on it.
-    expect(() => taskkill.emit("error", new Error("kill failed"))).not.toThrow()
-  })
-
   // The bound is the taskkill's own, so it holds even when Git closes and the
-  // command settles first (ruling Q281).
-  it("ends a taskkill still running at its own bound, with no one else asking", () => {
+  // command settles first (ruling Q281). Running past it is a failed
+  // taskkill: Git, if still running, is killed directly, as for any failed
+  // taskkill, and the taskkill is asked to end with its completion handlers
+  // kept, so its real exit or kill error is still observed (ruling Q295).
+  it("kills a still-running Git directly when taskkill runs past its bound, and keeps observing taskkill", async () => {
     vi.useFakeTimers()
     try {
       const taskkill = fakeTaskkill()
-      windowsGitStop(fakeGit({ exitCode: null, signalCode: null }), () => taskkill as unknown as ChildProcess).stop()
-      vi.advanceTimersByTime(gitTeardownTimeoutMs - 1)
+      const git = fakeGit({ exitCode: null, signalCode: null })
+      windowsGitStop(git, () => taskkill as unknown as ChildProcess).stop()
+      await vi.advanceTimersByTimeAsync(gitTeardownTimeoutMs - 1)
       expect(taskkill.kill).not.toHaveBeenCalled()
-      vi.advanceTimersByTime(1)
+      expect(git.kill).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(1)
+
+      expect(git.kill).toHaveBeenCalledWith("SIGKILL")
       expect(taskkill.kill).toHaveBeenCalledOnce()
-      expect(taskkill.listenerCount("exit")).toBe(0)
+      expect(taskkill.listenerCount("exit")).toBeGreaterThan(0)
+      expect(taskkill.listenerCount("error")).toBeGreaterThan(0)
+      // A failed kill reports an error event; it is observed, not thrown.
+      expect(() => taskkill.emit("error", new Error("kill failed"))).not.toThrow()
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it("leaves a taskkill that exits before its bound alone", () => {
+  it("kills no process directly when taskkill ends Git before its bound", async () => {
     vi.useFakeTimers()
     try {
       const taskkill = fakeTaskkill()
-      windowsGitStop(fakeGit({ exitCode: null, signalCode: null }), () => taskkill as unknown as ChildProcess).stop()
+      const git = fakeGit({ exitCode: null, signalCode: null })
+      windowsGitStop(git, () => taskkill as unknown as ChildProcess).stop()
+      git.signalCode = "SIGTERM" as NodeJS.Signals | null
       taskkill.exitCode = 0
       taskkill.emit("exit", 0, null)
-      vi.advanceTimersByTime(gitTeardownTimeoutMs)
+      await vi.advanceTimersByTimeAsync(gitTeardownTimeoutMs)
       expect(taskkill.kill).not.toHaveBeenCalled()
+      expect(git.kill).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it("leaves a taskkill that already finished alone at the bound", () => {
+  it("kills Git directly when taskkill fails", async () => {
     const taskkill = fakeTaskkill()
-    const stop = windowsGitStop(fakeGit({ exitCode: null, signalCode: null }), () => taskkill as unknown as ChildProcess)
-    stop.stop()
-    taskkill.exitCode = 0
-    stop.cancel()
-    expect(taskkill.kill).not.toHaveBeenCalled()
+    const git = fakeGit({ exitCode: null, signalCode: null })
+    windowsGitStop(git, () => taskkill as unknown as ChildProcess).stop()
+    taskkill.exitCode = 1
+    taskkill.emit("exit", 1, null)
+    await vi.waitFor(() => expect(git.kill).toHaveBeenCalledWith("SIGKILL"))
   })
 })
 

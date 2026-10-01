@@ -248,37 +248,46 @@ function abortError(signal: AbortSignal): Error {
 // orphaned children are out of reach, and only the bounded teardown settles
 // the command, until the Q111 job-object follow-up keeps authority over
 // them. A small window remains between this check and taskkill opening the
-// PID, should Git exit in it. One taskkill at a time; cancel ends one still
-// running at the teardown bound, with its listeners removed.
+// PID, should Git exit in it. One taskkill at a time.
+//
+// Each taskkill has a bound of its own, which holds whether or not the
+// command settles first (ruling Q281). Running past it is a failed taskkill
+// (ruling Q295): Git, if still running, is killed directly, as for any
+// taskkill failure, and taskkill is asked to end. Its completion handlers
+// stay, so its real exit, or an error from the kill, is still observed. That
+// direct kill reaches Git alone; whether the processes Git started have ended
+// stays unknown, as after any kill (workspace-restore-lease.ts).
 export function windowsGitStop(
   child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode" | "kill">,
   run: TaskkillSpawn = spawn,
-): { stop(): void; cancel(): void } {
+): { stop(): void } {
   let taskkill: ChildProcess | undefined
   const exited = (spawned: Pick<ChildProcess, "exitCode" | "signalCode">) => spawned.exitCode !== null || spawned.signalCode !== null
-  const cancel = () => {
-    if (taskkill === undefined || exited(taskkill)) return
-    taskkill.removeAllListeners()
-    taskkill.on("error", () => {})
-    taskkill.kill()
-  }
   return {
     stop() {
       if (child.pid === undefined || exited(child)) return
       if (taskkill !== undefined && !exited(taskkill)) return
-      void windowsTreeKill(child.pid, (command, args, options) => (taskkill = run(command, args, options))).catch(() => {
+      let bound: NodeJS.Timeout | undefined
+      const overrun = new Promise<never>((_, reject) => {
+        bound = setTimeout(() => reject(new Error(`taskkill did not finish within ${gitTeardownTimeoutMs} ms`)), gitTeardownTimeoutMs)
+        bound.unref?.()
+      })
+      const killing = windowsTreeKill(child.pid, (command, args, options) => (taskkill = run(command, args, options)))
+      // Settles on its own after an overrun too; nothing waits for it then.
+      killing.catch(() => undefined)
+      const started = taskkill
+      void Promise.race([killing, overrun]).then(() => clearTimeout(bound), () => {
+        clearTimeout(bound)
+        if (started !== undefined && !exited(started)) {
+          try {
+            started.kill()
+          } catch {
+            // Its error event, which windowsTreeKill observes, says so too.
+          }
+        }
         if (!exited(child)) child.kill("SIGKILL")
       })
-      // The taskkill's own bound, which holds whether or not the command
-      // settles first (ruling Q281): Git can close its pipes while taskkill
-      // still runs, and nothing else would end it then.
-      const started = taskkill
-      if (started === undefined) return
-      const bound = setTimeout(cancel, gitTeardownTimeoutMs)
-      bound.unref?.()
-      started.once("exit", () => clearTimeout(bound))
     },
-    cancel,
   }
 }
 
@@ -342,7 +351,6 @@ export function runGitProcess(args: readonly string[], options: {
     }
     teardown ??= setTimeout(() => {
       if (settled) return
-      windows?.cancel()
       child.stdout.destroy()
       child.stderr.destroy()
       settle(signal?.aborted
