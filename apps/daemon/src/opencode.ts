@@ -88,6 +88,10 @@ type OpenCodeCatalog = {
 // How long a card waits for its directory's tool servers to be read again.
 const catalogReadTimeoutMs = 1_000
 
+// How long Domovoi waits for the server to answer an abort before it treats
+// the abort as failed (#sendAbort).
+const abortAnswerTimeoutMs = 10_000
+
 // What a turn aborted for a tool change says of the abort: a stated limit,
 // not a gate (#watchToolCall).
 const abortLimit = "The call that showed it may already have run, and a tool that is running may not stop for the abort."
@@ -252,18 +256,17 @@ type Session = {
   // unload cannot leave anything behind for the next load.
   generation: number
   activeTurnId?: string
-  // Set once the server shows the active turn's own messages. The server ends
-  // an aborted run before it takes the next prompt, so after an interrupt an
-  // idle or error that comes before them is the interrupted turn's, not this
-  // one's.
-  activeTurnStarted?: true
-  // The turn an interrupt was sent for, until the first idle after it (an
-  // error before that idle is the same run's). Only an interrupt arms the wait
-  // above; without one, the first idle or error ends the active turn as before.
-  interruptedTurnId?: string
-  // Set when the active turn's prompt goes out. An idle or error before that
-  // cannot be the turn's own (security review round 7 of #687).
-  activeTurnSent?: true
+  // How far the active turn's own run has come, by message identity
+  // (#turnEndOn, security review round 8 of #687, ruling Q287). `seen`: the
+  // server showed the turn's prompt (its user message, whose id Domovoi
+  // chose) or a reply to it or to one of its steers. `reply`: the latest such
+  // reply, and whether it has completed or failed. `error`: a session error
+  // after the turn was seen and since that reply began.
+  activeTurn?: {
+    seen?: true
+    reply?: { done: boolean; error?: string }
+    error?: string
+  }
   // The catalog checked before the prompt that started the active turn. Every
   // prompt, a steer's included, is checked before it is sent, but only the
   // prompt that starts a turn sets this, and the turn's tool calls, a
@@ -284,26 +287,25 @@ type DirectoryStream = {
 }
 
 // An abort Domovoi sent to a provider session's run (#abortRun), recorded
-// before it is sent (security review round 7 of #687). OpenCode 1.18.33 and
-// Kilo 7.8.1 answer an abort after publishing the aborted run's idle (their
-// SessionRunState.cancel: the runner's cancel, or a plain idle when nothing
-// runs), but the answer and the event stream are not ordered, so the run's
-// end, error or idle, can arrive before or after the answer. Until that idle
-// arrives the record takes the run's end, so it never ends a later turn
-// (#takenByAbort).
+// before it is sent and kept until the server answers or ten seconds pass
+// (security review rounds 7 and 8 of #687). Every abort of a session goes
+// through it: a stop, an interrupt, a thread stop and a run outside any turn.
+// A second one while it is pending joins it. The aborted run's own end
+// (errors and idles, which the servers publish in no fixed number) is not
+// counted: a turn the abort stops ends on the answer, and a later turn only
+// on an idle after its own reply completed (#turnEndOn).
 type RunAbort = {
-  // The Domovoi turns the abort stops; none for a run outside any turn.
-  turnIds: Set<string>
+  // The Domovoi turns the abort concerns, and what its answer does to each:
+  // a stop fails the turn with its reason, answered or not; an interrupt
+  // fails it once answered; a hold (a thread stop) only keeps the run's end
+  // from ending it while the abort is pending.
+  turns: Map<string, { ends: "stop" | "interrupt" | "hold"; reason: string }>
   // Why it was sent, for a prompt that waits on an abort that fails.
   reason: string
-  // True once the server answered the abort, false if it did not.
+  // True once the server answered the abort, false if it did not in time.
   settled: Promise<boolean>
-  // Until the server answers. A second trigger joins a pending abort.
+  // Until the server answers or the bound passes.
   pending: boolean
-  // The aborted run's idles still to come: one for each abort the server
-  // took, none once an abort fails. Only the thread's own session awaits
-  // them: a subagent's end ends no turn.
-  awaitedEnds: number
 }
 
 type PendingApproval = {
@@ -649,14 +651,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const turnId = this.#nextMessageId(session)
     session.runtime = runtime
     session.activeTurnId = turnId
-    delete session.activeTurnStarted
-    delete session.activeTurnSent
+    session.activeTurn = {}
     try {
       await this.#sendPrompt(session, turnId, prompt, runtime, { starts: turnId })
     } catch (error) {
       if (session.activeTurnId === turnId) {
         delete session.activeTurnId
-        delete session.activeTurnSent
+        delete session.activeTurn
       }
       throw error
     }
@@ -676,8 +677,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // can end while the steer is in flight. The server then runs the
     // accepted steer outside any Domovoi turn, where no tool call is checked:
     // Domovoi aborts that run, waits for the server's answer, and fails the
-    // steer (security review rounds 6 and 7 of #687). The abort's record
-    // takes that run's end, and a prompt for a new turn waits for it.
+    // steer (security review rounds 6 and 7 of #687). A prompt for a new turn
+    // waits for that abort, and that run's end never ends a later turn, which
+    // ends only after its own reply (#turnEndOn).
     if (session.activeTurnId !== turnId) {
       const name = this.#identity.providerName
       const reason = `The ${name} turn ended while the steer was sent, so Domovoi stopped it: ${name} would have run it outside the turn, where Domovoi does not check its tool calls. Send it as a new prompt.`
@@ -695,20 +697,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
     const session = this.#requireSession(threadId)
     if (session.activeTurnId !== turnId) return
-    const client = await this.#client()
-    // Armed before the abort is sent, because the run's end can arrive before
-    // the abort's own answer.
-    session.interruptedTurnId = turnId
-    try {
-      unwrap(await client.session.abort({
-        path: { id: threadId },
-        query: { directory: session.cwd },
-        throwOnError: true,
-      }), `${this.#identity.providerName} turn interruption`)
-    } catch (error) {
-      if (session.interruptedTurnId === turnId) delete session.interruptedTurnId
-      throw error
-    }
+    // Through the shared abort record: an abort already pending is joined,
+    // and the turn fails once the server answers (security review round 8 of
+    // #687). A failed or unanswered abort throws, as before, and leaves the
+    // turn running unless a stop it joined ends it.
+    const name = this.#identity.providerName
+    const answered = await this.#abortRun(threadId, session.cwd, `The ${name} turn was interrupted.`, { turnId, ends: "interrupt" }).settled
+    if (!answered) throw new Error(`${name} turn interruption failed. ${this.#unconfirmed()}`)
   }
 
   async stopThread(threadId: string): Promise<void> {
@@ -718,12 +713,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     if (pending) pending.cancelled = true
     const cwd = session?.cwd ?? pending!.cwd
     const client = await this.#client()
-    if (session?.activeTurnId) {
-      unwrap(await client.session.abort({
-        path: { id: threadId },
-        query: { directory: cwd },
-        throwOnError: true,
-      }), `${this.#identity.providerName} session interruption`)
+    const turnId = session?.activeTurnId
+    if (session && turnId !== undefined) {
+      // Through the shared abort record, joining one already pending (security
+      // review round 8 of #687). A failed or unanswered abort throws, as before.
+      const name = this.#identity.providerName
+      const answered = await this.#abortRun(threadId, cwd, `The ${name} session was stopped.`, { turnId, ends: "hold" }).settled
+      if (!answered) throw new Error(`${name} session interruption failed. ${this.#unconfirmed()}`)
     }
     unwrap(await client.session.delete({
       path: { id: threadId },
@@ -1190,10 +1186,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // session's check publishes to the directory later. Only the prompt that
     // starts the turn sets it: a steer runs its own check above but leaves
     // the turn's snapshot as it was (security review round 5 of #687).
-    if (startsTurn) {
-      session.checkedCatalog = { turnId: messageId, catalog: checked }
-      session.activeTurnSent = true
-    }
+    if (startsTurn) session.checkedCatalog = { turnId: messageId, catalog: checked }
     ensureSuccess(await client.session.promptAsync({
       path: { id: session.threadId },
       query: { directory: session.cwd },
@@ -1304,16 +1297,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       if (toolStarts || permission) this.#abortUnwatched(sessionId, cwd)
       return
     }
-    // The thread's own run ending (error, idle) while an abort Domovoi sent
-    // to it is recorded: that run's end, taken by the record, ends no turn
-    // (security review round 7 of #687).
-    if (!subagent && (event.type === "session.error" || event.type === "session.idle") && this.#takenByAbort(session, event.type)) return
-
     if (event.type === "message.updated") {
       const info = asRecord(properties.info)
-      if (session.activeTurnId !== undefined && (info?.id === session.activeTurnId || info?.parentID === session.activeTurnId)) {
-        session.activeTurnStarted = true
-      }
+      if (!subagent && info) this.#trackTurnMessage(session, info)
       const newest = laterMessageId(session.newestMessageId, info?.id)
       if (newest !== undefined) session.newestMessageId = newest
       if (info?.role === "assistant" && typeof info.id === "string") {
@@ -1406,25 +1392,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
     // A subagent finishing or failing ends its task tool call, not the turn.
     if (subagent) return
-    if (event.type === "session.error" || event.type === "session.idle") {
-      const interrupted = session.interruptedTurnId
-      // An interrupted run can end with an error and then an idle (the
-      // processor's halt publishes both), so the record lasts until the idle.
-      if (event.type === "session.idle") delete session.interruptedTurnId
-      // The interrupted run's own end, arriving after the next turn took the
-      // slot and before that turn's messages. It ends nothing.
-      if (interrupted !== undefined && session.activeTurnId !== interrupted && !session.activeTurnStarted) return
-    }
     if (event.type === "session.error") {
-      const error = asRecord(properties.error)
-      const interrupted = session.interruptedTurnId
-      this.#complete(session, "failed", errorMessage(error, this.#identity.providerName))
-      // The error can end the interrupted turn itself. Its idle is still to
-      // come, so the record stays until that idle.
-      if (interrupted !== undefined) session.interruptedTurnId = interrupted
+      const turn = session.activeTurn
+      // Before the turn's own messages, an error is an earlier run's.
+      if (turn?.seen) turn.error = errorMessage(asRecord(properties.error), this.#identity.providerName)
       return
     }
-    if (event.type === "session.idle") this.#complete(session, "completed")
+    if (event.type === "session.idle") this.#turnEndOn(session)
   }
 
   // A tool server added while a turn runs (the server's POST /mcp, which
@@ -1484,108 +1458,144 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
   }
 
-  // Aborts the turn's run, then ends the turn as failed with `reason`, so the
-  // turn is not reported over before the server has taken the abort. A
-  // failed abort is reported in the reason. The run's own end, arriving
-  // later, ends nothing. An answered abort does not show that a tool already
-  // running stopped: that tool may not honor it (#watchToolCall).
+  // Aborts the turn's run; the abort's answer, not the run's end, ends the
+  // turn as failed with `reason`, so the turn is not reported over before
+  // the server has taken the abort. An abort not answered in time is
+  // reported in the reason. An answered abort does not show that a tool
+  // already running stopped: that tool may not honor it (#watchToolCall).
   // Resolves true once the server answered the abort, false if it did not. A
   // stop already under way is joined: the caller waits for its answer
-  // (security review round 7 of #687). A turn no longer active resolves true
-  // at once.
+  // (security review rounds 7 and 8 of #687). A turn no longer active
+  // resolves true at once.
   async #stopTurn(session: Session, turnId: string, reason: string): Promise<boolean> {
     if (session.activeTurnId !== turnId || this.#sessions.get(session.threadId) !== session) return true
-    const stopped = await this.#abortRun(session.threadId, session.cwd, reason, turnId).settled
-    // The first stop to resume ends the turn; the abort's record takes the
-    // run's end, whether it came before the answer or is still to come.
-    if (session.activeTurnId === turnId) this.#complete(session, "failed", stopped ? reason : `${reason} ${this.#unconfirmed()}`)
-    return stopped
+    return this.#abortRun(session.threadId, session.cwd, reason, { turnId, ends: "stop" }).settled
   }
 
   #unconfirmed(): string {
     return `Domovoi could not confirm that ${this.#identity.providerName} stopped the run.`
   }
 
-  // Aborts a provider session's run: the thread's, or a subagent's. The
-  // abort is recorded before it is sent, and a second trigger while it is
-  // pending joins it rather than sending another (security review round 7
-  // of #687). An abort sent after an earlier one was answered but before
-  // that one's idle arrived waits for both idles.
-  #abortRun(providerSessionId: string, cwd: string, reason: string, turnId?: string): RunAbort {
-    const existing = this.#runAborts.get(providerSessionId)
-    if (existing?.pending) {
-      if (turnId !== undefined) existing.turnIds.add(turnId)
-      return existing
+  // Aborts a provider session's run: the thread's, or a subagent's. Every
+  // abort the adapter sends goes through here. The abort is recorded before
+  // it is sent, and a second one while it is pending joins it rather than
+  // sending another (security review rounds 7 and 8 of #687). When it
+  // settles, the record goes, and the thread's active turn ends as the
+  // record's entry for it says (RunAbort).
+  #abortRun(
+    providerSessionId: string,
+    cwd: string,
+    reason: string,
+    turn?: { turnId: string; ends: "stop" | "interrupt" | "hold" },
+  ): RunAbort {
+    const pending = this.#runAborts.get(providerSessionId)
+    const record: RunAbort = pending ?? { turns: new Map(), reason, settled: Promise.resolve(false), pending: true }
+    if (turn) {
+      const rank = { hold: 0, interrupt: 1, stop: 2 } as const
+      const current = record.turns.get(turn.turnId)
+      if (!current || rank[turn.ends] > rank[current.ends]) record.turns.set(turn.turnId, { ends: turn.ends, reason })
+      // A prompt waiting on the abort fails with the stop's reason.
+      if (turn.ends === "stop") record.reason = reason
     }
-    const fenced = this.#sessions.has(providerSessionId)
-    const record: RunAbort = {
-      turnIds: new Set([...existing?.turnIds ?? [], ...turnId === undefined ? [] : [turnId]]),
-      reason,
-      settled: Promise.resolve(false),
-      pending: true,
-      awaitedEnds: fenced ? (existing?.awaitedEnds ?? 0) + 1 : 0,
-    }
+    if (pending) return pending
     this.#runAborts.set(providerSessionId, record)
     record.settled = this.#sendAbort(providerSessionId, cwd).then((answered) => {
       record.pending = false
-      // An abort the server did not take ends no run, so no end is awaited.
-      if (!answered) record.awaitedEnds = 0
-      this.#releaseAbort(providerSessionId, record)
+      if (this.#runAborts.get(providerSessionId) === record) this.#runAborts.delete(providerSessionId)
+      const session = this.#sessions.get(providerSessionId)
+      const active = session?.activeTurnId
+      const entry = active === undefined ? undefined : record.turns.get(active)
+      if (session && entry && (entry.ends === "stop" || (entry.ends === "interrupt" && answered))) {
+        this.#complete(session, "failed", answered ? entry.reason : `${entry.reason} ${this.#unconfirmed()}`)
+      }
       return answered
     })
     return record
   }
 
+  // True once the server answers the abort. False when it refuses, or does
+  // not answer within ten seconds: the servers' own clients set no request
+  // timeout, so without this bound a prompt waiting on the abort would wait
+  // for ever (security review round 8 of #687).
   async #sendAbort(providerSessionId: string, cwd: string): Promise<boolean> {
-    try {
-      const client = await this.#client()
-      unwrap(await client.session.abort({
-        path: { id: providerSessionId },
-        query: { directory: cwd },
-        throwOnError: true,
-      }), `${this.#identity.providerName} turn interruption`)
-      return true
-    } catch (error) {
-      console.error(`Domovoi could not stop a ${this.#identity.providerName} turn`, error)
-      return false
-    }
-  }
-
-  #releaseAbort(providerSessionId: string, record: RunAbort): void {
-    if (!record.pending && record.awaitedEnds <= 0 && this.#runAborts.get(providerSessionId) === record) {
-      this.#runAborts.delete(providerSessionId)
-    }
-  }
-
-  // Whether an end (error, idle) of the thread's own run belongs to a run
-  // that is not the active turn's, and so ends nothing (security review
-  // round 7 of #687). While an abort is pending, every end is the aborted
-  // run's: the server runs one prompt at a time, and no prompt is sent while
-  // an abort is pending (#readyToSend). After the answer, the record takes
-  // ends until the aborted run's idle, unless the active turn is a later one
-  // whose own messages already came: the server published the aborted run's
-  // idle before it took that turn's prompt. An end while the active turn's
-  // prompt has not gone out is never that turn's.
-  #takenByAbort(session: Session, type: "session.error" | "session.idle"): boolean {
-    const record = this.#runAborts.get(session.threadId)
-    const active = session.activeTurnId
-    if (record && record.awaitedEnds > 0) {
-      if (record.pending || active === undefined || record.turnIds.has(active) || !session.activeTurnStarted) {
-        if (type === "session.idle") {
-          record.awaitedEnds -= 1
-          this.#releaseAbort(session.threadId, record)
-        }
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const unanswered = new Promise<false>((resolve) => {
+      timer = setTimeout(() => {
+        controller.abort()
+        resolve(false)
+      }, abortAnswerTimeoutMs)
+    })
+    const answer = (async () => {
+      try {
+        const client = await this.#client()
+        unwrap(await client.session.abort({
+          path: { id: providerSessionId },
+          query: { directory: cwd },
+          signal: controller.signal,
+          throwOnError: true,
+        }), `${this.#identity.providerName} turn interruption`)
         return true
+      } catch (error) {
+        if (!controller.signal.aborted) console.error(`Domovoi could not stop a ${this.#identity.providerName} turn`, error)
+        return false
       }
-      record.awaitedEnds = 0
-      this.#releaseAbort(session.threadId, record)
+    })()
+    try {
+      const answered = await Promise.race([answer, unanswered])
+      if (!answered && controller.signal.aborted) console.error(`${this.#identity.providerName} did not answer an abort within ${abortAnswerTimeoutMs / 1000} seconds`)
+      return answered
+    } finally {
+      clearTimeout(timer)
     }
-    if (active !== undefined && !session.activeTurnSent) {
-      // As below: an interrupted run's record lasts until its idle.
-      if (type === "session.idle") delete session.interruptedTurnId
-      return true
-    }
-    return false
+  }
+
+  // The active turn's progress, by message identity (security review round
+  // 8 of #687, ruling Q287). OpenCode 1.18.32/1.18.33 and Kilo 7.8.1 publish
+  // `message.updated` with `properties.info`: a prompt's user message keeps
+  // the `id` Domovoi sent as `messageID`; each assistant message the run
+  // makes has `role: "assistant"` and `parentID`, the id of the user message
+  // it replies to (SessionPrompt.runLoop: `parentID: lastUser.id`, so a
+  // steer's reply names the steer), and is published again with
+  // `time.completed` once it ends, with `error` set when it failed
+  // (SessionProcessor cleanup and halt). Events from before the turn's own
+  // messages are an earlier run's: the server publishes an aborted run's
+  // events before it answers the abort, and no prompt goes out while an
+  // abort is pending (#readyToSend).
+  #trackTurnMessage(session: Session, info: Record<string, unknown>): void {
+    const turnId = session.activeTurnId
+    const turn = session.activeTurn
+    if (turnId === undefined || !turn) return
+    const parent = typeof info.parentID === "string" ? info.parentID : undefined
+    const ownReply = info.role === "assistant" && parent !== undefined && (parent === turnId || session.steerTurnIds.get(parent) === turnId)
+    if (info.id === turnId || ownReply) turn.seen = true
+    if (!ownReply) return
+    const time = asRecord(info.time)
+    const failed = asRecord(info.error)
+    const done = typeof time?.completed === "number" || failed !== undefined
+    // A reply that has not ended yet: the run goes on, so an error before it
+    // no longer decides how the turn ends.
+    if (!done) delete turn.error
+    turn.reply = { done, ...(failed ? { error: errorMessage(failed, this.#identity.providerName) } : {}) }
+  }
+
+  // An idle ends the active turn only after the turn's own latest reply has
+  // completed or failed, or, when the run failed before any reply (an
+  // unknown agent, say), after an error that followed the turn's own prompt.
+  // An idle or error before the turn's own messages never ends it. A turn an
+  // abort under way concerns ends on the abort's answer instead (#abortRun).
+  // The servers publish an aborted run's end as an error and one or two
+  // idles (the processor's halt, then the runner's cancel), so the number of
+  // idles decides nothing (security review round 8 of #687, ruling Q287).
+  #turnEndOn(session: Session): void {
+    const turnId = session.activeTurnId
+    const turn = session.activeTurn
+    if (turnId === undefined || !turn?.seen) return
+    if (this.#runAborts.get(session.threadId)?.turns.has(turnId)) return
+    if (turn.reply ? !turn.reply.done : turn.error === undefined) return
+    const error = turn.reply?.error ?? turn.error
+    if (error === undefined) this.#complete(session, "completed")
+    else this.#complete(session, "failed", error)
   }
 
   // A run the server started outside any Domovoi turn, such as a steer it
@@ -1614,14 +1624,17 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // subagents report here too (security review round 3 of #687).
     const phaseKey = `${typeof part.sessionID === "string" ? part.sessionID : session.threadId}\u0000${callId}`
     if (session.toolPhases.get(phaseKey) === state.status) return
-    if (!session.toolPhases.has(phaseKey)) {
+    // Only a call starting (pending, running) is checked. A finished call's
+    // report (completed, error), such as the server's cleanup of a run it
+    // stopped, keeps its output below but never aborts (security review
+    // round 8 of #687).
+    if (!session.toolPhases.has(phaseKey) && (state.status === "pending" || state.status === "running")) {
       // A steer's reply names the steer as its parent; its calls are the
       // turn's (security review round 6 of #687).
       const logicalTurnId = session.steerTurnIds.get(turnId) ?? turnId
       if (logicalTurnId === session.activeTurnId) this.#watchToolCall(session, logicalTurnId, tool)
-      else if (state.status === "pending" || state.status === "running") {
-        // A call that starts in a message of no active turn or steer. A call
-        // already over is a late report from a run that ended.
+      else {
+        // A call that starts in a message of no active turn or steer.
         void this.#stopTurn(session, session.activeTurnId!, `${this.#identity.providerName} called a tool named "${tool}" outside the active turn, `
           + `so Domovoi aborted the turn: Domovoi does not check such a call. ${abortLimit} Send the prompt again.`)
       }
@@ -1687,10 +1700,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         turn: { id: turnId, status, ...(error ? { error } : {}) },
       },
     })
-    if (session.interruptedTurnId === session.activeTurnId) delete session.interruptedTurnId
     delete session.activeTurnId
-    delete session.activeTurnStarted
-    delete session.activeTurnSent
+    delete session.activeTurn
     session.toolPhases.clear()
     session.steerTurnIds.clear()
     // A subagent's request cannot outlive the turn that started it. Refuse it

@@ -65,6 +65,24 @@ const runtime = (permissionMode: Runtime["permissionMode"], auto = false): Runti
   auto,
 })
 
+// The end of a run as OpenCode 1.18.32/1.18.33 and Kilo 7.8.1 publish it: the
+// assistant message that replies to the prompt (parentID) completes
+// (time.completed, and `error` when it failed), and then the session goes
+// idle (SessionPrompt.runLoop, then the runner's onIdle). A turn ends only on
+// that idle (security review round 8 of #687, ruling Q287).
+function finishRun(stream: EventStream, threadId: string, parentID: string, options: { id?: string; error?: unknown } = {}) {
+  stream.emit({
+    type: "message.updated",
+    properties: {
+      info: {
+        id: options.id ?? `reply-${parentID}`, sessionID: threadId, role: "assistant", parentID,
+        time: { created: 1, completed: 2 }, ...(options.error === undefined ? {} : { error: options.error }),
+      },
+    },
+  })
+  stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+}
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
   const promise = new Promise<T>((done) => { resolve = done })
@@ -297,7 +315,7 @@ describe("OpenCodeSdkAdapter", () => {
     adapter.onEvent((event) => events.push(event))
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
     await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "First", runtime: runtime("build") })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-1")
     await waitForDaemon(() => expect(events.some((event) => event.type === "turn-completed")).toBe(true))
     await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Second", runtime: runtime("build") })
     for (const info of [
@@ -305,10 +323,14 @@ describe("OpenCodeSdkAdapter", () => {
     ]) stream.emit({ type: "message.updated", properties: { info: {
       ...info, sessionID: threadId, role: "assistant", tokens: { input: 10, output: 1 },
     } } })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-2")
     await waitForDaemon(() => expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(2))
+    // Each turn's own reply reports its usage too; the late one goes to the
+    // turn it names, and the unassociated one to none.
     expect(events.filter((event) => event.type === "usage")).toEqual([
+      expect.objectContaining({ turnId: "turn-1", source: expect.objectContaining({ id: "reply-turn-1" }) }),
       expect.objectContaining({ turnId: "turn-1", source: expect.objectContaining({ id: "late" }) }),
+      expect.objectContaining({ turnId: "turn-2", source: expect.objectContaining({ id: "reply-turn-2" }) }),
     ])
     await adapter.close()
   })
@@ -463,7 +485,7 @@ describe("OpenCodeSdkAdapter", () => {
         },
       },
     })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-1", { id: "assistant-message" })
     await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
       type: "turn-completed",
       params: {
@@ -533,7 +555,7 @@ describe("OpenCodeSdkAdapter", () => {
       prompt: "Try again",
       runtime: runtime("build"),
     })).resolves.toBe("turn-2")
-    reopened.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(reopened, threadId, "turn-2")
     await waitForDaemon(() => expect(events).toContainEqual({
       type: "turn-completed",
       params: { threadId, turnId: "turn-2", turn: { id: "turn-2", status: "completed" } },
@@ -728,8 +750,14 @@ describe("repository instruction files", () => {
   })
 })
 
+// Security review round 8 of #687 (ruling Q287): a turn ends by message
+// identity, not by counting idles. An interrupted turn ends on the abort's
+// answer; anything the interrupted run publishes after that ends nothing, and
+// the next turn ends only on an idle after its own reply has completed.
 describe("an interrupted turn's end that arrives late", () => {
-  it("does not complete the turn sent after the interrupt", async () => {
+  const turnEnds = (events: AgentEvent[], turnId: string) => events.filter((event) => event.type === "turn-completed" && event.params.turnId === turnId)
+
+  it("ends the interrupted turn on the abort's answer and does not complete the turn sent after it", async () => {
     const { factory, stream } = harness()
     let id = 0
     const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
@@ -739,26 +767,30 @@ describe("an interrupted turn's end that arrives late", () => {
     const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
     stream.emit({ type: "message.updated", properties: { info: { id: first, sessionID: threadId, role: "user" } } })
     await adapter.interruptTurn(threadId, first)
+    expect(turnEnds(events, first)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed", error: "The OpenCode turn was interrupted." }) }) })])
     const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
 
-    // The server ends the aborted run before it takes the next prompt, so its
-    // idle comes before the new turn's own user message.
+    // The interrupted run's end, delivered late: an error and two idles (the
+    // processor's halt, then the runner's cancel).
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "MessageAbortedError", data: { message: "aborted" } } } })
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(events.filter((event) => event.type === "turn-completed")).toEqual([])
-
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    // The new turn's own prompt, and an idle before its reply has completed.
     stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
-      type: "turn-completed",
-      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
-    })))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnds(events, second)).toEqual([])
+
+    finishRun(stream, threadId, second)
+    await waitForDaemon(() => expect(turnEnds(events, second)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "completed" }) }) })]))
+    expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(2)
     await adapter.close()
   })
 
-  // Only an interrupt arms the wait for the new turn's own messages. Without
-  // one, the first idle or error ends the turn, even before any message.
-  it("ends a turn on a session error that comes before its user message when nothing was interrupted", async () => {
+  // A run that fails before any reply (an unknown agent, say) publishes an
+  // error and then goes idle. Before the turn's own prompt shows, neither is
+  // the turn's.
+  it("ends a turn that fails before any reply only on an error and idle after its own prompt", async () => {
     const { factory, stream } = harness()
     let id = 0
     const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
@@ -767,125 +799,80 @@ describe("an interrupted turn's end that arrives late", () => {
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
     const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
 
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "UnknownError", data: { message: "earlier run" } } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnds(events, turnId)).toEqual([])
+
+    stream.emit({ type: "message.updated", properties: { info: { id: turnId, sessionID: threadId, role: "user" } } })
     stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "ProviderAuthError", data: { message: "no key" } } } })
-    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
-      type: "turn-completed",
-      params: expect.objectContaining({ turnId, turn: expect.objectContaining({ status: "failed" }) }),
-    })))
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(turnEnds(events, turnId)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed", error: expect.stringContaining("no key") }) }) })]))
     await adapter.close()
   })
 
-  it("waits for the new turn's messages only until the interrupted run's end has come", async () => {
+  // A run that fails during a reply ends through the processor's halt: an
+  // error and an idle, then the reply is published as failed, then the
+  // runner's idle. Only the idle after the failed reply ends the turn.
+  it("ends a turn whose reply fails only on the idle after that reply ends", async () => {
     const { factory, stream } = harness()
     let id = 0
     const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
     const events: AgentEvent[] = []
     adapter.onEvent((event) => events.push(event))
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
-    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
-    await adapter.interruptTurn(threadId, first)
-    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: turnId, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "reply", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 1 } } } })
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "APIError", data: { message: "overloaded" } } } })
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
     await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnds(events, turnId)).toEqual([])
 
-    const third = await adapter.interruptTurn(threadId, second).then(() =>
-      adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Three", runtime: runtime("build") }))
-    void third
-    events.length = 0
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "UnknownError", data: { message: "boom" } } } })
-    await waitForDaemon(() => expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(1))
+    finishRun(stream, threadId, turnId, { id: "reply", error: { name: "APIError", data: { message: "overloaded" } } })
+    await waitForDaemon(() => expect(turnEnds(events, turnId)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed", error: expect.stringContaining("overloaded") }) }) })]))
     await adapter.close()
   })
 
-  // A run that ends through the processor's halt publishes an error and then
-  // sets the session idle. Both belong to the interrupted run.
-  it("ignores both the error and the idle an interrupted run ends with", async () => {
+  // A steer's reply names the steer as its parent; it is the turn's reply.
+  it("ends a turn on the idle after its steer's reply completes", async () => {
     const { factory, stream } = harness()
     let id = 0
     const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
     const events: AgentEvent[] = []
     adapter.onEvent((event) => events.push(event))
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
-    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
-    await adapter.interruptTurn(threadId, first)
-    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
-
-    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "MessageAbortedError", data: { message: "aborted" } } } })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    const { providerMessageId: steer } = await adapter.steerTurn(threadId, turnId, "Also")
+    stream.emit({ type: "message.updated", properties: { info: { id: "first-reply", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 1, completed: 2 } } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "steer-reply", sessionID: threadId, role: "assistant", parentID: steer, time: { created: 3 } } } })
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
     await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(events.filter((event) => event.type === "turn-completed")).toEqual([])
+    expect(turnEnds(events, turnId)).toEqual([])
 
-    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
-      type: "turn-completed",
-      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
-    })))
+    finishRun(stream, threadId, steer, { id: "steer-reply" })
+    await waitForDaemon(() => expect(turnEnds(events, turnId)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "completed" }) }) })]))
     await adapter.close()
   })
 
-  // The error can end the interrupted turn while it still holds the slot. The
-  // idle that follows still belongs to it and must not end the next turn.
-  it("ignores the idle that follows an error which ended the interrupted turn itself", async () => {
+  // A subagent's idle ends its task tool call, never the parent's turn.
+  it("does not end the parent's turn on a subagent's idle", async () => {
     const { factory, stream } = harness()
     let id = 0
     const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
     const events: AgentEvent[] = []
     adapter.onEvent((event) => events.push(event))
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
-    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
-    stream.emit({ type: "message.updated", properties: { info: { id: first, sessionID: threadId, role: "user" } } })
-    await adapter.interruptTurn(threadId, first)
-
-    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "MessageAbortedError", data: { message: "aborted" } } } })
-    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
-      type: "turn-completed",
-      params: expect.objectContaining({ turnId: first, turn: expect.objectContaining({ status: "failed" }) }),
-    })))
-    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(1)
-
-    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
-      type: "turn-completed",
-      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
-    })))
-    expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(2)
-    await adapter.close()
-  })
-
-  // A subagent's idle ends its task tool call. It is not the interrupted run's
-  // end, so it must leave the interrupt record for the parent's own idle.
-  it("keeps the interrupt record through a subagent's idle", async () => {
-    const { factory, stream } = harness()
-    let id = 0
-    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
-    const events: AgentEvent[] = []
-    adapter.onEvent((event) => events.push(event))
-    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
-    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
-    stream.emit({ type: "message.updated", properties: { info: { id: first, sessionID: threadId, role: "user" } } })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: "reply", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 1, completed: 2 } } } })
     stream.emit({ type: "session.created", properties: { sessionID: "ses_child", info: { id: "ses_child", parentID: threadId, directory: "/worktree" } } })
-    await adapter.interruptTurn(threadId, first)
-
+    stream.emit({ type: "message.updated", properties: { info: { id: "child-reply", sessionID: "ses_child", role: "assistant", parentID: "child-user", time: { created: 1, completed: 2 } } } })
     stream.emit({ type: "session.idle", properties: { sessionID: "ses_child" } })
     await new Promise((resolve) => setTimeout(resolve, 20))
-    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(events.filter((event) => event.type === "turn-completed")).toEqual([])
+    expect(turnEnds(events, turnId)).toEqual([])
 
-    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
-      type: "turn-completed",
-      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
-    })))
-    expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(1)
+    await waitForDaemon(() => expect(turnEnds(events, turnId)).toHaveLength(1))
     await adapter.close()
   })
 })
@@ -1426,6 +1413,9 @@ describe("subagents and current permission events", () => {
       }),
     })))
 
+    // Even once the parent's reply has completed, the child's idle ends only
+    // the child's task, not the parent's turn.
+    stream.emit({ type: "message.updated", properties: { info: { id: "reply-turn-1", sessionID: threadId, role: "assistant", parentID: "turn-1", time: { created: 1, completed: 2 } } } })
     stream.emit({ type: "session.idle", properties: { sessionID: child } })
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(events).not.toContainEqual(expect.objectContaining({ type: "turn-completed" }))
@@ -1460,7 +1450,7 @@ describe("subagents and current permission events", () => {
       type: "approval-requested", requestId: 1, threadId, turnId: "turn-1",
     })))
     beforeTurnEnd?.(client)
-    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "UnknownError", data: { message: "parent failed" } } } })
+    finishRun(stream, threadId, "turn-1", { error: { name: "UnknownError", data: { message: "parent failed" } } })
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
       type: "turn-completed", params: expect.objectContaining({ turnId: "turn-1" }),
     })))
@@ -1678,7 +1668,7 @@ describe("subagents and current permission events", () => {
 
     settle.resolve(Promise.reject(new Error("provider busy")))
     await new Promise((resolve) => setTimeout(resolve, 20))
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-2")
     await waitForDaemon(() => expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(2))
     await new Promise((resolve) => setTimeout(resolve, 20))
     const oldRefusals = (client.postSessionIdPermissionsPermissionId.mock.calls as unknown as Array<[{ path: { permissionID: string } }]>).filter(
@@ -1733,7 +1723,7 @@ describe("subagents and current permission events", () => {
       properties: { id: "per_parent", sessionID: threadId, permission: "bash", patterns: ["ls"], metadata: { command: "ls" }, always: [] },
     })
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", requestId: 1 })))
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-1")
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed" })))
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalled()
@@ -2086,13 +2076,15 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     const events: AgentEvent[] = []
     adapter.onEvent((event) => events.push(event))
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
-    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Work", runtime: runtime("build") })
-    stream.emit({ type: "message.updated", properties: { info: { id: "assistant-message", sessionID: threadId, role: "assistant", parentID: "turn-1" } } })
-    const call = (callID: string, tool: string) => stream.emit({
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Work", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: "assistant-message", sessionID: threadId, role: "assistant", parentID: turnId } } })
+    const call = (callID: string, tool: string, status = "pending") => stream.emit({
       type: "message.part.updated",
-      properties: { part: { type: "tool", sessionID: threadId, messageID: "assistant-message", callID, tool, state: { status: "pending", input: {} } } },
+      properties: { part: { type: "tool", sessionID: threadId, messageID: "assistant-message", callID, tool, state: { status, input: {} } } },
     })
-    return { adapter, client, events, stream, threadId, call }
+    // The turn's run ends: its reply completes, then the session goes idle.
+    const finish = () => finishRun(stream, threadId, turnId, { id: "assistant-message" })
+    return { adapter, client, events, stream, threadId, turnId, call, finish }
   }
   const turnEnd = (events: AgentEvent[]) => events.find((event) => event.type === "turn-completed")
 
@@ -2111,13 +2103,13 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
   // answered, before the Domovoi turn ends.
   it("ends the turn only once the abort is answered", async () => {
     let answer!: () => void
-    const { adapter, client, events, call, stream, threadId } = await turnWithTools((setup) => {
+    const { adapter, client, events, call, finish } = await turnWithTools((setup) => {
       setup.session.abort.mockImplementation(() => new Promise((resolve) => { answer = () => resolve({ data: true }) }))
     })
     call("call-1", "plan_enter")
     await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
     // The run's own end, while the abort is under way, does not end the turn.
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finish()
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(turnEnd(events)).toBeUndefined()
     answer()
@@ -2200,14 +2192,14 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
   it("stops a steer the server accepted after the turn ended, and reports it failed", async () => {
     let accept!: () => void
     let answerAbort!: () => void
-    const { adapter, client, events, call, stream, threadId } = await turnWithTools()
+    const { adapter, client, events, call, finish, threadId } = await turnWithTools()
     client.session.promptAsync.mockImplementationOnce(() => new Promise((resolve) => { accept = () => resolve({ data: undefined }) }))
     client.session.abort.mockImplementationOnce(() => new Promise((resolve) => { answerAbort = () => resolve({ data: true }) }))
     const steer = adapter.steerTurn(threadId, "turn-1", "More")
     let settled = false
     const outcome = steer.then(() => "sent", (error: Error) => error.message).finally(() => { settled = true })
     await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledTimes(2))
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finish()
     await waitForDaemon(() => expect(turnEnd(events)).toMatchObject({ params: { turn: { status: "completed" } } }))
     accept()
     await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } })))
@@ -2223,8 +2215,8 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
   })
 
   it("aborts a run that calls a tool while the thread has no turn", async () => {
-    const { adapter, client, events, call, stream, threadId } = await turnWithTools()
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    const { adapter, client, events, call, finish, threadId } = await turnWithTools()
+    finish()
     await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
     expect(client.session.abort).not.toHaveBeenCalled()
     call("call-9", "bash")
@@ -2233,8 +2225,8 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
   })
 
   it("aborts a run that asks for a tool's approval while the thread has no turn", async () => {
-    const { adapter, client, events, stream, threadId } = await turnWithTools()
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    const { adapter, client, events, stream, threadId, finish } = await turnWithTools()
+    finish()
     await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
     stream.emit({
       type: "permission.asked",
@@ -2249,9 +2241,9 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     ["linked to a turn that ended", true],
     ["started while the thread had no turn", false],
   ] as const)("aborts a subagent %s that calls a tool", async (_case, linked) => {
-    const { adapter, client, events, stream, threadId } = await turnWithTools()
+    const { adapter, client, events, stream, threadId, finish } = await turnWithTools()
     if (linked) stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finish()
     await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
     if (!linked) stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
     stream.emit({ type: "message.updated", properties: { info: { id: "child-message", sessionID: "child-session", role: "assistant", parentID: "child-user" } } })
@@ -2275,11 +2267,11 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
         answers.push((ok) => (ok ? resolve({ data: true }) : reject(new Error("abort refused"))))
       }))
     }, () => `prompt-${++next}`)
-    const { adapter, client, events, stream, threadId } = setup
+    const { adapter, client, events, threadId } = setup
     client.session.promptAsync.mockImplementationOnce(() => new Promise((resolve) => { accept = () => resolve({ data: undefined }) }))
     const steer = adapter.steerTurn(threadId, "prompt-1", "More").then(() => "sent", (error: Error) => error.message)
     await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledTimes(2))
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    setup.finish()
     await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
     accept()
     await waitForDaemon(() => expect(answers).toHaveLength(1))
@@ -2288,14 +2280,23 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
   }
   const turnEnds = (events: AgentEvent[], turnId: string) => events.filter((event) => event.type === "turn-completed" && event.params.turnId === turnId)
 
-  it("consumes the aborted steer's idle that comes before the abort's answer, leaving nothing to swallow the next turn's error", async () => {
+  // Round 8 (ruling Q287): the next turn's error counts only after the
+  // turn's own prompt shows; before it, an error and idle are the aborted
+  // steer's.
+  it("does not end the next turn on the aborted steer's end, and fails it on its own error", async () => {
     const { adapter, events, stream, threadId, steer, answer } = await lateSteer()
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
     answer(true)
     expect(await steer).toContain("turn ended while the steer was sent")
     const next = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "MessageAbortedError", data: { message: "Aborted" } } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnds(events, next)).toHaveLength(0)
+    stream.emit({ type: "message.updated", properties: { info: { id: next, sessionID: threadId, role: "user" } } })
     stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "APIError", data: { message: "rate limited" } } } })
-    await waitForDaemon(() => expect(turnEnds(events, next)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed" }) }) })]))
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(turnEnds(events, next)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed", error: expect.stringContaining("rate limited") }) }) })]))
     await adapter.close()
   })
 
@@ -2311,8 +2312,7 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     expect(await steer).toContain("turn ended while the steer was sent")
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(turnEnds(events, next)).toHaveLength(0)
-    stream.emit({ type: "message.updated", properties: { info: { id: "reply-next", sessionID: threadId, role: "assistant", parentID: next } } })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, next)
     await waitForDaemon(() => expect(turnEnds(events, next)).toHaveLength(1))
     await adapter.close()
   })
@@ -2330,11 +2330,11 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
   // Security review round 7 of #687 (P2): a finished tool's report is a late
   // report, not a call, and a run has at most one abort outstanding.
   it("does not abort for a finished tool's late report, and joins an outstanding abort", async () => {
-    const { adapter, client, events, stream, threadId } = await turnWithTools((setup) => {
+    const { adapter, client, events, stream, threadId, finish } = await turnWithTools((setup) => {
       setup.session.abort.mockImplementation(() => new Promise(() => {}))
     })
     stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finish()
     await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
     const report = (sessionID: string, messageID: string, callID: string, status: string) => stream.emit({
       type: "message.part.updated",
@@ -2362,7 +2362,7 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     let next = 0
     let accept!: () => void
     let answer!: (ok: boolean) => void
-    const { adapter, client, stream, threadId, events } = await turnWithTools((setup) => {
+    const { adapter, client, stream, threadId, events, finish } = await turnWithTools((setup) => {
       setup.session.abort.mockImplementation(() => new Promise((resolve, reject) => {
         answer = (ok) => (ok ? resolve({ data: true }) : reject(new Error("abort refused")))
       }))
@@ -2371,7 +2371,7 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     let settled = false
     const steer = adapter.steerTurn(threadId, "prompt-1", "More").then(() => "sent", (error: Error) => error.message).finally(() => { settled = true })
     await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledTimes(2))
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finish()
     await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
     const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
     stream.emit({ type: "message.updated", properties: { info: { id: "reply-second", sessionID: threadId, role: "assistant", parentID: second } } })
@@ -2395,9 +2395,9 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     ["linked to a turn that ended", true],
     ["started while the thread had no turn", false],
   ] as const)("refuses and aborts a subagent %s that asks for approval", async (_case, linked) => {
-    const { adapter, client, events, stream, threadId } = await turnWithTools()
+    const { adapter, client, events, stream, threadId, finish } = await turnWithTools()
     if (linked) stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finish()
     await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
     if (!linked) stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
     stream.emit({
@@ -2407,6 +2407,115 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "child-session", permissionID: "p" }, body: { response: "reject" } })))
     await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "child-session" } })))
     expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(0)
+    await adapter.close()
+  })
+
+  // Security review round 8 of #687 (ruling Q287): an aborted run's end is
+  // not counted. OpenCode 1.18.32/1.18.33 and Kilo 7.8.1 publish an error
+  // and an idle from the processor's halt and another idle from the
+  // runner's cancel. A turn the abort stops ends on the abort's answer, and
+  // a later turn ends only on an idle after its own reply has completed.
+  async function stoppedTurn() {
+    let answer!: (ok: boolean) => void
+    let next = 0
+    const setup = await turnWithTools((client) => {
+      client.session.abort.mockImplementation(() => new Promise((resolve, reject) => {
+        answer = (ok) => (ok ? resolve({ data: true }) : reject(new Error("abort refused")))
+      }))
+    }, () => `prompt-${++next}`)
+    setup.call("call-1", "plan_enter")
+    await waitForDaemon(() => expect(setup.client.session.abort).toHaveBeenCalledTimes(1))
+    const cancel = () => {
+      setup.stream.emit({ type: "session.error", properties: { sessionID: setup.threadId, error: { name: "MessageAbortedError", data: { message: "Aborted" } } } })
+      setup.stream.emit({ type: "session.idle", properties: { sessionID: setup.threadId } })
+      setup.stream.emit({ type: "message.updated", properties: { info: { id: "assistant-message", sessionID: setup.threadId, role: "assistant", parentID: setup.turnId, time: { created: 1, completed: 2 }, error: { name: "MessageAbortedError", data: { message: "Aborted" } } } } })
+      setup.stream.emit({ type: "session.idle", properties: { sessionID: setup.threadId } })
+    }
+    return { ...setup, answer: (ok: boolean) => answer(ok), cancel }
+  }
+
+  it("does not end a stopping turn on its cancelled run's two idles before the abort is answered", async () => {
+    const { adapter, events, turnId, answer, cancel } = await stoppedTurn()
+    cancel()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnds(events, turnId)).toHaveLength(0)
+    answer(true)
+    await waitForDaemon(() => expect(turnEnds(events, turnId)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed", error: expect.stringContaining("plan_enter") }) }) })]))
+    await adapter.close()
+  })
+
+  it("does not end a later turn on the stopped run's delayed second idle", async () => {
+    const { adapter, events, stream, threadId, turnId, answer } = await stoppedTurn()
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "MessageAbortedError", data: { message: "Aborted" } } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    answer(true)
+    await waitForDaemon(() => expect(turnEnds(events, turnId)).toHaveLength(1))
+    const later = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    // The cancelled run's failed reply and second idle, delivered late.
+    stream.emit({ type: "message.updated", properties: { info: { id: "assistant-message", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 1, completed: 2 }, error: { name: "MessageAbortedError", data: { message: "Aborted" } } } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    // The later turn's own prompt, and an idle before its reply completes.
+    stream.emit({ type: "message.updated", properties: { info: { id: later, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnds(events, later)).toHaveLength(0)
+    finishRun(stream, threadId, later)
+    await waitForDaemon(() => expect(turnEnds(events, later)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "completed" }) }) })]))
+    await adapter.close()
+  })
+
+  it("fails the stopped turn and a prompt waiting on its abort once the abort goes unanswered for ten seconds", async () => {
+    const { adapter, client, events, call, threadId, turnId } = await turnWithTools((setup) => {
+      setup.session.abort.mockImplementation(() => new Promise(() => {}))
+    })
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    let steer: Promise<string>
+    let settled = false
+    try {
+      // The stop: a call to a tool the catalog did not hold.
+      call("call-1", "plan_enter")
+      for (let step = 0; step < 5; step += 1) await vi.advanceTimersByTimeAsync(1)
+      expect(client.session.abort).toHaveBeenCalledTimes(1)
+      steer = adapter.steerTurn(threadId, turnId, "More").then(() => "sent", (error: Error) => error.message).finally(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(9_000)
+      expect(settled).toBe(false)
+      expect(turnEnds(events, turnId)).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(1_100)
+    } finally {
+      vi.useRealTimers()
+    }
+    const failure = await steer
+    expect(failure).toContain("plan_enter")
+    expect(failure).toContain("could not confirm")
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1)
+    expect(turnEnds(events, turnId)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed", error: expect.stringContaining("could not confirm") }) }) })])
+    await adapter.close()
+  })
+
+  it("aborts nothing for a finished tool's first report in an active turn", async () => {
+    const { adapter, client, events, call } = await turnWithTools()
+    call("call-1", "plan_enter", "completed")
+    call("call-2", "docs_search", "error")
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(client.session.abort).not.toHaveBeenCalled()
+    expect(turnEnd(events)).toBeUndefined()
+    await adapter.close()
+  })
+
+  it.each([
+    ["an interrupt", "interrupt"],
+    ["a thread stop", "stop"],
+  ] as const)("joins %s to a stop under way instead of sending a second abort", async (_case, kind) => {
+    const { adapter, client, events, threadId, turnId, answer } = await stoppedTurn()
+    let settled = false
+    const joined = (kind === "interrupt" ? adapter.interruptTurn(threadId, turnId) : adapter.stopThread(threadId)).finally(() => { settled = true })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    expect(settled).toBe(false)
+    answer(true)
+    await joined
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    expect(turnEnds(events, turnId)).toHaveLength(1)
     await adapter.close()
   })
 
@@ -2531,7 +2640,7 @@ describe("event stream shapes", () => {
     await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
 
     stream.emit({ type: "sync" } as unknown as OpenCodeEvent)
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-1")
 
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
       type: "turn-completed",

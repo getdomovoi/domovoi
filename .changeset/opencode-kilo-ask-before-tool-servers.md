@@ -11,5 +11,8 @@ or a tool that is not the server's own could take a name the server's own tools 
 explore subagent now sees tool server tools and asks before each call, where they were hidden
 before. A steer the server accepts after its turn has ended is aborted and reported as failed. A
 tool call started or an approval asked for by a run outside any turn, a subagent's included,
-aborts that run, and the approval is refused. An aborted run's end no longer ends a later turn,
-and a new prompt waits for a pending abort.
+aborts that run, and the approval is refused. A turn now ends only on an idle after its own reply
+has completed or failed, so an aborted run's idles no longer end a later turn; a stopped or
+interrupted turn ends when the abort is answered. Aborts to a session go out one at a time, an
+abort not answered within ten seconds counts as failed, and a new prompt waits for a pending abort.
+A finished tool's report no longer aborts a turn.

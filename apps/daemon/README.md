@@ -585,11 +585,19 @@ code or settings the repository brings:
   approval is refused with no card. A subagent whose turn has ended, or that started while its
   thread had no turn, is treated the same way: an approval it asks for is refused with no card,
   and that request or a tool call it starts aborts the subagent. A report of a tool that has
-  already finished aborts nothing. The daemon sends at most one abort at a time to a session; a
-  second reason to stop it waits for that abort's answer. Until the aborted run's end arrives, it
-  ends no turn, and a new prompt waits for a pending abort's answer; if the server does not answer
-  the abort, that prompt fails with the reason the run was stopped and is not sent. The status
-  answer names nothing else about a server, so one replaced
+  already finished (completed or failed) is never checked and aborts nothing, in a turn or
+  outside one; its output is still shown. Every abort the daemon sends, for a stop, an interrupt,
+  a thread stop or a run outside any turn, goes through one record per session, so it sends at
+  most one abort at a time to a session; a second reason to stop it waits for that abort's
+  answer. The daemon waits ten seconds for the answer and then treats the abort as failed. A
+  stopped turn ends when the abort is answered or fails, with the reason it was stopped, not
+  when the run reports its end. Another turn ends only on an idle that comes after its own reply,
+  an answer to its prompt or to one of its steers, has completed or failed, or, for a run that
+  failed before any reply, after an error that came after its own prompt. An idle or error before
+  the turn's own messages ends nothing, so an aborted run's end, however many idles it brings,
+  never ends a later turn. A new prompt waits for a pending abort's answer; if the server does not
+  answer within ten seconds, that prompt fails with the reason the run was stopped and is not
+  sent. The status answer names nothing else about a server, so one replaced
   under the same name with the same status is not seen; its tools still ask, since a server whose
   name could make one of the allowed names is refused before the prompt. The next prompt refuses a
   server whose tools could be named like OpenCode's or Kilo's own. This check is a stated limit,
