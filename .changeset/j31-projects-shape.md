@@ -10,7 +10,8 @@ snapshot without `projects`, such as one a daemon stored before this, reads as i
 alone; `workspaceProjects` returns the list either way.
 
 `session.create`, `tool.inventory` and every `skill.*` call take an optional `projectId`; left
-out, the daemon uses the focused project. `project.close` (`projectId`, `client`, optional
+out, the daemon uses the focused project. A project id is at most 256 UTF-16 code units, in a
+snapshot as in a call, so every listed project can be named. `project.close` (`projectId`, `client`, optional
 `confirmation`) is declared with its confirmation, error code -32022, and its result: the snapshot
 and each session it stopped, `stopped` or `unconfirmed`. It is a control call that changes stored
 state, and a phone or tablet credential may not make it. A `project.open` past the cap is refused

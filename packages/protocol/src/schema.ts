@@ -15,6 +15,7 @@ import {
   commitShaSchema,
   forkRequestIdSchema,
   machineIdSchema,
+  projectIdSchema,
   sha256DigestSchema,
   toolKindSchema,
   toolStatusSchema,
@@ -136,8 +137,10 @@ export const machineSchema = z.object({
   toolPath: z.string().min(1).optional(),
 })
 
+// The id is bounded as a call names it, so every listed project can be named
+// in a project-scoped call and in project.close.
 export const projectSchema = z.object({
-  id: z.string().min(1),
+  id: projectIdSchema,
   machineId: machineIdSchema,
   name: z.string().min(1),
   path: z.string().min(1),

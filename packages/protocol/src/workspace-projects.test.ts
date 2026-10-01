@@ -4,6 +4,7 @@ import {
   createEmptyWorkspace,
   demoWorkspace,
   maximumProjectCap,
+  projectSchema,
   workspaceProjects,
   workspaceSnapshotSchema,
   type Project,
@@ -120,6 +121,20 @@ describe("workspace projects", () => {
     const overCap = twoProjects()
     overCap.projectCap = 1
     expect(issues(overCap)).toContain("Active projects cannot exceed the project cap")
+  })
+
+  // Every project a snapshot lists can be named in a project-scoped call and
+  // in project.close, which bound the id the same way.
+  it("bounds a project id as a call names it", () => {
+    expect(projectSchema.safeParse({ ...second, id: "p".repeat(256) }).success).toBe(true)
+    expect(projectSchema.safeParse({ ...second, id: "p".repeat(257) }).success).toBe(false)
+
+    const long = "p".repeat(257)
+    const snapshot = twoProjects()
+    snapshot.projects = [focused, { ...second, id: long }]
+    snapshot.sessions = snapshot.sessions.map((session) => session.projectId === second.id ? { ...session, projectId: long } : session)
+    snapshot.approvalRules = snapshot.approvalRules.map((entry) => entry.projectId === second.id ? { ...entry, projectId: long } : entry)
+    expect(workspaceSnapshotSchema.safeParse(snapshot).success).toBe(false)
   })
 
   it("bounds the project cap", () => {
