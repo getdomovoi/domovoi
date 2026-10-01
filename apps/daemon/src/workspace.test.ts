@@ -2578,7 +2578,15 @@ describe("GitWorkspaceService session refs", () => {
   it("stops a push the remote never answers at its deadline", async () => {
     const { scratch, workspace, repositoryPath } = await sessionWithRemote("domovoi-ref-silent-")
     const held: Socket[] = []
-    const silent = createNetServer((socket) => { held.push(socket) })
+    // The remote never answers, and the push's Git is killed: its connection
+    // ends, on Windows with a reset. Errors on the server and on each socket
+    // are expected, and kept rather than left uncaught.
+    const resets: unknown[] = []
+    const silent = createNetServer((socket) => {
+      socket.on("error", (error) => resets.push(error))
+      held.push(socket)
+    })
+    silent.on("error", (error) => resets.push(error))
     await new Promise<void>((listening) => silent.listen(0, "127.0.0.1", listening))
     try {
       const { port } = silent.address() as AddressInfo
@@ -2590,6 +2598,11 @@ describe("GitWorkspaceService session refs", () => {
         .rejects.toThrow("did not finish within 1 seconds")
       expect(Date.now() - started).toBeLessThan(20_000)
       expect(held.length).toBeGreaterThan(0)
+      // Windows resets the connection of the Git that was killed (read
+      // ECONNRESET in CI run 36936022381); the same reset, made here, is an
+      // expected end, not an uncaught error.
+      held[0]!.destroy(Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }))
+      await new Promise((settle) => setImmediate(settle))
     } finally {
       for (const socket of held) socket.destroy()
       await new Promise<void>((closed) => silent.close(() => closed()))
