@@ -33,9 +33,9 @@ before 2026-10-01 it did, and the loop it started then refused to run.
 This is Windows user logon, not Windows boot supervision. The guest loop is not
 self-restarting after distro or loop loss. A demand-start fixture does not
 establish real logon acceptance; that remains open in the lifecycle assessment.
-The native Windows logon task runs the same loop on the host
-([Windows crash supervision](#windows-crash-supervision)), and a Linux install
-turns lingering on ([Linux lingering](#linux-lingering)).
+The native Windows logon task has no crash supervision yet
+([Windows logon task](#windows-logon-task)), and a Linux install turns
+lingering on ([Linux lingering](#linux-lingering)).
 
 It captures the current daemon configuration before asking the service manager to start anything.
 Close other daemon owners, including Desktop, before starting the service, then reopen Desktop to
@@ -44,10 +44,8 @@ Existing installations need one reinstall to replace their old launch command; u
 alone does not rewrite service-manager configuration.
 
 The installer writes `<user-home>/.domovoi/service.json`. The installed command names the Node
-runtime, daemon entry point, and `--service-config <path>` explicitly. The Windows logon task names
-`--service-supervise <path>` instead, and its supervisor loop starts the daemon with
-`--service-config <path>`. On startup the production factory receives the saved settings, not
-daemon variables inherited from the supervisor.
+runtime, daemon entry point, and `--service-config <path>` explicitly. On startup the production
+factory receives the saved settings, not daemon variables inherited from the supervisor.
 Windows installation refuses command lines over 262 characters before writing files; use shorter
 absolute installation paths rather than a truncated launch command.
 
@@ -174,17 +172,19 @@ finds it on keeps an earlier `true`. And a reinstall whose `loginctl` read fails
 dropping an earlier `true`, so a later removal leaves on the lingering Domovoi did turn on. Either
 case only changes the installing user's own lingering.
 
-## Windows crash supervision
+## Windows logon task
 
-Decided 2026-09-17 (`SHIP-PLAN.md` S1.1): the limited-user `ONLOGON` task runs
-`domovoid --service-supervise <service.json>`, the supervisor loop the WSL guest runs, instead of the
-daemon itself. The loop starts the daemon with `--service-config`, restarts it after a crash with
-1, 5 and 15 second backoffs, and after a fourth crash records exhaustion in
-`<profile>/supervisor.json` and exits 1 with `Daemon supervision exhausted after 4 crashes and 4
-attempts.` A clean exit or a deliberate stop does not restart. The task is still created by
-`schtasks /create /sc onlogon /rl LIMITED`, which cannot set a task's run limit or battery rules
-and leaves Task Scheduler's defaults: a 72 hour execution limit, as Microsoft documents it, and
-battery rules that stop the task. The loop and its daemon would end there. So after every
+The limited-user `ONLOGON` task runs the daemon itself with `--service-config`. It has no crash
+supervision yet: a daemon that crashes stays down until the next logon or a manual start. The
+2026-09-17 decision to give it the WSL guest's supervisor loop was taken out of #698 by ruling
+Q300 A (2026-10-01), after review showed that failing closed on Windows needs per-attempt process
+tree evidence, a startup gate and boot-based recovery. It returns together with a job object that
+contains the daemon's tree.
+
+The task is created by `schtasks /create /sc onlogon /rl LIMITED`, which cannot set a task's run
+limit or battery rules and leaves Task Scheduler's defaults: a 72 hour execution limit, as
+Microsoft documents it, and battery rules that stop the task. The daemon would end there, with or
+without supervision. So after every
 `/create`, at install, update and an update's restore, a PowerShell step through the Task Scheduler
 COM interface sets what the WSL task sets: `ExecutionTimeLimit` `PT0S` (no limit),
 `DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries` false. It registers the change in place
@@ -193,39 +193,11 @@ is run. A failure there fails the install after the task was registered, as any 
 `/create` does. Tests check the generated script only; Task Scheduler has not been seen to accept
 it.
 
-Windows has no `/proc`, so the loop identifies a process by its pid and its creation time, a UTC
-`FILETIME` read from `Win32_Process` through PowerShell under `SystemRoot`, and the boot by the
-System process's creation time. A query that fails refuses rather than reading as a dead process.
-Each read starts PowerShell and blocks its caller while it runs, the desktop's status read
-included; that cost has not been measured. A daemon that exits before its creation time is read is recorded as a failed
-launch (`EXITED_BEFORE_IDENTITY`) and counted as a crash, once its exit is observed. A stop ends the
-daemon's whole process tree with `taskkill /T /F`; nothing relies on Task Scheduler's own stop to
-end the processes the loop started, which is not proved.
-
-`domovoid service status` reads the task's state and the loop's record:
-`installed, running: Domovoi daemon is running; daemon running; attempt 1; 0 crashes`, and exits 1
-when supervision is exhausted or refused. A task installed before this change still runs the
-daemon directly and is reported, removed and updated as before. Installing over a supervised task
-whose loop is still running refuses with `The Windows task "Domovoi daemon" still runs Domovoi's
-crash supervisor. Run domovoid service remove, then install again. Nothing was stopped or changed.`
-An update stops the loop the same way removal does, without retiring its registration, since it
-registers the same one again.
-
 ## Windows removal
 
 `domovoid service remove` disables the logon task before stopping it, waits for Task Scheduler to
 report that it is disabled with no queued or running instances, and only then removes the task and
 saved configuration. Deleting a registration alone does not stop its running program.
-A supervised task is disabled first, then its loop is asked to stop through its own stop request,
-cancels any backoff, stops the daemon, and is proved dead with every daemon it started before Task
-Scheduler stops and deletes the task: that Task Scheduler's stop also ends the daemon the loop
-started is not proved, so it is not relied on. A loop that never recorded a start has no daemon to
-stop. A failed proof keeps the task,
-disabled, and the configuration, as any failure after the stop step does.
-Limit: that error's advice to re-enable the task with `schtasks /change` does not hold for a
-supervised task whose stop request was already written. The request retires the registration, so
-a re-enabled task's loop refuses to start; reinstalling, which assigns a new registration, or
-retrying the removal does work.
 See [schtasks delete](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-delete)
 and [RegisteredTask.State](https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-state).
 
@@ -398,16 +370,11 @@ Windows status uses the numeric Task Scheduler `RegisteredTask.State` through th
 COM inspection as removal. State 4 reports running; 1, 2 and 3 report registered but not running.
 Only an explicit missing-task answer reports no registration. Unknown state 0, malformed output
 and every nonzero PowerShell exit refuse the query. Localized `schtasks` prose is not parsed.
-For a supervised task, a running task is the loop: the daemon reports running only when the loop's
-record also shows its child alive.
 
 Beyond those native tests these are configuration delivery and focused removal checks, not full
 native systemd, launchd, or Task Scheduler lifecycle acceptance. Crash supervision of the fixture
-process is proven on systemd and launchd. On Windows the logon task now runs the supervisor loop.
-Tests added on 2026-10-01 for the ordinary Windows CI leg run that loop in the test process with
-real children, crash one and require its restart after the 1 second backoff, and read real
-creation times; they had not run on Windows when this was written. No test registers a supervised
-task, crashes the daemon under Task Scheduler, or removes one: that native acceptance is open.
+process is proven on systemd and launchd, and absent on Windows: the logon task runs the daemon
+directly with no restart, and supervision returns with the job-object work (ruling Q300 A).
 Lingering is proven only against mocked and shimmed `loginctl`; no test changes a real user's
 lingering. Installer rollback
 remains separate audit work. A timed-out manager may already have changed OS state; inspect service
