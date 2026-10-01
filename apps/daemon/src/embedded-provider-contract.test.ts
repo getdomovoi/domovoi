@@ -71,7 +71,7 @@ describe.skipIf(!live)("embedded OpenCode and Kilo contract", () => {
     const { env, project, password } = await scratchEnvironment(prefix, config)
     if (!await onPath(tested.command, env)) context.skip(`${tested.command} is not on PATH`)
     const read = async (command: string) => (await promisify(execFile)(command, ["--version"], { env, timeout: 10_000 })).stdout
-    await expect(requireTestedVersion(tested as TestedVersion, read)).resolves.toMatch(new RegExp(`^${tested.line.replace(".", "\\.")}\\.`, "u"))
+    expect(tested.tested).toContain(await requireTestedVersion(tested as TestedVersion, read))
 
     const child = spawn(tested.command, ["serve", "--hostname=127.0.0.1", "--port=0"], { env, cwd: project, stdio: ["ignore", "pipe", "pipe"] })
     children.push(child)

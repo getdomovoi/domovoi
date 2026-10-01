@@ -1883,9 +1883,9 @@ export function allowedPermissionNames(config: { permission?: unknown; agent?: u
 
 export const openCodeAllowedPermissions = allowedPermissionNames(domovoiOpenCodeConfig)
 
-// The OpenCode release the permission names, tool ids and rule shapes here
-// were read from, and the minor line accepted (embedded-version.ts).
-export const testedOpenCode: TestedVersion = { command: "opencode", providerName: "OpenCode", line: "1.18", tested: "1.18.32" }
+// The OpenCode releases the permission names, tool ids and rule shapes here
+// were read from and that passed the live contract (embedded-version.ts).
+export const testedOpenCode: TestedVersion = { command: "opencode", providerName: "OpenCode", tested: ["1.18.32", "1.18.33"] }
 
 const defaultOpenCodeFactory: OpenCodeFactory = async () => {
   await requireTestedVersion(testedOpenCode)

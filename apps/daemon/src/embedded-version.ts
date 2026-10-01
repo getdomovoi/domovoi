@@ -2,20 +2,20 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 
 // The OpenCode and Kilo permission names, tool ids and rule shapes the
-// adapter trusts were read from particular server versions, and the SDKs
+// adapter trusts were read from particular server releases, and the SDKs
 // start whichever `opencode` or `kilo` executable is first on PATH. A default
-// factory reads that executable's version before starting it and starts
-// nothing outside the minor line the lists were tested on (security review
-// round 4 of #687). The gated contract test (embedded-provider-contract
-// .test.ts) fails when a tested server's lists drift.
+// factory reads that executable's version before starting it and starts only
+// a release on the exact list that passed the gated contract test
+// (embedded-provider-contract.test.ts), which fails when a tested server's
+// lists drift. A patch release can change those lists, so a release is added
+// here only after the contract passes against it (security review rounds 4
+// and 5 of #687).
 
 export type TestedVersion = Readonly<{
   command: string
   providerName: string
-  // The tested minor line, such as "1.18": any 1.18.x is accepted.
-  line: string
-  // The release the lists were read from, named in a refusal.
-  tested: string
+  // The releases that passed the live contract, such as ["1.18.32"].
+  tested: readonly string[]
 }>
 
 const versionReadTimeoutMs = 10_000
@@ -32,31 +32,42 @@ export async function readExecutableVersion(command: string): Promise<string> {
   return stdout
 }
 
-// The executable's version when it is on the tested minor line; otherwise an
-// error naming the version found and the one tested.
+// OpenCode 1.18.33 and Kilo 7.8.1 print the bare version and a newline, with
+// no name or `v` prefix. Anything else, such as an update notice or a second
+// line, is not read as a version.
+const bareVersion = /^\d+\.\d+\.\d+$/u
+
+function testedList(expected: TestedVersion): string {
+  const releases = expected.tested
+  const listed = releases.length <= 1
+    ? releases.join("")
+    : `${releases.slice(0, -1).join(", ")} and ${releases.at(-1) ?? ""}`
+  return `${expected.providerName} ${listed}`
+}
+
+// The executable's version when it is a tested release; otherwise an error
+// naming the version found and the releases tested.
 export async function requireTestedVersion(
   expected: TestedVersion,
   read: (command: string) => Promise<string> = readExecutableVersion,
 ): Promise<string> {
   let output: string
   try {
-    output = await read(expected.command)
+    output = (await read(expected.command)).trim()
   } catch {
     output = ""
   }
-  const found = /(\d+)\.(\d+)\.(\d+)/u.exec(output)
-  if (found === null) {
+  if (!bareVersion.test(output)) {
     throw new Error(
-      `Domovoi could not read the version of ${expected.providerName} (\`${expected.command} --version\`), so it does not start it. `
-      + `Domovoi was tested with ${expected.providerName} ${expected.tested} (any ${expected.line}.x).`,
+      `Domovoi could not read the version of ${expected.providerName} (\`${expected.command} --version\` did not print one version line), so it does not start it. `
+      + `Domovoi was tested with ${testedList(expected)}.`,
     )
   }
-  const version = found[0]
-  if (`${found[1]}.${found[2]}` !== expected.line) {
+  if (!expected.tested.includes(output)) {
     throw new Error(
-      `${expected.providerName} ${version} is not a version Domovoi was tested with, so Domovoi does not start it: `
-      + `it was tested with ${expected.providerName} ${expected.tested} (any ${expected.line}.x). Install ${expected.providerName} ${expected.line}.x to use it with Domovoi.`,
+      `${expected.providerName} ${output} is not a release Domovoi was tested with, so Domovoi does not start it: `
+      + `it was tested with ${testedList(expected)}. Install one of those releases to use it with Domovoi.`,
     )
   }
-  return version
+  return output
 }

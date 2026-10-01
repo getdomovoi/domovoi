@@ -130,9 +130,9 @@ export const domovoiKiloConfig: Config = {
   mode: kiloAgentBlocks.mode as NonNullable<Config["mode"]>,
 }
 
-// The Kilo release the permission names, tool ids and rule shapes here were
-// read from, and the minor line accepted (embedded-version.ts).
-export const testedKilo: TestedVersion = { command: "kilo", providerName: "Kilo", line: "7.8", tested: "7.8.1" }
+// The Kilo releases the permission names, tool ids and rule shapes here were
+// read from and that passed the live contract (embedded-version.ts).
+export const testedKilo: TestedVersion = { command: "kilo", providerName: "Kilo", tested: ["7.8.1"] }
 
 export const createDefaultKiloRuntime: OpenCodeFactory = async () => {
   await requireTestedVersion(testedKilo)

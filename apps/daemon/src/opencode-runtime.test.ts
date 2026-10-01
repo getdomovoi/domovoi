@@ -71,16 +71,16 @@ describe("embedded provider servers", () => {
   // Security review round 4 of #687 (P2): the permission and tool lists are
   // tied to the server versions they were read from, and the SDKs start the
   // executable found on PATH. The default factories read its version first
-  // and start nothing outside the tested minor line.
+  // and start nothing but a release that passed the live contract (round 5).
   it.each([
-    ["OpenCode", "opencode", "1.19.0", "1.18", () => new OpenCodeSdkAdapter()],
-    ["OpenCode", "opencode", "1.17.9", "1.18", () => new OpenCodeSdkAdapter()],
-    ["Kilo", "kilo", "7.9.0", "7.8", () => new KiloSdkAdapter()],
-  ] as const)("refuses to start %s (%s %s) at an untested version", async (_name, command, found, line, create) => {
+    ["OpenCode", "opencode", "1.19.0", "OpenCode 1.18.32 and 1.18.33", () => new OpenCodeSdkAdapter()],
+    ["OpenCode", "opencode", "1.18.34", "OpenCode 1.18.32 and 1.18.33", () => new OpenCodeSdkAdapter()],
+    ["Kilo", "kilo", "7.8.2", "Kilo 7.8.1", () => new KiloSdkAdapter()],
+  ] as const)("refuses to start %s (%s %s) at an untested release", async (_name, command, found, tested, create) => {
     versions.read.mockImplementation(async (asked: string) => (asked === command ? found : "0.0.0"))
     const adapter = create()
-    await expect(adapter.connect()).rejects.toThrow(found)
-    await expect(create().connect()).rejects.toThrow(`${line}.`)
+    await expect(adapter.connect()).rejects.toThrow(`${found} is not a release`)
+    await expect(create().connect()).rejects.toThrow(tested)
     expect(spawnedEnvironments).toHaveLength(0)
     expect(versions.read).toHaveBeenCalledWith(command)
     await adapter.close()

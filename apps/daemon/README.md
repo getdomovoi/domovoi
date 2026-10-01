@@ -549,11 +549,13 @@ code or settings the repository brings:
   Always. A running session keeps what it loaded; a changed configuration or a new grant applies
   at its next open. A session loaded only to be archived gets nothing.
 - The daemon reads `opencode --version` and `kilo --version` before it starts either server, and
-  starts OpenCode only at 1.18.x and Kilo only at 7.8.x: the permission names, tool ids and rule
-  shapes below were read from OpenCode 1.18.32 and Kilo 7.8.1. Any other version, or a version it
-  cannot read, refuses with a message naming the version found and the one tested. A contract
-  test run with `DOMOVOI_LIVE_PROVIDERS=1` fails when an installed server's tool ids or permission
-  names drift from those lists.
+  starts only the releases that passed the live contract below: OpenCode 1.18.32 and 1.18.33, and
+  Kilo 7.8.1. The permission names, tool ids and rule shapes below were read from them. The
+  output must be exactly one version line, as those releases print it. Any other release, an
+  output with more than one line or a prefix, or no output refuses with a message naming the
+  version found and the releases tested. A contract test run with `DOMOVOI_LIVE_PROVIDERS=1` fails
+  when an installed server's tool ids or permission names drift from those lists; a release joins
+  the list only after that test passes against it.
 - OpenCode and Kilo servers start with `OPENCODE_DISABLE_PROJECT_CONFIG=1` and
   `KILO_DISABLE_PROJECT_CONFIG=1`. Project `opencode.json`, `kilo.json`, `.opencode/`, `.kilo/`
   and `.kilocode/` configuration, plugins and MCP entries are not loaded, and no package install
