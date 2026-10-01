@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto"
 import { once } from "node:events"
+import { existsSync, readdirSync, renameSync } from "node:fs"
 import { copyFile, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
 import {
@@ -330,11 +331,16 @@ describe("a saved project row", () => {
 describe("a stored list naming only the open project", () => {
   it("is dropped at load, so opening another project saves no stale list", async () => {
     const { databasePath } = await storedState({ ...base(), projects: [projectA], projectCap: 1, sessions: [sessionIn(projectA.id)] })
+    const before = openDescriptors()
     const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine))
     const loaded = store.load()
     expect(loaded.project).toEqual(projectA)
     expect(loaded).not.toHaveProperty("projects")
     expect(loaded).not.toHaveProperty("projectCap")
+    // This store reads the state only; the daemon below opens its own. Left
+    // open, it held the file, and Windows refused to remove it.
+    await store.close()
+    released(databasePath, before)
 
     const { daemon, openProject } = await openDaemon(databasePath)
     const opened = await openProject("/code/c")
@@ -345,6 +351,64 @@ describe("a stored list naming only the open project", () => {
     await daemon.stop()
     daemons.splice(0)
     expect(JSON.parse(storedRow(databasePath))).not.toHaveProperty("projects")
+  })
+})
+
+// The process's open descriptors, where the platform lists them. Windows does
+// not; there a handle still open makes the rename in released() fail instead.
+function openDescriptors(): number | undefined {
+  try {
+    return readdirSync("/dev/fd").length
+  } catch {
+    return undefined
+  }
+}
+
+// The store holds no handle on the database, its log or its index: no
+// descriptor more than before, and each file can be moved and moved back.
+function released(databasePath: string, descriptorsBefore: number | undefined): void {
+  if (descriptorsBefore !== undefined) expect(openDescriptors()).toBe(descriptorsBefore)
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const path = `${databasePath}${suffix}`
+    if (!existsSync(path)) continue
+    renameSync(path, `${path}.moved`)
+    renameSync(`${path}.moved`, path)
+  }
+}
+
+describe("the database file once the store is done with it", () => {
+  it("is not held after a refusal at load", async () => {
+    const { databasePath } = await storedState({ ...base(), projects: [projectA, projectB], projectCap: 3, sessions: [sessionIn(projectB.id)] })
+    const before = openDescriptors()
+    expect(() => new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine))).toThrow(MultiProjectWorkspaceStateError)
+    expect(() => new DomovoiDaemon({ port: 0, statePath: databasePath })).toThrow(MultiProjectWorkspaceStateError)
+    released(databasePath, before)
+  })
+
+  it("is not held after a refusal read from a write-ahead log", async () => {
+    const { databasePath } = await storedState({ ...base(), sessions: [sessionIn(projectA.id)] })
+    const writer = new DatabaseSync(databasePath)
+    writer.exec("PRAGMA wal_autocheckpoint = 0")
+    writer.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify({ ...base(), projects: [projectA, projectB], projectCap: 3, sessions: [sessionIn(projectB.id)] }))
+    const copyDirectory = await mkdtemp(join(dirname(databasePath), "copy-"))
+    const copyPath = join(copyDirectory, "state.sqlite")
+    for (const suffix of ["", "-wal", "-shm"]) await copyFile(`${databasePath}${suffix}`, `${copyPath}${suffix}`)
+    writer.close()
+    const before = openDescriptors()
+    expect(() => new SqliteWorkspaceStore(copyPath, createEmptyWorkspace(machine))).toThrow(MultiProjectWorkspaceStateError)
+    released(copyPath, before)
+  })
+
+  it("is not held after a store that refused a saved project row is closed", async () => {
+    const { databasePath } = await storedState({ ...base(), sessions: [sessionIn(projectA.id)] })
+    insertProjectRow(databasePath, "project-b", projectRow({ ...projectB }, { sessions: [sessionIn("project-c")] }))
+    const before = openDescriptors()
+    const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine))
+    expect(store.load().project).toEqual(projectA)
+    expect(() => store.loadProject("project-b")).toThrow(SavedProjectStateError)
+    await store.close()
+    released(databasePath, before)
   })
 })
 
