@@ -163,3 +163,50 @@ it("says the path was not reported when the daemon predates the search record", 
   const report = screen.getByRole("region", { name: "Provider search" })
   expect(report.textContent).toContain("Searched for codex and found nothing. This daemon did not report where it looked.")
 })
+
+// The provider pick names the new harness before its models arrive. The level
+// chosen on the old harness is read on that harness's scale, so Claude Code's
+// Medium stays Medium on Codex instead of falling to Codex's default.
+it("carries the effort level across a provider pick by its word", async () => {
+  const user = userEvent.setup()
+  const onCreateSession = vi.fn(async () => {})
+  const onListModels = vi.fn(async (provider: string) => provider === "claude-code"
+    ? [{
+        provider: "claude-code",
+        id: "sonnet",
+        displayName: "Sonnet",
+        description: "",
+        supportedReasoningEfforts: ["think", "think-hard", "ultrathink"],
+        defaultReasoningEffort: "think-hard",
+        isDefault: true,
+      }]
+    : [{
+        provider: "codex",
+        id: "gpt-5.6-sol",
+        displayName: "GPT-5.6 Sol",
+        description: "",
+        supportedReasoningEfforts: ["low", "medium"],
+        defaultReasoningEffort: "low",
+        isDefault: true,
+      }])
+  render(
+    <LauncherDialog
+      mode="session"
+      defaultProviderId="claude-code"
+      defaultPermissionMode="build"
+      onOpenChange={vi.fn()}
+      onOpenProject={vi.fn(async () => {})}
+      onCreateSession={onCreateSession}
+      onListModels={onListModels}
+      providers={[{ id: "claude-code", command: "claude", status: "ready", sessionCapable: true }, ...providers]}
+    />,
+  )
+  await screen.findByText("Sonnet")
+  await user.click(screen.getByRole("button", { name: "Execution provider" }))
+  await user.click(screen.getByRole("menuitem", { name: /Codex/ }))
+  await screen.findByText("GPT-5.6 Sol")
+  await user.type(screen.getByPlaceholderText("Describe what this session should accomplish"), "Fix the build")
+  await user.click(screen.getByRole("button", { name: "Create session" }))
+  await waitFor(() => expect(onCreateSession).toHaveBeenCalledTimes(1))
+  expect(onCreateSession).toHaveBeenCalledWith("Fix the build", expect.objectContaining({ provider: "codex", reasoning: "medium" }))
+})

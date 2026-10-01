@@ -68,7 +68,7 @@
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "catalog:",
     "tsup": "^8.5.0",
-    "tsx": "^4.23.13",
+    "tsx": "^4.23.15",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

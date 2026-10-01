@@ -4323,10 +4323,12 @@ class Component extends DCLogic {
     // clamp is real rather than a label that springs back on the next switch.
     const pickModel = i => () => {
       const scale = scaleFor(models[i % models.length]).levels;
-      const landed = scale.length ? scale[resolveEffort(st.effort, scale)].label : st.effort;
+      const carried = scale.find(l => l.label === st.effort);
+      const modelDef = scale.find(l => l.isDefault);
+      const landed = !scale.length ? st.effort : carried ? carried.label : modelDef ? modelDef.label : scale[resolveEffort(st.effort, scale)].label;
       this.setState({
         model: i, modelMenuOpen: false, effort: landed,
-        effortDropped: landed === st.effort ? null : { from: st.effort, to: landed, agent: models[i % models.length].agent }
+        effortDropped: landed === st.effort ? null : { from: st.effort, to: landed, agent: models[i % models.length].agent, toDefault: !carried && !!modelDef }
       });
     };
     const modelQ = (st.modelQuery || "").toLowerCase();
@@ -6456,7 +6458,7 @@ class Component extends DCLogic {
       })),
       effortFootNote: st.effortDropped
         ? st.effortDropped.agent + " has no " + st.effortDropped.from + ", so this moved to " +
-          st.effortDropped.to + " when you changed model. It stays there."
+          (st.effortDropped.toDefault ? "the model's default, " : "") + st.effortDropped.to + ". It stays until you pick a level."
         : "Applies from the next turn. A turn already in flight keeps the effort it started with.",
       effortFootStyle: "padding: 10px 12px; border-top: 1px solid var(--border); font-size: 11px; line-height: 1.5; color: var(--" +
         (st.effortDropped ? "foreground" : "muted-foreground") + ");" +

@@ -69,6 +69,7 @@ import {
   type AuditActor,
   type AuditOutcome,
   type ProviderModel,
+  type Project,
   type ProjectSwitchConfirmation,
   type QueuedSessionSend,
   type RepositoryGitFilterRefusal,
@@ -1632,7 +1633,10 @@ export class DomovoiDaemon {
   #repositoryProviderConfig: RepositoryProviderConfigReader | undefined
   #repositoryTrust: RepositoryTrustStore | undefined
   #profileDirectory: string
-  #fileSkillCatalog: { projectPath: string | undefined; catalog: FileSkillCatalog } | undefined
+  // One file catalog per project path, undefined for no project. A catalog
+  // checks its files and trust keys again at every listing, so one kept from
+  // an earlier visit to a project reads that project as it is now.
+  readonly #fileSkillCatalogs = new Map<string | undefined, FileSkillCatalog>()
   #workspaceAbort = new AbortController()
   #emergencyBlockedThreads = new Set<string>()
   #failedEmergencyThreads = new Set<string>()
@@ -2074,7 +2078,8 @@ export class DomovoiDaemon {
   // A). The workspace took away what it made when worktreeRemoved says so, so
   // the record of the attempt goes too; otherwise the record stays for
   // recovery to preserve the worktree. The answer carries the drivers and the
-  // open project's trust read now; any other error passes through unchanged.
+  // session's project's trust read now; any other error passes through
+  // unchanged, and so does this one when that project cannot be found.
   async #gitFilterRefusal(error: unknown, sessionId: string, projectId: string): Promise<unknown> {
     if (!(error instanceof RepositoryGitFilterRefusedError)) return error
     if (error.worktreeRemoved) {
@@ -2088,12 +2093,12 @@ export class DomovoiDaemon {
     return await this.#gitFilterRpcError(error, projectId) ?? error
   }
 
-  // A refusal over a repository git filter with its data, for the open
-  // project only, read now; undefined when it names another project or none,
-  // or the read fails: the refusal's text then answers alone.
+  // A refusal over a repository git filter with its data, for the project it
+  // names, read now; undefined when it names none that can be found, or the
+  // read fails: the refusal's text then answers alone.
   async #gitFilterRpcError(error: RepositoryFilterRefusedError, projectId: string | undefined): Promise<RepositoryGitFilterRpcError | undefined> {
-    const project = this.#snapshot.project
-    if (projectId === undefined || !project || project.id !== projectId) return undefined
+    const project = projectId === undefined ? undefined : this.#projectById(projectId)
+    if (!project) return undefined
     return repositoryGitFilterRpcError({
       error,
       project: { id: project.id, path: project.path },
@@ -2103,16 +2108,16 @@ export class DomovoiDaemon {
   }
 
   // The project a path the workspace gates belongs to
-  // (repository-git-filter-gate.ts): the open project's root, or one of its
-  // session worktrees. The grant and the count of revokes are read at every
-  // call, never kept from an earlier answer (#662). Any other path belongs to
-  // no project here, and its repository filters stay held back.
+  // (repository-git-filter-gate.ts): the open project's root, or a session
+  // worktree, which belongs to its session's own project. The grant and the
+  // count of revokes are read at every call, never kept from an earlier
+  // answer (#662). Any other path belongs to no project here, and its
+  // repository filters stay held back.
   #repositoryFilterTrust(anchor: string): RepositoryFilterTrustSource | undefined {
-    const project = this.#snapshot.project
+    const open = this.#snapshot.project
+    const session = open?.path === anchor ? undefined : this.#snapshot.sessions.find((candidate) => candidate.workspacePath === anchor)
+    const project = open?.path === anchor ? open : session ? this.#projectForSession(session) : undefined
     if (!project) return undefined
-    const known = anchor === project.path
-      || this.#snapshot.sessions.some((session) => session.projectId === project.id && session.workspacePath === anchor)
-    if (!known) return undefined
     return {
       projectId: project.id,
       projectPath: project.path,
@@ -3105,7 +3110,7 @@ export class DomovoiDaemon {
       action: method,
       outcome: method === "approval.resolve" && values.decision === "deny" ? "denied" : "succeeded",
       ...(sessionId ? { sessionId } : {}),
-      ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+      ...this.#auditProject(sessionId),
       ...(target ? { target } : {}),
       ...(method === "skill.setEnabled"
         ? { detail: `enabled=${values.enabled === true} digest=${String(values.contentDigest ?? "")}` }
@@ -3201,9 +3206,43 @@ export class DomovoiDaemon {
     this.#approvalLedger.admit(this.#snapshot.approvals, approval)
   }
 
+  // The project a session belongs to, found by its id: the open project, else
+  // that project's saved row, read and never written. Every session in the
+  // live snapshot belongs to the open project today, so the saved row is read
+  // only for an id that is not the open one's. Undefined when neither has it,
+  // and each caller then acts as it does when no project is open.
+  #projectById(projectId: string): Project | undefined {
+    const open = this.#snapshot.project
+    if (open?.id === projectId) return open
+    try {
+      return this.#store.loadProject?.(projectId, this.#snapshot.machine)?.project
+    } catch (error) {
+      this.#reportError("Domovoi could not read a saved project", error)
+      return undefined
+    }
+  }
+
+  #projectForSession(session: Pick<WorkspaceSnapshot["sessions"][number], "projectId">): Project | undefined {
+    return this.#projectById(session.projectId)
+  }
+
+  // The project an audit record about a session names: the session's own. A
+  // record with no session, or for one no longer in the snapshot, names the
+  // open project, as it always has.
+  #auditProject(sessionId: string | undefined): { projectId?: string } {
+    const session = sessionId === undefined
+      ? undefined
+      : this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+    const projectId = session?.projectId ?? this.#snapshot.project?.id
+    return projectId === undefined ? {} : { projectId }
+  }
+
+  // A session with no worktree of its own works in its project's checkout. An
+  // approval whose session has left the snapshot keeps the open project's.
   #approvalWorkspace(approval: WorkspaceSnapshot["approvals"][number]): string | undefined {
-    return this.#snapshot.sessions.find((session) => session.id === approval.sessionId)?.workspacePath
-      ?? this.#snapshot.project?.path
+    const session = this.#snapshot.sessions.find((candidate) => candidate.id === approval.sessionId)
+    if (!session) return this.#snapshot.project?.path
+    return session.workspacePath ?? this.#projectForSession(session)?.path
   }
 
   #approvalScope(runtime: Runtime): ApprovalScope | undefined {
@@ -3237,7 +3276,7 @@ export class DomovoiDaemon {
     approval: WorkspaceSnapshot["approvals"][number],
     session: WorkspaceSnapshot["sessions"][number],
   ): Promise<{ refusal: string | undefined; otherNames: boolean }> {
-    const workspace = session.workspacePath ?? this.#snapshot.project?.path
+    const workspace = session.workspacePath ?? this.#projectForSession(session)?.path
     if (workspace === undefined) return { refusal: undefined, otherNames: false }
     const held = this.#approvalTargets.get(approval.id)
     const fileTool = held !== undefined && heldFileTool(held.request)
@@ -3619,8 +3658,9 @@ export class DomovoiDaemon {
       target,
     })
     if (!reachable.allowed) return this.#refusedTransferPreview(params, reachable.reason)
+    const project = this.#projectForSession(session)
     if (
-      !this.#snapshot.project
+      !project
       || !session.workspacePath
       || !this.#usageLedger.transferSession
       || !this.#workspaceService.transferFingerprint
@@ -3648,8 +3688,8 @@ export class DomovoiDaemon {
             ),
           } : {}),
         }),
-        this.#workspaceService.inspect(this.#snapshot.project.path, signal)
-          .then((project) => project.head),
+        this.#workspaceService.inspect(project.path, signal)
+          .then((inspected) => inspected.head),
         this.#workspaceService.transferFingerprint(session.workspacePath, signal),
       ])
     } catch (error) {
@@ -3686,7 +3726,7 @@ export class DomovoiDaemon {
           contractVersion: sessionTransferContractVersion,
           sessionId: session.id,
           sourceMachineId: this.#snapshot.machine.id,
-          sourceProjectId: this.#snapshot.project.id,
+          sourceProjectId: project.id,
           lineageCommit: projectHead,
           ownershipGeneration: session.ownershipGeneration ?? 0,
           method: params.method,
@@ -3701,7 +3741,7 @@ export class DomovoiDaemon {
         snapshot: this.#snapshot,
         sourceMachineId: this.#snapshot.machine.id,
         targetMachineId: target.id,
-        sourceProjectId: this.#snapshot.project.id,
+        sourceProjectId: project.id,
         targetProjectId: targetReady.targetProjectId,
         lineageCommit: targetReady.lineageCommit,
         sourceHeadCommit: fingerprint.headCommit,
@@ -4242,7 +4282,7 @@ export class DomovoiDaemon {
       action: "session.ownership-conflict",
       outcome: "denied",
       sessionId: source.id,
-      ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+      projectId: source.projectId,
       target: lifecycle.targetMachineId,
       detail: `Source stopped because target reported ${refusal.reason} at generation ${refusal.existingGeneration} for transfer ${lifecycle.transferId}`,
     })
@@ -4600,7 +4640,7 @@ export class DomovoiDaemon {
         action: "session.source-recovery-cleared",
         outcome: "succeeded",
         sessionId: session.id,
-        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        projectId: session.projectId,
         target: recovery.targetMachineId,
         detail: `Target confirmed no committed ownership for transfer ${recovery.transferId}`,
       })
@@ -4676,7 +4716,7 @@ export class DomovoiDaemon {
       action: "session.ownership-conflict",
       outcome: "denied",
       sessionId: session.id,
-      ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+      projectId: session.projectId,
       target: recovery.targetMachineId,
       detail: `Recovered source stopped because transfer ${recovery.transferId} is committed at generation ${remote.ownershipGeneration}`,
     })
@@ -5133,16 +5173,22 @@ export class DomovoiDaemon {
 
   #skillCatalogFor(projectPath: string | undefined): SkillCatalog {
     if (this.#skillCatalog) return this.#skillCatalog
-    if (!this.#fileSkillCatalog || this.#fileSkillCatalog.projectPath !== projectPath) {
-      this.#fileSkillCatalog = {
-        projectPath,
-        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath, this.#profileDirectory), this.#skillReviews, {
-          trustPath: this.#skillTrustPath,
-          report: (detail) => this.#errorSink({ context: "skill-trust", detail }),
-        }),
-      }
+    let catalog = this.#fileSkillCatalogs.get(projectPath)
+    if (!catalog) {
+      catalog = new FileSkillCatalog(skillRoots(homedir(), projectPath, this.#profileDirectory), this.#skillReviews, {
+        trustPath: this.#skillTrustPath,
+        report: (detail) => this.#errorSink({ context: "skill-trust", detail }),
+      })
+      this.#fileSkillCatalogs.set(projectPath, catalog)
     }
-    return this.#fileSkillCatalog.catalog
+    return catalog
+  }
+
+  // A review is kept for the skill, not the project, and no catalog's file
+  // check sees it change, so every kept catalog lists again after one.
+  #invalidateSkillCatalogs(): void {
+    if (this.#skillCatalog instanceof FileSkillCatalog) this.#skillCatalog.invalidate()
+    for (const catalog of this.#fileSkillCatalogs.values()) catalog.invalidate()
   }
 
   async #ensureAgentConnected(provider = "codex"): Promise<AgentAdapter> {
@@ -7613,7 +7659,7 @@ export class DomovoiDaemon {
           (candidate) => candidate.projectId !== project.id || candidate.skillId !== current.id,
         )
         this.#snapshot.skillEnablements.push(review)
-        if (catalog instanceof FileSkillCatalog) catalog.invalidate()
+        this.#invalidateSkillCatalogs()
         changed = true
       }
 
@@ -7660,7 +7706,7 @@ export class DomovoiDaemon {
         } else {
           reviews.revoke(current.id)
         }
-        if (catalog instanceof FileSkillCatalog) catalog.invalidate()
+        this.#invalidateSkillCatalogs()
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -8252,6 +8298,9 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, fileTargetOtherNamesMessage)
           return
         }
+        // A standing rule stays with the open project: the snapshot accepts
+        // only rules for that project, so routing it by the session's waits
+        // for the snapshot to hold several projects.
         const project = this.#snapshot.project
         if (params.decision === "always-project" && !project) {
           this.#error(socket, request.id, internalError, "Approval has no open project")
@@ -9202,7 +9251,7 @@ export class DomovoiDaemon {
           forkedFrom: { sourceSessionId: source.id, checkpointId: checkpoint.id, checkpointCommit: checkpoint.commit,
             requestId: params.requestId, client: params.client, requestedRuntime: params.runtime },
         }
-        this.#recordSessionCreation(creationDraft, this.#snapshot.project?.path ?? source.workspacePath)
+        this.#recordSessionCreation(creationDraft, this.#projectForSession(source)?.path ?? source.workspacePath)
         let creatingWorkspace: Promise<{ path: string }> | undefined
         const workspace = await this.#withAbortTimeout(
           (signal) => {
@@ -9432,7 +9481,7 @@ export class DomovoiDaemon {
             ...(deliversPlan ? { workingPlan: boundaryPlan } : {}),
             capabilities: registeredAgent.capabilities,
             annotationVisualContext: this.#annotationVisualContext,
-            skillCatalog: this.#skillCatalogFor(this.#snapshot.project?.path),
+            skillCatalog: this.#skillCatalogFor(this.#projectForSession(session)?.path),
             requireTrustedSkills:
               session.runtime.permissionMode === "build" && session.runtime.auto,
             ...(params.skillSelection ? { skillSelection: params.skillSelection } : {}),
@@ -9623,7 +9672,7 @@ export class DomovoiDaemon {
               action: "provider.plan-delivered",
               outcome: "succeeded",
               sessionId: currentSession.id,
-              ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+              projectId: currentSession.projectId,
               target: currentSession.id,
               detail: [
                 `provider=${providerTarget.provider}`,
@@ -9652,7 +9701,7 @@ export class DomovoiDaemon {
               action: "plan.edit-finalized",
               outcome: boundaryMutation.disposition === "applied" ? "succeeded" : "failed",
               sessionId: currentSession.id,
-              ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+              projectId: currentSession.projectId,
               ...(currentPlan?.pendingEdit?.id
                 ? { target: currentPlan.pendingEdit.id }
                 : {}),
@@ -10139,7 +10188,7 @@ export class DomovoiDaemon {
         action: "provider.plan-updated",
         outcome: "succeeded",
         sessionId: session.id,
-        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        projectId: session.projectId,
         target: session.id,
         detail: [
           `revision=${mutation.plan.revision}`,
@@ -10224,7 +10273,7 @@ export class DomovoiDaemon {
           action: "provider.policy-refused",
           outcome: "denied",
           sessionId: session.id,
-          ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+          projectId: session.projectId,
           ...(event.itemId ? { target: event.itemId } : {}),
           detail: refusal.rule,
         })
@@ -10237,7 +10286,9 @@ export class DomovoiDaemon {
       // or card. It denies a request a stop has overtaken and holds one that
       // meets the handoff fence.
       if (!this.#admitApprovalRequest(provider, event)) return
-      const project = this.#snapshot.project
+      // A request whose session's project cannot be found is dropped, as one
+      // was when no project was open.
+      const project = this.#projectForSession(session)
       if (!project) return
       // A path the provider blocked on is named beside the request and is
       // never its directory.
@@ -10433,7 +10484,7 @@ export class DomovoiDaemon {
         action: `provider.tool.${event.phase}`,
         outcome: itemOutcome,
         sessionId: session.id,
-        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        projectId: session.projectId,
         ...(typeof itemRecord?.id === "string" ? { target: itemRecord.id } : {}),
       })
       const completedItemId = event.phase === "completed" && typeof itemRecord?.id === "string" ? itemRecord.id : undefined
@@ -10663,7 +10714,7 @@ export class DomovoiDaemon {
         action: "provider.turn-completed",
         outcome: failed ? "failed" : "succeeded",
         sessionId: session.id,
-        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        projectId: session.projectId,
       })
       if (failed) this.#holdQueuedSessionSend(session.id, "The provider turn failed before the queued boundary could release.")
       else releaseQueuedSend = true
@@ -10801,7 +10852,7 @@ export class DomovoiDaemon {
         action: "plan.approval-blocker-cleared",
         outcome: "succeeded",
         sessionId: approval.sessionId,
-        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        ...this.#auditProject(approval.sessionId),
         target: approval.id,
       })
     }
@@ -11369,6 +11420,10 @@ export class DomovoiDaemon {
     }
   }
 
+  // A recovered session joins the live snapshot, which holds only the open
+  // project's sessions, so only that project's creations are recovered here.
+  // Another project's wait until project.open loads it and calls this again.
+  // Each recovered record names its own repository path.
   async #recoverSessionCreations(): Promise<void> {
     const journal = this.#store.sessionCreations
     const projectId = this.#snapshot.project?.id
@@ -11898,7 +11953,7 @@ export class DomovoiDaemon {
       // The archived notice names the kept branch and what the source never
       // received; both are read while the worktree still exists. A failure
       // here does not stop the archive: the notice then says less.
-      const sourcePath = this.#snapshot.project?.path
+      const sourcePath = this.#projectForSession(session)?.path
       if (this.#workspaceService.sessionBranchFacts && sourcePath) {
         try {
           const facts = await this.#withAbortTimeout(
