@@ -151,14 +151,15 @@ function FileCard({ file, reason }: { file: HeldBackFile, reason: string }) {
     <Card flush accessibilityLabel={file.path}>
       <View className="gap-1 px-[13px] py-3">
         <Text variant="machine" className="text-[12px] text-foreground">{file.path}</Text>
-        <Text variant="note">{file.source} · {file.providers.join(" · ")} · {file.counts}</Text>
+        {/* A git config file is every agent's, so it names none. */}
+        <Text variant="note">{[file.source, ...file.providers, file.counts].filter(Boolean).join(" · ")}</Text>
         <Text variant="note" className="text-strong">{reason}</Text>
       </View>
       {file.rows.map((row) => (
         <View key={row.key} className="gap-0.5 border-t border-border px-[13px] py-2.5">
           <View className="flex-row flex-wrap items-center gap-x-2 gap-y-0.5">
             <Text variant="label">{row.kind}</Text>
-            <Text variant="machine" className="text-faint">{row.provider}</Text>
+            {row.provider ? <Text variant="machine" className="text-faint">{row.provider}</Text> : null}
           </View>
           <Text variant="machine" className="text-[11.5px] text-strong">{row.name}</Text>
           {row.detail ? <Text variant="machine" className="text-faint">{row.detail}</Text> : null}

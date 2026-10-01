@@ -200,6 +200,50 @@ describe("heldBackView", () => {
     expect(view.awaitsTrust).toBe(false)
   })
 
+  // A filter the repository's own Git config sets is held back for every
+  // agent, so its file names no agent.
+  it("lists the repository's git filter drivers under their git config file", () => {
+    const filtered = toolInventorySchema.parse({
+      ...inventory(),
+      repository: {
+        ...inventory().repository,
+        gitFilters: {
+          files: [{ path: ".git/config", scope: "local" }],
+          entries: [
+            { driver: "sops", operation: "smudge", command: "sops -d", file: ".git/config", scope: "local", heldBack: true },
+            { driver: "sops", operation: "clean", command: "sops -e", file: ".git/config", scope: "local", heldBack: true },
+          ],
+          omittedEntries: 0,
+        },
+      },
+    })
+    const view = loaded(heldBackView(filtered))
+    const git = view.files.at(-1)!
+    expect(git).toEqual({
+      path: ".git/config",
+      source: "local git config",
+      providers: [],
+      counts: "1 filter driver",
+      rows: [{ key: "local\u0000.git/config\u0000sops", provider: "", kind: "Filter driver", name: "sops", detail: "smudge sops -d · clean sops -e" }],
+    })
+    // Each command is an entry, as the daemon lists it.
+    expect(view.held).toBe(9)
+    expect(view.lead).toBe("None of it loads for any agent.")
+  })
+
+  it("does not call the list whole when the git config could not be read", () => {
+    const unread = toolInventorySchema.parse({
+      ...inventory(),
+      repository: { ...inventory().repository, gitFilters: { files: [], entries: [], omittedEntries: 0, unreadable: { reason: "too-large" } } },
+    })
+    expect(loaded(heldBackView(unread)).incomplete).toBe("the Git config could not be read")
+    const cut = toolInventorySchema.parse({
+      ...inventory(),
+      repository: { ...inventory().repository, gitFilters: { files: [], entries: [], omittedEntries: 2 } },
+    })
+    expect(loaded(heldBackView(cut)).incomplete).toBe("2 entries were left out")
+  })
+
   it("has nothing to hold back when no project is open", () => {
     const none = toolInventorySchema.parse({ machine: inventory().machine, providers: [] })
     expect(heldBackView(none)).toEqual({ kind: "no-project", machine: "studio" })
