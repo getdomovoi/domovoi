@@ -8,6 +8,7 @@ import {
 
 import { claudeEntryHeldBack, claudeRepositoryFiles, claudeRepositoryLoad } from "./claude-repository-trust.js"
 import { codexEntryHeldBack, codexRepositoryFiles, codexRepositoryLoad } from "./codex-repository-trust.js"
+import { openCodeEntryHeldBack, openCodeRepositoryFiles, openCodeRepositoryLoad } from "./opencode-repository-trust.js"
 import {
   readRepositoryProviderConfig,
   repositoryProviderScopes,
@@ -28,8 +29,9 @@ import type { RepositoryProviderConfigReader } from "./tool-inventory.js"
 // worktree, at the call that opens its thread or starts its turn, and never
 // relies on an earlier trust answer (#662 round 1): the documents it gives are
 // the ones the digest it compared was computed from. Claude Code (P6b,
-// claude-repository-trust.ts) and Codex (P6c, codex-repository-trust.ts) each
-// load parts of a trusted verdict's documents.
+// claude-repository-trust.ts), Codex (P6c, codex-repository-trust.ts), and
+// OpenCode and Kilo (P7, opencode-repository-trust.ts) each load parts of a
+// trusted verdict's documents.
 
 // Why a session's repository configuration is held back. Codes, not prose:
 // the notice that words them comes with the later slices (ruling Q153 A).
@@ -141,13 +143,19 @@ export const repositoryEntryHeldBack: RepositoryEntryHeldBack = (provider: strin
 // The policy under a trusted verdict whose documents are `documents`: Claude
 // Code's and Codex's entries are held back unless the plan its adapter passes
 // loads them (claude-repository-trust.ts, slice P6b; codex-repository-trust.ts,
-// slice P6c); every other provider's are marked as when untrusted.
+// slice P6c), and OpenCode's and Kilo's from their config files likewise
+// (opencode-repository-trust.ts, slice P7); every other provider's are marked
+// as when untrusted.
 export function trustedEntryHeldBack(documents: RepositoryConfigDocuments): RepositoryEntryHeldBack {
   const claude = claudeRepositoryLoad(documents)
   const codex = codexRepositoryLoad(documents)
+  const openCode = { opencode: openCodeRepositoryLoad("opencode", documents), kilo: openCodeRepositoryLoad("kilo", documents) }
   return (provider, entry) => {
     if (provider === "claude-code" && claudeRepositoryFiles.has(entry.file)) return claudeEntryHeldBack(entry, claude)
     if (provider === "codex" && codexRepositoryFiles.has(entry.file)) return codexEntryHeldBack(entry, codex)
+    if ((provider === "opencode" || provider === "kilo") && openCodeRepositoryFiles[provider].has(entry.file)) {
+      return openCodeEntryHeldBack(entry, openCode[provider])
+    }
     return repositoryEntryHeldBack(provider, entry)
   }
 }

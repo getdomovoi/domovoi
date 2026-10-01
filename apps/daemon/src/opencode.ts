@@ -9,10 +9,17 @@ import {
 } from "@opencode-ai/sdk"
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
-import type { AgentAdapter, AgentEvent } from "./agents.js"
+import type { AgentAdapter, AgentEvent, AgentRepositoryTrust } from "./agents.js"
 import { normalizeProviderUsage } from "./usage.js"
 import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
+import {
+  openCodeRepositoryLoad,
+  withoutOwnOpenCodeServers,
+  type OpenCodeRepositoryServer,
+} from "./opencode-repository-trust.js"
 import { projectInstructions } from "./project-instructions.js"
+import { repositoryTrustVerdict } from "./repository-trust-apply.js"
+import type { RepositoryProviderConfigReader } from "./tool-inventory.js"
 
 type OpenCodeResult<T> = { data?: T; error?: unknown }
 
@@ -53,12 +60,31 @@ export type OpenCodeClient = {
   postSessionIdPermissionsPermissionId(
     options: MethodOptions<OpencodeSdkClient["postSessionIdPermissionsPermissionId"]>,
   ): Promise<OpenCodeResult<unknown>>
-  // The tool servers a directory knows, by name. Optional: without it an
-  // approval card names no tool server.
+  // The tool servers a directory knows, by name, and a server added to one
+  // directory's instance. Optional: without status an approval card names no
+  // tool server, and without add or instance.dispose no repository server
+  // is given to a session.
   mcp?: {
     status(options: MethodOptions<OpencodeSdkClient["mcp"]["status"]>): Promise<OpenCodeResult<unknown>>
+    add?(options: MethodOptions<OpencodeSdkClient["mcp"]["add"]>): Promise<OpenCodeResult<unknown>>
+  }
+  instance?: {
+    dispose(options: MethodOptions<OpencodeSdkClient["instance"]["dispose"]>): Promise<OpenCodeResult<unknown>>
   }
 }
+
+export type OpenCodeAdapterOptions = {
+  // Reads a session worktree's repository configuration for its trust
+  // verdict; the reader's own default when absent.
+  readRepositoryConfig?: RepositoryProviderConfigReader
+}
+
+// A trusted verdict's servers for one session directory, and the digest they
+// were read from.
+type RepositoryPlan = { digest: string; servers: Record<string, OpenCodeRepositoryServer> }
+
+// How long a close waits for each directory's instance to be disposed.
+const closeDisposeTimeoutMs = 5_000
 
 type OpenCodeConfig = { model?: string }
 
@@ -295,15 +321,26 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #failedRefusals = new Map<number, PendingApproval>()
   #nextApprovalId = 0
   #nextGeneration = 0
+  readonly #readRepositoryConfig: RepositoryProviderConfigReader | undefined
+  // Threads given a trusted repository's servers, with the digest they were
+  // read from (ruling Q170 A). A stop disposes the instance, which ends the
+  // servers' processes without waiting for them to exit (ruling Q152 A), so
+  // a thread stays reported until the adapter closes.
+  #trustApplied = new Map<string, { digest: string }>()
+  // Directories whose instance holds trusted servers this adapter added, by
+  // the names it added there.
+  #trustedDirectories = new Map<string, Set<string>>()
 
   constructor(
     factory: OpenCodeFactory = defaultOpenCodeFactory,
     id: (after?: string) => string = nextOpenCodeMessageId,
     identity: OpenCodeAdapterIdentity = { providerId: "opencode", providerName: "OpenCode" },
+    options: OpenCodeAdapterOptions = {},
   ) {
     this.#factory = factory
     this.#id = id
     this.#identity = identity
+    this.#readRepositoryConfig = options.readRepositoryConfig
   }
 
   async connect(): Promise<void> {
@@ -367,9 +404,15 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     })
   }
 
-  async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
+  async startThread({ cwd, runtime, repositoryTrust }: {
+    cwd: string
+    runtime: Runtime
+    repositoryTrust?: AgentRepositoryTrust
+  }): Promise<string> {
     await this.#refuseHeldBackRepositoryFiles(cwd)
+    const plan = await this.#repositoryPlan(cwd, repositoryTrust)
     const client = await this.#client()
+    await this.#releaseTrustedDirectory(client, cwd)
     const action = `${this.#identity.providerName} session creation`
     const created = requireSession(
       unwrap(await client.session.create({
@@ -393,20 +436,24 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       }
       throw error
     }
+    await this.#addRepositoryServers(client, created.id, cwd, plan)
     return created.id
   }
 
-  async resumeThread({ threadId, cwd, runtime }: {
+  async resumeThread({ threadId, cwd, runtime, repositoryTrust }: {
     threadId: string
     cwd: string
     runtime: Runtime
+    repositoryTrust?: AgentRepositoryTrust
   }): Promise<void> {
     if (this.#sessions.has(threadId)) return
     await this.#refuseHeldBackRepositoryFiles(cwd)
+    const plan = await this.#repositoryPlan(cwd, repositoryTrust)
     const pending = { cwd, cancelled: false }
     this.#pendingSessionLoads.set(threadId, pending)
     try {
       const client = await this.#client()
+      await this.#releaseTrustedDirectory(client, cwd)
       const action = `${this.#identity.providerName} session resume`
       const session = requireSession(
         unwrap(await client.session.get({
@@ -435,6 +482,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         if (loaded) this.#unloadSession(loaded)
         throw error
       }
+      await this.#addRepositoryServers(client, threadId, cwd, plan)
     } finally {
       if (this.#pendingSessionLoads.get(threadId) === pending) {
         this.#pendingSessionLoads.delete(threadId)
@@ -512,6 +560,15 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       throwOnError: true,
     }), `${this.#identity.providerName} session deletion`)
     if (session) this.#unloadSession(session)
+    // A failed dispose fails the stop, so a revoke does not count the thread
+    // stopped while its trusted servers may still run.
+    await this.#releaseTrustedDirectory(client, cwd)
+  }
+
+  // The digest of the trusted configuration whose servers this thread was
+  // given, or undefined when it was given none (ruling Q170 A).
+  repositoryTrustApplied(threadId: string): { digest: string } | undefined {
+    return this.#trustApplied.get(threadId)
   }
 
   resolveApproval(requestId: number, decision: ApprovalDecision): void {
@@ -563,6 +620,17 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
   async close(): Promise<void> {
     this.#closed = true
+    // Trusted servers end with their instance, before the server itself.
+    const client = this.#runtime?.client
+    if (client?.instance) {
+      const instance = client.instance
+      await Promise.allSettled([...this.#trustedDirectories.keys()].map((cwd) => instance.dispose({
+        query: { directory: cwd },
+        signal: AbortSignal.timeout(closeDisposeTimeoutMs),
+        throwOnError: true,
+      })))
+    }
+    this.#trustedDirectories.clear()
     for (const directory of this.#directories.values()) directory.controller.abort()
     this.#directories.clear()
     this.#sessions.clear()
@@ -572,6 +640,71 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#runtime?.server.close()
     this.#runtime = undefined
     await this.#connection
+  }
+
+  // The worktree's verdict under the grant, read just before the session
+  // opens: only a trusted one brings servers, and it brings the documents its
+  // digest was computed from (slice P7, opencode-repository-trust.ts). A
+  // running session keeps what it was given; a changed configuration or a new
+  // grant applies at its next open (rulings Q143 A and Q147 A).
+  async #repositoryPlan(cwd: string, grant: AgentRepositoryTrust | undefined): Promise<RepositoryPlan | undefined> {
+    const provider = this.#identity.providerId
+    if (grant === undefined || (provider !== "opencode" && provider !== "kilo")) return undefined
+    const verdict = await repositoryTrustVerdict(cwd, grant, this.#readRepositoryConfig)
+    if (verdict.state !== "trusted") return undefined
+    const servers = openCodeRepositoryLoad(provider, verdict.documents).mcpServers
+    return Object.keys(servers).length > 0 ? { digest: verdict.configDigest, servers } : undefined
+  }
+
+  // Adds the plan's servers to the session directory's instance, less any
+  // named like one of the person's own (ruling Q150 A): the servers the
+  // directory knows before anything is added, other than ones this adapter
+  // added there. When those cannot be read, none pass. The thread counts as
+  // given trusted servers from before the first add, since an add that fails
+  // or times out may already have started its program. A failed add is
+  // reported and the others are still added.
+  async #addRepositoryServers(client: OpenCodeClient, threadId: string, cwd: string, plan: RepositoryPlan | undefined): Promise<void> {
+    const add = client.mcp?.add?.bind(client.mcp)
+    if (plan === undefined || !client.mcp || add === undefined || !client.instance) return
+    let known: string[]
+    try {
+      const servers = asRecord(unwrap(await client.mcp.status({ query: { directory: cwd }, throwOnError: true }), `${this.#identity.providerName} tool server status`))
+      if (!servers) return
+      known = Object.keys(servers)
+    } catch {
+      return
+    }
+    const added = this.#trustedDirectories.get(cwd) ?? new Set<string>()
+    const passed = withoutOwnOpenCodeServers(plan.servers, known.filter((name) => !added.has(name)))
+    if (Object.keys(passed).length === 0) return
+    this.#trustApplied.set(threadId, { digest: plan.digest })
+    this.#trustedDirectories.set(cwd, added)
+    for (const [name, config] of Object.entries(passed)) {
+      added.add(name)
+      try {
+        unwrap(await add({ query: { directory: cwd }, body: { name, config }, throwOnError: true }), `${this.#identity.providerName} tool server add`)
+      } catch (error) {
+        console.error(`Domovoi could not add a trusted repository tool server to ${this.#identity.providerName}`, error)
+      }
+    }
+    const directory = this.#directories.get(cwd)
+    if (directory) directory.toolServers = [...new Set([...directory.toolServers ?? known, ...Object.keys(passed)])]
+  }
+
+  // Disposes a directory's instance once no loaded session uses it, when it
+  // holds trusted servers this adapter added: the instance's finalizer ends
+  // each server's processes (opencode mcp/index.ts), and the next session
+  // there starts a fresh instance with the person's own servers only. A
+  // failed dispose throws and keeps the directory recorded, so a later stop,
+  // open or close tries again.
+  async #releaseTrustedDirectory(client: OpenCodeClient, cwd: string): Promise<void> {
+    if (!this.#trustedDirectories.has(cwd)) return
+    const inUse = [...this.#sessions.values()].some((session) => session.cwd === cwd)
+      || [...this.#pendingSessionLoads.values()].some((pending) => pending.cwd === cwd && !pending.cancelled)
+    if (inUse) return
+    if (!client.instance) throw new Error(`${this.#identity.providerName} cannot remove trusted tool servers from this directory`)
+    unwrap(await client.instance.dispose({ query: { directory: cwd }, throwOnError: true }), `${this.#identity.providerName} instance disposal`)
+    this.#trustedDirectories.delete(cwd)
   }
 
   async #refuseHeldBackRepositoryFiles(cwd: string): Promise<void> {

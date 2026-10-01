@@ -200,10 +200,22 @@ describe("repositoryEntryHeldBack", () => {
     expect(repositoryEntryHeldBack("claude-code", entry(".codex/config.toml"))).toBe(false)
   })
 
-  it("keeps OpenCode and Kilo entries held back under a trusted grant, until P7 PR B passes their servers", () => {
-    const heldBack = trustedEntryHeldBack({})
+  // Slice P7: under a trusted verdict an OpenCode or Kilo server that passes
+  // loads, and the policy reports it so from the same documents.
+  it("reports a trusted repository's OpenCode and Kilo servers that pass as loading, and nothing else", () => {
+    const heldBack = trustedEntryHeldBack({
+      "opencode.json": { mcp: { db: { type: "local", command: ["db-mcp"] }, off: { type: "local", command: ["x"], enabled: false } } },
+      "kilo.json": { mcp: { db: { type: "local", command: ["db-mcp"] } } },
+    })
+    const server = (name: string, file: string): ToolInventoryEntry => ({
+      kind: "tool-server", name, transport: "stdio", command: "db-mcp", envKeys: [], file, startsAtSessionStart: true, heldBack: true,
+    })
+    expect(heldBack("opencode", server("db", "opencode.json"))).toBe(false)
+    expect(heldBack("opencode", server("off", "opencode.json"))).toBe(true)
     expect(heldBack("opencode", entry("opencode.json"))).toBe(true)
-    expect(heldBack("kilo", entry("kilo.json"))).toBe(true)
+    // Kilo reads db from kilo.json and opencode.json, so the name is held back (Q231 A).
+    expect(heldBack("kilo", server("db", "kilo.json"))).toBe(true)
+    expect(heldBack("kilo", entry(".kilo/mcp.json"))).toBe(true)
     expect(heldBack("kilo", entry(".agents/skills", "skill"))).toBe(false)
   })
 })

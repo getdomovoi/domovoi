@@ -15,7 +15,8 @@ import type { RepositoryTrustGrant } from "./repository-trust-store.js"
 // trusted repository's that its plan passes (claude-repository-trust.ts), Codex
 // its home's config.toml, and a trusted repository's that its plan passes
 // (codex-repository-trust.ts), and OpenCode and Kilo their global config (the
-// embedded config sets no `mcp`, opencode.ts and kilo-runtime.ts). The ACP
+// embedded config sets no `mcp`, opencode.ts and kilo-runtime.ts), and a
+// trusted repository's that its plan passes (opencode-repository-trust.ts). The ACP
 // agents are given no servers, but they load their own from the repository
 // and the reader has no scope for them.
 //

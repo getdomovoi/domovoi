@@ -22,6 +22,7 @@ import {
   type OpenCodeEvent,
   type OpenCodeFactory,
 } from "./opencode.js"
+import { readRepositoryProviderConfig } from "./repository-provider-config.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const scratchDirectories: string[] = []
@@ -1783,6 +1784,193 @@ describe("Kilo legacy repository configuration", () => {
 
     expect(client.session.promptAsync).toHaveBeenCalledOnce()
     await adapter.close()
+  })
+})
+
+// Slice P7: a trusted repository's tool servers are added to the session
+// directory's instance with mcp.add, from the files the verdict digested
+// (opencode-repository-trust.ts), and taken out by disposing the instance.
+describe("trusted repository tool servers", () => {
+  const trustedConfig = {
+    mcp: {
+      db: { type: "local", command: ["db-mcp"], environment: { DATABASE_URL: "postgres://db", PATH: "/repo/bin" } },
+      own: { type: "local", command: ["own-mcp"] },
+      token: { type: "remote", url: "https://mcp.example.com", headers: { Authorization: "Bearer {env:TOKEN}" } },
+    },
+    plugin: ["formatter"],
+  }
+
+  async function trustedWorktree(files: Record<string, string> = { "opencode.json": JSON.stringify(trustedConfig) }) {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-opencode-trusted-"))
+    scratchDirectories.push(worktree)
+    for (const [file, text] of Object.entries(files)) {
+      await mkdir(join(worktree, file, ".."), { recursive: true })
+      await writeFile(join(worktree, file), text)
+    }
+    const { configDigest } = await readRepositoryProviderConfig(worktree, { heldBack: true })
+    const grant = { projectId: "project-acme", trustedDigest: configDigest, trustedAt: "2026-10-01T12:00:00.000Z", trustedBy: { client: "desktop" as const } }
+    return { worktree, grant, configDigest }
+  }
+
+  type Answer = Promise<{ data?: unknown }>
+  function trustHarness(options: { status?: () => Answer; add?: () => Answer } = {}) {
+    const base = harness()
+    const status = vi.fn(async (_options?: unknown): Answer => (options.status ? options.status() : { data: { own: { status: "connected" } } }))
+    const add = vi.fn(async (_options?: unknown): Answer => (options.add ? options.add() : { data: {} }))
+    const dispose = vi.fn(async (_options?: unknown) => ({ data: true }))
+    const client = { ...base.client, mcp: { status, add }, instance: { dispose } }
+    const factory: OpenCodeFactory = async () => ({ client, server: base.server })
+    return { ...base, client, factory, status, add, dispose }
+  }
+
+  it("adds the servers that pass, after listing the person's own, and reports the thread as trust-applied", async () => {
+    const { worktree, grant, configDigest } = await trustedWorktree()
+    const { factory, status, add, stream } = trustHarness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build"), repositoryTrust: grant })
+
+    expect(status).toHaveBeenCalledWith(expect.objectContaining({ query: { directory: worktree } }))
+    // own is the person's (Q150 A); token names a variable (Q151 A).
+    expect(add.mock.calls.map(([options]) => options)).toEqual([expect.objectContaining({
+      query: { directory: worktree },
+      body: {
+        name: "db",
+        config: { type: "local", command: ["db-mcp"], environment: { DATABASE_URL: "postgres://db", OPENCODE_SERVER_PASSWORD: "", OPENCODE_SERVER_USERNAME: "" } },
+      },
+    })])
+    expect(adapter.repositoryTrustApplied(threadId)).toEqual({ digest: configDigest })
+
+    await adapter.startTurn({ threadId, cwd: worktree, prompt: "Query", runtime: runtime("build") })
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "q", sessionID: threadId, permission: "db_query", patterns: ["*"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: "call_q" } },
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", tool: "db_query", toolServer: { name: "db" } })))
+    await adapter.close()
+  })
+
+  it("adds nothing without a grant, or when the worktree's configuration is not the one trusted", async () => {
+    const { worktree, grant } = await trustedWorktree()
+    for (const repositoryTrust of [undefined, { ...grant, trustedDigest: `sha256:${"b".repeat(64)}` }]) {
+      const { factory, add } = trustHarness()
+      const adapter = new OpenCodeSdkAdapter(factory)
+      const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build"), ...(repositoryTrust ? { repositoryTrust } : {}) })
+      expect(add).not.toHaveBeenCalled()
+      expect(adapter.repositoryTrustApplied(threadId)).toBeUndefined()
+      await adapter.close()
+    }
+  })
+
+  it("adds nothing when the person's own servers cannot be listed", async () => {
+    const { worktree, grant } = await trustedWorktree()
+    const { factory, add } = trustHarness({ status: async () => { throw new Error("no list") } })
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build"), repositoryTrust: grant })
+    expect(add).not.toHaveBeenCalled()
+    expect(adapter.repositoryTrustApplied(threadId)).toBeUndefined()
+    await adapter.close()
+  })
+
+  // A failed or timed-out add may already have started the program, so the
+  // thread is reported before the first add is sent.
+  it("reports the thread as trust-applied even when an add fails", async () => {
+    const { worktree, grant, configDigest } = await trustedWorktree()
+    const { factory } = trustHarness({ add: async () => { throw new Error("add failed") } })
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build"), repositoryTrust: grant })
+    expect(adapter.repositoryTrustApplied(threadId)).toEqual({ digest: configDigest })
+    await adapter.close()
+  })
+
+  it("adds the servers again on a resume", async () => {
+    const { worktree, grant } = await trustedWorktree()
+    const { factory, add } = trustHarness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    await adapter.resumeThread({ threadId: "open-session", cwd: worktree, runtime: runtime("build"), repositoryTrust: grant })
+    expect(add).toHaveBeenCalledOnce()
+    expect(adapter.repositoryTrustApplied("open-session")).toBeDefined()
+    await adapter.close()
+  })
+
+  it("disposes the directory's instance when a trust-applied thread stops, and only then", async () => {
+    const { worktree, grant } = await trustedWorktree()
+    const { factory, dispose } = trustHarness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const plain = await mkdtemp(join(tmpdir(), "domovoi-opencode-plain-"))
+    scratchDirectories.push(plain)
+    const trusted = await adapter.startThread({ cwd: worktree, runtime: runtime("build"), repositoryTrust: grant })
+    await adapter.stopThread(trusted)
+    expect(dispose.mock.calls.map(([options]) => options)).toEqual([expect.objectContaining({ query: { directory: worktree } })])
+
+    const untrusted = await adapter.startThread({ cwd: plain, runtime: runtime("build") })
+    await adapter.stopThread(untrusted)
+    expect(dispose).toHaveBeenCalledOnce()
+    await adapter.close()
+  })
+
+  it("fails the stop when the instance cannot be disposed, so a revoke does not count it stopped", async () => {
+    const { worktree, grant } = await trustedWorktree()
+    const { factory, dispose } = trustHarness()
+    dispose.mockImplementation(async () => { throw new Error("dispose failed") })
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build"), repositoryTrust: grant })
+    await expect(adapter.stopThread(threadId)).rejects.toThrow("dispose failed")
+    await adapter.close()
+  })
+
+  // A thread that ends without a stop (its event stream closed) leaves the
+  // instance holding the servers it was given; the next open there, trusted
+  // or not, starts from an instance without them.
+  it("disposes a directory still holding trusted servers before a session opens there again", async () => {
+    const { worktree, grant } = await trustedWorktree()
+    const { factory, add, dispose, client, stream } = trustHarness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.startThread({ cwd: worktree, runtime: runtime("build"), repositoryTrust: grant })
+    stream.close()
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "provider-disconnected" })))
+    expect(dispose).not.toHaveBeenCalled()
+
+    client.event.subscribe.mockResolvedValueOnce({ stream: new EventStream() })
+    await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+    expect(dispose.mock.calls.map(([options]) => options)).toEqual([expect.objectContaining({ query: { directory: worktree } })])
+    expect(dispose.mock.invocationCallOrder[0]).toBeLessThan(client.session.create.mock.invocationCallOrder[1]!)
+    expect(add).toHaveBeenCalledOnce()
+    await adapter.close()
+  })
+
+  it("disposes every directory holding trusted servers when the adapter closes", async () => {
+    const { worktree, grant } = await trustedWorktree()
+    const { factory, dispose, server } = trustHarness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    await adapter.startThread({ cwd: worktree, runtime: runtime("build"), repositoryTrust: grant })
+    await adapter.close()
+    expect(dispose).toHaveBeenCalledWith(expect.objectContaining({ query: { directory: worktree } }))
+    expect(dispose.mock.invocationCallOrder[0]).toBeLessThan(server.close.mock.invocationCallOrder[0]!)
+  })
+
+  it("passes a trusted Kilo repository's servers and still refuses its legacy files", async () => {
+    const kiloConfig = JSON.stringify({ mcp: { search: { type: "remote", url: "https://mcp.example.com/mcp" } } })
+    const { worktree, grant } = await trustedWorktree({ "kilo.json": kiloConfig })
+    const { factory, add } = trustHarness()
+    const adapter = new KiloSdkAdapter(factory)
+    await adapter.startThread({ cwd: worktree, runtime: runtime("build"), repositoryTrust: grant })
+    expect(add.mock.calls.map(([options]) => options)).toEqual([expect.objectContaining({
+      body: { name: "search", config: { type: "remote", url: "https://mcp.example.com/mcp", oauth: false } },
+    })])
+    await adapter.close()
+
+    const legacy = await trustedWorktree({ "kilo.json": kiloConfig, ".kilo/mcp.json": "{}\n" })
+    const refused = trustHarness()
+    const kilo = new KiloSdkAdapter(refused.factory)
+    await expect(kilo.startThread({ cwd: legacy.worktree, runtime: runtime("build"), repositoryTrust: legacy.grant }))
+      .rejects.toThrow("Kilo would load .kilo/mcp.json from this worktree")
+    expect(refused.add).not.toHaveBeenCalled()
+    await kilo.close()
   })
 })
 

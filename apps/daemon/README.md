@@ -576,6 +576,32 @@ code or settings the repository brings:
   worktree that contains any of those three files, and says which one. Kilo also reads
   `.kilocode/rules/`, `.kilocode/workflows/` and `.kilocodeignore` from the worktree; those give
   instructions, slash commands and deny rules, and they still load.
+- When this machine has trusted the repository and the session worktree's configuration still has
+  the trusted digest, the daemon adds the `mcp` entries of the OpenCode or Kilo config files it
+  hashed (`opencode.json`, `opencode.jsonc` and `.opencode/` for OpenCode; `kilo.json`,
+  `kilo.jsonc`, `opencode.json`, `opencode.jsonc`, `config.json`, `.kilo/` and `.kilocode/` for
+  Kilo) to the session directory with the server's `mcp.add`, each time the session opens, after
+  reading the tool servers that directory already knows:
+  - a local server keeps only `type`, `command`, `environment`, `enabled` and `timeout`, and a
+    remote one `type`, `url`, `headers`, `enabled` and `timeout`, with OAuth always off, so your
+    stored tokens are never sent. Its `environment` loses `ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`,
+    `CODEX_*`, `OPENCODE_*`, `KILO_*`, `*_BASE_URL`, any key containing `PROXY`, `NODE_OPTIONS`,
+    `LD_*`, `DYLD_*` and `PATH`, in any case, and sets the embedded server's password and user
+    name empty, so the server cannot answer the session's approvals.
+  - a server with any other field, a disabled or partial entry, a value containing `{env:` or
+    `{file:` (which OpenCode fills in only when it reads a file), a remote address or header
+    containing `$`, a name declared in two of the files, a name that is not letters, digits, `-`
+    and `_`, and a name whose tools would read as one of yours (the same name in any case once
+    punctuation becomes `_`, or one that begins another up to a `_`) are held back. When the
+    directory's servers cannot be read, none is added.
+
+  Plugins, permissions, agents, modes, commands, formatters, language servers and every other
+  setting stay held back, and Kilo's legacy files still refuse the session. A call to a repository
+  server's tool asks for approval like any other tool server's, without Always. Stopping the
+  session, or taking trust back, disposes the directory's instance, which ends the servers; a stop
+  whose disposal fails is reported as failed. A running session keeps what it was given; a changed
+  configuration or a new grant applies at its next open. A session loaded only to be archived gets
+  nothing.
 - Cursor and Grok load MCP servers, hooks and permission rules from the repository they work in,
   and neither has a switch that turns that off. Until the trust gate ships the daemon does not
   run `agent`, `cursor-agent` or `grok` at all: provider discovery reports both as unable to start

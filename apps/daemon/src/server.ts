@@ -2123,8 +2123,8 @@ export class DomovoiDaemon {
   // confirmed. Only the adapter's own
   // report counts (AgentAdapter.repositoryTrustApplied, ruling Q170 A): a
   // grant that was passed and not applied loaded nothing, so taking trust back
-  // leaves that thread running. The Claude Code (P6b) and Codex (P6c)
-  // adapters report it. A report that throws is taken as applied, so the thread is
+  // leaves that thread running. The Claude Code (P6b), Codex (P6c), OpenCode
+  // and Kilo (P7) adapters report it. A report that throws is taken as applied, so the thread is
   // stopped rather than missed. A call without a grant clears nothing: a
   // thread that loaded trusted input earlier still holds it.
   // A call that lands after a revoke of its project carried a grant that is

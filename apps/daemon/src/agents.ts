@@ -68,8 +68,8 @@ export type AgentVisualContext = {
 // This machine's trust grant for the session's repository, looked up by the
 // daemon at the call that carries it. An adapter decides what it may load
 // with repositoryTrustVerdict (repository-trust-apply.ts) against the worktree
-// it opens; absent, nothing the repository brings loads. Claude Code (P6b)
-// and Codex (P6c) use it; every other adapter ignores it until its own slice.
+// it opens; absent, nothing the repository brings loads. Claude Code (P6b),
+// Codex (P6c), OpenCode and Kilo (P7) use it; the ACP agents are turned off.
 export type AgentRepositoryTrust = RepositoryTrustGrant
 
 export interface AgentAdapter {
@@ -90,8 +90,8 @@ export interface AgentAdapter {
    * after a startThread, resumeThread or startTurn that carried a grant lands,
    * and taking trust back stops only the threads that answered. Absent or
    * undefined: nothing trusted loaded. Claude Code (P6b) reports it when the
-   * session was given any trusted configuration, and Codex (P6c) only when
-   * repository tool servers loaded; no other adapter reports it.
+   * session was given any trusted configuration, and Codex (P6c), OpenCode
+   * and Kilo (P7) only when repository tool servers were passed.
    */
   repositoryTrustApplied?(threadId: string): { digest: string } | undefined
   stopThread(threadId: string): Promise<void>
