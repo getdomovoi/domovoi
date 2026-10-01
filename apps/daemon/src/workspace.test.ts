@@ -3995,6 +3995,29 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect((await lstat(index)).ino).toBe(indexBefore.ino)
   }, 30_000)
 
+  // A lock an earlier operation left, or any Git holds, belongs to no record
+  // of this checkpoint. Its index is not put back either (ruling Q272): the
+  // checkpoint fails on Git's lock error, the lock stays and the index keeps
+  // its file.
+  it("leaves the index under a lock it found already there, and names the lock", async () => {
+    const { repositoryPath, worktrees } = await filteredRepository("domovoi-checkpoint-held-lock-")
+    const service = new GitWorkspaceService(worktrees)
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-held-lock")
+    await writeFile(join(workspace.path, "victim.txt"), "changed\n")
+    const index = resolve(workspace.path, (await run("-C", workspace.path, "rev-parse", "--git-path", "index")).stdout.trim())
+    const lock = `${index}.lock`
+    await writeFile(lock, "")
+    const indexBefore = await lstat(index)
+
+    const error = await service.checkpoint(workspace.path, "held").then(() => undefined, (failure: unknown) => failure)
+
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain(`Git's index lock at ${lock} remains`)
+    expect((error as Error).message).toContain("did not put back the index it saved")
+    expect((await lstat(lock)).isFile()).toBe(true)
+    expect((await lstat(index)).ino).toBe(indexBefore.ino)
+  })
+
   // A snapshot's temporary index is written under its own lock. After a
   // kill that lock and the index stay, and the error names them.
   it.skipIf(!processGroups)("leaves a killed snapshot's temporary index and its lock, and names them in the error", async () => {

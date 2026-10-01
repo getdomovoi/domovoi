@@ -961,16 +961,43 @@ async function snapshotIndex(worktreePath: string, signal?: AbortSignal): Promis
   }
 }
 
-async function restoreIndex(snapshot: IndexSnapshot): Promise<void> {
-  if (!snapshot.bytes) {
-    await unlink(snapshot.path).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") throw error
-    })
-    return
+// Puts a saved index back the way Git writes one: under Git's own index lock,
+// created exclusively, then renamed over the index. A lock already there,
+// left by a killed Git or held by another, refuses the restore ("locked")
+// and stays, so the index under it keeps its file (ruling Q272). While this
+// lock exists no Git can take it, so nothing writes the index meanwhile.
+async function restoreIndex(snapshot: IndexSnapshot): Promise<"restored" | "locked"> {
+  const lock = `${snapshot.path}.lock`
+  let handle: Awaited<ReturnType<typeof open>>
+  try {
+    handle = await open(lock, "wx")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return "locked"
+    throw error
   }
-  const staging = `${snapshot.path}.domovoi-${randomUUID()}`
-  await writeFile(staging, snapshot.bytes)
-  await publishFileDurably(staging, snapshot.path)
+  let published = false
+  try {
+    try {
+      if (snapshot.bytes) {
+        await handle.writeFile(snapshot.bytes)
+        await handle.sync()
+      }
+    } finally {
+      await handle.close()
+    }
+    if (snapshot.bytes) {
+      await publishFileDurably(lock, snapshot.path)
+      published = true
+    } else {
+      await unlink(snapshot.path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error
+      })
+    }
+  } finally {
+    // This store's own lock, created exclusively above.
+    if (!published) await unlink(lock).catch(() => undefined)
+  }
+  return "restored"
 }
 
 // The commit's whole tree, read in the isolated directory: in a partial clone
@@ -1912,7 +1939,15 @@ export class GitWorkspaceService implements WorkspaceService {
       // A deadline can land after the commit itself did. The index is then
       // the new HEAD's tree, and the old one would read as reverting it.
       const head = await currentHead(worktreePath).catch(() => undefined)
-      if (head === undefined || head === index.head) await restoreIndex(index).catch(() => undefined)
+      if (head === undefined || head === index.head) {
+        // A lock already there, whoever left it, keeps the index as it is
+        // (ruling Q272), and the error names it as the recorded case does.
+        const restored = await restoreIndex(index).catch(() => "failed" as const)
+        if (restored === "locked" && error instanceof Error) {
+          error.message = `${error.message} Git's index lock at ${index.path}.lock remains. Remove it once no Git command is running in this worktree.`
+            + " Domovoi did not put back the index it saved, since a Git it cannot account for may hold that lock."
+        }
+      }
       throw error
     }
     const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
