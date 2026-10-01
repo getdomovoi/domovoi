@@ -1334,7 +1334,9 @@ export const workspaceSnapshotObjectSchema = z.object({
 // (TS7056). Only an interface keeps its name there: an alias of an inferred
 // type is written out in full. The annotation checks that the schema reads
 // exactly this type.
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- the interface exists for its name
 export interface WorkspaceSnapshot extends z.infer<typeof workspaceSnapshotObjectSchema> {}
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- the interface exists for its name
 export interface WorkspaceSnapshotInput extends z.input<typeof workspaceSnapshotObjectSchema> {}
 export const workspaceSnapshotSchema: z.ZodType<WorkspaceSnapshot, WorkspaceSnapshotInput> = workspaceSnapshotObjectSchema
 
