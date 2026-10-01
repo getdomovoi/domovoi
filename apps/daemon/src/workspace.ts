@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { constants } from "node:fs"
-import { chmod, copyFile, lstat, mkdir, open, readFile, readlink, realpath, unlink, writeFile } from "node:fs/promises"
+import { chmod, copyFile, lstat, mkdir, open, readFile, readlink, realpath, rm, unlink, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 
@@ -476,6 +476,43 @@ async function commitIndex(
   // An empty old value requires that the branch does not exist yet.
   await git(worktreePath, ["update-ref", "-m", `commit: ${message}`, "HEAD", commit, parent ?? ""], signal)
   return commit
+}
+
+// What `git reset --hard` clears of an operation in progress, which a reset
+// run in an isolated Git directory clears only there (Git's branch.c
+// remove_branch_state, observed with Git 2.54): the merge state, the squash
+// message, the cherry-pick and revert heads, and, after a pick head, a
+// sequencer whose last pick is done. Pseudorefs are deleted through Git, so a
+// reftable repository loses them too; the files are removed by path in the
+// worktree's own Git directory. Anything that cannot be removed fails the
+// caller. A merge autostash is left as it is: storing it is a stash
+// operation, and the file holds data, not a program.
+async function clearOperationState(worktreePath: string, signal?: AbortSignal): Promise<void> {
+  const files = ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "MERGE_RR", "AUTO_MERGE", "SQUASH_MSG", "sequencer/todo", "sequencer"]
+  const paths = (await git(worktreePath, ["rev-parse", ...files.flatMap((name) => ["--git-path", name])], signal))
+    .split("\n").map((line) => resolve(worktreePath, line.trim()))
+  const pathOf = (name: string) => paths[files.indexOf(name)]!
+  let pickHead = false
+  for (const ref of ["CHERRY_PICK_HEAD", "REVERT_HEAD", "AUTO_MERGE"]) {
+    const present = await git(worktreePath, ["rev-parse", "-q", "--verify", ref], signal).then(() => true, () => false)
+    if (!present) continue
+    if (ref !== "AUTO_MERGE") pickHead = true
+    await git(worktreePath, ["update-ref", "--no-deref", "-d", ref], signal)
+  }
+  for (const name of ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "MERGE_RR", "AUTO_MERGE", "SQUASH_MSG"]) {
+    await unlink(pathOf(name)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error
+    })
+  }
+  if (!pickHead) return
+  // Git removes the sequencer once its todo holds one line or none.
+  const todo = await readFile(pathOf("sequencer/todo"), "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined
+    throw error
+  })
+  if (todo === undefined) return
+  const newline = todo.indexOf("\n")
+  if (newline === -1 || newline === todo.length - 1) await rm(pathOf("sequencer"), { recursive: true, force: true })
 }
 
 export class WorkspaceEvidenceUnstableError extends Error {
@@ -2140,6 +2177,7 @@ export class GitWorkspaceService implements WorkspaceService {
       await isolated.setHead(recovery.commit)
       await isolated.run(["reset", "--hard", "--quiet", checkpointCommit], { signal })
       await git(worktreePath, ["update-ref", "-m", `reset: moving to ${checkpointCommit}`, "HEAD", checkpointCommit], signal)
+      await clearOperationState(worktreePath, signal)
       return { restoredCommit: checkpointCommit, recoveryCommit: recovery.commit }
     })
   }

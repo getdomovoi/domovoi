@@ -851,6 +851,39 @@ describe("GitWorkspaceService", () => {
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })
 
+  // The hard reset runs in an isolated Git directory, so the merge and
+  // sequencer state it would clear in the worktree's own Git directory is
+  // cleared there explicitly: a later commit must not pick up a stale parent.
+  it("clears an unfinished merge from the session worktree when it restores a checkpoint", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-restore-merge-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    const git = (path: string, ...args: string[]) => execute("git", ["-C", path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", ...args])
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await git(repositoryPath, "config", "core.autocrlf", "false")
+    await writeFile(join(repositoryPath, "README.md"), "base\n")
+    await git(repositoryPath, "add", ".")
+    await git(repositoryPath, "commit", "-m", "initial")
+    await git(repositoryPath, "checkout", "-q", "-b", "side")
+    await writeFile(join(repositoryPath, "side.txt"), "side\n")
+    await git(repositoryPath, "add", ".")
+    await git(repositoryPath, "commit", "-m", "side")
+    await git(repositoryPath, "checkout", "-q", "main")
+    const service = new GitWorkspaceService(join(scratch, "worktrees"))
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-merge")
+    await git(workspace.path, "merge", "--no-ff", "--no-commit", "side")
+    const statePath = async (name: string) => resolve(workspace.path, (await git(workspace.path, "rev-parse", "--git-path", name)).stdout.trim())
+    await expect(readFile(await statePath("MERGE_HEAD"), "utf8")).resolves.toMatch(/^[0-9a-f]{40}/u)
+
+    await service.restore(workspace.path, workspace.baseCommit)
+
+    for (const name of ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"]) {
+      await expect(readFile(await statePath(name), "utf8")).rejects.toMatchObject({ code: "ENOENT" })
+    }
+    await expect(git(workspace.path, "rev-parse", "-q", "--verify", "MERGE_HEAD")).rejects.toThrow()
+    await expect(readFile(join(workspace.path, "side.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" })
+  })
+
   it("checkpoints past a failing commit hook and a signing setup it cannot use", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-checkpoint-signing-"))
     scratchDirectories.push(scratch)
