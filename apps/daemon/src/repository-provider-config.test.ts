@@ -2114,6 +2114,32 @@ describe("readRepositoryProviderConfig: git filters", () => {
     expect(omitted.gitFilters?.reviewDigest).not.toBe(moved.gitFilters?.reviewDigest)
   })
 
+  // Git reads a numeric boolean as a C int: base 0 (0x hex, leading 0 octal),
+  // an optional k, m or g, within the signed 32-bit range. The shown state
+  // must be Git's own, so each probe is checked against
+  // `git config --bool` (ruling Q265).
+  it.each([
+    ["09", undefined], ["018", undefined], ["2147483648", undefined], ["-2147483649", undefined], ["0x80000000", undefined],
+    ["1kb", undefined], ["0x", undefined], ["2097152k", undefined], ["2g", undefined], ["1 ", undefined], ["- 1", undefined],
+    ["1.5", undefined], ["tru", undefined],
+    ["2147483647", "true"], ["-2147483648", "true"], ["-2097152k", "true"], ["0x10", "true"], ["010", "true"], ["0x0", "false"], ["00", "false"],
+    ["1k", "true"], ["2097151K", "true"], ["-1", "true"], ["+1", "true"], [" 1", "true"], ["TRUE", "true"], ["Off", "false"], ["", "false"],
+  ] as const)("reads required %j as Git does", async (value, state) => {
+    const root = await repository()
+    git(root, "config", "filter.crypt.smudge", "git-crypt smudge")
+    git(root, "config", "filter.crypt.required", value)
+    let gits: string | undefined
+    try {
+      gits = git(root, "config", "--bool", "--get", "filter.crypt.required").toString().trim()
+    } catch {
+      gits = undefined
+    }
+    expect(gits).toBe(state)
+    const read = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(read.gitFilters?.entries.map(({ required }) => required)).toEqual(state === undefined ? [] : [state])
+    expect(read.gitFilters?.omittedEntries).toBe(state === undefined ? 1 : 0)
+  })
+
   it("counts a driver command whose required setting Git would not read as a boolean, and lists the rest", async () => {
     const root = await repository()
     git(root, "config", "filter.crypt.smudge", "git-crypt smudge")
