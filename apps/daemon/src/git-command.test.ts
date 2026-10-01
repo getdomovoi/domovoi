@@ -33,6 +33,20 @@ describe("gitCommand on Windows", () => {
     expect(gitCommand({ pAtH: "\"C:\\Program Files\\Git\\cmd\"" }, "win32", isFile)).toBe(installed)
   })
 
+  // Node gives the child one of several case variants of a name: the first
+  // in sorted order, inherited keys included, and none at all when that one
+  // is undefined. The resolver reads the PATH the child gets (ruling Q301).
+  it("reads the PATH variant Node hands the child when names differ only in case", () => {
+    const other = "C:\\Other\\Git\\cmd\\git.exe"
+    const both = (path: string) => path === installed || path === other
+    // "PATH" sorts before "Path", whatever the insertion order.
+    expect(gitCommand({ Path: "C:\\Other\\Git\\cmd", PATH: "C:\\Program Files\\Git\\cmd" }, "win32", both)).toBe(installed)
+    const inherited = Object.assign(Object.create({ PATH: "C:\\Program Files\\Git\\cmd" }) as NodeJS.ProcessEnv, { Path: "C:\\Other\\Git\\cmd" })
+    expect(gitCommand(inherited, "win32", both)).toBe(installed)
+    // The winning variant undefined: the child gets no PATH at all.
+    expect(() => gitCommand({ PATH: undefined, Path: "C:\\Other\\Git\\cmd" }, "win32", both)).toThrow(GitNotFoundError)
+  })
+
   it("refuses when no absolute PATH entry holds git.exe", () => {
     expect(() => gitCommand({ Path: "C:\\nothing;.;relative\\bin" }, "win32", isFile)).toThrow(GitNotFoundError)
     expect(() => gitCommand({}, "win32", isFile)).toThrow("Domovoi found no git.exe")

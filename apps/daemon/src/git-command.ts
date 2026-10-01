@@ -38,12 +38,18 @@ function isFileOnDisk(path: string): boolean {
   }
 }
 
-// Windows environment names ignore case: Path is the usual spelling.
+// The PATH the child gets. Windows environment names ignore case, and Node
+// hands the child, of the names that differ only in case, the first in
+// sorted order, inherited keys included, and none at all when its value is
+// undefined (Node 22 lib/child_process.js, normalizeSpawnArguments). The same
+// choice here keeps the resolver and the child on one PATH (ruling Q301).
 function windowsPath(environment: NodeJS.ProcessEnv): string {
-  for (const [name, value] of Object.entries(environment)) {
-    if (name.toUpperCase() === "PATH" && value !== undefined) return value
-  }
-  return ""
+  const names: string[] = []
+  // for...in, as Node reads it: inherited enumerable keys count too.
+  for (const name in environment) names.push(name)
+  names.sort()
+  const chosen = names.find((name) => name.toUpperCase() === "PATH")
+  return chosen === undefined ? "" : environment[chosen] ?? ""
 }
 
 export function gitCommand(
