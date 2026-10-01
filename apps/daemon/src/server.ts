@@ -4788,7 +4788,7 @@ export class DomovoiDaemon {
       }
 
       if (params.method === "git-bundle") {
-        const bundleSession = this.#workspaceService.bundleSession
+        const bundleSession = this.#workspaceService.bundleSession?.bind(this.#workspaceService)
         const readBundle = this.#readTransferBundle
         if (!bundleSession || !readBundle) {
           throw new SessionTransferStateError("session-resource-unavailable")
@@ -4813,7 +4813,7 @@ export class DomovoiDaemon {
           await rm(temporary, { recursive: true, force: true }).catch(() => {})
         }
       } else {
-        const pushSessionRef = this.#workspaceService.pushSessionRef
+        const pushSessionRef = this.#workspaceService.pushSessionRef?.bind(this.#workspaceService)
         if (!pushSessionRef || !params.remote) {
           throw new SessionTransferStateError("session-resource-unavailable")
         }
