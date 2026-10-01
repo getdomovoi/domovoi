@@ -52,6 +52,35 @@ function windowsPath(environment: NodeJS.ProcessEnv): string {
   return chosen === undefined ? "" : environment[chosen] ?? ""
 }
 
+// PATH's entries as libuv splits them for its own search (src/win/process.c,
+// search_path): an entry that starts with a double or single quote runs to
+// the matching quote before the next ";" is looked for, so a quoted
+// directory can hold a ";". One leading and one trailing quote are dropped;
+// nothing is trimmed, so " C:\Git" stays a relative entry, which is passed
+// over. Empty entries are dropped.
+function pathEntries(path: string): string[] {
+  const entries: string[] = []
+  let start = 0
+  while (start <= path.length) {
+    let end = start
+    const quote = path[start]
+    if (quote === "\"" || quote === "'") {
+      const close = path.indexOf(quote, start + 1)
+      end = close === -1 ? path.length : close
+    }
+    let separator = path.indexOf(";", end)
+    if (separator === -1) separator = path.length
+    let entry = path.slice(start, separator)
+    if (entry.length > 0) {
+      if (entry.startsWith("\"") || entry.startsWith("'")) entry = entry.slice(1)
+      if (entry.endsWith("\"") || entry.endsWith("'")) entry = entry.slice(0, -1)
+      entries.push(entry)
+    }
+    start = separator + 1
+  }
+  return entries
+}
+
 export function gitCommand(
   environment: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
@@ -62,8 +91,7 @@ export function gitCommand(
   const cache = isFile === isFileOnDisk
   const known = cache ? resolved.get(path) : undefined
   if (known !== undefined) return known
-  for (const entry of path.split(";")) {
-    const directory = entry.trim().replace(/^"(.*)"$/su, "$1")
+  for (const directory of pathEntries(path)) {
     if (directory.includes("\0") || !/^[A-Za-z]:[\\/]|^\\\\[^\\]/u.test(directory)) continue
     const candidate = win32.join(directory, "git.exe")
     if (isFile(candidate)) {

@@ -47,6 +47,15 @@ describe("gitCommand on Windows", () => {
     expect(() => gitCommand({ PATH: undefined, Path: "C:\\Other\\Git\\cmd" }, "win32", both)).toThrow(GitNotFoundError)
   })
 
+  // libuv reads a quoted PATH entry up to its closing quote before looking
+  // for the separator, so a quoted directory can hold a semicolon.
+  it("keeps a quoted entry with a semicolon in it whole", () => {
+    const quoted = "C:\\Tools;Git\\cmd\\git.exe"
+    const exists = (path: string) => path === quoted
+    expect(gitCommand({ Path: ".;\"C:\\Tools;Git\\cmd\";C:\\nothing" }, "win32", exists)).toBe(quoted)
+    expect(gitCommand({ Path: "'C:\\Tools;Git\\cmd'" }, "win32", exists)).toBe(quoted)
+  })
+
   it("refuses when no absolute PATH entry holds git.exe", () => {
     expect(() => gitCommand({ Path: "C:\\nothing;.;relative\\bin" }, "win32", isFile)).toThrow(GitNotFoundError)
     expect(() => gitCommand({}, "win32", isFile)).toThrow("Domovoi found no git.exe")
