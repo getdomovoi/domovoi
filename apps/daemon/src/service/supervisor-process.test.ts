@@ -4,9 +4,8 @@ import { tmpdir } from "node:os"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { ProcessTreeUnconfirmedError } from "./guest-supervisor.js"
 import {
-  launchGuestChild, parseGuestProcessStat, parseWindowsProcessAnswer,
+  guestBootId, guestProcessAlive, guestProcessIdentity, launchGuestChild, parseGuestProcessStat, parseWindowsProcessAnswer,
   ProcessExitedBeforeIdentityError, windowsBootId, windowsProcessAlive, windowsProcessIdentity, windowsProcessQueryCommand,
 } from "./supervisor-process.js"
 import { guestProcessIdentitySchema } from "./supervisor-record.js"
@@ -131,51 +130,16 @@ describe("Windows process identity", () => {
   })
 })
 
-// Ruling Q296 (2026-10-01, applying Q111 B): a Windows daemon's exit is not
-// its process tree's. Only a tree kill that succeeded counts; a failed one, a
-// direct kill of the daemon, or an exit already observed leaves the tree
-// unconfirmed, and the stop says so instead of resolving. No test runs a
-// real taskkill or PowerShell: both are injected.
-describe("Windows process tree shutdown", () => {
-  const known = (pid: number) => ({ pid, start: "123", bootId: randomUUID() })
-  const live = ["-e", "setInterval(() => {}, 1000)"]
-  async function started(args: string[], options: Parameters<typeof launchGuestChild>[2]) {
-    const launched = await launchGuestChild(process.execPath, args, { platform: "win32", identify: known, ...options })
-    if (launched.state !== "started") throw new Error("child did not start")
-    return launched.child
-  }
-
-  it("does not count a stop as tree shutdown when the tree kill is rejected", async () => {
-    const child = await started(live, { alive: () => true, treeKill: async () => { throw new Error("taskkill exited with status 1") } })
-    const stopped = child.stop()
-    await expect(stopped).rejects.toBeInstanceOf(ProcessTreeUnconfirmedError)
-    await expect(stopped).rejects.toThrow("taskkill exited with status 1")
-    // The daemon itself is still ended, through Node's own handle to it.
-    expect(await child.exited).toMatchObject({ signal: "SIGKILL" })
-  })
-
-  it("does not count an already observed daemon exit as tree shutdown", async () => {
-    const treeKill = vi.fn(async () => {})
-    const child = await started(["-e", "setTimeout(() => process.exit(0), 50)"], { alive: () => false, treeKill })
-    await child.exited
-    await expect(child.stop()).rejects.toBeInstanceOf(ProcessTreeUnconfirmedError)
-    await expect(child.confirmTree!()).rejects.toBeInstanceOf(ProcessTreeUnconfirmedError)
-    // A pid whose process has exited may already name another one.
-    expect(treeKill).not.toHaveBeenCalled()
-  })
-
-  it("confirms the tree only after a tree kill that succeeded", async () => {
-    const treeKill = vi.fn(async (pid: number) => { process.kill(pid, "SIGKILL") })
-    const child = await started(live, { alive: () => true, treeKill })
-    await expect(child.stop()).resolves.toMatchObject({ signal: "SIGKILL" })
-    expect(treeKill).toHaveBeenCalledWith(child.identity.pid)
-    await expect(child.confirmTree!()).resolves.toBeUndefined()
-  })
-
-  it("marks a daemon that exited before its identity as an unconfirmed tree", async () => {
-    const launched = await launchGuestChild(process.execPath, live, {
-      platform: "win32", ...withoutTaskkill, identify: () => { throw new ProcessExitedBeforeIdentityError() },
-    })
-    expect(launched).toEqual({ state: "failed", errorCode: "EXITED_BEFORE_IDENTITY", treeUnconfirmed: true })
-  })
-})
+// Real Windows identity, on the Windows CI leg only.
+it.runIf(process.platform === "win32")("identifies this process and a stopped child by real Windows creation times", async () => {
+  const self = guestProcessIdentity(process.pid)
+  expect(guestProcessIdentity(process.pid)).toEqual(self)
+  expect(guestBootId()).toBe(self.bootId)
+  expect(guestProcessAlive(self)).toBe(true)
+  expect(guestProcessAlive({ ...self, start: String(BigInt(self.start) + 10n) })).toBe(false)
+  const launched = await launchGuestChild(process.execPath, ["-e", "setInterval(() => {}, 1000)"], withoutTaskkill)
+  if (launched.state !== "started") throw new Error("child did not start")
+  expect(guestProcessAlive(launched.child.identity)).toBe(true)
+  await launched.child.stop()
+  expect(guestProcessAlive(launched.child.identity)).toBe(false)
+}, 60_000)

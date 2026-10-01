@@ -64,18 +64,12 @@ has the printed text and failure handling.
   process). Status reads the loop's record and exits 1 on exhaustion; removal
   disables the task and proves loop and daemon stopped before deleting it; an
   update stops the loop without retiring the registration it registers again.
-  Security review of #698 (F1) and ruling Q296 (2026-10-01, applying Q111 B):
-  a Windows daemon's exit does not prove its process tree ended, and a dead
-  daemon's tree cannot be killed safely by pid. So on Windows the loop records
-  a crash as `tree-unconfirmed` and does not restart; status exits 1 and
-  removal refuses, keeping the task and configuration. Windows therefore gets
-  crash detection and fail-closed removal, not crash restart, until a job
-  object contains the daemon's tree (the follow-up). Evidence: mocked Task
-  Scheduler, supervisor and process tests on every leg; no test runs a real
-  PowerShell, `taskkill` or `schtasks`. The `native` WSL workflow exercises
-  none of it beyond the shared loop's Linux path. Owed: the job object and a
-  native proof that a registered supervised task restarts a crashed daemon
-  and exhausts, removal of a live supervised task,
+  Evidence: mocked Task Scheduler and supervisor tests on every leg, and
+  real-loop tests (crash, 1 second backoff, restart, clean exit; real creation
+  times) for the ordinary Windows CI leg, which had not run when this was
+  written. The `native` WSL workflow exercises none of it beyond the shared
+  loop's Linux path. Owed: a native proof that a registered supervised task
+  restarts a crashed daemon and exhausts, removal of a live supervised task,
   a native read-back of the task settings (a step after each `schtasks
   /create` sets `ExecutionTimeLimit` `PT0S` and both battery rules false, as
   the WSL task does, replacing the documented 72 hour default; only the

@@ -88,7 +88,7 @@ export type ServiceStatus = {
   installed: boolean | null
   running: boolean
   detail: string
-  supervisionFailure?: "exhausted" | "observation-failure" | "configuration-missing" | "tree-unconfirmed"
+  supervisionFailure?: "exhausted" | "observation-failure" | "configuration-missing"
   // A supervisor loop is alive and has not stopped, so it may launch again.
   supervising?: boolean
 }

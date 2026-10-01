@@ -763,15 +763,10 @@ Two policies decided on 2026-09-17 keep the daemon running while its person is a
   missing or refuses, `install` still installs, exits 0, records nothing, and says on stderr that
   the daemon stops at logout and starts again at the next login.
 - **Windows crash supervision.** The logon task runs `domovoid --service-supervise`, the
-  supervisor loop the WSL guest runs. On Windows a daemon's exit does not prove that the agents,
-  terminals and tools it started have ended, and only a `taskkill /T /F` that succeeded counts
-  (ruling Q296, 2026-10-01). Once a daemon has exited, its tree can no longer be named safely by
-  pid, so a crash is recorded, the daemon is not restarted, and `status` reports it and exits 1.
-  A stop whose tree kill fails does the same, and `remove` then refuses and keeps the task,
-  disabled, and `service.json`. Restarting after a crash waits for a job object that contains the
-  tree. `remove` otherwise stops the loop and proves the daemon stopped before deleting the task.
-  A task installed earlier still runs the daemon directly until it is reinstalled or updated from
-  the app.
+  supervisor loop the WSL guest runs. It restarts a crashed daemon after 1, 5 and 15 seconds,
+  records a fourth crash as exhausted, and `status` then reports it and exits 1. `remove` stops the
+  loop and proves the daemon stopped before deleting the task. A task installed earlier still runs
+  the daemon directly until it is reinstalled or updated from the app.
 
 [Daemon service configuration](../../docs/daemon-services.md) has the printed text, failure
 handling and what is and is not proved natively.

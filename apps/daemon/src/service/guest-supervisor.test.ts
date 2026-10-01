@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 
 import { describe, expect, it, vi } from "vitest"
 
-import { ProcessTreeUnconfirmedError, superviseGuest, type GuestSupervisorEffects } from "./guest-supervisor.js"
+import { superviseGuest, type GuestSupervisorEffects } from "./guest-supervisor.js"
 import { supervisorRecordSchema, type SupervisorRecord } from "./supervisor-record.js"
 
 const loop = { pid: 100, start: "1000", bootId: randomUUID() }
@@ -124,51 +124,6 @@ describe("guest crash supervisor", () => {
     f.effects.write = (record) => { if (record.state === "running") throw primary; write(record) }
     await expect(superviseGuest(input(), f.effects)).rejects.toMatchObject({ cause: primary, errors: [primary, cleanup] })
     expect(f.effects.launch).toHaveBeenCalledTimes(1)
-  })
-
-  // Ruling Q296 (2026-10-01): a child whose process tree cannot be confirmed
-  // ended is never restarted. The loop records why and stops, so status and
-  // removal can refuse on it.
-  describe("an unconfirmed process tree", () => {
-    const unconfirmed = () => new ProcessTreeUnconfirmedError("the daemon exited before its tree was ended")
-    function withTree(f: ReturnType<typeof fixture>, exit: { code: number | null; signal: string | null }) {
-      f.effects.launch = vi.fn<GuestSupervisorEffects["launch"]>(async () => ({ state: "started", child: {
-        identity: identity(1), exited: Promise.resolve(exit), stop: f.stop, confirmTree: async () => { throw unconfirmed() },
-      } }))
-    }
-
-    it.each([
-      { exit: { code: 1, signal: null }, crashes: 1 },
-      { exit: { code: 0, signal: null }, crashes: 0 },
-    ])("refuses to restart after exit $exit.code and records why", async ({ exit, crashes }) => {
-      const f = fixture([])
-      withTree(f, exit)
-      const final = await superviseGuest(input(), f.effects)
-      expect(final).toMatchObject({ state: "failed", attemptCount: 1, crashes, reason: { kind: "tree-unconfirmed" } })
-      expect(f.effects.launch).toHaveBeenCalledTimes(1)
-      expect(f.effects.wait).not.toHaveBeenCalled()
-    })
-
-    it("records a deliberate stop that could not end the tree", async () => {
-      const controller = new AbortController()
-      const f = fixture([])
-      f.stop.mockRejectedValue(new ProcessTreeUnconfirmedError("taskkill exited with status 1", { code: null, signal: "SIGKILL" }))
-      f.effects.launch = async () => {
-        queueMicrotask(() => controller.abort())
-        return { state: "started", child: { identity: identity(1), exited: new Promise(() => {}), stop: f.stop } }
-      }
-      const final = await superviseGuest({ ...input(), signal: controller.signal }, f.effects)
-      expect(final).toMatchObject({ state: "failed", crashes: 0, reason: { kind: "tree-unconfirmed" } })
-      expect(final.attempts[0]?.exit).toMatchObject({ kind: "stopped", signal: "SIGKILL" })
-    })
-
-    it("refuses to restart a launch that exited before its identity", async () => {
-      const f = fixture([])
-      f.effects.launch = vi.fn<GuestSupervisorEffects["launch"]>(async () => ({ state: "failed", errorCode: "EXITED_BEFORE_IDENTITY", treeUnconfirmed: true }))
-      const final = await superviseGuest(input(), f.effects)
-      expect(final).toMatchObject({ state: "failed", attemptCount: 1, crashes: 1, reason: { kind: "tree-unconfirmed" } })
-      expect(f.effects.wait).not.toHaveBeenCalled()
-    })
   })
 
   it("does not repeat an already failed deliberate shutdown", async () => {

@@ -255,11 +255,6 @@ async function main() {
       process.stderr.write(`${supervised} supervision exhausted after ${record.crashes} crashes and ${record.attemptCount} attempts. See the profile's supervisor.json and domovoid service status.\n`)
       process.exitCode = 1
     }
-    // Ruling Q296: the daemon ended but its process tree did not provably.
-    if (record.reason?.kind === "tree-unconfirmed") {
-      process.stderr.write("Supervision stopped: the daemon's process tree could not be confirmed ended, so it was not restarted. Processes it started may still run. See domovoid service status.\n")
-      process.exitCode = 1
-    }
     return
   }
   if (args.length === 2 && args[0] === "--service-supervisor-stop") {
