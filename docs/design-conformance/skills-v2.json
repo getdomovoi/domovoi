@@ -226,11 +226,12 @@
       ],
       "evidence": [
         "Trust for this machine",
-        "Filter driver"
+        "Filter driver",
+        "re:>Git filter<"
       ],
       "partial": {
         "since": "2026-09-30",
-        "reason": "the sheet opens from the Tools tab and lists every tool server, hook, plugin, env key name, rule, helper and skill tool.inventory reports, grouped by file, with the one config digest; tool.inventory reports no git filter or filter driver, so the sheet lists none, and no refusal opens it yet (trust.refusal is blocked)"
+        "reason": "the sheet opens from the Tools tab and from a refused session, and lists every tool server, hook, plugin, env key name, rule, helper and skill tool.inventory reports, grouped by file, and each filter driver the repository's own Git config sets (repository.gitFilters), one group per git config file and scope, with the one config digest; tool.inventory does not carry the .gitattributes patterns that pick the files a driver runs on, so the sheet draws no Git filter rows and does not mark patterns not pinned (ruling Q206 A applies once the data carries them)"
       }
     },
     {
@@ -278,13 +279,26 @@
         "Checking out acme-api would run the sops filter driver, which is not trusted on",
         "It names"
       ],
+      "presence": [
+        "Domovoi did not start this session",
+        "refused · untrusted git filter",
+        "Nothing from the repository ran.",
+        "Start the session again"
+      ],
       "evidence": [
+        "Domovoi did not start this session",
+        "refused · untrusted git filter",
+        "It names",
+        "Nothing from the repository ran.",
+        "Trusted on",
+        "Start the session again",
+        "Open Tools",
+        "codex did not start",
         "refused · untrusted repository file"
       ],
-      "blocked": {
+      "partial": {
         "since": "2026-09-30",
-        "needs": "protocol",
-        "reason": "a refused session reaches the client as prose, with no reason code and no file or filter field to name; and no grant lifts a refusal yet: Codex refuses a worktree holding .codex config whatever the grant until P6c, and a filter the repository's own Git config sets is refused whatever the grant (RepositoryFilterRefusedError), so Start the session again would be refused again. The phone refusal (step 16), which names the file or filter and opens the phone Tools screen, waits on the same reason: as of 2026-09-30 a refused session reaches the phone as the daemon's prose with no refusal code, so there is no refusal card to attach the pointer to"
+        "reason": "the git filter refusal is built: session.create and session.fork answer it with repositoryGitFilterErrorCode and the drivers it names, the card draws who refused, the reason code, the drivers and that nothing ran, Review and trust opens the one sheet, and after a grant the card says Trusted on the machine and Start the session again, which repeats the request only when pressed. An agent's refusal is not: Codex refuses a worktree holding .codex config with prose and no code (codexRepositoryConfigRefusal in the daemon), so codex did not start, refused · untrusted repository file and the file it names are not drawn. Until P8 PR B a trusted filter is still refused, so Start the session again comes back refused, and the card then says the repository is trusted and Domovoi still does not run the filter"
       }
     },
     {
@@ -313,28 +327,19 @@
     {
       "id": "trust.phone",
       "name": "Held back on the phone",
-      "where": "phone Tools screen (step 18): held back with every entry grouped by file, and a footer saying trust is granted from desktop or web; phone refusal (step 16): names the file or filter, See what is held back opens the phone Tools screen, and the same Trust from desktop or web bar; the phone cannot trust. The step 18 screen is built (2026-09-30, ruling Q211) in apps/mobile/src/screens/tools.tsx over tool.inventory, now on the phone and tablet allow-list, and opens from the connected machine's card on Machines; the step 16 refusal pointer is not built",
+      "where": "phone Tools screen (step 18): held back with every entry grouped by file, and a footer saying trust is granted from desktop or web; phone refusal (step 16): names the file or filter, See what is held back opens the phone Tools screen, and the same Trust from desktop or web bar; the phone cannot trust. The step 18 screen is built (2026-09-30, ruling Q211) in apps/mobile/src/screens/tools.tsx over tool.inventory, now on the phone and tablet allow-list, and opens from the connected machine's card on Machines; the step 16 refusal is built (2026-09-30, ruling Q203 A) in apps/mobile/src/components/refusal-card.tsx for a start refused with repositoryGitFilterErrorCode",
       "copy": [
         "None of it loads for any agent.",
         "Trust from desktop or web",
         "A phone shows this but cannot trust it.",
         "See what is held back"
       ],
-      "presence": [
-        "None of it loads for any agent.",
-        "Trust from desktop or web",
-        "A phone shows this but cannot trust it."
-      ],
       "evidence": [
         "None of it loads for any agent.",
         "Trust from desktop or web",
         "A phone shows this but cannot trust it.",
         "See what is held back"
-      ],
-      "partial": {
-        "since": "2026-09-30",
-        "reason": "the step 18 Tools screen is built; the step 16 phone refusal, whose See what is held back opens it, waits on the refusal reason code trust.refusal is blocked on, since a refused session reaches the phone as prose with no card to attach the pointer to"
-      }
+      ]
     }
   ],
   "annotations": [
@@ -417,17 +422,22 @@
     {
       "id": "trust.phone",
       "since": "2026-09-30",
-      "note": "Built from this inventory, not read against the design's step 18 frame. How the screen is reached is not drawn here: it opens from Open Tools on the connected machine's card on Machines. Each file card says the held-back reason once, since every entry shares it. The footer drops Trust from desktop or web where trust cannot lift the hold (a trusted repository, or one that cannot be trusted) and keeps A phone shows this but cannot trust it. Unreadable repository files, entries left out and cannot-trust reasons are listed in cards the design may draw differently."
+      "note": "Built from this inventory, not read against the design's step 18 frame. How the screen is reached is not drawn here: it opens from Open Tools on the connected machine's card on Machines. Each file card says the held-back reason once, since every entry shares it. The footer drops Trust from desktop or web where trust cannot lift the hold (a trusted repository, or one that cannot be trusted) and keeps A phone shows this but cannot trust it. Unreadable repository files, entries left out and cannot-trust reasons are listed in cards the design may draw differently. The step 16 refusal is drawn inside the start sheet that was refused (a fresh start or Start another like this one), in place of the daemon's sentence, not as a screen of its own. It uses the desktop card's wording (Domovoi did not start this session, refused · untrusted git filter, the sentence naming the drivers, It names, Nothing from the repository ran.), names each driver with its git config scope (sops · local git config) because the refusal names drivers and scopes, not files, and keeps Trust from desktop or web only where trust would lift the refusal. The Tools screen lists the repository's filter drivers under their git config file, a card that names no agent, with the source local, worktree or command-line git config. Only the git filter refusal has a code; Codex's own refusal of .codex config is still the daemon's sentence."
     },
     {
       "id": "trust.held-back",
       "since": "2026-09-30",
-      "note": "The card shows while the repository is untrusted and not yet reviewed and brings at least one config file the inventory lists, decided from the files and not from entries, since a file such as .codex/rules/*.rules or an empty .codex/config.toml can make an agent refuse without declaring an entry; such a file reads no entries, in the card and in the sheet. When the daemon holds back only some entries, it says how many of how many are held back and that the rest load, instead of the design's for-any-agent line, which would be false then; when it holds none back while some load, the card is titled not trusted rather than held back. Where this client cannot grant trust (a watching client), the card says Granted from desktop or web only in place of Review and trust."
+      "note": "The card shows while the repository is untrusted and not yet reviewed and brings at least one config file the inventory lists, decided from the files and not from entries, since a file such as .codex/rules/*.rules or an empty .codex/config.toml can make an agent refuse without declaring an entry; such a file reads no entries, in the card and in the sheet. When the daemon holds back only some entries, it says how many of how many are held back and that the rest load, instead of the design's for-any-agent line, which would be false then; when it holds none back while some load, the card is titled not trusted rather than held back. Where this client cannot grant trust (a watching client), the card says Granted from desktop or web only in place of Review and trust. Since 2026-09-30 the card also lists each git config file that sets a filter driver, with its count (.git/config 1 filter driver), and a Git config not read row when the daemon could not read it, and shows for a repository whose only config is a filter; each filter command counts as one entry in the how many of how many line."
     },
     {
       "id": "trust.sheet",
       "since": "2026-09-30",
-      "note": "Built as a dialog over the Tools tab. A file two agents read is one group naming both agents, with each entry once. When the daemon answers config-changed, the sheet says The files changed while this was open and Nothing was trusted, which the design does not draw, and the tab reads the files again; the new digest is sent only by the next click. A cannot-trust answer lists the refusals in the sheet and removes the trust button. Env keys are counted one by one in a file's counts. When the daemon holds back only some of the repository's entries, the sheet's lead says how many of how many are held back and that the rest already load, instead of the design's None of it has run, which would be false then. When the daemon left entries out of the list, the sheet says This list is not complete, how many entries are not shown, and offers no trust until every entry can be listed, since the grant covers the whole configuration; a repository config file that could not be read blocks trust the same way, naming the file, until it can be read (ruling Q219 A). The design does not draw this state."
+      "note": "Built as a dialog over the Tools tab. A file two agents read is one group naming both agents, with each entry once. When the daemon answers config-changed, the sheet says The files changed while this was open and Nothing was trusted, which the design does not draw, and the tab reads the files again; the new digest is sent only by the next click. A cannot-trust answer lists the refusals in the sheet and removes the trust button. Env keys are counted one by one in a file's counts. When the daemon holds back only some of the repository's entries, the sheet's lead says how many of how many are held back and that the rest already load, instead of the design's None of it has run, which would be false then. When the daemon left entries out of the list, the sheet says This list is not complete, how many entries are not shown, and offers no trust until every entry can be listed, since the grant covers the whole configuration; a repository config file that could not be read blocks trust the same way, naming the file, until it can be read (ruling Q219 A). The design does not draw this state. Since 2026-09-30 each git config file and scope that sets a filter is a group of its own (path, local, worktree or command-line git config, its count), one Filter driver row per driver with each operation and its redacted command (smudge sops -d · clean sops -e), and a line the design does not draw, from ruling Q205 A: A filter driver runs its command whenever Git checks out or stages a file. If the command runs a file in this repository, it runs whatever that file holds, an agent's edit included. A git config the daemon could not read blocks trust with The repository's Git config could not be read and its reason (ruling Q219 A), and filter entries left out block it and read Git filters: N more entries were left out of this list. The pinned line counts the git config files among the files. Opened from a refused session, the sheet is the same component, reading the files when it opens."
+    },
+    {
+      "id": "trust.refusal",
+      "since": "2026-09-30",
+      "note": "Read against this inventory, not the design's step 15 frame. A refused session.create closes the launcher, and a refused session.fork closes the fork dialog, and the card takes the thread lane in place of the active thread until another session, project or machine is chosen or the card's Dismiss button, which the design does not draw, is pressed. The sentence is the design's with the drivers named (and N more for drivers the daemon counted but did not name); It names lists each driver with its git config scope, not a file, because the refusal names drivers and scopes. After a grant from the card the trust clause is dropped and a line reads Trusted on the machine. Nothing has started yet., words the brief gave and the design does not draw. A refusal whose repository cannot be trusted says so and offers only Open Tools; one whose repository is trusted (the daemon still refuses trusted filters until P8 PR B) says the repository is trusted and Domovoi still does not run a filter the repository's own Git config sets, and offers only Open Tools. Start the session again repeats the refused request, a fork with a new request id. On a client that cannot grant trust the card says Granted from desktop or web only."
     },
     {
       "id": "trust.changed",
