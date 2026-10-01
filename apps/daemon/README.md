@@ -589,8 +589,9 @@ code or settings the repository brings:
   - The password stays readable by those programs for as long as the server runs, and nothing
     the API allows apart from approval replies is seen: configuration, MCP, terminal, prompt and
     session changes made with it go unnoticed.
-  - When the daemon cannot tell whether the server accepted its own answer, it counts the reply
-    as someone else's and stops the session.
+  - When the daemon cannot tell whether the server accepted its own answer, because the answer
+    failed or had no outcome within 10 seconds, it counts a matching reply as someone else's and
+    stops the session.
   - A reply sent while the daemon's event stream for that directory is down, or for a subagent
     whose creation the daemon never saw, is not seen.
   - Kilo writes always-allow rules and a global allow everything to your global Kilo

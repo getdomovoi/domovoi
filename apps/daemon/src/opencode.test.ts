@@ -18,6 +18,7 @@ import {
   openCodeMessageId,
   OpenCodeMessageIdsExhaustedError,
   openCodeMessageOrder,
+  permissionAnswerConfirmMs,
   type OpenCodeClient,
   type OpenCodeEvent,
   type OpenCodeFactory,
@@ -2080,6 +2081,37 @@ describe("approval replies Domovoi did not send", () => {
     await waitForDaemon(() => expect(stopped(events)).toEqual([
       expect.objectContaining({ threadId, permissionId: "per_1", reply: "once" }),
     ]))
+    await adapter.close()
+  })
+
+  // Codex review of #691, round 2, P1: a POST that never answers is an
+  // unknown outcome once its bound runs out, so a matching reply seen while
+  // it was in flight is someone else's.
+  it("stops when Domovoi's own answer never settles after a matching reply arrived", async () => {
+    const { adapter, client, events, stream, threadId, ask, approvals } = await askedTurn()
+    client.postSessionIdPermissionsPermissionId.mockImplementationOnce(() => {
+      stream.emit({ type: "permission.replied", properties: { sessionID: threadId, requestID: "per_1", reply: "once" } })
+      return new Promise(() => {})
+    })
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    try {
+      adapter.resolveApproval(1, "allow-once")
+      // vi.waitFor would move the fake clock, so the call is flushed instead.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(permissionAnswerConfirmMs - 1)
+      expect(stopped(events)).toEqual([])
+
+      await vi.advanceTimersByTimeAsync(1)
+
+      await vi.waitFor(() => expect(stopped(events)).toEqual([
+        expect.objectContaining({ threadId, permissionId: "per_1", reply: "once" }),
+      ]))
+    } finally {
+      vi.useRealTimers()
+    }
     await adapter.close()
   })
 

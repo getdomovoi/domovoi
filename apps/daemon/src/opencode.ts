@@ -588,12 +588,18 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       }
     }
     void this.#client().then(async (client) => {
-      unwrap(await client.postSessionIdPermissionsPermissionId({
-        path: { id: pending.providerSessionId, permissionID: pending.permissionId },
-        query: { directory: pending.cwd },
-        body: { response },
-        throwOnError: true,
-      }), `${this.#identity.providerName} permission response`)
+      // Bounded (Codex review of #691, round 2): an answer with no outcome
+      // after the bound is an unknown outcome, the same as a failed one.
+      unwrap(await settlesWithin(
+        client.postSessionIdPermissionsPermissionId({
+          path: { id: pending.providerSessionId, permissionID: pending.permissionId },
+          query: { directory: pending.cwd },
+          body: { response },
+          throwOnError: true,
+        }),
+        permissionAnswerConfirmMs,
+        `${this.#identity.providerName} did not answer a permission response within ${permissionAnswerConfirmMs} ms`,
+      ), `${this.#identity.providerName} permission response`)
     }).then(() => this.#replyAccepted(key, record), (error: unknown) => {
       console.error(`Domovoi could not resolve a ${this.#identity.providerName} permission`, error)
       this.#replyFailed(key, record)
@@ -1403,6 +1409,10 @@ function interactiveOnly(properties: Record<string, unknown>): boolean {
 
 // How long a stop waits for the provider to confirm a run was aborted.
 const abortConfirmMs = 10_000
+// How long Domovoi waits for the server to accept or refuse its answer to a
+// permission request. Past it the outcome is unknown, and a matching reply the
+// server reported meanwhile counts as someone else's.
+export const permissionAnswerConfirmMs = 10_000
 
 function settlesWithin<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   return new Promise((resolve, reject) => {
