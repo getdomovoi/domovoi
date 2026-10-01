@@ -48,6 +48,18 @@ export type AgentEvent =
       command: string
       reason: string
     }
+  | {
+      // The provider reported an approval reply this adapter did not send, so
+      // something else holding the provider's credential answered it (ruling
+      // Q243 A). The adapter has already ended the turn, refused what was
+      // pending and unloaded the thread; the approved call may have run.
+      type: "approval-answered-elsewhere"
+      threadId: string
+      turnId?: string
+      /** The provider's id for the answered request, as the provider sent it. */
+      permissionId: string
+      reply: "once" | "always" | "reject" | "unknown"
+    }
   | { type: "item"; phase: "started" | "completed"; params: Record<string, unknown> }
   | { type: "usage"; threadId: string; turnId: string; usage: NormalizedUsage; source?: UsageSource }
   | { type: "turn-completed"; params: Record<string, unknown> }

@@ -1797,3 +1797,221 @@ describe("SubagentRegistry tombstones", () => {
     expect(registry.isKnown("newest")).toBe(true)
   })
 })
+
+// Q243 A with Q246 A and Q247 A, 2026-10-01: the embedded server's password
+// sits in its startup environment, which any program it starts as the same
+// user can read. A permission.replied that Domovoi did not send therefore
+// stops the session. The only replies Domovoi treats as its own are the ones
+// it recorded before sending, plus the rejections the server adds for the same
+// session after a rejection Domovoi sent.
+describe("approval replies Domovoi did not send", () => {
+  const answeredElsewhere = {
+    kind: "approval-answered-elsewhere",
+    action: "review-changes",
+    message: "An approval was answered outside Domovoi",
+    retryable: false,
+  }
+  const adapters = [
+    ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory, () => "turn-1")],
+    ["Kilo", (factory: OpenCodeFactory) => new KiloSdkAdapter(factory, () => "turn-1")],
+  ] as const
+
+  async function askedTurn(make: (factory: OpenCodeFactory) => OpenCodeSdkAdapter = adapters[0][1]) {
+    const { client, factory, stream } = harness()
+    const adapter = make(factory)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Build it", runtime: runtime("build") })
+    const ask = (id: string, sessionID = threadId) => stream.emit({
+      type: "permission.asked",
+      properties: {
+        id, sessionID, permission: "bash", patterns: ["pnpm test"], metadata: { command: "pnpm test" },
+        always: ["pnpm *"], tool: { messageID: "msg_1", callID: `call_${id}` },
+      },
+    })
+    const reply = (requestID: string, value: string, sessionID = threadId) => stream.emit({
+      type: "permission.replied",
+      properties: { sessionID, requestID, reply: value },
+    })
+    const approvals = () => events.filter((event) => event.type === "approval-requested")
+    return { adapter, client, events, stream, threadId, ask, reply, approvals }
+  }
+
+  const stopped = (events: AgentEvent[]) => events.filter((event) => event.type === "approval-answered-elsewhere")
+
+  it.each([
+    ...adapters.map(([name, make]) => [name, "once", make] as const),
+    ...adapters.map(([name, make]) => [name, "always", make] as const),
+  ])("stops a %s session when a %s reply Domovoi did not send arrives", async (_name, value, make) => {
+    const { adapter, client, events, threadId, ask, reply, approvals } = await askedTurn(make)
+    ask("per_1")
+    ask("per_2")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(2))
+
+    reply("per_1", value)
+
+    await waitForDaemon(() => expect(stopped(events)).toEqual([{
+      type: "approval-answered-elsewhere",
+      threadId,
+      turnId: "turn-1",
+      permissionId: "per_1",
+      reply: value,
+    }]))
+    const completion = events.findIndex((event) => event.type === "turn-completed")
+    expect(events[completion]).toEqual({
+      type: "turn-completed",
+      params: {
+        threadId,
+        turnId: "turn-1",
+        turn: { id: "turn-1", status: "failed", error: "An approval was answered outside Domovoi" },
+        failure: answeredElsewhere,
+      },
+    })
+    expect(completion).toBeLessThan(events.findIndex((event) => event.type === "approval-answered-elsewhere"))
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({
+      path: { id: threadId },
+      query: { directory: "/worktree" },
+    })))
+    // The request still waiting is refused; the answered one is not sent anything.
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: threadId, permissionID: "per_2" }, body: { response: "reject" } }),
+    ))
+    expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: threadId, permissionID: "per_1" } }),
+    )
+    // A later answer to either card sends nothing, and the thread is unloaded.
+    adapter.resolveApproval(1, "allow-once")
+    adapter.resolveApproval(2, "allow-once")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledOnce()
+    await expect(adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Again", runtime: runtime("build") }))
+      .rejects.toThrow("is not loaded")
+    await adapter.close()
+  })
+
+  it("reads the reply shape older servers send", async () => {
+    const { adapter, events, stream, threadId, ask, approvals } = await askedTurn()
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+
+    stream.emit({ type: "permission.replied", properties: { sessionID: threadId, permissionID: "per_1", response: "once" } })
+
+    await waitForDaemon(() => expect(stopped(events)).toEqual([
+      expect.objectContaining({ threadId, permissionId: "per_1", reply: "once" }),
+    ]))
+    await adapter.close()
+  })
+
+  it("stops the session when the reply that arrives is not the one Domovoi sent", async () => {
+    const { adapter, client, events, threadId, ask, reply, approvals } = await askedTurn()
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+    adapter.resolveApproval(1, "deny")
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledOnce())
+
+    reply("per_1", "once")
+
+    await waitForDaemon(() => expect(stopped(events)).toEqual([
+      expect.objectContaining({ threadId, permissionId: "per_1", reply: "once" }),
+    ]))
+    await adapter.close()
+  })
+
+  it.each(adapters)("keeps a %s session going on the reply Domovoi sent", async (_name, make) => {
+    const { adapter, client, events, stream, threadId, ask, reply, approvals } = await askedTurn(make)
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+    adapter.resolveApproval(1, "allow-once")
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledOnce())
+
+    reply("per_1", "once")
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({ turn: { id: "turn-1", status: "completed" } }),
+    })))
+    expect(stopped(events)).toEqual([])
+    expect(client.session.abort).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("records its own reply before sending it, so a reply event that beats the answer is still its own", async () => {
+    const { adapter, client, events, stream, threadId, ask, approvals } = await askedTurn()
+    // The server publishes the reply before it answers the request that caused it.
+    client.postSessionIdPermissionsPermissionId.mockImplementationOnce(async () => {
+      stream.emit({ type: "permission.replied", properties: { sessionID: threadId, requestID: "per_1", reply: "once" } })
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      return { data: true }
+    })
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+
+    adapter.resolveApproval(1, "allow-once")
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledOnce())
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed" })))
+    expect(stopped(events)).toEqual([])
+    await adapter.close()
+  })
+
+  it("treats the rejections the server adds after Domovoi's own rejection as Domovoi's", async () => {
+    const { adapter, client, events, stream, threadId, ask, reply, approvals } = await askedTurn()
+    ask("per_1")
+    ask("per_2")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(2))
+    adapter.resolveApproval(1, "deny")
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledOnce())
+
+    // A rejection refuses every other request of the same session.
+    reply("per_1", "reject")
+    reply("per_2", "reject")
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed" })))
+    expect(stopped(events)).toEqual([])
+    await adapter.close()
+  })
+
+  it("stops the session on a rejection Domovoi did not send either", async () => {
+    const { adapter, events, threadId, ask, reply, approvals } = await askedTurn()
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+
+    reply("per_1", "reject")
+
+    await waitForDaemon(() => expect(stopped(events)).toEqual([
+      expect.objectContaining({ threadId, permissionId: "per_1", reply: "reject" }),
+    ]))
+    await adapter.close()
+  })
+
+  it("stops the thread whose subagent's request was answered elsewhere", async () => {
+    const { adapter, client, events, stream, threadId, ask, reply, approvals } = await askedTurn()
+    stream.emit({ type: "session.created", properties: { sessionID: "ses_child", info: { id: "ses_child", parentID: threadId, directory: "/worktree" } } })
+    ask("per_child", "ses_child")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+
+    reply("per_child", "once", "ses_child")
+
+    await waitForDaemon(() => expect(stopped(events)).toEqual([
+      expect.objectContaining({ threadId, turnId: "turn-1", permissionId: "per_child", reply: "once" }),
+    ]))
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } })))
+    await adapter.close()
+  })
+
+  it("ignores a reply for a session it does not hold", async () => {
+    const { adapter, client, events, reply } = await askedTurn()
+
+    reply("per_elsewhere", "once", "ses_unknown")
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    expect(stopped(events)).toEqual([])
+    expect(client.session.abort).not.toHaveBeenCalled()
+    expect(events.some((event) => event.type === "turn-completed")).toBe(false)
+    await adapter.close()
+  })
+})
