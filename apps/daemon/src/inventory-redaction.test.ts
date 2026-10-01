@@ -724,6 +724,9 @@ describe("work on adversarial input", () => {
       for (const result of results) expect(backstopAccepts(result)).toBe(true)
       expect(growth).toBeLessThan(nearLinearGrowth)
     },
+    // Work is counted, not timed. The limit only bounds a busy runner, which
+    // took up to 3.3 s for the largest case and timed out at the 5 s default.
+    30_000,
   )
 
   // The counter cannot see the scanning inside one regular expression search,
