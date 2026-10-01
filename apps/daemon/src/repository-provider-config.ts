@@ -1340,8 +1340,8 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
 
 // The filters as tool.inventory lists them: by the file that sets each one,
 // relative to the root when inside it and absolute otherwise, the command
-// redacted. Every entry is held back: nothing runs a repository filter under
-// trust yet (P8, slice B). An entry Git names no file for, or past a cap, or
+// redacted. Every entry is marked held back here; the inventory clears the
+// mark under a trusted grant (gitFiltersUnder). An entry Git names no file for, or past a cap, or
 // whose redacted text the protocol still refuses, is counted, not listed.
 async function gitFilterInventory(rootPath: string, filters: readonly RepositoryGitFilter[]): Promise<ToolInventoryGitFilters> {
   const root = await realpath(rootPath).catch(() => resolve(rootPath))

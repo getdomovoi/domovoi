@@ -2,7 +2,7 @@ import { maximumToolInventoryBytes, toolInventorySchema, type ToolInventory } fr
 
 import { redactInventoryPath } from "./inventory-redaction.js"
 import { readRepositoryProviderConfig, type RepositoryProviderConfig, type RepositoryProviderConfigOptions } from "./repository-provider-config.js"
-import { heldBackUnder, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
+import { gitFiltersUnder, heldBackUnder, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant } from "./repository-trust-store.js"
 
 // The tool.inventory answer: what the open repository's own agent
@@ -29,7 +29,8 @@ import type { RepositoryTrustGrant } from "./repository-trust-store.js"
 // worktrees read it (ruling Q145 A).
 //
 // The git filters the repository's own Git config sets are listed beside the
-// providers, every one held back: nothing runs one under trust yet.
+// providers, held back unless a grant for the digest read now runs them
+// (gitFiltersUnder).
 
 export type RepositoryProviderConfigReader = (rootPath: string, options: RepositoryProviderConfigOptions) => Promise<RepositoryProviderConfig>
 
@@ -58,7 +59,7 @@ export async function readToolInventory({ machine, project, grant, read = readRe
       root: redactInventoryPath(project.path),
       configDigest: config.configDigest,
       trust,
-      ...(config.gitFilters ? { gitFilters: config.gitFilters } : {}),
+      ...(config.gitFilters ? { gitFilters: gitFiltersUnder(config.gitFilters, trust) } : {}),
     },
     providers: heldBackUnder(config, trust),
   }))

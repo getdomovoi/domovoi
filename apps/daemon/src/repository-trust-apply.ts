@@ -3,6 +3,7 @@ import {
   maximumRepositoryTrustThreadRestarts,
   type RepositoryTrustState,
   type ToolInventoryEntry,
+  type ToolInventoryGitFilters,
   type ToolInventoryProvider,
 } from "@getdomovoi/protocol"
 
@@ -148,6 +149,15 @@ export function heldBackUnder(config: RepositoryProviderConfig, trust: Repositor
     ...provider,
     entries: provider.entries.map((entry) => ({ ...entry, heldBack: heldBack(provider.provider, entry) })),
   }))
+}
+
+// The repository's git filters as the inventory reports them under `trust`:
+// the reader marks every one held back, and a trusted grant for the digest
+// read now runs them (P8 PR B, repository-git-filter-gate.ts), in every
+// session worktree that reads the same filters as the root.
+export function gitFiltersUnder(filters: ToolInventoryGitFilters, trust: RepositoryTrustState): ToolInventoryGitFilters {
+  if (trust.state !== "trusted") return filters
+  return { ...filters, entries: filters.entries.map((entry) => ({ ...entry, heldBack: false })) }
 }
 
 // How tool.inventory and the trust step read the project root: entries marked

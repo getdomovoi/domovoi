@@ -198,6 +198,7 @@ import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
   RepositoryConfigRefusedError,
+  RepositoryFilterRefusedError,
   RepositoryGitFilterRefusedError,
   SubmoduleChangesRefusedError,
   GitWorkspaceService,
@@ -234,6 +235,8 @@ import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } f
 import { readToolInventory, type RepositoryProviderConfigReader } from "./tool-inventory.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
 import { RepositoryGitFilterRpcError, repositoryGitFilterRpcError } from "./repository-git-filter-refusal.js"
+import type { RepositoryFilterTrustSource } from "./repository-git-filter-gate.js"
+import { RepositoryGitConfigUnreadableError } from "./repository-git-filters.js"
 import { maximumRevokedTrustThreads, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant, RepositoryTrustStore } from "./repository-trust-store.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
@@ -1933,6 +1936,7 @@ export class DomovoiDaemon {
     )
     this.#workspaceService = options.workspaceService ?? new GitWorkspaceService(
       options.worktreeRoot ?? join(this.#profileDirectory, "worktrees"),
+      { repositoryTrust: (anchor) => this.#repositoryFilterTrust(anchor) },
     )
     this.#agentTimeoutMs = options.agentTimeoutMs ?? 30_000
     this.#authToken = authToken
@@ -2081,14 +2085,41 @@ export class DomovoiDaemon {
         this.#reportError("Domovoi could not clear a refused session creation", cleanupError)
       }
     }
+    return await this.#gitFilterRpcError(error, projectId) ?? error
+  }
+
+  // A refusal over a repository git filter with its data, for the open
+  // project only, read now; undefined when it names another project or none,
+  // or the read fails: the refusal's text then answers alone.
+  async #gitFilterRpcError(error: RepositoryFilterRefusedError, projectId: string | undefined): Promise<RepositoryGitFilterRpcError | undefined> {
     const project = this.#snapshot.project
-    if (!project || project.id !== projectId) return error
-    return await repositoryGitFilterRpcError({
+    if (projectId === undefined || !project || project.id !== projectId) return undefined
+    return repositoryGitFilterRpcError({
       error,
       project: { id: project.id, path: project.path },
       grant: this.#repositoryTrustFor(project.id).repositoryTrust,
       read: this.#repositoryProviderConfig,
-    }) ?? error
+    })
+  }
+
+  // The project a path the workspace gates belongs to
+  // (repository-git-filter-gate.ts): the open project's root, or one of its
+  // session worktrees. The grant and the count of revokes are read at every
+  // call, never kept from an earlier answer (#662). Any other path belongs to
+  // no project here, and its repository filters stay held back.
+  #repositoryFilterTrust(anchor: string): RepositoryFilterTrustSource | undefined {
+    const project = this.#snapshot.project
+    if (!project) return undefined
+    const known = anchor === project.path
+      || this.#snapshot.sessions.some((session) => session.projectId === project.id && session.workspacePath === anchor)
+    if (!known) return undefined
+    return {
+      projectId: project.id,
+      projectPath: project.path,
+      grant: () => this.#repositoryTrustFor(project.id).repositoryTrust,
+      generation: () => this.#repositoryTrustGeneration(project.id),
+      read: this.#repositoryProviderConfig,
+    }
   }
 
   #repositoryTrustFor(projectId: string): { repositoryTrust?: RepositoryTrustGrant } {
@@ -4953,6 +4984,9 @@ export class DomovoiDaemon {
         startedAt,
         completedAt,
       })
+      // Refused over a repository git filter here, on the source: the client
+      // gets the drivers and this machine's trust, so it can offer the review.
+      if (error instanceof RepositoryFilterRefusedError) throw error
       return rpcMethods["session.transfer"].result.parse({ outcome: "refused", reason })
     }
   }
@@ -9936,7 +9970,21 @@ export class DomovoiDaemon {
         this.#error(socket, request.id, error.code, error.message, error instanceof RepositoryGitFilterRpcError ? error.data : undefined)
         return
       }
-      if (error instanceof RepositoryConfigRefusedError || error instanceof AgentProviderUnavailableError) {
+      // A checkpoint, restore, revert or transfer refused over a repository
+      // git filter answers with the drivers and the trust read now, for the
+      // project its gate looked trust up for (P8 PR B).
+      const filterRefusal = error instanceof RepositoryFilterRefusedError
+        ? await this.#gitFilterRpcError(error, error.projectId).catch(() => undefined)
+        : undefined
+      if (filterRefusal) {
+        this.#error(socket, request.id, filterRefusal.code, filterRefusal.message, filterRefusal.data)
+        return
+      }
+      if (
+        error instanceof RepositoryConfigRefusedError
+        || error instanceof RepositoryGitConfigUnreadableError
+        || error instanceof AgentProviderUnavailableError
+      ) {
         this.#error(socket, request.id, invalidParams, error.message)
         return
       }

@@ -14,13 +14,13 @@ import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { AgentAdapter, AgentEvent } from "./agents.js"
-import type { RepositoryGitFilter } from "./repository-git-filters.js"
+import { RepositoryGitConfigUnreadableError, type RepositoryGitFilter } from "./repository-git-filters.js"
 import type { RepositoryProviderConfig, RepositoryProviderConfigOptions } from "./repository-provider-config.js"
 import { projectRootRead } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant, RepositoryTrustStore } from "./repository-trust-store.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
-import { RepositoryGitFilterRefusedError, type WorkspaceService } from "./workspace.js"
+import { RepositoryFilterRefusedError, RepositoryGitFilterRefusedError, type WorkspaceService } from "./workspace.js"
 
 // P8 slice A: a session.create or session.fork refused because checking the
 // repository out would run a filter its own Git config sets answers with its
@@ -100,6 +100,7 @@ async function fixture() {
     removeSessionWorkspace: vi.fn(async () => {}),
     checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
     restore: vi.fn(),
+    revertFile: vi.fn(),
   } satisfies WorkspaceService
   const agents = { "claude-code": agent() }
   const store = new SqliteWorkspaceStore(":memory:", snapshot)
@@ -129,7 +130,7 @@ async function fixture() {
     client: "desktop", sessionId: "session-source", checkpointId: "checkpoint-fork", requestId: "fork-refused", runtime: claude,
   })
   const sessionIds = async () => ((await rpc("workspace.get", {})).result as WorkspaceSnapshot).sessions.map(({ id }) => id)
-  return { agents, trust, config, repositoryProviderConfig, workspaceService, store, create, fork, sessionIds }
+  return { agents, trust, config, repositoryProviderConfig, workspaceService, store, create, fork, sessionIds, rpc }
 }
 
 type Refusal = { error: { code: number; message: string; data?: unknown } }
@@ -224,6 +225,56 @@ describe("a session refused over a repository git filter", () => {
     expect(reply.error.code).toBe(-32602)
     expect(reply.error.message).toContain("filter.sops.smudge in local Git config")
     expect(reply.error).not.toHaveProperty("data")
+  })
+
+  // P8 PR B: the operations on an existing session worktree answer the same
+  // way, for the project their gate looked trust up for.
+  it("answers checkpoint.create, checkpoint.restore and session.revertFile refused over a filter with the git filter code", async () => {
+    const { trust, workspaceService, rpc } = await fixture()
+    trust.current = grant("b")
+    const refusal = () => new RepositoryFilterRefusedError([filter("sops", "clean")], { reason: "config-changed", projectId })
+    workspaceService.checkpoint.mockRejectedValueOnce(refusal())
+    workspaceService.restore.mockRejectedValueOnce(refusal())
+    workspaceService.revertFile.mockRejectedValueOnce(refusal())
+
+    const replies = [
+      await rpc("checkpoint.create", { sessionId: "session-source", label: "refused", client: "desktop" }),
+      await rpc("checkpoint.restore", { sessionId: "session-source", checkpointId: "checkpoint-fork", client: "desktop" }),
+      await rpc("session.revertFile", { sessionId: "session-source", path: "secret.txt", client: "desktop" }),
+    ] as Refusal[]
+
+    for (const reply of replies) {
+      expect(reply.error.code).toBe(repositoryGitFilterErrorCode)
+      expect(reply.error.message).toContain("filter.sops.clean in local Git config")
+      expect(reply.error.data).toEqual({
+        kind: "repository-git-filter",
+        projectId,
+        configDigest: digest("a"),
+        trust: { state: "untrusted", reason: "config-changed", trustedDigest: digest("b"), trustedAt: "2026-09-30T12:00:00.000Z", trustedBy: { client: "desktop" } },
+        drivers: [{ name: "sops", scope: "local" }],
+        omittedDrivers: 0,
+      })
+    }
+  })
+
+  it("keeps a refusal that names no project as plain text", async () => {
+    const { workspaceService, rpc } = await fixture()
+    workspaceService.checkpoint.mockRejectedValueOnce(new RepositoryFilterRefusedError([filter("sops", "clean")]))
+
+    const reply = await rpc("checkpoint.create", { sessionId: "session-source", label: "refused", client: "desktop" }) as Refusal
+
+    expect(reply.error.code).toBe(-32602)
+    expect(reply.error).not.toHaveProperty("data")
+  })
+
+  it("refuses with its reason when the repository's Git config cannot be read", async () => {
+    const { workspaceService, rpc } = await fixture()
+    workspaceService.checkpoint.mockRejectedValueOnce(new RepositoryGitConfigUnreadableError("too-large"))
+
+    const reply = await rpc("checkpoint.create", { sessionId: "session-source", label: "unreadable", client: "desktop" }) as Refusal
+
+    expect(reply.error.code).toBe(-32602)
+    expect(reply.error.message).toBe("The repository's Git config sets more filter settings than Domovoi reads")
   })
 
   it("keeps its record of the attempt when the new worktree could not be taken away", async () => {

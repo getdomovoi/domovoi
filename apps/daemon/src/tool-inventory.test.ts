@@ -60,6 +60,27 @@ describe("readToolInventory", () => {
     expect(without.repository).not.toHaveProperty("gitFilters")
   })
 
+  // P8 PR B: under a grant for the digest read now, the reviewed filters run,
+  // so their entries are not held back; under any other trust they are.
+  it("reports the git filters running only under a grant for the current digest", async () => {
+    const gitFilters = {
+      files: [{ path: ".git/config", scope: "local" as const }],
+      entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt /dev/stdin", file: ".git/config", scope: "local" as const, heldBack: true }],
+      omittedEntries: 0,
+    }
+    const configDigest = `sha256:${"a".repeat(64)}`
+    const project = { id: "project-acme", path: "/code/acme" }
+    const read = async () => ({ configDigest, providers: [], trustRefusals: [], documents: {}, gitFilters })
+    const grant = { projectId: "project-acme", trustedDigest: configDigest, trustedAt: "2026-09-30T12:00:00.000Z", trustedBy: { client: "desktop" as const } }
+    const heldBack = (inventory: ToolInventory) => inventory.repository?.gitFilters?.entries.map((entry) => entry.heldBack)
+
+    expect(heldBack(await readToolInventory({ machine, project, grant, read }))).toEqual([false])
+    expect(heldBack(await readToolInventory({ machine, project, read }))).toEqual([true])
+    expect(heldBack(await readToolInventory({ machine, project, grant: { ...grant, trustedDigest: `sha256:${"b".repeat(64)}` }, read }))).toEqual([true])
+    const refused = async () => ({ ...await read(), trustRefusals: [{ provider: "codex", reason: "nested-config" as const, path: "sub/.codex/config.toml" }] })
+    expect(heldBack(await readToolInventory({ machine, project, grant, read: refused }))).toEqual([true])
+  })
+
   // Slice P6b: a trusted Claude Code entry is reported as loading exactly
   // when the adapter passes it, from the documents the digest was read from.
   it("marks a trusted repository's entries by what loads, and keeps the documents out of the answer", async () => {
