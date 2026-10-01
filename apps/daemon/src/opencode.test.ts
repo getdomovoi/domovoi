@@ -2226,6 +2226,46 @@ describe("approval replies Domovoi did not send", () => {
     await adapter.close()
   })
 
+  // Codex review of #691, P2: both servers also define permission.v2.asked
+  // and permission.v2.replied. Domovoi answers neither, so every v2 reply is
+  // someone else's, and a v2 request is one it cannot answer.
+  it.each(adapters)("stops a %s session on a permission.v2.replied", async (_name, make) => {
+    const { adapter, events, stream, threadId } = await askedTurn(make)
+
+    stream.emit({ type: "permission.v2.replied", properties: { sessionID: threadId, requestID: "per_v2", reply: "once" } })
+
+    await waitForDaemon(() => expect(stopped(events)).toEqual([
+      expect.objectContaining({ threadId, permissionId: "per_v2", reply: "once" }),
+    ]))
+    await adapter.close()
+  })
+
+  it.each(adapters)("ends a %s turn that asks through permission.v2.asked, which Domovoi cannot answer", async (name, make) => {
+    const { adapter, client, events, stream, threadId, approvals } = await askedTurn(make)
+
+    stream.emit({
+      type: "permission.v2.asked",
+      properties: { id: "per_v2", sessionID: threadId, action: "bash", resources: ["pnpm test"], metadata: {} },
+    })
+
+    await waitForDaemon(() => expect(events).toContainEqual({
+      type: "turn-completed",
+      params: {
+        threadId,
+        turnId: "turn-1",
+        turn: {
+          id: "turn-1",
+          status: "failed",
+          error: `${name} asked for an approval through a permission interface Domovoi does not answer, so Domovoi stopped the turn`,
+        },
+      },
+    }))
+    expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } }))
+    expect(approvals()).toEqual([])
+    expect(stopped(events)).toEqual([])
+    await adapter.close()
+  })
+
   it("ignores a reply for a session it does not hold", async () => {
     const { adapter, client, events, reply } = await askedTurn()
 

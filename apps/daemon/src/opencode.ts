@@ -953,8 +953,15 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
     const sessionId = eventSessionId(properties)
     if (!sessionId) return
-    if (event.type === "permission.replied") {
+    // permission.v2.replied has the current reply's shape (opencode
+    // schema/src/permission.ts:44-51). Domovoi sends no v2 reply, so every one
+    // is someone else's (Codex review of #691, P2).
+    if (event.type === "permission.replied" || event.type === "permission.v2.replied") {
       this.#receiveReply(cwd, sessionId, properties)
+      return
+    }
+    if (event.type === "permission.v2.asked") {
+      this.#refuseUnanswerable(cwd, sessionId)
       return
     }
     const subagentTurn = this.#subagents.get(sessionId)
@@ -1154,6 +1161,30 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       await this.#stopServer(confirmed
         ? `Domovoi restarted the ${name} server because an approval was answered outside Domovoi, so no approval it kept stays in place`
         : this.#unconfirmedStopReason())
+    })
+  }
+
+  // A v2 permission request is answered through an interface Domovoi does not
+  // use, so it cannot be shown or answered. Its run is aborted and the turn
+  // ends, rather than wait for an answer that could only come from elsewhere.
+  #refuseUnanswerable(cwd: string, sessionId: string): void {
+    const threadId = this.#subagents.get(sessionId)?.threadId
+      ?? this.#subagents.neverLinkedThread(sessionId)
+      ?? sessionId
+    const session = this.#sessions.get(threadId)
+    if (!session || session.cwd !== cwd || session.stopping) return
+    const name = this.#identity.providerName
+    void this.#abortThread(session, sessionId).then(async (confirmed) => {
+      if (!confirmed) {
+        await this.#stopServer(this.#unconfirmedStopReason())
+        return
+      }
+      if (this.#sessions.get(session.threadId) !== session) return
+      this.#complete(
+        session,
+        "failed",
+        `${name} asked for an approval through a permission interface Domovoi does not answer, so Domovoi stopped the turn`,
+      )
     })
   }
 
