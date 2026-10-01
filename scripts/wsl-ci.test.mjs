@@ -7,7 +7,7 @@ import { join, matchesGlob } from "node:path"
 import test from "node:test"
 
 import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
-import { assertWslReport, assertWslServiceReport, defaultBudgets, downloadWslImage, requiredWslServiceProofs, runWslCi } from "./wsl-ci.mjs"
+import { assertWslReport, assertWslServiceReport, defaultBudgets, downloadWslImage, requiredWslServiceProofs, runWslCi, startAttached } from "./wsl-ci.mjs"
 
 const require = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
 const { parse } = require("yaml")
@@ -61,8 +61,25 @@ const serviceTitle = serviceTitles[0]
 const servicePassed = { numTotalTests: serviceTitles.length, numPassedTests: serviceTitles.length, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0,
   success: true, testResults: [{ assertionResults: serviceTitles.map((title) => ({ title, fullName: title, status: "passed" })) }] }
 
+// A stand-in for the attached wsl.exe keep-alive child. It is ready at once
+// and exits when killed unless a test says otherwise; `exit` ends it early.
+function keepAliveFixture({ ready = Promise.resolve(), exitsOnKill = true } = {}) {
+  const state = { started: [], kills: 0, alive: false, exit: undefined }
+  const start = (command, args, options) => {
+    let resolveExit
+    const exited = new Promise((resolve) => { resolveExit = resolve })
+    state.alive = true
+    state.exit = (status) => { state.alive = false; resolveExit(status) }
+    state.started.push({ command, args, options })
+    return { ready, exited, output: () => "keep-alive output",
+      kill: () => { state.kills += 1; if (exitsOnKill) state.exit("code null, signal SIGKILL") } }
+  }
+  return { state, start }
+}
+
 function fixture(overrides = {}) {
   const calls = []
+  const keepAlive = keepAliveFixture()
   const effects = {
     downloadImage: async () => {},
     downloadNode: async () => {},
@@ -73,11 +90,12 @@ function fixture(overrides = {}) {
       return args.includes("uname") ? "6.6.87.2-microsoft-standard-WSL2\n"
         : args.includes("wslpath") ? "/fixture/path" : ""
     },
+    start: keepAlive.start,
     readReport: async (path) => path.endsWith("service.json") ? servicePassed : passed,
     log: () => {},
     ...overrides,
   }
-  return { calls, effects }
+  return { calls, effects, keepAlive: keepAlive.state }
 }
 
 test("WSL job is separate, path-filtered, nightly and bounded", async () => {
@@ -324,6 +342,129 @@ test("successful proofs retain real guest diagnostics in the job log", async () 
   })
   await runWslCi({ platform: "win32", effects })
   assert.ok(lines.some((line) => line.includes("WSL repository Git: git version from the required guest")))
+})
+
+// WSL 2 stops a distro once no wsl.exe session is attached. A backgrounded
+// sleep from a finished --exec call let the guest stop before the proofs'
+// Running check on 2026-09-30, so the runner holds one attached child.
+// Every wsl.exe and Vitest call and the keep-alive start, in order, each call
+// with the keep-alive's state at that moment. `fail` throws for one call.
+function recordedKeepAlive({ keepAlive: keepAliveOptions, fail, effects: overrides } = {}) {
+  const events = []
+  const calls = []
+  const responder = fixture().effects.run
+  const keepAlive = keepAliveFixture(keepAliveOptions)
+  const { effects } = fixture({
+    run: (command, args, options) => {
+      const call = { args, options, alive: keepAlive.state.alive, kills: keepAlive.state.kills }
+      events.push(call)
+      calls.push(call)
+      if (fail?.(args)) throw fail(args)
+      return responder(command, args, options)
+    },
+    start: (command, args, options) => {
+      events.push({ start: true })
+      return keepAlive.start(command, args, options)
+    },
+    createStaging: async () => "fixture-staging",
+    removeStaging: async () => {},
+    ...overrides,
+  })
+  return { calls, effects, events, keepAlive: keepAlive.state }
+}
+
+test("an attached keep-alive holds the guest from provisioning through the proofs", async () => {
+  const { effects, events, keepAlive } = recordedKeepAlive()
+  await runWslCi({ platform: "win32", effects })
+  assert.equal(keepAlive.started.length, 1)
+  const [{ command, args, options }] = keepAlive.started
+  const distribution = events.find((event) => event.args?.includes("--install")).args.at(-1)
+  assert.equal(command, "wsl.exe")
+  assert.deepEqual(args.slice(0, 5), ["-d", distribution, "-u", "root", "--exec"])
+  // Bounded by the phases after provisioning (300 + 240 + 300 + 60 seconds).
+  assert.match(args.at(-1), /&& exec sleep 900$/)
+  assert.ok(args.at(-1).includes(options.readyMarker), "readiness is the guest's own output")
+  const started = events.findIndex((event) => event.start)
+  assert.ok(started > events.findIndex((event) => event.args?.includes("uname")), "only a confirmed WSL 2 guest is held")
+  assert.ok(started < events.findIndex((event) => event.args?.includes("wslpath")), "held before the guest runtime phase")
+  for (const file of ["src/wsl-windows.test.ts", "src/service/wsl-task.native.test.ts"]) {
+    const proof = events.find((event) => event.args?.includes(file))
+    assert.equal(proof.alive, true, `${file} runs while the keep-alive is attached`)
+    assert.equal(proof.kills, 0)
+  }
+  const removal = events.findLast((event) => event.args?.[0] === "--terminate")
+  assert.equal(removal.kills, 1, "killed before the guest is terminated")
+  assert.equal(keepAlive.kills, 1)
+  assert.equal(keepAlive.alive, false)
+})
+
+test("a failed proof still kills the keep-alive before removing the guest", async () => {
+  const proofError = new Error("Vitest exited 1")
+  const { calls, effects, keepAlive } = recordedKeepAlive({
+    fail: (args) => args.includes("src/wsl-windows.test.ts") && proofError,
+  })
+  await assert.rejects(runWslCi({ platform: "win32", effects }), (error) => error === proofError)
+  assert.equal(keepAlive.kills, 1)
+  assert.equal(keepAlive.alive, false)
+  assert.equal(calls.at(-1).args[0], "--unregister")
+  assert.equal(calls.at(-1).kills, 1)
+})
+
+test("a keep-alive lost before the proofs is named instead of a Stopped guest", async () => {
+  const recorded = recordedKeepAlive({ effects: {
+    downloadNode: async () => { recorded.keepAlive.exit("code 1, signal null") },
+  } })
+  await assert.rejects(runWslCi({ platform: "win32", effects: recorded.effects }),
+    /WSL keep-alive exited before the native proofs: code 1, signal null; keep-alive output/)
+  assert.equal(recorded.calls.some(({ args }) => args.includes("src/wsl-windows.test.ts")), false)
+  assert.equal(recorded.calls.at(-1).args[0], "--unregister")
+})
+
+test("a keep-alive that never attaches expires provisioning and is still killed", { timeout: 3_000 }, async () => {
+  const { calls, effects, keepAlive } = recordedKeepAlive({ keepAlive: { ready: new Promise(() => {}) } })
+  await assert.rejects(runWslCi({ platform: "win32", effects, budgets: { provision: 100, cleanup: 1_000 } }), /provision.*deadline/)
+  assert.equal(keepAlive.kills, 1)
+  assert.equal(keepAlive.alive, false)
+  assert.equal(calls.some(({ args }) => args.includes("wslpath")), false)
+  assert.equal(calls.at(-1).args[0], "--unregister")
+})
+
+test("a keep-alive that survives its kill fails cleanup and the guest is still removed", { timeout: 3_000 }, async () => {
+  const { calls, effects, keepAlive } = recordedKeepAlive({ keepAlive: { exitsOnKill: false } })
+  await assert.rejects(runWslCi({ platform: "win32", effects, budgets: { cleanup: 1_000 }, keepAliveStop: 50 }),
+    /WSL keep-alive did not exit within 50 ms of its kill/)
+  assert.equal(keepAlive.kills, 1)
+  const distribution = calls.find(({ args }) => args.includes("--install")).args.at(-1)
+  assert.deepEqual(calls.slice(-2).map(({ args }) => args), [["--terminate", distribution], ["--unregister", distribution]])
+  for (const { options } of calls.slice(-2)) assert.equal(options.signal.aborted, false)
+})
+
+// The production start effect, against a real Node child instead of wsl.exe.
+test("the attached child is ready on its marker, stays up and exits when killed", { timeout: 10_000 }, async () => {
+  const deadline = bootstrapDeadline(8_000, "attached child test deadline")
+  const child = startAttached(process.execPath, ["-e", "console.log('fixture-ready'); setInterval(() => {}, 1_000)"],
+    { readyMarker: "fixture-ready" })
+  try {
+    await deadline.run(() => child.ready)
+    let exit
+    child.exited.then((status) => { exit = status })
+    await deadline.run(() => new Promise((resolve) => setTimeout(resolve, 100)))
+    assert.equal(exit, undefined, "a ready child keeps running until killed")
+    assert.match(child.output(), /fixture-ready/)
+    child.kill()
+    assert.equal(typeof await deadline.run(() => child.exited), "string")
+  } finally { child.kill(); deadline.clear() }
+})
+
+test("an attached child that exits or cannot start is never ready", { timeout: 10_000 }, async () => {
+  const deadline = bootstrapDeadline(8_000, "attached child failure test deadline")
+  try {
+    const early = startAttached(process.execPath, ["-e", "process.exit(3)"], { readyMarker: "fixture-ready" })
+    await deadline.run(() => assert.rejects(early.ready, /exited before it was ready: code 3, signal null/))
+    assert.equal(await deadline.run(() => early.exited), "code 3, signal null")
+    const missing = startAttached(join(tmpdir(), "domovoi-no-such-wsl.exe"), [], { readyMarker: "fixture-ready" })
+    await deadline.run(() => assert.rejects(missing.ready, /exited before it was ready: error .*ENOENT/))
+  } finally { deadline.clear() }
 })
 
 test("a working WSL executable with a WSL 1 guest is not enough", async () => {
