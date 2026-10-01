@@ -3015,6 +3015,73 @@ describe("reconciling a turn with the server's own state", () => {
     await adapter.close()
   })
 
+  // Security review round 13 of #687 (ruling Q306): a stop handler that
+  // settles while another stop is still registered leaves the session in
+  // place; the last to settle disposes of it, and the turn ends once with
+  // the failure first in precedence.
+  it("waits for a later approval stop when a closed stream's stop settles first", async () => {
+    const { adapter, client, events, stream, threadId, turnId, seen, tick } = await reconciledTurn()
+    const aborts = manualAborts(client)
+    let refuse!: () => void
+    client.postSessionIdPermissionsPermissionId.mockImplementationOnce(() => new Promise((_resolve, reject) => { refuse = () => reject(new Error("refused")) }))
+    seen()
+    stream.emit({ type: "session.created", properties: { info: { id: "ses_child", parentID: threadId } } })
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "per_1", sessionID: threadId, permission: "bash", patterns: ["ls"], metadata: { command: "ls" }, always: [], tool: { messageID: "msg_1", callID: "call_1" } },
+    })
+    await tick(10)
+    adapter.resolveApproval(1, "allow-once")
+    await tick(0)
+    // The server reports the reply before it answers the request.
+    stream.emit({ type: "permission.replied", properties: { sessionID: threadId, requestID: "per_1", reply: "once" } })
+    await tick(0)
+    stream.close()
+    await tick(10)
+    aborts.answer(threadId)
+    await tick(10)
+    // The answer fails, so the reply was someone else's: a second stop.
+    refuse()
+    await tick(10)
+    expect(aborts.pending(threadId)).toBe(1)
+    aborts.answer("ses_child")
+    await tick(10)
+    expect(turnEnds(events, turnId)).toEqual([])
+    aborts.answer(threadId)
+    await tick(10)
+    const end = turnEnds(events, turnId)
+    expect(end).toHaveLength(1)
+    expect(end[0]).toMatchObject({ params: { turn: { status: "failed" }, failure: expect.anything() } })
+    await adapter.close()
+  })
+
+  it("does not end the turn while a closed stream's stop and the server stop are still pending", async () => {
+    const { adapter, client, server, events, stream, threadId, turnId, seen, tick } = await reconciledTurn()
+    const aborts = manualAborts(client)
+    let stopped!: (ok: boolean) => void
+    server.stop.mockImplementation(() => new Promise<boolean>((resolve) => { stopped = resolve }))
+    seen()
+    cause(stream, threadId, "outside")
+    await tick(10)
+    stream.emit({ type: "session.created", properties: { info: { id: "ses_child", parentID: threadId } } })
+    await tick(0)
+    stream.close()
+    await tick(10)
+    expect(aborts.pending("ses_child")).toBe(1)
+    aborts.answer(threadId)
+    await tick(10)
+    expect(turnEnds(events, turnId)).toEqual([])
+    aborts.answer("ses_child")
+    await tick(10)
+    const end = turnEnds(events, turnId)
+    expect(end).toHaveLength(1)
+    expect(end[0]).toMatchObject({ params: { turn: { status: "failed" }, failure: expect.anything() } })
+    stopped(true)
+    await tick(10)
+    expect(turnEnds(events, turnId)).toHaveLength(1)
+    await adapter.close()
+  })
+
   // R12-3: a server stop that never answers does not hold a send for ever.
   it("rejects a held send when the adapter closes while the server stop is unanswered", async () => {
     const { adapter, client, server, stream, threadId, turnId, seen, tick } = await reconciledTurn()

@@ -348,17 +348,22 @@ type DirectoryStream = {
 // How a thread-wide stop fails the turn. The failure first in precedence
 // wins when stops overlap: an approval answered elsewhere (0), then a
 // request Domovoi cannot answer (1), then a closed event stream (2). A
-// server stop's own reason (#stopServer) counts only when no stop settled
-// with one of these.
-type StopOutcome = { rank: 0 | 1 | 2; error: string; failure?: ProviderFailure }
+// server stop's own reason (#stopServer, 3) counts only when no stop
+// settled with one of these.
+type StopOutcome = { rank: 0 | 1 | 2 | 3; error: string; failure?: ProviderFailure }
 
 // The thread-wide stops under way for one turn (#holdThread). Each owner
 // settles once, on its own, with its outcome; no owner waits for another,
-// so overlapping stops cannot wait on each other.
+// so overlapping stops cannot wait on each other. An owner that settles
+// while others remain leaves the session in place: what it would do with
+// the session (unload it, drop it) waits in `disposals` and runs when the
+// last owner settles, after the turn has ended once (security review round
+// 13 of #687).
 type ThreadStop = {
   turnId: string | undefined
   owners: number
   outcome?: StopOutcome
+  disposals: Array<() => void>
   // Settles when the last owner has settled or the session is gone.
   cleared: Promise<void>
   clear: () => void
@@ -1141,10 +1146,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       outcome = { rank: 2, error: reason }
       for (const [index, session] of sessions.entries()) {
         if (this.#sessions.get(session.threadId) !== session) continue
-        settles[index]!(outcome)
-        this.#forgetSubagents(session.threadId)
-        this.#forgetReplies(session.threadId)
-        this.#dropSession(session)
+        // The session leaves once every stop of it has settled (ThreadStop).
+        settles[index]!(outcome, () => {
+          if (this.#sessions.get(session.threadId) !== session) return
+          this.#forgetSubagents(session.threadId)
+          this.#forgetReplies(session.threadId)
+          this.#dropSession(session)
+        })
       }
       this.#emit({ type: "provider-disconnected", reason })
     }).finally(() => {
@@ -1159,33 +1167,48 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // the turn, and a prompt waits (#readyToSend). When the last registered
   // owner settles, the turn ends once with the failure first in precedence
   // (StopOutcome); with none, a turn still open is read from the server.
-  // Owners never wait for each other.
-  #holdThread(session: Session): (outcome?: StopOutcome) => void {
+  // Owners never wait for each other. What an owner does with the session
+  // once it has settled (`dispose`: unload it, drop it) runs only when the
+  // last owner has settled, after the turn ended (security review round 13
+  // of #687).
+  #holdThread(session: Session): (outcome?: StopOutcome, dispose?: () => void) => void {
     let stop = session.threadStop
     if (!stop) {
       let clear!: () => void
       const cleared = new Promise<void>((resolve) => { clear = resolve })
-      stop = { turnId: session.activeTurnId, owners: 0, cleared, clear }
+      stop = { turnId: session.activeTurnId, owners: 0, disposals: [], cleared, clear }
       session.threadStop = stop
     }
     const held = stop
     held.owners += 1
     this.#clearReconcile(session)
     let settled = false
-    return (outcome) => {
+    return (outcome, dispose) => {
       if (settled) return
       settled = true
-      if (outcome && (!held.outcome || outcome.rank < held.outcome.rank)) held.outcome = outcome
+      this.#recordOutcome(held, outcome)
       held.owners -= 1
-      if (held.owners > 0 || session.threadStop !== held) return
+      if (dispose) held.disposals.push(dispose)
+      // The record ended without this owner (the session was removed for
+      // good, as by close): what it would do is done now.
+      if (session.threadStop !== held) {
+        this.#runDisposals(held)
+        return
+      }
+      if (held.owners > 0) return
       this.#endThreadStop(session, held)
       if (session.activeTurnId !== undefined && this.#sessions.get(session.threadId) === session) this.#scheduleReconcile(session, session.activeTurnId)
     }
   }
 
-  // Ends the stop record: the turn it concerns, if still open, fails with
-  // the best recorded failure. Called when the last owner settles, and when
-  // the session is unloaded or dropped first.
+  #recordOutcome(stop: ThreadStop, outcome: StopOutcome | undefined): void {
+    if (outcome && (!stop.outcome || outcome.rank < stop.outcome.rank)) stop.outcome = outcome
+  }
+
+  // Ends the stop record: the turn it concerns, if still open, fails once
+  // with the best recorded failure, and then what the owners would do with
+  // the session runs. Called when the last owner settles, and when the
+  // session is removed for good first (#dropSession).
   #endThreadStop(session: Session, stop: ThreadStop): void {
     if (session.threadStop === stop) delete session.threadStop
     const outcome = stop.outcome
@@ -1193,11 +1216,19 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       this.#complete(session, "failed", outcome.error, outcome.failure)
     }
     stop.clear()
+    this.#runDisposals(stop)
   }
 
-  // The session leaves the adapter: a stop under way ends its turn with what
-  // it recorded, and a prompt waiting on it is refused (#readyToSend). This
-  // releases waiters only; it does not show that the provider stopped.
+  #runDisposals(stop: ThreadStop): void {
+    for (const dispose of stop.disposals.splice(0)) dispose()
+  }
+
+  // The session leaves the adapter for good: a stop under way ends its turn
+  // with what it recorded, whatever owners remain, and a prompt waiting on
+  // it is refused (#readyToSend). An ordinary stop owner never calls this
+  // while another stop is registered; it hands it to the record as a
+  // disposal (#holdThread). This releases waiters only; it does not show
+  // that the provider stopped.
   #dropSession(session: Session): void {
     if (session.threadStop) this.#endThreadStop(session, session.threadStop)
     this.#clearReconcile(session)
@@ -2227,10 +2258,12 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const settle = this.#holdThread(session)
     const outcome: StopOutcome = { rank: 0, error: approvalAnsweredElsewhere.message, failure: approvalAnsweredElsewhere }
     void this.#abortThread(session, sessionId).then(async (confirmed) => {
-      // Settled before the unload: the turn ends with this failure now, or,
-      // if another stop is still registered, when the unload drops it.
-      settle(outcome)
-      if (this.#sessions.get(session.threadId) === session) this.#unloadSession(session)
+      // The turn ends with the best failure, and the thread is unloaded, once
+      // every stop of it has settled: now, or when the last other one does
+      // (ThreadStop, security review round 13 of #687).
+      settle(outcome, () => {
+        if (this.#sessions.get(session.threadId) === session) this.#unloadSession(session)
+      })
       this.#emit({
         type: "approval-answered-elsewhere",
         threadId: session.threadId,
@@ -2310,14 +2343,23 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#pendingApprovals.clear()
     this.#failedRefusals.clear()
     for (const session of [...this.#sessions.values()]) {
+      const stop = session.threadStop
+      if (stop && stop.owners > 0) {
+        // A thread-wide stop still has owners: the session stays until the
+        // last of them settles, and the turn then ends once with the best
+        // failure, this server stop's reason only if none settled with one
+        // (StopOutcome, security review round 13 of #687).
+        this.#recordOutcome(stop, { rank: 3, error: reason })
+        stop.disposals.push(() => this.#dropSession(session))
+        continue
+      }
       // A thread-wide stop that already settled with its failure keeps it
       // (StopOutcome precedence); otherwise the turn fails with this reason.
-      const recorded = session.threadStop?.outcome
+      const recorded = stop?.outcome
       if (recorded) this.#complete(session, "failed", recorded.error, recorded.failure)
       else this.#complete(session, "failed", reason)
       this.#dropSession(session)
     }
-    this.#sessions.clear()
     this.#subagents = new SubagentRegistry()
     this.#sentReplies.clear()
     this.#cascadeRejections.clear()

@@ -645,8 +645,11 @@ code or settings the repository brings:
   steer waits, checking again after every wait. Stops that overlap end the turn once, when the
   last of them has settled, with the first failure in this order: an approval answered
   elsewhere, then a request the daemon cannot answer, then a closed event stream; a server stop's
-  own reason counts only when none of them settled with one. A prompt or steer still waiting when
-  its session is unloaded or the daemon's adapter closes is refused and not sent; that does not
+  own reason counts only when none of them settled with one. A stop that settles while another is
+  still under way leaves the thread loaded: the last to settle ends the turn and then unloads or
+  drops the thread, as does a server stop that one of them causes. A prompt or steer still
+  waiting when its session is unloaded or the daemon's adapter closes is refused and not sent;
+  that does not
   show that the provider or anything it started has stopped. With the session idle, the turn
   ends by the newest
   assistant message after its prompt in the server's own order (time created, then id), whatever
