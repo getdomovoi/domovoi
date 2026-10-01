@@ -2106,7 +2106,7 @@ describe("approval replies Domovoi did not send", () => {
 
       await vi.advanceTimersByTimeAsync(1)
 
-      await vi.waitFor(() => expect(stopped(events)).toEqual([
+      await waitForDaemon(() => expect(stopped(events)).toEqual([
         expect.objectContaining({ threadId, permissionId: "per_1", reply: "once" }),
       ]))
     } finally {
