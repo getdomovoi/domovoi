@@ -66,18 +66,25 @@ function checkedGrant(grant: RepositoryTrustGrant): RepositoryTrustGrant {
 // The table this store creates, column by column, with project_id its only
 // key. Anything else under the name was not made here, so it yields no grant.
 // hidden 0 is an ordinary column; generated and hidden columns, which
-// table_info leaves out, are refused.
-const earlierColumns = [
-  { name: "project_id", pk: 1, hidden: 0 },
-  { name: "trusted_digest", pk: 0, hidden: 0 },
-  { name: "trusted_at", pk: 0, hidden: 0 },
-  { name: "trusted_client", pk: 0, hidden: 0 },
-  { name: "trusted_client_id", pk: 0, hidden: 0 },
+// table_info leaves out, are refused. Each column's declared type, NOT NULL
+// and default are compared too (ruling Q255): a default is what a row written
+// without the column reads back as, so git_filters_reviewed DEFAULT 1 would
+// turn an earlier daemon's grant into one that reviewed the git filters.
+type ExpectedColumn = { name: string; type: string; notnull: number; dflt_value: string | null; pk: number; hidden: number }
+const earlierColumns: readonly ExpectedColumn[] = [
+  { name: "project_id", type: "TEXT", notnull: 0, dflt_value: null, pk: 1, hidden: 0 },
+  { name: "trusted_digest", type: "TEXT", notnull: 1, dflt_value: null, pk: 0, hidden: 0 },
+  { name: "trusted_at", type: "TEXT", notnull: 1, dflt_value: null, pk: 0, hidden: 0 },
+  { name: "trusted_client", type: "TEXT", notnull: 1, dflt_value: null, pk: 0, hidden: 0 },
+  { name: "trusted_client_id", type: "TEXT", notnull: 0, dflt_value: null, pk: 0, hidden: 0 },
 ]
 // git_filters_reviewed came later (P8 PR B). A table an earlier daemon made,
 // which passes every check with the earlier columns, gains it with 0: its
 // grants run no git filter.
-const expectedColumns = [...earlierColumns, { name: "git_filters_reviewed", pk: 0, hidden: 0 }]
+const expectedColumns: readonly ExpectedColumn[] = [
+  ...earlierColumns,
+  { name: "git_filters_reviewed", type: "INTEGER", notnull: 1, dflt_value: "0", pk: 0, hidden: 0 },
+]
 
 // The table's only indexes, sorted by name as the check compares them. Each
 // key query is a fixed literal: no name from the catalog is written into SQL.
@@ -146,12 +153,12 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
   // name finds a temporary index first. The trigger lookup reads both
   // catalogs, since a temporary trigger can fire on the main table; neither
   // catalog's name can be taken by another object.
-  #tableIsOurs(columnsExpected: readonly { name: string; pk: number; hidden: number }[]): boolean {
+  #tableIsOurs(columnsExpected: readonly ExpectedColumn[]): boolean {
     const tables = this.#database.prepare("PRAGMA table_list(repository_trust)").all() as Array<{ schema: string; name: string; type: string; ncol: number; wr: number }>
     const [table] = tables
     if (tables.length !== 1 || table?.schema !== "main" || table.name !== "repository_trust" || table.type !== "table" || table.ncol !== columnsExpected.length || table.wr !== 0) return false
-    const columns = (this.#database.prepare("PRAGMA main.table_xinfo(repository_trust)").all() as Array<{ name: string; pk: number; hidden: number }>)
-      .map(({ name, pk, hidden }) => ({ name, pk, hidden }))
+    const columns = (this.#database.prepare("PRAGMA main.table_xinfo(repository_trust)").all() as ExpectedColumn[])
+      .map(({ name, type, notnull, dflt_value, pk, hidden }) => ({ name, type, notnull, dflt_value, pk, hidden }))
     if (JSON.stringify(columns) !== JSON.stringify(columnsExpected)) return false
     // Every index on the table, the primary key's included, compares its key
     // columns as bytes: a key declared COLLATE NOCASE would let one project's

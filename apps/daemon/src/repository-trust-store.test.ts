@@ -161,12 +161,46 @@ describe("SqliteRepositoryTrust", () => {
     ["a table whose key ignores case", "CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY COLLATE NOCASE, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT)"],
     ["a table with a key index that ignores case", "CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT); CREATE UNIQUE INDEX repository_trust_folded ON repository_trust (project_id COLLATE NOCASE)"],
     ["a table named in another case","CREATE TABLE Repository_Trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT)"],
+    // An earlier table is migrated only when every column is declared as an
+    // earlier daemon declared it: type, NOT NULL and default.
+    ["an earlier table with a column of another type", "CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY, trusted_digest BLOB NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL, trusted_client_id TEXT)"],
+    ["an earlier table with a column that allows null", "CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT, trusted_client TEXT NOT NULL, trusted_client_id TEXT)"],
+    ["an earlier table with a column default", "CREATE TABLE repository_trust (project_id TEXT PRIMARY KEY, trusted_digest TEXT NOT NULL, trusted_at TEXT NOT NULL, trusted_client TEXT NOT NULL DEFAULT 'desktop', trusted_client_id TEXT)"],
   ])("yields no grant from %s", (_, table) => {
     const database = new DatabaseSync(":memory:")
     database.exec(table)
     const columns = table.includes("trusted_client_id") ? "project_id, trusted_digest, trusted_at, trusted_client, trusted_client_id" : "project_id, trusted_digest, trusted_at, trusted_client"
     const values = table.includes("trusted_client_id") ? "'project-acme', ?, '2026-09-28T10:00:00.000Z', 'desktop', NULL" : "'project-acme', ?, '2026-09-28T10:00:00.000Z', 'desktop'"
     database.prepare(`INSERT INTO repository_trust (${columns}) VALUES (${values})`).run(digest("a"))
+    const trust = new SqliteRepositoryTrust(database)
+
+    expect(trust.find("project-acme")).toBeUndefined()
+    expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+  })
+
+  // A table with every expected name and index, whose acknowledgement column
+  // defaults to 1, would make an earlier daemon's row read as a grant that
+  // reviewed the git filters (ruling Q255). The declared column contract is
+  // compared in full, so such a table yields no grant.
+  it.each([
+    ["INTEGER NOT NULL DEFAULT 1"],
+    ["BLOB NOT NULL DEFAULT 1"],
+    ["INTEGER DEFAULT 1"],
+  ])("yields no grant from a table whose acknowledgement column is %s", (declaration) => {
+    const database = new DatabaseSync(":memory:")
+    database.exec(`
+      CREATE TABLE repository_trust (
+        project_id TEXT PRIMARY KEY,
+        trusted_digest TEXT NOT NULL,
+        trusted_at TEXT NOT NULL,
+        trusted_client TEXT NOT NULL,
+        trusted_client_id TEXT,
+        git_filters_reviewed ${declaration}
+      );
+      CREATE INDEX repository_trust_trusted_at ON repository_trust (trusted_at);
+    `)
+    database.prepare("INSERT INTO repository_trust (project_id, trusted_digest, trusted_at, trusted_client, trusted_client_id) VALUES (?, ?, ?, ?, ?)")
+      .run("project-acme", digest("a"), "2026-09-30T12:00:00.000Z", "desktop", null)
     const trust = new SqliteRepositoryTrust(database)
 
     expect(trust.find("project-acme")).toBeUndefined()
