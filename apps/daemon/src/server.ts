@@ -182,6 +182,7 @@ import { emergencyStopRecoveryRounds, type SqliteEmergencyStopIntents } from "./
 import { ClaudeAgentSdkAdapter } from "./claude.js"
 import { OpenCodeSdkAdapter } from "./opencode.js"
 import { KiloSdkAdapter } from "./kilo.js"
+import { kiloTurnedOff, kiloTurnedOffReason, kiloTurnedOffResumeRefusal } from "./kilo-turned-off.js"
 import { createCursorAgentAdapter, createGrokAgentAdapter } from "./acp-factory.js"
 import {
   acpProviderNames,
@@ -194,6 +195,7 @@ import {
   AgentRegistry,
   type AgentAdapter,
   type AgentEvent,
+  type UnavailableProvider,
 } from "./agents.js"
 import { modelImageInput, prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
 import {
@@ -433,14 +435,28 @@ const sessionResourceMethods = new Set([
 ])
 type ProviderReadiness = WorkspaceSnapshot["machine"]["providers"][number]
 
-// Cursor and Grok are turned off whatever a stored row or a provider probe
-// says about them, so every row for either enters the machine snapshot as the
-// turned-off detection and cannot start a session.
+// Cursor, Grok and Kilo are turned off whatever a stored row or a provider
+// probe says about them, so every row for any of them enters the machine
+// snapshot as the turned-off detection and cannot start a session.
 function withTurnedOffProviders(providers: readonly ProviderReadiness[]): ProviderReadiness[] {
   return providers.map((provider) => {
     const turnedOff = turnedOffProviderDetection(provider.id)
     return turnedOff ? { ...turnedOff, sessionCapable: false } : provider
   })
+}
+
+// What the agent registry tells a session of each turned-off provider. Each
+// ruling has its own switch, so turning one back on leaves the other off.
+function turnedOffAgentProviders(): Record<string, UnavailableProvider> {
+  return {
+    ...(acpProvidersTurnedOff
+      ? Object.fromEntries(Object.entries(acpProviderNames).map(([provider, name]) => [provider, {
+        reason: acpProviderTurnedOffReason(name),
+        resumeRefusal: acpProviderTurnedOffResumeRefusal(name),
+      }]))
+      : {}),
+    ...(kiloTurnedOff ? { kilo: { reason: kiloTurnedOffReason, resumeRefusal: kiloTurnedOffResumeRefusal } } : {}),
+  }
 }
 
 function approvedRunKey(sessionId: string, turnId: string, itemId: string): string {
@@ -1991,7 +2007,7 @@ export class DomovoiDaemon {
       // version after a restart/upgrade. Keep provider readiness separately.
       this.#snapshot.machine = { ...initialSnapshot.machine, providers: this.#snapshot.machine.providers }
     }
-    // A row saved while Cursor or Grok could start sessions is not served,
+    // A row saved while Cursor, Grok or Kilo could start sessions is not served,
     // even until the first probe finishes or if it fails. The next write of
     // the snapshot stores the turned-off row in its place.
     this.#snapshot.machine.providers = withTurnedOffProviders(this.#snapshot.machine.providers)
@@ -2021,15 +2037,10 @@ export class DomovoiDaemon {
           "cursor-agent": createCursorAgentAdapter(),
           grok: createGrokAgentAdapter(),
         }),
-        kilo: new KiloSdkAdapter(),
+        ...(kiloTurnedOff ? {} : { kilo: new KiloSdkAdapter() }),
         opencode: new OpenCodeSdkAdapter(),
       },
-      acpProvidersTurnedOff
-        ? Object.fromEntries(Object.entries(acpProviderNames).map(([provider, name]) => [provider, {
-          reason: acpProviderTurnedOffReason(name),
-          resumeRefusal: acpProviderTurnedOffResumeRefusal(name),
-        }]))
-        : {},
+      turnedOffAgentProviders(),
     )
     this.#workspaceService = options.workspaceService ?? new GitWorkspaceService(
       options.worktreeRoot ?? join(this.#profileDirectory, "worktrees"),
@@ -3675,7 +3686,7 @@ export class DomovoiDaemon {
   async #refreshProviderReadiness(): Promise<void> {
     const sessionProviders = new Set(this.#agents.providers())
     // Normalised before the rows are saved, broadcast or returned: an
-    // injected probe need not know that Cursor and Grok are turned off.
+    // injected probe need not know that Cursor, Grok and Kilo are turned off.
     const providers = withTurnedOffProviders((await this.#providerProbe!.inspect()).map((provider) => ({
       ...provider,
       sessionCapable: sessionProviders.has(provider.id),

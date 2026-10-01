@@ -107,7 +107,9 @@ describe("CliProviderProbe", () => {
       throw Object.assign(new Error("missing"), { code: "ENOENT" })
     }) satisfies ProviderCommandRunner
 
-    const providers = await new CliProviderProbe(run).inspect()
+    // Kilo is turned off by default (kilo-turned-off.test.ts); this checks
+    // how its readiness is read when it is turned back on.
+    const providers = await new CliProviderProbe(run, { kiloTurnedOff: false }).inspect()
 
     expect(providers.find((provider) => provider.id === "claude-code")).toMatchObject({
       status: "auth-required",
@@ -164,7 +166,7 @@ describe("CliProviderProbe", () => {
       throw Object.assign(new Error("missing"), { code: "ENOENT" })
     }) satisfies ProviderCommandRunner
 
-    const providers = await new CliProviderProbe(run).inspect()
+    const providers = await new CliProviderProbe(run, { kiloTurnedOff: false }).inspect()
 
     expect(providers.find((provider) => provider.id === "opencode")).toEqual({
       id: "opencode",
