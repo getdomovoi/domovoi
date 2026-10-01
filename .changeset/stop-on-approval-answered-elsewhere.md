@@ -17,7 +17,9 @@ restarts its provider thread, which starts a new one. The daemon now starts the 
 Kilo servers itself, on POSIX under a keeper that holds their process group, and starts no
 other server for that provider until a stop has confirmed the old one's processes are gone; a
 server it cannot confirm gone is stopped again on each new message, which is refused with
-plain recovery steps until the processes are gone or the person restarts Domovoi. A permission
+plain recovery steps until the processes are confirmed gone or the person restarts Domovoi. On
+Windows a stop is confirmed only by a successful `taskkill /T` while the server's first process
+runs, followed by its exit; a first process that exits before that leaves the stop unconfirmed. A permission
 answer with no outcome within 10 seconds counts as unknown. The session view tells
 the person to review the session's changes, because the server lets the approved call run
 before the daemon hears of the reply.
