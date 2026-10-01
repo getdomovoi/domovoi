@@ -28,6 +28,19 @@ WSL 2 explicitly, configures the disposable guest to mount Windows drives under
 configuration, then executes `uname -r` inside it. A working `wsl.exe` or an
 installed WSL 1 distribution is not sufficient. The kernel must identify WSL 2.
 
+WSL 2 stops a distribution once no `wsl.exe` session is attached to it
+(`instanceIdleTimeout`), whatever still runs inside the guest. The job first
+kept the guest up with a backgrounded `sleep` from a finished `--exec` call.
+On 2026-09-30 that guest stopped between the runtime phase and the proofs'
+`Running` check three times. After the kernel check, the runner now starts one
+attached `wsl.exe -d <name> -u root --exec sh -c 'echo <marker> && exec sleep <n>'`
+child and waits for the marker under the provisioning deadline. `<n>` is the
+sum of the remaining phase budgets in seconds, so even an orphaned guest
+process ends. The proof phase refuses to start if that child has already
+exited, and names its exit status and output instead of a `Stopped` guest.
+The stopped-distro proof terminates the guest on purpose, which ends the
+child; nothing restarts it.
+
 The native test process receives the exact required distro name. It must find
 that distro running under WSL 2, rather than selecting some other running guest.
 The report must contain exactly fifteen named proofs: six discovery, four
@@ -87,7 +100,10 @@ publishing an endpoint or any daemon log. Keeping the invocation attached made
 startup observable and let all ten proofs run. This is not a proof of detached
 shell startup or guest service supervision.
 
-Cleanup runs after success and failure, with its own deadline. It terminates and
+Cleanup runs after success and failure, with its own deadline. It first kills
+the keep-alive child and waits at most 10 seconds of that deadline for it to
+exit; a child that survives is a cleanup error, and the guest is still removed.
+It then terminates and
 unregisters only this invocation's UUID distro and deletes only its staging
 directory. Unregistering destroys the disposable guest's files. No existing
 distro, runner-wide `wsl --shutdown`, profile or credential is touched. Cleanup
@@ -103,7 +119,8 @@ on destruction of the ephemeral runner VM for final cleanup.
 - Pinned Node download and locked guest dependencies: 5-minute total deadline.
 - Native proofs: 4-minute total deadline.
 - Failed-proof report diagnostics: a separate 5-second deadline.
-- Cleanup: 1-minute total deadline, shared by its commands.
+- Cleanup: 1-minute total deadline, shared by its commands. Stopping the
+  keep-alive child may use at most 10 seconds of it.
 - Entire job: 25-minute hard cap, including checkout and tool setup. The combined
   provisioning/proof command has a 16-minute step cap.
 

@@ -42,7 +42,7 @@
     "react-native-worklets": "0.10.1"
   },
   "devDependencies": {
-    "@jest/globals": "^30.5.0",
+    "@jest/globals": "^30.5.2",
     "@react-native/jest-preset": "0.86.3",
     "@testing-library/react-native": "^14.0.1",
     "@types/node": "^26.4.0",

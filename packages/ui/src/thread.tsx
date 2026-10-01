@@ -806,8 +806,9 @@ export function Thread({
   const [recoveryError, setRecoveryError] = useState("")
   const [runtimeError, setRuntimeError] = useState("")
   // A model change that could not carry the effort moved it to the new
-  // model's default. The effort menu says so until a level is picked or the
-  // runtime moves on.
+  // model's default, or to the nearest level when the model names no
+  // default. The effort menu says so until a level is picked or the runtime
+  // moves on. Whether it moved to the default is read at render.
   const [effortDropped, setEffortDropped] = useState<{ sessionId: string, from: string, to: string }>()
   const [restartPending, setRestartPending] = useState(false)
   const [restartError, setRestartError] = useState("")
@@ -1154,9 +1155,12 @@ export function Thread({
       await onSetRuntime(runtime)
       // As the design does: a model change sets or clears the note, a picked
       // level clears it, and a mode change leaves it.
+      // A level carried by its shared word under another value did not move.
       const modelChanged = runtime.provider !== previous.provider || runtime.model !== previous.model
-      if (modelChanged && previousShown && runtime.reasoning !== previous.reasoning) {
-        setEffortDropped({ sessionId, from: effortName(previous.provider, previous.reasoning), to: effortName(runtime.provider, runtime.reasoning) })
+      const from = effortName(previous.provider, previous.reasoning)
+      const to = effortName(runtime.provider, runtime.reasoning)
+      if (modelChanged && previousShown && from !== to) {
+        setEffortDropped({ sessionId, from, to })
       } else if (modelChanged || runtime.reasoning !== previous.reasoning) {
         setEffortDropped(undefined)
       }
@@ -1168,8 +1172,13 @@ export function Thread({
   }
 
   const effortModel = providerModels?.provider !== active.runtime.provider ? undefined : providerModels.models.find((model) => model.provider === active.runtime.provider && model.id === active.runtime.model)
+  // The rule moves a level to the model's default whenever the model names
+  // one among its levels, and to the nearest level only when it names none,
+  // so the level sits on the model's default exactly when it moved there.
+  // Read here from the session's model, because updateRuntime gets only the
+  // new runtime and a harness switch's model is not in its model list.
   const effortDroppedHere = effortDropped?.sessionId === active.id && effortDropped.to === effortName(active.runtime.provider, active.runtime.reasoning)
-    ? { from: effortDropped.from, to: effortDropped.to }
+    ? { from: effortDropped.from, to: effortDropped.to, toDefault: effortModel?.defaultReasoningEffort === active.runtime.reasoning }
     : undefined
 
   const forkRuntime = async (runtime: Runtime, checkpointId: string, requestId: string) => {
