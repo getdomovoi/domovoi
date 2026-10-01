@@ -567,15 +567,22 @@ code or settings the repository brings:
   it starts, and the daemon has no setting that removes it; a tool server of yours could use it to
   answer that server's approval prompts. Kilo 7.8 removes it from a tool server's environment.
   The daemon reads the directory's tool servers, tools and agent rules immediately before it sends
-  each prompt. A tool server added after that, while the turn runs, is not in what it read; adding
-  one takes the embedded server's password, which the daemon holds and, with OpenCode, every
-  local tool server it starts receives. A tool such a server adds asks before it runs, like any
-  tool that is not the server's own, unless its name is one of OpenCode's or Kilo's own
-  permissions that the embedded configuration allows (a server named `plan` with a tool named
-  `enter` makes `plan_enter`). The daemon checks each tool call as it appears: a call to a tool it
-  did not see before the prompt, a tool server added or removed or a change in any server's
+  each prompt, a steer included, and refuses the prompt when that read fails a check below. Only
+  the read before the prompt that starts a turn sets what the turn's tool calls are held to; a
+  steer's read never changes it, and the turn keeps it until it ends. A tool server added after
+  that read, while the turn runs, is not in it; adding one takes the embedded server's password,
+  which the daemon holds and, with OpenCode, every local tool server it starts receives. A tool
+  such a server adds asks before it runs, like any tool that is not the server's own, unless its
+  name is one of OpenCode's or Kilo's own permissions that the embedded configuration allows (a
+  server named `plan` with a tool named `enter` makes `plan_enter`). The daemon checks each tool
+  call in the turn, a steer's included, as it appears: a call to a tool that was not in the read
+  before the turn's first prompt, a tool server added or removed or a change in any server's
   status (connected, failed and the like, read again on each call), or a failed read aborts the
-  run and then ends the turn. The status answer names nothing else about a server, so one replaced
+  run and then ends the turn. The server answers a prompt and ends a run independently, so a turn
+  can end while a steer is being sent; the server then runs that steer outside the turn, and the
+  daemon aborts it, waits for the abort and reports the steer as failed. A tool call or tool
+  approval request from a run while no turn is active, or from a subagent whose turn has ended,
+  aborts that run. The status answer names nothing else about a server, so one replaced
   under the same name with the same status is not seen; its tools still ask, since a server whose
   name could make one of the allowed names is refused before the prompt. The next prompt refuses a
   server whose tools could be named like OpenCode's or Kilo's own. This check is a stated limit,
