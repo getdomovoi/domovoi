@@ -71,10 +71,8 @@ has the printed text and failure handling.
   removal refuses, keeping the task and configuration. Windows therefore gets
   crash detection and fail-closed removal, not crash restart, until a job
   object contains the daemon's tree (the follow-up). Evidence: mocked Task
-  Scheduler, supervisor and process tests on every leg, and Windows-leg-only
-  tests with real creation times, a real `taskkill` of a test child, and the
-  real loop recording a crash as `tree-unconfirmed` (not yet run on Windows
-  when this was written). The `native` WSL workflow exercises
+  Scheduler, supervisor and process tests on every leg; no test runs a real
+  PowerShell, `taskkill` or `schtasks`. The `native` WSL workflow exercises
   none of it beyond the shared loop's Linux path. Owed: the job object and a
   native proof that a registered supervised task restarts a crashed daemon
   and exhausts, removal of a live supervised task,
