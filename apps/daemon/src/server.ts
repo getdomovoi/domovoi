@@ -121,6 +121,7 @@ import {
 } from "./approval-settlement.js"
 import {
   boundedQueuedSendReason,
+  SavedProjectStateError,
   SqliteWorkspaceStore,
   type QueuedSessionSendTransition,
   type StoredQueuedSessionSend,
@@ -8960,6 +8961,16 @@ export class DomovoiDaemon {
             )
             return
           }
+          // The saved row is read before anything stops, so a row this
+          // daemon must not open is refused with the open project still
+          // running as it was (ruling Q259).
+          let restored: ReturnType<NonNullable<WorkspaceStore["loadProject"]>>
+          try {
+            restored = this.#store.loadProject?.(projectId, this.#snapshot.machine)
+          } catch (error) {
+            if (!(error instanceof SavedProjectStateError)) throw error
+            throw new PublicRpcError(invalidParams, error.message)
+          }
           this.#closeAllTerminals()
           for (const session of this.#snapshot.sessions) {
             this.#flushCommandOutputStreams(session.id)
@@ -8967,7 +8978,6 @@ export class DomovoiDaemon {
           await this.#suspendProjectSessions()
           this.#commandOutputRedactors.clear()
           if (this.#snapshot.project) await this.#persistSnapshot()
-          const restored = this.#store.loadProject?.(projectId, this.#snapshot.machine)
           this.#snapshot.project = {
             id: projectId,
             machineId: this.#snapshot.machine.id,

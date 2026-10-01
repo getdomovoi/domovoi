@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { once } from "node:events"
 import { copyFile, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -16,7 +17,12 @@ import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { DomovoiDaemon, workspaceSnapshotForClient } from "./server.js"
-import { MultiProjectWorkspaceStateError, SqliteWorkspaceStore } from "./store.js"
+import {
+  MultiProjectWorkspaceStateError,
+  SavedProjectStateError,
+  savedProjectStateRefusal,
+  SqliteWorkspaceStore,
+} from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import type { WorkspaceService } from "./workspace.js"
 
@@ -196,6 +202,131 @@ describe("stored state with several active projects", () => {
   })
 })
 
+// A daemon on a stored database, with a repository inspection that takes any
+// path as the repository root.
+async function openDaemon(databasePath: string) {
+  const workspaceService = {
+    inspect: async (path: string) => ({ root: path, name: path.split("/").at(-1), branch: "main", head: "a".repeat(40) }),
+  } as unknown as WorkspaceService
+  const daemon = new DomovoiDaemon({
+    port: 0,
+    store: new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine)),
+    workspaceService,
+    artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    errorSink: vi.fn(),
+  })
+  daemons.push(daemon)
+  const address = await daemon.start()
+  const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+  sockets.push(socket)
+  await once(socket, "open")
+  let id = 0
+  const rpc = (method: string, params: Record<string, unknown>) => new Promise<Record<string, unknown>>((resolve) => {
+    const requestId = ++id
+    const receive = (data: WebSocket.RawData) => {
+      const message = JSON.parse(String(data)) as Record<string, unknown>
+      if (message.id !== requestId) return
+      socket.off("message", receive)
+      resolve(message)
+    }
+    socket.on("message", receive)
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+  })
+  expect(await rpc("system.hello", { client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken }))
+    .not.toHaveProperty("error")
+  const openProject = async (path: string) => {
+    const opened = await rpc("project.open", { path, client: "desktop" })
+    const confirmation = (opened.error as { data?: { kind?: string } } | undefined)?.data
+    if (confirmation?.kind !== "project-switch-confirmation") return opened
+    return rpc("project.open", { path, client: "desktop", confirmation })
+  }
+  return { daemon, rpc, openProject }
+}
+
+// The id the daemon derives from a repository root.
+function projectIdFor(root: string): string {
+  return `project-${createHash("sha256").update(root).digest("hex").slice(0, 12)}`
+}
+
+function projectRow(project: Project, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    project,
+    sessions: [],
+    activeSessionId: null,
+    approvals: [],
+    approvalRules: [],
+    thread: [],
+    artifacts: [],
+    workingPlans: [],
+    annotations: [],
+    ...extra,
+  }
+}
+
+function insertProjectRow(databasePath: string, projectId: string, row: Record<string, unknown>): void {
+  const database = new DatabaseSync(databasePath)
+  database.prepare("INSERT INTO workspace_projects (project_id, state, updated_at) VALUES (?, ?, ?)")
+    .run(projectId, JSON.stringify(row), "2026-10-01T00:00:00.000Z")
+  database.close()
+}
+
+// Ruling Q259: a saved project row belongs to its own project only. A row
+// holding another project's records, or listing another project, is what a
+// newer Domovoi wrote, and is refused rather than opened or salvaged.
+describe("a saved project row", () => {
+  const rootB = "/code/b"
+  const idB = projectIdFor(rootB)
+  const savedB: Project = { id: idB, machineId: machine.id, name: "b", path: rootB, branch: "main" }
+  const savedC: Project = { id: "project-c", machineId: machine.id, name: "c", path: "/code/c", branch: "main" }
+  const strayRows: ReadonlyArray<[string, Record<string, unknown>]> = [
+    ["a list naming another project and its session", projectRow(savedB, { projects: [savedB, savedC], sessions: [sessionIn(savedC.id)] })],
+    ["another project's session, with no list", projectRow(savedB, { sessions: [sessionIn(savedC.id)] })],
+    ["another project's approval rule", projectRow(savedB, { approvalRules: [ruleIn(savedC.id)] })],
+    ["another project under this row's key", projectRow(savedC, { sessions: [sessionIn(savedC.id)] })],
+  ]
+
+  it.each(strayRows)("is refused when read: %s", async (_label, row) => {
+    const { databasePath } = await storedState({ ...base(), sessions: [sessionIn(projectA.id)] })
+    insertProjectRow(databasePath, idB, row)
+    const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine))
+    try {
+      expect(() => store.loadProject(idB)).toThrow(SavedProjectStateError)
+    } finally { await store.close() }
+  })
+
+  it("still reads a row that holds its own project's records", async () => {
+    const { databasePath } = await storedState({ ...base(), sessions: [sessionIn(projectA.id)] })
+    insertProjectRow(databasePath, idB, projectRow(savedB, { sessions: [sessionIn(idB)], approvalRules: [ruleIn(idB)] }))
+    const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine))
+    try {
+      expect(store.loadProject(idB)?.sessions.map((session) => session.projectId)).toEqual([idB])
+    } finally { await store.close() }
+  })
+
+  it("is refused by project.open, which leaves the running state as it was", async () => {
+    const { databasePath } = await storedState({ ...base(), sessions: [sessionIn(projectA.id)] })
+    insertProjectRow(databasePath, idB, strayRows[0]![1])
+    const { rpc, openProject } = await openDaemon(databasePath)
+    const before = (await rpc("workspace.get", {})).result
+    const refused = await openProject(rootB)
+    expect(refused.error).toMatchObject({ code: -32602, message: savedProjectStateRefusal })
+    expect((await rpc("workspace.get", {})).result).toEqual(before)
+  })
+
+  it("is not copied into the database that replaces a damaged one", async () => {
+    const { databasePath } = await storedState({ ...base(), sessions: [sessionIn(projectA.id)] })
+    insertProjectRow(databasePath, idB, strayRows[0]![1])
+    insertProjectRow(databasePath, "project-d", projectRow({ ...savedC, id: "project-d", path: "/code/d" }))
+    await damageAuditPage(databasePath)
+    const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine))
+    try {
+      expect(store.recovery).toMatchObject({ kind: "database", workspaceKept: true })
+      expect(store.loadProject(idB)).toBeUndefined()
+      expect(store.loadProject("project-d")?.project.id).toBe("project-d")
+    } finally { await store.close() }
+  })
+})
+
 describe("a stored list naming only the open project", () => {
   it("is dropped at load, so opening another project saves no stale list", async () => {
     const { databasePath } = await storedState({ ...base(), projects: [projectA], projectCap: 1, sessions: [sessionIn(projectA.id)] })
@@ -205,38 +336,8 @@ describe("a stored list naming only the open project", () => {
     expect(loaded).not.toHaveProperty("projects")
     expect(loaded).not.toHaveProperty("projectCap")
 
-    const workspaceService = {
-      inspect: async (path: string) => ({ root: path, name: path.split("/").at(-1), branch: "main", head: "a".repeat(40) }),
-    } as unknown as WorkspaceService
-    const daemon = new DomovoiDaemon({
-      port: 0,
-      store: new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine)),
-      workspaceService,
-      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
-      errorSink: vi.fn(),
-    })
-    daemons.push(daemon)
-    const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
-    sockets.push(socket)
-    await once(socket, "open")
-    let id = 0
-    const rpc = (method: string, params: Record<string, unknown>) => new Promise<Record<string, unknown>>((resolve) => {
-      const requestId = ++id
-      const receive = (data: WebSocket.RawData) => {
-        const message = JSON.parse(String(data)) as Record<string, unknown>
-        if (message.id !== requestId) return
-        socket.off("message", receive)
-        resolve(message)
-      }
-      socket.on("message", receive)
-      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
-    })
-    expect(await rpc("system.hello", { client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken }))
-      .not.toHaveProperty("error")
-    let opened = await rpc("project.open", { path: "/code/c", client: "desktop" })
-    const confirmation = (opened.error as { data?: unknown } | undefined)?.data
-    if (confirmation) opened = await rpc("project.open", { path: "/code/c", client: "desktop", confirmation })
+    const { daemon, openProject } = await openDaemon(databasePath)
+    const opened = await openProject("/code/c")
     expect(opened).not.toHaveProperty("error")
     const result = opened.result as WorkspaceSnapshot
     expect(result.project?.path).toBe("/code/c")

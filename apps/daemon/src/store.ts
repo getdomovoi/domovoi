@@ -487,6 +487,27 @@ function keepsSeveralProjects(value: unknown): boolean {
     .some((record) => isRecord(record) && another(record.projectId))
 }
 
+// A saved project row holds that project's records only: its own project
+// under its own key, no list naming another, and no session or approval rule
+// of another. Anything else is what a newer Domovoi that keeps several
+// projects open wrote, and is neither opened nor salvaged (ruling Q259).
+export const savedProjectStateRefusal =
+  "The saved state for this project holds another project's sessions or rules, as a newer Domovoi that keeps several projects open writes it. It was left as it is. Open this project with that version."
+
+export class SavedProjectStateError extends Error {
+  constructor(readonly projectId: string) {
+    super(savedProjectStateRefusal)
+    this.name = "SavedProjectStateError"
+  }
+}
+
+function holdsOneProject(value: unknown, projectId: string): boolean {
+  return isRecord(value)
+    && isRecord(value.project)
+    && value.project.id === projectId
+    && !keepsSeveralProjects(value)
+}
+
 function refuseSeveralProjects(path: string, value: unknown): MultiProjectWorkspaceStateError {
   const stored = isRecord(value) && typeof value.protocolVersion === "string" ? value.protocolVersion : protocolVersion
   return new MultiProjectWorkspaceStateError(path, stored)
@@ -719,8 +740,10 @@ function salvageWorkspace(
   for (const project of projects) {
     if (project.project_id === migrated.snapshot.project?.id) continue
     try {
+      const state = JSON.parse(project.state) as unknown
+      if (!holdsOneProject(state, project.project_id)) continue
       const candidate = {
-        ...JSON.parse(project.state) as Record<string, unknown>,
+        ...state as Record<string, unknown>,
         protocolVersion,
         machine: migrated.snapshot.machine,
         skillEnablements: [],
@@ -1421,6 +1444,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       .get(projectId) as StoredProjectWorkspace | undefined
     if (!row) return undefined
     const stored = JSON.parse(row.state) as Record<string, unknown>
+    if (!holdsOneProject(stored, projectId)) throw new SavedProjectStateError(projectId)
     const candidate = {
       ...stored,
       protocolVersion,

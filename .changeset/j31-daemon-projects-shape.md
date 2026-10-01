@@ -22,3 +22,10 @@ Domovoi that keeps several projects open, and this daemon keeps one project open
 left as it is and this daemon did not start. Run the newer Domovoi again.", and leaves the stored
 rows as they are. A stored list naming only the open project is dropped when the state is read, so
 it is not saved again after another project opens.
+
+A saved project's own row must hold that project only: its own project under its own key, no list
+naming another, and no session or approval rule of another. `project.open` refuses any other row
+with "The saved state for this project holds another project's sessions or rules, as a newer
+Domovoi that keeps several projects open writes it. It was left as it is. Open this project with
+that version." It reads the row before stopping anything, so the open project keeps running as it
+was. Salvage of a damaged database does not copy such a row into the replacement.
