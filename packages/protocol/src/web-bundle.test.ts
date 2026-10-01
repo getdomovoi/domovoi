@@ -110,6 +110,19 @@ describe("web bundle manifest", () => {
     expect(parseWebBundleManifest(value)).toEqual({ success: false, reason: "path-extension", path: "__proto__" })
     expect(webBundleManifestSchema.safeParse(value).success).toBe(false)
   })
+
+  it.each([
+    [["index.html", "Index.html"], "Index.html"],
+    [["index.html", "assets/a.js", "ASSETS/a.js"], "ASSETS/a.js"],
+    [["index.html", "assets/App.js", "assets/app.JS"], "path-extension"],
+  ])("refuses paths %j that name one file under ASCII case folding", (paths, expected) => {
+    const value = manifest(Object.fromEntries(paths.map((path) => [path, { sha256: digest, bytes: 1 }])))
+    // A path the other rules refuse is reported for that rule first.
+    expect(parseWebBundleManifest(value)).toEqual(expected === "path-extension"
+      ? { success: false, reason: "path-extension", path: "assets/app.JS" }
+      : { success: false, reason: "path-duplicate", path: expected })
+    expect(webBundleManifestSchema.safeParse(value).success).toBe(false)
+  })
 })
 
 describe("web bundle compatibility", () => {
@@ -137,8 +150,39 @@ describe("web bundle paths", () => {
     "rpc.js",
     "healthz.html",
     "assets/artifacts/a.js",
+    "console.js",
+    "auxiliary.css",
+    "nul-mark.svg",
+    "icons/con-1.png",
+    "COM10.js",
+    "LPT.js",
+    "comx/a.js",
+    "assets.v2/a.js",
   ])("accepts %s", (path) => {
     expect(webBundlePathRefusal(path)).toBeUndefined()
+  })
+
+  // Win32 drops a trailing period and reads a device name with any extension
+  // as the device, so these name another file or a device there.
+  it.each([
+    "index.html.",
+    "assets./a.js",
+    "assets../a.js",
+    "CON",
+    "con.js",
+    "Con.min.js",
+    "PRN.html",
+    "aux.css",
+    "assets/nul.png",
+    "NUL/a.js",
+    "com1.js",
+    "COM9.css",
+    "Com0.js",
+    "lpt1.js",
+    "LPT9/a.js",
+    "lpt0.svg",
+  ])("refuses %s as malformed on some file system", (path) => {
+    expect(webBundlePathRefusal(path)).toBe("path-malformed")
   })
 
   it.each([

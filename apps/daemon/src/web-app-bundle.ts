@@ -66,6 +66,7 @@ export type WebAppBundleInvalidReason =
   | "directory-writable"
   | "size-mismatch"
   | "digest-mismatch"
+  | "duplicate-file"
 
 // path, when set, is relative to the root as the manifest writes it, so a
 // report can name the file without a home directory in it.
@@ -147,6 +148,9 @@ class BundleReader {
   readonly #root: string
   readonly #rootStats: BigIntStats
   readonly #directories = new Map<string, BigIntStats>()
+  // Device and inode of every file read, so two listed paths that reach one
+  // file through an alias the grammar cannot see are refused.
+  readonly #files = new Set<string>()
 
   constructor(fileSystem: WebAppBundleFileSystem, root: string, rootStats: BigIntStats) {
     this.#fileSystem = fileSystem
@@ -207,6 +211,9 @@ class BundleReader {
       const opened = await handle.stat({ bigint: true })
       if (!opened.isFile() || !sameEntry(opened, entry)) throw new Refusal("file-changed", listed)
       if (writableByOthers(opened)) throw new Refusal("file-writable", listed)
+      const identity = `${opened.dev}:${opened.ino}`
+      if (this.#files.has(identity)) throw new Refusal("duplicate-file", listed)
+      this.#files.add(identity)
       let bytes: Buffer
       if ("size" in expected) {
         if (opened.size !== BigInt(expected.size)) throw new Refusal("size-mismatch", listed)

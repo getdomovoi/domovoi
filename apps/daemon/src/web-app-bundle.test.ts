@@ -208,6 +208,10 @@ describe("refusals", () => {
     ["path-reserved", "healthz"],
     ["path-reserved", "domovoi-web.json"],
     ["path-extension", "notes.txt"],
+    ["path-malformed", "assets./a.js"],
+    ["path-malformed", "con.js"],
+    ["path-malformed", "icons/LPT1.png"],
+    ["path-duplicate", "Index.html"],
   ])("refuses %s for %s, before reading any file", async (reason, path) => {
     const root = await bundle()
     await writeManifest(root, {
@@ -225,6 +229,22 @@ describe("refusals", () => {
   it("refuses a manifest past the file size bound", async () => {
     const root = await bundle(defaultFiles, { files: { "index.html": { sha256: sha256("x"), bytes: maximumWebBundleFileBytes + 1 } } })
     expect(refusal(await load(root))).toEqual({ state: "invalid", reason: "file-too-large", path: "index.html" })
+  })
+
+  it("refuses two listed paths that open one file", async () => {
+    // An alias the grammar cannot see (a mount, a short name): the second
+    // path is made to reach the first path's file through the seam.
+    const content = defaultFiles["index.html"]!
+    const root = await bundle({ "index.html": content, "copy.html": content })
+    const real = await realpath(root)
+    const alias = (path: string) => path === join(real, "index.html") ? join(real, "copy.html") : path
+    const fileSystem: WebAppBundleFileSystem = {
+      realpath,
+      lstat: async (path, options) => await lstat(alias(path), options),
+      open: async (path, flags) => await open(alias(path), flags),
+    }
+    expect(refusal(await load(root, { fileSystem }))).toEqual({ state: "invalid", reason: "duplicate-file", path: "index.html" })
+    expect((await load(root)).state).toBe("loaded")
   })
 
   it("refuses a listed file that is missing", async () => {

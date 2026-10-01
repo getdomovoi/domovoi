@@ -48,8 +48,18 @@ const reservedFirstSegments = new Set(["rpc", "healthz", "artifacts"])
 // One segment: ASCII letters, digits, "_", "-" and ".", not starting with ".".
 // That leaves out ".", "..", hidden files, "%" escapes, backslashes, NUL,
 // spaces, colons and every non-ASCII character, so a listed path cannot
-// traverse or alias by construction, before any file system is consulted.
+// traverse by construction, before any file system is consulted.
 const segmentPattern = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*(?![\s\S])/
+
+// Win32 drops a segment's trailing period and reads a device basename with
+// any extension as the device (learn.microsoft.com, "Naming Files, Paths, and
+// Namespaces"), so either would name something other than the file listed.
+// That page lists COM0 and LPT0 as well.
+const windowsDevicePattern = /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|(?![\s\S]))/i
+
+function portableSegment(segment: string): boolean {
+  return segmentPattern.test(segment) && !segment.endsWith(".") && !windowsDevicePattern.test(segment)
+}
 
 export type WebBundlePathRefusal = "path-malformed" | "path-reserved" | "path-extension"
 
@@ -64,7 +74,7 @@ export function webBundleContentType(path: string): string | undefined {
 export function webBundlePathRefusal(path: string): WebBundlePathRefusal | undefined {
   if (path.length === 0 || path.length > maximumWebBundlePathLength) return "path-malformed"
   const segments = path.split("/")
-  if (!segments.every((segment) => segmentPattern.test(segment))) return "path-malformed"
+  if (!segments.every(portableSegment)) return "path-malformed"
   if (path === webBundleManifestFileName || reservedFirstSegments.has(segments[0]!.toLowerCase())) return "path-reserved"
   if (webBundleContentType(path) === undefined) return "path-extension"
   return undefined
@@ -98,6 +108,7 @@ const webBundlePathSchema = z.string().refine((path) => webBundlePathRefusal(pat
 export type WebBundleManifestRefusal =
   | "manifest-schema"
   | WebBundlePathRefusal
+  | "path-duplicate"
   | "missing-index"
   | "too-many-files"
   | "file-too-large"
@@ -113,6 +124,14 @@ function filesRefusal(files: Record<string, { bytes: number }>): FilesRefusal | 
   for (const path of paths) {
     const refused = webBundlePathRefusal(path)
     if (refused !== undefined) return { reason: refused, path }
+  }
+  // On a case-insensitive file system two spellings open one file. The
+  // grammar above is ASCII only, so ASCII folding covers every spelling.
+  const folded = new Set<string>()
+  for (const path of paths) {
+    const key = path.toLowerCase()
+    if (folded.has(key)) return { reason: "path-duplicate", path }
+    folded.add(key)
   }
   let total = 0
   for (const path of paths) {
