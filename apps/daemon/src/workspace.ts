@@ -13,7 +13,7 @@ import {
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
 import {
-  carriedRemoteUrl, checkOutIsolated, IndexLockHeldError, openIsolatedGit, publishUnderIndexLock, runGitProcess, type IsolatedGit,
+  carriedRemoteUrl, checkOutIsolated, IndexLockHeldError, IndexPublishedNotDurableError, openIsolatedGit, publishUnderIndexLock, runGitProcess, type IsolatedGit,
 } from "./isolated-checkout.js"
 import {
   repositoryFilterGate,
@@ -1909,6 +1909,7 @@ export class GitWorkspaceService implements WorkspaceService {
       // An absent index lists no entry, as one seeded from nothing does.
       await publishUnderIndexLock(sharedIndex, () => readFile(index), async () => await entries(sharedIndex) === seeded)
     } catch (error) {
+      if (error instanceof IndexPublishedNotDurableError) throw new Error(`Domovoi made checkpoint ${commit} and put the worktree's index at it. ${error.message}`, { cause: error })
       throw new Error(`Domovoi made checkpoint ${commit}, but could not update the worktree's index to it: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
     }
     return { commit, changedFiles }

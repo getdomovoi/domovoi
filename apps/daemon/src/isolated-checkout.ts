@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcess, type PromiseWithChild } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { promises as fs } from "node:fs"
-import { isAbsolute, join, relative, resolve } from "node:path"
+import { constants, promises as fs } from "node:fs"
+import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
 
 import { publishFileDurably } from "@getdomovoi/credential-store"
@@ -626,11 +626,21 @@ export class IndexLockHeldError extends Error {
 // not remove is named in the error, beside whatever failed first. On POSIX
 // the rename is synced through its directory; Windows gives no such promise
 // for a rename (publishFileDurably).
+//
+// Once the rename is done the lock's name is no longer this function's:
+// another Git can take it at once, so it is never removed after that, and a
+// failure then (the directory flush) is an index published with its
+// durability unconfirmed (ruling Q281). Before the rename the lock is this
+// function's own, recognised by its file: it is removed and the directory
+// flushed, so a power loss cannot bring it back.
 export async function publishUnderIndexLock(
   path: string,
   bytes: () => Promise<Buffer>,
   proceed: () => Promise<boolean> = async () => true,
+  io: { publish?: typeof publishFileDurably; syncDirectory?: (directory: string) => Promise<void> } = {},
 ): Promise<"published" | "locked" | "declined"> {
+  const publish = io.publish ?? publishFileDurably
+  const flush = io.syncDirectory ?? syncDirectory
   const lock = `${path}.lock`
   let handle: fs.FileHandle
   try {
@@ -639,31 +649,72 @@ export async function publishUnderIndexLock(
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return "locked"
     throw error
   }
-  let outcome: "published" | "declined" = "declined"
+  let ours: { dev: number; ino: number } | undefined
+  let renamed = false
+  let declined = false
   let failure: { error: unknown } | undefined
   try {
+    ours = await handle.stat()
     if (await proceed()) {
       await handle.writeFile(await bytes())
       await handle.sync()
       await handle.close()
-      await publishFileDurably(lock, path)
-      outcome = "published"
+      await publish(lock, path)
+      renamed = true
+    } else {
+      declined = true
     }
   } catch (error) {
     failure = { error }
+    // Whether the rename happened before the failure: the index is then this
+    // function's file.
+    if (ours !== undefined) {
+      const now = await fs.lstat(path).catch(() => undefined)
+      renamed = now !== undefined && now.dev === ours.dev && now.ino === ours.ino
+    }
   } finally {
     await handle.close().catch(() => undefined)
   }
-  if (outcome !== "published") {
-    const removed = await fs.unlink(lock).then(() => true, (error: NodeJS.ErrnoException) => error.code === "ENOENT")
-    if (!removed) {
-      const left = `Domovoi could not remove its own index lock at ${lock}. Remove it once no Git command is running in this worktree.`
-      if (failure === undefined) throw new Error(left)
-      throw new AggregateError([failure.error], `${failure.error instanceof Error ? failure.error.message : String(failure.error)}. ${left}`)
-    }
+  if (renamed) {
+    if (failure === undefined) return "published"
+    throw new IndexPublishedNotDurableError(path, failure.error)
+  }
+  const message = (error: unknown) => error instanceof Error ? error.message : String(error)
+  const removed = await fs.unlink(lock).then(() => true, (error: NodeJS.ErrnoException) => error.code === "ENOENT")
+  if (!removed) {
+    const left = `Domovoi could not remove its own index lock at ${lock}. Remove it once no Git command is running in this worktree.`
+    if (failure === undefined) throw new Error(left)
+    throw new AggregateError([failure.error], `${message(failure.error)}. ${left}`)
+  }
+  try {
+    await flush(dirname(lock))
+  } catch (error) {
+    if (failure === undefined) throw error
+    throw new AggregateError([failure.error, error], `${message(failure.error)}. Removing its own index lock was not flushed: ${message(error)}`, { cause: error })
   }
   if (failure !== undefined) throw failure.error
-  return outcome
+  return declined ? "declined" : "published"
+}
+
+// The index is in place, but flushing its directory failed: a power loss
+// could still bring the old one back. Nothing is undone.
+export class IndexPublishedNotDurableError extends Error {
+  constructor(readonly path: string, cause: unknown) {
+    super(`Domovoi published the index at ${path}, but could not confirm it is durable: ${cause instanceof Error ? cause.message : String(cause)}`, { cause })
+    this.name = "IndexPublishedNotDurableError"
+  }
+}
+
+// Flushes a directory, so a rename or removal in it survives a power loss.
+// Windows gives no such call; there it does nothing (as publishFileDurably).
+async function syncDirectory(directory: string): Promise<void> {
+  if (process.platform === "win32") return
+  const handle = await fs.open(directory, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0))
+  try {
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
 }
 
 // Checks a new session worktree out of `commit` in an isolated Git directory

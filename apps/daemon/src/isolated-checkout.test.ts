@@ -4,6 +4,7 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/p
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { publishFileDurably } from "@getdomovoi/credential-store"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { gitTeardownTimeoutMs, publishUnderIndexLock, runGitProcess, windowsGitStop } from "./isolated-checkout.js"
@@ -171,8 +172,49 @@ describe("publishUnderIndexLock", () => {
     scratchDirectories.push(scratch)
     const path = join(scratch, "index")
     await writeFile(path, "old")
-    return { path, lock: `${path}.lock` }
+    return { scratch, path, lock: `${path}.lock` }
   }
+
+  // Once the rename is done the lock's name is free, and another Git can take
+  // it at once. A failure after the rename (the directory flush) never
+  // removes that name, and says the index was published with its durability
+  // unconfirmed (ruling Q281).
+  it("never removes the lock's name after its rename, and reports a failed flush as unconfirmed durability", async () => {
+    const { path, lock } = await file()
+    const publish = async (staging: string, target: string) => {
+      await publishFileDurably(staging, target)
+      await writeFile(lock, "another writer's", { flag: "wx" })
+      throw new Error("directory flush failed")
+    }
+
+    const failing = publishUnderIndexLock(path, async () => Buffer.from("new"), undefined, { publish })
+
+    await expect(failing).rejects.toThrow(`Domovoi published the index at ${path}, but could not confirm it is durable: directory flush failed`)
+    expect(await readFile(path, "utf8")).toBe("new")
+    expect(await readFile(lock, "utf8")).toBe("another writer's")
+  })
+
+  // Removing its own lock is flushed through the directory too, so a power
+  // loss cannot bring an empty lock back; a failed flush is reported.
+  it.each([
+    ["the check under the lock declines", async (): Promise<boolean> => false, async (): Promise<Buffer> => Buffer.from("new")],
+    ["writing fails", async (): Promise<boolean> => true, async (): Promise<Buffer> => { throw new Error("read failed") }],
+  ] as const)("flushes the directory after removing its own lock when %s", async (_label, proceed, bytes) => {
+    const { scratch, path, lock } = await file()
+    const flushed: string[] = []
+    const syncDirectory = async (directory: string) => {
+      await expect(lstat(lock)).rejects.toThrow()
+      flushed.push(directory)
+    }
+    await publishUnderIndexLock(path, bytes, proceed, { syncDirectory }).catch(() => undefined)
+    expect(flushed).toEqual([scratch])
+  })
+
+  it("reports a failed flush after removing its own lock", async () => {
+    const { path } = await file()
+    const syncDirectory = async () => { throw new Error("flush failed") }
+    await expect(publishUnderIndexLock(path, async () => Buffer.from("new"), async () => false, { syncDirectory })).rejects.toThrow("flush failed")
+  })
 
   it("publishes the bytes through its own lock and leaves no lock", async () => {
     const { path, lock } = await file()
