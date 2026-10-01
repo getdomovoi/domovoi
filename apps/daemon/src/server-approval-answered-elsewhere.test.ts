@@ -85,8 +85,9 @@ async function start() {
   } satisfies AgentAdapter
   const workspaceService = {
     inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(), restore: vi.fn(),
-    checkpoint: vi.fn(),
+    checkpoint: vi.fn(async () => ({ commit: "a".repeat(40), changedFiles: [] })),
     snapshot: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
+    archiveSessionWorkspace: vi.fn(async () => {}),
   } satisfies WorkspaceService
   const { append, auditLog } = recordingAuditLog()
   const daemon = new DomovoiDaemon({
@@ -176,6 +177,37 @@ describe("an approval answered outside Domovoi", () => {
     const again = await rpc("session.send", { sessionId, prompt: "go on", client: "desktop" })
     expect(again.error?.message).toBeUndefined()
     expect(provider.resumeThread).toHaveBeenCalledOnce()
+  })
+
+  // Codex review of #691 at a609034e, P1: the report waits behind an archive
+  // that drops the session's provider thread and makes it read-only. The
+  // incident is still recorded against the session the thread belonged to
+  // when the report arrived; only the stop itself is the archive's to make.
+  it("records the incident for a session archived while the report waited", async () => {
+    const { provider, rpc, snapshot, session, append, emit } = await start()
+    let releaseInterrupt!: () => void
+    provider.interruptTurn.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseInterrupt = resolve }))
+    const archived = rpc("session.archive", { sessionId, client: "desktop" })
+    await waitForDaemon(() => expect(provider.interruptTurn).toHaveBeenCalledOnce())
+
+    emit({ type: "approval-answered-elsewhere", threadId, turnId: "turn-billing", permissionId: "per_1", reply: "always" })
+    releaseInterrupt()
+    expect((await archived).error?.message).toBeUndefined()
+
+    await waitForDaemon(() => expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      action: "provider.approval-answered-elsewhere",
+      sessionId,
+      target: "per_1",
+    })))
+    const after = await snapshot()
+    expect(after.thread).toContainEqual(expect.objectContaining({
+      sessionId,
+      kind: "system",
+      body: "An approval in this session was answered outside Domovoi.",
+    }))
+    // The archive, not the report, decides how the session ends.
+    expect((await session()).state).toBe("archived")
+    expect((await session()).providerFailure).toBeUndefined()
   })
 
   it("fails the session when the stop arrives with no turn running", async () => {

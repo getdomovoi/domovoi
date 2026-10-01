@@ -1736,6 +1736,11 @@ export class DomovoiDaemon {
   // it, since the stop's own count would otherwise match once it finished.
   #emergencyStopGeneration = 0
   #approvalRequestGenerations = new WeakMap<AgentEvent, { generation: number; duringStop: boolean }>()
+  // The session an approval-answered-elsewhere report named when it arrived.
+  // The report can wait behind a mutation, such as an archive, that drops the
+  // provider thread before the report is handled, and the incident is still
+  // that session's (Codex review of #691 at a609034e, P1).
+  #answeredElsewhereSessions = new WeakMap<AgentEvent, string>()
   // Snapshot and delta broadcasts held while a stop runs. The stop's own
   // notification goes out first, then one snapshot carries every change.
   #snapshotBroadcastHeld = false
@@ -2003,6 +2008,11 @@ export class DomovoiDaemon {
         if (this.#stopping || this.#stopped) return
         if (event.type === "approval-requested") {
           this.#approvalRequestGenerations.set(event, { generation: this.#emergencyStopGeneration, duringStop: this.#emergencyStopInProgress })
+        }
+        if (event.type === "approval-answered-elsewhere") {
+          const owner = this.#snapshot.sessions.find((candidate) =>
+            candidate.runtime.provider === provider && candidate.providerThreadId === event.threadId)
+          if (owner) this.#answeredElsewhereSessions.set(event, owner.id)
         }
         if (event.type === "provider-disconnected") {
           void this.#enqueueMutation(() => this.#handleAgentEvent(provider, event))
@@ -10098,17 +10108,19 @@ export class DomovoiDaemon {
       })
       return
     }
+    // A security incident, recorded for the session the report named when it
+    // arrived whatever has happened to that session since. Handled before the
+    // emergency, lifecycle and turn checks: the turn it names has already ended.
+    if (event.type === "approval-answered-elsewhere") {
+      await this.#approvalAnsweredElsewhere(provider, threadId, event)
+      return
+    }
     if (this.#emergencyBlockedThreads.has(providerThreadKey(provider, threadId))) return
     const session = this.#snapshot.sessions.find(
       (candidate) => candidate.runtime.provider === provider && candidate.providerThreadId === threadId,
     )
     if (!session) return
     if (sessionIsReadOnly(session)) return
-    // Handled before the turn check: the turn it names has already ended.
-    if (event.type === "approval-answered-elsewhere") {
-      await this.#stopSessionAnsweredElsewhere(provider, threadId, session, event)
-      return
-    }
     const reportedTurnId = turnIdForAgentEvent(event)
     const eventRecord = reportedTurnId ? this.#usageRecord(provider, threadId, reportedTurnId) : undefined
     const eventTurnId = eventRecord?.accounting?.providerTurnId ?? reportedTurnId
@@ -12414,36 +12426,55 @@ export class DomovoiDaemon {
   }
 
   // Q243 A: the adapter saw an approval reply it did not send and has already
-  // stopped and unloaded the thread. The session fails with its own failure
-  // and lets its provider thread go.
-  async #stopSessionAnsweredElsewhere(
+  // stopped and unloaded the thread. The notice and the audit entry are
+  // recorded for every session the report can be traced to (Codex review of
+  // #691 at a609034e, P1). Only a session still running on that thread is
+  // stopped here: it fails with its own failure and lets its provider thread
+  // go. An archive, a transfer or an emergency stop that took the session
+  // first decides how it ends.
+  async #approvalAnsweredElsewhere(
     provider: string,
     threadId: string,
-    session: WorkspaceSnapshot["sessions"][number],
     event: Extract<AgentEvent, { type: "approval-answered-elsewhere" }>,
   ): Promise<void> {
+    const ownerId = this.#answeredElsewhereSessions.get(event)
+    const session = this.#snapshot.sessions.find((candidate) => ownerId === undefined
+      ? candidate.runtime.provider === provider && candidate.providerThreadId === threadId
+      : candidate.id === ownerId)
+    if (!session) return
     const stoppedAt = new Date().toISOString()
-    this.#holdQueuedSessionSend(session.id, "An approval was answered outside Domovoi, so the queued send was held.")
-    this.#flushCommandOutputStreams(session.id)
-    for (const [key, run] of this.#approvedRuns) if (run.sessionId === session.id) this.#approvedRuns.delete(key)
-    this.#loadedAgentThreads.delete(providerThreadKey(provider, threadId))
-    // Never resumed (Codex review of #691, P1): the provider session may hold
-    // approvals made elsewhere. Like a quarantined session, it continues only
-    // once the person restarts its provider thread, which starts a new one.
-    // The adapter restarts the server, which the provider-disconnected that
-    // follows reports to every other session on it.
-    delete session.providerThreadId
-    delete session.activeTurnId
-    session.state = "failed"
-    session.providerFailure = { ...approvalAnsweredElsewhereFailure }
-    session.updatedAt = stoppedAt
-    this.#removeApprovals((approval) => approval.sessionId === session.id, stoppedAt)
+    const threadKey = providerThreadKey(provider, threadId)
+    const live = !sessionIsReadOnly(session)
+      && session.runtime.provider === provider
+      && session.providerThreadId === threadId
+      && !this.#emergencyBlockedThreads.has(threadKey)
+    if (live) {
+      this.#holdQueuedSessionSend(session.id, "An approval was answered outside Domovoi, so the queued send was held.")
+      this.#flushCommandOutputStreams(session.id)
+      for (const [key, run] of this.#approvedRuns) if (run.sessionId === session.id) this.#approvedRuns.delete(key)
+      this.#loadedAgentThreads.delete(threadKey)
+      // Never resumed (Codex review of #691, P1): the provider session may hold
+      // approvals made elsewhere. Like a quarantined session, it continues only
+      // once the person restarts its provider thread, which starts a new one.
+      // The adapter restarts the server, which the provider-disconnected that
+      // follows reports to every other session on it.
+      delete session.providerThreadId
+      delete session.activeTurnId
+      session.state = "failed"
+      session.providerFailure = { ...approvalAnsweredElsewhereFailure }
+      session.updatedAt = stoppedAt
+      this.#removeApprovals((approval) => approval.sessionId === session.id, stoppedAt)
+    }
     this.#snapshot.thread.push({
       id: `system-${randomUUID()}`,
       sessionId: session.id,
       kind: "system",
-      body: "An approval in this session was answered outside Domovoi, so Domovoi stopped the session.",
-      detail: "A program on this machine that can read the provider server's password sent the answer, and what it approved may already have run. Review the session's changes, then restart the provider to continue: the session continues in a new provider session, without its earlier conversation.",
+      body: live
+        ? "An approval in this session was answered outside Domovoi, so Domovoi stopped the session."
+        : "An approval in this session was answered outside Domovoi.",
+      detail: live
+        ? "A program on this machine that can read the provider server's password sent the answer, and what it approved may already have run. Review the session's changes, then restart the provider to continue: the session continues in a new provider session, without its earlier conversation."
+        : "A program on this machine that can read the provider server's password sent the answer, and what it approved may already have run. Review the session's changes.",
       createdAt: stoppedAt,
     })
     this.#appendAudit({
