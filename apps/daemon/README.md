@@ -580,9 +580,16 @@ code or settings the repository brings:
   status (connected, failed and the like, read again on each call), or a failed read aborts the
   run and then ends the turn. The server answers a prompt and ends a run independently, so a turn
   can end while a steer is being sent; the server then runs that steer outside the turn, and the
-  daemon aborts it, waits for the abort and reports the steer as failed. A tool call or tool
-  approval request from a run while no turn is active, or from a subagent whose turn has ended,
-  aborts that run. The status answer names nothing else about a server, so one replaced
+  daemon aborts it, waits for the server to answer the abort and reports the steer as failed. A
+  run that starts a tool call or asks for an approval while no turn is active is aborted, and the
+  approval is refused with no card. A subagent whose turn has ended, or that started while its
+  thread had no turn, is treated the same way: an approval it asks for is refused with no card,
+  and that request or a tool call it starts aborts the subagent. A report of a tool that has
+  already finished aborts nothing. The daemon sends at most one abort at a time to a session; a
+  second reason to stop it waits for that abort's answer. Until the aborted run's end arrives, it
+  ends no turn, and a new prompt waits for a pending abort's answer; if the server does not answer
+  the abort, that prompt fails with the reason the run was stopped and is not sent. The status
+  answer names nothing else about a server, so one replaced
   under the same name with the same status is not seen; its tools still ask, since a server whose
   name could make one of the allowed names is refused before the prompt. The next prompt refuses a
   server whose tools could be named like OpenCode's or Kilo's own. This check is a stated limit,

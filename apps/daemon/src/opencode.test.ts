@@ -1472,6 +1472,8 @@ describe("subagents and current permission events", () => {
     properties: { id, sessionID, permission: "bash", patterns: ["ls"], metadata: { command: "ls" }, always: [] },
   })
 
+  // Never adopted, and outside any turn: security review round 7 of #687
+  // (ruling Q277) refuses its approval requests with no card and aborts it.
   it("never adopts a child first seen while its thread has no active turn", async () => {
     const { client, factory, stream } = harness()
     let turns = 0
@@ -1490,7 +1492,11 @@ describe("subagents and current permission events", () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
 
     expect(events.filter((event) => event.type === "approval-requested")).toEqual([])
-    expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalled()
+    for (const [session, permission] of [["ses_between", "per_between"], ["ses_grandchild", "per_grandchild"]] as const) {
+      expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(expect.objectContaining({ path: { id: session, permissionID: permission }, body: { response: "reject" } }))
+      expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: session } }))
+    }
+    expect(client.session.abort).not.toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } }))
     await adapter.close()
   })
 
@@ -2254,6 +2260,153 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
       properties: { part: { type: "tool", sessionID: "child-session", messageID: "child-message", callID: "call-c", tool: "bash", state: { status: "running", input: {} } } },
     })
     await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "child-session" } })))
+    await adapter.close()
+  })
+
+  // Security review round 7 of #687 (P2): an abort is recorded before it is
+  // sent, its run's end (idle, error) is consumed through that record with or
+  // without a turn, and a new prompt waits for a pending abort to settle.
+  async function lateSteer() {
+    let next = 0
+    let accept!: () => void
+    const answers: Array<(ok: boolean) => void> = []
+    const setup = await turnWithTools((client) => {
+      client.session.abort.mockImplementation(() => new Promise((resolve, reject) => {
+        answers.push((ok) => (ok ? resolve({ data: true }) : reject(new Error("abort refused"))))
+      }))
+    }, () => `prompt-${++next}`)
+    const { adapter, client, events, stream, threadId } = setup
+    client.session.promptAsync.mockImplementationOnce(() => new Promise((resolve) => { accept = () => resolve({ data: undefined }) }))
+    const steer = adapter.steerTurn(threadId, "prompt-1", "More").then(() => "sent", (error: Error) => error.message)
+    await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledTimes(2))
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
+    accept()
+    await waitForDaemon(() => expect(answers).toHaveLength(1))
+    const answer = (ok: boolean) => answers.shift()!(ok)
+    return { ...setup, steer, answer, answers }
+  }
+  const turnEnds = (events: AgentEvent[], turnId: string) => events.filter((event) => event.type === "turn-completed" && event.params.turnId === turnId)
+
+  it("consumes the aborted steer's idle that comes before the abort's answer, leaving nothing to swallow the next turn's error", async () => {
+    const { adapter, events, stream, threadId, steer, answer } = await lateSteer()
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    answer(true)
+    expect(await steer).toContain("turn ended while the steer was sent")
+    const next = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "APIError", data: { message: "rate limited" } } } })
+    await waitForDaemon(() => expect(turnEnds(events, next)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed" }) }) })]))
+    await adapter.close()
+  })
+
+  it("holds a turn started during a pending abort until the abort settles, and its idle does not end that turn", async () => {
+    const { adapter, client, events, stream, threadId, steer, answer } = await lateSteer()
+    const started = adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(2)
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    answer(true)
+    const next = await started
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(3)
+    expect(await steer).toContain("turn ended while the steer was sent")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnds(events, next)).toHaveLength(0)
+    stream.emit({ type: "message.updated", properties: { info: { id: "reply-next", sessionID: threadId, role: "assistant", parentID: next } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(turnEnds(events, next)).toHaveLength(1))
+    await adapter.close()
+  })
+
+  it("fails a prompt that waited on an abort the server did not answer, with the stop's reason", async () => {
+    const { adapter, client, threadId, steer, answer } = await lateSteer()
+    const started = adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    answer(false)
+    await expect(started).rejects.toThrow("turn ended while the steer was sent")
+    expect(await steer).toContain("could not confirm")
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(2)
+    await adapter.close()
+  })
+
+  // Security review round 7 of #687 (P2): a finished tool's report is a late
+  // report, not a call, and a run has at most one abort outstanding.
+  it("does not abort for a finished tool's late report, and joins an outstanding abort", async () => {
+    const { adapter, client, events, stream, threadId } = await turnWithTools((setup) => {
+      setup.session.abort.mockImplementation(() => new Promise(() => {}))
+    })
+    stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
+    const report = (sessionID: string, messageID: string, callID: string, status: string) => stream.emit({
+      type: "message.part.updated",
+      properties: { part: { type: "tool", sessionID, messageID, callID, tool: "bash", state: { status, input: {} } } },
+    })
+    stream.emit({ type: "message.updated", properties: { info: { id: "child-message", sessionID: "child-session", role: "assistant", parentID: "child-user" } } })
+    report(threadId, "assistant-message", "done-1", "completed")
+    report(threadId, "assistant-message", "done-2", "error")
+    report("child-session", "child-message", "done-3", "error")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.session.abort).not.toHaveBeenCalled()
+    report(threadId, "assistant-message", "live-1", "running")
+    report(threadId, "assistant-message", "live-2", "pending")
+    report("child-session", "child-message", "live-3", "running")
+    report("child-session", "child-message", "live-4", "running")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledTimes(2))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.session.abort.mock.calls.map((args: unknown[]) => (args[0] as { path: { id: string } }).path.id).sort()).toEqual(["child-session", threadId].sort())
+    await adapter.close()
+  })
+
+  // Security review round 7 of #687 (P3): a stop already under way is shared,
+  // so a late steer that meets it waits for its real answer.
+  it("makes a late steer that meets a stop under way wait for that stop's answer", async () => {
+    let next = 0
+    let accept!: () => void
+    let answer!: (ok: boolean) => void
+    const { adapter, client, stream, threadId, events } = await turnWithTools((setup) => {
+      setup.session.abort.mockImplementation(() => new Promise((resolve, reject) => {
+        answer = (ok) => (ok ? resolve({ data: true }) : reject(new Error("abort refused")))
+      }))
+    }, () => `prompt-${++next}`)
+    client.session.promptAsync.mockImplementationOnce(() => new Promise((resolve) => { accept = () => resolve({ data: undefined }) }))
+    let settled = false
+    const steer = adapter.steerTurn(threadId, "prompt-1", "More").then(() => "sent", (error: Error) => error.message).finally(() => { settled = true })
+    await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledTimes(2))
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: "reply-second", sessionID: threadId, role: "assistant", parentID: second } } })
+    stream.emit({
+      type: "message.part.updated",
+      properties: { part: { type: "tool", sessionID: threadId, messageID: "reply-second", callID: "c", tool: "plan_enter", state: { status: "pending", input: {} } } },
+    })
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledTimes(1))
+    accept()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(settled).toBe(false)
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    answer(false)
+    expect(await steer).toContain("could not confirm")
+    await adapter.close()
+  })
+
+  // Security review round 7 of #687 (P3): an approval request from a
+  // subagent outside its turn is refused and its run aborted.
+  it.each([
+    ["linked to a turn that ended", true],
+    ["started while the thread had no turn", false],
+  ] as const)("refuses and aborts a subagent %s that asks for approval", async (_case, linked) => {
+    const { adapter, client, events, stream, threadId } = await turnWithTools()
+    if (linked) stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
+    if (!linked) stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "p", sessionID: "child-session", permission: "bash", patterns: ["ls"], metadata: {}, always: ["ls"], tool: { messageID: "msg_c", callID: "call_c" } },
+    })
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "child-session", permissionID: "p" }, body: { response: "reject" } })))
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "child-session" } })))
+    expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(0)
     await adapter.close()
   })
 
