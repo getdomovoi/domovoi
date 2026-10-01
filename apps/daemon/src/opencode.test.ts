@@ -2114,6 +2114,24 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     await adapter.close()
   })
 
+  // Security review round 5 of #687: a steer runs its own check but does not
+  // change what the running turn is held to, and neither does a prompt that
+  // fails.
+  it.each([
+    ["is sent", false],
+    ["is rejected", true],
+  ] as const)("holds a turn to its first prompt's catalog when a steer that adds a server %s", async (_case, rejects) => {
+    const { adapter, client, call, threadId } = await turnWithTools()
+    client.mcp.status.mockResolvedValue({ data: { docs: { status: "connected" } } })
+    if (rejects) client.session.promptAsync.mockRejectedValueOnce(new Error("busy"))
+    const steer = adapter.steerTurn(threadId, "turn-1", "More")
+    if (rejects) await expect(steer).rejects.toThrow()
+    else await steer
+    call("call-1", "docs_search")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await adapter.close()
+  })
+
   it("checks a subagent's call that reuses a call id the turn already used", async () => {
     const { adapter, client, call, stream, threadId } = await turnWithTools()
     call("shared-call", "bash")

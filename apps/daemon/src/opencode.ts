@@ -254,7 +254,7 @@ type Session = {
   // The catalog checked for this session's latest prompt. The turn's tool
   // calls are held to it, never to the directory's (security review round 4
   // of #687).
-  checkedCatalog?: ToolCatalog
+  checkedCatalog?: { turnId: string; catalog: ToolCatalog }
   assistantMessageTurnIds: Map<string, string>
   toolPhases: Map<string, string>
 }
@@ -607,7 +607,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     session.activeTurnId = turnId
     delete session.activeTurnStarted
     try {
-      await this.#sendPrompt(session, turnId, prompt, runtime)
+      await this.#sendPrompt(session, turnId, prompt, runtime, true)
     } catch (error) {
       delete session.activeTurnId
       throw error
@@ -621,7 +621,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       throw new Error(`${this.#identity.providerName} turn is no longer active`)
     }
     const providerMessageId = this.#nextMessageId(session)
-    await this.#sendPrompt(session, providerMessageId, prompt, session.runtime)
+    await this.#sendPrompt(session, providerMessageId, prompt, session.runtime, false)
     return { providerMessageId }
   }
 
@@ -1087,6 +1087,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     messageId: string,
     prompt: string,
     runtime: Runtime,
+    startsTurn: boolean,
   ): Promise<void> {
     await this.#refuseHeldBackRepositoryFiles(session.cwd)
     const client = await this.#client()
@@ -1095,9 +1096,11 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // Last before the prompt goes out, after everything else it waits on, so
     // a tool server added meanwhile is seen (security review round 3 of #687).
     const checked = await this.#refuseUnownedNames(client, session.cwd, runtime)
-    // What this turn's tool calls are held to, whatever another session's
-    // check publishes to the directory later.
-    session.checkedCatalog = checked
+    // What this turn's tool calls are held to until it ends, whatever another
+    // session's check publishes to the directory later. Only the prompt that
+    // starts the turn sets it: a steer runs its own check above but leaves
+    // the turn's snapshot as it was (security review round 5 of #687).
+    if (startsTurn) session.checkedCatalog = { turnId: messageId, catalog: checked }
     ensureSuccess(await client.session.promptAsync({
       path: { id: session.threadId },
       query: { directory: session.cwd },
@@ -1317,7 +1320,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // the abort reaches a running tool only if that tool honors cancellation;
   // nothing here undoes what it did. The check holds the rest of the turn.
   #watchToolCall(session: Session, turnId: string, tool: string): void {
-    const catalog = session.checkedCatalog
+    // A snapshot from another turn holds nothing for this one.
+    const catalog = session.checkedCatalog?.turnId === turnId ? session.checkedCatalog.catalog : undefined
     const known = catalog !== undefined && (catalog.toolIds.has(tool) || serverInjectedTools.has(tool)
       || [...catalog.checkedStates.keys()].some((server) => tool.startsWith(`${openCodeToolPrefixName(server)}_`)))
     if (!known) {
