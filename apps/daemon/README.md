@@ -452,11 +452,14 @@ the agent.
 
 A standing rule (Always) is saved first with the status `inactive` and the reason
 `pending-delivery`, after the decision itself is saved. A pending rule never answers a request.
-It is made active, with the links to the rules it replaces, in one more save, and only after the
-agent has the decision: the adapter's `resolveApproval` returned and the provider was waiting for
-that request. An adapter answers a request it is not waiting on (never asked, already answered,
-or dropped with its turn) by throwing `ApprovalRequestNotPendingError` and sending nothing; the
-OpenCode, Kilo, Claude, Codex and ACP adapters all do. Returning is not the provider's acceptance.
+It is made active, with the links to the rules it replaces, in one more save, and only after
+delivery. Delivery here means the adapter's `resolveApproval` returned for a request id the
+adapter was tracking as waiting. It is not an acknowledgement from the provider: OpenCode and Kilo,
+for example, send the answer over HTTP after `resolveApproval` returns, and a later failure of that
+send does not take back a rule already made active. An adapter answers a request it is not
+tracking as waiting (never asked, already answered, or dropped with its turn) by throwing
+`ApprovalRequestNotPendingError` and sending nothing; the OpenCode, Kilo, Claude, Codex and ACP
+adapters all do.
 
 - An emergency stop that begins while the pending rule is saved cancels the decision. It is checked
   before that save and again after it. A cancelled decision is never sent. Its receipt, checkpoint
@@ -468,9 +471,13 @@ OpenCode, Kilo, Claude, Codex and ACP adapters all do. Returning is not the prov
 - If the pending rule cannot be saved, or the agent cannot be told, the decision is undone as
   above. If that undo cannot be saved either, the state file holds at most the receipt, the
   checkpoint row and a pending rule, never an active rule.
-- If making the rule active cannot be saved, the Allow already reached the agent and holds once.
-  The rule stays pending, in memory and in the state file, and the answer is `-32014` with "Domovoi
-  allowed this once, but could not save the standing rule, so it is not in force".
+- If the save that makes the rule active reports failure, the Allow was already sent once. The
+  rule stays pending in memory and answers no request while this daemon runs. A rejected save is
+  not proof that no active rule reached the state file: a save can fail after it has written, and
+  a restart then loads the rule active. A later whole save that lands rewrites the rule as
+  pending, which the next load drops. The answer is `-32014` with "Domovoi sent this Allow once,
+  but could not confirm the standing rule was saved. It may or may not be in force after Domovoi
+  restarts. Check Standing approval rules in Settings, Permissions and rules."
 - A daemon that loads a pending rule, at startup or when a project opens, drops it and records
   `approval-rule.undelivered` in the audit log: the decision that made it was never confirmed
   delivered. It replaced no rule, since links are made only when a rule becomes active.

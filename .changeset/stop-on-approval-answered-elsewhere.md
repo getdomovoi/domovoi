@@ -20,15 +20,23 @@ stopped. Until then the answered card gets no deny from an archive or an emergen
 note instead that it was answered outside Domovoi, and a person's answer to it is refused,
 including one already being saved, so neither its receipt nor a standing rule is kept. A
 standing rule is now saved only after the decision that makes it is committed, and first as a
-rule pending delivery, which never answers a request. It is made active only after the agent
-has the decision and was waiting for it; every provider adapter now throws
+rule pending delivery, which never answers a request. It is made active only after delivery:
+the adapter's `resolveApproval` returned for a request it was tracking as waiting, which is
+not an acknowledgement from the provider. Every provider adapter now throws
 `ApprovalRequestNotPendingError` for an answer to a request it is not waiting on, instead of
 dropping it silently. An emergency stop that begins while the pending rule is saved cancels the
 decision: it is never sent, its receipt and rule are taken back, and what the stop removed
 stays removed. A daemon that loads a rule still pending delivery drops it and records
 `approval-rule.undelivered` in the audit log. A refused or failed decision whose undo cannot
 be saved leaves at most its receipt, checkpoint row and a pending rule in the state file, never
-an active rule, and the next save that lands removes them. The
+an active rule, and the next save that lands removes them. That holds for a decision that was
+never sent. When the save that makes a delivered rule active reports failure, the Allow was
+sent once and the rule stays pending in memory, but a rejected save is not proof that no
+active rule reached the state file: a save can fail after writing, and a restart then loads
+the rule active. A later whole save that lands rewrites it as pending, which the next load
+drops. The answer is `-32014` with "Domovoi sent this Allow once, but could not confirm the
+standing rule was saved. It may or may not be in force after Domovoi restarts. Check Standing
+approval rules in Settings, Permissions and rules." The
 daemon then stops the server,
 so no approval it kept in memory stays in place, and every other session on it reconnects to a
 new server on its next message. An abort the server does not confirm also stops the server.

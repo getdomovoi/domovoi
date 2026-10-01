@@ -657,6 +657,11 @@ function permissionViolation(runtime: Runtime, agent: AgentAdapter): string | un
 
 const answeredElsewhereHoldReason = "An approval was answered outside Domovoi, so the queued send was held."
 const answeredElsewhereRefusal = "This request was answered outside Domovoi"
+// A failed activation save may still have written the active rule, so this
+// claims nothing about what the state file holds (round 10 of the Codex
+// review of #691).
+const activationUnconfirmedMessage = "Domovoi sent this Allow once, but could not confirm the standing rule was saved. "
+  + "It may or may not be in force after Domovoi restarts. Check Standing approval rules in Settings, Permissions and rules."
 
 // The facts of the card an outside answer was to, as the card showed them.
 // Each was settled, and any secret path hidden, when the card was made
@@ -8815,12 +8820,16 @@ export class DomovoiDaemon {
             target: approval.id,
           })
         }
-        // The agent has the decision and was waiting for it, so the rule is
-        // made active, with the links to the rules it replaces, as one save
-        // (ruling Q285). It is active in memory only once that save lands.
-        // If it does not, the rule stays pending delivery, in memory and in
-        // the state file, and answers no request; the next daemon to load it
-        // drops it, and the person is told the Allow held only this once.
+        // The adapter took the answer for a request it was tracking as
+        // waiting, so the rule is made active, with the links to the rules it
+        // replaces, as one save (ruling Q285). That is not the provider's
+        // acknowledgement. The rule is active in memory only once the save
+        // lands. If the save reports failure, the rule stays pending in
+        // memory and answers no request here, but the failure does not prove
+        // the active rule never reached the state file: a save can fail after
+        // writing (round 10 of the Codex review of #691). A later whole save
+        // that lands writes it back as pending, which the next load drops;
+        // until then a restart can load it active. The person is told so.
         if (newRule) {
           try {
             await this.#serializeSnapshotPersistence(async () => {
@@ -8847,7 +8856,7 @@ export class DomovoiDaemon {
               socket,
               request.id,
               daemonPersistenceUnavailableErrorCode,
-              "Domovoi allowed this once, but could not save the standing rule, so it is not in force",
+              activationUnconfirmedMessage,
             )
             return
           }

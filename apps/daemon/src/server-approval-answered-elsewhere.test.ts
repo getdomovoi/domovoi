@@ -788,7 +788,10 @@ describe("a standing rule and the decision that makes it", () => {
     ])
   })
 
-  it("keeps the rule pending, and says the Allow held once, when making it active cannot be saved", async () => {
+  // The save here fails before writing, so the state file keeps the pending
+  // rule. A save that fails after writing can leave it active there, which
+  // is why the message does not say where the rule stands (round 10).
+  it("keeps the rule pending, and says the Allow was sent once, when making it active cannot be saved", async () => {
     const paths = onDisk()
     const context = await start(paths)
     const { store, rpc, provider } = context
@@ -805,7 +808,8 @@ describe("a standing rule and the decision that makes it", () => {
 
     expect(decided.error).toEqual({
       code: daemonPersistenceUnavailableErrorCode,
-      message: "Domovoi allowed this once, but could not save the standing rule, so it is not in force",
+      message: "Domovoi sent this Allow once, but could not confirm the standing rule was saved. "
+        + "It may or may not be in force after Domovoi restarts. Check Standing approval rules in Settings, Permissions and rules.",
     })
     expect(provider.resolveApproval).toHaveBeenCalledWith(42, "allow-once")
     const live = await context.snapshot()
