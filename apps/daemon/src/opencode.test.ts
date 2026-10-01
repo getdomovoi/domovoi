@@ -2081,6 +2081,18 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
 
   // Security review round 3 of #687: call ids are not unique across provider
   // sessions, so a subagent's call that reuses one is still checked.
+  // Security review round 4 of #687: another session's check in the same
+  // directory must not change what a running turn is held to, and a check
+  // that refuses publishes nothing.
+  it("holds a turn to its own prompt's catalog when another session's check refuses a new server", async () => {
+    const { adapter, client, call } = await turnWithTools()
+    client.mcp.status.mockResolvedValue({ data: { plan: { status: "connected" } } })
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow(`tool server named "plan"`)
+    call("call-1", "plan_enter")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await adapter.close()
+  })
+
   it("checks a subagent's call that reuses a call id the turn already used", async () => {
     const { adapter, client, call, stream, threadId } = await turnWithTools()
     call("shared-call", "bash")

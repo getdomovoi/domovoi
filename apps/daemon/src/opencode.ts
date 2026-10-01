@@ -236,6 +236,10 @@ type Session = {
   // under way ends nothing, and is remembered so it is not waited for again.
   stoppingTurnId?: string
   stoppedRunEnded?: true
+  // The catalog checked for this session's latest prompt. The turn's tool
+  // calls are held to it, never to the directory's (security review round 4
+  // of #687).
+  checkedCatalog?: ToolCatalog
   assistantMessageTurnIds: Map<string, string>
   toolPhases: Map<string, string>
 }
@@ -869,7 +873,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // A tool server or plugin added while a turn runs is checked at the next
   // prompt. A plugin tool that asks under another name, or does not ask, is
   // the person's own code and is not caught here.
-  async #refuseUnownedNames(client: OpenCodeClient, cwd: string, runtime: Runtime): Promise<void> {
+  async #refuseUnownedNames(client: OpenCodeClient, cwd: string, runtime: Runtime): Promise<ToolCatalog> {
     const name = this.#identity.providerName
     const unreadable = new Error(
       `Domovoi could not read ${name}'s tool servers and tools for this worktree, so it cannot tell whether a tool could run without approval. Try again.`,
@@ -895,7 +899,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       if (error instanceof UnownedToolError) throw error
       throw unreadable
     }
-    this.#catalogs.set(cwd, catalog)
+    // The catalog is published to the directory only once every check below
+    // has passed (security review round 4 of #687).
     const builtInPermissions = [...this.#identity.builtInPermissions ?? openCodeBuiltInPermissions]
     for (const server of catalog.servers) {
       const prefix = `${openCodeToolPrefixName(server)}_`.toLowerCase()
@@ -944,6 +949,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         )
       }
     }
+    this.#catalogs.set(cwd, catalog)
+    return catalog
   }
 
   // Whether a card for `permission` could name a tool server the catalog does
@@ -1064,7 +1071,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const system = await projectInstructions(session.cwd, "opencode")
     // Last before the prompt goes out, after everything else it waits on, so
     // a tool server added meanwhile is seen (security review round 3 of #687).
-    await this.#refuseUnownedNames(client, session.cwd, runtime)
+    const checked = await this.#refuseUnownedNames(client, session.cwd, runtime)
+    // What this turn's tool calls are held to, whatever another session's
+    // check publishes to the directory later.
+    session.checkedCatalog = checked
     ensureSuccess(await client.session.promptAsync({
       path: { id: session.threadId },
       query: { directory: session.cwd },
@@ -1280,7 +1290,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // The call that showed the change can already have run: the stop comes
   // after it.
   #watchToolCall(session: Session, turnId: string, tool: string): void {
-    const catalog = this.#catalogs.get(session.cwd)
+    const catalog = session.checkedCatalog
     const known = catalog !== undefined && (catalog.toolIds.has(tool) || serverInjectedTools.has(tool)
       || [...catalog.checkedStates.keys()].some((server) => tool.startsWith(`${openCodeToolPrefixName(server)}_`)))
     if (!known) {
