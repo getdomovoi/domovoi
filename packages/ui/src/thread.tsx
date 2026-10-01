@@ -289,7 +289,7 @@ export function providerFailureActionCopy(failure: ProviderFailure): string {
     case "check-quota": return "Check the provider quota or billing plan, then retry."
     case "change-model": return "Choose another model in the runtime controls, then retry."
     case "shorten-context": return "Shorten the turn, or start a new session from a checkpoint."
-    case "review-changes": return "A program on this machine used the provider server's password to answer an approval, and the approved call may have run. Review the session's changes before you send another message."
+    case "review-changes": return "A program on this machine used the provider server's password to answer an approval, and what it approved may have run. Review the session's changes. Starting the provider again continues the session in a new provider session, without its earlier conversation."
   }
 }
 

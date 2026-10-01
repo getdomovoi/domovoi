@@ -25,6 +25,8 @@ it("tells a person to review the changes when an approval was answered outside D
   const copy = providerFailureActionCopy(failure)
   expect(copy).toMatch(/review/iu)
   expect(copy).toMatch(/may have run/iu)
+  // The stopped provider session is never resumed (Codex review of #691).
+  expect(copy).toMatch(/new provider session, without its earlier conversation/iu)
   expect(copy).not.toMatch(/[—!]/u)
 })
 
