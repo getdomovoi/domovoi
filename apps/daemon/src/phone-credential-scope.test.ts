@@ -98,7 +98,10 @@ describe("a phone-scoped credential", () => {
       "terminal.create", "terminal.input", "terminal.claim", "session.revertFile", "checkpoint.restore",
       "skill.install", "audit.export", "device.pair", "device.revoke", "device.rotate",
       "device.rename", "device.issueCode", "device.list", "fleet.enroll", "fleet.forget", "session.transfer",
+      // Ruling Q192 B: a phone opens a project and never closes one.
+      "project.close",
     ]))
+    expect(phoneAndTabletRpcMethods.has("project.open")).toBe(true)
     for (const method of refused) {
       const reply = await call(phone, method, {})
       expect(reply, method).toHaveProperty("error")

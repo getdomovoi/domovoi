@@ -12,7 +12,9 @@ export const credentialSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
 export const annotationStatusSchema = z.enum(["open", "resolved"])
 export const toolKindSchema = z.enum(["command", "file-change"])
 export const toolStatusSchema = z.enum(["running", "completed", "failed", "declined"])
-export const forkRequestIdSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/)
+// A project named in a request: the id the daemon derived from its repository root.
+export const projectIdSchema = z.string().min(1).check(utf16MaxLength(256))
+export const forkRequestIdSchema =z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/)
 
 const canonicalBase64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
 const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"

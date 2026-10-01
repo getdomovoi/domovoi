@@ -44,8 +44,11 @@ export const notificationSchemas = {
 export const errorDataSchemas = [
   "deviceLabelMismatchSchema",
   "fleetSnapshotOverflowSchema",
+  "projectCapRefusalSchema",
+  "projectCloseConfirmationSchema",
   "projectSwitchConfirmationSchema",
   "protocolMismatchSchema",
+  "repositoryGitFilterRefusalSchema",
   "sessionAttachmentRefusalSchema",
   "skillInstallRefusalSchema",
   "turnSkillSelectionRefusalSchema",
