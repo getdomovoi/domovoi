@@ -275,7 +275,9 @@ describe("AppBar", () => {
       />,
     )
 
-    expect(markup).toMatch(/<button(?=[^>]*aria-label="Stop everything")(?![^>]*disabled="")/)
+    // Unavailable is aria-disabled rather than disabled, so its tooltip name
+    // stays reachable; see titlebar-v2.dom.test.tsx.
+    expect(markup).toMatch(/<button(?=[^>]*aria-label="Stop everything")(?![^>]*disabled="")(?![^>]*aria-disabled="true")/)
   })
 
   it("disables pause-all while pending and announces its outcome", () => {
@@ -306,7 +308,7 @@ describe("AppBar", () => {
       />,
     )
 
-    expect(markup).toMatch(/<button(?=[^>]*aria-label="Stop everything")(?=[^>]*disabled="")/)
+    expect(markup).toMatch(/<button(?=[^>]*aria-label="Stop everything")(?=[^>]*aria-disabled="true")/)
     expect(markup).toContain('role="status"')
     expect(markup).toContain("2 turns stopped")
     expect(markup).toContain("1 terminal closed")
