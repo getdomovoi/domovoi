@@ -51,6 +51,11 @@ export type RepositoryGitFilter = {
   // The absolute path of the config file that sets it, or undefined when Git
   // names no file (a -c setting).
   origin: string | undefined
+  // For a filter.<driver>.* command, the value the repository's own config
+  // gives filter.<driver>.required, when it gives one. It decides whether Git
+  // stores unfiltered bytes when the filter fails, so the digest, the
+  // comparison and the reviewed pins carry it with the command.
+  required?: string
 }
 
 // Every filter and lfs setting; classify() picks the ones that start a program.
@@ -107,6 +112,12 @@ export async function readRepositoryGitFilters(
 
 // The settings from the repository's own config that start a program.
 export function repositoryGitFilters(settings: readonly GitFilterSetting[]): RepositoryGitFilter[] {
+  // The last value the repository's own config gives each driver's required.
+  const required = new Map<string, string>()
+  for (const { scope, key, value } of settings) {
+    const driver = /^filter\.(.+)\.required$/u.exec(key)?.[1]
+    if (driver !== undefined && !trustedConfigScopes.has(scope)) required.set(driver, value)
+  }
   const filters: RepositoryGitFilter[] = []
   for (const { scope, key, value, origin } of settings) {
     if (trustedConfigScopes.has(scope)) continue
@@ -114,7 +125,10 @@ export function repositoryGitFilters(settings: readonly GitFilterSetting[]): Rep
     if (value === "" || isStandardLfsFilterLine(key, value)) continue
     const classified = classify(key, value)
     if (classified === undefined) continue
-    filters.push({ scope: scope as RepositoryGitFilterScope, key, ...classified, value, origin })
+    const driverRequired = key.startsWith("filter.") ? required.get(classified.driver) : undefined
+    filters.push({
+      scope: scope as RepositoryGitFilterScope, key, ...classified, value, origin, ...(driverRequired === undefined ? {} : { required: driverRequired }),
+    })
   }
   return filters
 }

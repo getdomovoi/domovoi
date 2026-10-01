@@ -1325,7 +1325,12 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
     unreadable = error instanceof RepositoryGitConfigUnreadableError ? error.reason : "git-failed"
     digestRecords.push(`git:filters:unreadable:${unreadable}`)
   }
-  for (const filter of gitFilters) digestRecords.push(`git:filter:${filter.scope}:${sha256(`${filter.key}\0${filter.value}`)}`)
+  // A driver's required setting is part of the record when the repository
+  // sets it, so a record without one stays as it was.
+  for (const filter of gitFilters) {
+    const required = filter.required === undefined ? "" : `\0required=${filter.required}`
+    digestRecords.push(`git:filter:${filter.scope}:${sha256(`${filter.key}\0${filter.value}${required}`)}`)
+  }
   const gitFilterBlock: ToolInventoryGitFilters | undefined = unreadable !== undefined
     ? { files: [], entries: [], omittedEntries: 0, unreadable: { reason: unreadable } }
     : gitFilters.length > 0 ? await gitFilterInventory(rootPath, gitFilters) : undefined

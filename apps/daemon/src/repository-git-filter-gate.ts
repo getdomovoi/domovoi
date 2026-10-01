@@ -29,9 +29,10 @@ import type { RepositoryProviderConfigReader } from "./tool-inventory.js"
 //    config.worktree) refuses config-changed (ruling Q144 A's analogue).
 // 6. Allowed: T's values are added as command-line config, the values the
 //    digest covers, so a change to the repository's config after this read
-//    changes nothing that runs. A driver's `required` is added only when the
-//    repository sets it true, the direction that never stores unfiltered
-//    content.
+//    changes nothing that runs. A driver's `required`, when the repository
+//    sets it, is reviewed with its commands (the digest and the comparison
+//    carry it) and pinned to the reviewed value, since it decides whether Git
+//    stores unfiltered bytes when the filter fails.
 // 7. Before every command the grant and the project's revoke count are read
 //    again (confirm); a revoke or a new grant since step 3 refuses the rest.
 //    A command already running finishes within its operation's timeout.
@@ -84,10 +85,11 @@ export type RepositoryFilterGate =
 
 const sameFilters = (left: readonly RepositoryGitFilter[], right: readonly RepositoryGitFilter[]) => (
   left.length === right.length
-  && left.every((filter, index) => filter.scope === right[index]!.scope && filter.key === right[index]!.key && filter.value === right[index]!.value)
+  && left.every((filter, index) => {
+    const other = right[index]!
+    return filter.scope === other.scope && filter.key === other.key && filter.value === other.value && filter.required === other.required
+  })
 )
-
-const gitTrue = /^(?:true|yes|on|1)$/iu
 
 export async function repositoryFilterGate(input: {
   // The worktree the guarded commands run in.
@@ -119,10 +121,11 @@ export async function repositoryFilterGate(input: {
   if (trust.state !== "trusted") return refuse(trust.reason === "cannot-trust" ? "cannot-trust" : "config-changed")
   if (!sameFilters(filters, rootFilters)) return refuse("config-changed")
   const reviewed: Array<readonly [string, string]> = rootFilters.map(({ key, value }) => [key, value] as const)
-  for (const driver of new Set(rootFilters.filter(({ key }) => key.startsWith("filter.")).map(({ driver }) => driver))) {
-    const required = settings.filter(({ key }) => key === `filter.${driver}.required`).at(-1)
-    if (required !== undefined && gitTrue.test(required.value)) reviewed.push([`filter.${driver}.required`, "true"])
+  const requiredPins = new Map<string, string>()
+  for (const { driver, required } of rootFilters) {
+    if (required !== undefined) requiredPins.set(driver, required)
   }
+  for (const [driver, required] of requiredPins) reviewed.push([`filter.${driver}.required`, required])
   return {
     open: true,
     settings,

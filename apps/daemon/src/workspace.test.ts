@@ -3646,6 +3646,24 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     await expect(lstat(join(worktrees, "session-onbranch"))).rejects.toThrow()
   })
 
+  // A driver's `required` decides whether Git stores unfiltered bytes when
+  // the filter fails, so it is part of what trust reviews: changing or
+  // unsetting it after trust reads as a changed configuration.
+  it.each([["unset", undefined], ["set false", "false"]])("refuses when a reviewed driver's required setting is %s after trust", async (_label, value) => {
+    const { repositoryPath, worktrees, git, markers, trust, service } = await trustedRepository(`domovoi-trusted-required-${value ?? "unset"}-`)
+    await git("config", "filter.agent.required", "true")
+    await trust()
+    if (value === undefined) await git("config", "--unset", "filter.agent.required")
+    else await git("config", "filter.agent.required", value)
+
+    await expect(service().createSessionWorkspace(repositoryPath, "session-required")).rejects.toMatchObject({
+      name: "RepositoryGitFilterRefusedError",
+      reason: "config-changed",
+    })
+    expect(await markers()).toEqual([])
+    await expect(lstat(join(worktrees, "session-required"))).rejects.toThrow()
+  })
+
   it("runs the reviewed command when the config changes between the scan and the command", async () => {
     const { repositoryPath, git, swapped, markers, trust, service } = await trustedRepository("domovoi-trusted-swap-")
     await trust()
