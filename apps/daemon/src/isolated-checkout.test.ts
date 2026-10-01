@@ -193,7 +193,7 @@ describe("windowsGitStop", () => {
     windowsGitStop(git, () => taskkill as unknown as ChildProcess).stop()
     taskkill.exitCode = 1
     taskkill.emit("exit", 1, null)
-    await vi.waitFor(() => expect(git.kill).toHaveBeenCalledWith("SIGKILL"))
+    await vi.waitFor(() => expect(git.kill).toHaveBeenCalledWith("SIGKILL"), { timeout: 1_000 })
   })
 })
 
