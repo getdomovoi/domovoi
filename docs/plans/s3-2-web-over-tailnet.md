@@ -318,8 +318,9 @@ not admit. The shell's iframes also carry `sandbox="allow-scripts"`
 (`packages/ui/src/artifact-dock.tsx:743`, `:968`). An artifact is served as `text/html`, which a
 browser refuses as a service worker script.
 
-That sandbox becomes load-bearing for the app's origin, not only for the preview. Slice 5 adds a
-test that every `/artifacts/` response, for every purpose and error path that returns a document,
+That sandbox becomes load-bearing for the app's origin, not only for the preview. Slice 4, the
+first slice in which the app shares the listener (section 3.8), adds a test that every
+`/artifacts/` response, for every purpose and error path that returns a document,
 carries a `sandbox` directive without `allow-same-origin`. The alternative, a separate port for
 the app, was Q1's option B; the owner chose the shared origin (A).
 
@@ -428,6 +429,34 @@ machine. This is the point of `S3.2`, and the owner already limits it per code w
 - Certificate renewal: the certificate is read once at startup (`production-daemon.ts:139`). A
   renewed `tailscale cert` needs a daemon restart, as it does for the phone today.
 
+### 3.8 Security requirements carried into slices 3 to 5
+
+From the slice 1 security review (PR #699, ruling Q297). Each slice that touches the area meets
+these:
+
+- The CSP and headers in section 3.2 are the baseline for the app. Send them as enforcing response
+  headers, on the state page and on cache-validation responses (304) too. Build the WebSocket CSP
+  source from a canonical, validated authority. Handle each scheme's default port correctly: the
+  existing HTTP-only authority parser assumes port 80. Forwarded headers, an arbitrary Host,
+  wildcards and advertisement settings never create a plaintext non-loopback browser origin.
+- On the shared origin, every untrusted artifact document keeps an enforcing CSP `sandbox` without
+  `allow-same-origin`, top-level views and derived documents included. Keep `text/html`, `nosniff`,
+  restricted connections and the iframe `sandbox`. A sandbox in a report-only policy or a meta
+  element does not protect (CSP3). The response-header test is necessary; the real-browser check in
+  section 5.2 also exercises storage access, framing and the opaque-origin bridge.
+- The sandbox regression test is pinned in slice 4, when the app first shares the listener, not
+  later. The preview bridge's checks (`event.source`, `event.origin === "null"`, channel, artifact
+  identity) stay. `null` is never admitted to the socket.
+- `sw.js` keeps no `fetch` handler. Its scope `/` covers the previews as well as the app. App
+  caching does not introduce preview caching or relax artifact MIME or CSP handling.
+- Unauthenticated error and state responses carry no file-system path and no query content. The
+  no-fallback route policy and the signed artifact grants stay. Host and Origin checks are
+  admission controls, not RPC authentication and not proof that a client is on the tailnet.
+- The shared-origin (Q1) and plaintext-loopback (Q3) answers stand. A14's local listener
+  impersonation limit stands. Code-only pairing constrains the app flow (section 3.6, slice 2)
+  without claiming a daemon-side refusal of remote root credentials, which the owner has not
+  chosen.
+
 ## 4. `server.ts` versus new modules
 
 Two open pull requests change `apps/daemon/src/server.ts` heavily (#691, approvals answered
@@ -534,15 +563,17 @@ Each is one pull request, test first, with `pnpm typecheck`, `pnpm test`, `pnpm 
    server. Still no `server.ts` change.
 4. **Wire it in** (Codex). Lands only after slice 2 is merged. `DOMOVOI_WEB_DIR` in `config.ts`,
    default resolution and loading in `production-daemon.ts`, the startup line and help in
-   `index.ts`, `webDirectory` in `service/configuration.ts`, the `server.ts` option, field and hook, the loopback origin
-   admission (only the literal loopback origins, scheme included, and only with a loaded bundle;
-   `null` stays refused), coexistence tests, README rows, changeset. After this the app is served
-   on loopback.
+   `index.ts`, `webDirectory` in `service/configuration.ts`, the `server.ts` option, field and
+   hook, the loopback origin admission (only the literal loopback origins, scheme included, and
+   only with a loaded bundle; `null` stays refused), the sandbox test (section 3.8), coexistence
+   tests, README rows, changeset. After this the app is served on loopback, and on a TLS listener
+   that is already configured.
 5. **Listener authorities: tailnet names, previews, artifacts** (Codex). `listener-authorities.ts`;
    `#acceptsHost` delegates to it; the listener's exact canonical origins, scheme included, join
    the origin set after `listen`, which updates preview `frame-ancestors`; the host-only TLS
    fallback stops admitting another scheme, with the negative test for a same-authority `http`
-   Origin on TLS written first; the TLS test certificate tests; the sandbox test. The section 2.4
+   Origin on TLS written first; the TLS test certificate tests; the sandbox test extended to the
+   tailnet name. The section 2.4
    test is written first and must fail on `main`. After this the app works over the tailnet, and
    phone previews over the tailnet name may start working too.
 6. **Packaging and documents** (Claude Code for `scripts/`, the daemon owner for README). A
@@ -566,7 +597,8 @@ the answer under each.
   artifact response keeps previews in an opaque origin, pinned by a test. (B) Serve the app on a
   second port, so previews never share its origin; costs a second listener, a second advertised
   address and a second origin in every allow-list.
-  Answer: A, fetzy 2026-10-01, Q286. The sandbox test lands in slice 5.
+  Answer: A, fetzy 2026-10-01, Q286. The sandbox test was set for slice 5; the slice 1 review
+  (Q297) moved it to slice 4, when the app first shares the listener.
 - **Q2. When is the app served?** (A) Whenever a valid bundle is at `DOMOVOI_WEB_DIR` or the
   default path beside the install, with the state page at `/` otherwise; this is the 2026-09-17
   shape. (B) Only when `DOMOVOI_WEB_DIR` is set; `/` stays a 404 otherwise.
