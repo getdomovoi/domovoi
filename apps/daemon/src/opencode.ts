@@ -299,6 +299,12 @@ type Session = {
   // `retries` counts the reads that failed or settled nothing for want of
   // the prompt.
   reconcile?: { turnId: string; timer: ReturnType<typeof setTimeout>; retries: number }
+  // Counts what the session did other than end: a prompt or steer sent, a
+  // message or part updated, a status other than idle, an approval asked
+  // for, its subagents' included. A read of the server's state (#reconcile)
+  // is applied only if this did not move while it ran (security review round
+  // 10 of #687).
+  activity: number
   // The catalog checked before the prompt that started the active turn. Every
   // prompt, a steer's included, is checked before it is sent, but only the
   // prompt that starts a turn sets this, and the turn's tool calls, a
@@ -1036,6 +1042,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       assistantMessageTurnIds: new Map(),
       steerTurnIds: new Map(),
       toolPhases: new Map(),
+      activity: 0,
     }
     const existing = this.#directories.get(cwd)
     if (existing) {
@@ -1361,6 +1368,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // starts the turn sets it: a steer runs its own check above but leaves
     // the turn's snapshot as it was (security review round 5 of #687).
     if (startsTurn) session.checkedCatalog = { turnId: messageId, catalog: checked }
+    session.activity += 1
     ensureSuccess(await client.session.promptAsync({
       path: { id: session.threadId },
       query: { directory: session.cwd },
@@ -1464,6 +1472,11 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       }
       return
     }
+    // Anything but an end (idle, error, an idle status) is activity that a
+    // read of the server's state did not see (#reconcile).
+    const ends = event.type === "session.idle" || event.type === "session.error"
+      || (event.type === "session.status" && asRecord(properties.status)?.type === "idle")
+    if (!ends) session.activity += 1
     // A subagent outlives nothing: once the turn that started it has ended,
     // whatever it still sends is dropped rather than attached to a later turn,
     // an approval it asks for is refused at once, with no card, and that or
@@ -1849,11 +1862,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       return
     }
     // A pending abort holds the turn; its settling schedules this again.
-    if (this.#runAborts.get(session.threadId)?.turns.has(turnId)) {
+    const held = () => this.#runAborts.get(session.threadId)?.turns.has(turnId) === true
+    if (held()) {
       this.#clearReconcile(session)
       return
     }
     const name = this.#identity.providerName
+    const activity = session.activity
     let outcome: TurnOutcome | "busy" | { inconclusive: string }
     try {
       outcome = await this.#readTurnOutcome(session, turnId)
@@ -1864,6 +1879,20 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     if (session.reconcile !== scheduled) return
     if (!current()) {
       this.#clearReconcile(session)
+      return
+    }
+    // Rechecked after the read, before anything is retried or applied
+    // (security review round 10 of #687): an abort that started during the
+    // read (a stop, an interrupt, a thread stop) holds the turn, and its
+    // settling ends it or schedules this again.
+    if (held()) {
+      this.#clearReconcile(session)
+      return
+    }
+    // The session did something the read may not show: read it afresh.
+    if (session.activity !== activity) {
+      this.#clearReconcile(session)
+      this.#scheduleReconcile(session, turnId)
       return
     }
     if (outcome === "busy") {
@@ -1894,30 +1923,35 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // the bound) when the idle session does not hold the turn's prompt, or
   // holds it with no reply and no error was seen. Throws when a read fails.
   async #readTurnOutcome(session: Session, turnId: string): Promise<TurnOutcome | "busy" | { inconclusive: string }> {
-    const client = await this.#client()
+    // The running server's client: a read never starts a server.
+    const client = this.#runtime?.client
     const name = this.#identity.providerName
-    const statuses = asRecord(unwrap(await client.session.status({
-      query: { directory: session.cwd },
-      signal: AbortSignal.timeout(reconcileReadTimeoutMs),
-      throwOnError: true,
-    }), `${name} session status`))
-    if (!statuses) throw new Error(`${name} answered the session status with something else`)
-    const status = asRecord(statuses[session.threadId])?.type
-    if (status !== undefined && status !== "idle") return "busy"
+    if (!client) throw new Error(`${name} server is not running`)
+    const busy = async () => {
+      const statuses = asRecord(unwrap(await client.session.status({
+        query: { directory: session.cwd },
+        signal: AbortSignal.timeout(reconcileReadTimeoutMs),
+        throwOnError: true,
+      }), `${name} session status`))
+      if (!statuses) throw new Error(`${name} answered the session status with something else`)
+      const status = asRecord(statuses[session.threadId])?.type
+      return status !== undefined && status !== "idle"
+    }
+    if (await busy()) return "busy"
     const messages = await this.#messagesFromPrompt(client, session, turnId)
+    // The status and the history are separate reads, so the session can
+    // turn busy between them: the history counts only if it is idle after
+    // it too (security review round 10 of #687).
+    if (await busy()) return "busy"
     if (messages === undefined) return { inconclusive: `${name} never recorded this turn's prompt, and its session is idle, so Domovoi ended the turn.` }
-    const promptCreated = createdAt(messages.prompt)
+    // Ordered as the servers order messages, by time.created and then id
+    // (opencode 1.18.33 and kilo 7.8.1 session/message-v2.ts isAfter), so an
+    // assistant from the prompt's millisecond with an earlier id is not
+    // after it, and the order pages come in decides nothing.
     let newest: Record<string, unknown> | undefined
     for (const info of messages.others) {
-      if (info.role !== "assistant") continue
-      const created = createdAt(info)
-      // Created after the prompt: by time when both say, else by id order
-      // (the servers' ids and Domovoi's ascend together).
-      const after = promptCreated !== undefined && created !== undefined
-        ? created >= promptCreated
-        : typeof info.id === "string" && info.id > turnId
-      if (!after) continue
-      if (!newest || (createdAt(newest) ?? 0) <= (created ?? 0)) newest = info
+      if (info.role !== "assistant" || !isAfter(info, messages.prompt)) continue
+      if (!newest || isAfter(info, newest)) newest = info
     }
     if (!newest) {
       // The last session error seen after the turn's own prompt says why.
@@ -2410,6 +2444,16 @@ type TurnOutcome = { status: "completed" } | { status: "failed"; error: string }
 function createdAt(info: Record<string, unknown>): number | undefined {
   const created = asRecord(info.time)?.created
   return typeof created === "number" ? created : undefined
+}
+
+// Whether a message comes after another in the servers' order: by
+// time.created, then by id (opencode 1.18.33 and kilo 7.8.1
+// session/message-v2.ts isAfter). A message without a time is ordered by id.
+function isAfter(info: Record<string, unknown>, other: Record<string, unknown>): boolean {
+  const created = createdAt(info)
+  const otherCreated = createdAt(other)
+  if (created !== undefined && otherCreated !== undefined && created !== otherCreated) return created > otherCreated
+  return typeof info.id === "string" && typeof other.id === "string" && info.id > other.id
 }
 
 function errorMessage(error: Record<string, unknown> | undefined, providerName: string): string {

@@ -2767,6 +2767,124 @@ describe("reconciling a turn with the server's own state", () => {
     expect(turnEnds(events, turnId)).toEqual(ended("failed", "could not confirm how"))
     await adapter.close()
   })
+
+  // Security review round 10 of #687 (ruling Q298, R10-1): the status and the
+  // history are separate reads, so the session can turn busy between them.
+  // An outcome is applied only when the status is idle again after the
+  // history and nothing arrived for the session during the read.
+  function heldHistory(client: ReturnType<typeof harness>["client"]) {
+    let release!: (messages: Message[]) => void
+    client.session.messages.mockImplementationOnce(() => new Promise((resolve) => { release = (messages) => resolve({ data: messages }) }))
+    return (messages: Message[]) => release(messages)
+  }
+
+  it("applies no outcome when the run made progress while the history was read", async () => {
+    const { adapter, client, events, stream, threadId, turnId, history, idle, seen, tick } = await reconciledTurn()
+    seen()
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11 } } } })
+    idle()
+    const release = heldHistory(client)
+    await tick(2_100)
+    expect(client.session.messages).toHaveBeenCalledTimes(1)
+    // The run goes on while the history is read: busy, a reply, a tool.
+    stream.emit({ type: "session.status", properties: { sessionID: threadId, status: { type: "busy" } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_6", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 12 } } } })
+    stream.emit({ type: "message.part.updated", properties: { part: { type: "tool", sessionID: threadId, messageID: "msg_6", callID: "c1", tool: "bash", state: { status: "running", input: {} } } } })
+    release([user(turnId, 10), reply("msg_5", turnId, 11, {})])
+    await tick(100)
+    expect(turnEnds(events, turnId)).toEqual([])
+    // What the server holds once the run has really ended settles it.
+    client.session.status.mockResolvedValue({ data: {} })
+    history([user(turnId, 10), reply("msg_5", turnId, 11), reply("msg_6", turnId, 12)])
+    await tick(5_000)
+    expect(turnEnds(events, turnId)).toEqual(ended("completed"))
+    await adapter.close()
+  })
+
+  it("applies no outcome when the status turns busy before the history comes back", async () => {
+    const { adapter, client, events, threadId, turnId, idle, seen, tick } = await reconciledTurn()
+    seen()
+    idle()
+    const release = heldHistory(client)
+    await tick(2_100)
+    client.session.status.mockResolvedValue({ data: { [threadId]: { type: "busy" } } })
+    release([user(turnId, 10), reply("msg_5", turnId, 11, {})])
+    await tick(100)
+    expect(client.session.status).toHaveBeenCalledTimes(2)
+    expect(turnEnds(events, turnId)).toEqual([])
+    await adapter.close()
+  })
+
+  // R10-2: an abort that starts during the read holds the turn; the read's
+  // outcome is dropped and the stop's reason survives.
+  it("keeps a catalog stop that starts while the history is read, with its reason", async () => {
+    const { adapter, client, events, stream, threadId, turnId, idle, seen, tick } = await reconciledTurn()
+    let answer!: () => void
+    client.session.abort.mockImplementationOnce(() => new Promise((resolve) => { answer = () => resolve({ data: true }) }))
+    seen()
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11 } } } })
+    idle()
+    const release = heldHistory(client)
+    await tick(2_100)
+    stream.emit({ type: "message.part.updated", properties: { part: { type: "tool", sessionID: threadId, messageID: "msg_5", callID: "c1", tool: "plan_enter", state: { status: "pending", input: {} } } } })
+    await tick(10)
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    release([user(turnId, 10), user("msg_6", 11), reply("msg_7", "msg_6", 12)])
+    await tick(100)
+    expect(turnEnds(events, turnId)).toEqual([])
+    answer()
+    await tick(10)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "plan_enter"))
+    await adapter.close()
+  })
+
+  // An interrupt sends no event, so only the recheck of the abort holds it.
+  it("keeps an interrupt that starts while the history is read, with its outcome", async () => {
+    const { adapter, client, events, threadId, turnId, idle, seen, tick } = await reconciledTurn()
+    let answer!: () => void
+    client.session.abort.mockImplementationOnce(() => new Promise((resolve) => { answer = () => resolve({ data: true }) }))
+    seen()
+    idle()
+    const release = heldHistory(client)
+    await tick(2_100)
+    const interrupt = adapter.interruptTurn(threadId, turnId)
+    await tick(10)
+    release([user(turnId, 10), reply("msg_5", turnId, 11)])
+    await tick(100)
+    expect(turnEnds(events, turnId)).toEqual([])
+    answer()
+    await interrupt
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "interrupted"))
+    await adapter.close()
+  })
+
+  // R10-3: the servers order messages by (time.created, id) (opencode and
+  // kilo session/message-v2.ts isAfter); so does the read.
+  it("does not count an assistant from the prompt's millisecond whose id is earlier", async () => {
+    const { adapter, events, turnId, history, idle, seen, tick } = await reconciledTurn()
+    seen()
+    idle()
+    history([reply("msg_0", "msg_00", 10), user(turnId, 10)])
+    await tick(2_100)
+    expect(turnEnds(events, turnId)).toEqual([])
+    await adapter.close()
+  })
+
+  it("picks the newest reply by time and id, whichever page it is on", async () => {
+    const { adapter, client, events, turnId, idle, seen, tick } = await reconciledTurn()
+    client.session.messages.mockImplementation(async (options?: unknown) => {
+      const before = (options as { query?: { before?: string } } | undefined)?.query?.before
+      if (before === undefined) {
+        return { data: [reply("msg_9", turnId, 20, { completed: true, error: "context overflow" })], response: new Response(null, { headers: { "x-next-cursor": "older" } }) }
+      }
+      return { data: [user(turnId, 10), reply("msg_8", turnId, 20)] }
+    })
+    seen()
+    idle()
+    await tick(2_100)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "context overflow"))
+    await adapter.close()
+  })
 })
 
 describe("Kilo legacy repository configuration", () => {

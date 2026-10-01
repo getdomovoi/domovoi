@@ -633,8 +633,13 @@ code or settings the repository brings:
   ends nothing then. So two seconds after an idle or error that ended no turn, or after such an
   abort fails or the thread stop's deletion may have, the daemon reads the server's own state
   (its session status and the session's messages). A session the server reports busy settles
-  nothing, so an earlier run's idle never ends a later turn this way. With the session idle, the
-  turn ends by the newest assistant message created after its prompt, whatever that message
+  nothing, so an earlier run's idle never ends a later turn this way. The status is read again
+  after the messages, and the read counts only if the session is still idle then, no prompt,
+  message, tool progress, busy status or approval request arrived for the session while it ran,
+  and no abort concerning the turn started meanwhile; otherwise it is read again later, or the
+  abort's answer ends the turn as above. With the session idle, the turn ends by the newest
+  assistant message after its prompt in the server's own order (time created, then id), whatever
+  that message
   answers: completed if it finished without an error, failed with its error, or failed as
   unfinished. Compaction replies end a turn this way, not through what they answer; tool calls
   are still held to a turn only through its prompt and steers. With no reply, the turn fails with
