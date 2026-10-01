@@ -617,10 +617,11 @@ code or settings the repository brings:
   name, in any case, could make the name one of OpenCode's or Kilo's own tools asks under (a server
   named `plan` could make `plan_enter`), when a tool id appears twice, when a tool that is not the
   server's own takes the name of a permission the embedded configuration allows, or when it cannot
-  read them. On Windows the server compares rule names in any case, with a JavaScript regular
-  expression's case-insensitive flag and without its Unicode flag, and the daemon compares those
-  names the same way: `READ` takes `read`, and `Σ` and `ς` are one name. The refusal names the
-  server or tool to rename or turn off.
+  read them. The daemon compares those names as the server's rules do. On every platform the
+  server turns each backslash into a slash first, so `a\b` and `a/b` are one name. On Windows it
+  then compares in any case, with a JavaScript regular expression's case-insensitive flag and
+  without its Unicode flag: `READ` takes `read`, and `Σ` and `ς` are one name. The refusal names
+  the server or tool to rename or turn off.
   A card for a tool those reads cannot place waits up to a second while the daemon reads the
   directory's tool servers again; a read that fails or takes longer leaves that card without a
   server, and the next such card reads again. A card names a tool's server only when exactly one

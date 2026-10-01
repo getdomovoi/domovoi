@@ -131,24 +131,31 @@ export type OpenCodeAdapterIdentity = {
   agentName?: (agent: string) => string
 }
 
-// The server's rule matching (packages/core/src/util/wildcard.ts at opencode
-// v1.18.32 and kilo v7.8.1): `*` is any run, `?` any one character, a
-// trailing " *" also matches nothing, and Windows matches in any case.
+// The server's rule matching (packages/core/src/util/wildcard.ts, the same
+// file at opencode v1.18.32, v1.18.33 and kilo v7.8.1): every backslash
+// becomes a slash in both the pattern and the input, `*` is any run, `?` any
+// one character, a trailing " *" also matches nothing, and Windows matches
+// in any case.
+const ruleText = (name: string) => name.replaceAll("\\", "/")
+
 function wildcardMatches(input: string, pattern: string, platform: NodeJS.Platform): boolean {
-  let escaped = pattern.replaceAll("\\", "/").replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")
+  let escaped = ruleText(pattern).replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")
   if (escaped.endsWith(" .*")) escaped = `${escaped.slice(0, -3)}( .*)?`
-  return new RegExp(`^${escaped}$`, platform === "win32" ? "si" : "s").test(input.replaceAll("\\", "/"))
+  return new RegExp(`^${escaped}$`, platform === "win32" ? "si" : "s").test(ruleText(input))
 }
 
-// Whether the server's rules read two names as one. On Windows its matcher
-// compares in any case with a RegExp "i" flag and no "u" flag, whose case
-// folding is not toLowerCase: "Σ" and "ς" match though their lower cases
-// differ (security review rounds 4 and 5 of #687). Elsewhere names match
-// exactly.
+// Whether the server's rules read two names as one. Both sides take the
+// matcher's backslash-to-slash step on every platform, so "a\b" and "a/b"
+// are one name. On Windows the matcher then compares in any case with a
+// RegExp "i" flag and no "u" flag, whose case folding is not toLowerCase:
+// "Σ" and "ς" match though their lower cases differ. Elsewhere the names
+// must then be equal (security review rounds 4 and 5 of #687).
 function sameRuleName(a: string, b: string, platform: NodeJS.Platform): boolean {
-  if (platform !== "win32") return a === b
-  // Every special character of the name is escaped, as the server escapes it.
-  return new RegExp(`^${a.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i").test(b)
+  const left = ruleText(a)
+  const right = ruleText(b)
+  if (platform !== "win32") return left === right
+  // Every special character of the name is escaped, so it matches only itself.
+  return new RegExp(`^${left.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i").test(right)
 }
 
 export type OpenCodeAdapterOptions = {

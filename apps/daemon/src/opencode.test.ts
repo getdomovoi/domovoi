@@ -15,6 +15,7 @@ import {
   SubagentRegistry,
   domovoiOpenCodeConfig,
   openCodeAgentFor,
+  openCodeAllowedPermissions,
   openCodeBuiltInToolIds,
   openCodeMessageId,
   OpenCodeMessageIdsExhaustedError,
@@ -1900,12 +1901,45 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     ["win32", ["deploy", "DEPLOY"], "refused"],
     ["darwin", ["Σ", "ς"], "opened"],
     ["linux", ["deploy", "DEPLOY"], "opened"],
+    // The server's matcher turns every backslash into a slash on both
+    // sides, on every platform (packages/core/src/util/wildcard.ts, the
+    // same file at opencode v1.18.32, v1.18.33 and kilo v7.8.1).
+    ["darwin", ["a\\b", "a/b"], "refused"],
+    ["linux", ["a/b", "a\\b"], "refused"],
+    ["win32", ["a\\b", "A/B"], "refused"],
+    ["linux", ["a\\b", "a_b"], "opened"],
   ] as const)("on %s, treats plugin tool ids %j as duplicates by the server's matcher", async (platform, ids, outcome) => {
     const { client, factory } = harness()
     client.tool.ids.mockResolvedValue({ data: [...openCodeBuiltInToolIds, ...ids] })
     const adapter = new OpenCodeSdkAdapter(factory, undefined, undefined, { platform })
     const opened = adapter.startThread({ cwd: "/worktree", runtime: runtime("build") }).then(() => "opened", (error: Error) => {
       expect(error.message).toContain(`tool named "${ids[1]}"`)
+      return "refused"
+    })
+    await expect(opened).resolves.toBe(outcome)
+    await adapter.close()
+  })
+
+  // An id the server's matcher reads as an allowed permission takes that
+  // permission's rules unless it is exactly one of the server's own ids.
+  it.each([
+    ["darwin", "docs\\read", [], "refused"],
+    ["linux", "docs\\read", ["docs/read"], "refused"],
+    ["win32", "Docs\\Read", ["docs/read"], "refused"],
+    ["linux", "docs/read", ["docs/read"], "opened"],
+    ["win32", "docs\\read", ["docs\\read"], "opened"],
+  ] as const)("on %s, treats tool id %j by the server's matcher against an allowed name", async (platform, id, own, outcome) => {
+    const { client, factory } = harness()
+    client.tool.ids.mockResolvedValue({ data: [...openCodeBuiltInToolIds, id] })
+    const identity = {
+      providerId: "opencode",
+      providerName: "OpenCode",
+      allowedPermissions: new Set([...openCodeAllowedPermissions, "docs/read"]),
+      builtInToolIds: [...openCodeBuiltInToolIds, ...own],
+    }
+    const adapter = new OpenCodeSdkAdapter(factory, undefined, identity, { platform })
+    const opened = adapter.startThread({ cwd: "/worktree", runtime: runtime("build") }).then(() => "opened", (error: Error) => {
+      expect(error.message).toContain(`tool named "${id}"`)
       return "refused"
     })
     await expect(opened).resolves.toBe(outcome)
