@@ -189,10 +189,20 @@ export class SqliteRepositoryTrust implements RepositoryTrustStore {
         .map(({ name, coll }) => ({ name, coll }))
       if (keys.length === 0 || JSON.stringify(keys) !== JSON.stringify(index.keys)) return false
     }
+    // No foreign key (ruling Q265): ON UPDATE or ON DELETE CASCADE, SET NULL
+    // or SET DEFAULT would let a change to another table's row rewrite a
+    // stored grant, its acknowledgement included. A table with none is
+    // changed only by statements that name it: a cascade changes the child
+    // table, which this one then never is.
+    if (this.#database.prepare("PRAGMA main.foreign_key_list(repository_trust)").all().length > 0) return false
+    // No trigger on the table, and none anywhere whose text names it: a
+    // trigger on another table can write this one, directly or through a
+    // view. Any reference spells the name, and SQLite folds only ASCII case,
+    // so lower() finds every spelling, quoted or not.
     const triggers = this.#database.prepare(`
-      SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'repository_trust' COLLATE NOCASE
+      SELECT name FROM sqlite_master WHERE type = 'trigger' AND (tbl_name = 'repository_trust' COLLATE NOCASE OR instr(lower(sql), 'repository_trust') > 0)
       UNION ALL
-      SELECT name FROM sqlite_temp_master WHERE type = 'trigger' AND tbl_name = 'repository_trust' COLLATE NOCASE
+      SELECT name FROM sqlite_temp_master WHERE type = 'trigger' AND (tbl_name = 'repository_trust' COLLATE NOCASE OR instr(lower(sql), 'repository_trust') > 0)
     `).all()
     return triggers.length === 0
   }

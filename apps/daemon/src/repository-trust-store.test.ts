@@ -207,6 +207,70 @@ describe("SqliteRepositoryTrust", () => {
     expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
   })
 
+  // A foreign key with ON UPDATE CASCADE lets a change to another table's
+  // row rewrite a stored grant: here the parent key moves from 0 to 1 and an
+  // unreviewed grant would read as one that reviewed the git filters (ruling
+  // Q265). Any foreign key refuses the table, earlier or current.
+  it("yields no grant from a table with a foreign key, even after its parent changes", () => {
+    const database = new DatabaseSync(":memory:")
+    database.exec(`
+      CREATE TABLE flags (value INTEGER PRIMARY KEY);
+      INSERT INTO flags VALUES (0);
+      CREATE TABLE repository_trust (
+        project_id TEXT PRIMARY KEY,
+        trusted_digest TEXT NOT NULL,
+        trusted_at TEXT NOT NULL,
+        trusted_client TEXT NOT NULL,
+        trusted_client_id TEXT,
+        git_filters_reviewed INTEGER NOT NULL DEFAULT 0 REFERENCES flags(value) ON UPDATE CASCADE
+      );
+      CREATE INDEX repository_trust_trusted_at ON repository_trust (trusted_at);
+    `)
+    database.prepare("INSERT INTO repository_trust (project_id, trusted_digest, trusted_at, trusted_client, trusted_client_id) VALUES (?, ?, ?, ?, ?)")
+      .run("project-acme", digest("a"), "2026-09-30T12:00:00.000Z", "desktop", null)
+    const trust = new SqliteRepositoryTrust(database)
+    database.exec("UPDATE flags SET value = 1 WHERE value = 0")
+
+    expect(trust.find("project-acme")).toBeUndefined()
+    expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+  })
+
+  it("does not migrate an earlier table with a foreign key", () => {
+    const database = new DatabaseSync(":memory:")
+    database.exec(`
+      CREATE TABLE digests (value TEXT PRIMARY KEY);
+      CREATE TABLE repository_trust (
+        project_id TEXT PRIMARY KEY,
+        trusted_digest TEXT NOT NULL REFERENCES digests(value) ON UPDATE CASCADE,
+        trusted_at TEXT NOT NULL,
+        trusted_client TEXT NOT NULL,
+        trusted_client_id TEXT
+      );
+      CREATE INDEX repository_trust_trusted_at ON repository_trust (trusted_at);
+    `)
+    const trust = new SqliteRepositoryTrust(database)
+
+    expect(database.prepare("PRAGMA main.table_xinfo(repository_trust)").all()).toHaveLength(5)
+    expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+  })
+
+  // A trigger on any other table that writes this one could change a grant
+  // behind the store, so a trigger anywhere whose text names the table refuses
+  // it. With no foreign key on the table, no cascade reaches it.
+  it.each([
+    ["a trigger", "CREATE TRIGGER mint AFTER INSERT ON other BEGIN UPDATE repository_trust SET git_filters_reviewed = 1; END"],
+    ["a temporary trigger", "CREATE TEMP TRIGGER mint AFTER INSERT ON other BEGIN UPDATE \"Repository_Trust\" SET git_filters_reviewed = 1; END"],
+  ])("yields no grant when %s on another table writes its table", (_, trigger) => {
+    const database = new DatabaseSync(":memory:")
+    new SqliteRepositoryTrust(database).record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
+    database.exec("CREATE TABLE other (value INTEGER)")
+    database.exec(trigger)
+    const trust = new SqliteRepositoryTrust(database)
+
+    expect(trust.find("project-acme")).toBeUndefined()
+    expect(() => trust.record({ projectId: "project-beta", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })).toThrow()
+  })
+
   it("yields no grant when a trigger it did not create is on its table", () => {
     const database = new DatabaseSync(":memory:")
     new SqliteRepositoryTrust(database).record({ projectId: "project-acme", trustedDigest: digest("a"), trustedBy: { client: "desktop" } })
