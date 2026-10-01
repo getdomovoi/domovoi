@@ -15,7 +15,7 @@ os.userInfo = () => ({ ...user, homedir: process.env.DOMOVOI_TEST_SERVICE_HOME ?
 let held = false
 childProcess.execFile = (command, args, options, callback) => {
   const powershell = command.endsWith("\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
-  if (!["systemctl", "launchctl", "schtasks"].includes(command) && !powershell) {
+  if (!["systemctl", "launchctl", "schtasks", "loginctl"].includes(command) && !powershell) {
     throw new Error(`Unexpected install subprocess: ${command}`)
   }
   appendFileSync(process.env.DOMOVOI_TEST_MANAGER_LOG, `${JSON.stringify({ command, args })}\n`)
@@ -27,10 +27,15 @@ childProcess.execFile = (command, args, options, callback) => {
   const script = powershell ? Buffer.from(args.at(-1), "base64").toString("utf16le") : ""
   const decode = (entry) => entry.command.endsWith("powershell.exe") ? Buffer.from(entry.args.at(-1), "base64").toString("utf16le") : ""
   let registered = false
+  // Lingering (service/linger.ts) is off until this log records an
+  // enable-linger with no later disable-linger. The account's own is never read.
+  let lingering = false
   for (const line of readFileSync(process.env.DOMOVOI_TEST_MANAGER_LOG, "utf8").split("\n").filter(Boolean)) {
     const entry = JSON.parse(line)
     if ((entry.command === "schtasks" && entry.args[0] === "/create") || (entry.command === "launchctl" && entry.args[0] === "bootstrap")) registered = true
     if (decode(entry).includes("$folder.DeleteTask(") || (entry.command === "launchctl" && entry.args[0] === "bootout")) registered = false
+    if (entry.command === "loginctl" && entry.args[0] === "enable-linger") lingering = true
+    if (entry.command === "loginctl" && entry.args[0] === "disable-linger") lingering = false
   }
   const action = {
     path: `"${process.execPath}"`,
@@ -46,7 +51,7 @@ childProcess.execFile = (command, args, options, callback) => {
         : `domovoi-task:${script.includes("$folder.DeleteTask(") ? "deleted" : "1"}\r\n`
     : printed && registered
       ? `\tpath = ${path.posix.join(home, "Library", "LaunchAgents", "sh.domovoi.domovoid.plist")}\n\tstate = running\n`
-      : ""
+      : command === "loginctl" && args[0] === "show-user" ? (lingering ? "yes\n" : "no\n") : ""
   if (printed && !registered) {
     const error = Object.assign(new Error("Could not find service"), { code: 113 })
     callback(error, "", 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501')

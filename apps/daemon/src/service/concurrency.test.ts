@@ -21,6 +21,11 @@ afterEach(() => {
   if (failures.length > 0) throw new AggregateError(failures, "Test cleanup failed")
 })
 
+async function simulatedLoginctl(command: string, args: string[]) {
+  if (command === "loginctl" && args[0] === "show-user") return { code: 0, stdout: "yes\n" }
+  throw new Error(`This test may not run ${command} ${args.join(" ")}`)
+}
+
 function latch() {
   let release = () => {}
   const promise = new Promise<void>((resolve) => { release = resolve })
@@ -37,7 +42,9 @@ describe("service command exclusion", () => {
     const home = await within(() => mkdtemp(join(tmpdir(), "domovoi-service-overlap-")))
     const entered = latch()
     const resume = latch()
-    const node = nodeServiceEffects({ userHomeDirectory: home })
+    // Lingering (linger.ts) is simulated with the other native managers: a
+    // Linux install asks loginctl, and this answers that it is already on.
+    const node = { ...nodeServiceEffects({ userHomeDirectory: home }), capture: simulatedLoginctl }
     const target = {
       platform: "linux", home, execPath: "/usr/local/bin/domovoid",
       configuration: createServiceConfiguration({}, {

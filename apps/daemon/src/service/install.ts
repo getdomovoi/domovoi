@@ -23,6 +23,7 @@ import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, Owner
 import { readLocalOwnerRecord, type LocalOwnerRecord } from "../local-owner-record.js"
 import { readGuestSupervisorStatus } from "./supervisor-command.js"
 import { profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
+import { disableLinger, enableLinger, lingerAfterRestore, lingerInstallLine, lingerRecord, lingerRemovalLine, type LingerInstallOutcome, type LingerRemovalOutcome } from "./linger.js"
 
 const serviceName = "domovoid"
 const unitFile = loginServiceUnitFile
@@ -38,6 +39,9 @@ type ServiceRegistrationPlan =
 export type ServicePlan = ServiceRegistrationPlan & {
   configuration: { path: string; contents: string }
 }
+
+// An install's plan as carried out, with what happened to Linux lingering.
+export type InstalledService = ServicePlan & { linger?: LingerInstallOutcome }
 
 type ServiceRemovalPlan = Extract<ServiceRegistrationPlan, { kind: "file" }> | WindowsTaskRemovalPlan
 
@@ -676,10 +680,10 @@ async function installWithDeadline(
   handoff: (() => Promise<void>) | undefined,
   callerProfile?: ProfileLocation,
   beforeChanges?: () => Promise<void>,
-): Promise<ServicePlan> {
+): Promise<InstalledService> {
   // Reinstalling is a new supervisor decision, not reuse of an old recovery
   // authorization. Assign the identity here, even if the caller supplied one.
-  const plan = servicePlan({ ...target, configuration: { ...target.configuration, registrationId: randomUUID() } })
+  let plan: InstalledService = servicePlan({ ...target, configuration: { ...target.configuration, registrationId: randomUUID() } })
   deadline.throwIfExpired()
   const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory, target.platform)
   let previous: ProfileLocation | undefined
@@ -742,14 +746,22 @@ async function installWithDeadline(
     // of #577).
     if (beforeChanges !== undefined) await withinServiceDeadline(deadline, beforeChanges)
     await withinServiceDeadline(deadline, () => effects.remove(localOwnerRemovalReceiptPath(profile), deadline))
+    // Decided 2026-09-17 (SHIP-PLAN S1.1): a systemd user unit gets lingering,
+    // turned on before service.json is written, so the one write records
+    // whether Domovoi turned it on (linger.ts).
+    if (target.platform === "linux" && plan.kind === "file") plan = await withLinger(target, plan, effects, deadline)
+    const written = plan
     try {
-      await withinServiceDeadline(deadline, () => effects.write(plan.configuration.path, plan.configuration.contents, deadline))
-      if (plan.kind === "file") await withinServiceDeadline(deadline, () => effects.write(plan.path, plan.contents, deadline))
+      await withinServiceDeadline(deadline, () => effects.write(written.configuration.path, written.configuration.contents, deadline))
+      if (written.kind === "file") await withinServiceDeadline(deadline, () => effects.write(written.path, written.contents, deadline))
     } catch (cause) {
       // Security review round 4 (#574): no manager has seen the new files, so
       // both go back to what they were, under the profile lease. A timed-out
       // write may still land, so then nothing is put back.
-      if (previousFiles && !deadline.signal.aborted) await putPreviousFilesBack(previousFiles, effects, deadline, cause)
+      if (previousFiles && !deadline.signal.aborted) {
+        await putPreviousFilesBack(previousFiles, effects, deadline, cause)
+        if (written.linger?.kind === "enabled") await lingerAfterRestore(target, effects, deadline, cause)
+      }
       throw cause
     }
     deadline.throwIfExpired()
@@ -772,6 +784,7 @@ async function installWithDeadline(
       if (index <= registering && previousFiles && !deadline.signal.aborted) {
         await putPreviousFilesBack(previousFiles, effects, deadline, cause)
         if (bootoutSent) await loadPreviousAgent(target, plan, previousFiles, effects, deadline, cause)
+        if (plan.linger?.kind === "enabled") await lingerAfterRestore(target, effects, deadline, cause)
       }
       throw cause
     }
@@ -779,11 +792,29 @@ async function installWithDeadline(
   return plan
 }
 
+// Lingering for the installing user, and the plan whose service.json records
+// what was done. An earlier install's record is read first so a reinstall
+// keeps a lingering Domovoi turned on as Domovoi's; one that cannot be read
+// counts as no record.
+async function withLinger(target: ServiceTarget, plan: ServicePlan, effects: InstallEffects, deadline: OperationDeadline): Promise<InstalledService> {
+  let previous: boolean | undefined
+  try {
+    previous = effects.readConfiguration?.(target.configuration.homeDirectory, target.platform)?.lingerEnabledByDomovoi
+  } catch {
+    previous = undefined
+  }
+  const linger = await enableLinger(target, previous, effects, deadline)
+  const { lingerEnabledByDomovoi: _earlier, ...configuration } = parseServiceConfiguration(plan.configuration.contents)
+  const record = lingerRecord(linger)
+  const contents = serializeServiceConfiguration(record === undefined ? configuration : { ...configuration, lingerEnabledByDomovoi: record })
+  return { ...plan, configuration: { ...plan.configuration, contents }, linger }
+}
+
 export function installService(
   target: ServiceTarget,
   effects: InstallEffects & Pick<ServiceEffects, "claimServiceOperation">,
   options: { handoff?: () => Promise<void>; callerProfile?: ProfileLocation; beforeChanges?: () => Promise<void> } = {},
-): Promise<ServicePlan> {
+): Promise<InstalledService> {
   return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.handoff, options.callerProfile, options.beforeChanges))
 }
 
@@ -1122,6 +1153,8 @@ type RemovalEffects = Pick<ServiceEffects, "run" | "capture" | "remove" | "exist
 type ServiceRemovalResult = ServiceRemovalPlan & {
   profileRecovery: "recorded" | "operator-confirmation-required" | "proof-unavailable" | "not-needed"
   profileRecoveryDetail?: string
+  // Linux: what happened to lingering, when service.json recorded it.
+  linger?: LingerRemovalOutcome
 }
 
 // Only a failure raised while the Task Scheduler adapter holds the deadline is
@@ -1130,7 +1163,7 @@ type ServiceRemovalResult = ServiceRemovalPlan & {
 type RemovalProgress = { managerHoldsDeadline: boolean }
 
 async function removeWithDeadline(
-  target: Pick<ServiceTarget, "platform" | "home" | "uid">,
+  target: Pick<ServiceTarget, "platform" | "home" | "uid" | "user">,
   effects: RemovalEffects,
   deadline: OperationDeadline,
   progress: RemovalProgress,
@@ -1143,6 +1176,17 @@ async function removeWithDeadline(
   // left running and registered.
   if (plan.kind === "task" && await windowsTaskOwner(home, effects, deadline) === "other") {
     throw new WindowsTaskNotDomovoiError(displayName)
+  }
+  // Decided 2026-09-17 (SHIP-PLAN S1.1): read before anything changes. Only a
+  // record that Domovoi turned lingering on turns it off; a configuration that
+  // cannot be read names no record, and lingering is left as found.
+  let lingerEnabledByDomovoi: boolean | undefined
+  if (target.platform === "linux" && plan.kind === "file") {
+    try {
+      lingerEnabledByDomovoi = effects.readConfiguration?.(home, target.platform)?.lingerEnabledByDomovoi
+    } catch {
+      lingerEnabledByDomovoi = undefined
+    }
   }
   const before = effects.removalSnapshot(home, target.platform)
   // Security review rounds 2 and 3 of #577: the caller's profile is checked
@@ -1199,6 +1243,7 @@ async function removeWithDeadline(
   // profile the saved configuration names under its own home.
   const profile = profileLocation(home, before.effectiveProfileDirectory ?? before.profileDirectory)
   const lease = effects.claimProfile(profile)
+  let removed: ServiceRemovalResult
   try {
     const recovery = serviceRemovalRecovery(before, effects.removalSnapshot(home, target.platform), managerStopped)
     const files = [
@@ -1212,7 +1257,7 @@ async function removeWithDeadline(
     }
     deadline.throwIfExpired()
     if (recovery.kind === "receipt") effects.writeRemovalReceipt(profile, lease, serviceRemovalReceipt(recovery, target.platform), deadline)
-    return {
+    removed = {
       ...plan,
       profileRecovery: recovery.kind === "receipt" ? "recorded" : recovery.kind,
       ...(recovery.kind === "proof-unavailable" ? { profileRecoveryDetail: recovery.reason } : {}),
@@ -1222,10 +1267,14 @@ async function removeWithDeadline(
     // launch settings. On expiry the CLI retains it until process exit.
     if (!deadline.signal.aborted) lease.release()
   }
+  // Last, once the service is gone: a failure here is reported, never thrown,
+  // and leaves lingering on.
+  if (lingerEnabledByDomovoi === undefined) return removed
+  return { ...removed, linger: lingerEnabledByDomovoi ? await disableLinger(target, effects, deadline) : { kind: "left-on" } }
 }
 
 export function removeService(
-  target: Pick<ServiceTarget, "platform" | "home" | "uid">,
+  target: Pick<ServiceTarget, "platform" | "home" | "uid" | "user">,
   effects: RemovalEffects,
   options: { callerProfile?: ProfileLocation } = {},
 ): Promise<ServiceRemovalResult> {
@@ -1388,6 +1437,10 @@ export async function runServiceCommand(
           ? `Installed the Domovoi daemon service at ${plan.path}\n`
           : `Installed the Domovoi daemon service as ${serviceName}\n`,
       )
+      if (plan.linger !== undefined) {
+        const line = lingerInstallLine(plan.linger, target)
+        dependencies[line.stream](line.text)
+      }
       return 0
     }
 
@@ -1398,6 +1451,10 @@ export async function runServiceCommand(
           ? `Removed the Domovoi daemon service at ${plan.path}\n`
           : `Removed the Domovoi daemon service ${displayName}\n`,
       )
+      if (plan.linger !== undefined) {
+        const line = lingerRemovalLine(plan.linger, target)
+        dependencies[line.stream](line.text)
+      }
       if (plan.profileRecovery === "operator-confirmation-required") {
         dependencies.stdout("The profile owner remains unresolved. After confirming no custom or legacy supervisor will restart it, run domovoid profile recover --confirm-no-supervisor.\n")
       }

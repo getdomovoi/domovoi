@@ -27,6 +27,7 @@ import { launchdPlistProgram, systemdUnitProgram } from "./units.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { DaemonServiceUpdateError, publishFirst, runServiceUpdate, trackInFlight } from "./update-outcome.js"
 import { prepareWslUpdate } from "./wsl-install.js"
+import type { LingerInstallOutcome, LingerRemovalOutcome } from "./linger.js"
 
 export { DaemonServiceUpdateError, type DaemonServiceUpdateOutcome } from "./update-outcome.js"
 
@@ -89,12 +90,14 @@ export type DaemonServiceStagedRuntime = {
   publish: () => Promise<void>
 }
 
+// linger: Linux only, what the install or removal did to lingering
+// (service/linger.ts). An update leaves lingering as it is and reports none.
 export type DaemonServiceInstallResult =
-  | { kind: "file"; path: string; configurationPath: string }
+  | { kind: "file"; path: string; configurationPath: string; linger?: LingerInstallOutcome }
   | { kind: "task"; name: string; configurationPath: string }
 
 export type DaemonServiceRemovalResult =
-  | { kind: "file"; path: string; profileRecovery: ProfileRecovery; profileRecoveryDetail?: string }
+  | { kind: "file"; path: string; profileRecovery: ProfileRecovery; profileRecoveryDetail?: string; linger?: LingerRemovalOutcome }
   | { kind: "task"; name: string; profileRecovery: ProfileRecovery; profileRecoveryDetail?: string }
 
 type ProfileRecovery = "recorded" | "operator-confirmation-required" | "proof-unavailable" | "not-needed"
@@ -194,7 +197,7 @@ export async function installDaemonService(
     }),
   })
   return plan.kind === "file"
-    ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
+    ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path, ...(plan.linger === undefined ? {} : { linger: plan.linger }) }
     : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
 }
 
@@ -320,7 +323,7 @@ export async function removeDaemonService(
     ...(removed.profileRecoveryDetail === undefined ? {} : { profileRecoveryDetail: removed.profileRecoveryDetail }),
   }
   return removed.kind === "file"
-    ? { kind: "file", path: removed.path, ...recovery }
+    ? { kind: "file", path: removed.path, ...recovery, ...(removed.linger === undefined ? {} : { linger: removed.linger }) }
     : { kind: "task", name: taskName, ...recovery }
 }
 

@@ -69,6 +69,22 @@ describe("installDaemonService", () => {
     expect(effects.run).toHaveBeenCalledWith("launchctl", ["bootstrap", "gui/501", installed.path], expect.anything())
   })
 
+  // Decided 2026-09-17 (SHIP-PLAN S1.1): the desktop's Linux install turns
+  // lingering on as the CLI's does, and says what it did with the result.
+  it("reports what happened to Linux lingering on install and removal", async () => {
+    const loginctl = vi.fn(async (command: string, args: string[]) => command === "loginctl" && args[0] === "show-user"
+      ? { code: 0, stdout: "no\n" } : { code: 0, stdout: "" })
+    const installing = dependencies({ platform: "linux", home: "/home/dl", uid: 1000, capture: loginctl })
+    expect(await installDaemonService({ runtime }, installing)).toMatchObject({ kind: "file", linger: { kind: "enabled" } })
+    const removing = dependencies({
+      platform: "linux", home: "/home/dl", uid: 1000, capture: loginctl,
+      readConfiguration: vi.fn(() => ({ ...createServiceConfiguration({}, { platform: "linux", homeDirectory: "/home/dl", workingDirectory: "/home/dl" }), lingerEnabledByDomovoi: true })),
+    })
+    expect(await removeDaemonService(removing)).toMatchObject({ kind: "file", linger: { kind: "disabled" } })
+    expect(loginctl.mock.calls.filter(([command]) => command === "loginctl").map(([, args]) => args[0]))
+      .toEqual(["show-user", "enable-linger", "disable-linger"])
+  })
+
   it("refuses a runtime that is not there before claiming the profile or writing a file", async () => {
     for (const [part, missing] of [["node", runtime.nodePath], ["daemon", runtime.daemonEntryPath]] as const) {
       const effects = dependencies({ runtimeFile: vi.fn(async (path: string) => path === missing ? "missing" as const : "file" as const) })

@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { on, once } from "node:events"
 import { chmod, copyFile, mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { tmpdir, userInfo } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { promisify } from "node:util"
@@ -101,6 +101,14 @@ describe("distributed service CLI", () => {
       expect(launch).toContain(process.execPath)
       expect(launch).toContain("--service-config")
       expect(launch).toContain(configPath)
+      // Decided 2026-09-17 (SHIP-PLAN S1.1): the Linux install turned the
+      // shim's lingering on and recorded it. The shim answers loginctl.
+      if (process.platform === "linux") {
+        expect(commands).toContainEqual({ command: "loginctl", args: ["enable-linger", String(userInfo().uid)] })
+        expect(saved.lingerEnabledByDomovoi).toBe(true)
+      } else {
+        expect(commands.some(({ command }) => command === "loginctl")).toBe(false)
+      }
 
       // The manager has a different environment after reboot. It must not
       // override the saved listener, file credential, identity, or origins.
