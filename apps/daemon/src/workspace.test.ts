@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process"
+import { execFile, type ChildProcess } from "node:child_process"
 import { createServer } from "node:http"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises"
@@ -42,12 +42,40 @@ async function failNextRestoreClaimClose(error: Error) {
   })
 }
 
+const gitDaemons: ChildProcess[] = []
+
 afterEach(async () => {
   vi.mocked(open).mockReset()
   vi.mocked(readFile).mockReset()
   vi.mocked(unlink).mockReset()
+  for (const daemon of gitDaemons.splice(0)) daemon.kill()
   await removeScratchDirectories(scratchDirectories)
 })
+
+// A shared remote served over git:// by a local git daemon for the test's
+// life, push included. A session transfer refuses a repository remote on a
+// local path or a file:// URL: the far side would run that repository's
+// own hooks.
+async function servedRemotes(basePath: string): Promise<{ url: (name: string) => string }> {
+  const port = await new Promise<number>((resolvePort, reject) => {
+    const probe = createServer()
+    probe.once("error", reject)
+    probe.listen(0, "127.0.0.1", () => {
+      const address = probe.address()
+      probe.close(() => resolvePort(typeof address === "object" && address ? address.port : 0))
+    })
+  })
+  gitDaemons.push(execFile("git", [
+    "daemon", "--reuseaddr", "--export-all", "--enable=receive-pack", `--base-path=${basePath}`, "--listen=127.0.0.1", `--port=${port}`, basePath,
+  ]))
+  const url = (name: string) => `git://127.0.0.1:${port}/${name}`
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const ready = await execute("git", ["ls-remote", url("")]).then(() => true, (error: { stderr?: string }) => !/Connection refused|unable to connect/iu.test(error.stderr ?? ""))
+    if (ready) break
+    await new Promise((wait) => setTimeout(wait, 100))
+  }
+  return { url }
+}
 
 describe("GitWorkspaceService", () => {
   it("archives only the session worktree while retaining its branch and source checkout", async () => {
@@ -2055,13 +2083,39 @@ describe("GitWorkspaceService session refs", () => {
       "-c", "user.email=test@example.invalid",
       "commit", "-m", "initial",
     ])
-    await execute("git", ["-C", repositoryPath, "remote", "add", "origin", remotePath])
+    const served = await servedRemotes(scratch)
+    await execute("git", ["-C", repositoryPath, "remote", "add", "origin", served.url("remote.git")])
     const service = new GitWorkspaceService(join(scratch, "worktrees"))
     const workspace = await service.createSessionWorkspace(repositoryPath, "session-1")
     await writeFile(join(workspace.path, "README.md"), "moved\n")
     const checkpoint = await service.checkpoint(workspace.path, "before-transfer")
-    return { scratch, service, workspace, checkpoint, remotePath }
+    return { scratch, service, workspace, checkpoint, remotePath, repositoryPath }
   }
+
+  // A repository can track a bare repository of its own, hooks included, and
+  // name it as a remote. Pushing to it would run its receive hooks as the
+  // person, and fetching from it its upload side; a remote on a local path or
+  // a file:// URL is refused, and nothing on the far side runs.
+  it.each([
+    ["a local path", (path: string) => join(path, "target.git")],
+    ["a file URL", (path: string) => pathToFileURL(join(path, "target.git")).href],
+  ])("refuses a repository remote on %s, and runs none of its hooks", async (_label, address) => {
+    const { scratch, service, workspace, checkpoint, repositoryPath } = await sessionWithRemote("domovoi-ref-local-")
+    const target = join(repositoryPath, "target.git")
+    const markerPath = join(scratch, "hook-ran").replaceAll("\\", "/")
+    await execute("git", ["init", "--quiet", "--bare", target])
+    for (const hook of ["pre-receive", "update", "post-receive", "reference-transaction", "pre-upload-pack"]) {
+      await writeFile(join(target, "hooks", hook), `#!/bin/sh\necho ${hook} >> "${markerPath}"\nexit 1\n`, { mode: 0o755 })
+    }
+    await execute("git", ["-C", repositoryPath, "remote", "add", "tracked", address(repositoryPath)])
+
+    await expect(service.pushSessionRef(workspace.path, "tracked", "session-1")).rejects.toMatchObject({ name: "RepositoryRemoteRefusedError" })
+    const targetService = new GitWorkspaceService(join(scratch, "target-worktrees"))
+    await expect(targetService.restoreSessionFromRef(repositoryPath, "tracked", "session-2", checkpoint.commit))
+      .rejects.toMatchObject({ name: "RepositoryRemoteRefusedError" })
+
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+  })
 
   it("pushes without the repository's own ssh command", async () => {
     const { scratch, service, workspace } = await sessionWithRemote("domovoi-ref-ssh-")
@@ -2192,7 +2246,8 @@ describe("GitWorkspaceService session ref restore", () => {
       "-c", "user.email=test@example.invalid",
       "commit", "-m", "initial",
     ])
-    await execute("git", ["-C", repositoryPath, "remote", "add", "origin", remotePath])
+    const served = await servedRemotes(scratch)
+    await execute("git", ["-C", repositoryPath, "remote", "add", "origin", served.url("remote.git")])
     const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
     const workspace = await source.createSessionWorkspace(repositoryPath, "session-1")
     await writeFile(join(workspace.path, "README.md"), "moved\n")
@@ -2200,7 +2255,7 @@ describe("GitWorkspaceService session ref restore", () => {
     await source.pushSessionRef(workspace.path, "origin", "session-1")
 
     const targetClone = join(scratch, "target-project")
-    await execute("git", ["clone", "--quiet", remotePath, targetClone])
+    await execute("git", ["clone", "--quiet", served.url("remote.git"), targetClone])
     const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
     const restored = await target.restoreSessionFromRef(
       targetClone,
@@ -2255,7 +2310,8 @@ describe("GitWorkspaceService session ref restore", () => {
       "-c", "user.email=test@example.invalid",
       "commit", "-m", "initial",
     ])
-    await execute("git", ["-C", repositoryPath, "remote", "add", "origin", remotePath])
+    const served = await servedRemotes(scratch)
+    await execute("git", ["-C", repositoryPath, "remote", "add", "origin", served.url("remote.git")])
     const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
     const workspace = await source.createSessionWorkspace(repositoryPath, "session-1")
 
@@ -2274,7 +2330,7 @@ describe("GitWorkspaceService session ref restore", () => {
     )
 
     const targetClone = join(scratch, "target-project")
-    await execute("git", ["clone", "--quiet", remotePath, targetClone])
+    await execute("git", ["clone", "--quiet", served.url("remote.git"), targetClone])
     const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
     const restored = await target.restoreSessionFromRef(
       targetClone,
@@ -3179,14 +3235,15 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     const { scratch, repositoryPath, filterFile, git, ran } = await filteredRepository("domovoi-ref-transfer-filter-")
     const remotePath = join(scratch, "remote.git")
     await run("init", "--bare", remotePath)
-    await git("remote", "add", "origin", remotePath)
+    const served = await servedRemotes(scratch)
+    await git("remote", "add", "origin", served.url("remote.git"))
     const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
     const workspace = await source.createSessionWorkspace(repositoryPath, "session-1")
     await writeFile(join(workspace.path, "victim.txt"), "moved\n")
     const checkpoint = await source.checkpoint(workspace.path, "before-transfer")
     await source.pushSessionRef(workspace.path, "origin", "session-1")
     const targetClone = join(scratch, "target-project")
-    await run("clone", "--quiet", remotePath, targetClone)
+    await run("clone", "--quiet", served.url("remote.git"), targetClone)
     await run("-C", targetClone, "config", "includeIf.onbranch:domovoi/**.path", filterFile)
     const targetWorktrees = join(scratch, "target-worktrees")
 

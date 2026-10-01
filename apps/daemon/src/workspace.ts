@@ -422,24 +422,24 @@ async function configEntries(
   return entries
 }
 
-const transferProtocols = ["https", "http", "ssh", "git", "file"] as const
+const remoteProtocols = ["https", "http", "ssh", "git"] as const
 
-// Whether a session transfer pushes to or fetches from this address: the
-// forms a checkout carries (carriedRemoteUrl: https, http, ssh, git or an
-// scp-like address), a file:// URL, or a local path. A `<helper>::` address,
-// any other scheme, a control character or a leading "-" is refused.
+// Whether a session transfer pushes to or fetches from this repository
+// remote address: the forms a checkout carries (carriedRemoteUrl: https,
+// http, ssh, git or an scp-like address). A local path or a file:// URL is
+// refused: Git would run the receiving or serving side on this machine, with
+// that repository's own hooks and config, which the repository chose. So is
+// a `<helper>::` address, any other scheme, a control character or a host
+// starting with "-".
 export function transferRemoteUrl(url: string): boolean {
-  if (carriedRemoteUrl(url)) return true
-  if (url === "" || /[\p{Cc}]/u.test(url) || url.includes("::") || url.startsWith("-")) return false
-  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//u.exec(url)
-  return scheme === null || scheme[1]!.toLowerCase() === "file"
+  return carriedRemoteUrl(url)
 }
 
 export class RepositoryRemoteRefusedError extends RepositoryConfigRefusedError {
   constructor(remote: string) {
     super(
       `The remote "${shownName(remote)}" has an address or a remote helper Domovoi does not push to or fetch from. `
-      + "A session transfer uses https, http, ssh and git remotes, file:// URLs and local paths only.",
+      + "A session transfer uses https, http, ssh and git remotes only, not a local path or a file:// URL.",
     )
     this.name = "RepositoryRemoteRefusedError"
   }
@@ -466,18 +466,26 @@ async function refuseRemoteAddresses(repositoryPath: string, remote: string, sig
 // sets is refused, since no override can remove one.
 const transportSettingPattern = String.raw`^(core\.(sshcommand|askpass|gitproxy)|credential\..*helper|remote\..*\.(uploadpack|receivepack)|url\..*\.(insteadof|pushinsteadof))$`
 
-async function repositoryTransportOverrides(repositoryPath: string, signal?: AbortSignal): Promise<string[]> {
+// `source` says where the transfer reads or writes: a named repository
+// remote, or a bundle file Domovoi itself wrote and names by path.
+async function repositoryTransportOverrides(
+  repositoryPath: string,
+  source: "remote" | "bundle",
+  signal?: AbortSignal,
+): Promise<string[]> {
   const entries = await configEntries(repositoryPath, transportSettingPattern, signal)
   const untrusted = entries.filter(({ scope }) => !trustedConfigScopes.has(scope))
   const refused = untrusted.filter(({ key }) => key.includes("=") || /^(core\.gitproxy|url\..*\.(insteadof|pushinsteadof))$/u.test(key))
   if (refused.length > 0) throw new RepositoryTransportRefusedError(refused)
   // Only the transports a session transfer uses: https, http, ssh and git
-  // remotes, and file for a remote on a local path and for a bundle. Every
-  // other transport, ext:: and any `<helper>::` address or remote vcs
-  // setting that would start git-remote-<helper>, is refused by Git.
+  // for a repository remote, and file only for a bundle path Domovoi
+  // supplies. Every other transport, ext:: and any `<helper>::` address or
+  // remote vcs setting that would start git-remote-<helper>, is refused by
+  // Git. A bundle fetch reads the file and starts no serving side.
+  const protocols = source === "bundle" ? ["file"] : remoteProtocols
   const overrides = [
     "-c", "protocol.allow=never",
-    ...transferProtocols.flatMap((protocol) => ["-c", `protocol.${protocol}.allow=always`]),
+    ...protocols.flatMap((protocol) => ["-c", `protocol.${protocol}.allow=always`]),
     "-c", "push.gpgSign=false",
   ]
   for (const key of new Set(untrusted.map(({ key }) => key))) {
@@ -1880,7 +1888,7 @@ export class GitWorkspaceService implements WorkspaceService {
     if (!safeRemoteName.test(remote)) throw new Error("Remote name is not safe")
 
     const { commit, transport } = await this.#isolated(worktreePath, worktreePath, signal, async (isolated) => {
-      const transport = await repositoryTransportOverrides(worktreePath, signal)
+      const transport = await repositoryTransportOverrides(worktreePath, "remote", signal)
       const remotes = await git(worktreePath, ["remote"], signal)
       if (!remotes.split("\n").map((name) => name.trim()).includes(remote)) {
         throw new Error(`Repository has no remote named ${remote}`)
@@ -1937,7 +1945,7 @@ export class GitWorkspaceService implements WorkspaceService {
 
     const ref = `refs/domovoi/sessions/${sessionId}`
     const checkpointRefs = uniqueCheckpointCommits(checkpointCommits).map(checkpointRef)
-    const transport = await repositoryTransportOverrides(repositoryPath, operationSignal)
+    const transport = await repositoryTransportOverrides(repositoryPath, "remote", operationSignal)
     await refuseRemoteAddresses(repositoryPath, remote, operationSignal)
     await git(repositoryPath, [
       ...transport,
@@ -2171,7 +2179,12 @@ export class GitWorkspaceService implements WorkspaceService {
       source: checkpointRef(commit),
       target: `${incomingPrefix}/checkpoints/${commit}`,
     }))
-    const transport = await repositoryTransportOverrides(repository.root, signal)
+    // The file transport is allowed only for this path, the bundle Domovoi
+    // received, and only while it is a regular file: a repository directory
+    // there would start a serving side with that repository's own config.
+    const transport = await repositoryTransportOverrides(repository.root, "bundle", signal)
+    const bundle = await lstat(bundlePath).catch(() => undefined)
+    if (!bundle?.isFile()) throw new Error("Bundle could not be verified")
     try {
       await git(repository.root, [
         ...transport,
