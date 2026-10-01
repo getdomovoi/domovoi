@@ -552,19 +552,57 @@ code or settings the repository brings:
   `KILO_DISABLE_PROJECT_CONFIG=1`. Project `opencode.json`, `kilo.json`, `.opencode/`, `.kilo/`
   and `.kilocode/` configuration, plugins and MCP entries are not loaded, and no package install
   runs in those directories. Your global provider configuration still applies.
-- The OpenCode and Kilo servers listen on loopback and take a new random password at each start.
-  Both read that password only from their environment, so it is in each server's startup
-  environment. Every program a server starts (an approved command, a tool server, a language
-  server) runs as the same user and can read that environment (`ps eww` on macOS,
-  `/proc/<pid>/environ` on Linux), learn the password, and answer an approval itself. The daemon
-  records each approval reply before it sends it. When a server reports a reply the daemon did
-  not send, the daemon aborts the run, fails the session with `approval-answered-elsewhere`,
-  refuses every request still waiting, unloads the thread, and records
-  `provider.approval-answered-elsewhere` in the audit log. The next message resumes the thread.
-  Limits: the server lets the approved call run before the daemon hears of the reply, so one call
-  approved this way can run before the stop. The password stays readable by those programs for
-  as long as the server runs. The stop covers approval replies only, not other requests made with
-  the password.
+- The daemon starts one OpenCode server and one Kilo server, each on loopback with a new random
+  password at each start. Both read that password only from their environment, so it is in each
+  server's startup environment, though never in the daemon's own environment or in any process's
+  arguments. Every program a server starts (an approved command, a tool server, a language server)
+  runs as the same user and can read that environment (`ps eww` on macOS, `/proc/<pid>/environ` on
+  Linux). The password authenticates the whole server API, for every session on that server, not
+  one session. With it a program can:
+  - list every session on the server and read its messages;
+  - create a session with permission rules or a parent session it chooses;
+  - change the server's global or directory configuration, including permission rules;
+  - add or connect MCP servers;
+  - start a terminal (PTY) and run commands in it;
+  - send or resend prompts, which run on your provider accounts;
+  - abort or delete other sessions;
+  - answer any session's approval requests, and on Kilo save always-allow rules
+    (`/permission/{requestID}/always-rules`) or allow everything (`/permission/allow-everything`).
+
+  What the daemon does about it. A reply to an approval counts as the daemon's only when the
+  daemon sent that answer and the server accepted it: a server takes one answer per request and
+  refuses later ones. When a server reports any other reply, in `permission.replied` or
+  `permission.v2.replied`, the daemon refuses every request the session still waits on, aborts
+  the session's run and its subagents' runs and waits for the server to confirm, fails the session
+  with `approval-answered-elsewhere`, and records `provider.approval-answered-elsewhere` in the
+  audit log. It then restarts the server, which ends every process the server started and drops
+  every approval the server kept in memory, so every other session on that server reconnects on
+  its next message. The stopped session's provider session is never resumed: it continues only
+  after you restart its provider, in a new provider session without its earlier conversation. A
+  stop the server does not confirm, or a directory whose event stream closes with a run the server
+  will not confirm aborted, ends the server. A `permission.v2.asked` request, which the daemon
+  cannot answer, ends its turn.
+
+  Limits:
+  - The server runs the approved call before the daemon hears of the reply, so whatever was
+    approved, and anything it started, may have run before the stop.
+  - The password stays readable by those programs for as long as the server runs, and nothing
+    the API allows apart from approval replies is seen: configuration, MCP, terminal, prompt and
+    session changes made with it go unnoticed.
+  - When the daemon cannot tell whether the server accepted its own answer, it counts the reply
+    as someone else's and stops the session.
+  - A reply sent while the daemon's event stream for that directory is down, or for a subagent
+    whose creation the daemon never saw, is not seen.
+  - Kilo writes always-allow rules and a global allow everything to your global Kilo
+    configuration file, where a restart does not remove them, and allow everything with no
+    request waiting reports nothing the daemon sees. The daemon's own Kilo agents keep its ask
+    rules after any rule in that file, but Kilo's built-in subagents (`general`, `debug`) do
+    not: when the file names `bash` or `edit` before a global allow everything, that allow
+    everything opens commands and edits to them.
+  - A reply made in another session's name, or a forged subagent, stops that session, and every
+    stop restarts the server for every session on it.
+  - A process that leaves the server's process group (`setsid`) or, on Windows, its process tree
+    survives a stop.
 - Kilo still reads its legacy files from the session directory with that switch set: a
   `.kilo/mcp.json` or `.kilocode/mcp.json` starts its MCP servers, and a `.kilocodemodes` adds
   agents with their own permissions. The daemon refuses to open or continue a Kilo session in a
