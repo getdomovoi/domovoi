@@ -1,7 +1,8 @@
 # S3.2 plan: the daemon serves the web app over the tailnet
 
-Status: plan only, written 2026-10-01 on `feat/s3-2-web-over-tailnet` from `origin/main`
-164eb985. No production code is in this change. Every `file:line` below was read on that commit.
+Status: plan, written 2026-10-01 on `feat/s3-2-web-over-tailnet` from `origin/main` 164eb985.
+Every `file:line` below was read on that commit. The owner answered section 7 on 2026-10-01
+(Q286, A for each).
 
 ## What this closes
 
@@ -95,7 +96,7 @@ follows.
 The bundle is loaded once, in `apps/daemon/src/production-daemon.ts` next to `loadTls`
 (`production-daemon.ts:139`), before the listener exists, into an immutable in-memory map from
 URL path to `{ bytes, contentType, etag, cacheClass }`. Per request the daemon reads nothing from
-disk. Replacing the bundle takes a daemon restart (owner question Q4).
+disk. Replacing the bundle takes a daemon restart (Q4, answered A).
 
 The loader refuses the whole bundle, and the daemon serves the plain page instead, when any of
 these hold:
@@ -172,7 +173,7 @@ second TLS configuration. Consequences:
 - On a loopback daemon without TLS the origin is `http://127.0.0.1:<port>` (or `localhost`,
   `[::1]`). Plaintext stays loopback only, because `config.ts:57-64` already refuses a
   non-loopback listener without TLS; nothing here adds a second rule.
-- Whether loopback serves the app at all is owner question Q3.
+- Loopback serves the app too (Q3, answered A), with A14's loopback limit restated.
 
 ### 2.3 Path layout on the listener
 
@@ -301,7 +302,7 @@ browser refuses as a service worker script.
 That sandbox becomes load-bearing for the app's origin, not only for the preview. Slice 5 adds a
 test that every `/artifacts/` response, for every purpose and error path that returns a document,
 carries a `sandbox` directive without `allow-same-origin`. The alternative, a separate port for
-the app, is owner question Q1.
+the app, was Q1's option B; the owner chose the shared origin (A).
 
 The web root must also never hold agent output. It is configured by the owner, outside the
 profile's `worktrees/`, and the loader refuses a root inside the profile directory.
@@ -362,8 +363,8 @@ the desktop's (`apps/daemon/src/local-daemon.ts` nonce and proof). What changes:
 
 The pasted root-bearer path (`pairBrowserDevice`, `daemon-pairing.ts:149-170`) moves the daemon's
 root credential into a browser. On a page served to another machine that sends the root
-credential off the execution machine, against the architecture rule that secrets stay there. Owner
-question Q5 covers hiding it off loopback.
+credential off the execution machine, against the architecture rule that secrets stay there. Q5,
+answered A: off loopback the served app offers code pairing only (slice 6).
 
 A web credential with `full` access is a full client: it can answer gates and, per ruling Q67, grant
 repository trust (`server.ts:2087-2104`). Served over the tailnet, that client can be on another
@@ -484,8 +485,8 @@ Each is one pull request, test first, with `pnpm typecheck`, `pnpm test`, `pnpm 
    which updates preview `frame-ancestors`; the TLS test certificate tests; the sandbox test. The
    section 2.4 test is written first and must fail on `main`. After this the app works over the
    tailnet, and phone previews over the tailnet name may start working too.
-6. **Pairing copy off loopback** (Claude Code), if Q5 is A: the served app offers code pairing
-   only when its origin is not loopback.
+6. **Pairing copy off loopback** (Claude Code), per Q5 (answered A): the served app offers code
+   pairing only when its origin is not loopback.
 7. **Packaging and documents** (Claude Code for `scripts/`, the daemon owner for README). A
    `domovoi-web-<version>.tar.gz` in `scripts/release-artifacts.mjs` with its line in `SHA256SUMS`;
    install steps in `docs/clean-machine-setup.md` and the tailnet section of `apps/mobile/README.md`;
@@ -498,29 +499,33 @@ one host and `DOMOVOI_WEB_APP_URL` is unset, `server.ts:7353`) would let the pai
 browser link with no setting. It is small and reversible and can follow slice 5; it is not needed
 for M1.
 
-## 7. Owner questions
+## 7. Owner answers
 
-Each has two options and a recommendation. Nothing in slices 1 to 3 depends on Q1, Q3 or Q5.
+The owner answered all six on 2026-10-01 as Q286: A for each. The options are kept as asked, with
+the answer under each.
 
 - **Q1. One origin for the app and the previews?** (A) Same origin; the CSP sandbox on every
   artifact response keeps previews in an opaque origin, pinned by a test. (B) Serve the app on a
   second port, so previews never share its origin; costs a second listener, a second advertised
-  address and a second origin in every allow-list. Recommend A.
+  address and a second origin in every allow-list.
+  Answer: A, fetzy 2026-10-01, Q286. The sandbox test lands in slice 5.
 - **Q2. When is the app served?** (A) Whenever a valid bundle is at `DOMOVOI_WEB_DIR` or the
   default path beside the install, with the state page at `/` otherwise; this is the 2026-09-17
-  shape. (B) Only when `DOMOVOI_WEB_DIR` is set; `/` stays a 404 otherwise. Recommend A: the surface
-  is static files, and B makes every tailnet setup carry one more setting.
+  shape. (B) Only when `DOMOVOI_WEB_DIR` is set; `/` stays a 404 otherwise.
+  Answer: A, fetzy 2026-10-01, Q286.
 - **Q3. Serve on a plaintext loopback listener too?** (A) Yes, the same rule as the socket, with
   A14's loopback limit restated. (B) TLS listeners only; loopback keeps the vite dev server.
-  Recommend A: the loopback half of `S3.2` then runs on the shipped bundle rather than a dev server.
+  Answer: A, fetzy 2026-10-01, Q286.
 - **Q4. Replacing a bundle.** (A) Load once at start; a new bundle takes a daemon restart. (B)
-  Reload when the manifest file changes, swapping the map atomically. Recommend A for M1, with B
-  when `S1.4` gives the web bundle its own update path.
+  Reload when the manifest file changes, swapping the map atomically.
+  Answer: A, fetzy 2026-10-01, Q286. B can follow when `S1.4` gives the web bundle its own update
+  path.
 - **Q5. Pasting the root credential into a page served to another machine.** (A) Off loopback the
-  served app offers code pairing only. (B) Keep both paths everywhere. Recommend A: the root
-  credential should not leave the execution machine. A daemon-side refusal of the root credential
-  from non-loopback peers would also affect the CLI over the tailnet, so it is a separate question.
+  served app offers code pairing only. (B) Keep both paths everywhere.
+  Answer: A, fetzy 2026-10-01, Q286. A daemon-side refusal of the root credential from non-loopback
+  peers would also affect the CLI over the tailnet, so it stays a separate question.
 - **Q6. Does the desktop app ship the bundle?** (A) Not in M1: the bundle is a release artifact the
   owner places, documented in clean-machine setup. (B) The desktop packs it beside its daemon
   runtime (`apps/desktop/electron-builder.yml` `extraResources`) so a desktop-installed service
-  serves it with no step. Recommend A for M1; B belongs with `S1.4`.
+  serves it with no step.
+  Answer: A, fetzy 2026-10-01, Q286. B can follow with `S1.4`.
