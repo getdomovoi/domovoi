@@ -23,4 +23,5 @@ process runs, followed by its exit; a first process that exits before any `taskk
 `taskkill` that fails, leaves the stop unconfirmed until Domovoi restarts. A permission
 answer with no outcome within 10 seconds counts as unknown. The session view tells
 the person to review the session's changes, because the server lets the approved call run
-before the daemon hears of the reply.
+before the daemon hears of the reply. The desktop setup steps show the same incident for that
+provider and do not offer to finish setup, instead of reporting the provider ready.
