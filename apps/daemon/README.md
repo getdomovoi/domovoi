@@ -581,9 +581,9 @@ code or settings the repository brings:
   read them. The refusal names the server or tool to rename or turn off.
   When a session's directory opens, the daemon reads the names of the tool servers that directory
   knows. A card names a tool's server only when exactly one of them could have made the tool's name
-  (the server's name with characters outside letters, digits, `-` and `_` turned into `_`, then
-  `_` and the tool's name), never for one of OpenCode's or Kilo's own tools, and then it offers no
-  Always.
+  (the server's name with each UTF-16 unit outside letters, digits, `-` and `_` turned into `_`,
+  then `_` and the tool's name), never for a tool the directory lists among its tool ids (OpenCode's
+  or Kilo's own, or a plugin's), and then it offers no Always.
 - Kilo still reads its legacy files from the session directory with that switch set: a
   `.kilo/mcp.json` or `.kilocode/mcp.json` starts its MCP servers, and a `.kilocodemodes` adds
   agents with their own permissions. The daemon refuses to open or continue a Kilo session in a

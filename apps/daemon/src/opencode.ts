@@ -811,17 +811,18 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     )
   }
 
-  // The tool server whose tool asks under `permission`: the one server the
-  // directory knows whose name, made into a tool key prefix as the server
-  // makes it (opencode mcp/catalog.ts: every character outside [a-zA-Z0-9_-]
-  // becomes `_`, then `_` before the tool's name), starts the permission.
-  // None when no server or more than one could have made it, so a card never
-  // names a server the call may not reach, and none for the server's own
-  // tools.
+  // The tool server whose tool asks under `permission`, from the directory's
+  // catalog: the one server whose name, made a tool key prefix as the server
+  // makes it (openCodeToolPrefixName, then `_`), starts the permission. None
+  // for a permission that is one of the directory's tool ids (a plugin's tool
+  // or the server's own), and none when no server or more than one could
+  // have made it, so a card never names a server the call may not reach. A
+  // server whose tools could take one of the server's own permissions refuses
+  // the session (#refuseUnownedNames), so no such name is left to suppress.
   #toolServerOf(cwd: string, permission: string): string | undefined {
-    if ((this.#identity.builtInPermissions ?? openCodeBuiltInPermissions).has(permission)) return undefined
-    const servers = this.#catalogs.get(cwd)?.servers ?? []
-    const matches = servers.filter((name) => permission.startsWith(`${name.replace(/[^a-zA-Z0-9_-]/gu, "_")}_`))
+    const catalog = this.#catalogs.get(cwd)
+    if (catalog === undefined || catalog.toolIds.has(permission)) return undefined
+    const matches = catalog.servers.filter((name) => permission.startsWith(`${openCodeToolPrefixName(name)}_`))
     return matches.length === 1 ? matches[0] : undefined
   }
 

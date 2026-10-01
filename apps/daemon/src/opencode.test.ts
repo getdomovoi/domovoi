@@ -1275,6 +1275,35 @@ describe("subagents and current permission events", () => {
     await adapter.close()
   })
 
+  // Security review round 1 of #687 (P2): the card's tool server comes from
+  // the directory's catalog. A tool listed among the tool ids is a plugin's
+  // or the server's own, never a tool server's, and a server's name is made a
+  // key prefix exactly as OpenCode makes it: each UTF-16 unit outside
+  // [a-zA-Z0-9_-] becomes `_`.
+  it("names a tool server from the directory's catalog, as OpenCode names its tools", async () => {
+    const { client, factory, stream } = harness()
+    client.mcp.status.mockResolvedValue({ data: { docs: { status: "connected" }, "team🔥x": { status: "connected" } } })
+    client.tool.ids.mockResolvedValue({ data: [...openCodeBuiltInToolIds, "docs_publish"] })
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Call tools", runtime: runtime("build") })
+    const ask = (id: string, permission: string) => stream.emit({
+      type: "permission.asked",
+      properties: { id, sessionID: threadId, permission, patterns: ["*"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: `call_${id}` } },
+    })
+    ask("plugin", "docs_publish")
+    ask("emoji", "team__x_search")
+    ask("server", "docs_search")
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(3))
+    const approval = (itemId: string) => events.find((event) => event.type === "approval-requested" && event.itemId === itemId)
+    expect(approval("call_plugin")).not.toHaveProperty("toolServer")
+    expect(approval("call_emoji")).toMatchObject({ toolServer: { name: "team🔥x" } })
+    expect(approval("call_server")).toMatchObject({ toolServer: { name: "docs" } })
+    await adapter.close()
+  })
+
   it("routes a subagent's approvals and commands to the parent thread and answers the child session", async () => {
     const { adapter, client, events, stream, threadId } = await buildTurn()
     const child = "ses_child"
