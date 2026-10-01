@@ -214,7 +214,16 @@ function mergeDeep(target: Merged, source: Merged): Merged {
   }
   return output
 }
-const underPerson = (person: Merged, config: unknown) => mergeDeep(person, config as Merged) as EmbeddedConfig
+// After every source is merged, each deprecated `mode` block is merged into
+// the agent of its name as a primary agent (config/config.ts in both servers).
+function withModes(config: Merged): EmbeddedConfig {
+  let agent = isPlain(config.agent) ? config.agent : {}
+  for (const [name, mode] of Object.entries(isPlain(config.mode) ? config.mode : {})) {
+    agent = mergeDeep(agent, { [name]: { ...(isPlain(mode) ? mode : {}), mode: "primary" } })
+  }
+  return { ...config, agent } as EmbeddedConfig
+}
+const underPerson = (person: Merged, config: unknown) => withModes(mergeDeep(person, config as Merged))
 
 // The rules a call is judged by in each agent a Domovoi session runs: its four
 // primary agents and OpenCode's own compaction, title and summary agents by
@@ -254,7 +263,7 @@ const cases = [
 
 describe.each(cases)("%s permissions under the embedded config", (name, builtIns, model, config, primary) => {
   const was = judged(model(before), primary)
-  const is = judged(model(config as EmbeddedConfig), primary)
+  const is = judged(model(withModes(config as Merged)), primary)
 
   it("keeps every built-in tool's action for every agent a session runs", () => {
     expectBuiltInsKept(builtIns, was, is)
@@ -280,6 +289,23 @@ describe.each(cases)("%s permissions under the embedded config", (name, builtIns
     for (const agent of [primary, "domovoi-auto", "plan"]) {
       expect(`${agent} task reviewer: ${evaluate("task", "reviewer", opened[agent]!)}`).toBe(`${agent} task reviewer: ask`)
     }
+  })
+
+  // Security review round 2 of #687: a person's deprecated `mode` block is
+  // merged into its agent after every config source, this config included.
+  // This config sets its primary agents' blocks under `mode` too, so the
+  // merge keeps its values over the person's.
+  it("asks before an unnamed tool whatever the person's own mode blocks allow", () => {
+    const names = ["build", "code", "plan", "domovoi-auto", "domovoi-ask"]
+    const person = { mode: Object.fromEntries(names.map((agent) => [agent, { permission: { "*": "allow", webfetch: "allow" } }])) }
+    const opened = judged(model(underPerson(person, config)), primary)
+    for (const agent of [primary, "plan", "domovoi-auto", "domovoi-ask"]) {
+      for (const tool of [...otherTools, "browser_open", "notebook_execute"]) {
+        expect(`${agent} ${tool}: ${evaluate(tool, "*", opened[agent]!)}`).not.toBe(`${agent} ${tool}: allow`)
+      }
+    }
+    expect(evaluate("webfetch", "*", opened["domovoi-ask"]!)).toBe(evaluate("webfetch", "*", is["domovoi-ask"]!))
+    expect(evaluate("webfetch", "*", opened[primary]!)).toBe("ask")
   })
 
   // Kilo names its build agent code and reads a "build" block as "code"; a

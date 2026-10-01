@@ -569,7 +569,13 @@ code or settings the repository brings:
   it after a `"*"` rule of its own; without one, the catch-all comes after your rule and asks.
   Every agent block the embedded configuration sets starts with the same catch-all and restates
   the defaults after it, so a `"*"` rule in your own block for one of those agents takes the
-  catch-all's place and asks; for Kilo the block is set under both `build` and `code`. A primary
+  catch-all's place and asks; for Kilo the block is set under both `build` and `code`. The primary
+  agents' blocks are set under the deprecated `mode` key as well, because the servers merge a
+  `mode` block into its agent after every other config, so your own `mode` block cannot replace
+  them either. Before a session opens and before each prompt the daemon also reads every agent's
+  merged rules from the server and refuses the session, naming the agent, when one a session runs
+  would allow a tool no rule names; this covers config the daemon does not read, such as an
+  organization's or a managed config, and a wildcard rule of yours placed after `"*"`. A primary
   agent starts OpenCode's or Kilo's own `general` and `explore` subagents as before, and asks
   before it starts a subagent of yours, which runs by your own rules.
   A rule names a permission, not a tool, and a tool server's tool asks under its server's name, `_`

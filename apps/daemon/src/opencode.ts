@@ -62,6 +62,10 @@ export type OpenCodeClient = {
   tool?: {
     ids(options: MethodOptions<OpencodeSdkClient["tool"]["ids"]>): Promise<OpenCodeResult<unknown>>
   }
+  // The agents with their merged rules, checked with the catalog.
+  app?: {
+    agents(options: MethodOptions<OpencodeSdkClient["app"]["agents"]>): Promise<OpenCodeResult<unknown>>
+  }
 }
 
 type OpenCodeConfig = { model?: string }
@@ -109,6 +113,35 @@ export type OpenCodeAdapterIdentity = {
   builtInPermissions?: ReadonlySet<string>
   builtInToolIds?: readonly string[]
   allowedPermissions?: ReadonlySet<string>
+  // The agents a Domovoi session runs: its primary agents and the subagents
+  // they start without a card. Each must ask before a tool it does not name.
+  sessionAgents?: readonly string[]
+}
+
+const openCodeSessionAgents: readonly string[] = ["build", "plan", "domovoi-auto", "domovoi-ask", "general", "explore"]
+
+// Names no tool has, to test whether an agent's merged rules allow a tool
+// they do not name: one shaped like a tool server's tool key, one not.
+const unnamedToolProbes = ["domovoi_unnamed_tool", "domovoiunnamedtool"]
+
+// The server's rule matching (packages/core/src/util/wildcard.ts at opencode
+// v1.18.32 and kilo v7.8.1): `*` is any run, `?` any one character, a
+// trailing " *" also matches nothing, and Windows matches in any case.
+function wildcardMatches(input: string, pattern: string): boolean {
+  let escaped = pattern.replaceAll("\\", "/").replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")
+  if (escaped.endsWith(" .*")) escaped = `${escaped.slice(0, -3)}( .*)?`
+  return new RegExp(`^${escaped}$`, process.platform === "win32" ? "si" : "s").test(input.replaceAll("\\", "/"))
+}
+
+// The action the last matching rule gives, as the server evaluates it; no
+// matching rule asks.
+function ruleAction(rules: readonly unknown[], permission: string): unknown {
+  const rule = rules.findLast((candidate) => {
+    const record = asRecord(candidate)
+    return typeof record?.permission === "string" && typeof record.pattern === "string"
+      && wildcardMatches(permission, record.permission) && wildcardMatches("*", record.pattern)
+  })
+  return rule === undefined ? "ask" : asRecord(rule)?.action
 }
 
 // What a directory's instance was last read to hold: its tool servers by
@@ -773,12 +806,16 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const unreadable = new Error(
       `Domovoi could not read ${name}'s tool servers and tools for this worktree, so it cannot tell whether a tool could run without approval. Try again.`,
     )
-    if (!client.mcp || !client.tool) throw unreadable
+    if (!client.mcp || !client.tool || !client.app) throw unreadable
     let catalog: ToolCatalog
+    let agents: unknown[]
     try {
       const servers = asRecord(unwrap(await client.mcp.status({ query: { directory: cwd }, throwOnError: true }), `${name} tool server status`))
       const ids = unwrap(await client.tool.ids({ query: { directory: cwd }, throwOnError: true }), `${name} tool ids`)
+      const listedAgents = unwrap(await client.app.agents({ query: { directory: cwd }, throwOnError: true }), `${name} agents`)
       if (!servers || !Array.isArray(ids) || !ids.every((id): id is string => typeof id === "string")) throw unreadable
+      if (!Array.isArray(listedAgents)) throw unreadable
+      agents = listedAgents
       const listed = new Set<string>()
       for (const id of ids) {
         if (listed.has(id)) throw this.#unownedTool(id)
@@ -805,6 +842,25 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const allowed = this.#identity.allowedPermissions ?? openCodeAllowedPermissions
     for (const id of catalog.toolIds) {
       if (!builtInToolIds.has(id) && allowed.has(id)) throw this.#unownedTool(id)
+    }
+    // Config this adapter does not see, an agent or mode block of the
+    // person's, an organization's or a managed config, can still leave an
+    // agent allowing a tool it does not name (security review round 2 of
+    // #687). The agents' merged rules, as the server will judge calls, are
+    // checked: an agent a session runs must not allow a name no rule names.
+    // A rule of the person's for a named tool stands. An agent the server
+    // does not list is not run.
+    const runs = new Set(this.#identity.sessionAgents ?? openCodeSessionAgents)
+    for (const agent of agents) {
+      const record = asRecord(agent)
+      if (typeof record?.name !== "string" || !runs.has(record.name)) continue
+      const rules = Array.isArray(record.permission) ? record.permission : undefined
+      if (rules === undefined || unnamedToolProbes.some((probe) => ruleAction(rules, probe) === "allow")) {
+        throw new UnownedToolError(
+          `${name}'s ${record.name} agent allows a tool it does not name, so a tool server's tool could run there without approval. `
+          + `A rule in your own ${name} configuration, such as a "*" rule in an agent or mode block, allows it; remove that rule to use ${name} here.`,
+        )
+      }
     }
   }
 
@@ -1543,37 +1599,52 @@ export type EmbeddedAgents = Record<string, {
   permission: Readonly<Record<string, PermissionAction | Readonly<Record<string, PermissionAction>>>>
 }>
 
+// A person's deprecated `mode` block is merged into the agent of its name
+// after every config source, this one included (config/config.ts in both
+// servers), so it could restore a final "*": "allow" over an agent block.
+// The primary agents' blocks are set under `mode` too: the person's and this
+// config's mode blocks merge first, this config's values winning, and that is
+// what lands on the agent (security review round 2 of #687). Subagents are
+// left out: a mode block makes its agent primary, which the task tool cannot
+// start.
+export function withModeBlocks(agents: EmbeddedAgents, primaries: readonly string[]): { agent: EmbeddedAgents; mode: EmbeddedAgents } {
+  return { agent: agents, mode: Object.fromEntries(primaries.flatMap((name) => (agents[name] ? [[name, agents[name]]] : []))) }
+}
+
+const openCodeAgentBlocks = withModeBlocks({
+  "domovoi-ask": domovoiAskAgent,
+  plan: {
+    permission: {
+      ...domovoiAgentPermission,
+      question: "allow",
+      plan_exit: "allow",
+      task: planSubagents,
+      todowrite: "allow",
+      ...domovoiPlanLimits,
+    },
+  },
+  build: {
+    permission: { ...domovoiAgentPermission, question: "allow", plan_enter: "allow", task: builtInSubagents, todowrite: "allow" },
+  },
+  "domovoi-auto": {
+    mode: "primary",
+    description: "Domovoi automatic build mode",
+    permission: { ...domovoiAgentPermission, task: builtInSubagents, todowrite: "allow" },
+  },
+  general: { permission: { ...domovoiAgentPermission, todowrite: "deny" } },
+  explore: {
+    permission: { "*": "deny", grep: "allow", glob: "allow", list: "allow", websearch: "allow", read: "allow", ...askBeforeEdits },
+  },
+  // OpenCode's own agents for compaction, titles and summaries deny every
+  // tool before the person's rules.
+  ...Object.fromEntries(["compaction", "title", "summary"].map((name) => [name, { permission: { "*": "deny", ...askBeforeEdits } }])),
+}, ["build", "plan", "domovoi-auto", "domovoi-ask"])
+
 export const domovoiOpenCodeConfig: Config = {
   autoupdate: false,
   permission: domovoiAgentPermission,
-  agent: ({
-    "domovoi-ask": domovoiAskAgent,
-    plan: {
-      permission: {
-        ...domovoiAgentPermission,
-        question: "allow",
-        plan_exit: "allow",
-        task: planSubagents,
-        todowrite: "allow",
-        ...domovoiPlanLimits,
-      },
-    },
-    build: {
-      permission: { ...domovoiAgentPermission, question: "allow", plan_enter: "allow", task: builtInSubagents, todowrite: "allow" },
-    },
-    "domovoi-auto": {
-      mode: "primary",
-      description: "Domovoi automatic build mode",
-      permission: { ...domovoiAgentPermission, task: builtInSubagents, todowrite: "allow" },
-    },
-    general: { permission: { ...domovoiAgentPermission, todowrite: "deny" } },
-    explore: {
-      permission: { "*": "deny", grep: "allow", glob: "allow", list: "allow", websearch: "allow", read: "allow", ...askBeforeEdits },
-    },
-    // OpenCode's own agents for compaction, titles and summaries deny every
-    // tool before the person's rules.
-    ...Object.fromEntries(["compaction", "title", "summary"].map((name) => [name, { permission: { "*": "deny", ...askBeforeEdits } }])),
-  } satisfies EmbeddedAgents) as NonNullable<Config["agent"]>,
+  agent: openCodeAgentBlocks.agent as NonNullable<Config["agent"]>,
+  mode: openCodeAgentBlocks.mode as NonNullable<Config["mode"]>,
 }
 
 // Every permission an embedded config allows in some agent, for any pattern,

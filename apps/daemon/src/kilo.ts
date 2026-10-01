@@ -21,6 +21,7 @@ export class KiloSdkAdapter extends OpenCodeSdkAdapter {
       builtInPermissions: kiloBuiltInPermissions,
       builtInToolIds: kiloBuiltInToolIds,
       allowedPermissions: kiloAllowedPermissions,
+      sessionAgents: ["code", "plan", "domovoi-auto", "domovoi-ask", "general", "explore"],
     })
   }
 }

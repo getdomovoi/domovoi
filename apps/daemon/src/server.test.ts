@@ -12699,6 +12699,7 @@ describe("DomovoiDaemon", () => {
       postSessionIdPermissionsPermissionId: vi.fn(async () => ({ data: true })),
       mcp: { status: vi.fn(async () => ({ data: {} })) },
       tool: { ids: vi.fn(async () => ({ data: [...openCodeBuiltInToolIds] })) },
+      app: { agents: vi.fn(async () => ({ data: [{ name: "build", permission: [{ permission: "*", pattern: "*", action: "ask" }] }] })) },
     } satisfies OpenCodeClient
     const adapter = new OpenCodeSdkAdapter(async () => ({ client, server: { close: vi.fn() } }), () => "turn-opencode")
     const store = { load: () => snapshot, save: vi.fn(), close: vi.fn() } satisfies WorkspaceStore

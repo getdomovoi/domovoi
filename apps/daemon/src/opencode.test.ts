@@ -110,6 +110,12 @@ function harness() {
     // and before each prompt: none of the person's, and OpenCode's own tools.
     mcp: { status: vi.fn(async (_options?: unknown): Promise<{ data?: unknown }> => ({ data: {} })) },
     tool: { ids: vi.fn(async (_options?: unknown): Promise<{ data?: unknown }> => ({ data: [...openCodeBuiltInToolIds] })) },
+    // The agents' merged rules: each asks before a tool it does not name.
+    app: {
+      agents: vi.fn(async (_options?: unknown): Promise<{ data?: unknown }> => ({
+        data: ["build", "code", "plan", "general"].map((name) => ({ name, permission: [{ permission: "*", pattern: "*", action: "ask" }] })),
+      })),
+    },
   } satisfies OpenCodeClient
   const server = { close: vi.fn() }
   const factory = vi.fn(async () => ({ client, server })) satisfies OpenCodeFactory
@@ -1884,6 +1890,45 @@ describe("tools that could take a name OpenCode's own tools ask under", () => {
     await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow("could not read")
     await expect(adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow("could not read")
     expect(client.session.create).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  // Security review round 2 of #687: config this adapter does not see (an
+  // agent or mode block of the person's, an organization or managed config)
+  // could still leave an agent a session runs allowing a tool it does not
+  // name. The agents' merged rules are read and checked too.
+  it.each([
+    ["OpenCode", "build"],
+    ["Kilo", "code"],
+    ["OpenCode", "general"],
+  ] as const)("refuses a %s session whose %s agent allows a tool it does not name", async (name, agent) => {
+    const { client, factory } = harness()
+    client.app.agents.mockResolvedValue({ data: [
+      { name: agent, permission: [{ permission: "*", pattern: "*", action: "ask" }, { permission: "*", pattern: "*", action: "allow" }] },
+      { name: "plan", permission: [{ permission: "*", pattern: "*", action: "ask" }] },
+    ] })
+    const adapter = adapters.find(([candidate]) => candidate === name)![1](factory)
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow(`${agent} agent allows a tool it does not name`)
+    expect(client.session.create).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("lets a person's own rule for a named tool stand, and checks only agents a session runs", async () => {
+    const { client, factory } = harness()
+    client.app.agents.mockResolvedValue({ data: [
+      { name: "build", permission: [{ permission: "*", pattern: "*", action: "ask" }, { permission: "github_*", pattern: "*", action: "allow" }] },
+      { name: "reviewer", permission: [{ permission: "*", pattern: "*", action: "allow" }] },
+    ] })
+    const adapter = new OpenCodeSdkAdapter(factory)
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).resolves.toBe("open-session")
+    await adapter.close()
+  })
+
+  it("refuses a session when the agents' rules cannot be read", async () => {
+    const { client, factory } = harness()
+    client.app.agents.mockRejectedValue(new Error("busy"))
+    const adapter = new OpenCodeSdkAdapter(factory)
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow("could not read")
     await adapter.close()
   })
 

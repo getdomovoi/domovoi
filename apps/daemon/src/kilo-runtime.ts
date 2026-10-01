@@ -15,7 +15,7 @@ import {
   permissionActions,
   planSubagents,
   requireOpenCodeClient,
-  type EmbeddedAgents,
+  withModeBlocks,
   type OpenCodeFactory,
 } from "./opencode.js"
 
@@ -84,42 +84,47 @@ const kiloPlanAllows: ReadonlySet<string> = new Set([
 ])
 const kiloExploreAllows: ReadonlySet<string> = new Set(["glob", "grep", "list", "skill", "websearch", "semantic_search", "board_read", "board_post"])
 
+// Each agent's block, under `mode` as well for the primary agents
+// (withModeBlocks in opencode.ts says why).
+const kiloAgentBlocks = withModeBlocks({
+  "domovoi-ask": domovoiAskAgent,
+  plan: {
+    permission: {
+      "*": "ask",
+      ...deniedBuiltIns(new Set([...kiloPlanAllows, ...Object.keys(domovoiPlanLimits)])),
+      read: defaultReads,
+      ...permissionActions([...kiloPlanAllows], "allow"),
+      task: planSubagents,
+      ...domovoiPlanLimits,
+    },
+  },
+  // Kilo reads a "build" block as its code agent's, and of two blocks for
+  // one agent the later replaces the earlier, so both names carry the block
+  // and a person's own block under either name cannot replace it.
+  build: { permission: kiloCode },
+  code: { permission: kiloCode },
+  "domovoi-auto": {
+    mode: "primary",
+    description: "Domovoi automatic build mode",
+    permission: { ...kiloPermission, task: builtInSubagents, todowrite: "allow" },
+  },
+  general: { permission: { ...kiloPermission, todowrite: "deny" } },
+  explore: {
+    permission: {
+      "*": "ask",
+      ...deniedBuiltIns(new Set([...kiloExploreAllows, ...Object.keys(askBeforeEdits)])),
+      read: "allow",
+      ...permissionActions([...kiloExploreAllows], "allow"),
+      ...askBeforeEdits,
+    },
+  },
+}, ["build", "code", "plan", "domovoi-auto", "domovoi-ask"])
+
 export const domovoiKiloConfig: Config = {
   autoupdate: false,
   permission: kiloPermission,
-  agent: ({
-    "domovoi-ask": domovoiAskAgent,
-    plan: {
-      permission: {
-        "*": "ask",
-        ...deniedBuiltIns(new Set([...kiloPlanAllows, ...Object.keys(domovoiPlanLimits)])),
-        read: defaultReads,
-        ...permissionActions([...kiloPlanAllows], "allow"),
-        task: planSubagents,
-        ...domovoiPlanLimits,
-      },
-    },
-    // Kilo reads a "build" block as its code agent's, and of two blocks for
-    // one agent the later replaces the earlier, so both names carry the block
-    // and a person's own block under either name cannot replace it.
-    build: { permission: kiloCode },
-    code: { permission: kiloCode },
-    "domovoi-auto": {
-      mode: "primary",
-      description: "Domovoi automatic build mode",
-      permission: { ...kiloPermission, task: builtInSubagents, todowrite: "allow" },
-    },
-    general: { permission: { ...kiloPermission, todowrite: "deny" } },
-    explore: {
-      permission: {
-        "*": "ask",
-        ...deniedBuiltIns(new Set([...kiloExploreAllows, ...Object.keys(askBeforeEdits)])),
-        read: "allow",
-        ...permissionActions([...kiloExploreAllows], "allow"),
-        ...askBeforeEdits,
-      },
-    },
-  } satisfies EmbeddedAgents) as NonNullable<Config["agent"]>,
+  agent: kiloAgentBlocks.agent as NonNullable<Config["agent"]>,
+  mode: kiloAgentBlocks.mode as NonNullable<Config["mode"]>,
 }
 
 export const createDefaultKiloRuntime: OpenCodeFactory = async () => {
