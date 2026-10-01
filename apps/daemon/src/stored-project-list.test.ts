@@ -1,5 +1,5 @@
 import { once } from "node:events"
-import { mkdtemp, readdir, readFile } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -97,6 +97,24 @@ function storedRow(databasePath: string): string {
   }
 }
 
+// A large audit row on an overflow page, then that page pointed past the end
+// of the file: the audit table is damaged and the workspace row is intact, as
+// in store.test.ts.
+async function damageAuditPage(databasePath: string): Promise<void> {
+  const marker = "unreadable-audit-page"
+  const database = new DatabaseSync(databasePath)
+  database.prepare(`
+    INSERT INTO audit_log (id, occurred_at, actor_kind, action, outcome, detail)
+    VALUES ('audit-large', '2026-08-29T12:00:00.000Z', 'daemon', 'test.large', 'succeeded', ?)
+  `).run(`${"a".repeat(6_000)}${marker}${"b".repeat(20_000)}`)
+  database.close()
+  const bytes = await readFile(databasePath)
+  const offset = bytes.indexOf(marker)
+  expect(offset).toBeGreaterThan(0)
+  bytes.writeUInt32BE(0x7fff_ffff, Math.floor(offset / 4_096) * 4_096)
+  await writeFile(databasePath, bytes)
+}
+
 describe("stored state with several active projects", () => {
   it.each(severalProjects)("is refused at load, with nothing on disk changed: %s", async (_label, snapshot) => {
     const { scratch, databasePath, written } = await storedState(snapshot)
@@ -115,6 +133,32 @@ describe("stored state with several active projects", () => {
     expect(storedRow(databasePath)).toBe(written)
     expect((await readdir(scratch)).filter((name) => name.includes("corrupt"))).toEqual([])
     expect((await readFile(databasePath)).equals(bytes)).toBe(true)
+  })
+
+  // Ruling Q258: corruption elsewhere in the file sends the store to salvage,
+  // which moves the database aside and keeps the workspace it can read. An
+  // intact snapshot with several projects is refused before anything moves.
+  it.each([
+    ["a list naming another project", { ...base(), projects: [projectA, projectB], projectCap: 3, sessions: [sessionIn(projectB.id)] }],
+    ["a session of another project, with no list", { ...base(), sessions: [sessionIn(projectB.id)] }],
+  ] as const)("is refused before salvage moves a damaged database: %s", async (_label, snapshot) => {
+    const { scratch, databasePath } = await storedState(snapshot)
+    await damageAuditPage(databasePath)
+    const entries = (await readdir(scratch)).sort()
+    const bytes = await readFile(databasePath)
+    expect(() => new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine))).toThrow(MultiProjectWorkspaceStateError)
+    expect((await readdir(scratch)).sort()).toEqual(entries)
+    expect((await readFile(databasePath)).equals(bytes)).toBe(true)
+  })
+
+  it("leaves salvage to a damaged database holding one project", async () => {
+    const { databasePath } = await storedState({ ...base(), sessions: [sessionIn(projectA.id)] })
+    await damageAuditPage(databasePath)
+    const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine))
+    try {
+      expect(store.recovery).toMatchObject({ kind: "database", workspaceKept: true })
+      expect(store.load().sessions.map((session) => session.projectId)).toEqual([projectA.id])
+    } finally { await store.close() }
   })
 
   it("is refused when a store holding it is handed to the daemon", () => {

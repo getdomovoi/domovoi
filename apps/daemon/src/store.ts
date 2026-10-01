@@ -545,12 +545,31 @@ function quotedColumn(name: string): string {
 // constructs its store only while it holds the profile lease, so no other
 // daemon writes the file or its log during this read.
 export function storedProtocolVersion(path: string): string | undefined {
+  return readStoredState(path, readStoredVersion)
+}
+
+// The stored workspace snapshot, read the same way and with the same limits,
+// for a file about to be moved aside as damaged: state with several projects
+// is refused before that (ruling Q258).
+function storedSnapshotValue(path: string): unknown {
+  return readStoredState(path, (database) => {
+    const row = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as StoredWorkspace | undefined
+    if (!row) return undefined
+    try {
+      return JSON.parse(row.snapshot) as unknown
+    } catch {
+      return undefined
+    }
+  })
+}
+
+function readStoredState<T>(path: string, read: (database: DatabaseSync) => T | undefined): T | undefined {
   if (path === ":memory:" || !existsSync(path)) return undefined
   const walPath = `${path}-wal`
   try {
     return existsSync(walPath) && statSync(walPath).size > 0
-      ? versionFromCopy(path)
-      : versionFromImmutable(path)
+      ? readFromCopy(path, read)
+      : readFromImmutable(path, read)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (isCorruption(error) || /no such table|malformed JSON/i.test(message)) return undefined
@@ -565,24 +584,24 @@ function readStoredVersion(database: DatabaseSync): string | undefined {
   return typeof row?.version === "string" ? row.version : undefined
 }
 
-function versionFromImmutable(path: string): string | undefined {
+function readFromImmutable<T>(path: string, read: (database: DatabaseSync) => T | undefined): T | undefined {
   const location = pathToFileURL(path)
   location.searchParams.set("immutable", "1")
   let database: DatabaseSync
   try {
     database = new DatabaseSync(location, { readOnly: true })
   } catch (error) {
-    if (error instanceof TypeError) return versionFromCopy(path)
+    if (error instanceof TypeError) return readFromCopy(path, read)
     throw error
   }
   try {
-    return readStoredVersion(database)
+    return read(database)
   } finally {
     database.close()
   }
 }
 
-function versionFromCopy(path: string): string | undefined {
+function readFromCopy<T>(path: string, read: (database: DatabaseSync) => T | undefined): T | undefined {
   const directory = mkdtempSync(join(tmpdir(), "domovoi-state-version-"))
   try {
     const copy = join(directory, "state.sqlite")
@@ -590,7 +609,7 @@ function versionFromCopy(path: string): string | undefined {
     if (existsSync(`${path}-wal`)) copyFileSync(`${path}-wal`, `${copy}-wal`)
     const database = new DatabaseSync(copy, { readOnly: true })
     try {
-      return readStoredVersion(database)
+      return read(database)
     } finally {
       database.close()
     }
@@ -680,6 +699,9 @@ function salvageWorkspace(
   try {
     const value: unknown = JSON.parse(snapshot.snapshot)
     if (newerStoredProtocol(value) !== undefined) return undefined
+    // Refused before the move when it could be read there. If only the moved
+    // copy reads, it is left in that copy rather than cut to one project.
+    if (keepsSeveralProjects(value)) return undefined
     migrated = migrateStoredWorkspace(value)
   } catch {
     return undefined
@@ -1006,6 +1028,10 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       // An operational failure is reported to the caller rather than repaired,
       // so a locked or unreadable file is never renamed aside.
       if (!isCorruption(error)) throw error
+      // Salvage keeps the workspace it can read. State with several projects
+      // is not this daemon's to keep, so it is refused before anything moves.
+      const intact = storedSnapshotValue(path)
+      if (keepsSeveralProjects(intact)) throw refuseSeveralProjects(path, intact)
       const quarantinedPath = quarantineDatabase(path)
       prepareStatePath(path, manageDirectoryPermissions)
       opened = openState(path, integrityCheckMaximumBytes)
