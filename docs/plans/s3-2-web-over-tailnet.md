@@ -94,9 +94,10 @@ follows.
 ### 1.3 Loading and checking
 
 The bundle is loaded once, in `apps/daemon/src/production-daemon.ts` next to `loadTls`
-(`production-daemon.ts:139`), before the listener exists, into an immutable in-memory map from
-URL path to `{ bytes, contentType, etag, cacheClass }`. Per request the daemon reads nothing from
-disk. Replacing the bundle takes a daemon restart (Q4, answered A).
+(`production-daemon.ts:139`), before the listener exists, into an in-memory map from URL path to
+`{ bytes, contentType, etag, cacheClass }`. The map is read-only by contract: the result and each
+entry are shallowly frozen, but the `Map` and its `Buffer`s stay writable to code in the daemon's
+process, and callers only look up and send. Per request the daemon reads nothing from disk. Replacing the bundle takes a daemon restart (Q4, answered A).
 
 The loader refuses the whole bundle, and the daemon serves the plain page instead, when any of
 these hold:

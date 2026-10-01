@@ -82,6 +82,11 @@ export type WebAppBundleInvalidReason =
   | "digest-mismatch"
   | "duplicate-file"
 
+// files is read-only by contract, not at runtime: the result and each entry
+// are shallowly frozen, but the Map and each Buffer can still be changed by
+// code in this process. Callers look up and send; none may write. Nothing on
+// disk can change them after the load.
+//
 // path, when set, is relative to the root as the manifest writes it, so a
 // report can name the file without a home directory in it. The exception is
 // a directory above the root (the ancestor reasons, and a link or unreadable
