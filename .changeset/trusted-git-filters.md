@@ -38,7 +38,10 @@ revert and transfer refuse while a checked-out submodule's own Git config sets a
 a partial clone, which no trust covers. Every other daemon Git command runs with lazy fetching off
 (Git 2.45 and later), so a partial clone's missing object fails the command instead of being
 fetched through the repository's own promisor and transport config; only the isolated directory,
-with the filtered transports, fetches one.
+with the filtered transports, fetches one. Git before 2.45 cannot be kept from lazy fetching, so
+on it, or when the version cannot be read, a repository or worktree that is a partial clone by
+its own config is refused with a message naming the Git version needed; other repositories work
+as before.
 
 Under trust, a filter runs in a process group of its own on macOS and Linux, and a timeout or an
 emergency stop ends the whole group. A process a filter started can leave that group, so after a
