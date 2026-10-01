@@ -13,6 +13,10 @@ import { approvalAnsweredElsewhereFailure as approvalAnsweredElsewhere } from ".
 import { normalizeProviderUsage } from "./usage.js"
 import { createAuthenticatedEmbeddedRuntime, embeddedServerCommand, type EmbeddedServer } from "./embedded-server.js"
 import { projectInstructions } from "./project-instructions.js"
+import { PublicRpcError } from "./rpc-errors.js"
+
+// JSON-RPC invalid params, the code the daemon gives a refusal a person can act on.
+const invalidParams = -32602
 
 type OpenCodeResult<T> = { data?: T; error?: unknown }
 
@@ -71,9 +75,11 @@ type OpenCodeCatalog = {
   default: Record<string, string>
 }
 
+type OpenCodeServer = Pick<EmbeddedServer, "close" | "stop" | "processGroup">
+
 export type OpenCodeFactory = () => Promise<{
   client: OpenCodeClient
-  server: Pick<EmbeddedServer, "close" | "stop">
+  server: OpenCodeServer
 
 }>
 
@@ -331,6 +337,11 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // are dropped when the rejection does not go through and when the turn ends
   // (Codex review of #691, P3).
   #cascadeRejections = new Map<string, { origin: string; threadId: string }>()
+  // A server Domovoi stopped and has not confirmed gone, kept so it can be
+  // stopped again, and the stop under way. While either is set, no other
+  // server starts (Codex review of #691, round 2).
+  #retiredServer: OpenCodeServer | undefined
+  #retiring: Promise<void> | undefined
   #nextApprovalId = 0
   #nextGeneration = 0
 
@@ -347,6 +358,14 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   async connect(): Promise<void> {
     if (this.#closed) throw new Error(`${this.#identity.providerName} adapter closed`)
     if (this.#runtime) return
+    // A stopped server not yet confirmed gone blocks the next one (Codex
+    // review of #691, round 2): it is stopped again, and while it may still
+    // run, with the password and the programs it started, none other starts.
+    const retired = this.#retiredServer
+    if (retired) {
+      await this.#retire(retired)
+      if (this.#retiredServer) throw new PublicRpcError(invalidParams, this.#retiredServerRefusal(retired))
+    }
     this.#connection ??= this.#factory().then((runtime) => {
       if (this.#closed) runtime.server.close()
       else this.#runtime = runtime
@@ -662,6 +681,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#cascadeRejections.clear()
     this.#runtime?.server.close()
     this.#runtime = undefined
+    this.#retiredServer?.close()
     await this.#connection
   }
 
@@ -1236,13 +1256,37 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#subagents = new SubagentRegistry()
     this.#sentReplies.clear()
     this.#cascadeRejections.clear()
-    const stopped = runtime ? await runtime.server.stop() : true
+    // Retired before anything is awaited, so no other server can start
+    // while this one is being stopped.
+    const stopped = runtime ? await this.#retire(runtime.server) : true
+    const name = this.#identity.providerName
     this.#emit({
       type: "provider-disconnected",
       reason: stopped
         ? reason
-        : `${reason}. Domovoi could not confirm that the server and the programs it started have ended`,
+        : `${reason}. Domovoi could not confirm that the server and the programs it started have ended, `
+          + `so it starts no other ${name} server until it can. Each new message checks again`,
     })
+  }
+
+  // Stops a server and keeps it until it is confirmed gone. A stop already
+  // under way is shared rather than repeated. Resolves true once it is gone.
+  #retire(server: OpenCodeServer): Promise<boolean> {
+    this.#retiredServer = server
+    this.#retiring ??= server.stop().catch(() => false).then((stopped) => {
+      if (stopped && this.#retiredServer === server) this.#retiredServer = undefined
+    }).finally(() => {
+      this.#retiring = undefined
+    })
+    return this.#retiring.then(() => this.#retiredServer !== server)
+  }
+
+  #retiredServerRefusal(server: OpenCodeServer): string {
+    const name = this.#identity.providerName
+    const group = server.processGroup === undefined ? "" : ` (process group ${server.processGroup})`
+    return `Domovoi could not confirm that the earlier ${name} server and the programs it started have ended, `
+      + `so it starts no other ${name} server. Each new message checks again. To continue sooner, end those `
+      + `programs${group} or restart Domovoi.`
   }
 
   #receiveTool(session: Session, turnId: string, part: Record<string, unknown>): void {

@@ -5,6 +5,11 @@ import { windowsTreeKill } from "./claude-process.js"
 
 export type EmbeddedServer = {
   url: string
+  /**
+   * The id a person can use to find the server's processes: its process group
+   * on POSIX, its process tree's root on Windows.
+   */
+  processGroup?: number
   /** Starts a stop and does not wait for it. */
   close(): void
   /**
@@ -174,7 +179,7 @@ function startEmbeddedServer(
         }
         settled = true
         clearTimeout(timer)
-        resolve({ url, close: () => void stop(), stop })
+        resolve({ url, ...(child.pid !== undefined ? { processGroup: child.pid } : {}), close: () => void stop(), stop })
         return
       }
     })

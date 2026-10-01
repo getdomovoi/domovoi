@@ -107,7 +107,7 @@ function harness() {
     },
     postSessionIdPermissionsPermissionId: vi.fn(async () => ({ data: true })),
   } satisfies OpenCodeClient
-  const server = { url: "http://127.0.0.1:4096", close: vi.fn(), stop: vi.fn(async () => true) }
+  const server = { url: "http://127.0.0.1:4096", processGroup: 4242, close: vi.fn(), stop: vi.fn(async () => true) }
   const factory = vi.fn(async () => ({ client, server })) satisfies OpenCodeFactory
   return { client, factory, server, stream }
 }
@@ -2226,8 +2226,54 @@ describe("approval replies Domovoi did not send", () => {
 
     await waitForDaemon(() => expect(events).toContainEqual({
       type: "provider-disconnected",
-      reason: "Domovoi stopped the OpenCode server because it could not confirm that a session it stopped had stopped. Domovoi could not confirm that the server and the programs it started have ended",
+      reason: "Domovoi stopped the OpenCode server because it could not confirm that a session it stopped had stopped. "
+        + "Domovoi could not confirm that the server and the programs it started have ended, so it starts no other "
+        + "OpenCode server until it can. Each new message checks again",
     }))
+    await adapter.close()
+  })
+
+  // Codex review of #691, round 2, P1: one stop is a barrier for the
+  // provider. Nothing starts another server while it runs, and a server not
+  // confirmed gone is kept, stopped again on each attempt, and blocks the next.
+  it("starts no other server while the stopped one is still stopping", async () => {
+    const { adapter, factory, server, events, ask, reply, approvals } = await askedTurn()
+    const stopping = deferred<boolean>()
+    server.stop.mockImplementationOnce(() => stopping.promise)
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+    reply("per_1", "once")
+    await waitForDaemon(() => expect(server.stop).toHaveBeenCalledOnce())
+
+    const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(factory).toHaveBeenCalledOnce()
+
+    stopping.resolve(true)
+    await expect(starting).resolves.toBe("open-session")
+    expect(factory).toHaveBeenCalledTimes(2)
+    expect(events.filter((event) => event.type === "provider-disconnected")).toHaveLength(1)
+    await adapter.close()
+  })
+
+  it("refuses another server while the stopped one may still run, and stops it again on each attempt", async () => {
+    const { adapter, factory, server, ask, reply, approvals } = await askedTurn()
+    server.stop.mockResolvedValueOnce(false).mockResolvedValueOnce(false)
+    ask("per_1")
+    await waitForDaemon(() => expect(approvals()).toHaveLength(1))
+    reply("per_1", "once")
+    await waitForDaemon(() => expect(server.stop).toHaveBeenCalledOnce())
+
+    const refusal = "Domovoi could not confirm that the earlier OpenCode server and the programs it started have ended, "
+      + "so it starts no other OpenCode server. Each new message checks again. To continue sooner, end those programs "
+      + "(process group 4242) or restart Domovoi."
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow(refusal)
+    expect(server.stop).toHaveBeenCalledTimes(2)
+    expect(factory).toHaveBeenCalledOnce()
+
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).resolves.toBe("open-session")
+    expect(server.stop).toHaveBeenCalledTimes(3)
+    expect(factory).toHaveBeenCalledTimes(2)
     await adapter.close()
   })
 

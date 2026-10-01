@@ -575,13 +575,20 @@ code or settings the repository brings:
   `permission.v2.replied`, the daemon refuses every request the session still waits on, aborts
   the session's run and its subagents' runs and waits for the server to confirm, fails the session
   with `approval-answered-elsewhere`, and records `provider.approval-answered-elsewhere` in the
-  audit log. It then restarts the server, which ends every process the server started and drops
-  every approval the server kept in memory, so every other session on that server reconnects on
-  its next message. The stopped session's provider session is never resumed: it continues only
-  after you restart its provider, in a new provider session without its earlier conversation. A
-  stop the server does not confirm, or a directory whose event stream closes with a run the server
-  will not confirm aborted, ends the server. A `permission.v2.asked` request, which the daemon
-  cannot answer, ends its turn.
+  audit log. It then stops the server, which drops every approval the server kept in memory, and
+  every other session on that server reconnects to a new server on its next message. The stopped
+  session's provider session is never resumed: it continues only after you restart its provider,
+  in a new provider session without its earlier conversation. An abort the server does not
+  confirm, or a directory whose event stream closes with a run the server will not confirm
+  aborted, also stops the server. A `permission.v2.asked` request, which the daemon cannot
+  answer, ends its turn.
+
+  A stop kills the server's process group on POSIX, or its process tree on Windows, and the
+  daemon starts no other server for that provider until the stop is over and it has confirmed
+  that none of those processes is left. If it cannot confirm that, it keeps the stopped server,
+  stops it again on each new message, and refuses the message until the processes are gone. The
+  refusal names the process group. To continue sooner, end those programs yourself, or restart
+  Domovoi, which forgets the stopped server and starts a new one.
 
   Limits:
   - The server runs the approved call before the daemon hears of the reply, so whatever was
