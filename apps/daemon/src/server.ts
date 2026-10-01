@@ -77,6 +77,7 @@ import {
   type RpcResult,
   type RpcMethod,
   type SessionHistoryPage,
+  workspaceProjects,
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
   type SessionTurn,
@@ -356,6 +357,29 @@ export const repositoryTrustCredentialRefusal =
 // Trust is granted and taken back for the open project only. The refusal names
 // no path or value (ruling Q123).
 export const repositoryTrustProjectRefusal = "Repository trust applies only to the open project"
+// J31 S1: the daemon keeps one project open at a time. Opening another one
+// switches to it, so the cap it states is 1 until several projects can be
+// active (S2 raises it to the configured cap, 3 by default, ruling Q190 A).
+export const activeProjectCap = 1
+// A call that names a project other than the open one.
+export const projectNotOpenRefusal =
+  "That project is not open. Open it first, or leave projectId out to use the open project."
+// project.close is declared on the wire before it is built (J31 S3).
+export const projectCloseUnavailableRefusal =
+  "Closing a project is not available yet. Opening another project switches to it after you confirm the sessions it stops."
+// Methods whose params may name a project with projectId.
+const projectScopedRpcMethods: ReadonlySet<RpcMethod> = new Set([
+  "session.create",
+  "tool.inventory",
+  "skill.list",
+  "skill.inventory",
+  "skill.read",
+  "skill.reviewRevision",
+  "skill.setEnabled",
+  "skill.review",
+  "skill.installPreview",
+  "skill.install",
+])
 // A session whose provider thread did not confirm its exit. It also answers a
 // session fenced for a thread that loaded trusted input (ruling Q172 A).
 const providerThreadRecoveryRefusal = "Provider thread requires recovery after emergency stop"
@@ -962,10 +986,19 @@ export class ActiveAssistantItemCache {
   }
 }
 
+// Every snapshot a client receives states the active projects and the cap.
+// The stored snapshot holds one project and no list (J31 S1); the list is
+// derived here, the one place snapshots are built for clients.
 export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
   const thread = boundedClientThread(snapshot.thread, snapshot.activeSessionId)
   const historyTruncated = thread.length < snapshot.thread.length
-  return { ...snapshot, thread, ...(historyTruncated ? { historyTruncated: true } : {}) }
+  return {
+    ...snapshot,
+    projects: workspaceProjects(snapshot),
+    projectCap: activeProjectCap,
+    thread,
+    ...(historyTruncated ? { historyTruncated: true } : {}),
+  }
 }
 
 export function isTestCommandTitle(title: string): boolean {
@@ -5885,6 +5918,20 @@ export class DomovoiDaemon {
         daemonPersistenceUnavailableErrorCode,
         persistenceUnavailableMessage,
       )
+      return
+    }
+
+    // One project is open at a time (J31 S1). A call may name it; naming any
+    // other is refused rather than answered for the open one.
+    if (projectScopedRpcMethods.has(method)) {
+      const named = (paramsResult.data as { projectId?: string }).projectId
+      if (named !== undefined && named !== this.#snapshot.project?.id) {
+        this.#error(socket, request.id, invalidParams, projectNotOpenRefusal)
+        return
+      }
+    }
+    if (method === "project.close") {
+      this.#error(socket, request.id, invalidParams, projectCloseUnavailableRefusal)
       return
     }
 
