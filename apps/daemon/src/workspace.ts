@@ -18,7 +18,7 @@ import {
   type RepositoryFilterRefusalReason,
   type RepositoryFilterTrustLookup,
 } from "./repository-git-filter-gate.js"
-import type { RepositoryGitFilter } from "./repository-git-filters.js"
+import { readGitFilterSettings, repositoryGitFilters, type RepositoryGitFilter } from "./repository-git-filters.js"
 import { RestoreOperationLease, trackRestoreCommand } from "./workspace-restore-lease.js"
 
 const execute = promisify(execFile)
@@ -247,23 +247,90 @@ export class SubmoduleChangesRefusedError extends Error {
   }
 }
 
-// Whether any submodule has changed tracked content or untracked files: the
-// M or U in the submodule field ("S<c><m><u>") of a porcelain v2 record.
-async function submoduleHasLocalChanges(isolated: IsolatedGit, signal?: AbortSignal): Promise<boolean> {
-  // No optional locks: status must not refresh the index the agent shares.
-  const status = (await isolated.run([
-    "--no-optional-locks", "status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--untracked-files=no",
-  ], { signal })).trim()
-  const records = status.split("\0")
-  for (let index = 0; index < records.length; index += 1) {
-    const record = records[index]!
-    const fields = record.split(" ")
-    if (fields[0] === "2") index += 1
-    if (fields[0] !== "1" && fields[0] !== "2" && fields[0] !== "u") continue
-    const submodule = fields[2] ?? ""
-    if (submodule.startsWith("S") && (submodule[2] === "M" || submodule[3] === "U")) return true
+const maximumSubmoduleDepth = 8
+
+// For a status or diff of the superproject: a submodule's commit is compared,
+// but Git does not look into its worktree, which would run a `git status`
+// there under the submodule's own config. Local work inside a submodule is
+// found by submoduleHasLocalChanges instead.
+const outsideSubmodules = "--ignore-submodules=dirty"
+
+// The checked-out submodules directly in a worktree, from its index: a
+// gitlink whose path holds a .git. One that is not checked out holds no
+// local work and no config Git would read there.
+async function checkedOutSubmodules(worktreePath: string, signal?: AbortSignal): Promise<string[]> {
+  const listed = await rawGit(worktreePath, ["ls-files", "--stage", "-z"], signal)
+  const submodules: string[] = []
+  for (const record of listed.split("\0")) {
+    if (!record.startsWith("160000 ")) continue
+    const submodule = resolve(worktreePath, record.slice(record.indexOf("\t") + 1))
+    if (!pathStaysInside(worktreePath, submodule)) throw new Error("Git named a submodule outside the worktree")
+    if (submodules.includes(submodule)) continue
+    if (await lstat(join(submodule, ".git")).then(() => true, () => false)) submodules.push(submodule)
+  }
+  return submodules
+}
+
+// A checked-out submodule whose own Git config sets a filter. Staging the
+// superproject looks into every checked-out submodule with a `git status`
+// that reads that submodule's config, and no trust grant reviews a
+// submodule's filters, so the operation is refused and nothing runs.
+export class SubmoduleFilterRefusedError extends RepositoryConfigRefusedError {
+  constructor(submodule: string, filters: readonly RepositoryGitFilter[]) {
+    super(
+      `The submodule "${redactInventoryText(submodule, inventoryFieldCaps.detail)}" sets the filter `
+      + `${filterNames(filters).map((name) => `"${shownName(name)}"`).join(", ")} in its own Git config (${shownSettings(filters)}). `
+      + "Checkpoint, restore, revert and transfer would run it, and no trust covers a submodule's own filters, "
+      + "so Domovoi does not run it. Nothing ran.",
+    )
+    this.name = "SubmoduleFilterRefusedError"
+  }
+}
+
+// Refuses while any checked-out submodule, at any depth, sets a filter in
+// its own Git config. Reading that config runs nothing. A submodule whose
+// config cannot be read fails the caller.
+async function refuseSubmoduleFilters(top: string, worktreePath: string = top, signal?: AbortSignal, depth = 0): Promise<void> {
+  for (const submodule of await checkedOutSubmodules(worktreePath, signal)) {
+    if (depth >= maximumSubmoduleDepth) throw new Error("Submodules nest deeper than Domovoi reads")
+    const filters = repositoryGitFilters(await readGitFilterSettings(submodule, signal))
+    if (filters.length > 0) throw new SubmoduleFilterRefusedError(relative(top, submodule).split(sep).join("/"), filters)
+    await refuseSubmoduleFilters(top, submodule, signal, depth + 1)
+  }
+}
+
+// Whether any checked-out submodule, at any depth, has changed tracked
+// content, a changed nested submodule commit, or untracked files: local work
+// a checkpoint, which records a submodule by its commit, cannot hold.
+//
+// A recursive `git status` would read each submodule's own config and run
+// what it names (a filter, core.fsmonitor), which no trust grant reviews. So
+// the submodules are found from the index, and each is read through an
+// isolated Git directory of its own (isolated-checkout.ts) that reads none of
+// its config, with status kept out of its own submodules, which this walk
+// reads in turn. A submodule that cannot be read fails the caller.
+async function submoduleHasLocalChanges(worktreePath: string, signal?: AbortSignal, depth = 0): Promise<boolean> {
+  for (const submodule of await checkedOutSubmodules(worktreePath, signal)) {
+    if (depth >= maximumSubmoduleDepth) throw new Error("Submodules nest deeper than Domovoi reads")
+    if (await submoduleWorktreeChanged(submodule, signal)) return true
+    if (await submoduleHasLocalChanges(submodule, signal, depth + 1)) return true
   }
   return false
+}
+
+async function submoduleWorktreeChanged(submodule: string, signal?: AbortSignal): Promise<boolean> {
+  const isolated = await openIsolatedGit({ worktree: submodule, settings: await readGitFilterSettings(submodule, signal), worktreeIndex: true, signal })
+  try {
+    const head = await currentHead(submodule, signal)
+    if (head !== undefined) await isolated.setHead(head)
+    // No optional locks: status must not refresh the index the agent shares.
+    const status = await isolated.run([
+      "--no-optional-locks", "status", "--porcelain=v2", "-z", "--ignore-submodules=dirty", "--untracked-files=normal",
+    ], { signal })
+    return status.split("\0").some((record) => record !== "")
+  } finally {
+    await isolated.dispose()
+  }
 }
 
 // A config key or driver name is the repository's own text and can hold a
@@ -1008,11 +1075,12 @@ async function workspaceEvidenceFingerprint(
 ): Promise<{ headCommit: string; digest: string }> {
   const [baseCommit, status, diffHash] = await Promise.all([
     git(worktreePath, ["rev-parse", "HEAD"], signal),
-    isolated.run(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"], { signal }).then((output) => output.trim()),
+    isolated.run(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all", outsideSubmodules], { signal }).then((output) => output.trim()),
     hashIsolatedGit(isolated, [
       "--no-optional-locks",
       ...diffSettings,
       "diff",
+      outsideSubmodules,
       "--binary",
       "--no-ext-diff",
       "--no-textconv",
@@ -1287,6 +1355,9 @@ export class GitWorkspaceService implements WorkspaceService {
   ): Promise<T> {
     const gate = await this.#gate(anchor, worktree, signal)
     if (!gate.open && whenRefused === "refuse") throw new RepositoryFilterRefusedError(gate.filters, { reason: gate.reason, projectId: gate.projectId })
+    // Evidence keeps out of submodule worktrees (--ignore-submodules=dirty);
+    // every other operation may stage, which looks into each one.
+    if (whenRefused === "refuse") await refuseSubmoduleFilters(worktree, worktree, signal)
     await this.#afterRepositoryFilterGate?.(worktree)
     const isolated = await openIsolatedGit({
       worktree, settings: gate.settings, reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true, beforeCommand: this.#confirm(gate), signal,
@@ -1503,6 +1574,7 @@ export class GitWorkspaceService implements WorkspaceService {
         "--porcelain=v2",
         "-z",
         "--untracked-files=all",
+        outsideSubmodules,
       ], { signal })).trim()
       await this.#afterEvidenceObservation?.("status")
       const [numstat, diff, basePaths] = await Promise.all([
@@ -1510,6 +1582,7 @@ export class GitWorkspaceService implements WorkspaceService {
           "--no-optional-locks",
           ...diffSettings,
           "diff",
+          outsideSubmodules,
           baseCommit,
           "--numstat",
           "-z",
@@ -1523,6 +1596,7 @@ export class GitWorkspaceService implements WorkspaceService {
             "--no-optional-locks",
             ...diffSettings,
             "diff",
+            outsideSubmodules,
             "--no-ext-diff",
             "--no-textconv",
             "--no-color",
@@ -1800,7 +1874,7 @@ export class GitWorkspaceService implements WorkspaceService {
   async #snapshot(worktreePath: string, label: string, isolated: IsolatedGit, signal?: AbortSignal): Promise<Checkpoint> {
     const head = await currentHead(worktreePath, signal)
     if (head !== undefined) await isolated.setHead(head)
-    if (await submoduleHasLocalChanges(isolated, signal)) throw new SubmoduleChangesRefusedError()
+    if (await submoduleHasLocalChanges(worktreePath, signal)) throw new SubmoduleChangesRefusedError()
     const sharedIndex = resolve(worktreePath, await git(worktreePath, ["rev-parse", "--git-path", "index"], signal))
     const temporaryIndex = resolve(
       worktreePath,
@@ -1970,7 +2044,8 @@ export class GitWorkspaceService implements WorkspaceService {
     if (held !== undefined) {
       const status = await this.#isolated(repositoryPath, path, operationSignal, async (isolated) => {
         await isolated.setHead(held)
-        return (await isolated.run(["--no-optional-locks", "status", "--porcelain"], { signal: operationSignal })).trim()
+        const changed = (await isolated.run(["--no-optional-locks", "status", "--porcelain", outsideSubmodules], { signal: operationSignal })).trim()
+        return changed !== "" || await submoduleHasLocalChanges(path, operationSignal) ? "changed" : ""
       })
       if (held !== commit || status.length > 0) throw new SessionWorktreeExistsError()
       await git(path, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], operationSignal)
@@ -2007,8 +2082,8 @@ export class GitWorkspaceService implements WorkspaceService {
       signal?.throwIfAborted()
     }
     await isolated.setHead(commit)
-    const status = (await isolated.run(["--no-optional-locks", "status", "--porcelain"], { signal })).trim()
-    if (durableCommit !== commit || status.length > 0) {
+    const status = (await isolated.run(["--no-optional-locks", "status", "--porcelain", outsideSubmodules], { signal })).trim()
+    if (durableCommit !== commit || status.length > 0 || await submoduleHasLocalChanges(worktreePath, signal)) {
       throw new Error("Session worktree has work that is not checkpointed")
     }
     return commit
@@ -2233,8 +2308,8 @@ export class GitWorkspaceService implements WorkspaceService {
           ])
           if (await realpath(worktreeCommon) !== await realpath(repositoryCommon)) throw new SessionWorktreeExistsError()
           await isolated.setHead(held)
-          const status = (await isolated.run(["status", "--porcelain"], { signal })).trim()
-          if (status.length > 0) throw new SessionWorktreeExistsError()
+          const status = (await isolated.run(["status", "--porcelain", outsideSubmodules], { signal })).trim()
+          if (status.length > 0 || await submoduleHasLocalChanges(path, signal)) throw new SessionWorktreeExistsError()
           await isolated.run(["reset", "--hard", "--quiet", arrived], { signal })
         })
         await git(path, ["update-ref", "-m", `checkout: moving to ${branch}`, `refs/heads/${branch}`, arrived], signal)
@@ -2293,9 +2368,7 @@ export class GitWorkspaceService implements WorkspaceService {
       // The recovery checkpoint records a submodule by its commit and the
       // reset leaves its files alone, so a submodule's local changes would
       // survive the restore unrecorded: refused, as a snapshot refuses them.
-      const head = await currentHead(worktreePath, signal)
-      if (head !== undefined) await isolated.setHead(head)
-      if (await submoduleHasLocalChanges(isolated, signal)) throw new SubmoduleChangesRefusedError()
+      if (await submoduleHasLocalChanges(worktreePath, signal)) throw new SubmoduleChangesRefusedError()
       const recovery = await this.#checkpoint(worktreePath, "before restore", isolated, signal)
       // `reset --hard` in two parts: the files and the index through the
       // isolated directory, then the branch with a ref command.
@@ -2332,6 +2405,7 @@ export class GitWorkspaceService implements WorkspaceService {
         "--porcelain",
         "-z",
         "--untracked-files=all",
+        outsideSubmodules,
         "--",
         pathspec,
       ], { signal })).trim()

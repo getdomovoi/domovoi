@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -187,12 +187,14 @@ describe("GitWorkspaceService.snapshot", () => {
   // Ruled 2026-09-23 (A): a checkpoint records a submodule by its commit, not
   // its files, so local changes inside one are refused rather than left out.
   describe("with a submodule", () => {
-    async function withSubmodule() {
+    async function withSubmodule(attributes?: string) {
       const scratch = await mkdtemp(join(tmpdir(), "domovoi-snapshot-submodule-"))
       scratchDirectories.push(scratch)
       const library = join(scratch, "library")
       await execute("git", ["init", "--initial-branch=main", library])
+      await execute("git", ["-C", library, "config", "core.autocrlf", "false"])
       await writeFile(join(library, "lib.txt"), "library\n")
+      if (attributes !== undefined) await writeFile(join(library, ".gitattributes"), attributes)
       await execute("git", ["-C", library, "add", "."])
       await execute("git", ["-C", library, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "library"])
       const path = join(scratch, "project")
@@ -202,8 +204,58 @@ describe("GitWorkspaceService.snapshot", () => {
       await execute("git", ["-C", path, "add", "."])
       await execute("git", ["-C", path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"])
       await writeFile(join(path, "tracked.txt"), "agent edit\n")
-      return { service: new GitWorkspaceService(join(scratch, "worktrees")), path }
+      return { service: new GitWorkspaceService(join(scratch, "worktrees")), path, scratch }
     }
+
+    // A submodule's own Git config is read by Git whenever the superproject's
+    // status, diff or staging looks into it, and no trust grant reviews it.
+    // The dirty-submodule check reads each submodule through an isolated Git
+    // directory of its own; staging, which always looks into a checked-out
+    // submodule, is refused while one sets a filter; and evidence keeps out
+    // of submodule worktrees.
+    async function withSubmoduleFilter() {
+      const repository = await withSubmodule("lib.txt filter=agent\n")
+      const { service, path, scratch } = repository
+      const checkpoint = await service.checkpoint(path, "before")
+      await writeFile(join(path, "tracked.txt"), "later edit\n")
+      const markerPath = join(scratch, "submodule-filter-ran").replaceAll("\\", "/")
+      const payload = join(scratch, "payload.sh").replaceAll("\\", "/")
+      await writeFile(payload, `echo ran >> "${markerPath}"\ncat\n`)
+      const submodule = join(path, "vendor", "library")
+      await execute("git", ["-C", submodule, "config", "filter.agent.clean", `sh ${payload}`])
+      await execute("git", ["-C", submodule, "config", "core.fsmonitor", `sh ${payload}`])
+      // The same bytes with a new time, so Git has to read the file again.
+      await writeFile(join(submodule, "lib.txt"), "library\n")
+      const later = new Date(Date.now() + 5_000)
+      await utimes(join(submodule, "lib.txt"), later, later)
+      const ran = async () => readFile(markerPath, "utf8").then(() => true, () => false)
+      return { ...repository, checkpoint, ran }
+    }
+
+    it.each(["restore", "snapshot", "checkpoint"] as const)("refuses a %s while a submodule's own config sets a filter, and runs it nowhere", async (operation) => {
+      const { service, path, checkpoint, ran } = await withSubmoduleFilter()
+      const head = (await gitOut(path, "rev-parse", "HEAD")).trim()
+
+      const attempt = operation === "restore"
+        ? service.restore(path, checkpoint.commit)
+        : operation === "snapshot" ? service.snapshot(path, "while the agent runs") : service.checkpoint(path, "after")
+
+      await expect(attempt).rejects.toMatchObject({
+        name: "SubmoduleFilterRefusedError",
+        message: expect.stringContaining("filter.agent.clean in local Git config"),
+      })
+      expect(await ran()).toBe(false)
+      expect((await gitOut(path, "rev-parse", "HEAD")).trim()).toBe(head)
+    })
+
+    it("reads evidence without looking into a submodule's worktree, so its filter never runs", async () => {
+      const { service, path, ran } = await withSubmoduleFilter()
+
+      const evidence = await service.evidence(path)
+
+      expect(evidence.files.map((file) => file.path)).toEqual(["tracked.txt"])
+      expect(await ran()).toBe(false)
+    })
 
     it("records a repository whose submodule is clean", async () => {
       const { service, path } = await withSubmodule()
