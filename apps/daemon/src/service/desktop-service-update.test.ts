@@ -575,6 +575,8 @@ describe("updateDaemonService with a WSL guest service (ruled B)", () => {
     const registered = vi.mocked(effects.capture).mock.calls.find(([, args]) => script(args).includes("RegisterTaskDefinition"))![1]
     expect(registered).toEqual(next.register.args)
     expect(effects.files.has(intentPath)).toBe(false)
+    // The same registration is registered again, so the stop does not retire it.
+    expect(effects.stopSupervisor).toHaveBeenCalledWith(configurationPath, expect.anything(), { retire: false })
   })
 
   it("registers the old task again with the old runtime saved when the new one will not register", async () => {
@@ -650,7 +652,11 @@ describe("updateDaemonService with a WSL guest service (ruled B)", () => {
   // stopped must not stay retired: runGuestSupervisor refuses a loop for a
   // registration whose stop request names it. This drives the real stop and
   // its marker in a temporary profile; only process liveness is answered.
-  it("leaves the guest registration startable after stopping its loop", async () => {
+  // Skipped on a Windows host: a WSL guest's saved configuration needs a POSIX
+  // absolute home (parseServiceConfiguration refuses any other), and the
+  // host's temporary directory is a drive path. The test above pins the
+  // retire: false call on every host.
+  it.skipIf(process.platform === "win32")("leaves the guest registration startable after stopping its loop", async () => {
     const home = await mkdtemp(join(tmpdir(), "domovoi-wsl-update-"))
     try {
       const configuration: ServiceConfiguration = {
