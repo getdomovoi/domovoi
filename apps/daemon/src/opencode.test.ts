@@ -13,12 +13,14 @@ import type { Runtime } from "@getdomovoi/protocol"
 import { ApprovalRequestNotPendingError, type AgentEvent } from "./agents.js"
 import { embeddedServerCommand } from "./embedded-server.js"
 import { KiloSdkAdapter } from "./kilo.js"
-import { domovoiKiloConfig } from "./kilo-runtime.js"
+import { domovoiKiloConfig, kiloBuiltInToolIds } from "./kilo-runtime.js"
 import {
   OpenCodeSdkAdapter,
   SubagentRegistry,
   domovoiOpenCodeConfig,
   openCodeAgentFor,
+  openCodeAllowedPermissions,
+  openCodeBuiltInToolIds,
   openCodeMessageId,
   OpenCodeMessageIdsExhaustedError,
   openCodeMessageOrder,
@@ -68,6 +70,24 @@ const runtime = (permissionMode: Runtime["permissionMode"], auto = false): Runti
   auto,
 })
 
+// The end of a run as OpenCode 1.18.32/1.18.33 and Kilo 7.8.1 publish it: the
+// assistant message that replies to the prompt (parentID) completes
+// (time.completed, and `error` when it failed), and then the session goes
+// idle (SessionPrompt.runLoop, then the runner's onIdle). A turn ends only on
+// that idle (security review round 8 of #687, ruling Q287).
+function finishRun(stream: EventStream, threadId: string, parentID: string, options: { id?: string; error?: unknown } = {}) {
+  stream.emit({
+    type: "message.updated",
+    properties: {
+      info: {
+        id: options.id ?? `reply-${parentID}`, sessionID: threadId, role: "assistant", parentID,
+        time: { created: 1, completed: 2 }, ...(options.error === undefined ? {} : { error: options.error }),
+      },
+    },
+  })
+  stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+}
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
   const promise = new Promise<T>((done) => { resolve = done })
@@ -105,11 +125,23 @@ function harness() {
       abort: vi.fn(async () => ({ data: true })),
       promptAsync: vi.fn(async () => ({ data: undefined })),
       messages: vi.fn(async (_options?: unknown): Promise<{ data: unknown; response?: Response }> => ({ data: [] })),
+      // The servers' GET /session/status: only sessions that are not idle.
+      status: vi.fn(async (_options?: unknown): Promise<{ data?: unknown }> => ({ data: {} })),
     },
     event: {
       subscribe: vi.fn(async () => ({ stream })),
     },
     postSessionIdPermissionsPermissionId: vi.fn(async () => ({ data: true })),
+    // The directory's tool servers and tool ids, read before a session opens
+    // and before each prompt: none of the person's, and OpenCode's own tools.
+    mcp: { status: vi.fn(async (_options?: unknown): Promise<{ data?: unknown }> => ({ data: {} })) },
+    tool: { ids: vi.fn(async (_options?: unknown): Promise<{ data?: unknown }> => ({ data: [...openCodeBuiltInToolIds] })) },
+    // The agents' merged rules: each asks before a tool it does not name.
+    app: {
+      agents: vi.fn(async (_options?: unknown): Promise<{ data?: unknown }> => ({
+        data: ["build", "code", "plan", "general"].map((name) => ({ name, permission: [{ permission: "*", pattern: "*", action: "ask" }] })),
+      })),
+    },
   } satisfies OpenCodeClient
   const server = { url: "http://127.0.0.1:4096", processGroup: 4242, close: vi.fn(), stop: vi.fn(async () => true) }
   const factory = vi.fn(async () => ({ client, server })) satisfies OpenCodeFactory
@@ -290,7 +322,7 @@ describe("OpenCodeSdkAdapter", () => {
     adapter.onEvent((event) => events.push(event))
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
     await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "First", runtime: runtime("build") })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-1")
     await waitForDaemon(() => expect(events.some((event) => event.type === "turn-completed")).toBe(true))
     await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Second", runtime: runtime("build") })
     for (const info of [
@@ -298,10 +330,14 @@ describe("OpenCodeSdkAdapter", () => {
     ]) stream.emit({ type: "message.updated", properties: { info: {
       ...info, sessionID: threadId, role: "assistant", tokens: { input: 10, output: 1 },
     } } })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-2")
     await waitForDaemon(() => expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(2))
+    // Each turn's own reply reports its usage too; the late one goes to the
+    // turn it names, and the unassociated one to none.
     expect(events.filter((event) => event.type === "usage")).toEqual([
+      expect.objectContaining({ turnId: "turn-1", source: expect.objectContaining({ id: "reply-turn-1" }) }),
       expect.objectContaining({ turnId: "turn-1", source: expect.objectContaining({ id: "late" }) }),
+      expect.objectContaining({ turnId: "turn-2", source: expect.objectContaining({ id: "reply-turn-2" }) }),
     ])
     await adapter.close()
   })
@@ -456,7 +492,7 @@ describe("OpenCodeSdkAdapter", () => {
         },
       },
     })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-1", { id: "assistant-message" })
     await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
       type: "turn-completed",
       params: {
@@ -526,7 +562,7 @@ describe("OpenCodeSdkAdapter", () => {
       prompt: "Try again",
       runtime: runtime("build"),
     })).resolves.toBe("turn-2")
-    reopened.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(reopened, threadId, "turn-2")
     await waitForDaemon(() => expect(events).toContainEqual({
       type: "turn-completed",
       params: { threadId, turnId: "turn-2", turn: { id: "turn-2", status: "completed" } },
@@ -721,8 +757,14 @@ describe("repository instruction files", () => {
   })
 })
 
+// Security review round 8 of #687 (ruling Q287): a turn ends by message
+// identity, not by counting idles. An interrupted turn ends on the abort's
+// answer; anything the interrupted run publishes after that ends nothing, and
+// the next turn ends only on an idle after its own reply has completed.
 describe("an interrupted turn's end that arrives late", () => {
-  it("does not complete the turn sent after the interrupt", async () => {
+  const turnEnds = (events: AgentEvent[], turnId: string) => events.filter((event) => event.type === "turn-completed" && event.params.turnId === turnId)
+
+  it("ends the interrupted turn on the abort's answer and does not complete the turn sent after it", async () => {
     const { factory, stream } = harness()
     let id = 0
     const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
@@ -732,26 +774,30 @@ describe("an interrupted turn's end that arrives late", () => {
     const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
     stream.emit({ type: "message.updated", properties: { info: { id: first, sessionID: threadId, role: "user" } } })
     await adapter.interruptTurn(threadId, first)
+    expect(turnEnds(events, first)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed", error: "The OpenCode turn was interrupted." }) }) })])
     const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
 
-    // The server ends the aborted run before it takes the next prompt, so its
-    // idle comes before the new turn's own user message.
+    // The interrupted run's end, delivered late: an error and two idles (the
+    // processor's halt, then the runner's cancel).
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "MessageAbortedError", data: { message: "aborted" } } } })
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(events.filter((event) => event.type === "turn-completed")).toEqual([])
-
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    // The new turn's own prompt, and an idle before its reply has completed.
     stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
-      type: "turn-completed",
-      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
-    })))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnds(events, second)).toEqual([])
+
+    finishRun(stream, threadId, second)
+    await waitForDaemon(() => expect(turnEnds(events, second)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "completed" }) }) })]))
+    expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(2)
     await adapter.close()
   })
 
-  // Only an interrupt arms the wait for the new turn's own messages. Without
-  // one, the first idle or error ends the turn, even before any message.
-  it("ends a turn on a session error that comes before its user message when nothing was interrupted", async () => {
+  // A run that fails before any reply (an unknown agent, say) publishes an
+  // error and then goes idle. Before the turn's own prompt shows, neither is
+  // the turn's.
+  it("ends a turn that fails before any reply only on an error and idle after its own prompt", async () => {
     const { factory, stream } = harness()
     let id = 0
     const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
@@ -760,125 +806,80 @@ describe("an interrupted turn's end that arrives late", () => {
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
     const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
 
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "UnknownError", data: { message: "earlier run" } } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnds(events, turnId)).toEqual([])
+
+    stream.emit({ type: "message.updated", properties: { info: { id: turnId, sessionID: threadId, role: "user" } } })
     stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "ProviderAuthError", data: { message: "no key" } } } })
-    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
-      type: "turn-completed",
-      params: expect.objectContaining({ turnId, turn: expect.objectContaining({ status: "failed" }) }),
-    })))
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(turnEnds(events, turnId)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed", error: expect.stringContaining("no key") }) }) })]))
     await adapter.close()
   })
 
-  it("waits for the new turn's messages only until the interrupted run's end has come", async () => {
+  // A run that fails during a reply ends through the processor's halt: an
+  // error and an idle, then the reply is published as failed, then the
+  // runner's idle. Only the idle after the failed reply ends the turn.
+  it("ends a turn whose reply fails only on the idle after that reply ends", async () => {
     const { factory, stream } = harness()
     let id = 0
     const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
     const events: AgentEvent[] = []
     adapter.onEvent((event) => events.push(event))
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
-    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
-    await adapter.interruptTurn(threadId, first)
-    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: turnId, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "reply", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 1 } } } })
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "APIError", data: { message: "overloaded" } } } })
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
     await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnds(events, turnId)).toEqual([])
 
-    const third = await adapter.interruptTurn(threadId, second).then(() =>
-      adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Three", runtime: runtime("build") }))
-    void third
-    events.length = 0
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "UnknownError", data: { message: "boom" } } } })
-    await waitForDaemon(() => expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(1))
+    finishRun(stream, threadId, turnId, { id: "reply", error: { name: "APIError", data: { message: "overloaded" } } })
+    await waitForDaemon(() => expect(turnEnds(events, turnId)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed", error: expect.stringContaining("overloaded") }) }) })]))
     await adapter.close()
   })
 
-  // A run that ends through the processor's halt publishes an error and then
-  // sets the session idle. Both belong to the interrupted run.
-  it("ignores both the error and the idle an interrupted run ends with", async () => {
+  // A steer's reply names the steer as its parent; it is the turn's reply.
+  it("ends a turn on the idle after its steer's reply completes", async () => {
     const { factory, stream } = harness()
     let id = 0
     const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
     const events: AgentEvent[] = []
     adapter.onEvent((event) => events.push(event))
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
-    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
-    await adapter.interruptTurn(threadId, first)
-    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
-
-    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "MessageAbortedError", data: { message: "aborted" } } } })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    const { providerMessageId: steer } = await adapter.steerTurn(threadId, turnId, "Also")
+    stream.emit({ type: "message.updated", properties: { info: { id: "first-reply", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 1, completed: 2 } } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "steer-reply", sessionID: threadId, role: "assistant", parentID: steer, time: { created: 3 } } } })
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
     await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(events.filter((event) => event.type === "turn-completed")).toEqual([])
+    expect(turnEnds(events, turnId)).toEqual([])
 
-    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
-      type: "turn-completed",
-      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
-    })))
+    finishRun(stream, threadId, steer, { id: "steer-reply" })
+    await waitForDaemon(() => expect(turnEnds(events, turnId)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "completed" }) }) })]))
     await adapter.close()
   })
 
-  // The error can end the interrupted turn while it still holds the slot. The
-  // idle that follows still belongs to it and must not end the next turn.
-  it("ignores the idle that follows an error which ended the interrupted turn itself", async () => {
+  // A subagent's idle ends its task tool call, never the parent's turn.
+  it("does not end the parent's turn on a subagent's idle", async () => {
     const { factory, stream } = harness()
     let id = 0
     const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
     const events: AgentEvent[] = []
     adapter.onEvent((event) => events.push(event))
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
-    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
-    stream.emit({ type: "message.updated", properties: { info: { id: first, sessionID: threadId, role: "user" } } })
-    await adapter.interruptTurn(threadId, first)
-
-    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "MessageAbortedError", data: { message: "aborted" } } } })
-    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
-      type: "turn-completed",
-      params: expect.objectContaining({ turnId: first, turn: expect.objectContaining({ status: "failed" }) }),
-    })))
-    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(1)
-
-    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
-      type: "turn-completed",
-      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
-    })))
-    expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(2)
-    await adapter.close()
-  })
-
-  // A subagent's idle ends its task tool call. It is not the interrupted run's
-  // end, so it must leave the interrupt record for the parent's own idle.
-  it("keeps the interrupt record through a subagent's idle", async () => {
-    const { factory, stream } = harness()
-    let id = 0
-    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
-    const events: AgentEvent[] = []
-    adapter.onEvent((event) => events.push(event))
-    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
-    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
-    stream.emit({ type: "message.updated", properties: { info: { id: first, sessionID: threadId, role: "user" } } })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: "reply", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 1, completed: 2 } } } })
     stream.emit({ type: "session.created", properties: { sessionID: "ses_child", info: { id: "ses_child", parentID: threadId, directory: "/worktree" } } })
-    await adapter.interruptTurn(threadId, first)
-
+    stream.emit({ type: "message.updated", properties: { info: { id: "child-reply", sessionID: "ses_child", role: "assistant", parentID: "child-user", time: { created: 1, completed: 2 } } } })
     stream.emit({ type: "session.idle", properties: { sessionID: "ses_child" } })
     await new Promise((resolve) => setTimeout(resolve, 20))
-    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(events.filter((event) => event.type === "turn-completed")).toEqual([])
+    expect(turnEnds(events, turnId)).toEqual([])
 
-    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
-      type: "turn-completed",
-      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
-    })))
-    expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(1)
+    await waitForDaemon(() => expect(turnEnds(events, turnId)).toHaveLength(1))
     await adapter.close()
   })
 })
@@ -1130,7 +1131,7 @@ describe("subagents and current permission events", () => {
     ["OpenCode", domovoiOpenCodeConfig],
     ["Kilo", domovoiKiloConfig],
   ])("makes every %s agent, built-in subagents included, ask before it edits, runs or fetches", (_name, config) => {
-    expect(config.permission).toEqual({
+    expect(config.permission).toMatchObject({
       edit: "ask",
       bash: "ask",
       webfetch: "ask",
@@ -1235,6 +1236,137 @@ describe("subagents and current permission events", () => {
     await adapter.close()
   })
 
+  // A tool server's tool asks under its key, the server's name and the tool's
+  // joined by one `_` (opencode mcp/catalog.ts toolName). The card names the
+  // server only when exactly one server the session's directory knows could
+  // have made the key, and never for one of the server's own tools.
+  it.each([
+    ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory)],
+    ["Kilo", (factory: OpenCodeFactory) => new KiloSdkAdapter(factory)],
+  ] as const)("names the tool server a %s tool call belongs to", async (_name, create) => {
+    const { client, factory, stream } = harness()
+    const status = vi.fn(async (_options?: unknown) => ({
+      data: {
+        github: { status: "connected" }, git: { status: "connected" }, git_hub: { status: "failed" },
+        "my.docs": { status: "connected" },
+      },
+    }))
+    const adapter = create(() => factory().then((runtime) => ({ ...runtime, client: { ...client, mcp: { status } } })))
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Call tools", runtime: runtime("build") })
+    await waitForDaemon(() => expect(status).toHaveBeenCalledWith(expect.objectContaining({ query: { directory: "/worktree" } })))
+    const ask = (id: string, permission: string) => stream.emit({
+      type: "permission.asked",
+      properties: { id, sessionID: threadId, permission, patterns: ["*"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: `call_${id}` } },
+    })
+    ask("issue", "github_create_issue")
+    ask("ambiguous", "git_hub_status")
+    ask("only_git", "git_status")
+    ask("dotted", "my_docs_search")
+    ask("builtin", "doom_loop")
+    ask("unknown", "slack_post")
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(6))
+    const approval = (itemId: string) => events.find((event) => event.type === "approval-requested" && event.itemId === itemId)
+    expect(approval("call_issue")).toMatchObject({ tool: "github_create_issue", toolServer: { name: "github" } })
+    expect(approval("call_only_git")).toMatchObject({ tool: "git_status", toolServer: { name: "git" } })
+    expect(approval("call_dotted")).toMatchObject({ tool: "my_docs_search", toolServer: { name: "my.docs" } })
+    for (const itemId of ["call_ambiguous", "call_builtin", "call_unknown"]) expect(approval(itemId)).not.toHaveProperty("toolServer")
+    await adapter.close()
+  })
+
+  // Security review round 1 of #687 (P2): a card for a tool the catalog cannot
+  // place waits for the directory's tool servers to be read again, for a
+  // bounded time, and a read that fails is tried again for the next card.
+  it("reads the tool servers again before raising a card the catalog cannot place", async () => {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Call tools", runtime: runtime("build") })
+    const ask = (id: string, permission: string) => stream.emit({
+      type: "permission.asked",
+      properties: { id, sessionID: threadId, permission, patterns: ["*"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: `call_${id}` } },
+    })
+    // A server the directory gained after the prompt's read; the first read
+    // for its card fails, the next card's succeeds.
+    client.mcp.status.mockRejectedValueOnce(new Error("busy"))
+    client.mcp.status.mockResolvedValue({ data: { github: { status: "connected" } } })
+    ask("first", "github_create_issue")
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(1))
+    expect(events.find((event) => event.type === "approval-requested")).not.toHaveProperty("toolServer")
+    ask("second", "github_close_issue")
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(2))
+    expect(events.filter((event) => event.type === "approval-requested")[1]).toMatchObject({ itemId: "call_second", toolServer: { name: "github" } })
+    await adapter.close()
+  })
+
+  it("raises the card without a tool server once the read has taken too long", async () => {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Call tools", runtime: runtime("build") })
+    client.mcp.status.mockImplementation(() => new Promise(() => {}))
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "slow", sessionID: threadId, permission: "github_create_issue", patterns: ["*"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: "call_slow" } },
+    })
+    // The read is bounded at one second; the card comes within a few.
+    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", itemId: "call_slow" })), { timeout: 5_000 })
+    expect(events.find((event) => event.type === "approval-requested")).not.toHaveProperty("toolServer")
+    await adapter.close()
+  })
+
+  it("raises a card for one of the server's own permissions without reading again", async () => {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Fetch", runtime: runtime("build") })
+    const reads = client.mcp.status.mock.calls.length
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "fetch", sessionID: threadId, permission: "webfetch", patterns: ["https://example.test"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: "call_fetch" } },
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", itemId: "call_fetch" })))
+    expect(client.mcp.status.mock.calls.length).toBe(reads)
+    await adapter.close()
+  })
+
+  // Security review round 1 of #687 (P2): the card's tool server comes from
+  // the directory's catalog. A tool listed among the tool ids is a plugin's
+  // or the server's own, never a tool server's, and a server's name is made a
+  // key prefix exactly as OpenCode makes it: each UTF-16 unit outside
+  // [a-zA-Z0-9_-] becomes `_`.
+  it("names a tool server from the directory's catalog, as OpenCode names its tools", async () => {
+    const { client, factory, stream } = harness()
+    client.mcp.status.mockResolvedValue({ data: { docs: { status: "connected" }, "team🔥x": { status: "connected" } } })
+    client.tool.ids.mockResolvedValue({ data: [...openCodeBuiltInToolIds, "docs_publish"] })
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Call tools", runtime: runtime("build") })
+    const ask = (id: string, permission: string) => stream.emit({
+      type: "permission.asked",
+      properties: { id, sessionID: threadId, permission, patterns: ["*"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: `call_${id}` } },
+    })
+    ask("plugin", "docs_publish")
+    ask("emoji", "team__x_search")
+    ask("server", "docs_search")
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(3))
+    const approval = (itemId: string) => events.find((event) => event.type === "approval-requested" && event.itemId === itemId)
+    expect(approval("call_plugin")).not.toHaveProperty("toolServer")
+    expect(approval("call_emoji")).toMatchObject({ toolServer: { name: "team🔥x" } })
+    expect(approval("call_server")).toMatchObject({ toolServer: { name: "docs" } })
+    await adapter.close()
+  })
+
   it("routes a subagent's approvals and commands to the parent thread and answers the child session", async () => {
     const { adapter, client, events, stream, threadId } = await buildTurn()
     const child = "ses_child"
@@ -1288,6 +1420,9 @@ describe("subagents and current permission events", () => {
       }),
     })))
 
+    // Even once the parent's reply has completed, the child's idle ends only
+    // the child's task, not the parent's turn.
+    stream.emit({ type: "message.updated", properties: { info: { id: "reply-turn-1", sessionID: threadId, role: "assistant", parentID: "turn-1", time: { created: 1, completed: 2 } } } })
     stream.emit({ type: "session.idle", properties: { sessionID: child } })
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(events).not.toContainEqual(expect.objectContaining({ type: "turn-completed" }))
@@ -1322,7 +1457,7 @@ describe("subagents and current permission events", () => {
       type: "approval-requested", requestId: 1, threadId, turnId: "turn-1",
     })))
     beforeTurnEnd?.(client)
-    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "UnknownError", data: { message: "parent failed" } } } })
+    finishRun(stream, threadId, "turn-1", { error: { name: "UnknownError", data: { message: "parent failed" } } })
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
       type: "turn-completed", params: expect.objectContaining({ turnId: "turn-1" }),
     })))
@@ -1334,6 +1469,8 @@ describe("subagents and current permission events", () => {
     properties: { id, sessionID, permission: "bash", patterns: ["ls"], metadata: { command: "ls" }, always: [] },
   })
 
+  // Never adopted, and outside any turn: security review round 7 of #687
+  // (ruling Q277) refuses its approval requests with no card and aborts it.
   it("never adopts a child first seen while its thread has no active turn", async () => {
     const { client, factory, stream } = harness()
     let turns = 0
@@ -1352,7 +1489,11 @@ describe("subagents and current permission events", () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
 
     expect(events.filter((event) => event.type === "approval-requested")).toEqual([])
-    expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalled()
+    for (const [session, permission] of [["ses_between", "per_between"], ["ses_grandchild", "per_grandchild"]] as const) {
+      expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(expect.objectContaining({ path: { id: session, permissionID: permission }, body: { response: "reject" } }))
+      expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: session } }))
+    }
+    expect(client.session.abort).not.toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } }))
     await adapter.close()
   })
 
@@ -1538,7 +1679,7 @@ describe("subagents and current permission events", () => {
 
     settle.resolve(Promise.reject(new Error("provider busy")))
     await new Promise((resolve) => setTimeout(resolve, 20))
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-2")
     await waitForDaemon(() => expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(2))
     await new Promise((resolve) => setTimeout(resolve, 20))
     const oldRefusals = (client.postSessionIdPermissionsPermissionId.mock.calls as unknown as Array<[{ path: { permissionID: string } }]>).filter(
@@ -1595,7 +1736,7 @@ describe("subagents and current permission events", () => {
       properties: { id: "per_parent", sessionID: threadId, permission: "bash", patterns: ["ls"], metadata: { command: "ls" }, always: [] },
     })
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", requestId: 1 })))
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-1")
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed" })))
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalled()
@@ -1681,6 +1822,1478 @@ describe("subagents and current permission events", () => {
   })
 })
 
+// Security review round 1 of #687: a permission name does not say which tool
+// asks under it. A tool server's tool asks under `<server>_<tool>`, and a
+// plugin's tool under whatever it names, so a tool that is not the server's
+// own could take a name the embedded config allows. Before a session opens
+// and before each prompt the adapter reads the directory's tool servers and
+// tool ids, and refuses when one could take such a name, or when it cannot
+// read them.
+describe("tools that could take a name OpenCode's own tools ask under", () => {
+  const adapters = [
+    ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory)],
+    ["Kilo", (factory: OpenCodeFactory) => new KiloSdkAdapter(factory)],
+  ] as const
+
+  it.each([
+    ["OpenCode", "plan", "plan_enter"],
+    ["OpenCode", "Plan", "plan_enter"],
+    ["OpenCode", "doom", "doom_loop"],
+    ["Kilo", "board", "board_post"],
+    ["Kilo", "kilo_memory", "kilo_memory_save"],
+    ["Kilo", "semantic", "semantic_search"],
+  ] as const)("refuses a %s session whose tool server %s could make %s", async (name, server, permission) => {
+    const { client, factory } = harness()
+    client.mcp.status.mockResolvedValue({ data: { docs: { status: "connected" }, [server]: { status: "connected" } } })
+    const adapter = adapters.find(([candidate]) => candidate === name)![1](factory)
+    const refusal = adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await expect(refusal).rejects.toThrow(`tool server named "${server}"`)
+    await expect(refusal).rejects.toThrow(permission)
+    expect(client.session.create).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it.each([
+    ["a second glob", [...openCodeBuiltInToolIds, "glob"]],
+    ["a list tool", [...openCodeBuiltInToolIds, "list"]],
+    ["a plan_enter tool", [...openCodeBuiltInToolIds, "plan_enter"]],
+  ] as const)("refuses a session with %s that is not OpenCode's own", async (_case, ids) => {
+    const { client, factory } = harness()
+    client.tool.ids.mockResolvedValue({ data: ids })
+    const adapter = new OpenCodeSdkAdapter(factory)
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow("not one of its own")
+    expect(client.session.create).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("knows Kilo's own tools and what Kilo's embedded config allows", async () => {
+    const { client, factory } = harness()
+    client.tool.ids.mockResolvedValue({ data: [...kiloBuiltInToolIds] })
+    const kilo = new KiloSdkAdapter(factory)
+    await expect(kilo.startThread({ cwd: "/worktree", runtime: runtime("build") })).resolves.toBe("open-session")
+    await kilo.close()
+
+    const other = harness()
+    other.client.tool.ids.mockResolvedValue({ data: [...kiloBuiltInToolIds, "semantic_search"] })
+    const refused = new KiloSdkAdapter(other.factory)
+    await expect(refused.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow(`tool named "semantic_search"`)
+    await refused.close()
+  })
+
+  // Security review round 4 of #687: on Windows the server matches rules in
+  // any case, so a tool id that differs from one of its own, or from an
+  // allowed permission, only in case takes that name there.
+  it.each([
+    ["win32", "READ", "refused"],
+    ["win32", "Glob", "refused"],
+    ["win32", "Plan_Enter", "refused"],
+    ["darwin", "READ", "opened"],
+    ["linux", "Glob", "opened"],
+  ] as const)("on %s, treats a tool id %s by the server's case matching", async (platform, id, outcome) => {
+    const { client, factory } = harness()
+    client.tool.ids.mockResolvedValue({ data: [...openCodeBuiltInToolIds, id] })
+    const adapter = new OpenCodeSdkAdapter(factory, undefined, undefined, { platform })
+    const opened = adapter.startThread({ cwd: "/worktree", runtime: runtime("build") }).then(() => "opened", (error: Error) => {
+      expect(error.message).toContain(`tool named "${id}"`)
+      return "refused"
+    })
+    await expect(opened).resolves.toBe(outcome)
+    await adapter.close()
+  })
+
+  // Security review round 5 of #687 (P3): the server compares in any case
+  // with a RegExp "i" flag and no "u" flag, which reads "Σ" and "ς" as one
+  // name, though their lower cases ("σ" and "ς") differ.
+  it.each([
+    ["win32", ["Σ", "ς"], "refused"],
+    ["win32", ["ς", "Σ"], "refused"],
+    ["win32", ["deploy", "DEPLOY"], "refused"],
+    ["darwin", ["Σ", "ς"], "opened"],
+    ["linux", ["deploy", "DEPLOY"], "opened"],
+    // The server's matcher turns every backslash into a slash on both
+    // sides, on every platform (packages/core/src/util/wildcard.ts, the
+    // same file at opencode v1.18.32, v1.18.33 and kilo v7.8.1).
+    ["darwin", ["a\\b", "a/b"], "refused"],
+    ["linux", ["a/b", "a\\b"], "refused"],
+    ["win32", ["a\\b", "A/B"], "refused"],
+    ["linux", ["a\\b", "a_b"], "opened"],
+  ] as const)("on %s, treats plugin tool ids %j as duplicates by the server's matcher", async (platform, ids, outcome) => {
+    const { client, factory } = harness()
+    client.tool.ids.mockResolvedValue({ data: [...openCodeBuiltInToolIds, ...ids] })
+    const adapter = new OpenCodeSdkAdapter(factory, undefined, undefined, { platform })
+    const opened = adapter.startThread({ cwd: "/worktree", runtime: runtime("build") }).then(() => "opened", (error: Error) => {
+      expect(error.message).toContain(`tool named "${ids[1]}"`)
+      return "refused"
+    })
+    await expect(opened).resolves.toBe(outcome)
+    await adapter.close()
+  })
+
+  // An id the server's matcher reads as an allowed permission takes that
+  // permission's rules unless it is exactly one of the server's own ids.
+  it.each([
+    ["darwin", "docs\\read", [], "refused"],
+    ["linux", "docs\\read", ["docs/read"], "refused"],
+    ["win32", "Docs\\Read", ["docs/read"], "refused"],
+    ["linux", "docs/read", ["docs/read"], "opened"],
+    ["win32", "docs\\read", ["docs\\read"], "opened"],
+  ] as const)("on %s, treats tool id %j by the server's matcher against an allowed name", async (platform, id, own, outcome) => {
+    const { client, factory } = harness()
+    client.tool.ids.mockResolvedValue({ data: [...openCodeBuiltInToolIds, id] })
+    const identity = {
+      providerId: "opencode",
+      providerName: "OpenCode",
+      allowedPermissions: new Set([...openCodeAllowedPermissions, "docs/read"]),
+      builtInToolIds: [...openCodeBuiltInToolIds, ...own],
+    }
+    const adapter = new OpenCodeSdkAdapter(factory, undefined, identity, { platform })
+    const opened = adapter.startThread({ cwd: "/worktree", runtime: runtime("build") }).then(() => "opened", (error: Error) => {
+      expect(error.message).toContain(`tool named "${id}"`)
+      return "refused"
+    })
+    await expect(opened).resolves.toBe(outcome)
+    await adapter.close()
+  })
+
+  it("opens a session whose tool servers and plugin tools take no such name", async () => {
+    const { client, factory } = harness()
+    client.mcp.status.mockResolvedValue({ data: { docs: { status: "connected" }, github: { status: "failed" } } })
+    client.tool.ids.mockResolvedValue({ data: [...openCodeBuiltInToolIds, "deploy", "docs_publish"] })
+    const adapter = new OpenCodeSdkAdapter(factory)
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).resolves.toBe("open-session")
+    await adapter.close()
+  })
+
+  it.each([
+    ["tool servers", "mcp"],
+    ["tool ids", "tool"],
+  ] as const)("refuses a session when its %s cannot be read", async (_case, part) => {
+    const { client, factory } = harness()
+    if (part === "mcp") client.mcp.status.mockRejectedValue(new Error("busy"))
+    else client.tool.ids.mockRejectedValue(new Error("busy"))
+    const adapter = new OpenCodeSdkAdapter(factory)
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow("could not read")
+    await expect(adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow("could not read")
+    expect(client.session.create).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  // Security review rounds 2 and 3 of #687: config this adapter does not see
+  // (an agent or mode block of the person's, an organization or managed
+  // config) could leave an agent a session runs allowing a tool that is not
+  // the server's own. Each such agent's merged rules are read and checked by
+  // shape: the last rule for every tool and every pattern must ask or deny,
+  // and every allow after it must name one of the server's own permissions
+  // literally. Any other allow, a wildcard or a named tool of the person's,
+  // refuses the session.
+  const ask = (permission: string, pattern = "*") => ({ permission, pattern, action: "ask" })
+  const allow = (permission: string, pattern = "*") => ({ permission, pattern, action: "allow" })
+  const agentsWith = (rules: unknown[], name = "build") => ({ data: [
+    { name, mode: "primary", permission: rules },
+    { name: "general", mode: "subagent", permission: [ask("*")] },
+  ] })
+
+  it.each([
+    ["OpenCode", "build", [ask("*"), allow("*")], "does not ask before"],
+    ["Kilo", "code", [ask("*"), allow("*")], "does not ask before"],
+    ["OpenCode", "build", [ask("*"), allow("mcp_*")], `allows "mcp_*"`],
+    ["OpenCode", "build", [ask("*"), allow("github_create_issue")], `allows "github_create_issue"`],
+    ["OpenCode", "build", [ask("*"), allow("gl?b")], `allows "gl?b"`],
+    ["OpenCode", "build", [ask("*"), { permission: "*", pattern: "src/*", action: "allow" }], `allows "*"`],
+    ["OpenCode", "build", [allow("*")], "does not ask before"],
+    ["OpenCode", "build", [ask("bash")], "does not ask before"],
+    ["OpenCode", "build", [ask("*"), { permission: "glob", pattern: "*", action: "maybe" }], "rule Domovoi cannot read"],
+    ["OpenCode", "general", [ask("*"), allow("docs_*")], `allows "docs_*"`],
+  ] as const)("refuses a %s session whose %s agent has rules %j", async (name, agent, rules, message) => {
+    const { client, factory } = harness()
+    client.app.agents.mockResolvedValue(agent === "general"
+      ? { data: [{ name: "build", mode: "primary", permission: [ask("*")] }, { name: "general", mode: "subagent", permission: rules }] }
+      : agentsWith([...rules], agent))
+    const adapter = adapters.find(([candidate]) => candidate === name)![1](factory)
+    const refusal = adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await expect(refusal).rejects.toThrow(`${agent} agent`)
+    await expect(refusal).rejects.toThrow(message)
+    expect(client.session.create).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  // Security review round 3 of #687 (P2): only the agents a session can reach
+  // are checked: the primary agent it runs now, and every agent the task tool
+  // can start from it, by the agent's effective mode and the primary's task
+  // rule.
+  it("checks only the primary agent selected and the subagents it can start", async () => {
+    const opens = async (agents: unknown[], permissionMode: Runtime["permissionMode"] = "build") => {
+      const { client, factory } = harness()
+      client.app.agents.mockResolvedValue({ data: agents })
+      const adapter = new OpenCodeSdkAdapter(factory)
+      try {
+        await adapter.startThread({ cwd: "/worktree", runtime: runtime(permissionMode) })
+        return "opened"
+      } catch (error) {
+        return (error as Error).message
+      } finally {
+        await adapter.close()
+      }
+    }
+    const build = { name: "build", mode: "primary", permission: [ask("*")] }
+    // A general the person made primary cannot be started by the task tool.
+    expect(await opens([build, { name: "general", mode: "primary", permission: [allow("*")] }])).toBe("opened")
+    // A subagent of the person's that the task tool can start, with a card.
+    expect(await opens([build, { name: "reviewer", mode: "subagent", permission: [ask("*"), allow("mcp_*")] }])).toContain("reviewer agent")
+    expect(await opens([build, { name: "helper", mode: "all", permission: [ask("*"), allow("mcp_*")] }])).toContain("helper agent")
+    // One the primary's task rule denies cannot be started.
+    expect(await opens([
+      { name: "build", mode: "primary", permission: [ask("*"), { permission: "task", pattern: "reviewer", action: "deny" }] },
+      { name: "reviewer", mode: "subagent", permission: [ask("*"), allow("mcp_*")] },
+    ])).toBe("opened")
+    // Plan is checked when it is the agent the session runs.
+    const plan = { name: "plan", mode: "primary", permission: [ask("*"), allow("mcp_*")] }
+    expect(await opens([build, plan])).toBe("opened")
+    expect(await opens([build, plan], "plan")).toContain("plan agent")
+    // An agent the session would run that the server does not list refuses.
+    expect(await opens([{ name: "general", mode: "subagent", permission: [ask("*")] }])).toContain("build agent")
+  })
+
+  it("lets the server's own permissions be allowed after the catch-all, and anything before it", async () => {
+    const { client, factory } = harness()
+    client.app.agents.mockResolvedValue(agentsWith([
+      allow("*"), allow("mcp_*"), allow("github_create_issue"),
+      ask("*"),
+      allow("read"), { permission: "read", pattern: "*.env", action: "ask" }, allow("glob"), allow("task", "general"),
+      allow("external_directory", "/tool-output/*"), allow("bash", "git log *"), allow("edit", ".opencode/plans/*.md"),
+      ask("docs_*"), { permission: "secret_*", pattern: "*", action: "deny" },
+    ]))
+    const adapter = new OpenCodeSdkAdapter(factory)
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).resolves.toBe("open-session")
+    await adapter.close()
+  })
+
+  it("refuses a session when the agents' rules cannot be read", async () => {
+    const { client, factory } = harness()
+    client.app.agents.mockRejectedValue(new Error("busy"))
+    const adapter = new OpenCodeSdkAdapter(factory)
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow("could not read")
+    await adapter.close()
+  })
+
+  // Security review round 2 of #687: a tool server added during a turn (the
+  // server's POST /mcp) can register a tool named like an allowed built-in,
+  // which then runs with no card, and the servers emit no event for an add.
+  // The adapter watches the turn's tool calls: a call to a tool the catalog
+  // does not hold, or a change in the directory's tool servers seen while the
+  // turn calls tools, stops the turn. One call can run before the stop.
+  async function turnWithTools(setup?: (client: ReturnType<typeof harness>["client"]) => void, id: () => string = () => "turn-1") {
+    const { client, factory, stream } = harness()
+    setup?.(client)
+    const adapter = new OpenCodeSdkAdapter(factory, id)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Work", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: "assistant-message", sessionID: threadId, role: "assistant", parentID: turnId } } })
+    const call = (callID: string, tool: string, status = "pending") => stream.emit({
+      type: "message.part.updated",
+      properties: { part: { type: "tool", sessionID: threadId, messageID: "assistant-message", callID, tool, state: { status, input: {} } } },
+    })
+    // The turn's run ends: its reply completes, then the session goes idle.
+    const finish = () => finishRun(stream, threadId, turnId, { id: "assistant-message" })
+    return { adapter, client, events, stream, threadId, turnId, call, finish }
+  }
+  const turnEnd = (events: AgentEvent[]) => events.find((event) => event.type === "turn-completed")
+
+  it("stops the turn when it calls a tool the catalog did not hold", async () => {
+    const { adapter, client, events, call } = await turnWithTools()
+    call("call-1", "plan_enter")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await waitForDaemon(() => expect(turnEnd(events)).toMatchObject({ params: { turn: { status: "failed", error: expect.stringContaining("plan_enter") } } }))
+    // The next prompt reads the catalog again and refuses the new server.
+    client.mcp.status.mockResolvedValue({ data: { plan: { status: "connected" } } })
+    await expect(adapter.startTurn({ threadId: "open-session", cwd: "/worktree", prompt: "Again", runtime: runtime("build") })).rejects.toThrow(`tool server named "plan"`)
+    await adapter.close()
+  })
+
+  // Security review round 3 of #687: the run is aborted, and the abort
+  // answered, before the Domovoi turn ends.
+  it("ends the turn only once the abort is answered", async () => {
+    let answer!: () => void
+    const { adapter, client, events, call, finish } = await turnWithTools((setup) => {
+      setup.session.abort.mockImplementation(() => new Promise((resolve) => { answer = () => resolve({ data: true }) }))
+    })
+    call("call-1", "plan_enter")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    // The run's own end, while the abort is under way, does not end the turn.
+    finish()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnd(events)).toBeUndefined()
+    answer()
+    await waitForDaemon(() => expect(turnEnd(events)).toMatchObject({ params: { turn: { status: "failed" } } }))
+    await adapter.close()
+  })
+
+  it("stops the turn when the directory's tool servers change while it calls tools", async () => {
+    const { adapter, client, events, call } = await turnWithTools()
+    client.mcp.status.mockResolvedValue({ data: { github: { status: "connected" } } })
+    call("call-1", "bash")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await waitForDaemon(() => expect(turnEnd(events)).toMatchObject({ params: { turn: { status: "failed", error: expect.stringContaining("github") } } }))
+    await adapter.close()
+  })
+
+  // Security review round 3 of #687: a server listed as failed at the prompt
+  // that connects during the turn exposes tools the prompt's read did not
+  // see, under a name the catalog already holds; a change of status counts.
+  it("stops the turn when a tool server's status changes while it calls tools", async () => {
+    const { adapter, client, events, call } = await turnWithTools((setup) => {
+      setup.mcp.status.mockResolvedValue({ data: { mcp: { status: "failed", error: "Connection closed" } } })
+    })
+    client.mcp.status.mockResolvedValue({ data: { mcp: { status: "connected" } } })
+    call("call-1", "mcp_newly_available")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await waitForDaemon(() => expect(turnEnd(events)).toMatchObject({ params: { turn: { status: "failed", error: expect.stringContaining("mcp") } } }))
+    await adapter.close()
+  })
+
+  it("holds a turn's calls to the servers checked before the prompt, whatever a card read since", async () => {
+    const { adapter, client, events, call, stream, threadId } = await turnWithTools()
+    client.mcp.status.mockResolvedValue({ data: { github: { status: "connected" } } })
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "p", sessionID: threadId, permission: "github_create_issue", patterns: ["*"], metadata: {}, always: ["*"], tool: { messageID: "msg_1", callID: "call_p" } },
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", toolServer: { name: "github" } })))
+    call("call-2", "github_close_issue")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await adapter.close()
+  })
+
+  // Security review round 3 of #687: call ids are not unique across provider
+  // sessions, so a subagent's call that reuses one is still checked.
+  // Security review round 4 of #687: another session's check in the same
+  // directory must not change what a running turn is held to, and a check
+  // that refuses publishes nothing.
+  it("holds a turn to its own prompt's catalog when another session's check refuses a new server", async () => {
+    const { adapter, client, call } = await turnWithTools()
+    client.mcp.status.mockResolvedValue({ data: { plan: { status: "connected" } } })
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow(`tool server named "plan"`)
+    call("call-1", "plan_enter")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await adapter.close()
+  })
+
+  // Security review round 5 of #687: a steer runs its own check but does not
+  // change what the running turn is held to, and neither does a prompt that
+  // fails.
+  it.each([
+    ["is sent", false],
+    ["is rejected", true],
+  ] as const)("holds a turn to its first prompt's catalog when a steer that adds a server %s", async (_case, rejects) => {
+    const { adapter, client, call, threadId } = await turnWithTools()
+    client.mcp.status.mockResolvedValue({ data: { docs: { status: "connected" } } })
+    if (rejects) client.session.promptAsync.mockRejectedValueOnce(new Error("busy"))
+    const steer = adapter.steerTurn(threadId, "turn-1", "More")
+    if (rejects) await expect(steer).rejects.toThrow()
+    else await steer
+    call("call-1", "docs_search")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await adapter.close()
+  })
+
+  // Security review round 6 of #687 (P2): the server answers a prompt and
+  // ends a run independently, so a turn can end while a steer is in flight.
+  // The run the accepted steer starts is outside any Domovoi turn: Domovoi
+  // aborts it, waits for the abort, and reports the steer as failed.
+  it("stops a steer the server accepted after the turn ended, and reports it failed", async () => {
+    let accept!: () => void
+    let answerAbort!: () => void
+    const { adapter, client, events, call, finish, threadId } = await turnWithTools()
+    client.session.promptAsync.mockImplementationOnce(() => new Promise((resolve) => { accept = () => resolve({ data: undefined }) }))
+    client.session.abort.mockImplementationOnce(() => new Promise((resolve) => { answerAbort = () => resolve({ data: true }) }))
+    const steer = adapter.steerTurn(threadId, "turn-1", "More")
+    let settled = false
+    const outcome = steer.then(() => "sent", (error: Error) => error.message).finally(() => { settled = true })
+    await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledTimes(2))
+    finish()
+    await waitForDaemon(() => expect(turnEnd(events)).toMatchObject({ params: { turn: { status: "completed" } } }))
+    accept()
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } })))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(settled).toBe(false)
+    answerAbort()
+    expect(await outcome).toContain("turn ended while the steer was sent, so Domovoi stopped it")
+    // The steer's run, if the abort has not reached it, still calls tools.
+    client.session.abort.mockClear()
+    call("call-9", "docs_search")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } })))
+    await adapter.close()
+  })
+
+  it("aborts a run that calls a tool while the thread has no turn", async () => {
+    const { adapter, client, events, call, finish, threadId } = await turnWithTools()
+    finish()
+    await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
+    expect(client.session.abort).not.toHaveBeenCalled()
+    call("call-9", "bash")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } })))
+    await adapter.close()
+  })
+
+  it("aborts a run that asks for a tool's approval while the thread has no turn", async () => {
+    const { adapter, client, events, stream, threadId, finish } = await turnWithTools()
+    finish()
+    await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "p", sessionID: threadId, permission: "bash", patterns: ["ls"], metadata: {}, always: ["ls"], tool: { messageID: "msg_9", callID: "call_9" } },
+    })
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: threadId } })))
+    expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(0)
+    await adapter.close()
+  })
+
+  it.each([
+    ["linked to a turn that ended", true],
+    ["started while the thread had no turn", false],
+  ] as const)("aborts a subagent %s that calls a tool", async (_case, linked) => {
+    const { adapter, client, events, stream, threadId, finish } = await turnWithTools()
+    if (linked) stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
+    finish()
+    await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
+    if (!linked) stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "child-message", sessionID: "child-session", role: "assistant", parentID: "child-user" } } })
+    stream.emit({
+      type: "message.part.updated",
+      properties: { part: { type: "tool", sessionID: "child-session", messageID: "child-message", callID: "call-c", tool: "bash", state: { status: "running", input: {} } } },
+    })
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "child-session" } })))
+    await adapter.close()
+  })
+
+  // Security review round 7 of #687 (P2): an abort is recorded before it is
+  // sent, its run's end (idle, error) is consumed through that record with or
+  // without a turn, and a new prompt waits for a pending abort to settle.
+  async function lateSteer() {
+    let next = 0
+    let accept!: () => void
+    const answers: Array<(ok: boolean) => void> = []
+    const setup = await turnWithTools((client) => {
+      client.session.abort.mockImplementation(() => new Promise((resolve, reject) => {
+        answers.push((ok) => (ok ? resolve({ data: true }) : reject(new Error("abort refused"))))
+      }))
+    }, () => `prompt-${++next}`)
+    const { adapter, client, events, threadId } = setup
+    client.session.promptAsync.mockImplementationOnce(() => new Promise((resolve) => { accept = () => resolve({ data: undefined }) }))
+    const steer = adapter.steerTurn(threadId, "prompt-1", "More").then(() => "sent", (error: Error) => error.message)
+    await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledTimes(2))
+    setup.finish()
+    await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
+    accept()
+    await waitForDaemon(() => expect(answers).toHaveLength(1))
+    const answer = (ok: boolean) => answers.shift()!(ok)
+    return { ...setup, steer, answer, answers }
+  }
+  const turnEnds = (events: AgentEvent[], turnId: string) => events.filter((event) => event.type === "turn-completed" && event.params.turnId === turnId)
+
+  // Round 8 (ruling Q287): the next turn's error counts only after the
+  // turn's own prompt shows; before it, an error and idle are the aborted
+  // steer's.
+  it("does not end the next turn on the aborted steer's end, and fails it on its own error", async () => {
+    const { adapter, events, stream, threadId, steer, answer } = await lateSteer()
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    answer(true)
+    expect(await steer).toContain("turn ended while the steer was sent")
+    const next = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "MessageAbortedError", data: { message: "Aborted" } } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnds(events, next)).toHaveLength(0)
+    stream.emit({ type: "message.updated", properties: { info: { id: next, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "APIError", data: { message: "rate limited" } } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(turnEnds(events, next)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed", error: expect.stringContaining("rate limited") }) }) })]))
+    await adapter.close()
+  })
+
+  it("holds a turn started during a pending abort until the abort settles, and its idle does not end that turn", async () => {
+    const { adapter, client, events, stream, threadId, steer, answer } = await lateSteer()
+    const started = adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(2)
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    answer(true)
+    const next = await started
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(3)
+    expect(await steer).toContain("turn ended while the steer was sent")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnds(events, next)).toHaveLength(0)
+    finishRun(stream, threadId, next)
+    await waitForDaemon(() => expect(turnEnds(events, next)).toHaveLength(1))
+    await adapter.close()
+  })
+
+  it("fails a prompt that waited on an abort the server did not answer, with the stop's reason", async () => {
+    const { adapter, client, threadId, steer, answer } = await lateSteer()
+    const started = adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    answer(false)
+    await expect(started).rejects.toThrow("turn ended while the steer was sent")
+    expect(await steer).toContain("could not confirm")
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(2)
+    await adapter.close()
+  })
+
+  // Security review round 7 of #687 (P2): a finished tool's report is a late
+  // report, not a call, and a run has at most one abort outstanding.
+  it("does not abort for a finished tool's late report, and joins an outstanding abort", async () => {
+    const { adapter, client, events, stream, threadId, finish } = await turnWithTools((setup) => {
+      setup.session.abort.mockImplementation(() => new Promise(() => {}))
+    })
+    stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
+    finish()
+    await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
+    const report = (sessionID: string, messageID: string, callID: string, status: string) => stream.emit({
+      type: "message.part.updated",
+      properties: { part: { type: "tool", sessionID, messageID, callID, tool: "bash", state: { status, input: {} } } },
+    })
+    stream.emit({ type: "message.updated", properties: { info: { id: "child-message", sessionID: "child-session", role: "assistant", parentID: "child-user" } } })
+    report(threadId, "assistant-message", "done-1", "completed")
+    report(threadId, "assistant-message", "done-2", "error")
+    report("child-session", "child-message", "done-3", "error")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.session.abort).not.toHaveBeenCalled()
+    report(threadId, "assistant-message", "live-1", "running")
+    report(threadId, "assistant-message", "live-2", "pending")
+    report("child-session", "child-message", "live-3", "running")
+    report("child-session", "child-message", "live-4", "running")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledTimes(2))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.session.abort.mock.calls.map((args: unknown[]) => (args[0] as { path: { id: string } }).path.id).sort()).toEqual(["child-session", threadId].sort())
+    await adapter.close()
+  })
+
+  // Security review round 7 of #687 (P3): a stop already under way is shared,
+  // so a late steer that meets it waits for its real answer.
+  it("makes a late steer that meets a stop under way wait for that stop's answer", async () => {
+    let next = 0
+    let accept!: () => void
+    let answer!: (ok: boolean) => void
+    const { adapter, client, stream, threadId, events, finish } = await turnWithTools((setup) => {
+      setup.session.abort.mockImplementation(() => new Promise((resolve, reject) => {
+        answer = (ok) => (ok ? resolve({ data: true }) : reject(new Error("abort refused")))
+      }))
+    }, () => `prompt-${++next}`)
+    client.session.promptAsync.mockImplementationOnce(() => new Promise((resolve) => { accept = () => resolve({ data: undefined }) }))
+    let settled = false
+    const steer = adapter.steerTurn(threadId, "prompt-1", "More").then(() => "sent", (error: Error) => error.message).finally(() => { settled = true })
+    await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledTimes(2))
+    finish()
+    await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: "reply-second", sessionID: threadId, role: "assistant", parentID: second } } })
+    stream.emit({
+      type: "message.part.updated",
+      properties: { part: { type: "tool", sessionID: threadId, messageID: "reply-second", callID: "c", tool: "plan_enter", state: { status: "pending", input: {} } } },
+    })
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledTimes(1))
+    accept()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(settled).toBe(false)
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    answer(false)
+    expect(await steer).toContain("could not confirm")
+    await adapter.close()
+  })
+
+  // Security review round 7 of #687 (P3): an approval request from a
+  // subagent outside its turn is refused and its run aborted.
+  it.each([
+    ["linked to a turn that ended", true],
+    ["started while the thread had no turn", false],
+  ] as const)("refuses and aborts a subagent %s that asks for approval", async (_case, linked) => {
+    const { adapter, client, events, stream, threadId, finish } = await turnWithTools()
+    if (linked) stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
+    finish()
+    await waitForDaemon(() => expect(turnEnd(events)).toBeDefined())
+    if (!linked) stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "p", sessionID: "child-session", permission: "bash", patterns: ["ls"], metadata: {}, always: ["ls"], tool: { messageID: "msg_c", callID: "call_c" } },
+    })
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "child-session", permissionID: "p" }, body: { response: "reject" } })))
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "child-session" } })))
+    expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(0)
+    await adapter.close()
+  })
+
+  // Security review round 8 of #687 (ruling Q287): an aborted run's end is
+  // not counted. OpenCode 1.18.32/1.18.33 and Kilo 7.8.1 publish an error
+  // and an idle from the processor's halt and another idle from the
+  // runner's cancel. A turn the abort stops ends on the abort's answer, and
+  // a later turn ends only on an idle after its own reply has completed.
+  async function stoppedTurn() {
+    let answer!: (ok: boolean) => void
+    let next = 0
+    const setup = await turnWithTools((client) => {
+      client.session.abort.mockImplementation(() => new Promise((resolve, reject) => {
+        answer = (ok) => (ok ? resolve({ data: true }) : reject(new Error("abort refused")))
+      }))
+    }, () => `prompt-${++next}`)
+    setup.call("call-1", "plan_enter")
+    await waitForDaemon(() => expect(setup.client.session.abort).toHaveBeenCalledTimes(1))
+    const cancel = () => {
+      setup.stream.emit({ type: "session.error", properties: { sessionID: setup.threadId, error: { name: "MessageAbortedError", data: { message: "Aborted" } } } })
+      setup.stream.emit({ type: "session.idle", properties: { sessionID: setup.threadId } })
+      setup.stream.emit({ type: "message.updated", properties: { info: { id: "assistant-message", sessionID: setup.threadId, role: "assistant", parentID: setup.turnId, time: { created: 1, completed: 2 }, error: { name: "MessageAbortedError", data: { message: "Aborted" } } } } })
+      setup.stream.emit({ type: "session.idle", properties: { sessionID: setup.threadId } })
+    }
+    return { ...setup, answer: (ok: boolean) => answer(ok), cancel }
+  }
+
+  it("does not end a stopping turn on its cancelled run's two idles before the abort is answered", async () => {
+    const { adapter, events, turnId, answer, cancel } = await stoppedTurn()
+    cancel()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnds(events, turnId)).toHaveLength(0)
+    answer(true)
+    await waitForDaemon(() => expect(turnEnds(events, turnId)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed", error: expect.stringContaining("plan_enter") }) }) })]))
+    await adapter.close()
+  })
+
+  it("does not end a later turn on the stopped run's delayed second idle", async () => {
+    const { adapter, events, stream, threadId, turnId, answer } = await stoppedTurn()
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "MessageAbortedError", data: { message: "Aborted" } } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    answer(true)
+    await waitForDaemon(() => expect(turnEnds(events, turnId)).toHaveLength(1))
+    const later = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    // The cancelled run's failed reply and second idle, delivered late.
+    stream.emit({ type: "message.updated", properties: { info: { id: "assistant-message", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 1, completed: 2 }, error: { name: "MessageAbortedError", data: { message: "Aborted" } } } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    // The later turn's own prompt, and an idle before its reply completes.
+    stream.emit({ type: "message.updated", properties: { info: { id: later, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(turnEnds(events, later)).toHaveLength(0)
+    finishRun(stream, threadId, later)
+    await waitForDaemon(() => expect(turnEnds(events, later)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "completed" }) }) })]))
+    await adapter.close()
+  })
+
+  it("fails the stopped turn and a prompt waiting on its abort once the abort goes unanswered for ten seconds", async () => {
+    const { adapter, client, events, call, threadId, turnId } = await turnWithTools((setup) => {
+      setup.session.abort.mockImplementation(() => new Promise(() => {}))
+    })
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    let steer: Promise<string>
+    let settled = false
+    try {
+      // The stop: a call to a tool the catalog did not hold.
+      call("call-1", "plan_enter")
+      for (let step = 0; step < 5; step += 1) await vi.advanceTimersByTimeAsync(1)
+      expect(client.session.abort).toHaveBeenCalledTimes(1)
+      steer = adapter.steerTurn(threadId, turnId, "More").then(() => "sent", (error: Error) => error.message).finally(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(9_000)
+      expect(settled).toBe(false)
+      expect(turnEnds(events, turnId)).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(1_100)
+    } finally {
+      vi.useRealTimers()
+    }
+    const failure = await steer
+    expect(failure).toContain("plan_enter")
+    expect(failure).toContain("could not confirm")
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1)
+    expect(turnEnds(events, turnId)).toEqual([expect.objectContaining({ params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed", error: expect.stringContaining("could not confirm") }) }) })])
+    await adapter.close()
+  })
+
+  it("aborts nothing for a finished tool's first report in an active turn", async () => {
+    const { adapter, client, events, call } = await turnWithTools()
+    call("call-1", "plan_enter", "completed")
+    call("call-2", "docs_search", "error")
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(client.session.abort).not.toHaveBeenCalled()
+    expect(turnEnd(events)).toBeUndefined()
+    await adapter.close()
+  })
+
+  it.each([
+    ["an interrupt", "interrupt"],
+    ["a thread stop", "stop"],
+  ] as const)("joins %s to a stop under way instead of sending a second abort", async (_case, kind) => {
+    const { adapter, client, events, threadId, turnId, answer } = await stoppedTurn()
+    let settled = false
+    const joined = (kind === "interrupt" ? adapter.interruptTurn(threadId, turnId) : adapter.stopThread(threadId)).finally(() => { settled = true })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    expect(settled).toBe(false)
+    answer(true)
+    await joined
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    expect(turnEnds(events, turnId)).toHaveLength(1)
+    await adapter.close()
+  })
+
+  // A steer's reply names the steer as its parent, not the turn; its calls
+  // are still the turn's and are held to the turn's catalog.
+  it("holds a steer's own tool calls inside a live turn to the turn's catalog", async () => {
+    let next = 0
+    const { adapter, client, events, stream, threadId } = await turnWithTools(undefined, () => `prompt-${++next}`)
+    expect(await adapter.steerTurn(threadId, "prompt-1", "More")).toEqual({ providerMessageId: "prompt-2" })
+    stream.emit({ type: "message.updated", properties: { info: { id: "steer-reply", sessionID: threadId, role: "assistant", parentID: "prompt-2" } } })
+    const call = (callID: string, tool: string) => stream.emit({
+      type: "message.part.updated",
+      properties: { part: { type: "tool", sessionID: threadId, messageID: "steer-reply", callID, tool, state: { status: "pending", input: {} } } },
+    })
+    call("call-1", "bash")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.session.abort).not.toHaveBeenCalled()
+    expect(turnEnd(events)).toBeUndefined()
+    call("call-2", "plan_enter")
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await waitForDaemon(() => expect(turnEnd(events)).toMatchObject({ params: { turnId: "prompt-1", turn: { status: "failed", error: expect.stringContaining("plan_enter") } } }))
+    await adapter.close()
+  })
+
+  it("checks a subagent's call that reuses a call id the turn already used", async () => {
+    const { adapter, client, call, stream, threadId } = await turnWithTools()
+    call("shared-call", "bash")
+    stream.emit({ type: "session.created", properties: { info: { id: "child-session", parentID: threadId } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "child-message", sessionID: "child-session", role: "assistant", parentID: "child-user" } } })
+    stream.emit({
+      type: "message.part.updated",
+      properties: { part: { type: "tool", sessionID: "child-session", messageID: "child-message", callID: "shared-call", tool: "plan_enter", state: { status: "pending", input: {} } } },
+    })
+    await waitForDaemon(() => expect(client.session.abort).toHaveBeenCalled())
+    await adapter.close()
+  })
+
+  it("lets a turn call the tools the catalog holds", async () => {
+    const { adapter, client, events, call } = await turnWithTools((setup) => {
+      setup.mcp.status.mockResolvedValue({ data: { docs: { status: "connected" } } })
+    })
+    for (const [id, tool] of [["a", "bash"], ["b", "docs_search"], ["c", "list_mcp_resources"], ["d", "read_mcp_resource"], ["e", "invalid"]] as const) call(id, tool)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    await waitForDaemon(() => expect(client.mcp.status.mock.calls.length).toBeGreaterThan(1))
+    expect(client.session.abort).not.toHaveBeenCalled()
+    expect(turnEnd(events)).toBeUndefined()
+    await adapter.close()
+  })
+
+  it("checks again before each prompt", async () => {
+    const { client, factory } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    client.mcp.status.mockResolvedValue({ data: { plan: { status: "connected" } } })
+    await expect(adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Hello", runtime: runtime("build") })).rejects.toThrow(`tool server named "plan"`)
+    expect(client.session.promptAsync).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+})
+
+// Security review round 9 of #687 (ruling Q294): a turn whose run ended with
+// no event that ends it (compaction replies, a handler error after the last
+// idle, an error before the prompt was recorded, an unfinished reply, or
+// evidence held while an abort that then failed was pending) is settled from
+// the server's own state: GET /session/status and GET /session/{id}/message,
+// read two seconds after the idle, error or failed abort, and retried for up
+// to thirty seconds. A busy session settles nothing.
+describe("reconciling a turn with the server's own state", () => {
+  type Message = { info: Record<string, unknown>; parts: unknown[] }
+  const user = (id: string, created: number): Message => ({ info: { id, role: "user", time: { created } }, parts: [] })
+  const reply = (id: string, parentID: string, created: number, end: { completed?: boolean; error?: string } = { completed: true }): Message => ({
+    info: {
+      id, role: "assistant", parentID,
+      time: { created, ...(end.completed ? { completed: created + 1 } : {}) },
+      ...(end.error ? { error: { name: "UnknownError", data: { message: end.error } } } : {}),
+    },
+    parts: [],
+  })
+  const turnEnds = (events: AgentEvent[], turnId: string) => events.filter((event) => event.type === "turn-completed" && event.params.turnId === turnId)
+  const ended = (status: string, error?: string) => [expect.objectContaining({
+    params: expect.objectContaining({ turn: expect.objectContaining({ status, ...(error === undefined ? {} : { error: expect.stringContaining(error) }) }) }),
+  })]
+
+  async function reconciledTurn(setup?: (client: ReturnType<typeof harness>["client"]) => void) {
+    const { client, factory, server, stream } = harness()
+    setup?.(client)
+    let next = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `msg_${++next}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Work", runtime: runtime("build") })
+    // Everything after setup runs on fake timers, so the reconcile delays,
+    // retries and the abort bound are counted exactly.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    const history = (messages: Message[]) => client.session.messages.mockResolvedValue({ data: messages })
+    const idle = () => stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    const error = (message: string) => stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "UnknownError", data: { message } } } })
+    const seen = () => stream.emit({ type: "message.updated", properties: { info: { id: turnId, sessionID: threadId, role: "user", time: { created: 10 } } } })
+    const tick = (ms: number) => vi.advanceTimersByTimeAsync(ms)
+    return { adapter, client, server, events, stream, threadId, turnId, history, idle, error, seen, tick }
+  }
+  afterEach(() => { vi.useRealTimers() })
+
+  it("ends a turn whose replies answer compaction messages, not its prompt", async () => {
+    const { adapter, events, stream, threadId, turnId, history, idle, seen, tick } = await reconciledTurn()
+    seen()
+    // Automatic compaction before the first reply: a generated user message,
+    // its summary, a generated continuation and the reply to it.
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_6", sessionID: threadId, role: "assistant", parentID: "msg_5", time: { created: 12, completed: 13 } } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_8", sessionID: threadId, role: "assistant", parentID: "msg_7", time: { created: 14, completed: 15 } } } })
+    idle()
+    history([user(turnId, 10), user("msg_5", 11), reply("msg_6", "msg_5", 12), user("msg_7", 13), reply("msg_8", "msg_7", 14)])
+    await tick(1_900)
+    expect(turnEnds(events, turnId)).toEqual([])
+    await tick(200)
+    expect(turnEnds(events, turnId)).toEqual(ended("completed"))
+    await adapter.close()
+  })
+
+  it("fails a turn whose handler error comes after the last idle", async () => {
+    const { adapter, events, turnId, history, idle, error, seen, tick } = await reconciledTurn()
+    seen()
+    idle()
+    error("storage busy")
+    history([user(turnId, 10)])
+    await tick(2_100)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "storage busy"))
+    await adapter.close()
+  })
+
+  it("fails a turn whose prompt the server never recorded, once that holds for the retry bound", async () => {
+    const { adapter, events, turnId, history, idle, error, tick } = await reconciledTurn()
+    error("could not resolve the prompt's files")
+    idle()
+    history([])
+    await tick(10_000)
+    expect(turnEnds(events, turnId)).toEqual([])
+    await tick(25_000)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "never recorded"))
+    await adapter.close()
+  })
+
+  it("fails a turn whose recorded prompt has no reply and no error only once that holds for the retry bound", async () => {
+    const { adapter, events, turnId, history, idle, seen, tick } = await reconciledTurn()
+    seen()
+    idle()
+    history([user(turnId, 10)])
+    await tick(10_000)
+    expect(turnEnds(events, turnId)).toEqual([])
+    await tick(25_000)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "without a reply"))
+    await adapter.close()
+  })
+
+  it("fails a turn whose reply the server left unfinished while idle", async () => {
+    const { adapter, events, stream, threadId, turnId, history, idle, error, seen, tick } = await reconciledTurn()
+    seen()
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11 } } } })
+    error("setup failed")
+    idle()
+    history([user(turnId, 10), reply("msg_5", turnId, 11, {})])
+    await tick(2_100)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "unfinished"))
+    await adapter.close()
+  })
+
+  it.each([
+    ["fails", true, 0],
+    ["goes unanswered", false, 10_000],
+  ] as const)("ends an interrupted turn from the server's state when its abort %s after the run finished", async (_case, refuse, wait) => {
+    const { adapter, client, events, stream, threadId, turnId, history, idle, seen, tick } = await reconciledTurn()
+    let reject!: (error: Error) => void
+    client.session.abort.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail }))
+    seen()
+    const interrupt = adapter.interruptTurn(threadId, turnId).then(() => "answered", (failure: Error) => failure.message)
+    await tick(0)
+    // The run finishes on its own while the abort is pending.
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11, completed: 12 } } } })
+    idle()
+    history([user(turnId, 10), reply("msg_5", turnId, 11)])
+    await tick(100)
+    expect(turnEnds(events, turnId)).toEqual([])
+    if (refuse) reject(new Error("abort refused"))
+    await tick(wait)
+    expect(await interrupt).toContain("could not confirm")
+    expect(turnEnds(events, turnId)).toEqual([])
+    await tick(2_100)
+    expect(turnEnds(events, turnId)).toEqual(ended("completed"))
+    await adapter.close()
+  })
+
+  it("ends a turn held by a thread stop whose session deletion failed", async () => {
+    const { adapter, client, events, stream, threadId, turnId, history, idle, seen, tick } = await reconciledTurn((setup) => {
+      setup.session.delete.mockRejectedValueOnce(new Error("busy"))
+    })
+    let answer!: () => void
+    client.session.abort.mockImplementationOnce(() => new Promise((resolve) => { answer = () => resolve({ data: true }) }))
+    seen()
+    const stop = adapter.stopThread(threadId).then(() => "stopped", (failure: Error) => failure.message)
+    await tick(0)
+    // The run finishes on its own while the stop's abort is pending.
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11, completed: 12 } } } })
+    idle()
+    history([user(turnId, 10), reply("msg_5", turnId, 11)])
+    await tick(100)
+    expect(turnEnds(events, turnId)).toEqual([])
+    answer()
+    await tick(0)
+    expect(await stop).toContain("busy")
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    await tick(2_100)
+    expect(turnEnds(events, turnId)).toEqual(ended("completed"))
+    await adapter.close()
+  })
+
+  it("never ends a new turn on an old run's idle while the server reports the session busy", async () => {
+    const { adapter, client, events, threadId, turnId, history, idle, tick } = await reconciledTurn()
+    client.session.status.mockResolvedValue({ data: { [threadId]: { type: "busy" } } })
+    history([])
+    idle()
+    await tick(60_000)
+    expect(client.session.status).toHaveBeenCalled()
+    expect(turnEnds(events, turnId)).toEqual([])
+    await adapter.close()
+  })
+
+  it("fails the turn, saying the run's end is unconfirmed, when the server cannot be read for the retry bound", async () => {
+    const { adapter, client, events, turnId, idle, seen, tick } = await reconciledTurn()
+    client.session.status.mockRejectedValue(new Error("connection refused"))
+    seen()
+    idle()
+    await tick(20_000)
+    expect(turnEnds(events, turnId)).toEqual([])
+    await tick(30_000)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "could not confirm how"))
+    await adapter.close()
+  })
+
+  // Security review round 10 of #687 (ruling Q298, R10-1): the status and the
+  // history are separate reads, so the session can turn busy between them.
+  // An outcome is applied only when the status is idle again after the
+  // history and nothing arrived for the session during the read.
+  function heldHistory(client: ReturnType<typeof harness>["client"]) {
+    let release!: (messages: Message[]) => void
+    client.session.messages.mockImplementationOnce(() => new Promise((resolve) => { release = (messages) => resolve({ data: messages }) }))
+    return (messages: Message[]) => release(messages)
+  }
+
+  it("applies no outcome when the run made progress while the history was read", async () => {
+    const { adapter, client, events, stream, threadId, turnId, history, idle, seen, tick } = await reconciledTurn()
+    seen()
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11 } } } })
+    idle()
+    const release = heldHistory(client)
+    await tick(2_100)
+    expect(client.session.messages).toHaveBeenCalledTimes(1)
+    // The run goes on while the history is read: busy, a reply, a tool.
+    stream.emit({ type: "session.status", properties: { sessionID: threadId, status: { type: "busy" } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_6", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 12 } } } })
+    stream.emit({ type: "message.part.updated", properties: { part: { type: "tool", sessionID: threadId, messageID: "msg_6", callID: "c1", tool: "bash", state: { status: "running", input: {} } } } })
+    release([user(turnId, 10), reply("msg_5", turnId, 11, {})])
+    await tick(100)
+    expect(turnEnds(events, turnId)).toEqual([])
+    // What the server holds once the run has really ended settles it.
+    client.session.status.mockResolvedValue({ data: {} })
+    history([user(turnId, 10), reply("msg_5", turnId, 11), reply("msg_6", turnId, 12)])
+    await tick(5_000)
+    expect(turnEnds(events, turnId)).toEqual(ended("completed"))
+    await adapter.close()
+  })
+
+  it("applies no outcome when the status turns busy before the history comes back", async () => {
+    const { adapter, client, events, threadId, turnId, idle, seen, tick } = await reconciledTurn()
+    seen()
+    idle()
+    const release = heldHistory(client)
+    await tick(2_100)
+    client.session.status.mockResolvedValue({ data: { [threadId]: { type: "busy" } } })
+    release([user(turnId, 10), reply("msg_5", turnId, 11, {})])
+    await tick(100)
+    expect(client.session.status).toHaveBeenCalledTimes(2)
+    expect(turnEnds(events, turnId)).toEqual([])
+    await adapter.close()
+  })
+
+  // R10-2: an abort that starts during the read holds the turn; the read's
+  // outcome is dropped and the stop's reason survives.
+  it("keeps a catalog stop that starts while the history is read, with its reason", async () => {
+    const { adapter, client, events, stream, threadId, turnId, idle, seen, tick } = await reconciledTurn()
+    let answer!: () => void
+    client.session.abort.mockImplementationOnce(() => new Promise((resolve) => { answer = () => resolve({ data: true }) }))
+    seen()
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11 } } } })
+    idle()
+    const release = heldHistory(client)
+    await tick(2_100)
+    stream.emit({ type: "message.part.updated", properties: { part: { type: "tool", sessionID: threadId, messageID: "msg_5", callID: "c1", tool: "plan_enter", state: { status: "pending", input: {} } } } })
+    await tick(10)
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    release([user(turnId, 10), user("msg_6", 11), reply("msg_7", "msg_6", 12)])
+    await tick(100)
+    expect(turnEnds(events, turnId)).toEqual([])
+    answer()
+    await tick(10)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "plan_enter"))
+    await adapter.close()
+  })
+
+  // An interrupt sends no event, so only the recheck of the abort holds it.
+  it("keeps an interrupt that starts while the history is read, with its outcome", async () => {
+    const { adapter, client, events, threadId, turnId, idle, seen, tick } = await reconciledTurn()
+    let answer!: () => void
+    client.session.abort.mockImplementationOnce(() => new Promise((resolve) => { answer = () => resolve({ data: true }) }))
+    seen()
+    idle()
+    const release = heldHistory(client)
+    await tick(2_100)
+    const interrupt = adapter.interruptTurn(threadId, turnId)
+    await tick(10)
+    release([user(turnId, 10), reply("msg_5", turnId, 11)])
+    await tick(100)
+    expect(turnEnds(events, turnId)).toEqual([])
+    answer()
+    await interrupt
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "interrupted"))
+    await adapter.close()
+  })
+
+  // R10-3: the servers order messages by (time.created, id) (opencode and
+  // kilo session/message-v2.ts isAfter); so does the read.
+  it("does not count an assistant from the prompt's millisecond whose id is earlier", async () => {
+    const { adapter, events, turnId, history, idle, seen, tick } = await reconciledTurn()
+    seen()
+    idle()
+    history([reply("msg_0", "msg_00", 10), user(turnId, 10)])
+    await tick(2_100)
+    expect(turnEnds(events, turnId)).toEqual([])
+    await adapter.close()
+  })
+
+  it("picks the newest reply by time and id, whichever page it is on", async () => {
+    const { adapter, client, events, turnId, idle, seen, tick } = await reconciledTurn()
+    client.session.messages.mockImplementation(async (options?: unknown) => {
+      const before = (options as { query?: { before?: string } } | undefined)?.query?.before
+      if (before === undefined) {
+        return { data: [reply("msg_9", turnId, 20, { completed: true, error: "context overflow" })], response: new Response(null, { headers: { "x-next-cursor": "older" } }) }
+      }
+      return { data: [user(turnId, 10), reply("msg_8", turnId, 20)] }
+    })
+    seen()
+    idle()
+    await tick(2_100)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "context overflow"))
+    await adapter.close()
+  })
+
+  // Security review round 11 of #687 (ruling Q302, R11-1): a thread-wide
+  // stop (an approval answered elsewhere, a request Domovoi cannot answer, a
+  // closed event stream) aborts the thread and its subagents. Until every
+  // abort has settled and the stop has applied its own failure, nothing else
+  // ends the turn: not the root abort's answer, not a read of the server.
+  it.each([
+    ["an approval answered elsewhere", "outside"],
+    ["a request Domovoi cannot answer", "v2"],
+    ["a closed event stream", "closed"],
+  ] as const)("holds the turn through %s until its subagent's abort settles", async (_case, cause) => {
+    const { adapter, client, events, stream, threadId, turnId, history, seen, tick } = await reconciledTurn()
+    let answerChild!: () => void
+    client.session.abort.mockImplementation((...args: unknown[]) => {
+      const id = (args[0] as { path: { id: string } }).path.id
+      return id === "ses_child"
+        ? new Promise<{ data: boolean }>((resolve) => { answerChild = () => resolve({ data: true }) })
+        : Promise.resolve({ data: true })
+    })
+    seen()
+    stream.emit({ type: "session.created", properties: { info: { id: "ses_child", parentID: threadId } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11 } } } })
+    await tick(0)
+    history([user(turnId, 10), reply("msg_5", turnId, 11)])
+    if (cause === "outside") stream.emit({ type: "permission.replied", properties: { sessionID: threadId, requestID: "per_elsewhere", reply: "once" } })
+    if (cause === "v2") stream.emit({ type: "permission.v2.asked", properties: { sessionID: threadId, id: "per_v2" } })
+    if (cause === "closed") stream.close()
+    await tick(0)
+    expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "ses_child" } }))
+    await tick(5_000)
+    expect(turnEnds(events, turnId)).toEqual([])
+    answerChild()
+    await tick(10)
+    const end = turnEnds(events, turnId)
+    expect(end).toEqual(ended("failed"))
+    const error = ((end[0] as unknown as { params: { turn: { error?: string } } }).params.turn.error) ?? ""
+    if (cause === "outside") expect(end[0]).toMatchObject({ params: { failure: expect.anything() } })
+    if (cause === "v2") expect(error).toContain("permission interface Domovoi does not answer")
+    if (cause === "closed") expect(error).toContain("event stream")
+    await adapter.close()
+  })
+
+  // Security review round 12 of #687 (ruling Q304). Aborts answered one by
+  // one: each test sets which sessions' aborts wait for a manual answer.
+  function manualAborts(client: ReturnType<typeof harness>["client"]) {
+    const waiting = new Map<string, Array<(ok: boolean) => void>>()
+    client.session.abort.mockImplementation((...args: unknown[]) => {
+      const id = (args[0] as { path: { id: string } }).path.id
+      return new Promise<{ data: boolean }>((resolve, reject) => {
+        const answers = waiting.get(id) ?? []
+        answers.push((ok) => (ok ? resolve({ data: true }) : reject(new Error("abort refused"))))
+        waiting.set(id, answers)
+      })
+    })
+    return {
+      answer: (id: string, ok = true) => waiting.get(id)?.shift()?.(ok),
+      pending: (id: string) => waiting.get(id)?.length ?? 0,
+    }
+  }
+  const cause = (stream: EventStream, threadId: string, owner: "outside" | "v2" | "closed") => {
+    if (owner === "outside") stream.emit({ type: "permission.replied", properties: { sessionID: threadId, requestID: "per_elsewhere", reply: "once" } })
+    if (owner === "v2") stream.emit({ type: "permission.v2.asked", properties: { sessionID: threadId, id: "per_v2" } })
+    if (owner === "closed") stream.close()
+  }
+
+  // R12-1: a hold taken while the final readiness check already waits on a
+  // root abort still holds the prompt.
+  it.each([["outside"], ["v2"], ["closed"]] as const)("holds a steer whose last check is waiting on an abort when a %s stop begins", async (owner) => {
+    const { adapter, client, events, stream, threadId, turnId, seen, tick } = await reconciledTurn()
+    const aborts = manualAborts(client)
+    seen()
+    stream.emit({ type: "session.created", properties: { info: { id: "ses_child", parentID: threadId } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11 } } } })
+    await tick(0)
+    // The steer's catalog read is held, so its last check comes later.
+    let readCatalog!: () => void
+    client.mcp.status.mockImplementationOnce(() => new Promise((resolve) => { readCatalog = () => resolve({ data: {} }) }))
+    const steer = adapter.steerTurn(threadId, turnId, "More").then(() => "sent", (failure: Error) => failure.message)
+    await tick(10)
+    // A catalog stop: the root abort is pending when the steer's last check runs.
+    stream.emit({ type: "message.part.updated", properties: { part: { type: "tool", sessionID: threadId, messageID: "msg_5", callID: "c1", tool: "plan_enter", state: { status: "pending", input: {} } } } })
+    await tick(10)
+    expect(aborts.pending(threadId)).toBe(1)
+    readCatalog()
+    await tick(10)
+    // The thread-wide stop begins: it joins the root abort and aborts the child.
+    cause(stream, threadId, owner)
+    await tick(10)
+    expect(aborts.pending("ses_child")).toBe(1)
+    aborts.answer(threadId)
+    await tick(10)
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1)
+    aborts.answer("ses_child")
+    await tick(10)
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1)
+    expect(await steer).not.toBe("sent")
+    expect(turnEnds(events, turnId)).toHaveLength(1)
+    await adapter.close()
+  })
+
+  // R12-2: overlapping thread-wide stops end the turn once, when the last
+  // has settled, with the failure first in precedence: an approval answered
+  // elsewhere, then a request Domovoi cannot answer, then a closed stream.
+  it.each([
+    ["over the same pending root abort", false],
+    ["with a subagent adopted between them", true],
+  ] as const)("ends a turn stopped twice with the approval answered elsewhere, %s", async (_case, adopt) => {
+    const { adapter, client, events, stream, threadId, turnId, seen, tick } = await reconciledTurn()
+    const aborts = manualAborts(client)
+    seen()
+    cause(stream, threadId, "v2")
+    await tick(10)
+    if (adopt) stream.emit({ type: "session.created", properties: { info: { id: "ses_child", parentID: threadId } } })
+    await tick(0)
+    cause(stream, threadId, "outside")
+    await tick(10)
+    expect(aborts.pending(threadId)).toBe(1)
+    aborts.answer(threadId)
+    await tick(10)
+    if (adopt) {
+      expect(turnEnds(events, turnId)).toEqual([])
+      aborts.answer("ses_child")
+      await tick(10)
+    }
+    const end = turnEnds(events, turnId)
+    expect(end).toHaveLength(1)
+    expect(end[0]).toMatchObject({ params: { turn: { status: "failed" }, failure: expect.anything() } })
+    await adapter.close()
+  })
+
+  // Security review round 13 of #687 (ruling Q306): a stop handler that
+  // settles while another stop is still registered leaves the session in
+  // place; the last to settle disposes of it, and the turn ends once with
+  // the failure first in precedence.
+  it("waits for a later approval stop when a closed stream's stop settles first", async () => {
+    const { adapter, client, events, stream, threadId, turnId, seen, tick } = await reconciledTurn()
+    const aborts = manualAborts(client)
+    let refuse!: () => void
+    client.postSessionIdPermissionsPermissionId.mockImplementationOnce(() => new Promise((_resolve, reject) => { refuse = () => reject(new Error("refused")) }))
+    seen()
+    stream.emit({ type: "session.created", properties: { info: { id: "ses_child", parentID: threadId } } })
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "per_1", sessionID: threadId, permission: "bash", patterns: ["ls"], metadata: { command: "ls" }, always: [], tool: { messageID: "msg_1", callID: "call_1" } },
+    })
+    await tick(10)
+    adapter.resolveApproval(1, "allow-once")
+    await tick(0)
+    // The server reports the reply before it answers the request.
+    stream.emit({ type: "permission.replied", properties: { sessionID: threadId, requestID: "per_1", reply: "once" } })
+    await tick(0)
+    stream.close()
+    await tick(10)
+    aborts.answer(threadId)
+    await tick(10)
+    // The answer fails, so the reply was someone else's: a second stop.
+    refuse()
+    await tick(10)
+    expect(aborts.pending(threadId)).toBe(1)
+    aborts.answer("ses_child")
+    await tick(10)
+    expect(turnEnds(events, turnId)).toEqual([])
+    aborts.answer(threadId)
+    await tick(10)
+    const end = turnEnds(events, turnId)
+    expect(end).toHaveLength(1)
+    expect(end[0]).toMatchObject({ params: { turn: { status: "failed" }, failure: expect.anything() } })
+    endsBeforeNotices(events, turnId)
+    await adapter.close()
+  })
+
+  // Security review round 14 of #687 (ruling Q308): the daemon drops a
+  // thread's turn on the incident and on a disconnect, so the turn's end must
+  // reach it first, even when another stop deferred that end.
+  function endsBeforeNotices(events: AgentEvent[], turnId: string) {
+    const end = events.findIndex((event) => event.type === "turn-completed" && event.params.turnId === turnId)
+    const notices = events.flatMap((event, index) => (event.type === "approval-answered-elsewhere" || event.type === "provider-disconnected" ? [index] : []))
+    expect(end).toBeGreaterThanOrEqual(0)
+    expect(events.some((event) => event.type === "approval-answered-elsewhere")).toBe(true)
+    expect(events.some((event) => event.type === "provider-disconnected")).toBe(true)
+    for (const index of notices) expect(end).toBeLessThan(index)
+  }
+
+  it("does not end the turn while a closed stream's stop and the server stop are still pending", async () => {
+    const { adapter, client, server, events, stream, threadId, turnId, seen, tick } = await reconciledTurn()
+    const aborts = manualAborts(client)
+    let stopped!: (ok: boolean) => void
+    server.stop.mockImplementation(() => new Promise<boolean>((resolve) => { stopped = resolve }))
+    seen()
+    cause(stream, threadId, "outside")
+    await tick(10)
+    stream.emit({ type: "session.created", properties: { info: { id: "ses_child", parentID: threadId } } })
+    await tick(0)
+    stream.close()
+    await tick(10)
+    expect(aborts.pending("ses_child")).toBe(1)
+    aborts.answer(threadId)
+    await tick(10)
+    expect(turnEnds(events, turnId)).toEqual([])
+    aborts.answer("ses_child")
+    await tick(10)
+    const end = turnEnds(events, turnId)
+    expect(end).toHaveLength(1)
+    expect(end[0]).toMatchObject({ params: { turn: { status: "failed" }, failure: expect.anything() } })
+    stopped(true)
+    await tick(10)
+    expect(turnEnds(events, turnId)).toHaveLength(1)
+    endsBeforeNotices(events, turnId)
+    await adapter.close()
+  })
+
+  // Security review round 17 of #687 (ruling Q313): requests a session
+  // cannot answer must not starve a pending disconnect. A stop of a session
+  // with no turn holds nothing, and a disconnect waits at most 30 seconds in
+  // all, after which the server is stopped, every held turn ends and the
+  // disconnect goes out.
+  async function directories() {
+    const { client, factory, server } = harness()
+    const streams = new Map<string, EventStream>()
+    client.event.subscribe.mockImplementation((async (...args: unknown[]) => {
+      const directory = (args[0] as { query: { directory: string } }).query.directory
+      const stream = streams.get(directory) ?? new EventStream()
+      streams.set(directory, stream)
+      return { stream }
+    }) as never)
+    let created = 0
+    client.session.create.mockImplementation(async () => ({ data: { id: `ses_${++created}` } }))
+    const aborts = manualAborts(client)
+    let next = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `msg_${++next}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    let asked = 0
+    return {
+      adapter, client, server, events, aborts,
+      open: (cwd: string) => adapter.startThread({ cwd, runtime: runtime("build") }),
+      turn: (threadId: string, cwd: string) => adapter.startTurn({ threadId, cwd, prompt: "Go", runtime: runtime("build") }),
+      stream: (cwd: string) => streams.get(cwd)!,
+      v2: (cwd: string, threadId: string) => streams.get(cwd)!.emit({ type: "permission.v2.asked", properties: { sessionID: threadId, id: `per_v2_${++asked}` } }),
+    }
+  }
+  const disconnects = (events: AgentEvent[], reason: string) => events.flatMap((event, index) => (event.type === "provider-disconnected" && event.reason === reason ? [index] : []))
+
+  it("lets requests on sessions with no turn hold no disconnect", async () => {
+    const { adapter, events, aborts, open, turn, stream, v2 } = await directories()
+    const a = await open("/a")
+    const c = await open("/c")
+    const b = await open("/b")
+    await turn(b, "/b")
+    v2("/a", a)
+    await waitForDaemon(() => expect(aborts.pending(a)).toBe(1))
+    stream("/b").close()
+    await waitForDaemon(() => expect(aborts.pending(b)).toBe(1))
+    v2("/c", c)
+    await waitForDaemon(() => expect(aborts.pending(c)).toBe(1))
+    aborts.answer(b)
+    await waitForDaemon(() => expect(disconnects(events, "OpenCode event stream connection closed")).toHaveLength(1))
+    expect(aborts.pending(a)).toBe(1)
+    expect(aborts.pending(c)).toBe(1)
+    await adapter.close()
+  })
+
+  it("sends a disconnect within 30 seconds however many turns keep being stopped, after their ends, and stops the server", async () => {
+    const { adapter, server, events, aborts, open, turn, stream, v2 } = await directories()
+    server.stop.mockImplementation(() => new Promise<boolean>(() => {}))
+    const sessions = { a: await open("/a"), c: await open("/c") }
+    const b = await open("/b")
+    await turn(sessions.a, "/a")
+    await turn(sessions.c, "/c")
+    await turn(b, "/b")
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    const tick = (ms: number) => vi.advanceTimersByTimeAsync(ms)
+    v2("/a", sessions.a)
+    await tick(10)
+    stream("/b").close()
+    await tick(10)
+    aborts.answer(b)
+    await tick(10)
+    // Each step starts a new turn on one session and stops it, then lets the
+    // other session's stop end: some turn is always being stopped.
+    let held: "a" | "c" = "a"
+    for (let step = 0; step < 7; step += 1) {
+      // Once the disconnect is out the server is stopped; nothing more runs.
+      if (disconnects(events, "OpenCode event stream connection closed").length > 0) break
+      const nextKey: "a" | "c" = held === "a" ? "c" : "a"
+      const cwd = `/${nextKey}`
+      if (step > 0) await turn(sessions[nextKey], cwd)
+      v2(cwd, sessions[nextKey])
+      await tick(10)
+      aborts.answer(sessions[held])
+      held = nextKey
+      await tick(5_000)
+      if (step < 5) expect(disconnects(events, "OpenCode event stream connection closed")).toEqual([])
+    }
+    const out = disconnects(events, "OpenCode event stream connection closed")
+    expect(out).toHaveLength(1)
+    const ends = events.flatMap((event, index) => (event.type === "turn-completed" ? [index] : []))
+    expect(ends.length).toBeGreaterThan(0)
+    for (const index of ends) expect(index).toBeLessThan(out[0]!)
+    expect(server.stop).toHaveBeenCalled()
+    // Round 18 (ruling Q314): the forced server stop sends no disconnect of
+    // its own, even once its retirement bound has passed.
+    await tick(25_000)
+    expect(events.filter((event) => event.type === "provider-disconnected")).toHaveLength(1)
+    await adapter.close()
+  })
+
+  // R12-3: a server stop that never answers does not hold a send for ever.
+  it("rejects a held send when the adapter closes while the server stop is unanswered", async () => {
+    const { adapter, client, server, stream, threadId, turnId, seen, tick } = await reconciledTurn()
+    client.session.abort.mockRejectedValue(new Error("abort refused"))
+    server.stop.mockImplementation(() => new Promise(() => {}))
+    seen()
+    cause(stream, threadId, "v2")
+    const steer = adapter.steerTurn(threadId, turnId, "More").then(() => "sent", (failure: Error) => failure.message)
+    await tick(10)
+    expect(server.stop).toHaveBeenCalled()
+    await adapter.close()
+    await tick(100_000)
+    expect(await steer).not.toBe("sent")
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps an unconfirmed server stop recorded, so no other server starts, once its bound has passed", async () => {
+    const { adapter, client, server, stream, threadId, turnId, events, seen, tick } = await reconciledTurn()
+    client.session.abort.mockRejectedValue(new Error("abort refused"))
+    server.stop.mockImplementation(() => new Promise(() => {}))
+    seen()
+    cause(stream, threadId, "v2")
+    await tick(30_000)
+    expect(events).toContainEqual(expect.objectContaining({ type: "provider-disconnected", reason: expect.stringContaining("could not confirm that the server") }))
+    expect(turnEnds(events, turnId)).toHaveLength(1)
+    // The next connection stops the server again, within the same bound,
+    // and is refused while that stop is unconfirmed.
+    const connecting = adapter.connect().then(() => "connected", (failure: Error) => failure.message)
+    await tick(25_000)
+    expect(await connecting).toContain("could not confirm that the earlier")
+    expect(server.stop).toHaveBeenCalledTimes(2)
+    await adapter.close()
+  })
+
+  it("keeps the thread-wide stop's failure when it joins a catalog stop under way", async () => {
+    const { adapter, client, events, stream, threadId, turnId, seen, tick } = await reconciledTurn()
+    let answer!: () => void
+    client.session.abort.mockImplementationOnce(() => new Promise((resolve) => { answer = () => resolve({ data: true }) }))
+    seen()
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11 } } } })
+    stream.emit({ type: "message.part.updated", properties: { part: { type: "tool", sessionID: threadId, messageID: "msg_5", callID: "c1", tool: "plan_enter", state: { status: "pending", input: {} } } } })
+    await tick(10)
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    stream.emit({ type: "permission.v2.asked", properties: { sessionID: threadId, id: "per_v2" } })
+    await tick(10)
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    // A steer sent meanwhile waits for the stop, and then finds the turn over.
+    const steer = adapter.steerTurn(threadId, turnId, "More").then(() => "sent", (failure: Error) => failure.message)
+    answer()
+    await tick(10)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "permission interface Domovoi does not answer"))
+    expect(await steer).toContain("no longer active")
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1)
+    await adapter.close()
+  })
+
+  // R11-2: an abort that starts and settles while a read is in flight makes
+  // that read stale; a fresh read after the abort decides.
+  it("reads afresh after an abort that started and settled during the read", async () => {
+    const { adapter, client, events, threadId, turnId, history, idle, seen, tick } = await reconciledTurn()
+    client.session.abort.mockRejectedValueOnce(new Error("abort refused"))
+    seen()
+    idle()
+    let release!: (messages: Message[]) => void
+    client.session.messages.mockImplementationOnce(() => new Promise((resolve) => { release = (messages) => resolve({ data: messages }) }))
+    await tick(2_100)
+    const interrupt = adapter.interruptTurn(threadId, turnId).then(() => "answered", (failure: Error) => failure.message)
+    expect(await interrupt).toContain("could not confirm")
+    history([user(turnId, 10), reply("msg_5", turnId, 11, { completed: true, error: "stopped by the server" })])
+    release([user(turnId, 10), reply("msg_5", turnId, 11)])
+    await tick(100)
+    expect(turnEnds(events, turnId)).toEqual([])
+    await tick(2_100)
+    expect(turnEnds(events, turnId)).toEqual(ended("failed", "stopped by the server"))
+    await adapter.close()
+  })
+
+  // R11-3: events from a subagent whose turn has ended are refused or
+  // dropped; they are not the current turn's activity.
+  it("does not let an ended turn's subagent reset the current turn's retries", async () => {
+    const { adapter, client, events, stream, threadId, turnId, idle, seen, tick } = await reconciledTurn()
+    stream.emit({ type: "session.created", properties: { info: { id: "ses_old", parentID: threadId } } })
+    seen()
+    finishRun(stream, threadId, turnId)
+    await tick(10)
+    expect(turnEnds(events, turnId)).toHaveLength(1)
+    const next = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    let sent = 0
+    client.session.messages.mockImplementation(async () => {
+      // An old subagent message arrives during every read.
+      stream.emit({ type: "message.updated", properties: { info: { id: `old_${++sent}`, sessionID: "ses_old", role: "assistant", parentID: "old-user" } } })
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      return { data: [] }
+    })
+    idle()
+    await tick(45_000)
+    expect(sent).toBeGreaterThan(3)
+    expect(turnEnds(events, next)).toEqual(ended("failed", "never recorded"))
+    await adapter.close()
+  })
+})
+
 describe("Kilo legacy repository configuration", () => {
   it.each([
     [".kilo/mcp.json"],
@@ -1745,7 +3358,7 @@ describe("event stream shapes", () => {
     await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
 
     stream.emit({ type: "sync" } as unknown as OpenCodeEvent)
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-1")
 
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
       type: "turn-completed",
@@ -1959,7 +3572,7 @@ describe("approval replies Domovoi did not send", () => {
     await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledOnce())
 
     reply("per_1", "once")
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-1")
 
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
       type: "turn-completed",
@@ -1983,7 +3596,7 @@ describe("approval replies Domovoi did not send", () => {
 
     adapter.resolveApproval(1, "allow-once")
     await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledOnce())
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-1")
 
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed" })))
     expect(stopped(events)).toEqual([])
@@ -2001,7 +3614,7 @@ describe("approval replies Domovoi did not send", () => {
     // A rejection refuses every other request of the same session.
     reply("per_1", "reject")
     reply("per_2", "reject")
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-1")
 
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed" })))
     expect(stopped(events)).toEqual([])
@@ -2018,7 +3631,7 @@ describe("approval replies Domovoi did not send", () => {
     adapter.resolveApproval(1, "deny")
     await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledOnce())
     reply("per_1", "reject")
-    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    finishRun(stream, threadId, "turn-1")
     await waitForDaemon(() => expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(1))
     await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
     ask("per_3")

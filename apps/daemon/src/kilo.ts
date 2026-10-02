@@ -1,8 +1,12 @@
 import {
   OpenCodeSdkAdapter,
+  allowedPermissionNames,
   nextOpenCodeMessageId,
   type OpenCodeFactory,
 } from "./opencode.js"
+import { domovoiKiloConfig, kiloBuiltInPermissions, kiloBuiltInToolIds } from "./kilo-runtime.js"
+
+const kiloAllowedPermissions = allowedPermissionNames(domovoiKiloConfig)
 
 export type KiloFactory = OpenCodeFactory
 
@@ -14,6 +18,11 @@ export class KiloSdkAdapter extends OpenCodeSdkAdapter {
       providerId: "kilo",
       providerName: "Kilo",
       heldBackRepositoryFiles: kiloLegacyRepositoryFiles,
+      builtInPermissions: kiloBuiltInPermissions,
+      builtInToolIds: kiloBuiltInToolIds,
+      allowedPermissions: kiloAllowedPermissions,
+      // Kilo runs the build agent as code (kilocode/agent/index.ts resolveKey).
+      agentName: (agent) => (agent === "build" ? "code" : agent),
     })
   }
 }
