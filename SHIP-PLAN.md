@@ -818,9 +818,11 @@ Every ledger entry is now merged.
     pure JS codec calling `crypto.getRandomValues` throws on a phone while passing under Node. The
     probe takes its randomness from the platform key service instead. Vectors run by two Node
     runners cannot catch this class of defect.
-  - Still unproven: iOS. Secure Enclave needs an Xcode 26 build, Expo SDK 57 is written in Swift
-    6.2, and Xcode 26 requires Apple Silicon, so the Intel Mac available here cannot build the app
-    at all. One Android device is also not a fleet.
+  - iOS, 2026-10-02: a development build from Xcode 27 on an Apple Silicon Mac ran the same probe
+    on an iPhone 17 Pro Max. It reported `secure-enclave` custody, a 65 byte public point, a
+    handle that survived a reopen, a 32 byte shared secret identical on both sides, and the probe
+    key deleted. The iPhone 17 Pro simulator on iOS 26.5 passes the same steps. One iPhone and
+    one Android device are still not a fleet, and neither run measured key-service latency.
   - Node 22 measurements compare option A's X25519/ChaChaPoly with option C's P-256/AES-GCM
     using built-in crypto, published A/B fixtures and explicitly derived P-256 fixtures. Full IK,
     daemon responder and established-frame costs are recorded for one Intel Linux host in
