@@ -749,6 +749,36 @@ describe("openIsolatedGit filter configuration", () => {
     }
   })
 
+  // A standalone transfer agent, plain or URL-scoped, that the person's global
+  // config names and the repository empties stays empty in isolation: the
+  // inherited agent is in no value the directory reads (ruling Q319).
+  it.each([
+    ["plain", "[lfs]\n\tstandalonetransferagent = domovoi-inert-label\n", "[lfs]\n\tstandalonetransferagent =\n", "lfs.standalonetransferagent"],
+    [
+      "URL-scoped",
+      "[lfs \"https://lfs.example.test/repo\"]\n\tstandalonetransferagent = domovoi-inert-label\n",
+      "[lfs \"https://lfs.example.test/repo\"]\n\tstandalonetransferagent =\n",
+      "lfs.https://lfs.example.test/repo.standalonetransferagent",
+    ],
+  ])("keeps a repository's empty override of a global %s standalone transfer agent", async (_label, global, local, key) => {
+    const { worktree, restore } = await sessionWorktree(() => `${lfsLines}${global}`, local)
+    try {
+      const isolated = await openIsolatedGit({ worktree, worktreeIndex: true })
+      try {
+        // The snapshot and the pin each hold the worktree's value: every one
+        // the directory reads is empty, and the last one wins.
+        expect(await isolated.run(["config", "--get", key])).toBe("\n")
+        expect((await isolated.run(["config", "--get-all", key])).split("\n").every((value) => value === "")).toBe(true)
+        const all = await isolated.run(["config", "--get-regexp", "standalonetransferagent"])
+        expect(all).not.toContain("domovoi-inert-label")
+      } finally {
+        await isolated.dispose()
+      }
+    } finally {
+      restore()
+    }
+  })
+
   it("holds back a Git LFS extension the repository's own config names, unless reviewed", async () => {
     const { worktree, restore } = await sessionWorktree(
       () => lfsLines,
