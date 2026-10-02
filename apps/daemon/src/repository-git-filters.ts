@@ -30,8 +30,9 @@ const execute = promisify(execFile)
 // config and starts a custom transfer agent, or an extension's clean or
 // smudge command, that config names, so each such setting is listed like a
 // filter command. Keys as git-lfs v3.8.0 matches them: a custom transfer's
-// path by the unanchored, case-insensitive `customtransfer.<name>.path`
-// (tq/custom.go) and its args as `lfs.customtransfer.<name>.args`; the
+// path by the unanchored `lfs\.((?i)customtransfer\.([^.]+))\.path`
+// (tq/custom.go), in the one spelling Domovoi models (lfsPolicyGroup), and
+// its args as `lfs.customtransfer.<name>.args`; the
 // standalone agent plain or URL-scoped (tq/manifest.go, config.URLConfig);
 // lfs.extension.<name>.clean and .smudge (config/git_fetcher.go). The
 // tracked .lfsconfig cannot set any of them: git-lfs reads only its safeKeys
@@ -60,19 +61,57 @@ export type RepositoryGitFilter = {
   required?: string
 }
 
-// Every filter and lfs setting; classify() picks the ones that start a program.
-const filterKeyPattern = String.raw`^(filter|lfs)\.`
+// Every filter and lfs setting, and every key with `lfs.customtransfer.` in
+// it, in any case, as an extended regular expression for `git config
+// --get-regexp`; classify() picks the ones that start a program.
+const caselessPattern = (text: string) => [...text].map((character) => /[a-z]/u.test(character) ? `[${character.toUpperCase()}${character}]` : character === "." ? "\\." : character).join("")
+export const filterKeyPattern = `^(filter|lfs)\\.|${caselessPattern("lfs.customtransfer.")}`
+
+// The keys every filter reader looks at, in JavaScript: filterKeyPattern.
+export const filterSettingKey = (key: string) => /^(?:filter|lfs)\.|lfs\.customtransfer\./iu.test(key)
 const repositoryScopes: ReadonlySet<string> = new Set(repositoryGitFilterScopes)
 
+// One model of the Git LFS keys that start or choose a program, for the gate,
+// the isolated directory's snapshot and its second check alike (ruling Q320).
+//
+// Git LFS v3.8.0 takes a custom transfer's path from any key its unanchored
+// `lfs\.((?i)customtransfer\.([^.]+))\.path` matches (tq/custom.go), and the
+// transfer's args, concurrency and direction from lfs.<that subsection>.args
+// and the rest. Domovoi models the keys that start `lfs.customtransfer.`, in
+// any case, and match that expression whole when they match it at all: a
+// key with `lfs.customtransfer.` anywhere else in it, or one the expression
+// matches only in part (lfs.customtransfer.<name>.pathname,
+// lfs.customtransfer.<name>.path.more), is one it cannot place in a group,
+// and it refuses the config, naming the key (refuseFilterSettingGitStopsOn).
+// Extensions are lfs.extension.<name>.<variable> (config/git_fetcher.go reads
+// exactly four parts); the standalone agent is plain or URL-scoped.
+export function unmodelledLfsTransferKey(key: string): boolean {
+  if (/.lfs\.customtransfer\./isu.test(key)) return true
+  const path = /lfs\.customtransfer\.[^.]+\.path/iu.exec(key)
+  return path !== null && path[0].length !== key.length
+}
+
+// The Git LFS settings that start a program or choose one, by the group they
+// belong to: an extension's or a custom transfer's keys (command, arguments,
+// priority, concurrency and the rest), or a standalone transfer agent.
+const lfsPolicyKey = /^lfs\.(?:extension\.(.+)\.[^.]+|customtransfer\.(.+)\.[^.]+|(?:.+\.)?standalonetransferagent)$/iu
+
+export function lfsPolicyGroup(key: string): string | undefined {
+  const match = lfsPolicyKey.exec(key)
+  if (match === null) return undefined
+  return match[1] !== undefined ? `extension\0${match[1]}` : match[2] !== undefined ? `customtransfer\0${match[2]}` : key
+}
+
 // The driver and operation of a setting that starts a program, or undefined.
-// `git config` prints section and variable names in lower case.
+// `git config` prints section and variable names in lower case. Every Git
+// LFS key it names is in an lfsPolicyGroup.
 export function classify(key: string, value: string): { driver: string; operation: RepositoryGitFilterOperation } | undefined {
   const filter = /^filter\.(.+)\.(clean|smudge|process)$/u.exec(key)
   if (filter) return { driver: filter[1]!, operation: filter[2] as RepositoryGitFilterOperation }
   if (!key.startsWith("lfs.")) return undefined
-  const path = /customtransfer\.([^.]+)\.path/iu.exec(key)
+  const path = /^lfs\.customtransfer\.([^.]+)\.path$/iu.exec(key)
   if (path) return { driver: path[1]!, operation: "lfs-transfer-path" }
-  const args = /customtransfer\.([^.]+)\.args$/iu.exec(key)
+  const args = /^lfs\.customtransfer\.([^.]+)\.args$/iu.exec(key)
   if (args) return { driver: args[1]!, operation: "lfs-transfer-args" }
   if (/^lfs\.(?:.+\.)?standalonetransferagent$/u.test(key)) return { driver: value, operation: "lfs-standalone-agent" }
   const extension = /^lfs\.extension\.([^.]+)\.(clean|smudge)$/iu.exec(key)
@@ -199,6 +238,7 @@ export function refuseFilterSettingGitStopsOn(scope: string, key: string, value:
   if (emptyNamedDriverKey.test(key)) {
     throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${scope} Git config names a filter driver with an empty name, which Domovoi does not run` })
   }
+  refuseUnmodelledLfsTransferKey(key, `${scope} Git config`)
   // A Git LFS extension, custom transfer or standalone agent key with no value
   // stops git-lfs; it refuses here too, so no copy of the config writes it as
   // a value (ruling Q319).
@@ -208,6 +248,15 @@ export function refuseFilterSettingGitStopsOn(scope: string, key: string, value:
   if (value !== undefined && /^filter\..+\.required$/u.test(key) && gitRequiredState(value) === undefined) {
     throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${scope} Git config is not a boolean` })
   }
+}
+
+// Refuses a key Git LFS can read as a custom transfer's program in a spelling
+// Domovoi does not model (unmodelledLfsTransferKey), naming it and `where`.
+export function refuseUnmodelledLfsTransferKey(key: string, where: string): void {
+  if (!unmodelledLfsTransferKey(key)) return
+  throw new RepositoryGitConfigUnreadableError("git-failed", {
+    detail: `${shownKey(key)} in ${where} is a key Git LFS can read as a custom transfer program, in a form Domovoi does not check`,
+  })
 }
 
 // A key of a filter driver, Git LFS extension or custom transfer named by an

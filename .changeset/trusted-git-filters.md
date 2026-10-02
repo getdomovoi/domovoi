@@ -45,7 +45,11 @@ filter key the directory would read otherwise refuses the operation, naming the 
 extension, custom transfer and standalone agent settings follow the same rule: each at the
 worktree's value, and one whose program the repository's own config names held back unless
 reviewed. A filter
-driver, Git LFS extension or custom transfer with an empty name is refused.
+driver, Git LFS extension or custom transfer with an empty name is refused. Git LFS reads a custom
+transfer's program from any key with `lfs.customtransfer.<name>.path` in it; the trust step, the
+snapshot and the check after it share one model of those keys, and a key in any other spelling
+(`lfs.customtransfer.` inside another key, or a variable that only begins with `path`) is refused,
+naming the key.
 Commits are written with Git's plumbing, since `git commit` and every index write
 can run a clean filter. A checkpoint stages and commits in an index of its own, seeded from the
 worktree's, so a failed checkpoint leaves the worktree's index as it was and undoes nothing another

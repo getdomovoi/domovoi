@@ -11,7 +11,7 @@ import {
   checkOutIsolated, gitTeardownTimeoutMs, IndexChangedError, openIsolatedGit, publishUnderIndexLock, runGitProcess, windowsGitStop,
 } from "./isolated-checkout.js"
 import { repositoryFilterGate } from "./repository-git-filter-gate.js"
-import { readGitFilterSettings } from "./repository-git-filters.js"
+import { classify, readGitFilterSettings } from "./repository-git-filters.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
 import { projectRootRead } from "./repository-trust-apply.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -603,6 +603,39 @@ describe("openIsolatedGit filter configuration", () => {
     )
     try {
       await expect(isolatedValue(worktree, "lfs.extension.evil.clean")).rejects.toMatchObject({ code: 1 })
+    } finally {
+      restore()
+    }
+  })
+
+  // Git LFS takes a custom transfer's path from any key its unanchored
+  // `lfs\.((?i)customtransfer\.([^.]+))\.path` matches (tq/custom.go, v3.8.0),
+  // not only one that starts `lfs.customtransfer.`. Domovoi models the keys
+  // that start with it and match whole; any other spelling refuses before
+  // isolation opens, and before the gate lists filters (ruling Q320).
+  it.each([
+    ["inside an lfs subsection, overridden empty", "[lfs \"fixture.lfs.customtransfer.test\"]\n\tpath = domovoi-inert-label\n", "[lfs \"fixture.lfs.customtransfer.test\"]\n\tpath =\n", "lfs.fixture.lfs.customtransfer.test.path"],
+    ["inside a filter subsection", "[filter \"lfs.customtransfer.test\"]\n\tpath = domovoi-inert-label\n", "", "filter.lfs.customtransfer.test.path"],
+    ["in another section", "[probe \"lfs.CustomTransfer.test\"]\n\tpath = domovoi-inert-label\n", "", "probe.lfs.CustomTransfer.test.path"],
+    ["with more after the path", "[lfs \"customtransfer.test.path\"]\n\tmore = domovoi-inert-label\n", "", "lfs.customtransfer.test.path.more"],
+    ["with a longer variable name", "[lfs \"customtransfer.test\"]\n\tpathname = domovoi-inert-label\n", "", "lfs.customtransfer.test.pathname"],
+  ])("refuses a Git LFS custom transfer key Domovoi does not model: %s", async (_label, global, local, key) => {
+    const { worktree, restore } = await sessionWorktree(() => `${lfsLines}${global}`, local)
+    try {
+      await expect(isolatedValue(worktree, key))
+        .rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", message: expect.stringContaining(key) })
+      await expect(readGitFilterSettings(worktree))
+        .rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", message: expect.stringContaining(key) })
+    } finally {
+      restore()
+    }
+  })
+
+  it("lists a custom transfer path written in mixed case as Git LFS reads it", async () => {
+    const { worktree, restore } = await sessionWorktree(() => lfsLines, "[lfs \"CustomTransfer.test\"]\n\tpath = domovoi-inert-label\n")
+    try {
+      expect(classify("lfs.CustomTransfer.test.path", "domovoi-inert-label")).toEqual({ driver: "test", operation: "lfs-transfer-path" })
+      await expect(isolatedValue(worktree, "lfs.CustomTransfer.test.path")).rejects.toMatchObject({ code: 1 })
     } finally {
       restore()
     }

@@ -12,7 +12,10 @@ import { gitCommand } from "./git-command.js"
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { isStandardLfsFilterLine } from "./git-read-config.js"
 import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
-import { classify, refuseFilterSettingGitStopsOn, RepositoryGitConfigUnreadableError } from "./repository-git-filters.js"
+import {
+  classify, filterKeyPattern, filterSettingKey, lfsPolicyGroup, refuseFilterSettingGitStopsOn, refuseUnmodelledLfsTransferKey,
+  RepositoryGitConfigUnreadableError,
+} from "./repository-git-filters.js"
 import { trackRestoreCommand } from "./workspace-restore-lease.js"
 
 const execute = promisify(execFile)
@@ -503,17 +506,6 @@ function refuseChangedReview(keys: readonly string[], unconfirmed: string | unde
   })
 }
 
-// The Git LFS settings that start a program or choose one, by the group they
-// belong to: an extension's or a custom transfer's keys (command, arguments,
-// priority, concurrency and the rest), or a standalone transfer agent.
-const lfsPolicyKey = /^lfs\.(?:extension\.(.+)\.[^.]+|customtransfer\.(.+)\.[^.]+|(?:.+\.)?standalonetransferagent)$/iu
-
-function lfsPolicyGroup(key: string): string | undefined {
-  const match = lfsPolicyKey.exec(key)
-  if (match === null) return undefined
-  return match[1] !== undefined ? `extension\0${match[1]}` : match[2] !== undefined ? `customtransfer\0${match[2]}` : key
-}
-
 // The Git LFS policy the isolated directory runs with (ruling Q319): every
 // such key the worktree sets, in any scope, once, at its effective value, an
 // empty override included. A group whose program the repository's own config
@@ -548,7 +540,7 @@ async function refuseUnpinnedFilters(environment: NodeJS.ProcessEnv, worktree: s
   const pinned = new Map(pins.filter(([key]) => policyKey(key)))
   let output = ""
   try {
-    output = (await execute(gitCommand(environment), [...inertRepositoryConfig, "config", "-z", "--get-regexp", "^(filter|lfs)\\."], {
+    output = (await execute(gitCommand(environment), [...inertRepositoryConfig, "config", "-z", "--get-regexp", filterKeyPattern], {
       env: environment, cwd: worktree, encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
     })).stdout
   } catch (error) {
@@ -560,6 +552,7 @@ async function refuseUnpinnedFilters(environment: NodeJS.ProcessEnv, worktree: s
     if (record === "") continue
     const newline = record.indexOf("\n")
     const key = newline === -1 ? record : record.slice(0, newline)
+    refuseUnmodelledLfsTransferKey(key, "the isolated Git directory's config")
     if (!policyKey(key)) continue
     if (newline === -1 && filterPolicyKey.test(key) && !key.endsWith(".required")) {
       throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `the isolated Git directory reads ${shownFilterKey(key)} with no value` })
@@ -603,7 +596,7 @@ async function worktreeConfig(worktree: string, signal?: AbortSignal): Promise<C
     const newline = record.indexOf("\n")
     const key = newline === -1 ? record : record.slice(0, newline)
     const value = newline === -1 ? undefined : record.slice(newline + 1)
-    if (/^(?:filter|lfs)\./iu.test(key)) refuseFilterSettingGitStopsOn(scope, key, value)
+    if (filterSettingKey(key)) refuseFilterSettingGitStopsOn(scope, key, value)
     entries.push({ scope, key, value })
   }
   return entries
