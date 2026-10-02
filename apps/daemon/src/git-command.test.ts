@@ -2,7 +2,7 @@ import { win32 } from "node:path"
 
 import { describe, expect, it, vi } from "vitest"
 
-import { gitCommand, GitNotFoundError } from "./git-command.js"
+import { gitCommand, GitNotFoundError, isolationGitCommand } from "./git-command.js"
 
 // Windows looks for a bare command name in the current directory before
 // PATH, and a session worktree is the current directory of most daemon Git
@@ -83,5 +83,27 @@ describe("gitCommand on Windows", () => {
   it("leaves the PATH lookup to the platform elsewhere", () => {
     expect(gitCommand({ PATH: "/usr/bin" }, "linux", isFile)).toBe("git")
     expect(gitCommand({ PATH: "/usr/bin" }, "darwin", isFile)).toBe("git")
+  })
+})
+
+// Isolation captures one Git binary at opening, by absolute path, on POSIX
+// too (ruling Q321): its version is checked and cached by that path, and every
+// isolated command runs it. Empty and relative PATH entries, which resolve
+// against the current directory, are passed over as on Windows.
+describe("isolationGitCommand", () => {
+  it("takes the first git in an absolute POSIX PATH entry", () => {
+    const isFile = vi.fn((path: string) => path === "/opt/git/bin/git" || path === "/usr/bin/git" || path === "relative/bin/git" || path === "git")
+    expect(isolationGitCommand({ PATH: ":.:relative/bin:/nothing:/opt/git/bin:/usr/bin" }, "linux", isFile)).toBe("/opt/git/bin/git")
+    expect(isFile.mock.calls.map(([path]) => path)).toEqual(["/nothing/git", "/opt/git/bin/git"])
+  })
+
+  it("refuses when no absolute POSIX PATH entry holds git", () => {
+    expect(() => isolationGitCommand({ PATH: ":.:relative/bin" }, "darwin", () => true)).toThrow(GitNotFoundError)
+    expect(() => isolationGitCommand({}, "darwin", () => true)).toThrow("Domovoi found no git")
+  })
+
+  it("takes the Windows resolver's git.exe on Windows", () => {
+    const installed = "C:\\Program Files\\Git\\cmd\\git.exe"
+    expect(isolationGitCommand({ Path: "C:\\Program Files\\Git\\cmd" }, "win32", (path) => path === installed)).toBe(installed)
   })
 })

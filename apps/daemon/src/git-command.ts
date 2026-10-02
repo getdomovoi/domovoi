@@ -1,5 +1,5 @@
-import { statSync } from "node:fs"
-import { win32 } from "node:path"
+import { accessSync, constants, statSync } from "node:fs"
+import { posix, win32 } from "node:path"
 
 // The command every daemon Git spawn runs (ruling Q301).
 //
@@ -20,12 +20,48 @@ import { win32 } from "node:path"
 //
 // POSIX execvp searches PATH alone, never the current directory except
 // through an empty or "." PATH entry the person set, so the bare name stays
-// there and a test can put a stand-in on PATH.
+// there and a test can put a stand-in on PATH. Isolated Git directories
+// resolve an absolute path on POSIX too (isolationGitCommand).
 export class GitNotFoundError extends Error {
-  constructor() {
-    super("Domovoi found no git.exe in an absolute PATH entry. Install Git for Windows, or put its cmd folder on PATH, then start Domovoi again.")
+  constructor(platform: NodeJS.Platform = "win32") {
+    super(platform === "win32"
+      ? "Domovoi found no git.exe in an absolute PATH entry. Install Git for Windows, or put its cmd folder on PATH, then start Domovoi again."
+      : "Domovoi found no git in an absolute PATH entry. Install Git, or put the folder that holds it on PATH, then start Domovoi again.")
     this.name = "GitNotFoundError"
   }
+}
+
+function isExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false
+    accessSync(path, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// The Git binary an isolated Git directory runs, as an absolute path, on
+// every platform (ruling Q321): resolved once as isolation opens, from the
+// environment its commands get, then its version checked by that path and
+// every isolated command run with it. So the Git whose version was checked
+// is the Git that runs, whatever PATH or the current directory do later. On
+// POSIX the first `git` that is an executable file in an absolute PATH entry,
+// as execvp would find it; empty and relative entries, which resolve against
+// the current directory, are passed over, as on Windows. Not cached on POSIX:
+// a PATH entry can come to hold another Git. Windows uses gitCommand.
+export function isolationGitCommand(
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+  isFile: (path: string) => boolean = platform === "win32" ? isFileOnDisk : isExecutableFile,
+): string {
+  if (platform === "win32") return gitCommand(environment, platform, isFile)
+  for (const directory of (environment.PATH ?? "").split(":")) {
+    if (directory.includes("\0") || !posix.isAbsolute(directory)) continue
+    const candidate = posix.join(directory, "git")
+    if (isFile(candidate)) return candidate
+  }
+  throw new GitNotFoundError(platform)
 }
 
 const resolved = new Map<string, string>()

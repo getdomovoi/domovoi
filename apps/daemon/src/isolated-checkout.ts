@@ -8,7 +8,7 @@ import { promisify } from "node:util"
 import { publishFileDurably } from "@getdomovoi/credential-store"
 
 import { windowsTreeKill, type TaskkillSpawn } from "./claude-process.js"
-import { gitCommand } from "./git-command.js"
+import { gitCommand, isolationGitCommand } from "./git-command.js"
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { isStandardLfsFilterLine } from "./git-read-config.js"
 import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
@@ -159,12 +159,16 @@ function installedGitVersion(): Promise<[number, number] | undefined> {
   return gitVersion
 }
 
+// The Git an isolated directory runs and the environment it was resolved
+// from, captured once as it opens (ruling Q321): every command of that
+// opening, reads included, runs this binary by its absolute path.
+type CapturedGit = { readonly command: string; readonly env: NodeJS.ProcessEnv }
+
 // Reads from the worktree: `git config` and `git rev-parse` start no program
 // the repository's config names.
-async function worktreeGit(worktree: string, args: string[], signal?: AbortSignal): Promise<string> {
-  const env = gitEnvironment()
-  return (await execute(gitCommand(env), ["-C", worktree, ...inertRepositoryConfig, ...args], {
-    env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, ...(signal ? { signal } : {}),
+async function worktreeGit(git: CapturedGit, worktree: string, args: string[], signal?: AbortSignal): Promise<string> {
+  return (await execute(git.command, ["-C", worktree, ...inertRepositoryConfig, ...args], {
+    env: git.env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, ...(signal ? { signal } : {}),
   })).stdout
 }
 
@@ -319,6 +323,8 @@ export const gitTeardownTimeoutMs = 5_000
 export function runGitProcess(args: readonly string[], options: {
   env: NodeJS.ProcessEnv
   cwd: string
+  // The Git binary to run; gitCommand(env) when not given.
+  command?: string | undefined
   signal?: AbortSignal | undefined
   onStdout?: (chunk: Buffer, stop: () => void) => void
   // Runs once, just before a running command is killed.
@@ -327,7 +333,7 @@ export function runGitProcess(args: readonly string[], options: {
   const posix = process.platform !== "win32"
   // An absolute git.exe on Windows, never one in the worktree that is the cwd
   // here (git-command.ts, ruling Q301).
-  const child = spawn(gitCommand(options.env), [...args], {
+  const child = spawn(options.command ?? gitCommand(options.env), [...args], {
     cwd: options.cwd,
     env: options.env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -566,12 +572,17 @@ function sourceLfsPolicy(
 // policy key: a driver or key only this directory sees (a global include
 // conditional on its Git directory, say) or a value other than the pin
 // refuses, naming the key (ruling Q318). Nothing has run yet.
-async function refuseUnpinnedFilters(environment: NodeJS.ProcessEnv, worktree: string, pins: ReadonlyArray<readonly [string, string]>): Promise<void> {
+async function refuseUnpinnedFilters(
+  command: string,
+  environment: NodeJS.ProcessEnv,
+  worktree: string,
+  pins: ReadonlyArray<readonly [string, string]>,
+): Promise<void> {
   const policyKey = (key: string) => filterPolicyKey.test(key) || lfsPolicyGroup(key) !== undefined
   const pinned = new Map(pins.filter(([key]) => policyKey(key)))
   let bytes: Buffer = Buffer.alloc(0)
   try {
-    bytes = (await execute(gitCommand(environment), [...inertRepositoryConfig, "config", "-z", "--get-regexp", filterKeyPattern], {
+    bytes = (await execute(command, [...inertRepositoryConfig, "config", "-z", "--get-regexp", filterKeyPattern], {
       env: environment, cwd: worktree, encoding: "buffer", maxBuffer: 4 * 1024 * 1024,
     })).stdout
   } catch (error) {
@@ -619,12 +630,11 @@ type ConfigEntry = { scope: string; key: string; value: string | undefined }
 // value that is not valid UTF-8 refuses, naming the key, or "a config key"
 // when the key itself is not, so every entry kept re-encodes to exactly the
 // bytes Git printed, which writeConfigSnapshot compares byte for byte.
-async function worktreeConfig(worktree: string, signal?: AbortSignal): Promise<ConfigEntry[]> {
+async function worktreeConfig(git: CapturedGit, worktree: string, signal?: AbortSignal): Promise<ConfigEntry[]> {
   let output: Buffer = Buffer.alloc(0)
   try {
-    const env = gitEnvironment()
-    output = (await execute(gitCommand(env), ["-C", worktree, ...inertRepositoryConfig, "config", "--list", "--show-scope", "-z"], {
-      env, encoding: "buffer", maxBuffer: 16 * 1024 * 1024, ...(signal ? { signal } : {}),
+    output = (await execute(git.command, ["-C", worktree, ...inertRepositoryConfig, "config", "--list", "--show-scope", "-z"], {
+      env: git.env, encoding: "buffer", maxBuffer: 16 * 1024 * 1024, ...(signal ? { signal } : {}),
     })).stdout
   } catch (error) {
     signal?.throwIfAborted()
@@ -697,15 +707,17 @@ function configFileText(entries: readonly { key: string; value: string | undefin
 // its own outside the repository, then reads it back through Git: a file Git
 // would read any other way refuses. No include line is written, so nothing
 // live is read through it.
-async function writeConfigSnapshot(entries: readonly { key: string; value: string | undefined }[]): Promise<{ directory: string; file: string }> {
+async function writeConfigSnapshot(
+  git: CapturedGit,
+  entries: readonly { key: string; value: string | undefined }[],
+): Promise<{ directory: string; file: string }> {
   const directory = await fs.mkdtemp(join(tmpdir(), "domovoi-git-config-"))
   try {
     const file = join(directory, "config")
     await fs.writeFile(file, configFileText(entries), { mode: 0o600, flag: "wx" })
-    const env = gitEnvironment()
     let output: Buffer = Buffer.alloc(0)
     try {
-      output = (await execute(gitCommand(env), ["config", "--file", file, "--list", "-z"], { env, encoding: "buffer", maxBuffer: 16 * 1024 * 1024 })).stdout
+      output = (await execute(git.command, ["config", "--file", file, "--list", "-z"], { env: git.env, encoding: "buffer", maxBuffer: 16 * 1024 * 1024 })).stdout
     } catch (error) {
       if ((error as { code?: unknown }).code !== 1 || entries.length > 0) throw error
     }
@@ -725,7 +737,8 @@ async function writeConfigSnapshot(entries: readonly { key: string; value: strin
 // The snapshot reaches Git as GIT_CONFIG_GLOBAL, which came in Git 2.32. An
 // older Git ignores it and reads the person's live global config and its
 // includes in every isolated command, so isolation refuses there, with no
-// fallback (ruling Q320). The version is read once per Git binary.
+// fallback (ruling Q320). The version is read once per Git binary, by the
+// absolute path isolation runs (ruling Q321).
 export class GitTooOldForIsolationError extends Error {
   constructor(readonly found: string | undefined) {
     super(`Domovoi needs Git 2.32 or newer for this operation; ${found === undefined ? "it could not read the installed Git's version" : `it found Git ${found}`}. Update Git, then try again.`)
@@ -733,20 +746,26 @@ export class GitTooOldForIsolationError extends Error {
   }
 }
 
-const isolationGitVersions = new Map<string, Promise<string | undefined>>()
-
-function gitVersionOf(command: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
-  let version = isolationGitVersions.get(command)
-  if (version === undefined) {
-    version = execute(command, ["--version"], { env, encoding: "utf8" }).then(({ stdout }) => stdout.trim(), () => undefined)
-    isolationGitVersions.set(command, version)
+// A `git --version` reader that asks `read` once per Git binary path.
+export function cachedGitVersions(
+  read: (command: string, env: NodeJS.ProcessEnv) => Promise<string | undefined>,
+): (command: string, env: NodeJS.ProcessEnv) => Promise<string | undefined> {
+  const versions = new Map<string, Promise<string | undefined>>()
+  return (command, env) => {
+    let version = versions.get(command)
+    if (version === undefined) {
+      version = read(command, env)
+      versions.set(command, version)
+    }
+    return version
   }
-  return version
 }
 
-async function refuseGitTooOldForIsolation(read?: () => Promise<string | undefined>): Promise<void> {
-  const env = gitEnvironment()
-  const text = await (read ?? (() => gitVersionOf(gitCommand(env), env)))()
+const isolationGitVersion = cachedGitVersions((command, env) => execute(command, ["--version"], { env, encoding: "utf8" })
+  .then(({ stdout }) => stdout.trim(), () => undefined))
+
+async function refuseGitTooOldForIsolation(git: CapturedGit, read?: (command: string) => Promise<string | undefined>): Promise<void> {
+  const text = await (read === undefined ? isolationGitVersion(git.command, git.env) : read(git.command))
   const match = text === undefined ? null : /^git version (\d+)\.(\d+)(?:\.(\d+))?/u.exec(text)
   if (match === null) throw new GitTooOldForIsolationError(undefined)
   const major = Number(match[1])
@@ -765,13 +784,17 @@ export async function openIsolatedGit(input: {
   // gate that allowed the reviewed definitions.
   beforeCommand?: (() => void) | undefined
   signal?: AbortSignal | undefined
-  // `git --version` of the Git isolation runs; a test seam.
-  gitVersion?: (() => Promise<string | undefined>) | undefined
+  // `git --version` of the Git binary isolation runs, by its absolute path;
+  // a test seam, uncached.
+  gitVersion?: ((command: string) => Promise<string | undefined>) | undefined
 }): Promise<IsolatedGit> {
   const { worktree, signal } = input
-  await refuseGitTooOldForIsolation(input.gitVersion)
+  // One Git binary and one environment for this opening (ruling Q321).
+  const env = gitEnvironment()
+  const git: CapturedGit = { command: isolationGitCommand(env), env }
+  await refuseGitTooOldForIsolation(git, input.gitVersion)
   // One rev-parse answers each on its own line, in the order asked.
-  const [commonDirectory, infoAttributes, infoExclude, sparseCheckout, index, objectFormat] = (await worktreeGit(worktree, [
+  const [commonDirectory, infoAttributes, infoExclude, sparseCheckout, index, objectFormat] = (await worktreeGit(git, worktree, [
     "rev-parse", "--path-format=absolute", "--git-common-dir",
     "--git-path", "info/attributes", "--git-path", "info/exclude", "--git-path", "info/sparse-checkout",
     "--git-path", "index", "--show-object-format",
@@ -780,7 +803,7 @@ export async function openIsolatedGit(input: {
     throw new Error("Git did not name the worktree's directories")
   }
   // Everything below comes from this one read of the worktree's config.
-  const entries = await worktreeConfig(worktree, signal)
+  const entries = await worktreeConfig(git, worktree, signal)
   const carriedKey = new RegExp(carriedPattern, "u")
   const carried = entries.filter(({ key }) => carriedKey.test(key)).map(({ key, value }): [string, string] => [key, value ?? "true"])
   const last = (key: string) => carried.filter(([name]) => name === key).at(-1)?.[1]
@@ -840,7 +863,7 @@ export async function openIsolatedGit(input: {
     ...filterPins.map(([key, value]) => ({ key, value })),
     ...lfsPolicy.map(([key, value]) => ({ key, value })),
   ]
-  const snapshot = await writeConfigSnapshot(snapshotEntries)
+  const snapshot = await writeConfigSnapshot(git, snapshotEntries)
 
   await sweepStaleCheckouts(commonDirectory)
   const gitDirectory = join(commonDirectory, `domovoi-checkout-${randomUUID()}`)
@@ -871,7 +894,7 @@ export async function openIsolatedGit(input: {
     throw error
   }
 
-  const environment: NodeJS.ProcessEnv = gitEnvironment()
+  const environment: NodeJS.ProcessEnv = { ...git.env }
   for (const name of droppedEnvironment) delete environment[name]
   // The snapshot is the only global config, and no system config is read.
   environment.GIT_CONFIG_GLOBAL = snapshot.file
@@ -890,7 +913,7 @@ export async function openIsolatedGit(input: {
   const effectivePins = new Map<string, string>()
   for (const [key, value] of pins) effectivePins.set(key, value)
   try {
-    await refuseUnpinnedFilters(environment, worktree, [...effectivePins])
+    await refuseUnpinnedFilters(git.command, environment, worktree, [...effectivePins])
   } catch (error) {
     await fs.rm(gitDirectory, { recursive: true, force: true })
     await fs.rm(snapshot.directory, { recursive: true, force: true })
@@ -943,7 +966,9 @@ export async function openIsolatedGit(input: {
     }
     let result: GitProcessResult
     try {
-      result = await trackRestoreCommand(() => runGitProcess([...inertRepositoryConfig, ...args], { env, cwd: worktree, signal: commandSignal, onStdout, beforeKill }))
+      result = await trackRestoreCommand(() => runGitProcess([...inertRepositoryConfig, ...args], {
+        command: git.command, env, cwd: worktree, signal: commandSignal, onStdout, beforeKill,
+      }))
     } catch (error) {
       if (killed || commandSignal?.aborted === true) {
         const left = await lockLeft()

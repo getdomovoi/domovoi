@@ -49,7 +49,9 @@ filter read too: Git LFS reads Git's config one line at a time and splits each l
 "=", so such an entry would give it settings no check sees. A harmless multiline value refuses
 too. The snapshot reaches Git through `GIT_CONFIG_GLOBAL`, which Git
 added in 2.32, so these operations need Git 2.32 or newer: on an older Git, or when its version
-cannot be read, they refuse with a message that names the version found, with no fallback. Every filter driver's clean, smudge, process and required the
+cannot be read, they refuse with a message that names the version found, with no fallback. Each
+operation finds its Git once, as an absolute path from an absolute PATH entry on every platform,
+checks that binary's version and runs every Git command of the operation with it. Every filter driver's clean, smudge, process and required the
 worktree sets, in any scope, empty overrides included, is in it at the worktree's value, and a
 filter key the directory would read otherwise refuses the operation, naming the key. Git LFS
 extension, custom transfer and standalone agent settings follow the same rule: each at the

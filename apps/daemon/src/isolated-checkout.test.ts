@@ -2,13 +2,14 @@ import { execFileSync, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 
 import { publishFileDurably } from "@getdomovoi/credential-store"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
-  checkOutIsolated, gitTeardownTimeoutMs, IndexChangedError, openIsolatedGit, publishUnderIndexLock, runGitProcess, windowsGitStop,
+  cachedGitVersions, checkOutIsolated, gitTeardownTimeoutMs, IndexChangedError, openIsolatedGit, publishUnderIndexLock, runGitProcess,
+  windowsGitStop,
 } from "./isolated-checkout.js"
 import { repositoryFilterGate } from "./repository-git-filter-gate.js"
 import { classify, readGitFilterSettings } from "./repository-git-filters.js"
@@ -503,6 +504,49 @@ describe("openIsolatedGit filter configuration", () => {
     } finally {
       restore()
     }
+  })
+
+  // The Git checked is the Git that runs, by absolute path (ruling Q321): two
+  // binaries selected one after the other in the same process each report
+  // their own version. The first is an inert stand-in that is never run.
+  it.skipIf(process.platform === "win32")("checks the version of the Git each opening selects", async () => {
+    const { scratch, worktree, restore } = await sessionWorktree(() => "")
+    const bin = join(scratch, "old-git-bin")
+    await mkdir(bin)
+    await writeFile(join(bin, "git"), "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+    const path = process.env.PATH
+    const asked: string[] = []
+    const gitVersion = async (command: string) => {
+      asked.push(command)
+      return command === join(bin, "git") ? "git version 2.31.0" : "git version 2.54.0"
+    }
+    try {
+      process.env.PATH = `${bin}:${path ?? ""}`
+      await expect(openIsolatedGit({ worktree, worktreeIndex: true, gitVersion }))
+        .rejects.toMatchObject({ name: "GitTooOldForIsolationError", message: expect.stringContaining("2.31.0") })
+      process.env.PATH = path
+      const isolated = await openIsolatedGit({ worktree, worktreeIndex: true, gitVersion })
+      try {
+        expect(await isolated.run(["config", "--get", "core.bare"])).toBe("false\n")
+      } finally {
+        await isolated.dispose()
+      }
+      expect(asked[0]).toBe(join(bin, "git"))
+      expect(asked[1]).not.toBe(join(bin, "git"))
+      expect(isAbsolute(asked[1]!)).toBe(true)
+    } finally {
+      process.env.PATH = path
+      restore()
+    }
+  })
+
+  it("keeps one version per Git binary path", async () => {
+    const read = vi.fn(async (command: string) => command === "/old/git" ? "git version 2.31.0" : "git version 2.54.0")
+    const versions = cachedGitVersions(read)
+    expect(await versions("/old/git", {})).toBe("git version 2.31.0")
+    expect(await versions("/new/git", {})).toBe("git version 2.54.0")
+    expect(await versions("/old/git", {})).toBe("git version 2.31.0")
+    expect(read.mock.calls.map(([command]) => command)).toEqual(["/old/git", "/new/git"])
   })
 
   // The snapshot copies Git's config bytes exactly or not at all (ruling

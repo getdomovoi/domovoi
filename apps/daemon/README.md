@@ -899,10 +899,13 @@ when the session opens. For OpenCode and Kilo it sends the first of `AGENTS.md`,
 Checkpoint, snapshot, restore, file revert, transfer, evidence and a new session's checkout run
 Git in a temporary Git directory that reads a snapshot of your global and system config, passed
 through `GIT_CONFIG_GLOBAL`. Git added that variable in 2.32; an older Git ignores it and reads
-your live global config instead. These operations therefore need Git 2.32 or newer. The daemon
-reads `git --version` of the Git it runs once per Git binary, and on an older Git, or when the
-version cannot be read, it refuses the operation with a message that names the version it found.
-There is no fallback for older Git.
+your live global config instead. These operations therefore need Git 2.32 or newer. As an
+operation starts, the daemon finds the Git it will run as an absolute path: the first `git` (on
+Windows, `git.exe`) in a PATH entry that is itself absolute, so empty and relative entries are
+passed over. Every Git command of that operation runs that binary. The daemon reads its
+`git --version` once per binary path, and on an older Git, or when the version cannot be read,
+it refuses the operation with a message that names the version it found. There is no fallback
+for older Git.
 
 ## Supervise
 
