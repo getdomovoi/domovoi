@@ -71,6 +71,13 @@ describe("createDesktopWindowBridge", () => {
     await expect(bridge.daemonService?.install()).resolves.toEqual({ ok: true, kind: "file", target: "/u", daemonRunning: true, lingerWarning: "Could not turn on lingering for dana: loginctl was not found." })
     target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/u", daemonRunning: true, lingerWarning: 5 }))
     await expect(bridge.daemonService?.install()).rejects.toThrow("invalid service outcome")
+    // The length bound and the other optional fields are refused the same way.
+    for (const field of [{ lingerWarning: "x".repeat(4_097) }, { daemonAttached: "yes" }, { profileRecovery: "guessed" }]) {
+      target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/u", daemonRunning: true, ...field }))
+      await expect(bridge.daemonService?.install()).rejects.toThrow("invalid service outcome")
+    }
+    target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/u", daemonRunning: true, lingerWarning: "x".repeat(4_096) }))
+    await expect(bridge.daemonService?.install()).resolves.toMatchObject({ lingerWarning: "x".repeat(4_096) })
     for (const [answer, drawn] of [
       [{ ok: true, kind: "task", target: "\\Domovoi\\domovoid", profileRecovery: "proof-unavailable", profileRecoveryDetail: "The service record could not be read", daemonRunning: false },
         { ok: true, kind: "task", target: "\\Domovoi\\domovoid", profileRecovery: "proof-unavailable", profileRecoveryDetail: "The service record could not be read", daemonRunning: false }],

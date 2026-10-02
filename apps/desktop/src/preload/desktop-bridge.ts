@@ -104,9 +104,11 @@ function serviceOutcome(value: unknown): DaemonServiceOutcome {
   const kind = result.kind === "file" || result.kind === "task" ? result.kind : undefined
   if (result.ok === true && kind && serviceText(result.target) && typeof result.daemonRunning === "boolean") {
     const recovery = profileRecoveries.find((candidate) => candidate === result.profileRecovery)
-    if (result.profileRecovery !== undefined && !recovery) throw new Error("Desktop returned an invalid service outcome")
-    if (result.daemonAttached !== undefined && typeof result.daemonAttached !== "boolean") throw new Error("Desktop returned an invalid service outcome")
-    if (result.lingerWarning !== undefined && !serviceText(result.lingerWarning)) throw new Error("Desktop returned an invalid service outcome")
+    // One refusal for every optional field keeps the preload inside its size
+    // budget (scripts/performance-budgets.mjs).
+    if ((result.profileRecovery !== undefined && !recovery)
+      || (result.daemonAttached !== undefined && typeof result.daemonAttached !== "boolean")
+      || (result.lingerWarning !== undefined && !serviceText(result.lingerWarning))) throw new Error("Desktop returned an invalid service outcome")
     return {
       ok: true, kind, target: result.target, daemonRunning: result.daemonRunning,
       ...(typeof result.daemonAttached === "boolean" ? { daemonAttached: result.daemonAttached } : {}),
