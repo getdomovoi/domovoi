@@ -502,6 +502,50 @@ describe("openIsolatedGit filter configuration", () => {
     }
   })
 
+  // Git LFS starts the programs its extension and custom transfer settings
+  // name, reading them through `git config`. They follow the same rule as
+  // filter commands (ruling Q319): the isolated directory reads each at the
+  // worktree's effective value, an empty override included, and a program
+  // the repository's own config names is held back unless reviewed.
+  const lfsLines = "[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n\trequired = true\n"
+  it("keeps a Git LFS extension command a global branch-conditional include empties", async () => {
+    const { worktree, restore } = await sessionWorktree((scratch) => {
+      const override = join(scratch, "override.gitconfig")
+      execFileSync("sh", ["-c", `printf '[lfs "extension.test"]\\n\\tclean =\\n' > "${override}"`])
+      return `${lfsLines}[lfs "extension.test"]\n\tclean = domovoi-inert-label\n\tsmudge = domovoi-inert-label\n\tpriority = 0\n`
+        + `[includeIf "onbranch:domovoi/**"]\n\tpath = ${override.replaceAll("\\", "/")}\n`
+    })
+    try {
+      expect(await isolatedValue(worktree, "lfs.extension.test.clean")).toBe("")
+    } finally {
+      restore()
+    }
+  })
+
+  it("keeps a repository's empty override of a global Git LFS extension command", async () => {
+    const { worktree, restore } = await sessionWorktree(
+      () => `${lfsLines}[lfs "extension.test"]\n\tclean = domovoi-inert-label\n\tpriority = 0\n`,
+      "[lfs \"extension.test\"]\n\tclean =\n",
+    )
+    try {
+      expect(await isolatedValue(worktree, "lfs.extension.test.clean")).toBe("")
+    } finally {
+      restore()
+    }
+  })
+
+  it("holds back a Git LFS extension the repository's own config names, unless reviewed", async () => {
+    const { worktree, restore } = await sessionWorktree(
+      () => lfsLines,
+      "[lfs \"extension.evil\"]\n\tclean = domovoi-inert-label\n\tpriority = 0\n",
+    )
+    try {
+      await expect(isolatedValue(worktree, "lfs.extension.evil.clean")).rejects.toMatchObject({ code: 1 })
+    } finally {
+      restore()
+    }
+  })
+
   // Git accepts a filter driver named by an empty subsection, `[filter ""]`,
   // printed as filter..clean. Rather than follow it through every check,
   // Domovoi refuses any such driver before isolation, naming the key (ruling

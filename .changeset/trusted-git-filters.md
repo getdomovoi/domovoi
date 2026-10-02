@@ -37,7 +37,10 @@ of it taken once as the operation starts, with includes and conditional includes
 worktree reads them, written to a private temporary directory, so a file edited during the
 operation changes nothing there. Every filter driver's clean, smudge, process and required the
 worktree sets, in any scope, empty overrides included, is in it at the worktree's value, and a
-filter key the directory would read otherwise refuses the operation, naming the key. A filter
+filter key the directory would read otherwise refuses the operation, naming the key. Git LFS
+extension, custom transfer and standalone agent settings follow the same rule: each at the
+worktree's value, and one whose program the repository's own config names held back unless
+reviewed. A filter
 driver, Git LFS extension or custom transfer with an empty name is refused.
 Commits are written with Git's plumbing, since `git commit` and every index write
 can run a clean filter. A checkpoint stages and commits in an index of its own, seeded from the

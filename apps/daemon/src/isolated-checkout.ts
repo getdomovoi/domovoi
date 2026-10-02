@@ -12,7 +12,7 @@ import { gitCommand } from "./git-command.js"
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { isStandardLfsFilterLine } from "./git-read-config.js"
 import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
-import { refuseFilterSettingGitStopsOn, RepositoryGitConfigUnreadableError } from "./repository-git-filters.js"
+import { classify, refuseFilterSettingGitStopsOn, RepositoryGitConfigUnreadableError } from "./repository-git-filters.js"
 import { trackRestoreCommand } from "./workspace-restore-lease.js"
 
 const execute = promisify(execFile)
@@ -482,15 +482,50 @@ function sourceFilterPins(
 // A filter driver's keys that decide what runs and whether it may fail.
 const filterPolicyKey = /^filter\.(.+)\.(?:clean|smudge|process|required)$/u
 
+// The Git LFS settings that start a program or choose one, by the group they
+// belong to: an extension's or a custom transfer's keys (command, arguments,
+// priority, concurrency and the rest), or a standalone transfer agent.
+const lfsPolicyKey = /^lfs\.(?:extension\.(.+)\.[^.]+|customtransfer\.(.+)\.[^.]+|(?:.+\.)?standalonetransferagent)$/iu
+
+function lfsPolicyGroup(key: string): string | undefined {
+  const match = lfsPolicyKey.exec(key)
+  if (match === null) return undefined
+  return match[1] !== undefined ? `extension\0${match[1]}` : match[2] !== undefined ? `customtransfer\0${match[2]}` : key
+}
+
+// The Git LFS policy the isolated directory runs with (ruling Q319): every
+// such key the worktree sets, in any scope, once, at its effective value, an
+// empty override included. A group whose program the repository's own config
+// names (classify), nonempty, is held back, left out whole, unless the
+// reviewed definitions hold that exact key and value.
+function sourceLfsPolicy(
+  entries: readonly ConfigEntry[],
+  reviewed: ReadonlyArray<readonly [string, string]>,
+): Array<readonly [string, string]> {
+  const effective = new Map<string, { scope: string; value: string }>()
+  for (const entry of entries) {
+    if (lfsPolicyGroup(entry.key) !== undefined) effective.set(entry.key, { scope: entry.scope, value: entry.value ?? "true" })
+  }
+  const confirmed = new Set(reviewed.map(([key, value]) => `${key}\0${value}`))
+  const heldBack = new Set<string>()
+  for (const [key, { scope, value }] of effective) {
+    if (!trustedConfigScopes.has(scope) && value !== "" && classify(key, value) !== undefined && !confirmed.has(`${key}\0${value}`)) {
+      heldBack.add(lfsPolicyGroup(key)!)
+    }
+  }
+  return [...effective].filter(([key]) => !heldBack.has(lfsPolicyGroup(key)!)).map(([key, { value }]) => [key, value] as const)
+}
+
 // After the pins, the directory must read exactly them for every filter
 // policy key: a driver or key only this directory sees (a global include
 // conditional on its Git directory, say) or a value other than the pin
 // refuses, naming the key (ruling Q318). Nothing has run yet.
 async function refuseUnpinnedFilters(environment: NodeJS.ProcessEnv, worktree: string, pins: ReadonlyArray<readonly [string, string]>): Promise<void> {
-  const pinned = new Map(pins.filter(([key]) => filterPolicyKey.test(key)))
+  const policyKey = (key: string) => filterPolicyKey.test(key) || lfsPolicyGroup(key) !== undefined
+  const pinned = new Map(pins.filter(([key]) => policyKey(key)))
   let output = ""
   try {
-    output = (await execute(gitCommand(environment), [...inertRepositoryConfig, "config", "-z", "--get-regexp", "^filter\\."], {
+    output = (await execute(gitCommand(environment), [...inertRepositoryConfig, "config", "-z", "--get-regexp", "^(filter|lfs)\\."], {
       env: environment, cwd: worktree, encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
     })).stdout
   } catch (error) {
@@ -502,8 +537,8 @@ async function refuseUnpinnedFilters(environment: NodeJS.ProcessEnv, worktree: s
     if (record === "") continue
     const newline = record.indexOf("\n")
     const key = newline === -1 ? record : record.slice(0, newline)
-    if (!filterPolicyKey.test(key)) continue
-    if (newline === -1 && !key.endsWith(".required")) {
+    if (!policyKey(key)) continue
+    if (newline === -1 && filterPolicyKey.test(key) && !key.endsWith(".required")) {
       throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `the isolated Git directory reads ${shownFilterKey(key)} with no value` })
     }
     seen.set(key, newline === -1 ? "true" : record.slice(newline + 1))
@@ -634,7 +669,8 @@ export async function openIsolatedGit(input: {
   const storage = last("lfs.storage")
   pins.push(["lfs.storage", storage === undefined || storage === "" ? join(commonDirectory, "lfs") : isAbsolute(storage) ? storage : resolve(commonDirectory, storage)])
   const filterPins = sourceFilterPins(entries, input.reviewed ?? [])
-  pins.push(...filterPins)
+  const lfsPolicy = sourceLfsPolicy(entries, input.reviewed ?? [])
+  pins.push(...filterPins, ...lfsPolicy)
   for (const key of ["lfs.url", "lfs.pushurl"]) {
     const value = last(key)
     if (value !== undefined && carriedRemoteUrl(value)) pins.push([key, value])
@@ -674,8 +710,9 @@ export async function openIsolatedGit(input: {
   // the worktree's effective value (as pinned above). A file the person
   // edits afterwards is not read. Repository config is still not in it.
   const snapshotEntries = [
-    ...entries.filter(({ scope, key }) => trustedConfigScopes.has(scope) && !/^include(?:if)?\./iu.test(key) && !filterPolicyKey.test(key)),
+    ...entries.filter(({ scope, key }) => trustedConfigScopes.has(scope) && !/^include(?:if)?\./iu.test(key) && !filterPolicyKey.test(key) && lfsPolicyGroup(key) === undefined),
     ...filterPins.map(([key, value]) => ({ key, value })),
+    ...lfsPolicy.map(([key, value]) => ({ key, value })),
   ]
   const snapshot = await writeConfigSnapshot(snapshotEntries)
 

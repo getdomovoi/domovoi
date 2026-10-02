@@ -199,7 +199,10 @@ export function refuseFilterSettingGitStopsOn(scope: string, key: string, value:
   if (emptyNamedDriverKey.test(key)) {
     throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${scope} Git config names a filter driver with an empty name, which Domovoi does not run` })
   }
-  if (value === undefined && filterCommandKey.test(key)) {
+  // A Git LFS extension, custom transfer or standalone agent key with no value
+  // stops git-lfs; it refuses here too, so no copy of the config writes it as
+  // a value (ruling Q319).
+  if (value === undefined && (filterCommandKey.test(key) || /^lfs\.(?:extension\.|customtransfer\.|(?:.+\.)?standalonetransferagent$)/iu.test(key))) {
     throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${scope} Git config has no value` })
   }
   if (value !== undefined && /^filter\..+\.required$/u.test(key) && gitRequiredState(value) === undefined) {
