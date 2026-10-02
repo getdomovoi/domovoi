@@ -246,9 +246,10 @@ type SessionStartAttempt =
   | { kind: "create"; title: string; runtime: Runtime }
   | { kind: "fork"; input: Omit<RpcParams<"session.fork">, "client"> }
 
-// Where a start was made: the shell's thread scope (machine, project and
-// active session) and the names the refusal card shows for it.
-type StartScope = { key: string; machineId: string; machine: string; repository: string }
+// Where a start was made: the generation of the shell's thread scope
+// (machine, project and active session), which advances on every change, and
+// the names the refusal card shows for it.
+type StartScope = { generation: number; machineId: string; machine: string; repository: string }
 
 export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
@@ -604,10 +605,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // to press (ruling Q202 A). Every other failure goes back to its caller.
   //
   // The card belongs to the thread it was drawn in: another session, project
-  // or machine replaces it. Each start keeps the scope it was made in, and a
-  // result that arrives after the scope changed is dropped, so a late refusal
-  // never takes another workspace's names or offers its review (ruling Q323).
-  const refusalScope = `${attached?.machineId ?? ""}\u0000${snapshot?.project?.id ?? ""}\u0000${snapshot?.activeSessionId ?? ""}`
+  // or machine replaces it. Each start keeps the scope generation it was made
+  // in, and a result that arrives after any scope change is dropped, so a late
+  // refusal never takes another workspace's names or offers its review
+  // (ruling Q323), and coming back to the same scope does not revive it
+  // (ruling Q325).
+  const refusalScope = `${attached?.machineId ?? snapshot?.machine.id ?? ""}\u0000${snapshot?.project?.id ?? ""}\u0000${snapshot?.activeSessionId ?? ""}`
   const [startRefusal, setStartRefusal] = useState<{
     id: number
     refusal: RepositoryGitFilterRefusal
@@ -615,17 +618,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     scope: StartScope
   } | null>(null)
   const startRefusals = useRef(0)
-  // The scope the shell shows now, for a start that finishes later to compare.
-  // Moved by the effect below, which also retires the card, so a result that
-  // lands before it runs is cleared with the card.
-  const shownStartScope = useRef(refusalScope)
+  // Advances on every scope change and never goes back. The effect that
+  // advances it also retires the card, so a result that lands before it runs
+  // is cleared with the card.
+  const startGeneration = useRef(0)
   useEffect(() => {
-    shownStartScope.current = refusalScope
+    startGeneration.current += 1
     setStartRefusal(null)
   }, [refusalScope])
   const startSession = async (attempt: SessionStartAttempt) => {
     const scope: StartScope = {
-      key: refusalScope,
+      generation: startGeneration.current,
       machineId: attached?.machineId ?? snapshot?.machine.id ?? "",
       machine: snapshot?.machine.name ?? "this machine",
       repository: snapshot?.project?.name ?? "this repository",
@@ -633,19 +636,19 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     try {
       if (attempt.kind === "create") await createSession(attempt.title, attempt.runtime)
       else await forkSession(attempt.input)
-      if (shownStartScope.current === scope.key) setStartRefusal(null)
+      if (startGeneration.current === scope.generation) setStartRefusal(null)
     } catch (cause) {
       const refusal = gitFilterRefusalFrom(cause)
       if (!refusal) throw cause
-      if (shownStartScope.current !== scope.key) return
+      if (startGeneration.current !== scope.generation) return
       startRefusals.current += 1
       setStartRefusal({ id: startRefusals.current, refusal, attempt, scope })
     }
   }
   // A fork's request id names one attempt, so the retry carries a new one. A
-  // retry is made only in the scope the refused start was made in.
+  // retry is made only in the scope generation the refused start was made in.
   const startAgain = async (attempt: SessionStartAttempt, scope: StartScope) => {
-    if (shownStartScope.current !== scope.key) return
+    if (startGeneration.current !== scope.generation) return
     await startSession(attempt.kind === "fork"
       ? { kind: "fork", input: { ...attempt.input, requestId: `fork-${globalThis.crypto.randomUUID()}` } }
       : attempt)

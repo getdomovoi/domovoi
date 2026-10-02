@@ -15,7 +15,8 @@ its Git filters back under the grant read now, for a reason the refusal does not
 says the filters are held back until they are reviewed again, and offers Review and trust again. Any other failure
 stays where it was shown before. Codex's own refusal of a worktree's .codex config has no code and
 still shows as the daemon's sentence. A start keeps the machine, project and session it was made
-in: a refusal that arrives after the shell moved to another one is dropped, the card names the
+in: a refusal that arrives after the shell moved to another one is dropped, even when the shell
+came back to the same one before it arrived, the card names the
 repository and machine of the refused start, its review refuses an inventory read for another
 project or machine, and Start the session again is made only in that scope.
 

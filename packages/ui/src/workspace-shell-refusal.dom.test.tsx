@@ -245,6 +245,30 @@ it("drops a refusal that arrives after the workspace moved to another project", 
   expect(sentRequests(socket, "tool.inventory")).toHaveLength(0)
 })
 
+// Leaving the scope retires the start for good: coming back to the same
+// project does not revive its refusal (ruling Q325).
+it("drops a refusal after the workspace left its project and came back", async () => {
+  const { socket, snapshot } = await createFromLauncher()
+  const other = {
+    ...snapshot,
+    project: { ...snapshot.project!, id: "project-audit-other", name: "audit-other", path: "/Users/dev/src/audit-other" },
+    sessions: snapshot.sessions.map((session) => ({ ...session, projectId: "project-audit-other" })),
+  }
+  await act(async () => { notify(socket, "workspace.changed", other) })
+  await settle()
+  await act(async () => { notify(socket, "workspace.changed", snapshot) })
+  await settle()
+
+  await act(async () => {
+    fail(socket, "session.create", { code: repositoryGitFilterErrorCode, message: "This repository's own Git config sets the filter \"sops\".", data: refusal(snapshot) })
+  })
+  await settle()
+  await act(async () => { await import("./session-refusal-card") })
+  await settle()
+
+  expect(screen.queryByRole("region", { name: "Domovoi did not start this session" })).toBeNull()
+})
+
 it("keeps any other failure in the launcher", async () => {
   const { socket } = await createFromLauncher()
   await act(async () => { fail(socket, "session.create", { code: -32603, message: "The worktree could not be created" }) })
