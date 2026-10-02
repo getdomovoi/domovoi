@@ -1232,27 +1232,47 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // owners, the notice waits on its record and goes out once the last of
   // those records has ended, after their turns' ends (security review round
   // 14 of #687). Otherwise it goes out now. No owner waits on it.
-  // A disconnect: the daemon ends every turn on this provider when it hears
-  // one, whatever directory closed, so it waits for every thread-wide stop
-  // the adapter still holds, in any directory (security review round 15 of
-  // #687).
-  #noticeProviderWide(event: AgentEvent): void {
-    this.#noticeAfterStops([...this.#sessions.values()], event)
+  #noticeAfterStops(sessions: Session[], event: AgentEvent): void {
+    this.#afterHeld(sessions, () => this.#emit(event))
   }
 
-  #noticeAfterStops(sessions: Session[], event: AgentEvent): void {
+  // Runs `then` once every one of the sessions' thread-wide stops that still
+  // has owners has ended, or now if none has.
+  #afterHeld(sessions: Session[], then: () => void): void {
     const held = sessions.flatMap((session) => (session.threadStop && session.threadStop.owners > 0 ? [session.threadStop] : []))
     if (held.length === 0) {
-      this.#emit(event)
+      then()
       return
     }
     let remaining = held.length
     for (const stop of held) {
       stop.notices.push(() => {
         remaining -= 1
-        if (remaining === 0) this.#emit(event)
+        if (remaining === 0) then()
       })
     }
+  }
+
+  // A disconnect: the daemon ends every turn on this provider when it hears
+  // one, whatever directory closed, so it waits for every thread-wide stop
+  // the adapter holds, in any directory (security review round 15 of #687).
+  // When those have ended it looks again, and waits for any stop that began
+  // meanwhile, in any session, before it goes out, once (round 16, ruling
+  // Q312 A). Prompts are not held meanwhile: the daemon handles the
+  // disconnect only after a send it is serving returns, so holding a prompt
+  // would not keep its turn from being ended. The wait grows only with new
+  // thread-wide stops, each bounded by the abort and server-stop limits, so a
+  // steady stream of new stops could keep extending it.
+  #noticeProviderWide(event: AgentEvent): void {
+    const attempt = () => this.#afterHeld([...this.#sessions.values()], () => {
+      const stillHeld = [...this.#sessions.values()].some((session) => session.threadStop && session.threadStop.owners > 0)
+      if (stillHeld) {
+        attempt()
+        return
+      }
+      this.#emit(event)
+    })
+    attempt()
   }
 
   #runDisposals(stop: ThreadStop): void {

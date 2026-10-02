@@ -76,10 +76,16 @@ class EventStream implements AsyncIterable<OpenCodeEvent> {
 const otherSessionId = "session-audit"
 const otherThreadId = "ses_audit"
 
-function openCodeSession(workspacePath: string, otherPath?: string): WorkspaceSnapshot {
+// A third OpenCode session, in a third directory (security review round 16
+// of #687).
+const thirdSessionId = "session-onboarding"
+const thirdThreadId = "ses_onboarding"
+
+function openCodeSession(workspacePath: string, otherPath?: string, thirdPath?: string): WorkspaceSnapshot {
   const snapshot = structuredClone(demoWorkspace)
   const sessions: Array<[string, string, string]> = [[sessionId, threadId, workspacePath]]
   if (otherPath) sessions.push([otherSessionId, otherThreadId, otherPath])
+  if (thirdPath) sessions.push([thirdSessionId, thirdThreadId, thirdPath])
   for (const [id, thread, path] of sessions) {
     const session = snapshot.sessions.find((candidate) => candidate.id === id)!
     session.runtime = { ...session.runtime, provider: "opencode", model: "anthropic/sonnet", permissionMode: "build", auto: false }
@@ -93,14 +99,19 @@ function openCodeSession(workspacePath: string, otherPath?: string): WorkspaceSn
   return workspaceSnapshotSchema.parse(snapshot)
 }
 
-async function start({ second = false } = {}) {
+// `third`: "send" starts the third session's turn with the others; "idle"
+// leaves it unloaded until the test sends to it.
+async function start({ second = false, third }: { second?: boolean; third?: "send" | "idle" } = {}) {
   const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-stop-order-"))
   scratch.push(workspacePath)
   const otherPath = second ? await mkdtemp(join(tmpdir(), "domovoi-stop-order-other-")) : undefined
   if (otherPath) scratch.push(otherPath)
+  const thirdPath = third ? await mkdtemp(join(tmpdir(), "domovoi-stop-order-third-")) : undefined
+  if (thirdPath) scratch.push(thirdPath)
   const stream = new EventStream()
   // Each directory has its own event stream.
   const otherStream = new EventStream()
+  const thirdStream = new EventStream()
   // Aborts wait for a manual answer, by provider session.
   const waiting = new Map<string, Array<(ok: boolean) => void>>()
   let replyPost: { refuse: () => void } | undefined
@@ -137,6 +148,7 @@ async function start({ second = false } = {}) {
     event: {
       subscribe: vi.fn(async (...args: unknown[]) => {
         const directory = (args[0] as { query?: { directory?: string } } | undefined)?.query?.directory
+        if (directory !== undefined && directory === thirdPath) return { stream: thirdStream }
         return { stream: directory !== undefined && directory === otherPath ? otherStream : stream }
       }),
     },
@@ -170,7 +182,7 @@ async function start({ second = false } = {}) {
     archiveSessionWorkspace: vi.fn(async () => {}),
   } satisfies WorkspaceService
   const usageLedger = new UsageLedger()
-  const store = new SqliteWorkspaceStore(":memory:", openCodeSession(workspacePath, otherPath))
+  const store = new SqliteWorkspaceStore(":memory:", openCodeSession(workspacePath, otherPath, thirdPath))
   const daemon = new DomovoiDaemon({
     port: 0, store, auditLog, usageLedger,
     agents: { opencode: adapter }, workspaceService, errorSink: vi.fn(),
@@ -202,13 +214,20 @@ async function start({ second = false } = {}) {
     expect(sentOther.error?.message).toBeUndefined()
     await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledTimes(2))
   }
+  const sendThird = () => rpc("session.send", { sessionId: thirdSessionId, prompt: "onboard it", client: "desktop" })
+  if (third === "send") {
+    expect((await sendThird()).error?.message).toBeUndefined()
+    await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledTimes(3))
+  }
   const answer = async (id: string) => {
     await waitForDaemon(() => expect(waiting.get(id)?.length ?? 0).toBeGreaterThan(0))
     waiting.get(id)!.shift()!(true)
   }
   const settle = () => new Promise((resolve) => setTimeout(resolve, 30))
+  const sessionById = async (id: string) => (await snapshot()).sessions.find((candidate) => candidate.id === id)!
   return {
-    client, stream, otherStream, rpc, snapshot, session, append, usageLedger, answer, settle,
+    client, stream, otherStream, thirdStream, sendThird, sessionById,
+    rpc, snapshot, session, append, usageLedger, answer, settle,
     pendingAborts: (id: string) => waiting.get(id)?.length ?? 0,
     refuseReply: () => replyPost!.refuse(),
   }
@@ -293,6 +312,63 @@ describe("a turn ended by overlapping thread stops, through the daemon", () => {
     // The disconnect reached the daemon after A's turn ended.
     const actions = append.mock.calls.map(([input]) => input)
     const completed = actions.findIndex((input) => input.action === "provider.turn-completed" && input.sessionId === sessionId)
+    const disconnected = actions.findIndex((input) => input.action === "provider.disconnected")
+    expect(disconnected).toBeGreaterThan(completed)
+  })
+
+  // Security review round 16 of #687 (ruling Q312): a disconnect waiting on
+  // held turns checks again before it goes out, and holds new prompts while
+  // it waits, so a turn held during the wait also ends first.
+  const v2 = (target: EventStream, thread: string) => target.emit({ type: "permission.v2.asked", properties: { sessionID: thread, id: `per_v2_${thread}` } })
+
+  async function expectStoredFailed({ append, usageLedger, sessionById }: Started, id: string, thread: string) {
+    await waitForDaemon(() => expect(append).toHaveBeenCalledWith(expect.objectContaining({ action: "provider.turn-completed", outcome: "failed", sessionId: id })))
+    expect((await sessionById(id)).state).toBe("failed")
+    expect(usageLedger.lookup({ provider: "opencode", threadId: thread, turnId })?.accounting?.status).toBe("failed")
+  }
+
+  it("ends a turn held during a pending disconnect before that disconnect", async () => {
+    const started = await start({ second: true, third: "send" })
+    const { stream, otherStream, thirdStream, append, answer, settle, pendingAborts } = started
+    v2(stream, threadId)
+    await waitForDaemon(() => expect(pendingAborts(threadId)).toBe(1))
+    otherStream.close()
+    await answer(otherThreadId)
+    await settle()
+    // C, already running, is held while B's disconnect waits on A.
+    v2(thirdStream, thirdThreadId)
+    await waitForDaemon(() => expect(pendingAborts(thirdThreadId)).toBe(1))
+    await answer(threadId)
+    await settle()
+    await answer(thirdThreadId)
+    await expectStoredFailed(started, thirdSessionId, thirdThreadId)
+    const actions = append.mock.calls.map(([input]) => input)
+    const completed = actions.findIndex((input) => input.action === "provider.turn-completed" && input.sessionId === thirdSessionId)
+    const disconnected = actions.findIndex((input) => input.action === "provider.disconnected")
+    expect(disconnected).toBeGreaterThan(completed)
+  })
+
+  // The report's case: C is loaded, starts a turn and gets a request it
+  // cannot answer while B's disconnect waits on A.
+  it("ends a late-loaded session's held turn before a pending disconnect", async () => {
+    const started = await start({ second: true, third: "idle" })
+    const { stream, otherStream, thirdStream, append, sendThird, answer, settle, pendingAborts } = started
+    v2(stream, threadId)
+    await waitForDaemon(() => expect(pendingAborts(threadId)).toBe(1))
+    otherStream.close()
+    await answer(otherThreadId)
+    await settle()
+    const sent = sendThird()
+    await settle()
+    v2(thirdStream, thirdThreadId)
+    await waitForDaemon(() => expect(pendingAborts(thirdThreadId)).toBe(1))
+    await answer(threadId)
+    await settle()
+    await answer(thirdThreadId)
+    await sent
+    await expectStoredFailed(started, thirdSessionId, thirdThreadId)
+    const actions = append.mock.calls.map(([input]) => input)
+    const completed = actions.findIndex((input) => input.action === "provider.turn-completed" && input.sessionId === thirdSessionId)
     const disconnected = actions.findIndex((input) => input.action === "provider.disconnected")
     expect(disconnected).toBeGreaterThan(completed)
   })
