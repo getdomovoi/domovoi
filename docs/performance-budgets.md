@@ -35,7 +35,7 @@ daemon-ready milestones plus main-process RSS. Interpret it as local diagnostic 
 
 | Surface | Alpha budget | Stable gate |
 | --- | --- | --- |
-| Startup | Web JS 1,280,000 startup bytes and 400,000 lazy bytes; web CSS 124,000; desktop renderer JS 1,280,000 startup bytes and 400,000 lazy bytes; renderer CSS 124,000; main 43,008; preload 9,728 | Startup graph measured from the built `index.html` entry and `modulepreload` links, lazy chunks reported separately; desktop creates its hidden window before awaiting daemon startup and records bounded milestones |
+| Startup | Web JS 1,280,000 startup bytes and 400,000 lazy bytes; web CSS 128,000; desktop renderer JS 1,280,000 startup bytes and 400,000 lazy bytes; renderer CSS 128,000; main 43,008; preload 9,728 | Startup graph measured from the built `index.html` entry and `modulepreload` links, lazy chunks reported separately; desktop creates its hidden window before awaiting daemon startup and records bounded milestones |
 | Memory | 100 thread items in a client snapshot; 200 retained history items; 65,536 terminal replay characters | Active-session snapshot window, bounded history merge/DOM, bounded terminal replay |
 | Long threads | 100 snapshot/rendered items; 100 items per history page; 32,768 Markdown characters and 500 lines per item | Durable history remains daemon-owned and pageable; client and quick-view tests enforce windows |
 | Terminal throughput | 65,536 characters per notification; 16 ms batching; WebSocket pause/resume at 1,048,576/262,144 buffered bytes | Fake-clock batching and backpressure tests plus protocol payload validation; bytes remain ordered and lossless |
@@ -44,8 +44,10 @@ daemon-ready milestones plus main-process RSS. Interpret it as local diagnostic 
 The CSS budgets were 115,000 until 2026-09-08, when the v2 design set's token contract took the
 web sheet to 115,147. The added bytes are the `--ok-*` state ramp and the `--skel` pair, which the
 v2 screens read, in both themes. Raised to 124,000 rather than trimmed, because the remaining v2
-screens add more utility classes and a ceiling that fails on the next screen teaches nothing. If a
-measurement approaches it again, check what is unused before raising it further.
+screens add more utility classes and a ceiling that fails on the next screen teaches nothing. Both
+were raised again to 128,000 on 2026-10-01 for the rest of the desktop chrome pass, after the
+titlebar slice measured the web sheet at 123,931. If a measurement approaches it again, check what
+is unused before raising it further.
 
 The startup JavaScript budgets, web and desktop renderer, were 1,250,000 until 2026-10-01. The
 production dependency batch (#678) left the web entry at 1,248,657 bytes, and the multi-project

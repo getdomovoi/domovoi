@@ -3,17 +3,21 @@ import {
   ClipboardIcon,
   CircleStopIcon,
   CpuIcon,
+  DiffIcon,
   ExternalLinkIcon,
   FolderOpenIcon,
   GitCommitHorizontalIcon,
   HistoryIcon,
   MessageSquarePlusIcon,
+  MonitorIcon,
   PanelTopIcon,
   RefreshCwIcon,
   RotateCcwIcon,
   ServerIcon,
   MessagesSquareIcon,
   SettingsIcon,
+  ShieldIcon,
+  SmartphoneIcon,
   SparklesIcon,
 } from "lucide-react"
 
@@ -26,7 +30,6 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
-  CommandShortcut,
 } from "./components/ui/command"
 import type { FleetEntry, WorkspaceSnapshot } from "@getdomovoi/protocol"
 import type { SessionSearchMatch, SessionSearchResult } from "@getdomovoi/protocol"
@@ -68,6 +71,8 @@ export type WorkspaceCommand = {
   section: CommandSection
   keywords: readonly string[]
   icon?: ComponentType
+  // The design's spec, such as "mod+shift+D". The palette draws it for the
+  // platform with shortcutLabel, and the shell binds it.
   shortcut?: string
   detail?: string | undefined
   // An entity row, rather than a verb. The launcher lists the things the
@@ -96,6 +101,37 @@ export function commandPaletteShortcut(
   return platform === "darwin"
     ? event.metaKey && !event.ctrlKey
     : event.ctrlKey && !event.metaKey
+}
+
+// The two shortcuts Desktop V2's palette names beside its commands: the
+// changes sheet and every machine. Shift keeps them clear of the editing keys.
+export type WorkspaceShortcut = "changes" | "machines"
+
+export function workspaceShortcut(
+  event: ShortcutEvent & { shiftKey: boolean },
+  platform: CommandPalettePlatform,
+): WorkspaceShortcut | null {
+  if (!event.shiftKey || event.altKey) return null
+  const modifier = platform === "darwin"
+    ? event.metaKey && !event.ctrlKey
+    : event.ctrlKey && !event.metaKey
+  if (!modifier) return null
+  const key = event.key.toLowerCase()
+  return key === "d" ? "changes" : key === "m" ? "machines" : null
+}
+
+// A shortcut is held as the design's spec ("mod+shift+D") and drawn for the
+// platform the way the design's K() draws it: symbols run together on macOS,
+// names joined by "+" elsewhere.
+export function shortcutLabel(spec: string, platform: CommandPalettePlatform): string {
+  const mac = platform === "darwin"
+  const parts = spec.split("+").map((part) => {
+    if (part === "mod") return mac ? "⌘" : "Ctrl"
+    if (part === "shift") return mac ? "⇧" : "Shift"
+    if (part === "alt") return mac ? "⌥" : "Alt"
+    return part
+  })
+  return mac ? parts.join("") : parts.join("+")
 }
 
 function commandScore(command: WorkspaceCommand, query: string): number {
@@ -149,6 +185,13 @@ export function buildWorkspaceCommands({
   previewTransferTo,
   currentMachineId,
   transferEntries,
+  openChanges,
+  revertToCheckpoint,
+  reviewRules,
+  approvalRuleCount,
+  moveSession,
+  pairDevice,
+  shortcutsBound,
 }: {
   activeWorkspacePath?: string | undefined
   copyWorktreePath?: (() => void) | undefined
@@ -185,6 +228,21 @@ export function buildWorkspaceCommands({
   // locked for that time rather than offered and then refused.
   takeCheckpoint?: (() => void) | undefined
   checkpointBlocked?: boolean | undefined
+  // Desktop V2's session commands. Each opens a view that already exists and
+  // decides nothing itself: the sheet tab, the machine menu or the settings
+  // card takes it from there. A shell that cannot open one leaves it out.
+  openChanges?: (() => void) | undefined
+  // The checkpoint count the design draws ("5 available") is not here: the
+  // snapshot does not carry it and the palette fetches nothing.
+  revertToCheckpoint?: (() => void) | undefined
+  reviewRules?: (() => void) | undefined
+  approvalRuleCount?: number | undefined
+  moveSession?: (() => void) | undefined
+  pairDevice?: (() => void) | undefined
+  // Whether the shell binds the changes and machines shortcuts. Ruling Q291 A
+  // (2026-10-01): only the desktop does, so a browser names no shortcut it
+  // would leave to the browser.
+  shortcutsBound?: boolean | undefined
 }): WorkspaceCommand[] {
   return [
     { id: "open-project", label: "Open project", section: "Project", keywords: ["folder", "repository"], icon: FolderOpenIcon, restoreFocus: false, run: openProject },
@@ -197,14 +255,31 @@ export function buildWorkspaceCommands({
     ] : []),
     { id: "pause-all", label: "Pause everything", section: "Session", keywords: ["pause", "turn boundary"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: pauseAll },
     { id: "emergency-stop", label: "Emergency stop", section: "Session", keywords: ["kill", "stop", "emergency"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: emergencyStop },
+    ...(openChanges ? [
+      { id: "open-changes", label: "Open the changes sheet", section: "Session" as const, keywords: ["diff", "files", "review"], icon: DiffIcon, ...(shortcutsBound ? { shortcut: "mod+shift+D" } : {}), run: openChanges },
+    ] : []),
     ...(takeCheckpoint ? [
-      { id: "take-checkpoint", label: "Take a checkpoint", section: "Session" as const, keywords: ["checkpoint", "save", "commit", "snapshot"], icon: GitCommitHorizontalIcon, disabled: !connected || Boolean(checkpointBlocked), run: takeCheckpoint },
+      { id: "take-checkpoint", label: "Take a checkpoint", section: "Session" as const, keywords: ["checkpoint", "save", "commit", "snapshot"], icon: GitCommitHorizontalIcon, detail: "manual", disabled: !connected || Boolean(checkpointBlocked), run: takeCheckpoint },
+    ] : []),
+    ...(revertToCheckpoint ? [
+      { id: "revert-checkpoint", label: "Revert to a checkpoint", section: "Session" as const, keywords: ["restore", "rewind", "undo"], icon: RotateCcwIcon, run: revertToCheckpoint },
+    ] : []),
+    ...(reviewRules ? [
+      { id: "review-rules", label: "Review what you have allowed", section: "Session" as const, keywords: ["rules", "approvals", "permissions"], icon: ShieldIcon, detail: `${approvalRuleCount ?? 0} ${approvalRuleCount === 1 ? "rule" : "rules"}`, run: reviewRules },
+    ] : []),
+    // The machine menu takes the choice of machine and the transfer dialog the
+    // decision, so the palette only opens the menu. Focus goes with it.
+    ...(moveSession ? [
+      { id: "move-session", label: "Move this session to another machine", section: "Session" as const, keywords: ["transfer", "machine"], icon: MonitorIcon, detail: "handoff", disabled: !connected, restoreFocus: false, run: moveSession },
     ] : []),
     { id: "surface-workspace", label: "Agent workspace", section: "Navigate", keywords: ["chat", "thread"], icon: PanelTopIcon, run: () => setSurface("workspace") },
     { id: "surface-providers", label: "Provider settings", section: "Navigate", keywords: ["models", "credentials"], icon: SettingsIcon, run: () => setSurface("providers") },
     { id: "surface-skills", label: "Skills", section: "Navigate", keywords: ["capabilities", "agents"], icon: SparklesIcon, run: () => setSurface("skills") },
-    { id: "surface-fleet", label: "Fleet", section: "Navigate", keywords: ["machines", "devices", "pairing"], icon: ServerIcon, run: () => setSurface("fleet") },
-    { id: "surface-audit", label: "Audit log", section: "Navigate", keywords: ["history", "receipts"], icon: HistoryIcon, run: () => setSurface("audit") },
+    { id: "surface-fleet", label: "Show all machines", section: "Navigate", keywords: ["fleet", "machines", "devices", "pairing"], icon: ServerIcon, ...(shortcutsBound ? { shortcut: "mod+shift+M" } : {}), run: () => setSurface("fleet") },
+    ...(pairDevice ? [
+      { id: "pair-device", label: "Pair a phone or tablet", section: "Navigate" as const, keywords: ["pairing", "phone", "tablet", "device"], icon: SmartphoneIcon, detail: "settings", disabled: !connected, run: pairDevice },
+    ] : []),
+    { id: "surface-audit", label: "Read the audit log", section: "Navigate", keywords: ["audit log", "history", "receipts"], icon: HistoryIcon, detail: "on this machine", run: () => setSurface("audit") },
     ...(openCheckpoints ? [
       { id: "open-checkpoints", label: "Checkpoints", section: "Navigate" as const, keywords: ["restore", "rewind", "worktree", "history"], icon: RotateCcwIcon, run: openCheckpoints },
     ] : []),
@@ -563,7 +638,11 @@ export function CommandPalette({
                       {command.kind ? (
                         <span className="shrink-0 text-eyebrow text-faint">{command.kind}</span>
                       ) : null}
-                      {command.shortcut ? <CommandShortcut>{command.shortcut}</CommandShortcut> : null}
+                      {/* The design draws a shortcut in the same meta column as a
+                          text meta, so it shares the detail's place and type. */}
+                      {command.shortcut ? (
+                        <kbd className="shrink-0 font-machine text-[10px] text-faint">{shortcutLabel(command.shortcut, platform)}</kbd>
+                      ) : null}
                     </CommandItem>
                   )
                 })}
