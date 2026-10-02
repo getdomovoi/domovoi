@@ -869,6 +869,19 @@ describe("Linux lingering", () => {
     expect(dependencies.stderr).toHaveBeenCalledWith(`Could not turn on lingering for dl: ${detail}. The service is installed, but systemd stops the daemon when dl logs out of every session and starts it again at the next login. To keep it running, run loginctl enable-linger; domovoid service remove will then leave lingering on.\n`)
   })
 
+  // Review of #698 round 4 (P2): loginctl's diagnostic is unbounded, and the
+  // app refuses service text over 4,096 UTF-16 units. The diagnostic is
+  // shortened, with a marker, before the line is composed, so the CLI and the
+  // app print the same bounded line and the logout limit and advice survive.
+  it("shortens a long loginctl diagnostic and keeps the logout limit and advice", async () => {
+    const diagnostic = `Failed to connect to bus: ${"x".repeat(4_600)}`
+    const dependencies = command({ ...target, capture: loginctl({ state: { code: 1, stdout: "", stderr: diagnostic } }) })
+    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(0)
+    const line = vi.mocked(dependencies.stderr).mock.calls.map(([text]) => text).find((text) => text.startsWith("Could not turn on lingering"))!
+    expect(line.length).toBeLessThanOrEqual(4_096)
+    expect(line).toMatch(/^Could not turn on lingering for dl: Failed to connect to bus: x+\.\.\. \(shortened\)\. The service is installed, but systemd stops the daemon when dl logs out of every session and starts it again at the next login\. To keep it running, run loginctl enable-linger; domovoid service remove will then leave lingering on\.\n$/u)
+  })
+
   it("turns lingering off again when the install puts the previous service files back", async () => {
     const dependencies = command({
       ...target,

@@ -36,8 +36,22 @@ function lingerUser(target: LingerTarget): string | undefined {
   return target.uid !== undefined ? String(target.uid) : target.user
 }
 
+// Review of #698 round 4 (P2): loginctl's diagnostic and the user name are
+// not bounded, and the app refuses service text over 4,096 UTF-16 units
+// (apps/desktop preload). Both are shortened here, by code point so no pair is
+// split, before any line is composed, so the CLI and the app get the same
+// text. Worst case, every kept code point two units: a name of 128 three
+// times and a detail of 1,000 leave the fixed sentences well inside 4,096.
+const maximumNameCodePoints = 128
+const maximumDetailCodePoints = 1_000
+
+function shortened(text: string, maximum: number): string {
+  const points = Array.from(text)
+  return points.length <= maximum ? text : `${points.slice(0, maximum).join("")}... (shortened)`
+}
+
 export function lingerName(target: LingerTarget): string {
-  return target.user ?? (target.uid !== undefined ? `user ${target.uid}` : "this user")
+  return target.user !== undefined ? shortened(target.user, maximumNameCodePoints) : target.uid !== undefined ? `user ${target.uid}` : "this user"
 }
 
 async function loginctl(args: string[], effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<Answer> {
@@ -53,10 +67,10 @@ const sentence = (text: string) => text.trim().replace(/\.+$/u, "")
 // loginctl exits 0 on success and non-zero on any failure; only exit 0 carries
 // an answer. execFile reports a program it could not find as spawn ... ENOENT.
 function failure(answer: Answer): string {
-  if ("error" in answer) return sentence(answer.error instanceof Error ? answer.error.message : String(answer.error))
+  if ("error" in answer) return shortened(sentence(answer.error instanceof Error ? answer.error.message : String(answer.error)), maximumDetailCodePoints)
   const stderr = answer.result.stderr?.trim() ?? ""
   if (/\bENOENT\b/u.test(stderr)) return "loginctl was not found"
-  return sentence(stderr) || `loginctl exited with code ${answer.result.code}`
+  return shortened(sentence(stderr), maximumDetailCodePoints) || `loginctl exited with code ${answer.result.code}`
 }
 
 // previous: the record an earlier Domovoi install saved, so a reinstall keeps

@@ -165,6 +165,11 @@ install and removal do the same and return the outcome as `linger`. When lingeri
 turned on, the install also returns the CLI's stderr text as `lingerWarning`, and Desktop shows it
 under the install result (ruling Q307). Desktop does not show the removal's outcome yet.
 
+Desktop refuses service text over 4,096 UTF-16 units. Before any lingering line is composed,
+`loginctl`'s diagnostic is cut to 1,000 code points and the user name to 128, each followed by
+`... (shortened)` when cut. The CLI and Desktop print the same bounded line, and the logout limit
+and the `loginctl enable-linger` advice always fit (review of #698, round 4).
+
 `loginctl` is run by its bare name and found through `PATH`, as `systemctl` is: `PATH` is trusted
 for the Linux service commands. Every call passes the installing user's numeric uid, taken from
 the OS, never from `service.json`.

@@ -103,6 +103,26 @@ describe("installDaemonService", () => {
       .not.toHaveProperty("lingerWarning")
   })
 
+  // Review of #698 round 4 (P2): the app refuses service text over 4,096
+  // UTF-16 units. The warning stays inside that limit whatever loginctl says
+  // and whatever the user is called, characters outside the BMP included, and
+  // the logout limit and the advice are always in it.
+  it("keeps the lingering warning inside the app's text limit", async () => {
+    const advice = "starts it again at the next login. To keep it running, run loginctl enable-linger; domovoid service remove will then leave lingering on."
+    for (const [user, diagnostic] of [["dl", "x".repeat(4_600)], ["\u{1F600}".repeat(300), "\u{1F600}".repeat(2_300)]] as const) {
+      const refused = vi.fn(async (command: string, args: string[]) => command === "loginctl" && args[0] === "show-user"
+        ? { code: 1, stdout: "", stderr: diagnostic } : { code: 0, stdout: "" })
+      const installed = await installDaemonService({ runtime }, dependencies({ platform: "linux", home: "/home/dl", uid: 1000, user, capture: refused }))
+      if (installed.kind !== "file" || installed.lingerWarning === undefined) throw new Error("expected a lingering warning")
+      expect(installed.lingerWarning.length).toBeLessThanOrEqual(4_096)
+      expect(installed.lingerWarning).toContain("... (shortened). The service is installed, but systemd stops the daemon when ")
+      expect(installed.lingerWarning.endsWith(advice)).toBe(true)
+      if (installed.linger?.kind !== "failed") throw new Error("expected a failed lingering outcome")
+      expect(installed.linger.detail.endsWith("... (shortened)")).toBe(true)
+      expect(installed.lingerWarning).toContain(`: ${installed.linger.detail}. The service is installed`)
+    }
+  })
+
   it("refuses a runtime that is not there before claiming the profile or writing a file", async () => {
     for (const [part, missing] of [["node", runtime.nodePath], ["daemon", runtime.daemonEntryPath]] as const) {
       const effects = dependencies({ runtimeFile: vi.fn(async (path: string) => path === missing ? "missing" as const : "file" as const) })
