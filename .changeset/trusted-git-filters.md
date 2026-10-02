@@ -42,7 +42,11 @@ of it taken once as the operation starts, with includes and conditional includes
 worktree reads them, written to a private temporary directory, so a file edited during the
 operation changes nothing there. The snapshot copies Git's config bytes exactly, checked byte for
 byte when it is read back; a key or value that is not valid UTF-8 refuses the operation, naming the
-key, or saying a config key when the key itself is not valid. The snapshot reaches Git through `GIT_CONFIG_GLOBAL`, which Git
+key, or saying a config key when the key itself is not valid. A config value on more than one line,
+in any scope, or a filter or Git LFS key holding "=", refuses the same way, in the trust step's
+filter read too: Git LFS reads Git's config one line at a time and splits each line at its first
+"=", so such an entry would give it settings no check sees. A harmless multiline value refuses
+too. The snapshot reaches Git through `GIT_CONFIG_GLOBAL`, which Git
 added in 2.32, so these operations need Git 2.32 or newer: on an older Git, or when its version
 cannot be read, they refuse with a message that names the version found, with no fallback. Every filter driver's clean, smudge, process and required the
 worktree sets, in any scope, empty overrides included, is in it at the worktree's value, and a

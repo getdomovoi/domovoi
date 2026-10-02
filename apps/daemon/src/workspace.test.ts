@@ -3037,7 +3037,6 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
   // refusal's message reaches clients, so it shows names as the inventory does.
   it("shows a filter's name and key redacted in a refusal's message", async () => {
     const { repositoryPath, worktrees, git } = await filteredRepository("domovoi-create-redact-")
-    await git("config", "filter.api_token=sekret-value.smudge", "cat")
     await git("config", "filter.Bearer sekret-token.clean", "cat")
 
     const message = await new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, "session-redact")
@@ -3048,6 +3047,22 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     const service = new GitWorkspaceService(worktrees)
     const checkpoint = await service.checkpoint(repositoryPath, "redact").then(() => "", (error: Error) => error.message)
     expect(checkpoint).toContain("Checkpoint, restore, revert")
+    expect(checkpoint).not.toContain("sekret")
+  })
+
+  // A filter name holding "=" is framed differently by Git LFS, so it refuses
+  // as unreadable config (ruling Q321); that message shows the key redacted.
+  it("shows a filter key holding \"=\" redacted when it refuses the config", async () => {
+    const { repositoryPath, worktrees, git } = await filteredRepository("domovoi-create-redact-equals-")
+    await git("config", "filter.api_token=sekret-value.smudge", "cat")
+
+    const service = new GitWorkspaceService(worktrees)
+    const message = await service.createSessionWorkspace(repositoryPath, "session-redact").then(() => "", (error: Error) => error.message)
+    expect(message).toContain("[REDACTED]")
+    expect(message).toContain("holds \"=\"")
+    expect(message).not.toContain("sekret")
+    const checkpoint = await service.checkpoint(repositoryPath, "redact").then(() => "", (error: Error) => error.message)
+    expect(checkpoint).toContain("holds \"=\"")
     expect(checkpoint).not.toContain("sekret")
   })
 

@@ -216,6 +216,7 @@ export async function readGitFilterSettings(
     const file = origin.startsWith("file:") ? resolve(directory, origin.slice("file:".length)) : undefined
     const key = newline === -1 ? record : record.slice(0, newline)
     const value = newline === -1 ? undefined : record.slice(newline + 1)
+    refuseAmbiguousConfigRecord(key, value, `${scope} Git config`)
     refuseFilterSettingGitStopsOn(scope, key, value)
     if (value !== undefined) settings.push({ scope, key, value, origin: file })
     // A driver's `required` written alone is boolean true. Another key with
@@ -247,6 +248,28 @@ export function refuseFilterSettingGitStopsOn(scope: string, key: string, value:
   }
   if (value !== undefined && /^filter\..+\.required$/u.test(key) && gitRequiredState(value) === undefined) {
     throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${scope} Git config is not a boolean` })
+  }
+}
+
+// Refuses a config entry whose record Git LFS would frame differently from
+// Git (ruling Q321). Git LFS v3.8.0 reads `git config --includes -l`, splits
+// it at every newline and each line at its first "=" (git/config.go
+// ParseConfigLines, config/git_fetcher.go readGitConfig), so a value or key
+// on more than one line becomes settings Git never had, which no check here
+// sees, and a filter or Git LFS key holding "=" (only a subsection can)
+// becomes a shorter key. Every view that feeds isolation runs this on every
+// entry it reads: the gate's filter read, the snapshot's source read (which
+// the carried settings come from) and the check after the pins. A harmless
+// multiline value refuses too.
+export function refuseAmbiguousConfigRecord(key: string, value: string | undefined, where: string): void {
+  if (/[\r\n]/u.test(key)) {
+    throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `a config key in ${where} spans more than one line, which Git LFS reads as other settings` })
+  }
+  if (value !== undefined && /[\r\n]/u.test(value)) {
+    throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${where} has a value on more than one line, which Git LFS reads as other settings` })
+  }
+  if (key.includes("=") && filterSettingKey(key)) {
+    throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${where} holds "=", which Git LFS reads as a shorter key` })
   }
 }
 

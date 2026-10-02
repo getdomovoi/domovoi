@@ -13,7 +13,8 @@ import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./gi
 import { isStandardLfsFilterLine } from "./git-read-config.js"
 import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
 import {
-  classify, filterKeyPattern, filterSettingKey, gitRequiredState, lfsPolicyGroup, refuseFilterSettingGitStopsOn, refuseUnmodelledLfsTransferKey,
+  classify, filterKeyPattern, filterSettingKey, gitRequiredState, lfsPolicyGroup, refuseAmbiguousConfigRecord, refuseFilterSettingGitStopsOn,
+  refuseUnmodelledLfsTransferKey,
   RepositoryGitConfigUnreadableError,
 } from "./repository-git-filters.js"
 import { trackRestoreCommand } from "./workspace-restore-lease.js"
@@ -574,6 +575,7 @@ async function refuseUnpinnedFilters(environment: NodeJS.ProcessEnv, worktree: s
     if (record === "") continue
     const newline = record.indexOf("\n")
     const key = newline === -1 ? record : record.slice(0, newline)
+    refuseAmbiguousConfigRecord(key, newline === -1 ? undefined : record.slice(newline + 1), "the isolated Git directory's config")
     refuseUnmodelledLfsTransferKey(key, "the isolated Git directory's config")
     if (!policyKey(key)) continue
     if (newline === -1 && filterPolicyKey.test(key) && !key.endsWith(".required")) {
@@ -633,6 +635,7 @@ async function worktreeConfig(worktree: string, signal?: AbortSignal): Promise<C
     if (newline !== -1 && value === undefined) {
       throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownFilterKey(key)} in ${scope} Git config has a value that is not valid UTF-8, which Domovoi does not copy` })
     }
+    refuseAmbiguousConfigRecord(key, value, `${scope} Git config`)
     if (filterSettingKey(key)) refuseFilterSettingGitStopsOn(scope, key, value)
     entries.push({ scope, key, value })
   }

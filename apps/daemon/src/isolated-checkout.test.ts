@@ -717,6 +717,39 @@ describe("openIsolatedGit filter configuration", () => {
     }
   })
 
+  // Git LFS reads `git config --includes -l`, splits it at every newline and
+  // each line at its first "=" (git/config.go, config/git_fetcher.go, v3.8.0),
+  // so a value on more than one line becomes settings Git never had. Any
+  // entry whose value or key holds a line break, and a filter or Git LFS key
+  // holding "=", refuses before isolation opens, naming the key (ruling Q321).
+  it.each([
+    ["a carried local setting", "", "[core]\n\tattributesFile = \"domovoi-inert-label\\nprobe.extra=domovoi-inert-second-label\"\n", "core.attributesfile"],
+    ["an inherited global setting", "[probe]\n\tvalue = \"domovoi-inert-label\\nprobe.extra=domovoi-inert-second-label\"\n", "", "probe.value"],
+  ])("refuses a multiline value in %s", async (_label, global, local, key) => {
+    const { worktree, restore } = await sessionWorktree(() => global, local)
+    try {
+      await expect(openIsolatedGit({ worktree, worktreeIndex: true }))
+        .rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", message: expect.stringContaining(`${key} in`) })
+    } finally {
+      restore()
+    }
+  })
+
+  it.each([
+    ["a multiline filter command", "[filter \"agent\"]\n\tclean = \"domovoi-inert-label\\nprobe.extra=domovoi-inert-second-label\"\n", "filter.agent.clean"],
+    ["an \"=\" in a Git LFS key", "[lfs \"extension.test.clean=probe\"]\n\tlabel = domovoi-inert-label\n", "lfs.extension.test.clean=probe.label"],
+  ])("refuses %s in the gate's read and before opening", async (_label, local, key) => {
+    const { worktree, restore } = await sessionWorktree(() => "", local)
+    try {
+      await expect(readGitFilterSettings(worktree))
+        .rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", message: expect.stringContaining(key) })
+      await expect(openIsolatedGit({ worktree, worktreeIndex: true }))
+        .rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", message: expect.stringContaining(key) })
+    } finally {
+      restore()
+    }
+  })
+
   it("lists a custom transfer path written in mixed case as Git LFS reads it", async () => {
     const { worktree, restore } = await sessionWorktree(() => lfsLines, "[lfs \"CustomTransfer.test\"]\n\tpath = domovoi-inert-label\n")
     try {
