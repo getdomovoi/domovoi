@@ -104,8 +104,10 @@ function openCodeSession(workspacePath: string, otherPath?: string, thirdPath?: 
 }
 
 // `third`: "send" starts the third session's turn with the others; "idle"
-// leaves it unloaded until the test sends to it.
-async function start({ second = false, third }: { second?: boolean; third?: "send" | "idle" } = {}) {
+// leaves it unloaded until the test sends to it. `noticeWaitMs` shortens the
+// adapter's bound on a pending disconnect. Each server the factory starts is
+// its own handle; the first one's stop waits for `confirmOldStop`.
+async function start({ second = false, third, noticeWaitMs }: { second?: boolean; third?: "send" | "idle"; noticeWaitMs?: number } = {}) {
   const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-stop-order-"))
   scratch.push(workspacePath)
   const otherPath = second ? await mkdtemp(join(tmpdir(), "domovoi-stop-order-other-")) : undefined
@@ -176,8 +178,17 @@ async function start({ second = false, third }: { second?: boolean; third?: "sen
       })),
     },
   } satisfies OpenCodeClient
-  const server = { close: vi.fn(), stop: vi.fn(async () => true) }
-  const adapter = new OpenCodeSdkAdapter(async () => ({ client, server }), () => turnId)
+  let confirmOldStop: (stopped: boolean) => void = () => {}
+  const oldServer = {
+    close: vi.fn(),
+    stop: vi.fn(() => (noticeWaitMs === undefined
+      ? Promise.resolve(true)
+      : new Promise<boolean>((resolve) => { confirmOldStop = resolve }))),
+  }
+  const replacementServer = { close: vi.fn(), stop: vi.fn(async () => true) }
+  const servers = [oldServer, replacementServer]
+  const factory = vi.fn(async () => ({ client, server: servers.shift() ?? replacementServer }))
+  const adapter = new OpenCodeSdkAdapter(factory, () => turnId, undefined, noticeWaitMs === undefined ? {} : { noticeWaitMs })
   const append = vi.fn((input: Parameters<AuditLog["append"]>[0]) => ({
     id: `audit-${append.mock.calls.length}`,
     occurredAt: "2026-10-01T12:00:00.000Z",
@@ -241,6 +252,7 @@ async function start({ second = false, third }: { second?: boolean; third?: "sen
   return {
     client, stream, otherStream, thirdStream, sendThird, sessionById,
     rpc, snapshot, session, append, usageLedger, answer, settle,
+    factory, oldServer, replacementServer, confirmOldStop: (stopped: boolean) => confirmOldStop(stopped),
     pendingAborts: (id: string) => waiting.get(id)?.length ?? 0,
     refuseReply: () => replyPost!.refuse(),
   }
@@ -411,5 +423,38 @@ describe("a turn ended by overlapping thread stops, through the daemon", () => {
     expect(sent.error?.message).toBeUndefined()
     expect(client.session.get.mock.calls.length).toBeGreaterThan(resumes)
     await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({ path: { id: otherThreadId } })))
+  })
+
+  // Security review round 18 of #687 (ruling Q314): when the bound runs out,
+  // the daemon hears one disconnect. The forced server stop sends none of
+  // its own, so a recovery turn started on the replacement server is not
+  // ended by a second one.
+  it("keeps a recovery turn on the replacement server after the bound runs out", async () => {
+    const started = await start({ second: true, noticeWaitMs: 300 })
+    const { client, stream, otherStream, append, rpc, sessionById, answer, settle, pendingAborts, factory, oldServer, replacementServer, confirmOldStop } = started
+    v2(stream, threadId)
+    await waitForDaemon(() => expect(pendingAborts(threadId)).toBe(1))
+    otherStream.close()
+    await answer(otherThreadId)
+    // The bound runs out: the old server is being stopped, the disconnect is out.
+    await waitForDaemon(() => expect(append).toHaveBeenCalledWith(expect.objectContaining({ action: "provider.disconnected" })))
+    expect(oldServer.stop).toHaveBeenCalled()
+    await answer(threadId)
+    // Recovery: the send waits for the old server's stop, then starts the
+    // replacement, resumes B and sends its new turn.
+    const sent = rpc("session.send", { sessionId: otherSessionId, prompt: "audit again", client: "desktop" })
+    await settle()
+    expect(factory).toHaveBeenCalledTimes(1)
+    confirmOldStop(true)
+    expect((await sent).error?.message).toBeUndefined()
+    expect(factory).toHaveBeenCalledTimes(2)
+    await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({ path: { id: otherThreadId } })))
+    await settle()
+    await settle()
+    expect(append.mock.calls.filter(([input]) => input.action === "provider.disconnected")).toHaveLength(1)
+    const recovered = await sessionById(otherSessionId)
+    expect(recovered.state).not.toBe("failed")
+    expect(recovered.activeTurnId).toBeDefined()
+    expect(replacementServer.stop).not.toHaveBeenCalled()
   })
 })

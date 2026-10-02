@@ -204,6 +204,9 @@ export type OpenCodeAdapterOptions = {
   // The platform the server runs on, whose rule matching the checks follow.
   // The daemon's own; tests set it.
   platform?: NodeJS.Platform
+  // How long a disconnect notice waits for turns being stopped
+  // (#noticeProviderWide); 30 seconds unless a test sets it.
+  noticeWaitMs?: number
 }
 
 // The agents a session can reach from the primary agent it runs (security
@@ -631,6 +634,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #nextApprovalId = 0
   #nextGeneration = 0
   readonly #platform: NodeJS.Platform
+  readonly #noticeWaitMs: number
 
   constructor(
     factory: OpenCodeFactory = defaultOpenCodeFactory,
@@ -642,6 +646,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#id = id
     this.#identity = identity
     this.#platform = options.platform ?? process.platform
+    this.#noticeWaitMs = options.noticeWaitMs ?? providerNoticeWaitMs
   }
 
   async connect(): Promise<void> {
@@ -1148,9 +1153,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     for (const session of sessions) this.#refusePendingFor(session.threadId)
     const settles = sessions.map((session) => this.#holdThread(session))
     let outcome: StopOutcome | undefined
+    const runtime = this.#runtime
     void Promise.all(sessions.map((session) => this.#abortThread(session))).then(async (confirmed) => {
       if (!confirmed.every(Boolean)) {
-        await this.#stopServer(this.#unconfirmedStopReason())
+        await this.#stopServerOf(runtime, this.#unconfirmedStopReason())
         return
       }
       outcome = { rank: 2, error: reason }
@@ -1286,11 +1292,11 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       // The drops run before the first await in #stopServer, so every held
       // turn has ended when the notice goes out below.
       void this.#stopServer(
-        `Domovoi stopped the ${name} server because sessions on it kept being stopped for ${providerNoticeWaitMs / 1000} seconds while it waited to report a lost connection`,
+        `Domovoi stopped the ${name} server because sessions on it kept being stopped for ${Math.round(this.#noticeWaitMs / 1000)} seconds while it waited to report a lost connection`,
         true,
       )
       send()
-    }, providerNoticeWaitMs)
+    }, this.#noticeWaitMs)
     const attempt = () => this.#afterHeld([...this.#sessions.values()], () => {
       if (out || expired) return
       const stillHeld = [...this.#sessions.values()].some((session) => session.threadStop && session.threadStop.owners > 0)
@@ -2341,6 +2347,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#refusePendingFor(session.threadId)
     const settle = this.#holdThread(session)
     const outcome: StopOutcome = { rank: 0, error: approvalAnsweredElsewhere.message, failure: approvalAnsweredElsewhere }
+    const runtime = this.#runtime
     void this.#abortThread(session, sessionId).then(async (confirmed) => {
       // The turn ends with the best failure, and the thread is unloaded, once
       // every stop of it has settled: now, or when the last other one does
@@ -2364,10 +2371,19 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       // rule anywhere else; what Kilo writes to its global configuration is
       // beyond a restart (see the daemon README).
       const name = this.#identity.providerName
-      await this.#stopServer(confirmed
+      await this.#stopServerOf(runtime, confirmed
         ? `Domovoi restarted the ${name} server because an approval was answered outside Domovoi, so no approval it kept stays in place`
         : this.#unconfirmedStopReason())
     }).finally(() => settle(outcome))
+  }
+
+  // Stops the server a stop began on, unless that server was already stopped
+  // or replaced while the stop waited: a late stop of an old server never
+  // stops its replacement or sends another disconnect (security review round
+  // 18 of #687).
+  async #stopServerOf(runtime: Awaited<ReturnType<OpenCodeFactory>> | undefined, reason: string): Promise<void> {
+    if (runtime === undefined || this.#runtime !== runtime) return
+    await this.#stopServer(reason)
   }
 
   // A v2 permission request is answered through an interface Domovoi does not
@@ -2391,9 +2407,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       rank: 1,
       error: `${name} asked for an approval through a permission interface Domovoi does not answer, so Domovoi stopped the turn`,
     }
+    const runtime = this.#runtime
     void this.#abortThread(session, sessionId).then(async (confirmed) => {
       if (!confirmed) {
-        await this.#stopServer(this.#unconfirmedStopReason())
+        await this.#stopServerOf(runtime, this.#unconfirmedStopReason())
         return
       }
       settle(outcome)
@@ -2469,6 +2486,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // Retired before anything is awaited, so no other server can start
     // while this one is being stopped.
     const stopped = runtime ? await this.#retire(runtime.server) : true
+    // A forced stop belongs to a disconnect whose bound ran out, and that
+    // disconnect is the daemon's one notice (security review round 18 of
+    // #687, ruling Q314): a second, after the retirement, could end a turn
+    // already started on the replacement server. An unconfirmed retirement
+    // is still reported where it matters: connect() refuses to start another
+    // server and says why.
+    if (forced) return
     const name = this.#identity.providerName
     // After the turns of sessions a thread-wide stop still holds have ended
     // (security review rounds 14 and 15 of #687); the retirement above does

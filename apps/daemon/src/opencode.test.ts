@@ -3185,6 +3185,10 @@ describe("reconciling a turn with the server's own state", () => {
     expect(ends.length).toBeGreaterThan(0)
     for (const index of ends) expect(index).toBeLessThan(out[0]!)
     expect(server.stop).toHaveBeenCalled()
+    // Round 18 (ruling Q314): the forced server stop sends no disconnect of
+    // its own, even once its retirement bound has passed.
+    await tick(25_000)
+    expect(events.filter((event) => event.type === "provider-disconnected")).toHaveLength(1)
     await adapter.close()
   })
 

@@ -659,8 +659,12 @@ code or settings the repository brings:
   disconnect was raised, across those rechecks. When the 30 seconds run out, the daemon stops the
   server and removes every session on it for good: each turn still being stopped ends first, with
   the failure its stops recorded or the server stop's reason, and then the disconnect goes out,
-  once. No stop that begins after that extends it, and, as for any server stop, no other server
-  starts until this one is confirmed stopped. A server stop itself is not delayed by this.
+  once. That is the only disconnect the daemon gets for it: the server stop it causes sends none
+  of its own, so a turn started on the replacement server is not ended by a second one. No stop
+  that begins after that extends it, and, as for any server stop, no other server starts until
+  this one is confirmed stopped; if that cannot be confirmed, the next message is refused and the
+  refusal says why. A stop of a thread that began on a server already stopped or replaced does not
+  stop the current server. A server stop itself is not delayed by this.
   Removing a thread for good (closing, stopping it, the provider deleting it) ends its turn with
   what the stops recorded and still sends every notice they held. A prompt or steer still
   waiting when its session is unloaded or the daemon's adapter closes is refused and not sent;
