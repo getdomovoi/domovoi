@@ -597,12 +597,49 @@ describe("updateDaemonService with a WSL guest service (ruled B)", () => {
     const old = installedWslTask(configuration.wsl!, registrationId, configurationPath)
     const lastRegistration = vi.mocked(effects.capture).mock.calls.filter(([, args]) => script(args).includes("RegisterTaskDefinition")).at(-1)![1]
     expect(lastRegistration).toEqual(old.register.args)
+    // The new task never ran, so no new guest loop can have started: the
+    // restore stops nothing more than the swap did.
+    expect(effects.stopSupervisor).toHaveBeenCalledOnce()
   })
 
   it("puts the old task back when the new guest daemon never reports ready", async () => {
     const effects = fake("linux", "/home/dl", { crashingStarts: 1 }, wslConfiguration())
     await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(restored)
     expect(effects.owner).toMatchObject({ state: "ready" })
+  })
+
+  // Ruling Q307 (review of #698, P1): once the new task was started, its guest
+  // loop and daemon hold the supervisor lease, so the old task's loop could not
+  // start. The restore disables the new task and stops its loop, proved dead
+  // with its daemon, before deleting it and starting the old one. Not retired:
+  // the old task runs the same registration.
+  it("stops the new guest loop, proved, before putting the old task back", async () => {
+    const effects = fake("linux", "/home/dl", { crashingStarts: 1 }, wslConfiguration())
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(restored)
+    const restoring = effects.order.slice(effects.order.indexOf("start task") + 1)
+    expect(restoring).toEqual([
+      "disable task", "stop guest supervisor",
+      "stop task", "delete task",
+      `write ${configurationPath}`, "register task", "start task",
+      `remove ${intentPath}`,
+    ])
+    expect(vi.mocked(effects.stopSupervisor!).mock.calls.map(([, , options]) => options)).toEqual([{ retire: false }, { retire: false }])
+  })
+
+  it("puts nothing back, and says both registrations need recovery, when the new guest loop cannot be proved stopped", async () => {
+    const effects = fake("linux", "/home/dl", { crashingStarts: 1 }, wslConfiguration())
+    let stops = 0
+    effects.stopSupervisor = vi.fn(async () => {
+      effects.order.push("stop guest supervisor")
+      if (++stops === 2) throw new Error("Supervisor stopped but its guest child is still alive; removal refused")
+    })
+    const failed = updateDaemonService({ runtime }, effects)
+    await expect(failed).rejects.toMatchObject({ outcome: "swap-failed-unstopped" })
+    await expect(failed).rejects.toThrow(
+      "Domovoi could not start the service on the new runtime: the service did not report ready within 1 second. The new service's guest supervisor could not be proved stopped: Supervisor stopped but its guest child is still alive; removal refused. Nothing was put back, and it may still be running. Both the previous and the new service registrations need manual recovery: check domovoid service status and Task Scheduler before installing again.",
+    )
+    expect(effects.order.slice(effects.order.indexOf("start task") + 1)).toEqual(["disable task", "stop guest supervisor"])
+    expect(effects.files.get(configurationPath)).not.toBe(serializeServiceConfiguration(wslConfiguration()))
   })
 
   // Review of 77c28291 (P2): an update that stopped between deleting the old

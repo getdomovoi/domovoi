@@ -12,7 +12,7 @@ import { createServiceConfiguration, parseServiceConfiguration, serializeService
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceCommand, ServiceCommandDependencies, ServiceEffects } from "./install.js"
 import { refuseTaskSchedulerExpansion } from "./install.js"
-import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, type InFlight, type ServiceSwap } from "./update-outcome.js"
+import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, ReplacementNotStoppedError, type InFlight, type ServiceSwap } from "./update-outcome.js"
 import { hasDomovoiServiceShape, isRecordedServiceProgram } from "./restore-target.js"
 import { serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
 import { installedWslTask, type WslInstallation } from "./wsl-registration.js"
@@ -260,9 +260,13 @@ export function prepareWslUpdate(
       if (result.code !== 0) throw new Error(result.stderr?.trim() || `Task Scheduler command exited with code ${result.code}`)
       return result.stdout.trim()
     }
+    // Set once the new task is asked to run, whatever the answer: from then on
+    // a new guest loop and daemon may hold the supervisor lease.
+    let nextStarted = false
     const startIn = (deadline: OperationDeadline) => async (task: typeof old) => {
       await instances.note(deadline)
       if (await confirmedIn(deadline)(task.register) !== "domovoi-task:created") throw new Error("WSL task registration was not confirmed")
+      if (task === next) nextStarted = true
       if (!/^domovoi-task:[1-4]$/.test(await confirmedIn(deadline)(task.start))) throw new Error("WSL task start was not confirmed")
       await instances.waitUntilReady(registrationId, waits.readinessWaitMs, deadline)
     }
@@ -323,6 +327,21 @@ export function prepareWslUpdate(
         return { name: next.name, configurationPath: path }
       },
       restore: async (deadline) => {
+        // Ruling Q307 (review of #698, P1): a new task that was started may run
+        // a guest loop and daemon that hold the supervisor lease, which the old
+        // task's loop then cannot take. So the new task is disabled and its
+        // loop stopped, with the proof removal uses, before the task is deleted.
+        // Not retired: the old task runs the same registration, and the new task
+        // is disabled meanwhile. Without that proof nothing is deleted, written
+        // or started, and both registrations are left for manual recovery.
+        if (nextStarted) {
+          try {
+            if (!/^domovoi-task:(missing|[1-4])$/.test(await confirmedIn(deadline)(next.disable))) throw new Error("WSL task disable was not confirmed")
+            await withinServiceDeadline(deadline, () => stopSupervisor(path, deadline, { retire: false }))
+          } catch (cause) {
+            throw new ReplacementNotStoppedError(cause)
+          }
+        }
         await removeRegisteredTask(candidates, effects, deadline)
         await writeIn(deadline)(path, serializeServiceConfiguration(restored))
         await startIn(deadline)(old)

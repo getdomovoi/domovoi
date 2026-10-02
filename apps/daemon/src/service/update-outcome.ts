@@ -27,7 +27,20 @@ export type DaemonServiceUpdateOutcome =
   | "runtime-copied"
   | "swap-failed-restored"
   | "swap-and-restore-failed"
+  // Ruling Q307 (2026-10-01): the restore found a new guest loop it could not
+  // prove stopped, so it put nothing back and started nothing old. Text
+  // proposed 2026-10-01, not yet ruled.
+  | "swap-failed-unstopped"
   | "profile-taken-restored"
+
+// A restore's refusal to put the previous service back while the new one may
+// still run (wsl-install.ts).
+export class ReplacementNotStoppedError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause })
+    this.name = "ReplacementNotStoppedError"
+  }
+}
 
 function detail(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error)
@@ -48,6 +61,8 @@ function updateMessage(outcome: DaemonServiceUpdateOutcome, cause: unknown, rest
       return `Domovoi could not start the service on the new runtime: ${detail(cause)}. The previous service was put back and is running.`
     case "swap-and-restore-failed":
       return `Domovoi could not start the service on the new runtime: ${detail(cause)}. Putting the previous service back also failed: ${detail(restoreCause)}. The service is not running. Check it with \`domovoid service status\`, then install it again.`
+    case "swap-failed-unstopped":
+      return `Domovoi could not start the service on the new runtime: ${detail(cause)}. The new service's guest supervisor could not be proved stopped: ${detail(restoreCause)}. Nothing was put back, and it may still be running. Both the previous and the new service registrations need manual recovery: check domovoid service status and Task Scheduler before installing again.`
     case "profile-taken-restored":
       return "Another Domovoi daemon took this profile while the service was stopped for the update. The previous service was put back and is running."
   }
@@ -201,6 +216,7 @@ export async function runServiceUpdate<T>(
         try {
           await steps.restore(restoreDeadline)
         } catch (restoreCause) {
+          if (restoreCause instanceof ReplacementNotStoppedError) throw new DaemonServiceUpdateError("swap-failed-unstopped", briefly(cause), restoreCause)
           throw new DaemonServiceUpdateError("swap-and-restore-failed", briefly(cause), briefly(restoreCause))
         } finally {
           restoreDeadline.clear()
