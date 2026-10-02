@@ -10,9 +10,9 @@ ran. Review and trust opens the same trust sheet as the Tools tab, over the file
 now, where this client can grant trust; elsewhere the card says trust is granted from desktop or
 web only. After a grant for the refused repository the card says it is trusted on the machine and
 that nothing has started, and Start the session again repeats the refused request only when
-pressed (a fork with a new request id). A refusal for a repository that is already trusted means
-the grant did not acknowledge its Git filters, or acknowledged others: the card says the filters
-stay held back until they are reviewed, and offers Review and trust again. Any other failure
+pressed (a fork with a new request id). A refusal for a repository that is already trusted holds
+its Git filters back under the grant read now, for a reason the refusal does not give: the card
+says the filters are held back until they are reviewed again, and offers Review and trust again. Any other failure
 stays where it was shown before. Codex's own refusal of a worktree's .codex config has no code and
 still shows as the daemon's sentence. A start keeps the machine, project and session it was made
 in: a refusal that arrives after the shell moved to another one is dropped, the card names the

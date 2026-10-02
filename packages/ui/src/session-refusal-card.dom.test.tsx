@@ -147,14 +147,15 @@ describe("session refused for an untrusted git filter", () => {
     expect(within(card).getByRole("button", { name: "Open Tools" })).toBeTruthy()
   })
 
-  // A trusted refusal: the grant covers the configuration, but its client did
-  // not show the git filters, or the ones shown are not the ones read now
-  // (filters-not-reviewed, filters-changed). Trusting again from a client that
-  // shows them settles it.
-  it("says the filters stay held back until they are reviewed when the repository is trusted", () => {
+  // A trusted refusal: the filters are held back under the trust read now
+  // (the daemon's filters-not-reviewed or filters-changed, or a grant that
+  // changed while the start ran). The refusal does not say which, so the
+  // sentence names no cause. Trusting again from a client that shows the
+  // filters settles it.
+  it("says the filters are held back until they are reviewed again when the repository is trusted", () => {
     const { card } = show({ onTrust: vi.fn<Trust>(), refusal: refusal({ trust: { state: "trusted", ...grant } }) })
 
-    expect(within(card).getByText("Checking out acme-api would run the sops filter driver. acme-api is trusted on mac-mini-m4, but its Git filters stay held back until they are reviewed: they were not shown when it was trusted, or they changed since.")).toBeTruthy()
+    expect(within(card).getByText("Checking out acme-api would run the sops filter driver. acme-api is trusted on mac-mini-m4, but its Git filters are held back until they are reviewed again.")).toBeTruthy()
     expect(within(card).getByRole("button", { name: "Review and trust again" })).toBeTruthy()
     expect(within(card).queryByRole("button", { name: "Start the session again" })).toBeNull()
   })

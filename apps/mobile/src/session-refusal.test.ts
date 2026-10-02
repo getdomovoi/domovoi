@@ -41,13 +41,14 @@ describe("phoneRefusalFrom", () => {
     expect(view?.omitted).toBe(3)
   })
 
-  // A trusted refusal: the grant did not acknowledge the git filters, or
-  // acknowledged others, so trusting again from desktop or web lifts it.
+  // A trusted refusal: the filters are held back under the trust read now.
+  // The refusal does not say why, so the sentence names no cause; trusting
+  // again from desktop or web lifts it.
   it("points to trust from desktop or web when the repository is trusted and its filters are held back", () => {
     const trusted: RepositoryTrustState = { state: "trusted", trustedDigest: digest, trustedAt: "2026-09-30T10:41:00Z", trustedBy: { client: "desktop" } }
     const afterTrust = refused({ trust: trusted })
     expect(afterTrust?.awaitsTrust).toBe(true)
-    expect(afterTrust?.sentence).toBe("Checking out acme-api would run the sops filter driver. acme-api is trusted on studio, but its Git filters stay held back until they are reviewed: they were not shown when it was trusted, or they changed since.")
+    expect(afterTrust?.sentence).toBe("Checking out acme-api would run the sops filter driver. acme-api is trusted on studio, but its Git filters are held back until they are reviewed again.")
   })
 
   it("does not point to trust where trust cannot lift the refusal", () => {

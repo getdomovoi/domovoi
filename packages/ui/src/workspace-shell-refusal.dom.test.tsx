@@ -202,7 +202,7 @@ it("shows the daemon's second refusal when the filters are still held back after
   await settle()
 
   const again = screen.getByRole("region", { name: "Domovoi did not start this session" })
-  expect(within(again).getByText(`Checking out acme-api would run the sops filter driver. acme-api is trusted on ${snapshot.machine.name}, but its Git filters stay held back until they are reviewed: they were not shown when it was trusted, or they changed since.`)).toBeTruthy()
+  expect(within(again).getByText(`Checking out acme-api would run the sops filter driver. acme-api is trusted on ${snapshot.machine.name}, but its Git filters are held back until they are reviewed again.`)).toBeTruthy()
   expect(within(again).queryByRole("button", { name: "Start the session again" })).toBeNull()
   expect(within(again).getByRole("button", { name: "Review and trust again" })).toBeTruthy()
 })

@@ -174,17 +174,18 @@ function driversPhrase(named: readonly string[], omitted: number): { phrase: str
 }
 
 // What the refusal says, by the trust the daemon read with it. Trusted means
-// the grant covers the configuration but not these git filters: its client
-// did not show them, or showed others. The refusal carries no finer reason, so
-// the sentence names both. Once the person trusts from this card, the trust
-// clause no longer holds and the line below says so instead.
+// the filters are held back under the grant read now: its client did not show
+// them, showed others, or trust changed while the start ran. The refusal
+// carries no finer reason, so the sentence names no cause, only what settles
+// it. Once the person trusts from this card, the trust clause no longer holds
+// and the line below says so instead.
 function refusalSentence(refusal: RepositoryGitFilterRefusal, named: readonly string[], repository: string, machine: string, grantedHere: boolean): string {
   const { phrase, many } = driversPhrase(named, refusal.omittedDrivers)
   const lead = `Checking out ${repository} would run ${phrase}`
   if (grantedHere) return `${lead}.`
   const { trust } = refusal
   if (trust.state === "trusted") {
-    return `${lead}. ${repository} is trusted on ${machine}, but its Git filters stay held back until they are reviewed: they were not shown when it was trusted, or they changed since.`
+    return `${lead}. ${repository} is trusted on ${machine}, but its Git filters are held back until they are reviewed again.`
   }
   if (trust.reason === "cannot-trust") return `${lead}, and ${repository} cannot be trusted on ${machine}.`
   return `${lead}, which ${many ? "are" : "is"} not trusted on ${machine}.`

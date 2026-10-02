@@ -50,8 +50,8 @@ export function phoneRefusalFrom(cause: unknown, repository: string, machine: st
     sentence: refusalSentence(refusal, repository, machine),
     names: refusal.drivers.map((driver) => `${driver.name} · ${scopeLabel[driver.scope]}`),
     omitted: refusal.omittedDrivers,
-    // A trusted refusal means the grant did not acknowledge the git filters,
-    // or acknowledged others, so trusting again lifts it too.
+    // A trusted refusal holds the filters back under the grant read now; it
+    // does not say why, and trusting again from desktop or web lifts it too.
     awaitsTrust: trust.state === "trusted" || trust.reason === "not-trusted" || trust.reason === "config-changed",
   }
 }
@@ -63,7 +63,7 @@ function refusalSentence(refusal: RepositoryGitFilterRefusal, repository: string
   const lead = `Checking out ${repository} would run the ${list} ${many ? "filter drivers" : "filter driver"}${refusal.omittedDrivers > 0 ? ` and ${refusal.omittedDrivers} more` : ""}`
   const { trust } = refusal
   if (trust.state === "trusted") {
-    return `${lead}. ${repository} is trusted on ${machine}, but its Git filters stay held back until they are reviewed: they were not shown when it was trusted, or they changed since.`
+    return `${lead}. ${repository} is trusted on ${machine}, but its Git filters are held back until they are reviewed again.`
   }
   if (trust.reason === "cannot-trust") return `${lead}, and ${repository} cannot be trusted on ${machine}.`
   return `${lead}, which ${many ? "are" : "is"} not trusted on ${machine}.`
