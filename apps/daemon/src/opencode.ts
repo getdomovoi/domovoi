@@ -156,6 +156,10 @@ export type OpenCodeFactory = () => Promise<{
 
 }>
 
+// One running server and its client, as a factory starts them. Each start
+// is a new object, so it identifies that server run.
+type EmbeddedRuntime = Awaited<ReturnType<OpenCodeFactory>>
+
 export type OpenCodeAdapterIdentity = {
   providerId: string
   providerName: string
@@ -595,7 +599,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   readonly #factory: OpenCodeFactory
   readonly #id: (after?: string) => string
   readonly #identity: OpenCodeAdapterIdentity
-  #runtime: Awaited<ReturnType<OpenCodeFactory>> | undefined
+  #runtime: EmbeddedRuntime | undefined
   #connection: Promise<void> | undefined
   #closed = false
   #sessions = new Map<string, Session>()
@@ -631,6 +635,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // server starts (Codex review of #691, round 2).
   #retiredServer: OpenCodeServer | undefined
   #retiring: Promise<void> | undefined
+  // Servers whose end the daemon has already heard as a disconnect
+  // (#noticeProviderWide, security review round 19 of #687).
+  readonly #reportedEnds = new WeakSet<EmbeddedRuntime>()
   #nextApprovalId = 0
   #nextGeneration = 0
   readonly #platform: NodeJS.Platform
@@ -1276,26 +1283,37 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // (round 17, ruling Q313): then the server is stopped and every session
   // removed for good, so each held turn ends first, and the notice goes out,
   // once. No stop begun after that extends it.
-  #noticeProviderWide(event: AgentEvent): void {
+  //
+  // One invalidation per server (round 19, ruling Q315): `ends` names the
+  // server a notice reports stopped (#stopServer's own). Such a notice is
+  // skipped if that server's end was already reported, and marks it
+  // reported when it goes out. A notice that goes out because the bound ran
+  // out reports the end of the server it was raised on and of the one it
+  // stopped. A notice about a newer server is unaffected.
+  #noticeProviderWide(event: AgentEvent, ends?: EmbeddedRuntime): void {
+    const raisedOn = this.#runtime
     let out = false
     let expired = false
-    const send = () => {
+    const send = (alsoEnds: Array<EmbeddedRuntime | undefined> = []) => {
       if (out) return
       out = true
       clearTimeout(timer)
-      this.#emit(event)
+      const reported = ends !== undefined && this.#reportedEnds.has(ends)
+      for (const runtime of [ends, ...alsoEnds]) if (runtime) this.#reportedEnds.add(runtime)
+      if (!reported) this.#emit(event)
     }
     const timer = setTimeout(() => {
       if (out || this.#closed) return
       expired = true
       const name = this.#identity.providerName
+      const stopping = this.#runtime
       // The drops run before the first await in #stopServer, so every held
       // turn has ended when the notice goes out below.
       void this.#stopServer(
         `Domovoi stopped the ${name} server because sessions on it kept being stopped for ${Math.round(this.#noticeWaitMs / 1000)} seconds while it waited to report a lost connection`,
         true,
       )
-      send()
+      send([raisedOn, stopping])
     }, this.#noticeWaitMs)
     const attempt = () => this.#afterHeld([...this.#sessions.values()], () => {
       if (out || expired) return
@@ -2381,7 +2399,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // or replaced while the stop waited: a late stop of an old server never
   // stops its replacement or sends another disconnect (security review round
   // 18 of #687).
-  async #stopServerOf(runtime: Awaited<ReturnType<OpenCodeFactory>> | undefined, reason: string): Promise<void> {
+  async #stopServerOf(runtime: EmbeddedRuntime | undefined, reason: string): Promise<void> {
     if (runtime === undefined || this.#runtime !== runtime) return
     await this.#stopServer(reason)
   }
@@ -2493,6 +2511,11 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // is still reported where it matters: connect() refuses to start another
     // server and says why.
     if (forced) return
+    // Nor does any stop whose server's end the daemon already heard, such as
+    // one that was retiring the server when a disconnect's bound ran out
+    // (security review round 19 of #687, ruling Q315): the check is made
+    // when the notice would go out (#noticeProviderWide).
+    if (runtime && this.#reportedEnds.has(runtime)) return
     const name = this.#identity.providerName
     // After the turns of sessions a thread-wide stop still holds have ended
     // (security review rounds 14 and 15 of #687); the retirement above does
@@ -2503,7 +2526,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         ? reason
         : `${reason}. Domovoi could not confirm that the server and the programs it started have ended, `
           + `so it starts no other ${name} server until it can. Each new message checks again`,
-    })
+    }, runtime)
   }
 
   // Stops a server and keeps it until it is confirmed gone. A stop already

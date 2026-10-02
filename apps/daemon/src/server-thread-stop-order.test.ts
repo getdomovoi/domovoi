@@ -107,7 +107,12 @@ function openCodeSession(workspacePath: string, otherPath?: string, thirdPath?: 
 // leaves it unloaded until the test sends to it. `noticeWaitMs` shortens the
 // adapter's bound on a pending disconnect. Each server the factory starts is
 // its own handle; the first one's stop waits for `confirmOldStop`.
-async function start({ second = false, third, noticeWaitMs }: { second?: boolean; third?: "send" | "idle"; noticeWaitMs?: number } = {}) {
+async function start({ second = false, third, noticeWaitMs, manualOldStop = noticeWaitMs !== undefined }: {
+  second?: boolean
+  third?: "send" | "idle"
+  noticeWaitMs?: number
+  manualOldStop?: boolean
+} = {}) {
   const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-stop-order-"))
   scratch.push(workspacePath)
   const otherPath = second ? await mkdtemp(join(tmpdir(), "domovoi-stop-order-other-")) : undefined
@@ -181,7 +186,7 @@ async function start({ second = false, third, noticeWaitMs }: { second?: boolean
   let confirmOldStop: (stopped: boolean) => void = () => {}
   const oldServer = {
     close: vi.fn(),
-    stop: vi.fn(() => (noticeWaitMs === undefined
+    stop: vi.fn(() => (!manualOldStop
       ? Promise.resolve(true)
       : new Promise<boolean>((resolve) => { confirmOldStop = resolve }))),
   }
@@ -456,5 +461,71 @@ describe("a turn ended by overlapping thread stops, through the daemon", () => {
     expect(recovered.state).not.toBe("failed")
     expect(recovered.activeTurnId).toBeDefined()
     expect(replacementServer.stop).not.toHaveBeenCalled()
+  })
+
+  // Security review round 19 of #687 (ruling Q315): one disconnect per
+  // server. A stop that was already retiring the old server when the
+  // 30 second bound ran out sends no second disconnect once that
+  // retirement confirms, so B's recovery turn on the replacement survives.
+  it("sends one disconnect when an earlier stop was retiring the server as the bound ran out", async () => {
+    const started = await start({ second: true, third: "send", manualOldStop: true })
+    const { client, stream, otherStream, thirdStream, append, rpc, sessionById, answer, pendingAborts, factory, oldServer, replacementServer, confirmOldStop } = started
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    try {
+      const tick = (ms: number) => vi.advanceTimersByTimeAsync(ms)
+      const sendTo = async (id: string) => {
+        const sent = await rpc("session.send", { sessionId: id, prompt: "again", client: "desktop" })
+        expect(sent.error?.message).toBeUndefined()
+      }
+      // B's disconnect waits behind A's held turn.
+      v2(stream, threadId)
+      await waitForDaemon(() => expect(pendingAborts(threadId)).toBe(1))
+      otherStream.close()
+      await answer(otherThreadId)
+      await tick(10)
+      // Held turns alternate between C and A, so the disconnect keeps waiting.
+      await tick(8_000)
+      v2(thirdStream, thirdThreadId)
+      await tick(10)
+      await answer(threadId)
+      await tick(8_000)
+      await sendTo(sessionId)
+      v2(stream, threadId)
+      await tick(10)
+      await answer(thirdThreadId)
+      await tick(8_000)
+      await sendTo(thirdSessionId)
+      v2(thirdStream, thirdThreadId)
+      await tick(10)
+      await answer(threadId)
+      expect(append.mock.calls.filter(([input]) => input.action === "provider.disconnected")).toHaveLength(0)
+      // At about 29.4 s an approval answered elsewhere on A starts a stop of
+      // the old server, whose retirement stays pending.
+      await tick(5_300)
+      stream.emit({ type: "permission.replied", properties: { sessionID: threadId, requestID: "per_elsewhere", reply: "once" } })
+      await answer(threadId)
+      await tick(50)
+      expect(oldServer.stop).toHaveBeenCalled()
+      // At 30 s the bound runs out: B's disconnect goes out.
+      await tick(1_000)
+      await waitForDaemon(() => expect(append).toHaveBeenCalledWith(expect.objectContaining({ action: "provider.disconnected" })))
+      // Recovery waits on the old server's retirement, then starts the
+      // replacement and sends B's turn.
+      const sent = rpc("session.send", { sessionId: otherSessionId, prompt: "audit again", client: "desktop" })
+      await tick(50)
+      confirmOldStop(true)
+      await tick(50)
+      expect((await sent).error?.message).toBeUndefined()
+      expect(factory).toHaveBeenCalledTimes(2)
+      await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({ path: { id: otherThreadId } })))
+      await tick(200)
+      expect(append.mock.calls.filter(([input]) => input.action === "provider.disconnected")).toHaveLength(1)
+      const recovered = await sessionById(otherSessionId)
+      expect(recovered.state).not.toBe("failed")
+      expect(recovered.activeTurnId).toBeDefined()
+      expect(replacementServer.stop).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
