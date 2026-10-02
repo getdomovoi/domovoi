@@ -10,7 +10,10 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   checkOutIsolated, gitTeardownTimeoutMs, IndexChangedError, openIsolatedGit, publishUnderIndexLock, runGitProcess, windowsGitStop,
 } from "./isolated-checkout.js"
+import { repositoryFilterGate } from "./repository-git-filter-gate.js"
 import { readGitFilterSettings } from "./repository-git-filters.js"
+import { readRepositoryProviderConfig } from "./repository-provider-config.js"
+import { projectRootRead } from "./repository-trust-apply.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const scratchDirectories: string[] = []
@@ -421,7 +424,7 @@ describe("openIsolatedGit filter configuration", () => {
         else process.env[name] = value
       }
     }
-    return { scratch, worktree, restore }
+    return { scratch, worktree, repository, restore }
   }
 
   const isolatedValue = async (worktree: string, key: string) => {
@@ -494,6 +497,37 @@ describe("openIsolatedGit filter configuration", () => {
         const target = where === "included" ? included : join(scratch, "home", ".gitconfig")
         await writeFile(target, `${await readFile(target, "utf8")}[filter "late"]\n\tclean = domovoi-inert-label\n`)
         await expect(isolated.run(["config", "--get", "filter.late.clean"])).rejects.toMatchObject({ code: 1 })
+      } finally {
+        await isolated.dispose()
+      }
+    } finally {
+      restore()
+    }
+  })
+
+  // Reviewed definitions only confirm the worktree's own values (ruling
+  // Q319): a reviewed command a later empty override turns off stays off.
+  // Through the real gate, with a grant made over the current digests.
+  it("does not let a reviewed command replace a later empty override", async () => {
+    const { worktree, repository, restore } = await sessionWorktree(
+      () => "",
+      "[filter \"agent\"]\n\tclean = domovoi-inert-label\n\tclean =\n",
+    )
+    try {
+      const config = await readRepositoryProviderConfig(repository, projectRootRead)
+      expect(config.gitFilters?.reviewDigest).toBeDefined()
+      const grant = {
+        projectId: "project-reviewed", trustedDigest: config.configDigest, trustedAt: "2026-10-01T00:00:00.000Z",
+        trustedBy: { client: "desktop" as const }, gitFilterReviewDigest: config.gitFilters!.reviewDigest,
+      }
+      const gate = await repositoryFilterGate({
+        worktree, anchor: worktree,
+        trust: () => ({ projectId: "project-reviewed", projectPath: repository, grant: () => grant, generation: () => 0 }),
+      })
+      expect(gate).toMatchObject({ open: true, reviewed: [["filter.agent.clean", "domovoi-inert-label"]] })
+      const isolated = await openIsolatedGit({ worktree, reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true })
+      try {
+        expect((await isolated.run(["config", "--get", "filter.agent.clean"])).replace(/\n$/u, "")).toBe("")
       } finally {
         await isolated.dispose()
       }

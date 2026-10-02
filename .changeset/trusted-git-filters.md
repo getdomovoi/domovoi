@@ -8,9 +8,11 @@ that showed the filters (`repository.trust` `gitFilters.reviewed`, recorded only
 listed every filter; a `reviewDigest` other than the one the daemon's own read gives grants
 nothing) and nothing in it refuses trust, the filter definitions the grant reviewed
 run at session create and fork, a transfer arriving,
-checkpoint, snapshot, restore, file revert, a transfer leaving and evidence. They run as the values
-the digest covers, passed as command-line config, so a change to the repository's config after
-that read changes nothing that runs. A session worktree that reads other filters than the project
+checkpoint, snapshot, restore, file revert, a transfer leaving and evidence. They run only as the
+values the digest covers: a reviewed definition confirms the value the operation reads, never
+supplies one, so a reviewed command changed after that read refuses the operation, naming the key,
+and runs neither the old command nor the new one, and a later empty override turns it off. A
+session worktree that reads other filters than the project
 root (an `includeIf "onbranch:"` include, an edited `config.worktree`), a configuration that
 changed since trust, or trust taken back while the operation runs refuses with
 `repositoryGitFilterErrorCode` and nothing runs. Every existing grant, and any grant from a client

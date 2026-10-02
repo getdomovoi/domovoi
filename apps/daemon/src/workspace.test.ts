@@ -4104,28 +4104,33 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     await expect(lstat(join(worktrees, "session-required"))).rejects.toThrow()
   })
 
-  it("runs the reviewed command when the config changes between the scan and the command", async () => {
-    const { repositoryPath, git, swapped, markers, trust, service } = await trustedRepository("domovoi-trusted-swap-")
+  // A reviewed definition only confirms the value the isolated directory's
+  // config snapshot reads (ruling Q319). A command swapped in after the gate
+  // is neither run nor replaced by the reviewed one: the operation refuses,
+  // naming the key, and nothing runs.
+  it("refuses when the config changes between the scan and the command, running neither command", async () => {
+    const { repositoryPath, worktrees, git, swapped, markers, trust, service } = await trustedRepository("domovoi-trusted-swap-")
     await trust()
     const reviewedSmudge = (await git("config", "--get", "filter.agent.smudge")).stdout.trim()
 
-    const workspace = await service({
+    await expect(service({
       afterNewWorktreeScan: async () => { await git("config", "filter.agent.smudge", `sh ${swapped}`) },
-    }).createSessionWorkspace(repositoryPath, "session-swap")
-    expect(await victimIn(workspace.path)).toBe("BASE\n")
-    expect(await markers()).toEqual(["smudge"])
+    }).createSessionWorkspace(repositoryPath, "session-swap"))
+      .rejects.toThrow("filter.agent.smudge changed after the repository's filters were checked")
+    expect(await markers()).toEqual([])
+    await expect(lstat(join(worktrees, "session-swap"))).rejects.toThrow()
 
     // The reviewed value again, so the digest is the trusted one, then a swap
     // between the checkpoint's gate and the staging it guards.
     await git("config", "filter.agent.smudge", reviewedSmudge)
+    const workspace = await service().createSessionWorkspace(repositoryPath, "session-swap")
+    expect(await markers()).toEqual(["smudge"])
     await writeFile(join(workspace.path, "victim.txt"), "CHANGED\n")
-    const checkpoint = await service({
+    await expect(service({
       afterRepositoryFilterGate: async () => { await git("config", "filter.agent.clean", `sh ${swapped}`) },
-    }).checkpoint(workspace.path, "swap")
+    }).checkpoint(workspace.path, "swap")).rejects.toThrow("filter.agent.clean changed after the repository's filters were checked")
 
-    expect((await run("-C", workspace.path, "show", `${checkpoint.commit}:victim.txt`)).stdout).toBe("changed\n")
-    expect(await markers()).toContain("clean")
-    expect(await markers()).not.toContain("swapped")
+    expect(await markers()).toEqual(["smudge"])
   })
 
   it("refuses a checkpoint after revoke, and leaves the files checked out under trust as they are", async () => {

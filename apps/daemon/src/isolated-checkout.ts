@@ -439,10 +439,12 @@ export type IsolatedGit = {
 // override among them).
 //
 // A command the repository's own config sets, other than the exact `git lfs
-// install` lines, runs only as reviewed: under a trusted grant the reviewed
-// pins, added after these and equal to them, carry it. Without one (evidence
-// with filters off) its driver is pinned absent, no command and not
-// required, as that evidence treats the repository's filters.
+// install` lines, runs only as reviewed: under a trusted grant whose reviewed
+// definitions hold exactly that key and the worktree's effective value. A
+// reviewed value is never pinned itself, so a later override the worktree
+// reads, an empty one included, wins (ruling Q319). Otherwise (evidence with
+// filters off, or a reviewed value the worktree no longer reads) its driver
+// is pinned absent, no command and not required.
 function sourceFilterPins(
   entries: readonly ConfigEntry[],
   reviewed: ReadonlyArray<readonly [string, string]>,
@@ -456,15 +458,19 @@ function sourceFilterPins(
     effective.set(entry.key, { scope: entry.scope, key: entry.key, value: entry.value ?? "true" })
     drivers.add(match[1]!)
   }
-  const reviewedKeys = new Set(reviewed.map(([key]) => key))
+  // A reviewed definition confirms a value, never supplies one: it counts
+  // only where it is exactly the worktree's effective value (ruling Q319).
+  const confirmed = new Set(reviewed.map(([key, value]) => `${key}\0${value}`))
   const pins: Array<readonly [string, string]> = []
   for (const driver of drivers) {
     const commands = ["clean", "smudge", "process"].map((operation) => `filter.${driver}.${operation}`)
-    const heldBack = commands.some((key) => {
+    const unconfirmed = commands.find((key) => {
       const setting = effective.get(key)
       return setting !== undefined && !trustedConfigScopes.has(setting.scope) && setting.value !== ""
-        && !isStandardLfsFilterLine(key, setting.value) && !reviewedKeys.has(key)
+        && !isStandardLfsFilterLine(key, setting.value) && !confirmed.has(`${key}\0${setting.value}`)
     })
+    const heldBack = unconfirmed !== undefined
+    refuseChangedReview(driverKeys(driver), heldBack ? unconfirmed : undefined, reviewed)
     // Only the keys the source sets: an unset key and an empty one differ to
     // Git (an empty process, unlike none, turns clean and smudge off), so an
     // unset key stays unset, and refuseUnpinnedFilters refuses one this
@@ -481,6 +487,21 @@ function sourceFilterPins(
 
 // A filter driver's keys that decide what runs and whether it may fail.
 const filterPolicyKey = /^filter\.(.+)\.(?:clean|smudge|process|required)$/u
+
+const driverKeys = (driver: string) => ["clean", "smudge", "process", "required"].map((variable) => `filter.${driver}.${variable}`)
+
+// A driver or Git LFS group the gate allowed under a reviewed definition,
+// whose value the worktree no longer reads as reviewed (its config changed
+// after the gate): the operation refuses rather than run without it or with
+// the new value (rulings Q318, Q319). `unconfirmed` is the key that differs,
+// undefined when the group runs as reviewed.
+function refuseChangedReview(keys: readonly string[], unconfirmed: string | undefined, reviewed: ReadonlyArray<readonly [string, string]>): void {
+  if (unconfirmed === undefined) return
+  if (!reviewed.some(([key]) => keys.includes(key))) return
+  throw new RepositoryGitConfigUnreadableError("git-failed", {
+    detail: `${shownFilterKey(unconfirmed)} changed after the repository's filters were checked; check the repository again`,
+  })
+}
 
 // The Git LFS settings that start a program or choose one, by the group they
 // belong to: an extension's or a custom transfer's keys (command, arguments,
@@ -510,7 +531,9 @@ function sourceLfsPolicy(
   const heldBack = new Set<string>()
   for (const [key, { scope, value }] of effective) {
     if (!trustedConfigScopes.has(scope) && value !== "" && classify(key, value) !== undefined && !confirmed.has(`${key}\0${value}`)) {
-      heldBack.add(lfsPolicyGroup(key)!)
+      const group = lfsPolicyGroup(key)!
+      heldBack.add(group)
+      refuseChangedReview(reviewed.map(([reviewedKey]) => reviewedKey).filter((reviewedKey) => lfsPolicyGroup(reviewedKey) === group), key, reviewed)
     }
   }
   return [...effective].filter(([key]) => !heldBack.has(lfsPolicyGroup(key)!)).map(([key, { value }]) => [key, value] as const)
@@ -702,7 +725,6 @@ export async function openIsolatedGit(input: {
 
   pins.push(["protocol.allow", "never"], ...allowedProtocols.map((protocol): [string, string] => [`protocol.${protocol}.allow`, "always"]))
   pins.push(["core.splitindex", "false"], ["core.untrackedcache", "false"], ["index.sparse", "false"])
-  pins.push(...input.reviewed ?? [])
 
   // The config the directory reads in place of the person's global and system
   // config (ruling Q319): their entries as the worktree read them, includes
@@ -759,8 +781,8 @@ export async function openIsolatedGit(input: {
     environment[`GIT_CONFIG_VALUE_${position}`] = value
   })
   environment.GIT_CONFIG_COUNT = String(pins.length)
-  // The pins are the last values Git reads, so the effective filter keys
-  // are: the reviewed pins after the source pins, each the same value.
+  // The pins are the last values Git reads, and every policy pin is the
+  // worktree's own value: the expected map is the worktree's (ruling Q319).
   const effectivePins = new Map<string, string>()
   for (const [key, value] of pins) effectivePins.set(key, value)
   try {
