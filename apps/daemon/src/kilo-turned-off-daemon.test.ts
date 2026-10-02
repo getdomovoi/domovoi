@@ -18,7 +18,12 @@ import type { WorkspaceService } from "./workspace.js"
 const startKilo = vi.hoisted(() => vi.fn(async () => {
   throw new Error("A test asked for a Kilo server")
 }))
-vi.mock("./kilo-runtime.js", () => ({ createDefaultKiloRuntime: startKilo }))
+// The Kilo adapter also reads the module's permission names and tool ids,
+// which start nothing, so they stay as they are.
+vi.mock("./kilo-runtime.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./kilo-runtime.js")>(),
+  createDefaultKiloRuntime: startKilo,
+}))
 
 const kiloMechanism = "Kilo's server can switch on a rule that allows every tool, and it sends Domovoi no event "
   + "when that happens, so Domovoi cannot show an approval card before a tool runs."

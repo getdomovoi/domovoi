@@ -144,8 +144,8 @@ describe("tool.inventory", () => {
 
   // heldBack is true only where the adapter provably keeps the entry from its
   // agent today (ruling Q128 A): Claude Code's settingSources ["user"], and
-  // Codex's refusal of a worktree holding .codex configuration. OpenCode and
-  // Kilo are stated in P7.
+  // Codex's refusal of a worktree holding .codex configuration, and OpenCode's
+  // and Kilo's project switch (P7), which still lets them load .claude/skills.
   it("marks an entry held back only where its adapter keeps it from the agent", async () => {
     const root = await repository({ ...configured, ".claude/skills/deploy/SKILL.md": "---\nname: deploy\n---\nDeploy." })
     const { daemon } = await fixture(root)
@@ -161,8 +161,9 @@ describe("tool.inventory", () => {
     ]))
     expect(heldBack("codex")).toEqual([["tool-server", ".codex/config.toml", true], ["permission-rule", ".codex/config.toml", true]])
     for (const name of ["opencode", "kilo"]) {
-      for (const [, file, held] of heldBack(name)) expect(held, `${name} ${String(file)}`).toBe(false)
+      for (const [, file, held] of heldBack(name)) expect(held, `${name} ${String(file)}`).toBe(file !== ".claude/skills")
     }
+    expect(heldBack("opencode")).toEqual(expect.arrayContaining([["tool-server", "opencode.json", true], ["skill", ".claude/skills", false]]))
   })
 
   // Ruling Q145 A: every session is a linked worktree of the open repository,

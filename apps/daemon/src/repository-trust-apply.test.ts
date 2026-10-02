@@ -169,15 +169,42 @@ describe("repositoryEntryHeldBack", () => {
     expect(heldBack("claude-code", entry(".mcp.json"))).toBe(true)
   })
 
-  // P7 states what OpenCode, Kilo and the ACP agents keep back.
-  it("claims nothing for another provider, even for a file of the same name", () => {
-    for (const provider of ["opencode", "kilo", "cursor-agent", "grok"]) {
+  // Slice P7: OpenCode and Kilo run with their project switch set, so they
+  // load nothing from their config files and folders (opencode-runtime.test.ts),
+  // and Kilo's legacy files refuse the session (opencode.test.ts). They still
+  // load skills from .claude/skills and .agents/skills (opencode v1.18.32
+  // skill/index.ts), so those are claimed for neither.
+  it("holds back what OpenCode and Kilo keep from the agent today", () => {
+    for (const file of ["opencode.json", "opencode.jsonc", "tui.json", ".opencode/opencode.json", ".opencode/package.json", ".opencode/plugin", ".opencode/skills"]) {
+      expect(repositoryEntryHeldBack("opencode", entry(file)), `opencode ${file}`).toBe(true)
+    }
+    for (const file of ["kilo.json", "config.json", ".kilo/kilo.jsonc", ".kilocode/mcp.json", ".kilo/mcp.json", ".kilocodemodes", ".kilo/package.json", ".kilocode/agent"]) {
+      expect(repositoryEntryHeldBack("kilo", entry(file)), `kilo ${file}`).toBe(true)
+    }
+    for (const provider of ["opencode", "kilo"]) {
+      for (const file of [".claude/skills", ".agents/skills"]) {
+        expect(repositoryEntryHeldBack(provider, entry(file, "skill")), `${provider} ${file}`).toBe(false)
+      }
+    }
+  })
+
+  it("claims nothing for another provider's file, nor for the ACP agents", () => {
+    for (const provider of ["cursor-agent", "grok"]) {
       expect(repositoryEntryHeldBack(provider, entry("opencode.json")), provider).toBe(false)
       expect(repositoryEntryHeldBack(provider, entry(".mcp.json")), provider).toBe(false)
-      expect(repositoryEntryHeldBack(provider, entry(".codex/config.toml")), provider).toBe(false)
     }
+    expect(repositoryEntryHeldBack("opencode", entry(".mcp.json"))).toBe(false)
+    expect(repositoryEntryHeldBack("opencode", entry(".kilo/mcp.json"))).toBe(false)
+    expect(repositoryEntryHeldBack("kilo", entry(".opencode/opencode.json"))).toBe(false)
     expect(repositoryEntryHeldBack("codex", entry(".mcp.json"))).toBe(false)
     expect(repositoryEntryHeldBack("claude-code", entry(".codex/config.toml"))).toBe(false)
+  })
+
+  it("keeps OpenCode and Kilo entries held back under a trusted grant, until P7 PR B passes their servers", () => {
+    const heldBack = trustedEntryHeldBack({})
+    expect(heldBack("opencode", entry("opencode.json"))).toBe(true)
+    expect(heldBack("kilo", entry("kilo.json"))).toBe(true)
+    expect(heldBack("kilo", entry(".agents/skills", "skill"))).toBe(false)
   })
 })
 
@@ -250,6 +277,28 @@ describe("heldBackUnder", () => {
     const load = claudeRepositoryLoad(config.documents)
     expect(Object.keys(load.mcpServers)).toEqual(["db"])
     expect(Object.keys(load.settings.hooks ?? {})).toEqual(["SessionStart"])
+  })
+
+  it("reports OpenCode and Kilo configuration as held back and their shared skills as loading", async () => {
+    const { main } = await checkouts({
+      "opencode.json": JSON.stringify({ mcp: { db: { type: "local", command: ["db-mcp"] } }, plugin: ["formatter"] }),
+      ".opencode/plugin/hook.ts": "export default {}\n",
+      "kilo.json": JSON.stringify({ mcp: { search: { type: "remote", url: "https://mcp.example.com" } } }),
+      ".agents/skills/deploy/SKILL.md": "---\nname: deploy\n---\nDeploy.",
+    })
+    const config = await readRepositoryProviderConfig(main, projectRootRead)
+    const opencodeAndKilo = marks(config, { state: "untrusted", reason: "not-trusted" }).filter(([provider]) => provider === "opencode" || provider === "kilo")
+    expect(opencodeAndKilo).toEqual([
+      ["opencode", "tool-server", "db", true],
+      ["opencode", "plugin", "formatter", true],
+      ["opencode", "plugin", "hook.ts", true],
+      ["opencode", "skill", "deploy", false],
+      ["kilo", "tool-server", "search", true],
+      // Kilo reads opencode.json at the root too.
+      ["kilo", "tool-server", "db", true],
+      ["kilo", "plugin", "formatter", true],
+      ["kilo", "skill", "deploy", false],
+    ])
   })
 
   it("keeps the held-back marks for a repository that is not trusted", async () => {
