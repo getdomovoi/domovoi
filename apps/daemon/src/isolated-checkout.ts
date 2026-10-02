@@ -512,8 +512,11 @@ const changedAfterReview = (key: string) => new RepositoryGitConfigUnreadableErr
 // command, path or argument key the worktree reads now has exactly the value
 // the gate read last, and each reviewed driver's required reads as the same
 // Git boolean. Set membership among values the gate once saw is not enough.
-// A reviewed command now empty or unset runs nothing and stays allowed: a
-// later empty override turns the filter off (ruling Q319).
+// A reviewed command or path now empty or unset runs nothing and stays
+// allowed: a later empty override turns the filter off (ruling Q319). That
+// holds only for a key whose emptiness turns its operation off (ruling Q321);
+// any other reviewed key, a custom transfer's args among them, compares
+// exactly, empty and unset both counting as a change.
 function refuseChangedPolicy(entries: readonly ConfigEntry[], reviewed: ReadonlyMap<string, string>): void {
   const effective = new Map<string, string>()
   for (const { key, value } of entries) effective.set(key, value ?? "true")
@@ -521,10 +524,18 @@ function refuseChangedPolicy(entries: readonly ConfigEntry[], reviewed: Readonly
     const current = effective.get(key)
     if (/^filter\..+\.required$/u.test(key)) {
       if ((gitRequiredState(current) === "true" ? "true" : "false") !== value) throw changedAfterReview(key)
-    } else if (current !== undefined && current !== "" && current !== value) {
+    } else if (turnsOffWhenEmpty(key) ? current !== undefined && current !== "" && current !== value : current !== value) {
       throw changedAfterReview(key)
     }
   }
+}
+
+// A filter's clean, smudge or process, a Git LFS extension's clean or smudge,
+// a custom transfer's path, or a standalone transfer agent: the keys whose
+// empty or missing value turns their operation off.
+function turnsOffWhenEmpty(key: string): boolean {
+  const operation = classify(key, "")?.operation
+  return operation !== undefined && operation !== "lfs-transfer-args"
 }
 
 // The Git LFS policy the isolated directory runs with (ruling Q319): every

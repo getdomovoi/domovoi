@@ -650,6 +650,29 @@ describe("openIsolatedGit filter configuration", () => {
     }
   })
 
+  // Only a command or path key turns its operation off when emptied (ruling
+  // Q321). A custom transfer's args is not one: emptied or removed after the
+  // gate, it is a change, and the operation refuses. The path stays empty
+  // throughout, so nothing could start.
+  it.each([
+    ["emptied", ["config", "lfs.customtransfer.test.args", ""]],
+    ["removed", ["config", "--unset", "lfs.customtransfer.test.args"]],
+  ])("refuses when a reviewed custom transfer's args is %s after the gate", async (_label, change) => {
+    const { worktree, repository, restore } = await sessionWorktree(
+      () => lfsLines,
+      "[lfs \"customtransfer.test\"]\n\tpath =\n\targs = domovoi-inert-argument-label\n",
+    )
+    try {
+      const gate = await realGate(worktree, repository)
+      expect(gate).toMatchObject({ open: true, reviewed: [["lfs.customtransfer.test.args", "domovoi-inert-argument-label"]] })
+      execFileSync("git", ["-C", repository, ...change])
+      await expect(openIsolatedGit({ worktree, reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true }))
+        .rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", message: expect.stringContaining("lfs.customtransfer.test.args") })
+    } finally {
+      restore()
+    }
+  })
+
   // Git LFS starts the programs its extension and custom transfer settings
   // name, reading them through `git config`. They follow the same rule as
   // filter commands (ruling Q319): the isolated directory reads each at the
