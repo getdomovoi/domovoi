@@ -173,33 +173,38 @@ export async function readGitFilterSettings(
     const scope = fields[index]!
     const origin = fields[index + 1]!
     const record = fields[index + 2]!
-    if (!trustedConfigScopes.has(scope) && !repositoryScopes.has(scope)) throw new RepositoryGitConfigUnreadableError("git-failed")
     const newline = record.indexOf("\n")
     const file = origin.startsWith("file:") ? resolve(directory, origin.slice("file:".length)) : undefined
-    // A driver's `required` written alone is boolean true. A filter command
-    // written with no value is an error Git stops on, whatever scope sets it,
-    // and so is a required that is not a boolean; each refuses here, naming
-    // the key (ruling Q318). Dropping one would let a Git directory that
-    // reads less config, the isolated one, run an inherited command ordinary
-    // Git refuses over. Another key with no value starts no program: Git LFS
-    // stops on it before running anything.
-    const recordKey = newline === -1 ? record : record.slice(0, newline)
-    if (emptyNamedDriverKey.test(recordKey)) {
-      throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(recordKey)} in ${scope} Git config names a filter driver with an empty name, which Domovoi does not run` })
-    }
-    if (newline === -1) {
-      if (/^filter\..+\.required$/u.test(record)) settings.push({ scope, key: record, value: "true", origin: file })
-      else if (filterCommandKey.test(record)) throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(record)} in ${scope} Git config has no value` })
-      continue
-    }
-    const key = record.slice(0, newline)
-    const value = record.slice(newline + 1)
-    if (/^filter\..+\.required$/u.test(key) && gitRequiredState(value) === undefined) {
-      throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${scope} Git config is not a boolean` })
-    }
-    settings.push({ scope, key, value, origin: file })
+    const key = newline === -1 ? record : record.slice(0, newline)
+    const value = newline === -1 ? undefined : record.slice(newline + 1)
+    refuseFilterSettingGitStopsOn(scope, key, value)
+    if (value !== undefined) settings.push({ scope, key, value, origin: file })
+    // A driver's `required` written alone is boolean true. Another key with
+    // no value starts no program: Git LFS stops on it before running anything.
+    else if (/^filter\..+\.required$/u.test(key)) settings.push({ scope, key, value: "true", origin: file })
   }
   return settings
+}
+
+// Refuses, naming the key, a filter or Git LFS setting Domovoi does not run
+// past: one from a scope it does not know, a filter driver, Git LFS
+// extension or custom transfer with an empty name (ruling Q319), a filter
+// command written with no value, or a required that is not a Git boolean.
+// The last two are errors Git stops on, whatever scope sets them (ruling
+// Q318); dropping one would let a Git directory that reads less config, the
+// isolated one, run an inherited command ordinary Git refuses over. `value`
+// undefined is a key written with no value.
+export function refuseFilterSettingGitStopsOn(scope: string, key: string, value: string | undefined): void {
+  if (!trustedConfigScopes.has(scope) && !repositoryScopes.has(scope)) throw new RepositoryGitConfigUnreadableError("git-failed")
+  if (emptyNamedDriverKey.test(key)) {
+    throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${scope} Git config names a filter driver with an empty name, which Domovoi does not run` })
+  }
+  if (value === undefined && filterCommandKey.test(key)) {
+    throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${scope} Git config has no value` })
+  }
+  if (value !== undefined && /^filter\..+\.required$/u.test(key) && gitRequiredState(value) === undefined) {
+    throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${scope} Git config is not a boolean` })
+  }
 }
 
 // A key of a filter driver, Git LFS extension or custom transfer named by an

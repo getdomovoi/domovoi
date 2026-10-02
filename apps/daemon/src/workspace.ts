@@ -392,7 +392,7 @@ async function submoduleHasLocalChanges(worktreePath: string, signal?: AbortSign
 }
 
 async function submoduleWorktreeChanged(submodule: string, signal?: AbortSignal): Promise<boolean> {
-  const isolated = await openIsolatedGit({ worktree: submodule, settings: await readGitFilterSettings(submodule, signal), worktreeIndex: true, signal })
+  const isolated = await openIsolatedGit({ worktree: submodule, worktreeIndex: true, signal })
   try {
     const head = await submoduleHead(submodule, signal)
     if (head !== undefined) await isolated.setHead(head)
@@ -1393,7 +1393,7 @@ export class GitWorkspaceService implements WorkspaceService {
     if (whenRefused === "refuse") await refuseSubmoduleConfig(worktree, worktree, signal)
     await this.#afterRepositoryFilterGate?.(worktree)
     const isolated = await openIsolatedGit({
-      worktree, settings: gate.settings, reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true, beforeCommand: this.#confirm(gate), signal,
+      worktree, reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true, beforeCommand: this.#confirm(gate), signal,
     })
     try {
       return await work(isolated)
@@ -1460,7 +1460,7 @@ export class GitWorkspaceService implements WorkspaceService {
     // never names one to remove.
     try {
       await checkOutIsolated({
-        worktree: path, commit, settings: gate.settings, reviewed: gate.open ? gate.reviewed : [], beforeCommand: this.#confirm(gate), signal, initialIndex,
+        worktree: path, commit, reviewed: gate.open ? gate.reviewed : [], beforeCommand: this.#confirm(gate), signal, initialIndex,
       })
       await git(path, ["update-ref", "HEAD", commit], signal)
     } catch (error) {

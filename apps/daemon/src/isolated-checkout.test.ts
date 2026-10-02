@@ -352,7 +352,7 @@ describe("checkOutIsolated after the index changed", () => {
     const before = await readFile(index)
 
     const error = await checkOutIsolated({
-      worktree, commit, settings: [], initialIndex: undefined,
+      worktree, commit, initialIndex: undefined,
       indexIo: { syncDirectory: async () => { throw new Error("flush failed") } },
     }).then(() => undefined, (failure: unknown) => failure)
 
@@ -370,7 +370,7 @@ describe("checkOutIsolated after the index changed", () => {
     let locked = false
     try {
       const error = await checkOutIsolated({
-        worktree, commit, settings: [], initialIndex: undefined,
+        worktree, commit, initialIndex: undefined,
         beforeCommand: () => {
           if (locked) return
           locked = true
@@ -425,7 +425,7 @@ describe("openIsolatedGit filter configuration", () => {
   }
 
   const isolatedValue = async (worktree: string, key: string) => {
-    const isolated = await openIsolatedGit({ worktree, settings: await readGitFilterSettings(worktree), worktreeIndex: true })
+    const isolated = await openIsolatedGit({ worktree, worktreeIndex: true })
     try {
       return (await isolated.run(["config", "--get", key])).replace(/\n$/u, "")
     } finally {
@@ -458,15 +458,45 @@ describe("openIsolatedGit filter configuration", () => {
     }
   })
 
-  it("refuses a filter key only the isolated directory reads, naming it", async () => {
+  // The snapshot follows conditional includes in the worktree's context, so a
+  // global include conditional on the isolated directory is never followed
+  // there (ruling Q319). refuseUnpinnedFilters remains behind it.
+  it("does not read a filter key only a global include conditional on the isolated directory names", async () => {
     const { worktree, restore } = await sessionWorktree((scratch) => {
       const ghost = join(scratch, "ghost.gitconfig")
       execFileSync("sh", ["-c", `printf '[filter "ghost"]\\n\\tclean = domovoi-inert-label\\n' > "${ghost}"`])
       return `[includeIf "gitdir:**/domovoi-checkout-*"]\n\tpath = ${ghost.replaceAll("\\", "/")}\n`
     })
     try {
-      await expect(isolatedValue(worktree, "filter.ghost.clean"))
-        .rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", message: expect.stringContaining("filter.ghost.clean") })
+      await expect(isolatedValue(worktree, "filter.ghost.clean")).rejects.toMatchObject({ code: 1 })
+    } finally {
+      restore()
+    }
+  })
+
+  // The isolated directory reads a snapshot of the worktree's config taken
+  // as it opens, never the person's live global, system or included files
+  // (ruling Q319): a key written to any of them afterwards is not seen by a
+  // later isolated command.
+  it.each([
+    ["an included global file", "included"],
+    ["the global config itself", "global"],
+  ] as const)("does not see a filter key added to %s after it opened", async (_label, where) => {
+    let included = ""
+    const { worktree, restore, scratch } = await sessionWorktree((root) => {
+      included = join(root, "included.gitconfig")
+      execFileSync("sh", ["-c", `: > "${included}"`])
+      return `[include]\n\tpath = ${included.replaceAll("\\", "/")}\n`
+    })
+    try {
+      const isolated = await openIsolatedGit({ worktree, worktreeIndex: true })
+      try {
+        const target = where === "included" ? included : join(scratch, "home", ".gitconfig")
+        await writeFile(target, `${await readFile(target, "utf8")}[filter "late"]\n\tclean = domovoi-inert-label\n`)
+        await expect(isolated.run(["config", "--get", "filter.late.clean"])).rejects.toMatchObject({ code: 1 })
+      } finally {
+        await isolated.dispose()
+      }
     } finally {
       restore()
     }
