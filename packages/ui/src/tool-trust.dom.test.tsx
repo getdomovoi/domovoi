@@ -19,6 +19,8 @@ afterEach(cleanup)
 
 const digest = `sha256:${"a".repeat(64)}`
 const changedDigest = `sha256:${"c".repeat(64)}`
+// tool.inventory's digest over the git filter block it lists.
+const reviewDigest = `sha256:${"b".repeat(64)}`
 const grant = { trustedDigest: digest, trustedAt: "2026-09-12T10:41:00.000Z", trustedBy: { client: "desktop" as const } }
 const readAt = new Date("2026-09-29T14:02:31")
 const notTrusted: RepositoryTrustState = { state: "untrusted", reason: "not-trusted" }
@@ -397,10 +399,11 @@ describe("trust review sheet", () => {
 const sopsFilters: ToolInventoryGitFilters = {
   files: [{ path: ".git/config", scope: "local" }],
   entries: [
-    { driver: "sops", operation: "smudge", command: "sops -d", file: ".git/config", scope: "local", heldBack: true },
-    { driver: "sops", operation: "clean", command: "sops -e", file: ".git/config", scope: "local", heldBack: true },
+    { driver: "sops", operation: "smudge", command: "sops -d", required: "true", file: ".git/config", scope: "local", heldBack: true },
+    { driver: "sops", operation: "clean", command: "sops -e", required: "true", file: ".git/config", scope: "local", heldBack: true },
   ],
   omittedEntries: 0,
+  reviewDigest,
 }
 
 function withGitFilters(value: ToolInventory, gitFilters: ToolInventoryGitFilters): ToolInventory {
@@ -435,9 +438,10 @@ describe("git filters in the review", () => {
       files: [{ path: ".git/config", scope: "local" }, { path: ".git/worktrees/w1/config.worktree", scope: "worktree" }],
       entries: [
         ...sopsFilters.entries,
-        { driver: "crypt", operation: "process", command: "./bin/crypt --token [REDACTED]", file: ".git/worktrees/w1/config.worktree", scope: "worktree", heldBack: true },
+        { driver: "crypt", operation: "process", command: "./bin/crypt --token [REDACTED]", required: "unset", file: ".git/worktrees/w1/config.worktree", scope: "worktree", heldBack: true },
       ],
       omittedEntries: 0,
+      reviewDigest,
     }
     show(withGitFilters(inventory(), filters), { onTrust: vi.fn() })
     const { sheet } = await openSheet()
@@ -462,7 +466,7 @@ describe("git filters in the review", () => {
 
   it("offers no trust while the repository's Git config could not be read", async () => {
     const onTrust = vi.fn<Trust>()
-    show(withGitFilters(inventory(), { files: [], entries: [], omittedEntries: 0, unreadable: { reason: "git-failed" } }), { onTrust })
+    show(withGitFilters(inventory(), { files: [], entries: [], omittedEntries: 0, unreadable: { reason: "git-failed" }, reviewDigest }), { onTrust })
 
     expect(within(heldCard()).getAllByRole("listitem").at(-1)?.textContent).toBe("Git confignot read")
     const { sheet } = await openSheet()

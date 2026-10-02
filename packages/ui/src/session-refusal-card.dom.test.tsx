@@ -21,6 +21,8 @@ afterEach(cleanup)
 
 const digest = `sha256:${"a".repeat(64)}`
 const changedDigest = `sha256:${"c".repeat(64)}`
+// tool.inventory's digest over the git filter block it lists.
+const reviewDigest = `sha256:${"b".repeat(64)}`
 const grant = { trustedDigest: digest, trustedAt: "2026-09-30T10:41:00.000Z", trustedBy: { client: "desktop" as const } }
 const notTrusted: RepositoryTrustState = { state: "untrusted", reason: "not-trusted" }
 
@@ -48,10 +50,11 @@ function inventory(configDigest = digest): ToolInventory {
       gitFilters: {
         files: [{ path: ".git/config", scope: "local" }],
         entries: [
-          { driver: "sops", operation: "smudge", command: "sops -d", file: ".git/config", scope: "local", heldBack: true },
-          { driver: "sops", operation: "clean", command: "sops -e", file: ".git/config", scope: "local", heldBack: true },
+          { driver: "sops", operation: "smudge", command: "sops -d", required: "true", file: ".git/config", scope: "local", heldBack: true },
+          { driver: "sops", operation: "clean", command: "sops -e", required: "true", file: ".git/config", scope: "local", heldBack: true },
         ],
         omittedEntries: 0,
+        reviewDigest,
       },
     },
     providers: [],

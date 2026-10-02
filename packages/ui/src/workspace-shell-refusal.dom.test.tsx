@@ -41,6 +41,8 @@ const settle = () => act(async () => {
 })
 
 const digest = `sha256:${"a".repeat(64)}`
+// tool.inventory's digest over the git filter block it lists.
+const reviewDigest = `sha256:${"b".repeat(64)}`
 const notTrusted: RepositoryTrustState = { state: "untrusted", reason: "not-trusted" }
 
 const codex: ProviderRuntime = { id: "codex", command: "codex", status: "ready", sessionCapable: true, version: "1.0.0" }
@@ -67,8 +69,9 @@ function toolInventory(snapshot: WorkspaceSnapshot): ToolInventory {
       trust: notTrusted,
       gitFilters: {
         files: [{ path: ".git/config", scope: "local" }],
-        entries: [{ driver: "sops", operation: "smudge", command: "sops -d", file: ".git/config", scope: "local", heldBack: true }],
+        entries: [{ driver: "sops", operation: "smudge", command: "sops -d", required: "true", file: ".git/config", scope: "local", heldBack: true }],
         omittedEntries: 0,
+        reviewDigest,
       },
     },
     providers: [],

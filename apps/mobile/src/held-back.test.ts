@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest"
 import { heldBackView, trustSummary } from "./held-back"
 
 const digest = `sha256:${"a".repeat(64)}`
+// tool.inventory's digest over the git filter block it lists.
+const reviewDigest = `sha256:${"b".repeat(64)}`
 const home = "/Users/ada"
 
 // The Skills design's Tools sample (J45), as the protocol tests carry it: two
@@ -210,10 +212,11 @@ describe("heldBackView", () => {
         gitFilters: {
           files: [{ path: ".git/config", scope: "local" }],
           entries: [
-            { driver: "sops", operation: "smudge", command: "sops -d", file: ".git/config", scope: "local", heldBack: true },
-            { driver: "sops", operation: "clean", command: "sops -e", file: ".git/config", scope: "local", heldBack: true },
+            { driver: "sops", operation: "smudge", command: "sops -d", required: "true", file: ".git/config", scope: "local", heldBack: true },
+            { driver: "sops", operation: "clean", command: "sops -e", required: "true", file: ".git/config", scope: "local", heldBack: true },
           ],
           omittedEntries: 0,
+          reviewDigest,
         },
       },
     })
@@ -234,12 +237,12 @@ describe("heldBackView", () => {
   it("does not call the list whole when the git config could not be read", () => {
     const unread = toolInventorySchema.parse({
       ...inventory(),
-      repository: { ...inventory().repository, gitFilters: { files: [], entries: [], omittedEntries: 0, unreadable: { reason: "too-large" } } },
+      repository: { ...inventory().repository, gitFilters: { files: [], entries: [], omittedEntries: 0, unreadable: { reason: "too-large" }, reviewDigest } },
     })
     expect(loaded(heldBackView(unread)).incomplete).toBe("the Git config could not be read")
     const cut = toolInventorySchema.parse({
       ...inventory(),
-      repository: { ...inventory().repository, gitFilters: { files: [], entries: [], omittedEntries: 2 } },
+      repository: { ...inventory().repository, gitFilters: { files: [], entries: [], omittedEntries: 2, reviewDigest } },
     })
     expect(loaded(heldBackView(cut)).incomplete).toBe("2 entries were left out")
   })
