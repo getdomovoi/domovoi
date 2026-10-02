@@ -768,6 +768,11 @@ To keep the daemon running while its person is away:
   with the job-object work (ruling Q300 A, 2026-10-01). The task does get Task Scheduler's
   72 hour execution limit and battery stops lifted, so the daemon is not ended after three days or
   on battery, and every `schtasks` call names the one under `SystemRoot`.
+- **WSL update, known limit** (ruling Q311 A). An update from the app retires the guest
+  supervisor registration and registers it again under the same ID, so the new supervisor and
+  the restored one both refuse to start and the service stays down. Starting the task by hand
+  does not help; remove the service and install it again. A separate PR will fix it with
+  per-start IDs and a start fence held through cleanup.
 
 [Daemon service configuration](../../docs/daemon-services.md) has the printed text, failure
 handling and what is and is not proved natively.

@@ -27,6 +27,16 @@ proof retains the registration; a missing task alone never authorizes recovery.
 Remove an existing registration before reinstalling. Interrupted installation can
 require operator reconciliation if no supervisor identity was ever recorded.
 
+Known limit (ruling Q311 A, read from source, not tested): a WSL update from the
+app stops the guest loop the way removal does, which retires the supervisor
+registration, then registers the same registration ID again. The new guest
+supervisor refuses to start for a retired registration, so the new service
+never reports ready. The restore registers the old task under that same ID, and
+it refuses too, so the update fails and says the service is not running.
+Starting the task by hand does not help, because the retirement still names that
+ID; remove the service and install it again, which issues a new ID. A separate
+PR will fix this with per-start IDs and a start fence held through cleanup.
+
 This is Windows user logon, not Windows boot supervision. The guest loop is not
 self-restarting after distro or loop loss. A demand-start fixture does not
 establish real logon acceptance; that remains open in the lifecycle assessment.

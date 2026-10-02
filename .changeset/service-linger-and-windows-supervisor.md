@@ -20,7 +20,8 @@ days or on battery. Install, update, restore and the desktop's runtime readers n
 `schtasks.exe` under `SystemRoot`, from its own directory, instead of one found by name, which
 could have been a repository's own.
 
-Known limit, unchanged: a WSL update retires the supervisor registration and registers it again
-under the same ID, so the new supervisor refuses to start and the service stays down until it is
-started by hand. A separate change will fix it with per-start IDs and a start fence held through
-cleanup.
+Known limit, unchanged by this release: a WSL update from the app retires the supervisor
+registration and registers it again under the same ID, so the new supervisor refuses to start, the
+restored one refuses too, and the service stays down. Starting the task by hand does not help;
+remove the service and install it again. A separate change will fix it with per-start IDs and a
+start fence held through cleanup.
