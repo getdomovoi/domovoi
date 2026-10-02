@@ -135,11 +135,22 @@ function serviceTarget(home: string) {
   }
 }
 
+// A Linux install asks loginctl about lingering (service/linger.ts). It is
+// answered here as already on, and never run.
+function withoutLoginctl(effects: ReturnType<typeof nodeServiceEffects>): ReturnType<typeof nodeServiceEffects> {
+  return {
+    ...effects,
+    capture: async (command, args, deadline) => command === "loginctl"
+      ? { code: 0, stdout: "yes\n" }
+      : effects.capture(command, args, deadline),
+  }
+}
+
 it("assigns a fresh registration on every install and invalidates an earlier recovery receipt", async () => {
   const deadline = OperationDeadline.start(operationBudget)
   try {
     const home = await setup(deadline)
-    const effects = { ...nodeServiceEffects({ userHomeDirectory: home }), run: vi.fn(async () => {}) }
+    const effects = { ...withoutLoginctl(nodeServiceEffects({ userHomeDirectory: home })), run: vi.fn(async () => {}) }
     const target = serviceTarget(home)
     await beforeDeadline(installService(target, effects), deadline)
     const first = JSON.parse(await readFile(serviceConfigurationPath(home, process.platform), "utf8")) as { registrationId?: string }
@@ -159,7 +170,7 @@ it("receipts the installed owner's exact instance only after stopping its superv
     const home = await setup(deadline)
     const node = nodeServiceEffects({ userHomeDirectory: home })
     const target = serviceTarget(home)
-    await beforeDeadline(installService(target, { ...node, run: async () => {} }), deadline)
+    await beforeDeadline(installService(target, { ...withoutLoginctl(node), run: async () => {} }), deadline)
     const saved = JSON.parse(await readFile(serviceConfigurationPath(home, process.platform), "utf8")) as { registrationId?: string }
     expect(saved.registrationId).toMatch(/^[0-9a-f-]{36}$/)
     const owner = await startOwner(home, deadline, true)

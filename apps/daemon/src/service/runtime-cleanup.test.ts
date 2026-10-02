@@ -2,7 +2,7 @@ import { lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, symlink, writeFil
 import { tmpdir } from "node:os"
 import { dirname, join, relative, sep } from "node:path"
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 
 import { readDaemonServiceRuntimeCopy, removeUnusedDaemonRuntimes, type DaemonServiceRuntimeCopy } from "../public.js"
 import { claimServiceOperation } from "./operation-lease.js"
@@ -783,6 +783,9 @@ describe("readDaemonServiceRuntimeCopy", () => {
   })
 
   it("tells a missing Windows task from a query that failed", async () => {
+    // The query names the schtasks under SystemRoot (review F3).
+    vi.stubEnv("SystemRoot", "C:\\Windows")
+    onTestFinished(() => { vi.unstubAllEnvs() })
     const windows = { platform: "win32", home: "C:\\Users\\dana", readDefinition: async () => undefined, readConfiguration: () => undefined }
     await expect(readDaemonServiceRuntimeCopy({ ...windows, capture: async () => ({ code: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified." }) }))
       .resolves.toEqual({ installed: false })

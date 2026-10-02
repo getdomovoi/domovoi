@@ -20,7 +20,7 @@ const settle = () => act(async () => { for (let index = 0; index < 8; index += 1
 
 // Without an install, the bridge offers no login service, as a desktop that
 // ships no daemon runtime does.
-function bridge(install?: () => Promise<{ ok: true; kind: "file"; target: string; daemonRunning: boolean }>, platform: DesktopWindowBridge["platform"] = "darwin"): DesktopWindowBridge {
+function bridge(install?: () => Promise<{ ok: true; kind: "file"; target: string; daemonRunning: boolean; lingerWarning?: string }>, platform: DesktopWindowBridge["platform"] = "darwin"): DesktopWindowBridge {
   return {
     platform,
     getRpcEndpoint: async () => ({ url: "ws://127.0.0.1:47831/rpc", token: "t" }),
@@ -81,6 +81,27 @@ it("installs when idle and tells the desktop the daemon changed", async () => {
   expect(install).toHaveBeenCalledOnce()
   expect(onLocalDaemonChanged).toHaveBeenCalledOnce()
   expect(await within(section()).findByText("Installed. Quitting this app now leaves the daemon and its sessions running.")).toBeTruthy()
+})
+
+// Ruling Q307 (review of #698, P2): a Linux install whose lingering could not
+// be turned on shows the daemon's warning, the CLI's words, with the result,
+// so the install does not read as a plain success.
+it("shows the daemon's lingering warning with the install result", async () => {
+  const lingerWarning = "Could not turn on lingering for dana: loginctl was not found. The service is installed, but systemd stops the daemon when dana logs out of every session and starts it again at the next login. To keep it running, run loginctl enable-linger; domovoid service remove will then leave lingering on."
+  const install = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/home/dana/.config/systemd/user/domovoid.service", daemonRunning: true, lingerWarning }))
+  const section = () => screen.getByRole("region", { name: "Daemon on this machine" })
+  const user = userEvent.setup()
+  const idle = workspaceSnapshot({ approvals: [], sessions: demoWorkspace.sessions.map((session) => { const { activeTurnId: _turn, ...rest } = session; return { ...rest, state: "idle" as const } }) })
+  render(<WorkspaceShell clientKind="desktop" windowBridge={bridge(install, "linux")} localDaemon={{ title: "Running Domovoi inside this app", detail: "", owner: "app" }} onLocalDaemonChanged={vi.fn()} />)
+  await act(async () => { completeHandshake(harness.socket(0), idle) })
+  await settle()
+  await skipFirstRun(user)
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  await screen.findByRole("region", { name: "Daemon on this machine" })
+  await user.click(within(section()).getByRole("button", { name: "Install" }))
+  await settle()
+  expect(await within(section()).findByText(lingerWarning)).toBeTruthy()
+  expect(within(section()).getByText("Installed. Quitting this app now leaves the daemon and its sessions running.")).toBeTruthy()
 })
 
 // The installed-service fact the daemon section waits for comes from the

@@ -910,6 +910,30 @@ written to a system-wide location and no step asks for elevation. `status` repor
 service file is present and whether the manager currently runs it, and exits non-zero when nothing
 is installed. `remove` stops the service and deletes the file it pointed at.
 
+To keep the daemon running while its person is away:
+
+- **Linux lingering** (decided 2026-09-17). Without it, systemd stops the daemon when the user's
+  last session ends. `install` runs `loginctl enable-linger` for the installing user when
+  lingering is off, says so, and records `"lingerEnabledByDomovoi": true` in `service.json`;
+  lingering that was already on is left alone and recorded as `false`. `remove` runs
+  `loginctl disable-linger` only on `true`, so lingering that another service or the person relied
+  on stays as it was. When `loginctl` is missing or refuses, `install` still installs, exits 0,
+  records nothing, and says on stderr that the daemon stops at logout and starts again at the next
+  login.
+- **Windows.** The logon task runs the daemon itself and has no crash supervision yet: a daemon
+  that crashes stays down until the next logon or a manual start. Supervision returns together
+  with the job-object work (ruling Q300 A, 2026-10-01). The task does get Task Scheduler's
+  72 hour execution limit and battery stops lifted, so the daemon is not ended after three days or
+  on battery, and every `schtasks` call names the one under `SystemRoot`.
+- **WSL update, known limit** (ruling Q311 A). An update from the app retires the guest
+  supervisor registration and registers it again under the same ID, so the new supervisor and
+  the restored one both refuse to start and the service stays down. Starting the task by hand
+  does not help; remove the service and install it again. A separate PR will fix it with
+  per-start IDs and a start fence held through cleanup.
+
+[Daemon service configuration](../../docs/daemon-services.md) has the printed text, failure
+handling and what is and is not proved natively.
+
 A service file never carries a secret. `DOMOVOI_AUTH_TOKEN` and any other credential stay in the
 user-private files the daemon already reads.
 

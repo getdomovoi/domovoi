@@ -42,18 +42,34 @@ clean-exit and live-child/backoff-removal evidence independently.
 Actual Windows user logon is still unproved. Neither this wiring nor a manual
 task start closes that gate. S1.1 stays open.
 
-**Decided 2026-09-17, not built as of 2026-09-22** (`SHIP-PLAN.md` S1.1,
-6a0be626). The two policies this assessment left to the maintainer are settled:
+**Decided 2026-09-17; Linux built 2026-10-01, Windows deferred, neither
+accepted** (`SHIP-PLAN.md` S1.1, 6a0be626; owner ruling Q282 A to build them,
+ruling Q300 A to defer Windows). The two policies this assessment left to the
+maintainer are settled. [Daemon service configuration](daemon-services.md)
+has the printed text and failure handling.
 
-- Linux enables linger. `service install` runs `loginctl enable-linger`, says
-  that it did, and records in its saved configuration that it enabled it;
-  `service remove` runs `disable-linger` only on that record. Owed: the
-  implementation (no daemon source mentions linger today) and a native proof
-  that the unit survives logout and starts at boot.
-- Windows matches WSL's shape. The scheduled task gains the same supervisor
-  loop with backoff and loud exhaustion the WSL guest has. Owed: the
-  implementation, native crash-restart and exhaustion proofs, and the actual
-  logon acceptance above.
+- Linux enables linger. `service install` asks `loginctl show-user <uid>
+  --property=Linger --value`; on `no` it runs `loginctl enable-linger <uid>`,
+  says that it did, and records `"lingerEnabledByDomovoi": true` in
+  `service.json`; on `yes` it changes nothing and records `false`. `service
+  remove` runs `disable-linger` only on `true`. A missing or failing `loginctl`
+  warns, records nothing and still installs: the service works while its user
+  is logged in, and the warning says the daemon stops at logout. Evidence: unit
+  tests with a mocked command runner, and the distributed-CLI test with a
+  shimmed `loginctl` on the Linux CI leg. No test runs a real `loginctl`. Owed:
+  a native proof that the unit survives logout and starts at boot.
+- Windows matches WSL's shape: not built. A supervisor loop under the logon
+  task was built on `feat/s1-1-service-policies` and taken out by ruling
+  Q300 A (2026-10-01). Security review of #698 showed that failing closed on
+  Windows needs per-attempt process tree evidence, a startup gate and
+  boot-based recovery, which a job object that contains the daemon's tree
+  would provide; the policy returns with that work. The logon task still runs
+  the daemon itself, with no crash restart. What did land for it: every
+  `schtasks` call names the one under `SystemRoot`, and a step after each
+  `schtasks /create` sets `ExecutionTimeLimit` `PT0S` and both battery rules
+  false, as the WSL task does, replacing the documented 72 hour default. Owed:
+  the supervision itself, a native read-back of those settings (only the
+  generated script is tested), and the actual logon acceptance above.
 
 The accepted scope is Unix acceptance, two status-reporting fixes, and Windows
 and WSL lifecycle decisions. Existing Unix adapters already install, supervise
@@ -287,8 +303,8 @@ Source locations in this section refer to the baseline commit above.
 | Platform | Built | Evidence read | Remaining work or decision |
 | --- | --- | --- | --- |
 | macOS | Per-user LaunchAgent in `gui/<uid>`, saved configuration, install/remove, `RunAtLoad`, and `KeepAlive` with `SuccessfulExit=false`. `service/install.ts:182`, `service/units.ts:69`. | Native lifecycle and crash/clean-exit tests at `service/launchd-agent.native.test.ts:322` and `:376`; [macOS job](https://github.com/getdomovoi/domovoi/actions/runs/34635457431/job/103382119331) ran that file's nine tests with no skips. | Fix `service/install.ts:444`: loadedness is reported as running. Acceptance still needs the intended login/logout and reboot boundary. The existing GUI agent supplies no pre-login daemon contract. |
-| Linux | Per-user systemd unit, `enable --now`, status, `disable --now` and removal, `Restart=on-failure`, five-second restart delay. `service/install.ts:169`, `service/units.ts:48`. | [Linux job](https://github.com/getdomovoi/domovoi/actions/runs/34635457431/job/103382119025) ran both tests in `service/systemd-unit.native.test.ts`: lifecycle plus crash restart, explicit-stop and clean-exit negatives. | The installer does not enable lingering yet. Decided 2026-09-17: it will, on install, and remove only a linger it enabled itself (see above). Native proofs use a throwaway process and unit; they do not reboot the host or prove production-daemon state recovery. |
-| Windows | Limited-user `ONLOGON` Task Scheduler task, immediate demand start, saved configuration, bounded disable/stop/observe/delete removal. `service/install.ts:193`, `service/windows-task.ts:66`. | [Windows job](https://github.com/getdomovoi/domovoi/actions/runs/34635457431/job/103382119358) ran `service/windows-task.native.test.ts:23`: one native stop-before-delete proof. Portable tests and the intercepted-manager CLI test cover creation/configuration. | The implementation is a user task, not an SCM Windows service. Crash restart is not configured yet. Decided 2026-09-17: the task gets the WSL guest's supervisor loop (see above). Full native creation/logon acceptance is missing. Fix the English `Status: Running` match at `service/install.ts:466`; formatting localized values as CSV would not establish a stable state contract. |
+| Linux | Per-user systemd unit, `enable --now`, status, `disable --now` and removal, `Restart=on-failure`, five-second restart delay. `service/install.ts:169`, `service/units.ts:48`. | [Linux job](https://github.com/getdomovoi/domovoi/actions/runs/34635457431/job/103382119025) ran both tests in `service/systemd-unit.native.test.ts`: lifecycle plus crash restart, explicit-stop and clean-exit negatives. | The installer does not enable lingering yet. Decided 2026-09-17: it will, on install, and remove only a linger it enabled itself (see above). Built 2026-10-01 with mocked and shimmed `loginctl` evidence only; the native logout and boot proof is owed. Native proofs use a throwaway process and unit; they do not reboot the host or prove production-daemon state recovery. |
+| Windows | Limited-user `ONLOGON` Task Scheduler task, immediate demand start, saved configuration, bounded disable/stop/observe/delete removal. `service/install.ts:193`, `service/windows-task.ts:66`. | [Windows job](https://github.com/getdomovoi/domovoi/actions/runs/34635457431/job/103382119358) ran `service/windows-task.native.test.ts:23`: one native stop-before-delete proof. Portable tests and the intercepted-manager CLI test cover creation/configuration. | The implementation is a user task, not an SCM Windows service. Crash restart is not configured yet. Decided 2026-09-17: the task gets the WSL guest's supervisor loop (see above). Deferred 2026-10-01 by ruling Q300 A until a job object can contain the daemon's tree; crash restart is still not configured. Full native creation/logon acceptance is missing. Fix the English `Status: Running` match at `service/install.ts:466`; formatting localized values as CSV would not establish a stable state contract. |
 | WSL without systemd | The daemon runs in a real guest and exposes authenticated transport. `index.ts:169` passes `process.platform`, so service installation takes the ordinary Linux `systemctl --user` path. There is no WSL-specific supervisor selection. | [Native WSL run](https://github.com/getdomovoi/domovoi/actions/runs/34633804887/job/103376745829) at ancestor `9a3af4976f0e3c31a8c94aaa2f824ebe4a13a90a`: WSL 2.7.13.0, 15 passed, zero skipped. | Select the launch trigger, crash supervisor and instance-lifetime contract. The proof has `systemd=false`, an explicit foreground launch and an explicit restart. It does not install or test automatic supervision. |
 
 The three ordinary CI jobs above ran against the exact measured main commit.

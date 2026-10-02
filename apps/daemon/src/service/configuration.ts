@@ -19,6 +19,7 @@ const configurationSchema = z.object({
   registrationId: z.uuid().optional(),
   wsl: wslInstallationSchema.optional(),
   serviceRuntime: z.object({ executable: pathSchema, entry: pathSchema }).strict().optional(),
+  lingerEnabledByDomovoi: z.boolean().optional(),
   homeDirectory: pathSchema,
   profileDirectory: pathSchema.optional(),
   host: z.string(),
@@ -47,6 +48,10 @@ export type ServiceConfiguration = Omit<DaemonEnvironmentConfig, "authToken"> & 
   registrationId?: string
   wsl?: WslInstallation
   serviceRuntime?: ServiceRuntimeRecord
+  // Decided 2026-09-17 (SHIP-PLAN S1.1), Linux only: true when a Domovoi
+  // install turned lingering on, false when it was already on. Absent when it
+  // was never checked or could not be changed. Removal turns it off only on true.
+  lingerEnabledByDomovoi?: boolean
   homeDirectory: string
 }
 
@@ -204,12 +209,13 @@ export function serviceProfileMismatch(input: { environment: NodeJS.ProcessEnv; 
 export function parseServiceConfiguration(text: string): ServiceConfiguration {
   try {
     if (Buffer.byteLength(text, "utf8") > maximumConfigurationBytes) throw new Error("oversized")
-    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, webAppUrl: savedWebAppUrl, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, serviceRuntime, ...required } = configurationSchema.parse(JSON.parse(text))
+    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, webAppUrl: savedWebAppUrl, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, serviceRuntime, lingerEnabledByDomovoi, ...required } = configurationSchema.parse(JSON.parse(text))
     const webAppUrl = webAppUrlSetting(savedWebAppUrl)
     const config: ServiceConfiguration = {
       ...required,
       ...(wsl !== undefined ? { wsl } : {}),
       ...(serviceRuntime !== undefined ? { serviceRuntime } : {}),
+      ...(lingerEnabledByDomovoi !== undefined ? { lingerEnabledByDomovoi } : {}),
       ...(profileDirectory !== undefined ? { profileDirectory } : {}),
       ...(relayIdentityPublicKey !== undefined ? { relayIdentityPublicKey } : {}),
       ...(relayCredentialFile !== undefined ? { relayCredentialFile } : {}),

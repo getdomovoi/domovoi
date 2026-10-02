@@ -27,6 +27,8 @@ import { launchdPlistProgram, systemdUnitProgram } from "./units.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { DaemonServiceUpdateError, publishFirst, runServiceUpdate, trackInFlight } from "./update-outcome.js"
 import { prepareWslUpdate } from "./wsl-install.js"
+import { lingerInstallLine, type LingerInstallOutcome, type LingerRemovalOutcome } from "./linger.js"
+import { windowsSchtasksPath } from "./windows-task.js"
 
 export { DaemonServiceUpdateError, type DaemonServiceUpdateOutcome } from "./update-outcome.js"
 
@@ -89,12 +91,16 @@ export type DaemonServiceStagedRuntime = {
   publish: () => Promise<void>
 }
 
+// linger: Linux only, what the install or removal did to lingering
+// (service/linger.ts). An update leaves lingering as it is and reports none.
+// lingerWarning: the CLI's own stderr line, from linger.ts, when lingering
+// could not be turned on, so the app shows it rather than a plain success.
 export type DaemonServiceInstallResult =
-  | { kind: "file"; path: string; configurationPath: string }
+  | { kind: "file"; path: string; configurationPath: string; linger?: LingerInstallOutcome; lingerWarning?: string }
   | { kind: "task"; name: string; configurationPath: string }
 
 export type DaemonServiceRemovalResult =
-  | { kind: "file"; path: string; profileRecovery: ProfileRecovery; profileRecoveryDetail?: string }
+  | { kind: "file"; path: string; profileRecovery: ProfileRecovery; profileRecoveryDetail?: string; linger?: LingerRemovalOutcome }
   | { kind: "task"; name: string; profileRecovery: ProfileRecovery; profileRecoveryDetail?: string }
 
 type ProfileRecovery = "recorded" | "operator-confirmation-required" | "proof-unavailable" | "not-needed"
@@ -193,9 +199,13 @@ export async function installDaemonService(
       },
     }),
   })
-  return plan.kind === "file"
-    ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
-    : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
+  if (plan.kind !== "file") return { kind: "task", name: taskName, configurationPath: plan.configuration.path }
+  const warning = plan.linger === undefined ? undefined : lingerInstallLine(plan.linger, target(dependencies))
+  return {
+    kind: "file", path: plan.path, configurationPath: plan.configuration.path,
+    ...(plan.linger === undefined ? {} : { linger: plan.linger }),
+    ...(warning?.stream === "stderr" ? { lingerWarning: warning.text.trim() } : {}),
+  }
 }
 
 export type DaemonServiceUpdateOptions = {
@@ -320,7 +330,7 @@ export async function removeDaemonService(
     ...(removed.profileRecoveryDetail === undefined ? {} : { profileRecoveryDetail: removed.profileRecoveryDetail }),
   }
   return removed.kind === "file"
-    ? { kind: "file", path: removed.path, ...recovery }
+    ? { kind: "file", path: removed.path, ...recovery, ...(removed.linger === undefined ? {} : { linger: removed.linger }) }
     : { kind: "task", name: taskName, ...recovery }
 }
 
@@ -424,7 +434,8 @@ export async function readDaemonServiceRuntimeVersion(
   if (reader.platform === "win32") {
     const deadline = OperationDeadline.start(10_000)
     try {
-      const queried = await reader.capture("schtasks", ["/query", "/tn", loginServiceTaskName, "/xml"], deadline)
+      // Under SystemRoot, never a schtasks found by name (review F3).
+      const queried = await reader.capture(windowsSchtasksPath(), ["/query", "/tn", loginServiceTaskName, "/xml"], deadline)
       definition = queried.code === 0 ? queried.stdout : undefined
     } finally {
       deadline.clear()
@@ -463,7 +474,7 @@ export async function readDaemonServiceRuntimeCopy(
   if (reader.platform === "win32") {
     const deadline = OperationDeadline.start(10_000)
     try {
-      const queried = await reader.capture("schtasks", ["/query", "/tn", loginServiceTaskName, "/xml"], deadline)
+      const queried = await reader.capture(windowsSchtasksPath(), ["/query", "/tn", loginServiceTaskName, "/xml"], deadline)
       if (queried.code === 0) definition = queried.stdout
       else if (!isMissingServiceFailure("win32", queried)) throw new Error(`schtasks could not read the login service: ${queried.stderr?.trim() || `exit code ${queried.code}`}`)
     } finally {

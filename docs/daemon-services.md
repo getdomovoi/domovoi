@@ -27,10 +27,22 @@ proof retains the registration; a missing task alone never authorizes recovery.
 Remove an existing registration before reinstalling. Interrupted installation can
 require operator reconciliation if no supervisor identity was ever recorded.
 
+Known limit (ruling Q311 A, read from source, not tested): a WSL update from the
+app stops the guest loop the way removal does, which retires the supervisor
+registration, then registers the same registration ID again. The new guest
+supervisor refuses to start for a retired registration, so the new service
+never reports ready. The restore registers the old task under that same ID, and
+it refuses too, so the update fails and says the service is not running.
+Starting the task by hand does not help, because the retirement still names that
+ID; remove the service and install it again, which issues a new ID. A separate
+PR will fix this with per-start IDs and a start fence held through cleanup.
+
 This is Windows user logon, not Windows boot supervision. The guest loop is not
-self-restarting after distro or loop loss. Native Windows crash policy and Linux
-lingering are unchanged. A demand-start fixture does not establish real logon
-acceptance; that remains open in the lifecycle assessment.
+self-restarting after distro or loop loss. A demand-start fixture does not
+establish real logon acceptance; that remains open in the lifecycle assessment.
+The native Windows logon task has no crash supervision yet
+([Windows logon task](#windows-logon-task)), and a Linux install turns
+lingering on ([Linux lingering](#linux-lingering)).
 
 It captures the current daemon configuration before asking the service manager to start anything.
 Close other daemon owners, including Desktop, before starting the service, then reopen Desktop to
@@ -117,6 +129,83 @@ but it yields no recovery receipt: the command names the unreadable file and poi
 `domovoid profile recover --confirm-no-supervisor` after repair. It does not remove the
 credential, identity, workspace database, or worktrees.
 
+## Linux lingering
+
+Decided 2026-09-17 (`SHIP-PLAN.md` S1.1). Without lingering, systemd stops a user's units when that
+user's last session ends and starts them again at the next login, so the daemon would stop at
+logout. `domovoid service install` on Linux (not inside WSL) therefore asks
+`loginctl show-user <uid> --property=Linger --value` first:
+
+- `no`: it runs `loginctl enable-linger <uid>`, saves `"lingerEnabledByDomovoi": true` in
+  `service.json`, and prints `Turned on lingering for <user> with loginctl enable-linger, so the
+  daemon keeps running after <user> logs out and starts when the machine boots. domovoid service
+  remove turns it off again.`
+- `yes`: it changes nothing, saves `"lingerEnabledByDomovoi": false`, and prints `Lingering was
+  already on for <user>, so Domovoi left it as it was. domovoid service remove will leave it on.`
+  A reinstall over a configuration that already says `true` keeps `true` and prints `Lingering for
+  <user> stays on from an earlier Domovoi install. domovoid service remove turns it off again.`
+
+Lingering is asked for under the profile lease, before `service.json` is written, so one write
+records it. Any other answer is a failure: `loginctl` missing (`loginctl was not found`), a non-zero
+exit (its own message), or a value other than `yes` or `no`. A failure records nothing, installs
+the service anyway, exits 0, and prints on stderr `Could not turn on lingering for <user>: <reason>.
+The service is installed, but systemd stops the daemon when <user> logs out of every session and
+starts it again at the next login. To keep it running, run loginctl enable-linger; domovoid service
+remove will then leave lingering on.` It warns rather than fails because the service itself works
+while the user is logged in, the way the WSL install succeeds and states its own limit (`Windows user
+logon only; no boot supervision.`). Every manager step stays fatal, and so does an expired deadline. If a later install step fails and the previous service files are put back, the lingering
+this install turned on is turned off again; if that fails too, the error says lingering is still
+on.
+
+`domovoid service remove` reads the record before anything changes. Only `true` runs
+`loginctl disable-linger <uid>`, after the unit and `service.json` are gone, and prints `Turned off
+lingering for <user>, which Domovoi turned on at install.` `false` prints `Lingering for <user> was
+on before Domovoi was installed, so it was left on.` No record, or a configuration that cannot be
+read, leaves lingering as found and prints nothing about it. A failed `disable-linger` does not undo
+the removal; it prints on stderr that lingering stays on and how to turn it off. The desktop's
+install and removal do the same and return the outcome as `linger`. When lingering could not be
+turned on, the install also returns the CLI's stderr text as `lingerWarning`, and Desktop shows it
+under the install result (ruling Q307). Desktop does not show the removal's outcome yet.
+
+Desktop refuses service text over 4,096 UTF-16 units. Before any lingering line is composed,
+`loginctl`'s diagnostic is cut to 1,000 code points and the user name to 128, each followed by
+`... (shortened)` when cut. The CLI and Desktop print the same bounded line, and the logout limit
+and the `loginctl enable-linger` advice always fit (review of #698, round 4).
+
+`loginctl` is run by its bare name and found through `PATH`, as `systemctl` is: `PATH` is trusted
+for the Linux service commands. Every call passes the installing user's numeric uid, taken from
+the OS, never from `service.json`.
+
+The record is an ownership hint, not proof of who turned lingering on (security review of #698).
+`service.json` is a private file of the same user, and the record says what an install saw, not
+what has happened since. Two cases follow. A stale `true`, or one written into the file by hand,
+makes removal turn lingering off even when Domovoi did not turn on the lingering in force; this
+includes lingering turned off and on again by the person after the install, since a reinstall that
+finds it on keeps an earlier `true`. And a reinstall whose `loginctl` read fails records nothing,
+dropping an earlier `true`, so a later removal leaves on the lingering Domovoi did turn on. Either
+case only changes the installing user's own lingering.
+
+## Windows logon task
+
+The limited-user `ONLOGON` task runs the daemon itself with `--service-config`. It has no crash
+supervision yet: a daemon that crashes stays down until the next logon or a manual start. The
+2026-09-17 decision to give it the WSL guest's supervisor loop was taken out of #698 by ruling
+Q300 A (2026-10-01), after review showed that failing closed on Windows needs per-attempt process
+tree evidence, a startup gate and boot-based recovery. It returns together with a job object that
+contains the daemon's tree.
+
+The task is created by `schtasks /create /sc onlogon /rl LIMITED`, which cannot set a task's run
+limit or battery rules and leaves Task Scheduler's defaults: a 72 hour execution limit, as
+Microsoft documents it, and battery rules that stop the task. The daemon would end there, with or
+without supervision. So after every
+`/create`, at install, update and an update's restore, a PowerShell step through the Task Scheduler
+COM interface sets what the WSL task sets: `ExecutionTimeLimit` `PT0S` (no limit),
+`DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries` false. It registers the change in place
+(`TASK_UPDATE`) under the task's own principal and logon type, with no password, before the task
+is run. A failure there fails the install after the task was registered, as any step after
+`/create` does. Tests check the generated script only; Task Scheduler has not been seen to accept
+it.
+
 ## Windows removal
 
 `domovoid service remove` disables the logon task before stopping it, waits for Task Scheduler to
@@ -128,6 +217,10 @@ and [RegisteredTask.State](https://learn.microsoft.com/en-us/windows/win32/tasks
 The Windows path uses the built-in Windows PowerShell Task Scheduler COM interface, not localized
 `schtasks /query` text. The executable is resolved beneath the absolute local `SystemRoot`, never
 from the project directory or `PATH`; a missing or relative OS directory refuses before spawning.
+Since the security review of #698 (F3) the same holds for `schtasks.exe` at install, update,
+restore and in the desktop's runtime readers, which named it bare before, so a repository's own
+`schtasks.exe` could have run. Both tools also run from their own directory, not the caller's.
+`SystemRoot` itself is trusted, as the environment that names the Windows directory.
 It runs noninteractively without a profile, elevation, execution-policy
 bypass, or a task password. Missing or blocked PowerShell refuses removal; there is no delete-only
 fallback. Disable, stop, status observations, deletion, and configuration cleanup share the same
@@ -293,9 +386,10 @@ and every nonzero PowerShell exit refuse the query. Localized `schtasks` prose i
 
 Beyond those native tests these are configuration delivery and focused removal checks, not full
 native systemd, launchd, or Task Scheduler lifecycle acceptance. Crash supervision of the fixture
-process is proven on systemd and launchd, and absent on Windows: the logon task is created with
-no restart setting at all, so nothing on that platform claims to relaunch a crashed daemon before
-the next logon and there is no policy there for a test to hold to. Installer rollback
+process is proven on systemd and launchd, and absent on Windows: the logon task runs the daemon
+directly with no restart, and supervision returns with the job-object work (ruling Q300 A).
+Lingering is proven only against mocked and shimmed `loginctl`; no test changes a real user's
+lingering. Installer rollback
 remains separate audit work. A timed-out manager may already have changed OS state; inspect service
 status before retrying. Each file is replaced by a same-directory rename only after a complete
 private staging write. A failed write preserves the last complete file. Expiry or a crash can leave
