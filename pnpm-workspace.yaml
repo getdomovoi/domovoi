@@ -57,3 +57,13 @@ minimumReleaseAgeExclude:
   - expo-modules-core@57.0.16
   - expo-modules-jsi@57.0.8
   - expo@57.0.20
+
+auditConfig:
+  ignoreGhsas:
+    # GHSA-86w9-cpqp-85rv, high: node-forge accepts extra nested DigestAlgorithm
+    # elements in RSA PKCS#1 v1.5 signature checks. Every node-forge release is
+    # affected (<= 1.4.0) and none is patched as of 2026-10-01. It reaches only
+    # apps/mobile, through Expo CLI's code-signing tools for development builds;
+    # the daemon, desktop, web and CLI do not depend on it. Ruling Q309 A,
+    # 2026-10-01. Remove once node-forge or Expo ships a fix.
+    - GHSA-86w9-cpqp-85rv
