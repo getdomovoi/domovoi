@@ -260,10 +260,11 @@ function pinnedText(files: number): string {
 }
 
 // A Git config file is not: the configuration digest pins each filter and Git
-// LFS setting listed (scope, key, value and required state), and the review
-// digest pins the file and scope that set it. Another setting in the same file
-// changes neither, so the sheet promises no more than that.
-const gitConfigPinnedText = "In the Git config only the filter settings listed here are pinned, not the whole file: changing one of them, or the file that sets it, holds them back again. Other Git settings in that file are not pinned."
+// LFS setting listed (scope, key, value and required state). Another setting
+// in the same file changes nothing pinned, and the review digest names a file
+// only by its shown, redacted label, so moving a setting to another file is
+// not promised to count either (ruling Q325).
+const gitConfigPinnedText = "In the Git config only the filter settings listed here are pinned, not the whole file: changing one of them holds them back again. Other Git settings in that file are not pinned."
 
 // One Git config file in one scope, with each filter driver it sets. The
 // repository's .gitattributes decides which files a driver runs on; the

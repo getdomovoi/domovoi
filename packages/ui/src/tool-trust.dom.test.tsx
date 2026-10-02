@@ -21,7 +21,9 @@ const digest = `sha256:${"a".repeat(64)}`
 const changedDigest = `sha256:${"c".repeat(64)}`
 // tool.inventory's digest over the git filter block it lists.
 const reviewDigest = `sha256:${"b".repeat(64)}`
-const gitConfigPinnedText = "In the Git config only the filter settings listed here are pinned, not the whole file: changing one of them, or the file that sets it, holds them back again. Other Git settings in that file are not pinned."
+// It promises nothing about moving a setting to another file: the review
+// digest names a file by its shown, redacted label (ruling Q325).
+const gitConfigPinnedText = "In the Git config only the filter settings listed here are pinned, not the whole file: changing one of them holds them back again. Other Git settings in that file are not pinned."
 const grant = { trustedDigest: digest, trustedAt: "2026-09-12T10:41:00.000Z", trustedBy: { client: "desktop" as const } }
 const readAt = new Date("2026-09-29T14:02:31")
 const notTrusted: RepositoryTrustState = { state: "untrusted", reason: "not-trusted" }
