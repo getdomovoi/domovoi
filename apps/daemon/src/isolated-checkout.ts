@@ -10,7 +10,8 @@ import { windowsTreeKill, type TaskkillSpawn } from "./claude-process.js"
 import { gitCommand } from "./git-command.js"
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { isStandardLfsFilterLine } from "./git-read-config.js"
-import type { GitFilterSetting } from "./repository-git-filters.js"
+import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
+import { RepositoryGitConfigUnreadableError, type GitFilterSetting } from "./repository-git-filters.js"
 import { trackRestoreCommand } from "./workspace-restore-lease.js"
 
 const execute = promisify(execFile)
@@ -432,6 +433,96 @@ export type IsolatedGit = {
   dispose(): Promise<void>
 }
 
+// The filter configuration this directory runs with: the source worktree's
+// own, never one it works out again (ruling Q318). Its global and system
+// config can be conditional on the Git directory or the branch, which differ
+// here, and it reads none of the repository's config. So for every filter
+// driver that the source sets any of clean, smudge, process or required for,
+// in any scope, each of the four the source sets is pinned to the source's
+// effective value, the last one Git reads there (ruling Q317's empty
+// override among them).
+//
+// A command the repository's own config sets, other than the exact `git lfs
+// install` lines, runs only as reviewed: under a trusted grant the reviewed
+// pins, added after these and equal to them, carry it. Without one (evidence
+// with filters off) its driver is pinned absent, no command and not
+// required, as that evidence treats the repository's filters.
+function sourceFilterPins(
+  settings: readonly GitFilterSetting[],
+  reviewed: ReadonlyArray<readonly [string, string]>,
+): Array<readonly [string, string]> {
+  const effective = new Map<string, GitFilterSetting>()
+  const drivers = new Set<string>()
+  for (const setting of settings) {
+    const match = filterPolicyKey.exec(setting.key)
+    if (match === null) continue
+    effective.set(setting.key, setting)
+    drivers.add(match[1]!)
+  }
+  const reviewedKeys = new Set(reviewed.map(([key]) => key))
+  const pins: Array<readonly [string, string]> = []
+  for (const driver of drivers) {
+    const commands = ["clean", "smudge", "process"].map((operation) => `filter.${driver}.${operation}`)
+    const heldBack = commands.some((key) => {
+      const setting = effective.get(key)
+      return setting !== undefined && !trustedConfigScopes.has(setting.scope) && setting.value !== ""
+        && !isStandardLfsFilterLine(key, setting.value) && !reviewedKeys.has(key)
+    })
+    // Only the keys the source sets: an unset key and an empty one differ to
+    // Git (an empty process, unlike none, turns clean and smudge off), so an
+    // unset key stays unset, and refuseUnpinnedFilters refuses one this
+    // directory would read.
+    for (const key of commands) {
+      const setting = effective.get(key)
+      if (setting !== undefined) pins.push([key, heldBack ? "" : setting.value])
+    }
+    const required = effective.get(`filter.${driver}.required`)
+    if (required !== undefined) pins.push([required.key, heldBack ? "false" : required.value])
+  }
+  return pins
+}
+
+// A filter driver's keys that decide what runs and whether it may fail.
+const filterPolicyKey = /^filter\.(.+)\.(?:clean|smudge|process|required)$/u
+
+// After the pins, the directory must read exactly them for every filter
+// policy key: a driver or key only this directory sees (a global include
+// conditional on its Git directory, say) or a value other than the pin
+// refuses, naming the key (ruling Q318). Nothing has run yet.
+async function refuseUnpinnedFilters(environment: NodeJS.ProcessEnv, worktree: string, pins: ReadonlyArray<readonly [string, string]>): Promise<void> {
+  const pinned = new Map(pins.filter(([key]) => filterPolicyKey.test(key)))
+  let output = ""
+  try {
+    output = (await execute(gitCommand(environment), [...inertRepositoryConfig, "config", "-z", "--get-regexp", "^filter\\."], {
+      env: environment, cwd: worktree, encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
+    })).stdout
+  } catch (error) {
+    // Exit 1: no filter key at all, which only holds with nothing pinned.
+    if ((error as { code?: unknown }).code !== 1) throw new RepositoryGitConfigUnreadableError("git-failed", { cause: error })
+  }
+  const seen = new Map<string, string>()
+  for (const record of output.split("\0")) {
+    if (record === "") continue
+    const newline = record.indexOf("\n")
+    const key = newline === -1 ? record : record.slice(0, newline)
+    if (!filterPolicyKey.test(key)) continue
+    if (newline === -1 && !key.endsWith(".required")) {
+      throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `the isolated Git directory reads ${shownFilterKey(key)} with no value` })
+    }
+    seen.set(key, newline === -1 ? "true" : record.slice(newline + 1))
+  }
+  for (const [key, value] of seen) {
+    if (pinned.get(key) !== value) {
+      throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `the isolated Git directory reads ${shownFilterKey(key)} other than the worktree does` })
+    }
+  }
+  for (const key of pinned.keys()) {
+    if (!seen.has(key)) throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `the isolated Git directory does not read ${shownFilterKey(key)} as the worktree does` })
+  }
+}
+
+const shownFilterKey = (key: string) => redactInventoryText(key, inventoryFieldCaps.detail)
+
 export async function openIsolatedGit(input: {
   worktree: string
   // The worktree's filter settings as the gate read them: the source of the
@@ -467,21 +558,7 @@ export async function openIsolatedGit(input: {
   }
   const storage = last("lfs.storage")
   pins.push(["lfs.storage", storage === undefined || storage === "" ? join(commonDirectory, "lfs") : isAbsolute(storage) ? storage : resolve(commonDirectory, storage)])
-  for (const setting of settings) {
-    if (!trustedConfigScopes.has(setting.scope) && isStandardLfsFilterLine(setting.key, setting.value)) pins.push([setting.key, setting.value])
-  }
-  // A filter command the repository's own config empties, over one a global
-  // or system config sets: Git then runs no command for it. This directory
-  // reads no repository config, so the empty value is carried, or the
-  // inherited command would run here while ordinary Git runs nothing (ruling
-  // Q317). Only where the repository's empty value is the last one Git reads.
-  const lastFilterCommand = new Map<string, GitFilterSetting>()
-  for (const setting of settings) {
-    if (/^filter\..+\.(?:clean|smudge|process)$/u.test(setting.key)) lastFilterCommand.set(setting.key, setting)
-  }
-  for (const [key, setting] of lastFilterCommand) {
-    if (!trustedConfigScopes.has(setting.scope) && setting.value === "") pins.push([key, ""])
-  }
+  pins.push(...sourceFilterPins(settings, input.reviewed ?? []))
   for (const key of ["lfs.url", "lfs.pushurl"]) {
     const value = last(key)
     if (value !== undefined && carriedRemoteUrl(value)) pins.push([key, value])
@@ -554,6 +631,16 @@ export async function openIsolatedGit(input: {
     environment[`GIT_CONFIG_VALUE_${position}`] = value
   })
   environment.GIT_CONFIG_COUNT = String(pins.length)
+  // The pins are the last values Git reads, so the effective filter keys
+  // are: the reviewed pins after the source pins, each the same value.
+  const effectivePins = new Map<string, string>()
+  for (const [key, value] of pins) effectivePins.set(key, value)
+  try {
+    await refuseUnpinnedFilters(environment, worktree, [...effectivePins])
+  } catch (error) {
+    await fs.rm(gitDirectory, { recursive: true, force: true })
+    throw error
+  }
 
   // An offline command fetches nothing: a promised object a partial clone
   // lacks fails the command instead of being fetched, and no transport is

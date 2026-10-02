@@ -32,9 +32,11 @@ Checkpoint, snapshot, restore, file revert, transfer and evidence now run every 
 reads or writes the worktree's files or index in the same temporary Git directory as a new
 session's checkout, so no repository config key (core.sshCommand, core.askPass, a credential
 helper, core.fsmonitor, a Git LFS program setting, an included file) starts a program there,
-trusted or not. A filter command the repository's own config sets to empty, over one your global
-or system config sets, stays empty there too, so the inherited command runs no more than it does
-in ordinary Git. Commits are written with Git's plumbing, since `git commit` and every index write
+trusted or not. That directory runs with the worktree's own effective filter configuration: every
+filter driver's clean, smudge, process and required the worktree sets, in any scope, conditional
+global includes and empty overrides included, is pinned to the worktree's value, and a filter key
+the directory would read otherwise refuses the operation, naming the key, before anything runs.
+Commits are written with Git's plumbing, since `git commit` and every index write
 can run a clean filter. A checkpoint stages and commits in an index of its own, seeded from the
 worktree's, so a failed checkpoint leaves the worktree's index as it was and undoes nothing another
 Git wrote meanwhile; on success the worktree's index becomes the checkpoint's, written under

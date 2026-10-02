@@ -8,8 +8,9 @@ import { publishFileDurably } from "@getdomovoi/credential-store"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
-  checkOutIsolated, gitTeardownTimeoutMs, IndexChangedError, publishUnderIndexLock, runGitProcess, windowsGitStop,
+  checkOutIsolated, gitTeardownTimeoutMs, IndexChangedError, openIsolatedGit, publishUnderIndexLock, runGitProcess, windowsGitStop,
 } from "./isolated-checkout.js"
+import { readGitFilterSettings } from "./repository-git-filters.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const scratchDirectories: string[] = []
@@ -383,5 +384,91 @@ describe("checkOutIsolated after the index changed", () => {
       await chmod(commonDirectory, 0o755)
     }
     expect((await readFile(index)).equals(before)).toBe(true)
+  })
+})
+
+// The isolated Git directory runs with the source worktree's effective filter
+// configuration, never one it works out again (ruling Q318). Global config
+// can be conditional on the Git directory or the branch, which differ there:
+// every filter driver's clean, smudge, process and required are pinned to the
+// source's values, and a filter key the pins do not cover refuses. Commands
+// here are inert labels, read as config and never run.
+describe("openIsolatedGit filter configuration", () => {
+  async function sessionWorktree(global: (scratch: string) => string, local = "") {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-isolated-config-"))
+    scratchDirectories.push(scratch)
+    const home = join(scratch, "home")
+    await mkdir(home)
+    const repository = join(scratch, "project")
+    const worktree = join(scratch, "worktree")
+    const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8", stdio: "pipe", env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config") } })
+    git("init", "-q", "--initial-branch=main", repository)
+    await writeFile(join(repository, "base.txt"), "base\n")
+    git("-C", repository, "add", ".")
+    git("-C", repository, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-qm", "initial")
+    git("-C", repository, "worktree", "add", "-q", "-b", "domovoi/session", worktree)
+    await writeFile(join(home, ".gitconfig"), global(scratch))
+    if (local !== "") {
+      const config = join(repository, ".git", "config")
+      await writeFile(config, `${await readFile(config, "utf8")}${local}`)
+    }
+    const previous = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
+    process.env.HOME = home
+    process.env.XDG_CONFIG_HOME = join(home, ".config")
+    const restore = () => {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+    return { scratch, worktree, restore }
+  }
+
+  const isolatedValue = async (worktree: string, key: string) => {
+    const isolated = await openIsolatedGit({ worktree, settings: await readGitFilterSettings(worktree), worktreeIndex: true })
+    try {
+      return (await isolated.run(["config", "--get", key])).replace(/\n$/u, "")
+    } finally {
+      await isolated.dispose()
+    }
+  }
+
+  it("keeps a command a global branch-conditional include empties for the source branch", async () => {
+    const { worktree, restore } = await sessionWorktree((scratch) => {
+      const override = join(scratch, "override.gitconfig")
+      execFileSync("sh", ["-c", `printf '[filter "agent"]\\n\\tclean =\\n' > "${override}"`])
+      return `[filter "agent"]\n\tclean = domovoi-inert-label\n[includeIf "onbranch:domovoi/**"]\n\tpath = ${override.replaceAll("\\", "/")}\n`
+    })
+    try {
+      expect(await isolatedValue(worktree, "filter.agent.clean")).toBe("")
+    } finally {
+      restore()
+    }
+  })
+
+  it("keeps a repository's required=true over an inherited required=false", async () => {
+    const { worktree, restore } = await sessionWorktree(
+      () => "[filter \"agent\"]\n\tclean =\n\tsmudge =\n\trequired = false\n",
+      "[filter \"agent\"]\n\tclean =\n\tsmudge =\n\trequired = true\n",
+    )
+    try {
+      expect(await isolatedValue(worktree, "filter.agent.required")).toBe("true")
+    } finally {
+      restore()
+    }
+  })
+
+  it("refuses a filter key only the isolated directory reads, naming it", async () => {
+    const { worktree, restore } = await sessionWorktree((scratch) => {
+      const ghost = join(scratch, "ghost.gitconfig")
+      execFileSync("sh", ["-c", `printf '[filter "ghost"]\\n\\tclean = domovoi-inert-label\\n' > "${ghost}"`])
+      return `[includeIf "gitdir:**/domovoi-checkout-*"]\n\tpath = ${ghost.replaceAll("\\", "/")}\n`
+    })
+    try {
+      await expect(isolatedValue(worktree, "filter.ghost.clean"))
+        .rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", message: expect.stringContaining("filter.ghost.clean") })
+    } finally {
+      restore()
+    }
   })
 })
