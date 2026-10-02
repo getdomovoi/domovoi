@@ -20,5 +20,7 @@ days or on battery. Install, update, restore and the desktop's runtime readers n
 `schtasks.exe` under `SystemRoot`, from its own directory, instead of one found by name, which
 could have been a repository's own.
 
-Updating a WSL guest service from the app no longer retires the registration it registers again,
-so the new guest loop, or a restored one, starts instead of refusing as stopped for removal.
+Known limit, unchanged: a WSL update retires the supervisor registration and registers it again
+under the same ID, so the new supervisor refuses to start and the service stays down until it is
+started by hand. A separate change will fix it with per-start IDs and a start fence held through
+cleanup.

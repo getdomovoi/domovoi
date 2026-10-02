@@ -287,10 +287,7 @@ export function prepareWslUpdate(
         if (interrupted === undefined) {
           if (!/^domovoi-task:(missing|[1-4])$/.test(await confirmedIn(deadline)(old.disable))) throw new Error("WSL task disable was not confirmed")
         }
-        // Not retired: the new task and a restore run the same registration,
-        // and a loop for a retired one refuses to start. The old task is
-        // disabled meanwhile, so no loop starts before it is deleted.
-        await withinServiceDeadline(deadline, () => stopSupervisor(path, deadline, { retire: false }))
+        await withinServiceDeadline(deadline, () => stopSupervisor(path, deadline))
         // Written just before the delete, once the old task is disabled and
         // its guest supervisor stopped, so status never reports an
         // interrupted update while the old task still runs.
