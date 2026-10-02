@@ -60,6 +60,10 @@ class EventStream implements AsyncIterable<OpenCodeEvent> {
     for (const waiter of this.#waiters.splice(0)) waiter({ value: undefined, done: true })
   }
 
+  get closed(): boolean {
+    return this.#closed
+  }
+
   [Symbol.asyncIterator](): AsyncIterator<OpenCodeEvent> {
     return {
       next: async () => {
@@ -112,6 +116,7 @@ async function start({ second = false, third }: { second?: boolean; third?: "sen
   // Each directory has its own event stream.
   const otherStream = new EventStream()
   const thirdStream = new EventStream()
+  const reopened: EventStream[] = []
   // Aborts wait for a manual answer, by provider session.
   const waiting = new Map<string, Array<(ok: boolean) => void>>()
   let replyPost: { refuse: () => void } | undefined
@@ -149,7 +154,15 @@ async function start({ second = false, third }: { second?: boolean; third?: "sen
       subscribe: vi.fn(async (...args: unknown[]) => {
         const directory = (args[0] as { query?: { directory?: string } } | undefined)?.query?.directory
         if (directory !== undefined && directory === thirdPath) return { stream: thirdStream }
-        return { stream: directory !== undefined && directory === otherPath ? otherStream : stream }
+        // A directory subscribed again after its stream closed gets a new one.
+        if (directory !== undefined && directory === otherPath) {
+          const latest = reopened.at(-1) ?? otherStream
+          if (!latest.closed) return { stream: latest }
+          const fresh = new EventStream()
+          reopened.push(fresh)
+          return { stream: fresh }
+        }
+        return { stream }
       }),
     },
     postSessionIdPermissionsPermissionId: vi.fn(() => new Promise<{ data: boolean }>((_resolve, reject) => {
@@ -371,5 +384,32 @@ describe("a turn ended by overlapping thread stops, through the daemon", () => {
     const completed = actions.findIndex((input) => input.action === "provider.turn-completed" && input.sessionId === thirdSessionId)
     const disconnected = actions.findIndex((input) => input.action === "provider.disconnected")
     expect(disconnected).toBeGreaterThan(completed)
+  })
+
+  // Security review round 17 of #687 (ruling Q313): requests a session with
+  // no turn cannot answer hold no disconnect, so B, whose stream closed,
+  // resumes on its next send once the turns held at the time have ended.
+  it("lets the dropped directory's session resume once the held turns have ended", async () => {
+    const started = await start({ second: true, third: "send" })
+    const { client, stream, otherStream, thirdStream, append, rpc, answer, settle, pendingAborts } = started
+    v2(stream, threadId)
+    await waitForDaemon(() => expect(pendingAborts(threadId)).toBe(1))
+    otherStream.close()
+    await answer(otherThreadId)
+    await settle()
+    v2(thirdStream, thirdThreadId)
+    await waitForDaemon(() => expect(pendingAborts(thirdThreadId)).toBe(1))
+    await answer(threadId)
+    await settle()
+    // A has no turn now; its next such request holds nothing.
+    v2(stream, threadId)
+    await waitForDaemon(() => expect(pendingAborts(threadId)).toBe(1))
+    await answer(thirdThreadId)
+    await waitForDaemon(() => expect(append).toHaveBeenCalledWith(expect.objectContaining({ action: "provider.disconnected" })))
+    const resumes = client.session.get.mock.calls.length
+    const sent = await rpc("session.send", { sessionId: otherSessionId, prompt: "audit again", client: "desktop" })
+    expect(sent.error?.message).toBeUndefined()
+    expect(client.session.get.mock.calls.length).toBeGreaterThan(resumes)
+    await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({ path: { id: otherThreadId } })))
   })
 })

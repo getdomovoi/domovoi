@@ -3096,6 +3096,98 @@ describe("reconciling a turn with the server's own state", () => {
     await adapter.close()
   })
 
+  // Security review round 17 of #687 (ruling Q313): requests a session
+  // cannot answer must not starve a pending disconnect. A stop of a session
+  // with no turn holds nothing, and a disconnect waits at most 30 seconds in
+  // all, after which the server is stopped, every held turn ends and the
+  // disconnect goes out.
+  async function directories() {
+    const { client, factory, server } = harness()
+    const streams = new Map<string, EventStream>()
+    client.event.subscribe.mockImplementation((async (...args: unknown[]) => {
+      const directory = (args[0] as { query: { directory: string } }).query.directory
+      const stream = streams.get(directory) ?? new EventStream()
+      streams.set(directory, stream)
+      return { stream }
+    }) as never)
+    let created = 0
+    client.session.create.mockImplementation(async () => ({ data: { id: `ses_${++created}` } }))
+    const aborts = manualAborts(client)
+    let next = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `msg_${++next}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    let asked = 0
+    return {
+      adapter, client, server, events, aborts,
+      open: (cwd: string) => adapter.startThread({ cwd, runtime: runtime("build") }),
+      turn: (threadId: string, cwd: string) => adapter.startTurn({ threadId, cwd, prompt: "Go", runtime: runtime("build") }),
+      stream: (cwd: string) => streams.get(cwd)!,
+      v2: (cwd: string, threadId: string) => streams.get(cwd)!.emit({ type: "permission.v2.asked", properties: { sessionID: threadId, id: `per_v2_${++asked}` } }),
+    }
+  }
+  const disconnects = (events: AgentEvent[], reason: string) => events.flatMap((event, index) => (event.type === "provider-disconnected" && event.reason === reason ? [index] : []))
+
+  it("lets requests on sessions with no turn hold no disconnect", async () => {
+    const { adapter, events, aborts, open, turn, stream, v2 } = await directories()
+    const a = await open("/a")
+    const c = await open("/c")
+    const b = await open("/b")
+    await turn(b, "/b")
+    v2("/a", a)
+    await waitForDaemon(() => expect(aborts.pending(a)).toBe(1))
+    stream("/b").close()
+    await waitForDaemon(() => expect(aborts.pending(b)).toBe(1))
+    v2("/c", c)
+    await waitForDaemon(() => expect(aborts.pending(c)).toBe(1))
+    aborts.answer(b)
+    await waitForDaemon(() => expect(disconnects(events, "OpenCode event stream connection closed")).toHaveLength(1))
+    expect(aborts.pending(a)).toBe(1)
+    expect(aborts.pending(c)).toBe(1)
+    await adapter.close()
+  })
+
+  it("sends a disconnect within 30 seconds however many turns keep being stopped, after their ends, and stops the server", async () => {
+    const { adapter, server, events, aborts, open, turn, stream, v2 } = await directories()
+    server.stop.mockImplementation(() => new Promise<boolean>(() => {}))
+    const sessions = { a: await open("/a"), c: await open("/c") }
+    const b = await open("/b")
+    await turn(sessions.a, "/a")
+    await turn(sessions.c, "/c")
+    await turn(b, "/b")
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    const tick = (ms: number) => vi.advanceTimersByTimeAsync(ms)
+    v2("/a", sessions.a)
+    await tick(10)
+    stream("/b").close()
+    await tick(10)
+    aborts.answer(b)
+    await tick(10)
+    // Each step starts a new turn on one session and stops it, then lets the
+    // other session's stop end: some turn is always being stopped.
+    let held: "a" | "c" = "a"
+    for (let step = 0; step < 7; step += 1) {
+      // Once the disconnect is out the server is stopped; nothing more runs.
+      if (disconnects(events, "OpenCode event stream connection closed").length > 0) break
+      const nextKey: "a" | "c" = held === "a" ? "c" : "a"
+      const cwd = `/${nextKey}`
+      if (step > 0) await turn(sessions[nextKey], cwd)
+      v2(cwd, sessions[nextKey])
+      await tick(10)
+      aborts.answer(sessions[held])
+      held = nextKey
+      await tick(5_000)
+      if (step < 5) expect(disconnects(events, "OpenCode event stream connection closed")).toEqual([])
+    }
+    const out = disconnects(events, "OpenCode event stream connection closed")
+    expect(out).toHaveLength(1)
+    const ends = events.flatMap((event, index) => (event.type === "turn-completed" ? [index] : []))
+    expect(ends.length).toBeGreaterThan(0)
+    for (const index of ends) expect(index).toBeLessThan(out[0]!)
+    expect(server.stop).toHaveBeenCalled()
+    await adapter.close()
+  })
+
   // R12-3: a server stop that never answers does not hold a send for ever.
   it("rejects a held send when the adapter closes while the server stop is unanswered", async () => {
     const { adapter, client, server, stream, threadId, turnId, seen, tick } = await reconciledTurn()

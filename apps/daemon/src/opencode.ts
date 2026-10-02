@@ -112,6 +112,11 @@ const abortAnswerTimeoutMs = 10_000
 // as unconfirmed (#retire).
 const serverStopConfirmMs = 20_000
 
+// How long a disconnect notice waits, in all, for the turns being stopped
+// to end before the server is stopped and the notice goes out
+// (#noticeProviderWide).
+const providerNoticeWaitMs = 30_000
+
 // A turn the events left open is settled from the server's own state
 // (#reconcile, security review round 9 of #687, ruling Q294): two seconds
 // after an idle or error that did not end it, or after an abort for it that
@@ -1260,17 +1265,40 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // meanwhile, in any session, before it goes out, once (round 16, ruling
   // Q312 A). Prompts are not held meanwhile: the daemon handles the
   // disconnect only after a send it is serving returns, so holding a prompt
-  // would not keep its turn from being ended. The wait grows only with new
-  // thread-wide stops, each bounded by the abort and server-stop limits, so a
-  // steady stream of new stops could keep extending it.
+  // would not keep its turn from being ended. The wait is bounded at 30
+  // seconds in all from when the notice was raised, across the rechecks
+  // (round 17, ruling Q313): then the server is stopped and every session
+  // removed for good, so each held turn ends first, and the notice goes out,
+  // once. No stop begun after that extends it.
   #noticeProviderWide(event: AgentEvent): void {
+    let out = false
+    let expired = false
+    const send = () => {
+      if (out) return
+      out = true
+      clearTimeout(timer)
+      this.#emit(event)
+    }
+    const timer = setTimeout(() => {
+      if (out || this.#closed) return
+      expired = true
+      const name = this.#identity.providerName
+      // The drops run before the first await in #stopServer, so every held
+      // turn has ended when the notice goes out below.
+      void this.#stopServer(
+        `Domovoi stopped the ${name} server because sessions on it kept being stopped for ${providerNoticeWaitMs / 1000} seconds while it waited to report a lost connection`,
+        true,
+      )
+      send()
+    }, providerNoticeWaitMs)
     const attempt = () => this.#afterHeld([...this.#sessions.values()], () => {
+      if (out || expired) return
       const stillHeld = [...this.#sessions.values()].some((session) => session.threadStop && session.threadStop.owners > 0)
       if (stillHeld) {
         attempt()
         return
       }
-      this.#emit(event)
+      send()
     })
     attempt()
   }
@@ -2352,7 +2380,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const session = this.#sessions.get(threadId)
     if (!session || session.cwd !== cwd || session.stopping) return
     const name = this.#identity.providerName
-    const settle = this.#holdThread(session)
+    // No turn, no hold (security review round 17 of #687, ruling Q313): a
+    // request on a session with no turn is still refused and its run
+    // aborted, but there is no turn to hold, so it registers no stop and
+    // cannot extend a pending disconnect.
+    const settle: (outcome?: StopOutcome) => void = session.activeTurnId === undefined && !session.threadStop
+      ? () => {}
+      : this.#holdThread(session)
     const outcome: StopOutcome = {
       rank: 1,
       error: `${name} asked for an approval through a permission interface Domovoi does not answer, so Domovoi stopped the turn`,
@@ -2393,7 +2427,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // Ends the server and every session on it. Each loaded thread's turn fails
   // with the reason, nothing more is sent to the server, and the daemon hears
   // the provider disconnected, so the next message starts a new server.
-  async #stopServer(reason: string): Promise<void> {
+  // `forced`: every session is removed for good now, a held one included,
+  // its turn ending with the best recorded failure or this reason (a
+  // disconnect that waited its full bound, #noticeProviderWide).
+  async #stopServer(reason: string, forced = false): Promise<void> {
     const runtime = this.#runtime
     this.#runtime = undefined
     for (const directory of this.#directories.values()) directory.controller.abort()
@@ -2403,6 +2440,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const sessions = [...this.#sessions.values()]
     for (const session of sessions) {
       const stop = session.threadStop
+      if (stop && forced) {
+        // Removed for good: the record ends now, the turn first, then its
+        // notices and disposals (#endThreadStop).
+        this.#recordOutcome(stop, { rank: 3, error: reason })
+        this.#dropSession(session)
+        continue
+      }
       if (stop && stop.owners > 0) {
         // A thread-wide stop still has owners: the session stays until the
         // last of them settles, and the turn then ends once with the best

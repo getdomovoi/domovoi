@@ -653,10 +653,14 @@ code or settings the repository brings:
   is audited and finishes its usage as failed. The daemon takes a disconnect as ending every turn
   on that provider, so a disconnect, even of another directory's event stream, waits for every
   such held turn in every directory. Before it goes out it looks again, so it also waits for a
-  turn whose stop began while it waited, in any session, and it goes out once. The wait grows only
-  with new stops of a whole thread, each bounded by the 10 second abort and 20 second server-stop
-  limits, so a steady stream of new stops could keep extending it. A server stop itself is not
-  delayed by this.
+  turn whose stop began while it waited, in any session, and it goes out once. A request the
+  daemon cannot answer on a session with no turn is still refused and its run aborted, but holds
+  nothing, so it cannot extend that wait. The wait lasts at most 30 seconds in all from when the
+  disconnect was raised, across those rechecks. When the 30 seconds run out, the daemon stops the
+  server and removes every session on it for good: each turn still being stopped ends first, with
+  the failure its stops recorded or the server stop's reason, and then the disconnect goes out,
+  once. No stop that begins after that extends it, and, as for any server stop, no other server
+  starts until this one is confirmed stopped. A server stop itself is not delayed by this.
   Removing a thread for good (closing, stopping it, the provider deleting it) ends its turn with
   what the stops recorded and still sends every notice they held. A prompt or steer still
   waiting when its session is unloaded or the daemon's adapter closes is refused and not sent;
