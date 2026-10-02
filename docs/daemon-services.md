@@ -29,11 +29,6 @@ require operator reconciliation if no supervisor identity was ever recorded.
 An update from the app stops the guest loop with the same proof but does not
 retire its registration, since the new task, or a restore, runs the same one;
 before 2026-10-01 it did, and the loop it started then refused to run.
-If the new task was started and its daemon does not report ready, the restore
-disables the new task and stops its guest loop with the same proof before
-deleting it and starting the old one: a loop left running would keep the
-supervisor lease the old one needs. If that proof fails, nothing is put back,
-and the error says both registrations need manual recovery (ruling Q307).
 
 This is Windows user logon, not Windows boot supervision. The guest loop is not
 self-restarting after distro or loop loss. A demand-start fixture does not
