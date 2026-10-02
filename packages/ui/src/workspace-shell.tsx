@@ -102,6 +102,7 @@ import {
   buildWorkspaceCommands,
   commandPaletteShortcut,
   CommandPalette,
+  workspaceShortcut,
   type CommandPalettePlatform,
 } from "./command-palette"
 import { colorSchemeQuery, resolveAppearanceTheme, useAppearanceTheme, type WorkspaceTheme } from "./appearance"
@@ -128,6 +129,7 @@ import {
   activeSessionCount,
   activeThreadKey,
   localFleetEntry,
+  sessionIsArchiveReadOnly,
 } from "./workspace-selectors"
 import { LauncherDialog, type LauncherMode, ProjectSwitchConfirmationDialog } from "./launcher-dialog"
 import { AppBar, useUsageToday } from "./app-bar"
@@ -153,6 +155,8 @@ const watchingMutationCommands = new Set([
   "pause-all",
   "emergency-stop",
   "reconnect",
+  "move-session",
+  "pair-device",
 ])
 
 // The shell opens on a thread. These surfaces load when one is first opened,
@@ -497,6 +501,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const resolvedTheme = resolveAppearanceTheme(theme, colorSchemeQuery()?.matches ?? true)
   const commandPlatform: CommandPalettePlatform = windowBridge?.platform
     ?? (typeof navigator !== "undefined" && /Mac|iPhone|iPad/u.test(navigator.platform) ? "darwin" : "linux")
+  // Ruling Q291 A (2026-10-01): the changes and machines shortcuts are the
+  // desktop's alone. A browser keeps those keys, so the palette names neither.
+  const workspaceShortcutsBound = clientKind === "desktop"
   const setDockCollapsed = (collapsed: boolean) => {
     const activePanel = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
       ? document.activeElement.closest("[data-workspace-panel]")?.getAttribute("data-workspace-panel")
@@ -586,10 +593,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // The v2 sheet gives checkpoints a tab of their own, so the affordances that
   // name Checkpoints open that tab. History keeps its category focus for the
   // filters it still narrows by.
-  const openCheckpoints = () => {
+  // The palette and its shortcuts reach the sheet from any surface, so the
+  // tab opens with the workspace that holds it.
+  const openSheetTab = (tab: string) => {
     setSurface("workspace")
-    openDockTab("checkpoints")
+    openDockTab(tab)
   }
+  const openCheckpoints = () => openSheetTab("checkpoints")
   const activeWorkspacePath = snapshot?.sessions.find(
     (session) => session.id === snapshot.activeSessionId,
   )?.workspacePath
@@ -992,6 +1002,25 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       takeCheckpoint: takeActiveCheckpoint,
       checkpointBlocked: Boolean(activeSession(snapshot)?.activeTurnId),
     } : {}),
+    // Desktop V2's session commands open views the shell already has. The
+    // sheet tabs carry their own read-only and blocked states, so opening one
+    // is safe while watching; the move and the pairing card are not, and
+    // watchingMutationCommands locks them.
+    ...(snapshot ? {
+      openChanges: () => openSheetTab("changes"),
+      reviewRules: () => openSheetTab("rules"),
+      // The same rules the Rules tab lists: this project's.
+      approvalRuleCount: snapshot.approvalRules.filter((rule) => rule.projectId === snapshot.project?.id).length,
+    } : {}),
+    ...(snapshot && activeSession(snapshot) ? { revertToCheckpoint: openCheckpoints } : {}),
+    // The same route as a session row's Move: the machine menu on the active
+    // session. An archived session has no worktree to move and no menu.
+    ...(snapshot?.activeSessionId && !sessionIsArchiveReadOnly(activeSession(snapshot)) ? {
+      moveSession: () => sessionRowAction("move", snapshot.activeSessionId!),
+    } : {}),
+    // The pairing card is in the desktop's own settings, for its own daemon.
+    ...(clientKind === "desktop" && !attached ? { pairDevice: () => setSurface("providers") } : {}),
+    shortcutsBound: workspaceShortcutsBound,
     // Cmd+Enter on a machine starts a session there: attach to that daemon,
     // then open the launcher on it. The intent names the machine, and the
     // launcher opens only once that machine's snapshot is the one on screen;
@@ -1229,6 +1258,26 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     globalThis.addEventListener("keydown", onKeyDown)
     return () => globalThis.removeEventListener("keydown", onKeyDown)
   }, [commandPaletteOpen, commandPlatform])
+
+  // The shortcuts the palette names beside Open the changes sheet and Show
+  // all machines. The sheet needs a snapshot to draw, so without one the key
+  // is left to the page.
+  const hasSnapshot = Boolean(snapshot)
+  useEffect(() => {
+    if (!workspaceShortcutsBound) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      const shortcut = workspaceShortcut(event, commandPlatform)
+      if (!shortcut || (shortcut === "changes" && !hasSnapshot)) return
+      event.preventDefault()
+      if (shortcut === "changes") openSheetTab("changes")
+      else setSurface("fleet")
+    }
+    globalThis.addEventListener("keydown", onKeyDown)
+    return () => globalThis.removeEventListener("keydown", onKeyDown)
+    // openSheetTab and setSurface write through state setters, so the
+    // listener does not go stale between renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commandPlatform, hasSnapshot, workspaceShortcutsBound])
 
   useEffect(() => {
     if (!snapshot) return
