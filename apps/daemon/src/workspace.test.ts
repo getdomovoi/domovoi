@@ -2579,15 +2579,23 @@ describe("GitWorkspaceService session refs", () => {
     const { scratch, workspace, repositoryPath } = await sessionWithRemote("domovoi-ref-silent-")
     const held: Socket[] = []
     // The remote never answers, and the push's Git is killed: its connection
-    // ends, on Windows with a reset. Errors on the server and on each socket
-    // are expected, and kept rather than left uncaught.
-    const resets: unknown[] = []
+    // ends, on Windows with a reset. A reset on an accepted socket is
+    // expected; any other socket error, or any server error, fails the test
+    // after teardown (ruling Q305).
+    const socketErrors: unknown[] = []
+    const serverErrors: unknown[] = []
     const silent = createNetServer((socket) => {
-      socket.on("error", (error) => resets.push(error))
+      socket.on("error", (error) => socketErrors.push(error))
       held.push(socket)
     })
-    silent.on("error", (error) => resets.push(error))
-    await new Promise<void>((listening) => silent.listen(0, "127.0.0.1", listening))
+    await new Promise<void>((listening, reject) => {
+      silent.once("error", reject)
+      silent.listen(0, "127.0.0.1", () => {
+        silent.off("error", reject)
+        listening()
+      })
+    })
+    silent.on("error", (error) => serverErrors.push(error))
     try {
       const { port } = silent.address() as AddressInfo
       await execute("git", ["-C", repositoryPath, "remote", "set-url", "origin", `git://127.0.0.1:${port}/remote.git`])
@@ -2607,6 +2615,9 @@ describe("GitWorkspaceService session refs", () => {
       for (const socket of held) socket.destroy()
       await new Promise<void>((closed) => silent.close(() => closed()))
     }
+    expect(socketErrors.length).toBeGreaterThan(0)
+    for (const error of socketErrors) expect(error).toMatchObject({ code: "ECONNRESET" })
+    expect(serverErrors).toEqual([])
   }, 30_000)
 })
 
