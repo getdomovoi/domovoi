@@ -27,7 +27,8 @@ export type PhoneRefusal = {
   // Drivers the daemon counted but did not name.
   omitted: number
   // Trusting on desktop or web would lift the refusal: false when the
-  // repository is trusted already or cannot be trusted.
+  // repository cannot be trusted. A trusted repository's filters are lifted
+  // by trusting it again from a client that shows them.
   awaitsTrust: boolean
 }
 
@@ -49,7 +50,9 @@ export function phoneRefusalFrom(cause: unknown, repository: string, machine: st
     sentence: refusalSentence(refusal, repository, machine),
     names: refusal.drivers.map((driver) => `${driver.name} · ${scopeLabel[driver.scope]}`),
     omitted: refusal.omittedDrivers,
-    awaitsTrust: trust.state === "untrusted" && (trust.reason === "not-trusted" || trust.reason === "config-changed"),
+    // A trusted refusal means the grant did not acknowledge the git filters,
+    // or acknowledged others, so trusting again lifts it too.
+    awaitsTrust: trust.state === "trusted" || trust.reason === "not-trusted" || trust.reason === "config-changed",
   }
 }
 
@@ -60,7 +63,7 @@ function refusalSentence(refusal: RepositoryGitFilterRefusal, repository: string
   const lead = `Checking out ${repository} would run the ${list} ${many ? "filter drivers" : "filter driver"}${refusal.omittedDrivers > 0 ? ` and ${refusal.omittedDrivers} more` : ""}`
   const { trust } = refusal
   if (trust.state === "trusted") {
-    return `${lead}. ${repository} is trusted on ${machine}, and Domovoi still does not run a filter the repository's own Git config sets.`
+    return `${lead}. ${repository} is trusted on ${machine}, but its Git filters stay held back until they are reviewed: they were not shown when it was trusted, or they changed since.`
   }
   if (trust.reason === "cannot-trust") return `${lead}, and ${repository} cannot be trusted on ${machine}.`
   return `${lead}, which ${many ? "are" : "is"} not trusted on ${machine}.`

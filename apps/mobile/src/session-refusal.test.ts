@@ -41,12 +41,16 @@ describe("phoneRefusalFrom", () => {
     expect(view?.omitted).toBe(3)
   })
 
-  it("does not point to trust where trust cannot lift the refusal", () => {
+  // A trusted refusal: the grant did not acknowledge the git filters, or
+  // acknowledged others, so trusting again from desktop or web lifts it.
+  it("points to trust from desktop or web when the repository is trusted and its filters are held back", () => {
     const trusted: RepositoryTrustState = { state: "trusted", trustedDigest: digest, trustedAt: "2026-09-30T10:41:00Z", trustedBy: { client: "desktop" } }
     const afterTrust = refused({ trust: trusted })
-    expect(afterTrust?.awaitsTrust).toBe(false)
-    expect(afterTrust?.sentence).toBe("Checking out acme-api would run the sops filter driver. acme-api is trusted on studio, and Domovoi still does not run a filter the repository's own Git config sets.")
+    expect(afterTrust?.awaitsTrust).toBe(true)
+    expect(afterTrust?.sentence).toBe("Checking out acme-api would run the sops filter driver. acme-api is trusted on studio, but its Git filters stay held back until they are reviewed: they were not shown when it was trusted, or they changed since.")
+  })
 
+  it("does not point to trust where trust cannot lift the refusal", () => {
     const cannot = refused({ trust: { state: "untrusted", reason: "cannot-trust", refusals: [{ provider: "codex", code: "nested-config", path: "a/.codex" }], omittedRefusals: 0 } })
     expect(cannot?.awaitsTrust).toBe(false)
     expect(cannot?.sentence).toBe("Checking out acme-api would run the sops filter driver, and acme-api cannot be trusted on studio.")
