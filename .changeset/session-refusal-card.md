@@ -14,7 +14,10 @@ pressed (a fork with a new request id). A refusal for a repository that is alrea
 the grant did not acknowledge its Git filters, or acknowledged others: the card says the filters
 stay held back until they are reviewed, and offers Review and trust again. Any other failure
 stays where it was shown before. Codex's own refusal of a worktree's .codex config has no code and
-still shows as the daemon's sentence.
+still shows as the daemon's sentence. A start keeps the machine, project and session it was made
+in: a refusal that arrives after the shell moved to another one is dropped, the card names the
+repository and machine of the refused start, its review refuses an inventory read for another
+project or machine, and Start the session again is made only in that scope.
 
 The trust sheet lists each filter driver the repository's own Git config sets, one group per git
 config file and scope, with each operation and its redacted command and its required state, and

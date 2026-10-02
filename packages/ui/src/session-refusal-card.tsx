@@ -27,6 +27,7 @@ export function SessionRefusalCard({
   refusal,
   repository,
   machine,
+  machineId,
   loadInventory,
   onTrust,
   onOpenTools,
@@ -34,8 +35,10 @@ export function SessionRefusalCard({
   onClose,
 }: {
   refusal: RepositoryGitFilterRefusal
+  // The repository and machine as they were when the refused start was made.
   repository: string
   machine: string
+  machineId: string
   loadInventory: (signal: AbortSignal) => Promise<ToolInventory>
   onTrust?: RepositoryTrustRequest | undefined
   onOpenTools: () => void
@@ -51,6 +54,7 @@ export function SessionRefusalCard({
   const [startError, setStartError] = useState("")
   const loadRef = useRef(loadInventory)
   loadRef.current = loadInventory
+  const { projectId } = refusal
 
   // The sheet reads the files while it is open, and again when it asks to
   // (the files changed under it). Each read retires the one before it.
@@ -60,14 +64,23 @@ export function SessionRefusalCard({
     const read = new AbortController()
     setInventory({ state: "loading" })
     loadRef.current(read.signal).then(
-      (value) => { if (active) setInventory({ state: "loaded", inventory: value, readAt: new Date() }) },
+      (value) => {
+        if (!active) return
+        // The review is of the refused repository on the machine that refused
+        // it. A read that answers for another one is never offered for trust.
+        if (value.repository?.projectId !== projectId || value.machine.id !== machineId) {
+          setInventory({ state: "error", message: otherScopeText })
+          return
+        }
+        setInventory({ state: "loaded", inventory: value, readAt: new Date() })
+      },
       (cause: unknown) => { if (active) setInventory({ state: "error", message: cause instanceof Error ? cause.message : "The tools could not be read" }) },
     )
     return () => {
       active = false
       read.abort()
     }
-  }, [reviewing, reads])
+  }, [reviewing, reads, projectId, machineId])
 
   // Only a grant for the refused repository lifts this refusal.
   const granted = useCallback((trust: RepositoryTrust) => {
@@ -148,6 +161,8 @@ export function SessionRefusalCard({
     </section>
   )
 }
+
+const otherScopeText = "Domovoi read the tools of another project or machine than the one that refused this session, so they are not shown for review."
 
 // "the sops filter driver", "the sops and crypt filter drivers and 2 more".
 function driversPhrase(named: readonly string[], omitted: number): { phrase: string; many: boolean } {

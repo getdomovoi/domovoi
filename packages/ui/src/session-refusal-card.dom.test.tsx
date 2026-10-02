@@ -80,6 +80,7 @@ function show(options: {
     refusal: options.refusal ?? refusal(),
     repository: "acme-api",
     machine: "mac-mini-m4",
+    machineId: "machine-1",
     loadInventory: options.loadInventory ?? vi.fn(async () => inventory()),
     onOpenTools: vi.fn(),
     onStartAgain: options.onStartAgain ?? vi.fn(async () => {}),
@@ -210,6 +211,23 @@ describe("review and trust from the refusal", () => {
     expect(within(card).getByText("Trusted on mac-mini-m4. Nothing has started yet.")).toBeTruthy()
     expect(within(card).getByText("Checking out acme-api would run the sops filter driver.")).toBeTruthy()
     expect(within(card).getByRole("button", { name: "Start the session again" })).toBeTruthy()
+  })
+
+  // The review is of the refused repository on the refused machine only: an
+  // inventory read for another one is not offered for trust (ruling Q323).
+  it.each([
+    ["another project", { ...inventory(), repository: { ...inventory().repository!, projectId: "project-other" } }],
+    ["another machine", { ...inventory(), machine: { ...inventory().machine, id: "machine-2" } }],
+  ])("offers no trust over the tools of %s", async (_label, other) => {
+    const onTrust = vi.fn<Trust>()
+    const { card, user } = show({ onTrust, loadInventory: vi.fn(async () => other) })
+
+    await user.click(within(card).getByRole("button", { name: "Review and trust" }))
+    const sheet = await screen.findByRole("dialog")
+
+    expect(await within(sheet).findByText("Domovoi read the tools of another project or machine than the one that refused this session, so they are not shown for review.")).toBeTruthy()
+    expect(within(sheet).queryByRole("button", { name: "Trust for this machine" })).toBeNull()
+    expect(onTrust).not.toHaveBeenCalled()
   })
 
   it("keeps the refusal when the files changed while the sheet was open, and reads them again", async () => {

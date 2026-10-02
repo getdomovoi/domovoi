@@ -246,6 +246,10 @@ type SessionStartAttempt =
   | { kind: "create"; title: string; runtime: Runtime }
   | { kind: "fork"; input: Omit<RpcParams<"session.fork">, "client"> }
 
+// Where a start was made: the shell's thread scope (machine, project and
+// active session) and the names the refusal card shows for it.
+type StartScope = { key: string; machineId: string; machine: string; repository: string }
+
 export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
   // J24: whether the login service is installed, from the desktop's own
@@ -598,32 +602,54 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // the thread as a refusal card, with the request that was refused so the
   // person can make it again after trust. Starting it again is always theirs
   // to press (ruling Q202 A). Every other failure goes back to its caller.
+  //
+  // The card belongs to the thread it was drawn in: another session, project
+  // or machine replaces it. Each start keeps the scope it was made in, and a
+  // result that arrives after the scope changed is dropped, so a late refusal
+  // never takes another workspace's names or offers its review (ruling Q323).
+  const refusalScope = `${attached?.machineId ?? ""}\u0000${snapshot?.project?.id ?? ""}\u0000${snapshot?.activeSessionId ?? ""}`
   const [startRefusal, setStartRefusal] = useState<{
     id: number
     refusal: RepositoryGitFilterRefusal
     attempt: SessionStartAttempt
+    scope: StartScope
   } | null>(null)
   const startRefusals = useRef(0)
+  // The scope the shell shows now, for a start that finishes later to compare.
+  // Moved by the effect below, which also retires the card, so a result that
+  // lands before it runs is cleared with the card.
+  const shownStartScope = useRef(refusalScope)
+  useEffect(() => {
+    shownStartScope.current = refusalScope
+    setStartRefusal(null)
+  }, [refusalScope])
   const startSession = async (attempt: SessionStartAttempt) => {
+    const scope: StartScope = {
+      key: refusalScope,
+      machineId: attached?.machineId ?? snapshot?.machine.id ?? "",
+      machine: snapshot?.machine.name ?? "this machine",
+      repository: snapshot?.project?.name ?? "this repository",
+    }
     try {
       if (attempt.kind === "create") await createSession(attempt.title, attempt.runtime)
       else await forkSession(attempt.input)
-      setStartRefusal(null)
+      if (shownStartScope.current === scope.key) setStartRefusal(null)
     } catch (cause) {
       const refusal = gitFilterRefusalFrom(cause)
       if (!refusal) throw cause
+      if (shownStartScope.current !== scope.key) return
       startRefusals.current += 1
-      setStartRefusal({ id: startRefusals.current, refusal, attempt })
+      setStartRefusal({ id: startRefusals.current, refusal, attempt, scope })
     }
   }
-  // A fork's request id names one attempt, so the retry carries a new one.
-  const startAgain = (attempt: SessionStartAttempt) => startSession(attempt.kind === "fork"
-    ? { kind: "fork", input: { ...attempt.input, requestId: `fork-${globalThis.crypto.randomUUID()}` } }
-    : attempt)
-  // The card belongs to the thread it was drawn in: another session, project
-  // or machine replaces it.
-  const refusalScope = `${attached?.machineId ?? ""}\u0000${snapshot?.project?.id ?? ""}\u0000${snapshot?.activeSessionId ?? ""}`
-  useEffect(() => { setStartRefusal(null) }, [refusalScope])
+  // A fork's request id names one attempt, so the retry carries a new one. A
+  // retry is made only in the scope the refused start was made in.
+  const startAgain = async (attempt: SessionStartAttempt, scope: StartScope) => {
+    if (shownStartScope.current !== scope.key) return
+    await startSession(attempt.kind === "fork"
+      ? { kind: "fork", input: { ...attempt.input, requestId: `fork-${globalThis.crypto.randomUUID()}` } }
+      : attempt)
+  }
   const forkFromCheckpoint = (checkpointId: string) => {
     const active = snapshot ? activeSession(snapshot) : undefined
     if (!active) return
@@ -1712,8 +1738,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                     <SessionRefusalCard
                       key={startRefusal.id}
                       refusal={startRefusal.refusal}
-                      repository={snapshot.project?.name ?? "this repository"}
-                      machine={snapshot.machine.name}
+                      repository={startRefusal.scope.repository}
+                      machine={startRefusal.scope.machine}
+                      machineId={startRefusal.scope.machineId}
                       loadInventory={(signal) => getToolInventory({ signal })}
                       // As on the Tools tab: desktop or web, never watching (ruling Q67).
                       onTrust={!watching && (clientKind === "desktop" || clientKind === "web")
@@ -1723,7 +1750,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                         setSkillsTab("tools")
                         setSurface("skills")
                       }}
-                      onStartAgain={() => startAgain(startRefusal.attempt)}
+                      onStartAgain={() => startAgain(startRefusal.attempt, startRefusal.scope)}
                       onClose={() => setStartRefusal(null)}
                     />
                   </div>
