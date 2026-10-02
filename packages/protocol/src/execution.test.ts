@@ -231,6 +231,20 @@ describe("standing approval execution state", () => {
     expect(approvalRuleSchema.safeParse({ ...inactive, execution: resolved }).success).toBe(false)
   })
 
+  // A standing rule saved before the decision that makes it has reached the
+  // agent (ruling Q285). It carries the record it will answer for once it is
+  // made active, and nothing else: it was never active, so it was never
+  // retired and never replaced another rule.
+  it("keeps a rule whose decision is not yet delivered inactive with its record", () => {
+    const pending = { ...commonRule, status: "inactive", inactiveReason: "pending-delivery", execution: resolved } as const
+    expect(approvalRuleSchema.parse(pending)).toEqual(pending)
+    const withoutRecord = { ...pending } as Record<string, unknown>
+    delete withoutRecord.execution
+    expect(approvalRuleSchema.safeParse(withoutRecord).success).toBe(false)
+    expect(approvalRuleSchema.safeParse({ ...pending, inactivatedAt: "2026-09-03T18:30:00.000Z" }).success).toBe(false)
+    expect(approvalRuleSchema.safeParse({ ...pending, replacedByRuleId: "rule-test-v1" }).success).toBe(false)
+  })
+
   it("tells an approval card which inactive rules require reapproval", () => {
     const request = {
       id: "approval-test",

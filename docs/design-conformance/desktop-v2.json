@@ -1,7 +1,7 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html",
-  "sha256": "52bafd8d3bae523a0e1d26813de3ca07b3630ac5cc6e5b9f4baa1ef52428da4c",
-  "derivedOn": "2026-09-26",
+  "sha256": "e8801310720f1d3fafff071424ec3486fb29f2e70ae86958b029ac18db9fb5ff",
+  "derivedOn": "2026-09-30",
   "sources": [
     "packages/ui/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts",
@@ -74,7 +74,10 @@
         "Domovoi"
       ],
       "evidence": [
-        "<DomovoiMark reduced className=\"size-5 shrink-0 text-primary\""
+        "<DomovoiMark reduced className=\"size-[22px] shrink-0 text-primary\""
+      ],
+      "notes": [
+        "2026-10-01 (S3.10 slice 1): drawn at the design's 22px rather than 20px. The working animation in `states` is not drawn by the titlebar template; markStyle is static."
       ]
     },
     {
@@ -86,9 +89,17 @@
         "open: tooltip Hide sessions",
         "red badge when a session needs you"
       ],
+      "copy": [
+        "Hide sessions"
+      ],
       "evidence": [
         "Hide sessions",
-        "aria-label=\"Sessions\""
+        "aria-label=\"Sessions\"",
+        "{open ? \"Hide sessions\" : \"Sessions\"}",
+        "needsYou > 0 && !open ? <span data-needs-you-badge"
+      ],
+      "notes": [
+        "2026-10-01 (S3.10 slice 1): the tooltip names the toggle as drawn, and the badge shows only while the drawer is closed (drawerBadgeStyle: fleetAlert && !drawerOpen). Pinned in packages/ui/src/titlebar-v2.dom.test.tsx."
       ]
     },
     {
@@ -97,6 +108,9 @@
       "where": "titlebar, after the drawer toggle",
       "states": [
         "tooltip New session · ⌘N"
+      ],
+      "copy": [
+        "New session ·"
       ],
       "evidence": [
         "New session · "
@@ -121,6 +135,9 @@
       "states": [
         "access = watching"
       ],
+      "copy": [
+        "watching only"
+      ],
       "evidence": [
         "watching only"
       ]
@@ -135,7 +152,11 @@
       ],
       "evidence": [
         "Machines: ",
-        "Disconnected from"
+        "Disconnected from",
+        "!connected && \"border-danger-border bg-danger-background"
+      ],
+      "notes": [
+        "2026-10-01 (S3.10 slice 1): offline now turns the chip itself to danger border and background (machineChipStyle), not only its dot."
       ]
     },
     {
@@ -147,10 +168,28 @@
         "open: two rows, each a label and a note"
       ],
       "copy": [
-        "STOP EVERYTHING, ON EVERY MACHINE"
+        "STOP EVERYTHING, ON EVERY MACHINE",
+        "Stop everything, every machine",
+        "Pause everything",
+        "Stops at the next turn boundary, nothing is killed.",
+        "Emergency stop",
+        "Kills processes now. Half-written files stay half-written."
       ],
       "evidence": [
-        "Stop everything"
+        "Stop everything",
+        "<OctagonXIcon className=\"size-4\" />",
+        "Stop everything on this machine",
+        "STOP EVERYTHING ON THIS MACHINE",
+        {
+          "absent": "ON EVERY MACHINE",
+          "in": "packages/ui/src/stop-menu.tsx"
+        },
+        "Stops at the next turn boundary, nothing is killed.",
+        "Kills processes now. Half-written files stay half-written."
+      ],
+      "notes": [
+        "2026-10-01 (S3.10 slice 1): was a labelled ghost button with the visible text Stop everything and a menu with no heading. Now the 28px octagon icon named by its tooltip, and the 380px danger-bordered menu headed STOP EVERYTHING, ON EVERY MACHINE with a dot, label and note per row, in the design's words. Pinned in packages/ui/src/titlebar-v2.dom.test.tsx.",
+        "2026-10-01 (Q290 A): the tooltip and menu heading say Stop everything on this machine and STOP EVERYTHING ON THIS MACHINE instead of the drawn every-machine wording, because system.pauseAll and system.emergencyStop reach only the selected machine's daemon. A fleet-wide stop with per-machine outcomes is a separate pull request. The copy claims stay the drawn strings; the evidence holds the shipped text."
       ]
     },
     {
@@ -161,7 +200,11 @@
         "Settings"
       ],
       "evidence": [
-        "aria-label=\"Settings\""
+        "aria-label=\"Settings\"",
+        "className={titlebarTipClassName}>Settings</TooltipContent>"
+      ],
+      "notes": [
+        "2026-10-01 (S3.10 slice 1): the gear now carries the drawn tooltip. Every titlebar tooltip is the design's card (topTipStyle) rather than the primitive's inverted chip."
       ]
     },
     {
@@ -171,6 +214,10 @@
       "states": [
         "dark: Light appearance",
         "light: Dark appearance"
+      ],
+      "copy": [
+        "Light appearance",
+        "Dark appearance"
       ],
       "evidence": [
         "Light appearance",
@@ -1693,25 +1740,36 @@
         "Review what you have allowed",
         "Show all machines",
         "Pair a phone or tablet",
-        "Read the audit log"
+        "Read the audit log",
+        "on this machine"
       ],
       "evidence": [
-        "Run a migration on this machine",
-        "Open the changes sheet",
-        "Revert to a checkpoint",
-        "Review what you have allowed",
-        "Show all machines",
-        "Pair a phone or tablet",
-        "Read the audit log"
-      ],
-      "presence": [
         "Search commands",
-        "sessions, machines, commands, skills"
+        "sessions, machines, commands, skills",
+        "label: \"Open the changes sheet\"",
+        "shortcut: \"mod+shift+D\"",
+        "label: \"Take a checkpoint\"",
+        "detail: \"manual\"",
+        "label: \"Revert to a checkpoint\"",
+        "label: \"Review what you have allowed\"",
+        "approvalRuleCount === 1 ? \"rule\" : \"rules\"",
+        "label: \"Move this session to another machine\"",
+        "detail: \"handoff\"",
+        "label: \"Show all machines\"",
+        "shortcut: \"mod+shift+M\"",
+        "label: \"Pair a phone or tablet\"",
+        "detail: \"settings\"",
+        "label: \"Read the audit log\"",
+        "detail: \"on this machine\""
       ],
-      "partial": {
-        "since": "2026-09-26",
-        "reason": "the design lists ten commands in its data script; seven of them are not commands anywhere in the implementation, which offers its own list"
-      }
+      "notes": [
+        "2026-10-01 (S3.10 slice 2, ruling Q288 A): Run a migration on this machine is left out. It is the mockup's sample session acting through the palette, not a command. Its copy stays claimed here so the gate keeps reading it, and no disabled placeholder is drawn.",
+        "2026-10-01 (ruling Q288 A): Open a pull request is left out until the git-from-app work lands; dock.changes-pr is blocked on protocol and claims its copy. No disabled placeholder is drawn.",
+        "2026-10-01: Revert to a checkpoint draws no count. The design's meta (5 available) needs the checkpoint list, which the snapshot does not carry and the palette does not fetch. The command opens the Checkpoints tab.",
+        "2026-10-01: Take a checkpoint keeps its existing action, which takes the checkpoint at once while the design's command opens the Checkpoints tab with its label field.",
+        "2026-10-01 (ruling Q291 A): only the desktop app binds the two shortcuts the meta names (mod+shift+D opens the changes sheet, mod+shift+M shows all machines) and draws that meta. A browser window registers neither binding, leaves those keys to the browser, and shows both commands without the shortcut meta. The shell tells the two apart by its clientKind, the signal it already uses for the dock's first tab and the pairing card.",
+        "2026-10-01: Move this session to another machine opens the machine menu on the active session, the same route as a session row's Move, and the transfer dialog follows the choice of machine. Pair a phone or tablet opens settings, and is offered only in a desktop window on its own daemon, where the pairing card is. Rows carry icons where the design draws a coloured dot."
+      ]
     },
     {
       "id": "palette.other-machines",
@@ -1761,7 +1819,7 @@
         "Balances the time it spends against what it catches.",
         "Applies from the next turn. A turn already in flight keeps the effort it started with.",
         "has no",
-        "when you changed model. It stays there."
+        "the model's default,"
       ],
       "evidence": [
         "<EffortChip",
@@ -1769,7 +1827,8 @@
         "`EFFORT ON ${provider.toUpperCase()}`",
         "Applies from the next turn. A turn already in flight keeps the effort it started with.",
         "so this moved to",
-        "when you changed model. It stays there.",
+        "so this moved to the model's default, ${dropped.to}. It stays until you pick a level.",
+        "so this moved to ${dropped.to}. It stays until you pick a level.",
         "kind: \"reasoning effort\"",
         "Stops reasoning early. Fine for triage and single-file edits.",
         "Balances the time it spends against what it catches.",
@@ -2404,11 +2463,6 @@
       "started 14:02 · running 1m 09s",
       "started 13:41 · stalled at 14:06",
       "started 14:02 · 4m 18s",
-      "Hide sessions",
-      "New session ·",
-      "Dark appearance",
-      "Light appearance",
-      "Stop everything, every machine",
       "Pause session",
       "Restart provider thread",
       "titles and summaries, every machine",
@@ -2416,7 +2470,6 @@
       "wsl-ubuntu-24, unreachable",
       "needs approval",
       "branch pushed",
-      "on this machine",
       "SESSIONS ON THIS MACHINE",
       "Step 3 needs the migration applied. PROD_DATABASE_URL was set in the environment, so I aimed at it and the daemon stopped me. I have not retried and I will not, since the refusal is a policy rather than a question.",
       "The handler processes the event before it records it, so a retry replays every side effect. I am adding a replay table with a unique claim on the event id and moving each handler to claim-then-commit.",
@@ -2793,7 +2846,6 @@
       "Reply, or steer the plan",
       "Also cover the claim-expiry case in replay.spec.ts",
       "queued, sends when this turn ends",
-      "watching only",
       "No sends, approvals, terminal or writes. Reads stream as normal.",
       "Archived, so the daemon accepts reads only.",
       "Free plan: this route carries reads only.",
@@ -2809,10 +2861,6 @@
       "Final checkpoint, then the worktree is removed. The branch is kept.",
       "Restart the provider thread",
       "Same worktree, fresh context with the model.",
-      "Pause everything",
-      "Stops at the next turn boundary, nothing is killed.",
-      "Emergency stop",
-      "Kills processes now. Half-written files stay half-written.",
       "On an API key the chip shows the cost",
       "bills the key's owner; Domovoi adds nothing.",
       "An OAuth connection is already paid for, so the chip carries the window rather than a price that would read as zero. Two windows run at once and the ring shows the tighter one.",

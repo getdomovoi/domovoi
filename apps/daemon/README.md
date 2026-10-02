@@ -450,6 +450,38 @@ waiting." If that second save also fails, the answer is `-32014` as above. A dec
 approval an emergency stop or another path removed during the save is not applied and not sent to
 the agent.
 
+A standing rule (Always) is saved first with the status `inactive` and the reason
+`pending-delivery`, after the decision itself is saved. A pending rule never answers a request.
+It is made active, with the links to the rules it replaces, in one more save, and only after
+delivery. Delivery here means the adapter's `resolveApproval` returned for a request id the
+adapter was tracking as waiting. It is not an acknowledgement from the provider: OpenCode and Kilo,
+for example, send the answer over HTTP after `resolveApproval` returns, and a later failure of that
+send does not take back a rule already made active. An adapter answers a request it is not
+tracking as waiting (never asked, already answered, or dropped with its turn) by throwing
+`ApprovalRequestNotPendingError` and sending nothing; the OpenCode, Kilo, Claude, Codex and ACP
+adapters all do.
+
+- An emergency stop that begins while the pending rule is saved cancels the decision. It is checked
+  before that save and again after it. A cancelled decision is never sent. Its receipt, checkpoint
+  row and rule are taken back, but the card and the session stay as the stop left them, and the
+  answer is "The approval was withdrawn before it could be allowed".
+- If the agent is not waiting for the request, an allow is taken back the same way and the answer
+  is "The agent is no longer waiting for this approval, so it was not allowed". A refusal of such a
+  request needs nothing sent and stands.
+- If the pending rule cannot be saved, or the agent cannot be told, the decision is undone as
+  above. If that undo cannot be saved either, the state file holds at most the receipt, the
+  checkpoint row and a pending rule, never an active rule.
+- If the save that makes the rule active reports failure, the Allow was already sent once. The
+  rule stays pending in memory and answers no request while this daemon runs. A rejected save is
+  not proof that no active rule reached the state file: a save can fail after it has written, and
+  a restart then loads the rule active. A later whole save that lands rewrites the rule as
+  pending, which the next load drops. The answer is `-32014` with "Domovoi sent this Allow once,
+  but could not confirm the standing rule was saved. It may or may not be in force after Domovoi
+  restarts. Check Standing approval rules in Settings, Permissions and rules."
+- A daemon that loads a pending rule, at startup or when a project opens, drops it and records
+  `approval-rule.undelivered` in the audit log: the decision that made it was never confirmed
+  delivered. It replaced no rule, since links are made only when a rule becomes active.
+
 Read-only methods keep working, including `workspace.get`, so an operator can read the state that
 is not reaching disk. `system.pauseAll`, `session.pause`, and `system.emergencyStop` also keep
 working, because they reduce what an unpersisted daemon is still doing. The daemon accepts changes
@@ -548,10 +580,244 @@ code or settings the repository brings:
   setting stay held back. A call to a repository server's tool still asks for approval, without
   Always. A running session keeps what it loaded; a changed configuration or a new grant applies
   at its next open. A session loaded only to be archived gets nothing.
+- The daemon reads `opencode --version` and `kilo --version` before it starts either server, and
+  starts only the releases that passed the live contract below: OpenCode 1.18.32 and 1.18.33, and
+  Kilo 7.8.1. The permission names, tool ids and rule shapes below were read from them. The
+  output must be exactly one version line, as those releases print it. Any other release, an
+  output with more than one line or a prefix, or no output refuses with a message naming the
+  version found and the releases tested. A contract test run with `DOMOVOI_LIVE_PROVIDERS=1` fails
+  when an installed server's tool ids or permission names drift from those lists; a release joins
+  the list only after that test passes against it.
 - OpenCode and Kilo servers start with `OPENCODE_DISABLE_PROJECT_CONFIG=1` and
   `KILO_DISABLE_PROJECT_CONFIG=1`. Project `opencode.json`, `kilo.json`, `.opencode/`, `.kilo/`
   and `.kilocode/` configuration, plugins and MCP entries are not loaded, and no package install
-  runs in those directories. Your global provider configuration still applies.
+  runs in those directories. Your global provider configuration still applies. Skills under
+  `.claude/skills` and `.agents/skills` still load with that switch set. The tool inventory lists
+  every OpenCode and Kilo entry from those files and folders as held back, and those skills as
+  loading. Each embedded server's password, and what a program holding it can do, is described
+  in the next item. The daemon reads the directory's tool servers, tools and agent rules immediately before it sends
+  each prompt, a steer included, and refuses the prompt when that read fails a check below. Only
+  the read before the prompt that starts a turn sets what the turn's tool calls are held to; a
+  steer's read never changes it, and the turn keeps it until it ends. A tool server added after
+  that read, while the turn runs, is not in it; adding one takes the embedded server's password,
+  which every program the server starts can read. A tool
+  such a server adds asks before it runs, like any tool that is not the server's own, unless its
+  name is one of OpenCode's or Kilo's own permissions that the embedded configuration allows (a
+  server named `plan` with a tool named `enter` makes `plan_enter`). The daemon checks each tool
+  call in the turn, a steer's included, as it appears: a call to a tool that was not in the read
+  before the turn's first prompt, a tool server added or removed or a change in any server's
+  status (connected, failed and the like, read again on each call), or a failed read aborts the
+  run and then ends the turn. The server answers a prompt and ends a run independently, so a turn
+  can end while a steer is being sent; the server then runs that steer outside the turn, and the
+  daemon aborts it, waits for the server to answer the abort and reports the steer as failed. A
+  run that starts a tool call or asks for an approval while no turn is active is aborted, and the
+  approval is refused with no card. A subagent whose turn has ended, or that started while its
+  thread had no turn, is treated the same way: an approval it asks for is refused with no card,
+  and that request or a tool call it starts aborts the subagent. A report of a tool that has
+  already finished (completed or failed) is never checked and aborts nothing, in a turn or
+  outside one; its output is still shown. Every abort the daemon sends, for a stop, an interrupt,
+  a thread stop, a run outside any turn, an approval answered elsewhere, a request it cannot
+  answer or a closed event stream, goes through one record per session, so it sends at
+  most one abort at a time to a session; a second reason to stop it waits for that abort's
+  answer. The daemon waits ten seconds for the answer and then treats the abort as failed. A
+  stopped turn ends when the abort is answered or fails, with the reason it was stopped, not
+  when the run reports its end. Another turn ends only on an idle that comes after its own reply,
+  an answer to its prompt or to one of its steers, has completed or failed, or, for a run that
+  failed before any reply, after an error that came after its own prompt. An idle or error before
+  the turn's own messages ends nothing, so an aborted run's end, however many idles it brings,
+  never ends a later turn by itself. The events do not always show a turn's end: automatic
+  compaction before the first reply makes user messages of the server's own, whose replies do not
+  name the turn's prompt; a failure while the server prepares the run can report its error after
+  the run's last idle, or before the prompt is recorded; a reply's setup can fail without
+  finishing it; and an end that arrives while an interrupt's or a thread stop's abort is pending
+  ends nothing then. So two seconds after an idle or error that ended no turn, or after such an
+  abort fails or the thread stop's deletion may have, the daemon reads the server's own state
+  (its session status and the session's messages). A session the server reports busy settles
+  nothing, so an earlier run's idle never ends a later turn this way. The status is read again
+  after the messages, and the read counts only if the session is still idle then, no prompt,
+  message, tool progress, busy status or approval request arrived for the session or a subagent
+  of the current turn while it ran, and no abort to the session started meanwhile, even one that
+  has already settled; otherwise it is read again later, or the abort's answer ends the turn as
+  above. A stop of the whole thread (an approval answered elsewhere, a request the daemon cannot
+  answer, a closed event stream) aborts the thread and its subagents and holds the turn until
+  every one of those aborts has settled, even when it joined an interrupt or a stop already
+  under way: until then neither the run's end nor a read ends the turn, and a new prompt or
+  steer waits, checking again after every wait. Stops that overlap end the turn once, when the
+  last of them has settled, with the first failure in this order: an approval answered
+  elsewhere, then a request the daemon cannot answer, then a closed event stream; a server stop's
+  own reason counts only when none of them settled with one. A stop that settles while another is
+  still under way leaves the thread loaded: the last to settle ends the turn and then unloads or
+  drops the thread, as does a server stop that one of them causes. The adapter reports the turn's
+  end before the approval answered elsewhere and before any disconnect, since the daemon drops
+  the thread and its turn when it hears either, so the stored turn ends failed with its failure,
+  is audited and finishes its usage as failed. The daemon takes a disconnect as ending every turn
+  on that provider, so a disconnect, even of another directory's event stream, waits for every
+  such held turn in every directory. Before it goes out it looks again, so it also waits for a
+  turn whose stop began while it waited, in any session, and it goes out once. A request the
+  daemon cannot answer on a session with no turn is still refused and its run aborted, but holds
+  nothing, so it cannot extend that wait. The wait lasts at most 30 seconds in all from when the
+  disconnect was raised, across those rechecks. When the 30 seconds run out, the daemon stops the
+  server and removes every session on it for good: each turn still being stopped ends first, with
+  the failure its stops recorded or the server stop's reason, and then the disconnect goes out,
+  once. That is the only disconnect the daemon gets for it: the daemon hears of each server's end
+  once, so neither the server stop it causes nor an earlier stop that was still waiting for that
+  server to end sends one of its own, and a turn started on the replacement server is not ended
+  by a second one. No stop
+  that begins after that extends it, and, as for any server stop, no other server starts until
+  this one is confirmed stopped; if that cannot be confirmed, the next message is refused and the
+  refusal says why. A stop of a thread that began on a server already stopped or replaced does not
+  stop the current server. A server stop itself is not delayed by this.
+  Removing a thread for good (closing, stopping it, the provider deleting it) ends its turn with
+  what the stops recorded and still sends every notice they held. A prompt or steer still
+  waiting when its session is unloaded or the daemon's adapter closes is refused and not sent;
+  that does not
+  show that the provider or anything it started has stopped. With the session idle, the turn
+  ends by the newest
+  assistant message after its prompt in the server's own order (time created, then id), whatever
+  that message
+  answers: completed if it finished without an error, failed with its error, or failed as
+  unfinished. Compaction replies end a turn this way, not through what they answer; tool calls
+  are still held to a turn only through its prompt and steers. With no reply, the turn fails with
+  the last error seen after its prompt. A prompt the server has not recorded, or a recorded prompt
+  with no reply and no error, is read again for up to thirty seconds, since the server may still
+  be preparing it, and then the turn fails saying so. A read that fails is retried for up to
+  thirty seconds (after 1, 2, 4, 8 and 15 seconds, each read bounded at five), and then the turn
+  fails saying the daemon could not confirm how the run ended. A new prompt waits for a pending
+  abort's answer; if the server does not answer within ten seconds, that prompt fails with the
+  reason the run was stopped and is not sent. The status answer names nothing else about a server,
+  so one replaced
+  under the same name with the same status is not seen; its tools still ask, since a server whose
+  name could make one of the allowed names is refused before the prompt. The next prompt refuses a
+  server whose tools could be named like OpenCode's or Kilo's own. This check is a stated limit,
+  not a gate: the server reports a tool call only once it has started it, so the first call to
+  such a colliding tool can run before the abort, and a tool that is already running may not stop
+  for the abort. Nothing the daemon does undoes what that call did.
+- OpenCode and Kilo ask before every tool that is not one of their own. The embedded configuration
+  starts its permissions with a `"*": "ask"` rule and then restates the server's own rules for its
+  built-in tools, so each built-in tool keeps the action it had, and a call to a tool server's
+  tool, one of yours included, raises an approval card. A plugin's tool asks only if the plugin
+  asks, under the name the plugin gives; it is your own code running in the server. Kilo's explore
+  subagent used to have tool server tools hidden; it now sees them and asks before each call, and
+  Kilo's plan agent asks before a tool that is not Kilo's own where it used to deny it. In the
+  agents a session runs, the embedded agent blocks come after your own top-level rules and set
+  the rules they restate as Domovoi sets them. An allow rule of yours for a tool that is not the
+  server's own asks instead when it sits in your top-level `permission` block, since every agent
+  block's catch-all comes after it, and refuses the session when it lands after that catch-all
+  (see below).
+  Every agent block the embedded configuration sets starts with the same catch-all and restates
+  the defaults after it, so a `"*"` rule in your own block for one of those agents takes the
+  catch-all's place and asks; for Kilo the block is set under both `build` and `code`. The primary
+  agents' blocks are set under the deprecated `mode` key as well, because the servers merge a
+  `mode` block into its agent after every other config, so your own `mode` block cannot replace
+  them either. Before a session opens and before each prompt the daemon also reads the merged
+  rules of every agent a session can reach from the server (the primary agent it runs, and every
+  agent that is not primary-only and that agent's task rule does not deny), in the order the
+  server judges them,
+  and checks their shape: the last rule for every tool and every argument (`"*"`) must ask or
+  deny, and every allow rule after it must name one of OpenCode's or Kilo's own permissions
+  literally. Otherwise it refuses the session, naming the agent and the rule: a wildcard allow
+  such as `mcp_*`, and an allow for a named tool of yours that is not the server's own, refuse
+  too. This covers config the daemon does not read, such as an organization's or a managed
+  config. A primary
+  agent starts OpenCode's or Kilo's own `general` and `explore` subagents as before, and asks
+  before it starts a subagent of yours, which runs by your own rules.
+  A rule names a permission, not a tool, and a tool server's tool asks under its server's name, `_`
+  and the tool's name. Before a session opens, and before each prompt, the daemon reads the tool
+  servers and tool ids the session directory knows, and refuses the session when a tool server's
+  name, in any case, could make the name one of OpenCode's or Kilo's own tools asks under (a server
+  named `plan` could make `plan_enter`), when a tool id appears twice, when a tool that is not the
+  server's own takes the name of a permission the embedded configuration allows, or when it cannot
+  read them. The daemon compares those names as the server's rules do. On every platform the
+  server turns each backslash into a slash first, so `a\b` and `a/b` are one name. On Windows it
+  then compares in any case, with a JavaScript regular expression's case-insensitive flag and
+  without its Unicode flag: `READ` takes `read`, and `Σ` and `ς` are one name. The refusal names
+  the server or tool to rename or turn off.
+  A card for a tool those reads cannot place waits up to a second while the daemon reads the
+  directory's tool servers again; a read that fails or takes longer leaves that card without a
+  server, and the next such card reads again. A card names a tool's server only when exactly one
+  of them could have made the tool's name
+  (the server's name with each UTF-16 unit outside letters, digits, `-` and `_` turned into `_`,
+  then `_` and the tool's name), never for a tool the directory lists among its tool ids (OpenCode's
+  or Kilo's own, or a plugin's), and then it offers no Always.
+- The daemon starts one OpenCode server and one Kilo server, each on loopback with a new random
+  password at each start. Both read that password only from their environment, so it is in each
+  server's startup environment, though never in the daemon's own environment or in any process's
+  arguments. Every program a server starts (an approved command, a tool server, a language server)
+  runs as the same user and can read that environment (`ps eww` on macOS, `/proc/<pid>/environ` on
+  Linux). The password authenticates the whole server API, for every session on that server, not
+  one session. With it a program can:
+  - list every session on the server and read its messages;
+  - create a session with permission rules or a parent session it chooses;
+  - change the server's global or directory configuration, including permission rules;
+  - add or connect MCP servers;
+  - start a terminal (PTY) and run commands in it;
+  - send or resend prompts, which run on your provider accounts;
+  - abort or delete other sessions;
+  - answer any session's approval requests, and on Kilo save always-allow rules
+    (`/permission/{requestID}/always-rules`) or allow everything (`/permission/allow-everything`).
+
+  What the daemon does about it. A reply to an approval counts as the daemon's only when the
+  daemon sent that answer and the server accepted it: a server takes one answer per request and
+  refuses later ones. When a server reports any other reply, in `permission.replied` or
+  `permission.v2.replied`, the daemon refuses every request the session still waits on, aborts
+  the session's run and its subagents' runs and waits for the server to confirm, fails the session
+  with `approval-answered-elsewhere`, and records `provider.approval-answered-elsewhere` in the
+  audit log. The audit entry and the session's notice name the card that was answered, with its
+  operation, command, directory, affected files, tool server and whether it was a hard gate, as
+  the card showed them when the report arrived, or say that the answer matched no card. The
+  match is made only against the cards shown when the report arrived, and the entry says so
+  (`match=currently-shown`): when it matched none, the notice adds that a Domovoi decision may
+  already have been saved or sent before the report and that its acceptance was not confirmed.
+  Until the report is handled, an archive or an emergency stop does not deny that card but notes
+  that it was answered outside Domovoi, and a person's answer to it is refused, including one
+  already being saved, which then keeps no receipt and no standing rule. A standing rule is
+  saved only after the decision that makes it is committed, as a rule pending delivery, and is
+  made active only after the agent has the decision (see "When state cannot reach disk"). A
+  refused decision whose undo cannot be saved can leave its receipt and checkpoint row in the
+  state file, never an active standing rule; the next save that lands removes them. It then
+  stops the server, which drops every approval the server kept in memory, and
+  every other session on that server reconnects to a new server on its next message. The stopped
+  session's provider session is never resumed: it continues only after you restart its provider,
+  in a new provider session without its earlier conversation. An abort the server does not
+  confirm, or a directory whose event stream closes with a run the server will not confirm
+  aborted, also stops the server. A `permission.v2.asked` request, which the daemon cannot
+  answer, ends its turn.
+
+  A stop kills the server's process group on POSIX, or its process tree on Windows, and the
+  daemon starts no other server for that provider until the stop is over and it has confirmed
+  that none of those processes is left. It waits 20 seconds for that confirmation, Windows tree
+  kill included, and counts a stop not confirmed by then as unconfirmed. If it cannot confirm
+  that, it keeps the stopped server, stops it again on each new message, waiting up to 20 seconds
+  again, and refuses the message. On POSIX the refusal ends once no
+  process of the group is left. On Windows a stop is confirmed only when the first `taskkill /T`
+  succeeds while the server's first process still runs and that process then exits. If that
+  process exits before any `taskkill`, or a `taskkill` fails, a process it started may still run
+  where nothing can find it, so the stop stays unconfirmed for good: `taskkill` is not run again,
+  and only a restart of Domovoi clears it. The refusal names the process group or tree. To
+  continue, end those programs yourself, then restart Domovoi, which forgets the stopped server
+  and starts a new one.
+
+  Limits:
+  - The server runs the approved call before the daemon hears of the reply, so whatever was
+    approved, and anything it started, may have run before the stop.
+  - The password stays readable by those programs for as long as the server runs, and nothing
+    the API allows apart from approval replies is seen: configuration, MCP, terminal, prompt and
+    session changes made with it go unnoticed.
+  - When the daemon cannot tell whether the server accepted its own answer, because the answer
+    failed or had no outcome within 10 seconds, it counts a matching reply as someone else's and
+    stops the session.
+  - A reply sent while the daemon's event stream for that directory is down, or for a subagent
+    whose creation the daemon never saw, is not seen.
+  - Kilo writes always-allow rules and a global allow everything to your global Kilo
+    configuration file, where a restart does not remove them, and allow everything with no
+    request waiting reports nothing the daemon sees. The daemon's own Kilo agents keep its ask
+    rules after any rule in that file, but Kilo's built-in subagents (`general`, `debug`) do
+    not: when the file names `bash` or `edit` before a global allow everything, that allow
+    everything opens commands and edits to them.
+  - A reply made in another session's name, or a forged subagent, stops that session, and every
+    stop restarts the server for every session on it.
+  - A process that leaves the server's process group (`setsid`) or, on Windows, its process tree
+    survives a stop.
 - Kilo still reads its legacy files from the session directory with that switch set: a
   `.kilo/mcp.json` or `.kilocode/mcp.json` starts its MCP servers, and a `.kilocodemodes` adds
   agents with their own permissions. The daemon refuses to open or continue a Kilo session in a
@@ -566,6 +832,18 @@ code or settings the repository brings:
   worktree and conversation are kept, and it can be switched to another provider, which starts a
   new thread there; the daemon holds no Cursor or Grok thread to stop. The switch is `acpProvidersTurnedOff` in
   `src/acp-providers.ts`.
+- Kilo is turned off. Kilo's embedded server answers `/permission/allow-everything`: a request
+  with the server password, which processes running as the same user can read from the Kilo
+  process environment, writes an allow-every-tool rule to the global `kilo.jsonc`. Kilo sends no
+  permission event when that happens, the rule survives a server restart, and Kilo's built-in
+  subagents then run commands and edits without asking. Domovoi cannot see the change, so it
+  cannot show an approval card before a tool runs. The daemon does not run `kilo` at all:
+  provider discovery reports Kilo as unable to start without running it, no Kilo adapter is
+  registered, so no Kilo server starts and no new session or switch onto Kilo is possible, and a
+  stored Kilo session is refused when it is continued. Its worktree and conversation are kept, and
+  it can be switched to another provider. The switch is `kiloTurnedOff` in
+  `src/kilo-turned-off.ts`, separate from the Cursor and Grok switch. The Kilo notes above apply
+  when it is turned back on.
 - Codex threads mark every path Codex consults for project trust as untrusted, so Codex loads
   nothing from the repository's `.codex` folder itself: no `config.toml`, `hooks.json` or
   `rules/*.rules`. The daemon refuses to open or continue a Codex session in a worktree that holds
@@ -616,6 +894,19 @@ when the session opens. For OpenCode and Kilo it sends the first of `AGENTS.md`,
 128 KiB that resolve inside the worktree are read; an import or link that leaves it is skipped.
 `.claude/rules/` and instruction entries in project provider configuration are not read.
 
+### Git version for workspace operations
+
+Checkpoint, snapshot, restore, file revert, transfer, evidence and a new session's checkout run
+Git in a temporary Git directory that reads a snapshot of your global and system config, passed
+through `GIT_CONFIG_GLOBAL`. Git added that variable in 2.32; an older Git ignores it and reads
+your live global config instead. These operations therefore need Git 2.32 or newer. As an
+operation starts, the daemon finds the Git it will run as an absolute path: the first `git` (on
+Windows, `git.exe`) in a PATH entry that is itself absolute, so empty and relative entries are
+passed over. Every Git command of that operation runs that binary. The daemon reads its
+`git --version` once per binary path, and on an older Git, or when the version cannot be read,
+it refuses the operation with a message that names the version it found. There is no fallback
+for older Git.
+
 ## Supervise
 
 Install the daemon as a service for the user who asks for it:
@@ -631,6 +922,30 @@ macOS, and a logon task on Windows, then asks the platform's service manager to 
 written to a system-wide location and no step asks for elevation. `status` reports whether the
 service file is present and whether the manager currently runs it, and exits non-zero when nothing
 is installed. `remove` stops the service and deletes the file it pointed at.
+
+To keep the daemon running while its person is away:
+
+- **Linux lingering** (decided 2026-09-17). Without it, systemd stops the daemon when the user's
+  last session ends. `install` runs `loginctl enable-linger` for the installing user when
+  lingering is off, says so, and records `"lingerEnabledByDomovoi": true` in `service.json`;
+  lingering that was already on is left alone and recorded as `false`. `remove` runs
+  `loginctl disable-linger` only on `true`, so lingering that another service or the person relied
+  on stays as it was. When `loginctl` is missing or refuses, `install` still installs, exits 0,
+  records nothing, and says on stderr that the daemon stops at logout and starts again at the next
+  login.
+- **Windows.** The logon task runs the daemon itself and has no crash supervision yet: a daemon
+  that crashes stays down until the next logon or a manual start. Supervision returns together
+  with the job-object work (ruling Q300 A, 2026-10-01). The task does get Task Scheduler's
+  72 hour execution limit and battery stops lifted, so the daemon is not ended after three days or
+  on battery, and every `schtasks` call names the one under `SystemRoot`.
+- **WSL update, known limit** (ruling Q311 A). An update from the app retires the guest
+  supervisor registration and registers it again under the same ID, so the new supervisor and
+  the restored one both refuse to start and the service stays down. Starting the task by hand
+  does not help; remove the service and install it again. A separate PR will fix it with
+  per-start IDs and a start fence held through cleanup.
+
+[Daemon service configuration](../../docs/daemon-services.md) has the printed text, failure
+handling and what is and is not proved natively.
 
 A service file never carries a secret. `DOMOVOI_AUTH_TOKEN` and any other credential stay in the
 user-private files the daemon already reads.

@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { on, once } from "node:events"
 import { chmod, copyFile, mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { tmpdir, userInfo } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { promisify } from "node:util"
@@ -91,7 +91,8 @@ describe("distributed service CLI", () => {
       // A Windows install first asks Task Scheduler whether a task of the same
       // name exists (security review round 3), so the launch command is the
       // /create call's, not the first manager call's.
-      const create = commands.find(({ command, args }) => command === "schtasks" && args[0] === "/create")
+      // schtasks is named by its path under SystemRoot (review F3).
+      const create = commands.find(({ command, args }) => command.endsWith("\\System32\\schtasks.exe") && args[0] === "/create")
       const launch = process.platform === "win32"
         ? create!.args[create!.args.indexOf("/tr") + 1]!
         : await within(() => readFile(process.platform === "darwin"
@@ -101,6 +102,14 @@ describe("distributed service CLI", () => {
       expect(launch).toContain(process.execPath)
       expect(launch).toContain("--service-config")
       expect(launch).toContain(configPath)
+      // Decided 2026-09-17 (SHIP-PLAN S1.1): the Linux install turned the
+      // shim's lingering on and recorded it. The shim answers loginctl.
+      if (process.platform === "linux") {
+        expect(commands).toContainEqual({ command: "loginctl", args: ["enable-linger", String(userInfo().uid)] })
+        expect(saved.lingerEnabledByDomovoi).toBe(true)
+      } else {
+        expect(commands.some(({ command }) => command === "loginctl")).toBe(false)
+      }
 
       // The manager has a different environment after reboot. It must not
       // override the saved listener, file credential, identity, or origins.

@@ -164,7 +164,7 @@ function redactWorkspaceRecords(snapshot: WorkspaceSnapshot): WorkspaceSnapshot 
     if (
       command.redacted
       || operation.redacted
-      || ((rule.status === "active" || rule.inactiveReason === "revoked") && executionContainsSecret(rule.execution))
+      || ("execution" in rule && executionContainsSecret(rule.execution))
     ) return []
     return [{ ...rule, command: command.value, operation: operation.value }]
   })

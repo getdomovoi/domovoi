@@ -69,6 +69,7 @@ import {
   type AuditActor,
   type AuditOutcome,
   type ProviderModel,
+  type Project,
   type ProjectSwitchConfirmation,
   type QueuedSessionSend,
   type RepositoryGitFilterRefusal,
@@ -120,6 +121,7 @@ import {
 } from "./approval-settlement.js"
 import {
   boundedQueuedSendReason,
+  SavedProjectStateError,
   SqliteWorkspaceStore,
   type QueuedSessionSendTransition,
   type StoredQueuedSessionSend,
@@ -180,6 +182,7 @@ import { emergencyStopRecoveryRounds, type SqliteEmergencyStopIntents } from "./
 import { ClaudeAgentSdkAdapter } from "./claude.js"
 import { OpenCodeSdkAdapter } from "./opencode.js"
 import { KiloSdkAdapter } from "./kilo.js"
+import { kiloTurnedOff, kiloTurnedOffReason, kiloTurnedOffResumeRefusal } from "./kilo-turned-off.js"
 import { createCursorAgentAdapter, createGrokAgentAdapter } from "./acp-factory.js"
 import {
   acpProviderNames,
@@ -190,14 +193,18 @@ import {
 import {
   AgentProviderUnavailableError,
   AgentRegistry,
+  ApprovalRequestNotPendingError,
   type AgentAdapter,
   type AgentEvent,
+  type ProviderApprovalDecision,
+  type UnavailableProvider,
 } from "./agents.js"
 import { modelImageInput, prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
 import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
   RepositoryConfigRefusedError,
+  RepositoryFilterRefusedError,
   RepositoryGitFilterRefusedError,
   SubmoduleChangesRefusedError,
   GitWorkspaceService,
@@ -234,6 +241,10 @@ import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } f
 import { readToolInventory, type RepositoryProviderConfigReader } from "./tool-inventory.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
 import { RepositoryGitFilterRpcError, repositoryGitFilterRpcError } from "./repository-git-filter-refusal.js"
+import type { RepositoryFilterTrustSource } from "./repository-git-filter-gate.js"
+import { RepositoryGitConfigUnreadableError } from "./repository-git-filters.js"
+import { GitTooOldForIsolationError } from "./isolated-checkout.js"
+import { GitNotFoundError } from "./git-command.js"
 import { maximumRevokedTrustThreads, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant, RepositoryTrustStore } from "./repository-trust-store.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
@@ -271,7 +282,7 @@ import {
 import type { ConfiguredSshTunnel } from "./transport-config.js"
 import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { advertisedTransports } from "./advertised-transports.js"
-import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
+import { approvalAnsweredElsewhereFailure, classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import {
   ArtifactWatcher,
   maximumArtifactFileBytes,
@@ -355,6 +366,29 @@ export const repositoryTrustCredentialRefusal =
 // Trust is granted and taken back for the open project only. The refusal names
 // no path or value (ruling Q123).
 export const repositoryTrustProjectRefusal = "Repository trust applies only to the open project"
+// J31 S1: the daemon keeps one project open at a time. Opening another one
+// switches to it, so the cap it states is 1 until several projects can be
+// active (S2 raises it to the configured cap, 3 by default, ruling Q190 A).
+export const activeProjectCap = 1
+// A call that names a project other than the open one.
+export const projectNotOpenRefusal =
+  "That project is not open. Open it first, or leave projectId out to use the open project."
+// project.close is declared on the wire before it is built (J31 S3).
+export const projectCloseUnavailableRefusal =
+  "Closing a project is not available yet. Opening another project switches to it after you confirm the sessions it stops."
+// Methods whose params may name a project with projectId.
+const projectScopedRpcMethods: ReadonlySet<RpcMethod> = new Set([
+  "session.create",
+  "tool.inventory",
+  "skill.list",
+  "skill.inventory",
+  "skill.read",
+  "skill.reviewRevision",
+  "skill.setEnabled",
+  "skill.review",
+  "skill.installPreview",
+  "skill.install",
+])
 // A session whose provider thread did not confirm its exit. It also answers a
 // session fenced for a thread that loaded trusted input (ruling Q172 A).
 const providerThreadRecoveryRefusal = "Provider thread requires recovery after emergency stop"
@@ -408,14 +442,28 @@ const sessionResourceMethods = new Set([
 ])
 type ProviderReadiness = WorkspaceSnapshot["machine"]["providers"][number]
 
-// Cursor and Grok are turned off whatever a stored row or a provider probe
-// says about them, so every row for either enters the machine snapshot as the
-// turned-off detection and cannot start a session.
+// Cursor, Grok and Kilo are turned off whatever a stored row or a provider
+// probe says about them, so every row for any of them enters the machine
+// snapshot as the turned-off detection and cannot start a session.
 function withTurnedOffProviders(providers: readonly ProviderReadiness[]): ProviderReadiness[] {
   return providers.map((provider) => {
     const turnedOff = turnedOffProviderDetection(provider.id)
     return turnedOff ? { ...turnedOff, sessionCapable: false } : provider
   })
+}
+
+// What the agent registry tells a session of each turned-off provider. Each
+// ruling has its own switch, so turning one back on leaves the other off.
+function turnedOffAgentProviders(): Record<string, UnavailableProvider> {
+  return {
+    ...(acpProvidersTurnedOff
+      ? Object.fromEntries(Object.entries(acpProviderNames).map(([provider, name]) => [provider, {
+        reason: acpProviderTurnedOffReason(name),
+        resumeRefusal: acpProviderTurnedOffResumeRefusal(name),
+      }]))
+      : {}),
+    ...(kiloTurnedOff ? { kilo: { reason: kiloTurnedOffReason, resumeRefusal: kiloTurnedOffResumeRefusal } } : {}),
+  }
 }
 
 function approvedRunKey(sessionId: string, turnId: string, itemId: string): string {
@@ -610,6 +658,47 @@ function permissionViolation(runtime: Runtime, agent: AgentAdapter): string | un
   if (runtime.permissionMode !== "build" || !runtime.auto) return undefined
   if (agent.permissionCapabilities?.buildAuto === "pre-execution") return undefined
   return `${providerName} does not support enforceable Build auto`
+}
+
+const answeredElsewhereHoldReason = "An approval was answered outside Domovoi, so the queued send was held."
+const answeredElsewhereRefusal = "This request was answered outside Domovoi"
+// A failed activation save may still have written the active rule, so this
+// claims nothing about what the state file holds (round 10 of the Codex
+// review of #691).
+const activationUnconfirmedMessage = "Domovoi sent this Allow once, but could not confirm the standing rule was saved. "
+  + "It may or may not be in force after Domovoi restarts. Check Standing approval rules in Settings, Permissions and rules."
+
+// The facts of the card an outside answer was to, as the card showed them.
+// Each was settled, and any secret path hidden, when the card was made
+// (approval-settlement.ts); the audit log redacts its detail again on append.
+// No card means the answer matched none the session was showing. The match
+// is made only against the cards shown when the report arrived
+// (match=currently-shown, round 8, ruling Q279): a card Domovoi had already
+// decided is gone from them, so its own answer may have gone out first.
+function answeredApprovalAuditFacts(approval: WorkspaceSnapshot["approvals"][number] | undefined): string {
+  if (approval === undefined) return "match=currently-shown approval=none"
+  return [
+    "match=currently-shown",
+    `approval=${approval.id}`,
+    `risk=${approval.risk}`,
+    `operation=${JSON.stringify(approval.operation)}`,
+    `command=${JSON.stringify(approval.command)}`,
+    `directory=${JSON.stringify(approval.directory)}`,
+    `affects=${JSON.stringify(approval.affects)}`,
+    ...(approval.toolServer ? [`toolServer=${JSON.stringify(approval.toolServer.name)}`] : []),
+  ].join(" ")
+}
+
+function answeredApprovalNotice(approval: WorkspaceSnapshot["approvals"][number] | undefined): string {
+  if (approval === undefined) {
+    return "The answer matched no request Domovoi was showing in this session. A Domovoi decision may already have been saved or sent before this report; its acceptance was not confirmed."
+  }
+  return [
+    `The answer was to the request "${approval.operation}", command ${approval.command}, in ${approval.directory}.`,
+    approval.affects,
+    ...(approval.toolServer ? [`The tool is from the tool server ${approval.toolServer.name}.`] : []),
+    approval.risk === "hard-gate" ? "It was a hard gate." : "It was not a hard gate.",
+  ].join(" ")
 }
 
 function sessionReadOnlyMessage(
@@ -961,10 +1050,30 @@ export class ActiveAssistantItemCache {
   }
 }
 
+// Every snapshot a client receives states the active projects and the cap.
+// The daemon keeps one project open (J31 S1), so the list is that project
+// alone. It is built here, the one place snapshots are built for clients.
 export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
+  const projects = snapshot.project ? [snapshot.project] : []
+  // The store refuses state with several projects (ruling Q257), so nothing
+  // here belongs to a project the list leaves out. If something ever does,
+  // fail here, loudly, rather than send a snapshot the schema refuses.
+  const listed = new Set(projects.map((project) => project.id))
+  if (
+    snapshot.sessions.some((session) => !listed.has(session.projectId))
+    || snapshot.approvalRules.some((rule) => !listed.has(rule.projectId))
+  ) {
+    throw new Error("The workspace holds a session or approval rule outside the projects it lists")
+  }
   const thread = boundedClientThread(snapshot.thread, snapshot.activeSessionId)
   const historyTruncated = thread.length < snapshot.thread.length
-  return { ...snapshot, thread, ...(historyTruncated ? { historyTruncated: true } : {}) }
+  return {
+    ...snapshot,
+    projects,
+    projectCap: activeProjectCap,
+    thread,
+    ...(historyTruncated ? { historyTruncated: true } : {}),
+  }
 }
 
 export function isTestCommandTitle(title: string): boolean {
@@ -1629,7 +1738,10 @@ export class DomovoiDaemon {
   #repositoryProviderConfig: RepositoryProviderConfigReader | undefined
   #repositoryTrust: RepositoryTrustStore | undefined
   #profileDirectory: string
-  #fileSkillCatalog: { projectPath: string | undefined; catalog: FileSkillCatalog } | undefined
+  // One file catalog per project path, undefined for no project. A catalog
+  // checks its files and trust keys again at every listing, so one kept from
+  // an earlier visit to a project reads that project as it is now.
+  readonly #fileSkillCatalogs = new Map<string | undefined, FileSkillCatalog>()
   #workspaceAbort = new AbortController()
   #emergencyBlockedThreads = new Set<string>()
   #failedEmergencyThreads = new Set<string>()
@@ -1688,6 +1800,22 @@ export class DomovoiDaemon {
   // it, since the stop's own count would otherwise match once it finished.
   #emergencyStopGeneration = 0
   #approvalRequestGenerations = new WeakMap<AgentEvent, { generation: number; duringStop: boolean }>()
+  // The session an approval-answered-elsewhere report named when it arrived,
+  // and the card it answered as the card stood then. The report can wait
+  // behind a mutation, such as an archive, that drops the provider thread and
+  // the cards before the report is handled, and the incident is still that
+  // session's and that card's (Codex review of #691 at a609034e, P1, and
+  // round 6, P2).
+  #answeredElsewhereReports = new WeakMap<
+    AgentEvent,
+    { sessionId: string; answered?: WorkspaceSnapshot["approvals"][number] }
+  >()
+  // Cards whose request was answered outside Domovoi, by card id. A cleanup
+  // that denies cards writes these no deny receipt and sends their provider
+  // no deny, and a person's answer to one is refused. An entry leaves once its
+  // incident is recorded and its card is gone, whichever comes last, so the
+  // map holds only reports still queued and cards still shown.
+  #approvalsAnsweredElsewhere = new Map<string, "queued" | "recorded">()
   // Snapshot and delta broadcasts held while a stop runs. The stop's own
   // notification goes out first, then one snapshot carries every change.
   #snapshotBroadcastHeld = false
@@ -1891,7 +2019,7 @@ export class DomovoiDaemon {
       // version after a restart/upgrade. Keep provider readiness separately.
       this.#snapshot.machine = { ...initialSnapshot.machine, providers: this.#snapshot.machine.providers }
     }
-    // A row saved while Cursor or Grok could start sessions is not served,
+    // A row saved while Cursor, Grok or Kilo could start sessions is not served,
     // even until the first probe finishes or if it fails. The next write of
     // the snapshot stores the turned-off row in its place.
     this.#snapshot.machine.providers = withTurnedOffProviders(this.#snapshot.machine.providers)
@@ -1921,18 +2049,14 @@ export class DomovoiDaemon {
           "cursor-agent": createCursorAgentAdapter(),
           grok: createGrokAgentAdapter(),
         }),
-        kilo: new KiloSdkAdapter(),
+        ...(kiloTurnedOff ? {} : { kilo: new KiloSdkAdapter() }),
         opencode: new OpenCodeSdkAdapter(),
       },
-      acpProvidersTurnedOff
-        ? Object.fromEntries(Object.entries(acpProviderNames).map(([provider, name]) => [provider, {
-          reason: acpProviderTurnedOffReason(name),
-          resumeRefusal: acpProviderTurnedOffResumeRefusal(name),
-        }]))
-        : {},
+      turnedOffAgentProviders(),
     )
     this.#workspaceService = options.workspaceService ?? new GitWorkspaceService(
       options.worktreeRoot ?? join(this.#profileDirectory, "worktrees"),
+      { repositoryTrust: (anchor) => this.#repositoryFilterTrust(anchor) },
     )
     this.#agentTimeoutMs = options.agentTimeoutMs ?? 30_000
     this.#authToken = authToken
@@ -1956,7 +2080,10 @@ export class DomovoiDaemon {
         if (event.type === "approval-requested") {
           this.#approvalRequestGenerations.set(event, { generation: this.#emergencyStopGeneration, duringStop: this.#emergencyStopInProgress })
         }
-        if (event.type === "provider-disconnected") {
+        if (event.type === "approval-answered-elsewhere") {
+          this.#receiveAnsweredElsewhere(provider, event)
+          this.#enqueueAnsweredElsewhere(provider, event)
+        } else if (event.type === "provider-disconnected") {
           void this.#enqueueMutation(() => this.#handleAgentEvent(provider, event))
         } else {
           void this.#mutations.enqueue(
@@ -1965,6 +2092,50 @@ export class DomovoiDaemon {
           )
         }
       }),
+    )
+  }
+
+  // Codex review of #691 at a609034e, P1, and round 6, P2 (ruling Q271): the
+  // session and the answered card are read when the report arrives, because
+  // an archive or an emergency stop can clear both before it is handled. The
+  // card is marked so that such a cleanup does not deny it: it was answered.
+  #receiveAnsweredElsewhere(
+    provider: string,
+    event: Extract<AgentEvent, { type: "approval-answered-elsewhere" }>,
+  ): void {
+    const owner = this.#snapshot.sessions.find((candidate) =>
+      candidate.runtime.provider === provider && candidate.providerThreadId === event.threadId)
+    if (!owner) return
+    const answered = event.requestId === undefined
+      ? undefined
+      : this.#snapshot.approvals.find((approval) =>
+          approval.sessionId === owner.id && approval.providerRequestId === event.requestId)
+    if (answered) this.#approvalsAnsweredElsewhere.set(answered.id, "queued")
+    this.#answeredElsewhereReports.set(event, {
+      sessionId: owner.id,
+      ...(answered ? { answered: structuredClone(answered) } : {}),
+    })
+  }
+
+  // An emergency stop cancels every queued mutation. The report is a record
+  // of what already happened, not work the stop prevents, so it is queued
+  // again behind the stop and recorded then. Only a daemon shutdown drops it.
+  #enqueueAnsweredElsewhere(
+    provider: string,
+    event: Extract<AgentEvent, { type: "approval-answered-elsewhere" }>,
+  ): void {
+    const report = this.#answeredElsewhereReports.get(event)
+    void this.#mutations.enqueue(
+      report ? `session:${report.sessionId}` : this.#resourceForAgentEvent(provider, event),
+      (signal) => this.#handleAgentEvent(provider, event, signal),
+      {
+        onCancelled: () => {
+          void this.#emergencyStopTail.then(() => {
+            if (this.#stopping || this.#stopped) return
+            this.#enqueueAnsweredElsewhere(provider, event)
+          })
+        },
+      },
     )
   }
 
@@ -2070,7 +2241,8 @@ export class DomovoiDaemon {
   // A). The workspace took away what it made when worktreeRemoved says so, so
   // the record of the attempt goes too; otherwise the record stays for
   // recovery to preserve the worktree. The answer carries the drivers and the
-  // open project's trust read now; any other error passes through unchanged.
+  // session's project's trust read now; any other error passes through
+  // unchanged, and so does this one when that project cannot be found.
   async #gitFilterRefusal(error: unknown, sessionId: string, projectId: string): Promise<unknown> {
     if (!(error instanceof RepositoryGitFilterRefusedError)) return error
     if (error.worktreeRemoved) {
@@ -2081,14 +2253,41 @@ export class DomovoiDaemon {
         this.#reportError("Domovoi could not clear a refused session creation", cleanupError)
       }
     }
-    const project = this.#snapshot.project
-    if (!project || project.id !== projectId) return error
-    return await repositoryGitFilterRpcError({
+    return await this.#gitFilterRpcError(error, projectId) ?? error
+  }
+
+  // A refusal over a repository git filter with its data, for the project it
+  // names, read now; undefined when it names none that can be found, or the
+  // read fails: the refusal's text then answers alone.
+  async #gitFilterRpcError(error: RepositoryFilterRefusedError, projectId: string | undefined): Promise<RepositoryGitFilterRpcError | undefined> {
+    const project = projectId === undefined ? undefined : this.#projectById(projectId)
+    if (!project) return undefined
+    return repositoryGitFilterRpcError({
       error,
       project: { id: project.id, path: project.path },
       grant: this.#repositoryTrustFor(project.id).repositoryTrust,
       read: this.#repositoryProviderConfig,
-    }) ?? error
+    })
+  }
+
+  // The project a path the workspace gates belongs to
+  // (repository-git-filter-gate.ts): the open project's root, or a session
+  // worktree, which belongs to its session's own project. The grant and the
+  // count of revokes are read at every call, never kept from an earlier
+  // answer (#662). Any other path belongs to no project here, and its
+  // repository filters stay held back.
+  #repositoryFilterTrust(anchor: string): RepositoryFilterTrustSource | undefined {
+    const open = this.#snapshot.project
+    const session = open?.path === anchor ? undefined : this.#snapshot.sessions.find((candidate) => candidate.workspacePath === anchor)
+    const project = open?.path === anchor ? open : session ? this.#projectForSession(session) : undefined
+    if (!project) return undefined
+    return {
+      projectId: project.id,
+      projectPath: project.path,
+      grant: () => this.#repositoryTrustFor(project.id).repositoryTrust,
+      generation: () => this.#repositoryTrustGeneration(project.id),
+      read: this.#repositoryProviderConfig,
+    }
   }
 
   #repositoryTrustFor(projectId: string): { repositoryTrust?: RepositoryTrustGrant } {
@@ -2693,6 +2892,10 @@ export class DomovoiDaemon {
     await this.#recoverSessionArchives()
     signal?.throwIfAborted()
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.())
+    if (this.#dropUndeliveredRules(this.#snapshot, "startup-recovery").length > 0) {
+      workspaceSnapshotSchema.parse(this.#snapshot)
+      this.#store.save(this.#snapshot)
+    }
     this.#recoverInterruptedTurns()
     this.#recoverEmergencyStops()
     // Startup recovery expired every saved card (ruled 2026-09-24, #604), so
@@ -3074,7 +3277,7 @@ export class DomovoiDaemon {
       action: method,
       outcome: method === "approval.resolve" && values.decision === "deny" ? "denied" : "succeeded",
       ...(sessionId ? { sessionId } : {}),
-      ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+      ...this.#auditProject(sessionId),
       ...(target ? { target } : {}),
       ...(method === "skill.setEnabled"
         ? { detail: `enabled=${values.enabled === true} digest=${String(values.contentDigest ?? "")}` }
@@ -3170,9 +3373,43 @@ export class DomovoiDaemon {
     this.#approvalLedger.admit(this.#snapshot.approvals, approval)
   }
 
+  // The project a session belongs to, found by its id: the open project, else
+  // that project's saved row, read and never written. Every session in the
+  // live snapshot belongs to the open project today, so the saved row is read
+  // only for an id that is not the open one's. Undefined when neither has it,
+  // and each caller then acts as it does when no project is open.
+  #projectById(projectId: string): Project | undefined {
+    const open = this.#snapshot.project
+    if (open?.id === projectId) return open
+    try {
+      return this.#store.loadProject?.(projectId, this.#snapshot.machine)?.project
+    } catch (error) {
+      this.#reportError("Domovoi could not read a saved project", error)
+      return undefined
+    }
+  }
+
+  #projectForSession(session: Pick<WorkspaceSnapshot["sessions"][number], "projectId">): Project | undefined {
+    return this.#projectById(session.projectId)
+  }
+
+  // The project an audit record about a session names: the session's own. A
+  // record with no session, or for one no longer in the snapshot, names the
+  // open project, as it always has.
+  #auditProject(sessionId: string | undefined): { projectId?: string } {
+    const session = sessionId === undefined
+      ? undefined
+      : this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+    const projectId = session?.projectId ?? this.#snapshot.project?.id
+    return projectId === undefined ? {} : { projectId }
+  }
+
+  // A session with no worktree of its own works in its project's checkout. An
+  // approval whose session has left the snapshot keeps the open project's.
   #approvalWorkspace(approval: WorkspaceSnapshot["approvals"][number]): string | undefined {
-    return this.#snapshot.sessions.find((session) => session.id === approval.sessionId)?.workspacePath
-      ?? this.#snapshot.project?.path
+    const session = this.#snapshot.sessions.find((candidate) => candidate.id === approval.sessionId)
+    if (!session) return this.#snapshot.project?.path
+    return session.workspacePath ?? this.#projectForSession(session)?.path
   }
 
   #approvalScope(runtime: Runtime): ApprovalScope | undefined {
@@ -3206,7 +3443,7 @@ export class DomovoiDaemon {
     approval: WorkspaceSnapshot["approvals"][number],
     session: WorkspaceSnapshot["sessions"][number],
   ): Promise<{ refusal: string | undefined; otherNames: boolean }> {
-    const workspace = session.workspacePath ?? this.#snapshot.project?.path
+    const workspace = session.workspacePath ?? this.#projectForSession(session)?.path
     if (workspace === undefined) return { refusal: undefined, otherNames: false }
     const held = this.#approvalTargets.get(approval.id)
     const fileTool = held !== undefined && heldFileTool(held.request)
@@ -3493,7 +3730,7 @@ export class DomovoiDaemon {
   async #refreshProviderReadiness(): Promise<void> {
     const sessionProviders = new Set(this.#agents.providers())
     // Normalised before the rows are saved, broadcast or returned: an
-    // injected probe need not know that Cursor and Grok are turned off.
+    // injected probe need not know that Cursor, Grok and Kilo are turned off.
     const providers = withTurnedOffProviders((await this.#providerProbe!.inspect()).map((provider) => ({
       ...provider,
       sessionCapable: sessionProviders.has(provider.id),
@@ -3588,8 +3825,9 @@ export class DomovoiDaemon {
       target,
     })
     if (!reachable.allowed) return this.#refusedTransferPreview(params, reachable.reason)
+    const project = this.#projectForSession(session)
     if (
-      !this.#snapshot.project
+      !project
       || !session.workspacePath
       || !this.#usageLedger.transferSession
       || !this.#workspaceService.transferFingerprint
@@ -3617,8 +3855,8 @@ export class DomovoiDaemon {
             ),
           } : {}),
         }),
-        this.#workspaceService.inspect(this.#snapshot.project.path, signal)
-          .then((project) => project.head),
+        this.#workspaceService.inspect(project.path, signal)
+          .then((inspected) => inspected.head),
         this.#workspaceService.transferFingerprint(session.workspacePath, signal),
       ])
     } catch (error) {
@@ -3655,7 +3893,7 @@ export class DomovoiDaemon {
           contractVersion: sessionTransferContractVersion,
           sessionId: session.id,
           sourceMachineId: this.#snapshot.machine.id,
-          sourceProjectId: this.#snapshot.project.id,
+          sourceProjectId: project.id,
           lineageCommit: projectHead,
           ownershipGeneration: session.ownershipGeneration ?? 0,
           method: params.method,
@@ -3670,7 +3908,7 @@ export class DomovoiDaemon {
         snapshot: this.#snapshot,
         sourceMachineId: this.#snapshot.machine.id,
         targetMachineId: target.id,
-        sourceProjectId: this.#snapshot.project.id,
+        sourceProjectId: project.id,
         targetProjectId: targetReady.targetProjectId,
         lineageCommit: targetReady.lineageCommit,
         sourceHeadCommit: fingerprint.headCommit,
@@ -4211,7 +4449,7 @@ export class DomovoiDaemon {
       action: "session.ownership-conflict",
       outcome: "denied",
       sessionId: source.id,
-      ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+      projectId: source.projectId,
       target: lifecycle.targetMachineId,
       detail: `Source stopped because target reported ${refusal.reason} at generation ${refusal.existingGeneration} for transfer ${lifecycle.transferId}`,
     })
@@ -4569,7 +4807,7 @@ export class DomovoiDaemon {
         action: "session.source-recovery-cleared",
         outcome: "succeeded",
         sessionId: session.id,
-        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        projectId: session.projectId,
         target: recovery.targetMachineId,
         detail: `Target confirmed no committed ownership for transfer ${recovery.transferId}`,
       })
@@ -4645,7 +4883,7 @@ export class DomovoiDaemon {
       action: "session.ownership-conflict",
       outcome: "denied",
       sessionId: session.id,
-      ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+      projectId: session.projectId,
       target: recovery.targetMachineId,
       detail: `Recovered source stopped because transfer ${recovery.transferId} is committed at generation ${remote.ownershipGeneration}`,
     })
@@ -4757,7 +4995,7 @@ export class DomovoiDaemon {
       }
 
       if (params.method === "git-bundle") {
-        const bundleSession = this.#workspaceService.bundleSession
+        const bundleSession = this.#workspaceService.bundleSession?.bind(this.#workspaceService)
         const readBundle = this.#readTransferBundle
         if (!bundleSession || !readBundle) {
           throw new SessionTransferStateError("session-resource-unavailable")
@@ -4782,7 +5020,7 @@ export class DomovoiDaemon {
           await rm(temporary, { recursive: true, force: true }).catch(() => {})
         }
       } else {
-        const pushSessionRef = this.#workspaceService.pushSessionRef
+        const pushSessionRef = this.#workspaceService.pushSessionRef?.bind(this.#workspaceService)
         if (!pushSessionRef || !params.remote) {
           throw new SessionTransferStateError("session-resource-unavailable")
         }
@@ -4953,6 +5191,9 @@ export class DomovoiDaemon {
         startedAt,
         completedAt,
       })
+      // Refused over a repository git filter here, on the source: the client
+      // gets the drivers and this machine's trust, so it can offer the review.
+      if (error instanceof RepositoryFilterRefusedError) throw error
       return rpcMethods["session.transfer"].result.parse({ outcome: "refused", reason })
     }
   }
@@ -5099,16 +5340,22 @@ export class DomovoiDaemon {
 
   #skillCatalogFor(projectPath: string | undefined): SkillCatalog {
     if (this.#skillCatalog) return this.#skillCatalog
-    if (!this.#fileSkillCatalog || this.#fileSkillCatalog.projectPath !== projectPath) {
-      this.#fileSkillCatalog = {
-        projectPath,
-        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath, this.#profileDirectory), this.#skillReviews, {
-          trustPath: this.#skillTrustPath,
-          report: (detail) => this.#errorSink({ context: "skill-trust", detail }),
-        }),
-      }
+    let catalog = this.#fileSkillCatalogs.get(projectPath)
+    if (!catalog) {
+      catalog = new FileSkillCatalog(skillRoots(homedir(), projectPath, this.#profileDirectory), this.#skillReviews, {
+        trustPath: this.#skillTrustPath,
+        report: (detail) => this.#errorSink({ context: "skill-trust", detail }),
+      })
+      this.#fileSkillCatalogs.set(projectPath, catalog)
     }
-    return this.#fileSkillCatalog.catalog
+    return catalog
+  }
+
+  // A review is kept for the skill, not the project, and no catalog's file
+  // check sees it change, so every kept catalog lists again after one.
+  #invalidateSkillCatalogs(): void {
+    if (this.#skillCatalog instanceof FileSkillCatalog) this.#skillCatalog.invalidate()
+    for (const catalog of this.#fileSkillCatalogs.values()) catalog.invalidate()
   }
 
   async #ensureAgentConnected(provider = "codex"): Promise<AgentAdapter> {
@@ -5839,6 +6086,20 @@ export class DomovoiDaemon {
         daemonPersistenceUnavailableErrorCode,
         persistenceUnavailableMessage,
       )
+      return
+    }
+
+    // One project is open at a time (J31 S1). A call may name it; naming any
+    // other is refused rather than answered for the open one.
+    if (projectScopedRpcMethods.has(method)) {
+      const named = (paramsResult.data as { projectId?: string }).projectId
+      if (named !== undefined && named !== this.#snapshot.project?.id) {
+        this.#error(socket, request.id, invalidParams, projectNotOpenRefusal)
+        return
+      }
+    }
+    if (method === "project.close") {
+      this.#error(socket, request.id, invalidParams, projectCloseUnavailableRefusal)
       return
     }
 
@@ -7470,11 +7731,34 @@ export class DomovoiDaemon {
           })
           return
         }
-        const { configDigest } = params as RpcParams<"repository.trust">
+        const { configDigest, gitFilters } = params as RpcParams<"repository.trust">
         const config = await read(project.path, projectRootRead)
         // An emergency stop during the read cancelled this mutation: nothing is
         // recorded, and the catch below answers it as a cancelled operation.
         signal?.throwIfAborted()
+        // The grant runs the repository's git filters only when the client says
+        // it showed them, and this read listed every one: none omitted past a
+        // cap and none unreadable, so what was shown is all there is. Any other
+        // grant keeps them held back; a repository with none needs nothing.
+        const filters = config.gitFilters
+        // The acknowledgement names the block the client fetched by its review
+        // digest. For the configuration read now, a digest other than this
+        // read's means the client did not show this block: nothing is granted
+        // (ruling Q255). A stale configDigest is answered as config-changed
+        // below instead.
+        if (gitFilters !== undefined && configDigest === config.configDigest && gitFilters.reviewDigest !== filters?.reviewDigest) {
+          this.#error(socket, request.id, invalidParams,
+            "Domovoi granted no trust: the git filters this client showed are not the ones Domovoi reads now. Read tool.inventory again and show its git filters before trusting the repository.")
+          return
+        }
+        // The grant keeps the digest of the block it reviewed, and the gate
+        // runs the filters only while the block read then has it (ruling Q265).
+        const gitFiltersReviewed = gitFilters?.reviewed === true && filters !== undefined
+          && filters.unreadable === undefined && filters.omittedEntries === 0
+        const record = () => store.record({
+          projectId: project.id, trustedDigest: config.configDigest, trustedBy,
+          ...(gitFiltersReviewed ? { gitFilterReviewDigest: filters.reviewDigest } : {}),
+        })
         const repository = (grant: RepositoryTrustGrant | undefined) => ({
           projectId: project.id,
           configDigest: config.configDigest,
@@ -7486,7 +7770,7 @@ export class DomovoiDaemon {
           ? { outcome: "config-changed", repository: repository(store.find(project.id)) }
           : config.trustRefusals.length > 0
             ? { outcome: "cannot-trust", repository: repository(undefined) }
-            : { outcome: "trusted", repository: repository(store.record({ projectId: project.id, trustedDigest: config.configDigest, trustedBy })) }
+            : { outcome: "trusted", repository: repository(record()) }
         this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(outcome) })
         return
       }
@@ -7519,8 +7803,11 @@ export class DomovoiDaemon {
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
+          // Built from the revision's own fields: the params may also name
+          // the project, which the strict result does not carry.
           result: rpcMethods[method].result.parse(revision ?? {
-            ...params,
+            id: params.id,
+            contentDigest: params.contentDigest,
             state: "unavailable",
             reason: "not-retained",
           }),
@@ -7579,7 +7866,7 @@ export class DomovoiDaemon {
           (candidate) => candidate.projectId !== project.id || candidate.skillId !== current.id,
         )
         this.#snapshot.skillEnablements.push(review)
-        if (catalog instanceof FileSkillCatalog) catalog.invalidate()
+        this.#invalidateSkillCatalogs()
         changed = true
       }
 
@@ -7626,7 +7913,7 @@ export class DomovoiDaemon {
         } else {
           reviews.revoke(current.id)
         }
-        if (catalog instanceof FileSkillCatalog) catalog.invalidate()
+        this.#invalidateSkillCatalogs()
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -7674,7 +7961,7 @@ export class DomovoiDaemon {
         }
         let installed
         try {
-          installed = await catalog.install(params)
+          installed = await catalog.install({ source: params.source, scope: params.scope, sourceDigest: params.sourceDigest })
         } catch (error) {
           if (error instanceof SkillInstallError) {
             this.#error(socket, request.id, skillInstallErrorCode, error.message, error.refusal)
@@ -8145,6 +8432,25 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Approval does not exist")
           return
         }
+        // The provider already has an answer for it (round 6 of the Codex
+        // review of #691, ruling Q271); the incident queued behind this
+        // request records it and clears the card.
+        // The mark can also land while this request waits below, during
+        // settlement, the checkpoint or the save; the final check is the
+        // pending predicate inside the save (round 7, ruling Q274).
+        const answeredOutside = () => this.#approvalsAnsweredElsewhere.has(approval.id)
+        if (answeredOutside()) {
+          this.#error(socket, request.id, invalidParams, answeredElsewhereRefusal)
+          return
+        }
+        // An emergency stop that begins after this point cancels the
+        // decision: it denies the cards it finds, and one this decision has
+        // already taken off the list must not be allowed after it (round 9,
+        // ruling Q285).
+        const stopGeneration = this.#emergencyStopGeneration
+        const cancelled = () => signal?.aborted === true
+          || this.#emergencyStopInProgress
+          || this.#emergencyStopGeneration !== stopGeneration
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === approval.sessionId,
         )
@@ -8218,6 +8524,9 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, fileTargetOtherNamesMessage)
           return
         }
+        // A standing rule stays with the open project: the snapshot accepts
+        // only rules for that project, so routing it by the session's waits
+        // for the snapshot to hold several projects.
         const project = this.#snapshot.project
         if (params.decision === "always-project" && !project) {
           this.#error(socket, request.id, internalError, "Approval has no open project")
@@ -8286,6 +8595,12 @@ export class DomovoiDaemon {
               useCount: 0,
             }
           : undefined
+        // The same rule as saved before the agent has the decision (ruling
+        // Q285): it never answers a request, and a daemon that loads it drops
+        // it. It replaces nothing until it is made active.
+        const pendingRule = newRule
+          ? { ...newRule, status: "inactive" as const, inactiveReason: "pending-delivery" as const }
+          : undefined
         const replacedRuleIds = new Set(newRule ? approval.reapproval?.inactiveRuleIds ?? [] : [])
         const withRule = (rules: WorkspaceSnapshot["approvalRules"]): WorkspaceSnapshot["approvalRules"] => {
           if (!newRule) return rules
@@ -8338,19 +8653,28 @@ export class DomovoiDaemon {
             ? "idle"
             : "active"
         }
+        // Round 8 of the Codex review of #691, P2 (ruling Q279): this write
+        // can still be refused after it reaches disk, and its undo can fail,
+        // so it never carries the standing rule. The rule is saved on its own
+        // once the decision is committed (below). A refused decision whose
+        // undo fails leaves at most its receipt and checkpoint row in the
+        // state file, never an active rule; the next whole-snapshot save that
+        // lands drops them, since memory never held them.
         const decided = (latest: WorkspaceSnapshot, slice: WorkspaceSnapshot) => workspaceSnapshotSchema.parse({
           ...mergeSessionSnapshotSlice(latest, slice, approval.sessionId),
-          approvalRules: withRule(latest.approvalRules),
+          approvalRules: latest.approvalRules,
         })
-        const stillPending = () => this.#snapshot.approvals.some((pending) => pending.id === approval.id)
+        // A card answered outside Domovoi is no longer pending for Domovoi's
+        // answer, so the decision and its receipt are kept only if no mark
+        // has landed by the point they are committed. A checkpoint taken
+        // above for the allow stays: it only records the worktree as it was,
+        // and its thread row is never committed.
+        const stillPending = () => !answeredOutside()
+          && this.#snapshot.approvals.some((pending) => pending.id === approval.id)
         let outcome = "cancelled" as "committed" | "cancelled" | "cancelled-after-write"
         try {
           await this.#serializeSnapshotPersistence(async () => {
             if (!stillPending()) return
-            undecided.replacedBy = new Map(this.#snapshot.approvalRules.map((rule) => [
-              rule.id,
-              "replacedByRuleId" in rule ? rule.replacedByRuleId : undefined,
-            ]))
             const persisted = decided(this.#snapshot, candidate)
             if (this.#store.saveAsync) await this.#store.saveAsync(persisted)
             else this.#store.save(persisted)
@@ -8382,8 +8706,118 @@ export class DomovoiDaemon {
               this.#reportError("Domovoi could not save state after a cancelled approval decision", error)
             }
           }
-          this.#error(socket, request.id, invalidParams, "Approval does not exist")
+          this.#error(socket, request.id, invalidParams, answeredOutside() ? answeredElsewhereRefusal : "Approval does not exist")
           return
+        }
+        // Takes this decision's standing rule out of a snapshot, pending or
+        // active, and gives back the links it took from the rules it replaced.
+        const withoutRule = (snapshot: WorkspaceSnapshot) => {
+          if (!newRule) return
+          snapshot.approvalRules = snapshot.approvalRules
+            .filter((rule) => rule.id !== newRule.id)
+            .map((rule) => {
+              if (!("replacedByRuleId" in rule) || rule.replacedByRuleId !== newRule.id) return rule
+              const { replacedByRuleId: _replaced, ...restored } = rule
+              const previous = undecided.replacedBy.get(rule.id)
+              return previous === undefined ? restored : { ...restored, replacedByRuleId: previous }
+            })
+        }
+        // Puts the card back as it was before this decision.
+        const undo = (snapshot: WorkspaceSnapshot) => {
+          snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId && item.id !== approvedCheckpoint?.id)
+          this.#approvalLedger.restore(
+            snapshot.approvals,
+            undecided.approval,
+            (restored) => this.#approvalWorkspace(restored),
+          )
+          withoutRule(snapshot)
+          snapshot.workingPlans = snapshot.workingPlans.map((plan) =>
+            structuredClone(undecided.plans.find((original) => original.sessionId === plan.sessionId)) ?? plan)
+          const undecidedSession = snapshot.sessions.find((candidateSession) => candidateSession.id === approval.sessionId)
+          if (undecidedSession && undecided.sessionState !== undefined) undecidedSession.state = undecided.sessionState
+        }
+        // Takes back what this decision wrote, and only that: its receipt,
+        // its checkpoint row and its rule. The card stays off the list, and
+        // the session and its plans stay as they are, because an emergency
+        // stop may have settled them since (round 9, ruling Q285), or the
+        // agent is no longer waiting for the answer.
+        const withdraw = (snapshot: WorkspaceSnapshot) => {
+          snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId && item.id !== approvedCheckpoint?.id)
+          withoutRule(snapshot)
+        }
+        // Applies one of the two to memory and saves it; answers whether the
+        // save landed. One that does not land leaves at most a rule pending
+        // delivery in the state file, which never answers a request and which
+        // the next daemon to load it drops.
+        const takeBack = async (change: (snapshot: WorkspaceSnapshot) => void): Promise<boolean> => {
+          const changedCopy = structuredClone(this.#snapshot)
+          change(changedCopy)
+          workspaceSnapshotSchema.parse(changedCopy)
+          change(this.#snapshot)
+          this.#sessionHistory.invalidate(approval.sessionId)
+          try {
+            await this.#persistSnapshot()
+            return true
+          } catch (rollbackError) {
+            this.#reportError("Domovoi could not save the undone approval decision", rollbackError)
+            return false
+          }
+        }
+        const rollBack = () => takeBack(undo)
+        const withdrawn = async (message: string) => {
+          await takeBack(withdraw)
+          this.#error(socket, request.id, invalidParams, message)
+        }
+        const withdrawnByStop = "The approval was withdrawn before it could be allowed"
+        // Committed: the card left the snapshot in the same synchronous run as
+        // the last pending check, and #receiveAnsweredElsewhere finds only
+        // shown cards, so no report can mark it from here on.
+        //
+        // An Always is saved next as a rule pending delivery (ruling Q285),
+        // and made active only once the agent has the decision. Its save
+        // waits, so a stop can begin meanwhile; the decision is checked for
+        // that before the save and again after it, and a cancelled one is
+        // never sent. If the save fails, the decision is undone and the agent
+        // is not told, as when the decision itself cannot be saved.
+        if (newRule && pendingRule) {
+          if (cancelled()) {
+            await withdrawn(withdrawnByStop)
+            return
+          }
+          try {
+            await this.#serializeSnapshotPersistence(async () => {
+              const staged = workspaceSnapshotSchema.parse({
+                ...this.#snapshot,
+                approvalRules: [...this.#snapshot.approvalRules.filter((rule) => rule.id !== pendingRule.id), pendingRule],
+              })
+              if (this.#store.saveAsync) await this.#store.saveAsync(staged)
+              else this.#store.save(staged)
+              this.#snapshot.approvalRules = [
+                ...this.#snapshot.approvalRules.filter((rule) => rule.id !== pendingRule.id),
+                pendingRule,
+              ]
+            })
+            this.#persistenceSucceeded()
+          } catch (error) {
+            this.#persistenceFailed(error)
+            this.#reportError("Domovoi could not save a standing rule", error)
+            if (cancelled()) {
+              await withdrawn(withdrawnByStop)
+              return
+            }
+            await rollBack()
+            this.#error(
+              socket,
+              request.id,
+              daemonPersistenceUnavailableErrorCode,
+              "Domovoi could not save this decision, so the agent was not told",
+            )
+            return
+          }
+          if (cancelled()) {
+            await withdrawn(withdrawnByStop)
+            return
+          }
         }
         this.#activeAssistantItems.clear()
         if (approval.providerRequestId !== undefined && session) {
@@ -8394,53 +8828,34 @@ export class DomovoiDaemon {
                 params.decision === "always-project" ? "allow-once" : params.decision,
               )
           } catch (error) {
-            this.#reportError("Domovoi could not pass an approval decision to the agent", error)
-            const undo = (snapshot: WorkspaceSnapshot) => {
-              snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId && item.id !== approvedCheckpoint?.id)
-              this.#approvalLedger.restore(
-                snapshot.approvals,
-                undecided.approval,
-                (restored) => this.#approvalWorkspace(restored),
-              )
-              if (newRule) {
-                snapshot.approvalRules = snapshot.approvalRules
-                  .filter((rule) => rule.id !== newRule.id)
-                  .map((rule) => {
-                    if (!("replacedByRuleId" in rule) || rule.replacedByRuleId !== newRule.id) return rule
-                    const { replacedByRuleId: _replaced, ...restored } = rule
-                    const previous = undecided.replacedBy.get(rule.id)
-                    return previous === undefined ? restored : { ...restored, replacedByRuleId: previous }
-                  })
+            // The agent is not waiting for it (ruling Q285). A refusal needs
+            // nothing sent and stands; an allow reached nothing, so it and
+            // its rule are taken back, and the card, which nothing can answer
+            // now, stays off the list.
+            if (error instanceof ApprovalRequestNotPendingError) {
+              if (allows) {
+                await withdrawn("The agent is no longer waiting for this approval, so it was not allowed")
+                return
               }
-              snapshot.workingPlans = snapshot.workingPlans.map((plan) =>
-                structuredClone(undecided.plans.find((original) => original.sessionId === plan.sessionId)) ?? plan)
-              const undecidedSession = snapshot.sessions.find((candidateSession) => candidateSession.id === approval.sessionId)
-              if (undecidedSession && undecided.sessionState !== undefined) undecidedSession.state = undecided.sessionState
-            }
-            const rolledBack = structuredClone(this.#snapshot)
-            undo(rolledBack)
-            workspaceSnapshotSchema.parse(rolledBack)
-            undo(this.#snapshot)
-            this.#sessionHistory.invalidate(approval.sessionId)
-            try {
-              await this.#persistSnapshot()
-            } catch (rollbackError) {
-              this.#reportError("Domovoi could not save the undone approval decision", rollbackError)
+            } else {
+              this.#reportError("Domovoi could not pass an approval decision to the agent", error)
+              if (!await rollBack()) {
+                this.#error(
+                  socket,
+                  request.id,
+                  daemonPersistenceUnavailableErrorCode,
+                  "Domovoi could not save this decision, so the agent was not told",
+                )
+                return
+              }
               this.#error(
                 socket,
                 request.id,
-                daemonPersistenceUnavailableErrorCode,
-                "Domovoi could not save this decision, so the agent was not told",
+                internalError,
+                "Domovoi could not reach the agent, so this decision was not applied. The approval is still waiting.",
               )
               return
             }
-            this.#error(
-              socket,
-              request.id,
-              internalError,
-              "Domovoi could not reach the agent, so this decision was not applied. The approval is still waiting.",
-            )
-            return
           }
         }
         this.#approvalTargets.delete(approval.id)
@@ -8463,6 +8878,47 @@ export class DomovoiDaemon {
             ...(project ? { projectId: project.id } : {}),
             target: approval.id,
           })
+        }
+        // The adapter took the answer for a request it was tracking as
+        // waiting, so the rule is made active, with the links to the rules it
+        // replaces, as one save (ruling Q285). That is not the provider's
+        // acknowledgement. The rule is active in memory only once the save
+        // lands. If the save reports failure, the rule stays pending in
+        // memory and answers no request here, but the failure does not prove
+        // the active rule never reached the state file: a save can fail after
+        // writing (round 10 of the Codex review of #691). A later whole save
+        // that lands writes it back as pending, which the next load drops;
+        // until then a restart can load it active. The person is told so.
+        if (newRule) {
+          try {
+            await this.#serializeSnapshotPersistence(async () => {
+              // The links this rule replaces, as they stand when it is applied,
+              // so an undo gives back another decision's link made since.
+              undecided.replacedBy = new Map(this.#snapshot.approvalRules.map((rule) => [
+                rule.id,
+                "replacedByRuleId" in rule ? rule.replacedByRuleId : undefined,
+              ]))
+              const promoted = workspaceSnapshotSchema.parse({
+                ...this.#snapshot,
+                approvalRules: withRule(this.#snapshot.approvalRules),
+              })
+              if (this.#store.saveAsync) await this.#store.saveAsync(promoted)
+              else this.#store.save(promoted)
+              this.#snapshot.approvalRules = withRule(this.#snapshot.approvalRules)
+            })
+            this.#persistenceSucceeded()
+          } catch (error) {
+            this.#persistenceFailed(error)
+            this.#reportError("Domovoi could not make a standing rule active", error)
+            this.#broadcastSnapshot()
+            this.#error(
+              socket,
+              request.id,
+              daemonPersistenceUnavailableErrorCode,
+              activationUnconfirmedMessage,
+            )
+            return
+          }
         }
         changed = true
         alreadyPersisted = true
@@ -8851,6 +9307,16 @@ export class DomovoiDaemon {
             )
             return
           }
+          // The saved row is read before anything stops, so a row this
+          // daemon must not open is refused with the open project still
+          // running as it was (ruling Q259).
+          let restored: ReturnType<NonNullable<WorkspaceStore["loadProject"]>>
+          try {
+            restored = this.#store.loadProject?.(projectId, this.#snapshot.machine)
+          } catch (error) {
+            if (!(error instanceof SavedProjectStateError)) throw error
+            throw new PublicRpcError(invalidParams, error.message)
+          }
           this.#closeAllTerminals()
           for (const session of this.#snapshot.sessions) {
             this.#flushCommandOutputStreams(session.id)
@@ -8858,7 +9324,6 @@ export class DomovoiDaemon {
           await this.#suspendProjectSessions()
           this.#commandOutputRedactors.clear()
           if (this.#snapshot.project) await this.#persistSnapshot()
-          const restored = this.#store.loadProject?.(projectId, this.#snapshot.machine)
           this.#snapshot.project = {
             id: projectId,
             machineId: this.#snapshot.machine.id,
@@ -8872,6 +9337,7 @@ export class DomovoiDaemon {
           // (ruled 2026-09-24, #604), before any client or save sees them.
           this.#snapshot.approvals = []
           this.#snapshot.approvalRules = restored?.approvalRules ?? []
+          this.#dropUndeliveredRules(this.#snapshot, "project-open")
           this.#snapshot.thread = restored?.thread ?? []
           this.#snapshot.artifacts = restored?.artifacts ?? []
           this.#snapshot.workingPlans = restored?.workingPlans ?? []
@@ -9168,7 +9634,7 @@ export class DomovoiDaemon {
           forkedFrom: { sourceSessionId: source.id, checkpointId: checkpoint.id, checkpointCommit: checkpoint.commit,
             requestId: params.requestId, client: params.client, requestedRuntime: params.runtime },
         }
-        this.#recordSessionCreation(creationDraft, this.#snapshot.project?.path ?? source.workspacePath)
+        this.#recordSessionCreation(creationDraft, this.#projectForSession(source)?.path ?? source.workspacePath)
         let creatingWorkspace: Promise<{ path: string }> | undefined
         const workspace = await this.#withAbortTimeout(
           (signal) => {
@@ -9398,7 +9864,7 @@ export class DomovoiDaemon {
             ...(deliversPlan ? { workingPlan: boundaryPlan } : {}),
             capabilities: registeredAgent.capabilities,
             annotationVisualContext: this.#annotationVisualContext,
-            skillCatalog: this.#skillCatalogFor(this.#snapshot.project?.path),
+            skillCatalog: this.#skillCatalogFor(this.#projectForSession(session)?.path),
             requireTrustedSkills:
               session.runtime.permissionMode === "build" && session.runtime.auto,
             ...(params.skillSelection ? { skillSelection: params.skillSelection } : {}),
@@ -9589,7 +10055,7 @@ export class DomovoiDaemon {
               action: "provider.plan-delivered",
               outcome: "succeeded",
               sessionId: currentSession.id,
-              ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+              projectId: currentSession.projectId,
               target: currentSession.id,
               detail: [
                 `provider=${providerTarget.provider}`,
@@ -9618,7 +10084,7 @@ export class DomovoiDaemon {
               action: "plan.edit-finalized",
               outcome: boundaryMutation.disposition === "applied" ? "succeeded" : "failed",
               sessionId: currentSession.id,
-              ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+              projectId: currentSession.projectId,
               ...(currentPlan?.pendingEdit?.id
                 ? { target: currentPlan.pendingEdit.id }
                 : {}),
@@ -9936,7 +10402,23 @@ export class DomovoiDaemon {
         this.#error(socket, request.id, error.code, error.message, error instanceof RepositoryGitFilterRpcError ? error.data : undefined)
         return
       }
-      if (error instanceof RepositoryConfigRefusedError || error instanceof AgentProviderUnavailableError) {
+      // A checkpoint, restore, revert or transfer refused over a repository
+      // git filter answers with the drivers and the trust read now, for the
+      // project its gate looked trust up for (P8 PR B).
+      const filterRefusal = error instanceof RepositoryFilterRefusedError
+        ? await this.#gitFilterRpcError(error, error.projectId).catch(() => undefined)
+        : undefined
+      if (filterRefusal) {
+        this.#error(socket, request.id, filterRefusal.code, filterRefusal.message, filterRefusal.data)
+        return
+      }
+      if (
+        error instanceof RepositoryConfigRefusedError
+        || error instanceof RepositoryGitConfigUnreadableError
+        || error instanceof GitTooOldForIsolationError
+        || error instanceof GitNotFoundError
+        || error instanceof AgentProviderUnavailableError
+      ) {
         this.#error(socket, request.id, invalidParams, error.message)
         return
       }
@@ -9977,6 +10459,13 @@ export class DomovoiDaemon {
           sessionId: owner.id, ...identity, model: owner.runtime.model, usage: event.usage,
         })
       })
+      return
+    }
+    // A security incident, recorded for the session the report named when it
+    // arrived whatever has happened to that session since. Handled before the
+    // emergency, lifecycle and turn checks: the turn it names has already ended.
+    if (event.type === "approval-answered-elsewhere") {
+      await this.#approvalAnsweredElsewhere(provider, threadId, event)
       return
     }
     if (this.#emergencyBlockedThreads.has(providerThreadKey(provider, threadId))) return
@@ -10091,7 +10580,7 @@ export class DomovoiDaemon {
         action: "provider.plan-updated",
         outcome: "succeeded",
         sessionId: session.id,
-        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        projectId: session.projectId,
         target: session.id,
         detail: [
           `revision=${mutation.plan.revision}`,
@@ -10176,7 +10665,7 @@ export class DomovoiDaemon {
           action: "provider.policy-refused",
           outcome: "denied",
           sessionId: session.id,
-          ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+          projectId: session.projectId,
           ...(event.itemId ? { target: event.itemId } : {}),
           detail: refusal.rule,
         })
@@ -10189,7 +10678,9 @@ export class DomovoiDaemon {
       // or card. It denies a request a stop has overtaken and holds one that
       // meets the handoff fence.
       if (!this.#admitApprovalRequest(provider, event)) return
-      const project = this.#snapshot.project
+      // A request whose session's project cannot be found is dropped, as one
+      // was when no project was open.
+      const project = this.#projectForSession(session)
       if (!project) return
       // A path the provider blocked on is named beside the request and is
       // never its directory.
@@ -10295,7 +10786,7 @@ export class DomovoiDaemon {
       // turn would hang, so the request is denied: nothing is approved that
       // cannot be recorded, and the turn ends instead of stalling.
       if (this.#persistenceUnavailable) {
-        this.#agents.require(provider).resolveApproval(event.requestId, "deny")
+        this.#answerProvider(provider, event.requestId, "deny")
         this.#reportError(
           persistenceUnavailableContext,
           new Error(`Denied ${settled.operation} because state cannot reach disk`),
@@ -10303,7 +10794,7 @@ export class DomovoiDaemon {
         return
       }
       if (allowed) {
-        this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
+        this.#answerProvider(provider, event.requestId, "allow-once")
       } else if (matchingRule) {
         matchingRule.useCount += 1
         try {
@@ -10323,7 +10814,7 @@ export class DomovoiDaemon {
             sessionId: session.id, projectId: project.id,
             detail: "Use count could not be persisted",
           })
-          this.#agents.require(provider).resolveApproval(event.requestId, "deny")
+          this.#answerProvider(provider, event.requestId, "deny")
           this.#reportError("Standing rule use could not be persisted", error)
           return
         }
@@ -10343,7 +10834,7 @@ export class DomovoiDaemon {
           action: "approval-rule.used", outcome: "succeeded", target: matchingRule.id,
           sessionId: session.id, projectId: project.id,
         })
-        this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
+        this.#answerProvider(provider, event.requestId, "allow-once")
       } else {
         const approval = settled
         this.#putApproval(approval)
@@ -10385,7 +10876,7 @@ export class DomovoiDaemon {
         action: `provider.tool.${event.phase}`,
         outcome: itemOutcome,
         sessionId: session.id,
-        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        projectId: session.projectId,
         ...(typeof itemRecord?.id === "string" ? { target: itemRecord.id } : {}),
       })
       const completedItemId = event.phase === "completed" && typeof itemRecord?.id === "string" ? itemRecord.id : undefined
@@ -10615,10 +11106,16 @@ export class DomovoiDaemon {
         action: "provider.turn-completed",
         outcome: failed ? "failed" : "succeeded",
         sessionId: session.id,
-        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        projectId: session.projectId,
       })
-      if (failed) this.#holdQueuedSessionSend(session.id, "The provider turn failed before the queued boundary could release.")
-      else releaseQueuedSend = true
+      // The adapter ends a turn whose approval was answered elsewhere before it
+      // reports the reply, and a held send keeps the reason it was held with,
+      // so the hold says why here (Codex review of #691 at a609034e, P2).
+      if (failed) {
+        this.#holdQueuedSessionSend(session.id, failure?.kind === "approval-answered-elsewhere"
+          ? answeredElsewhereHoldReason
+          : "The provider turn failed before the queued boundary could release.")
+      } else releaseQueuedSend = true
     }
 
     session.updatedAt = createdAt
@@ -10744,6 +11241,9 @@ export class DomovoiDaemon {
     if (!next) return []
     const { removed, blockedIds } = next
     this.#snapshot.approvals = this.#snapshot.approvals.filter((approval) => !next.removedIds.has(approval.id))
+    for (const id of next.removedIds) {
+      if (this.#approvalsAnsweredElsewhere.get(id) === "recorded") this.#approvalsAnsweredElsewhere.delete(id)
+    }
     this.#snapshot.workingPlans = next.workingPlans
     this.#forgetDepartedFileApprovalTargets()
     for (const approval of removed) {
@@ -10753,7 +11253,7 @@ export class DomovoiDaemon {
         action: "plan.approval-blocker-cleared",
         outcome: "succeeded",
         sessionId: approval.sessionId,
-        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        ...this.#auditProject(approval.sessionId),
         target: approval.id,
       })
     }
@@ -10817,6 +11317,20 @@ export class DomovoiDaemon {
     return true
   }
 
+  // Ruling Q285: an adapter refuses an answer to a request it is not waiting
+  // on. Here such a request was answered or dropped before Domovoi's own
+  // answer: a refusal of it needs nothing sent, and an automatic allow of it
+  // reaches nothing, so neither is an error. A person's decision is not
+  // answered through this; approval.resolve reads the refusal itself.
+  #answerProvider(provider: string, requestId: number, decision: ProviderApprovalDecision): void {
+    try {
+      return this.#agents.require(provider).resolveApproval(requestId, decision)
+    } catch (error) {
+      if (error instanceof ApprovalRequestNotPendingError) return
+      throw error
+    }
+  }
+
   // Whether an emergency stop overtook this request: it arrived while a stop
   // ran, or a stop began after it arrived.
   #stopOvertook(event: AgentEvent): boolean {
@@ -10828,7 +11342,7 @@ export class DomovoiDaemon {
   #denyHeldApprovalRequest(provider: string, event: AgentEvent): unknown {
     if (event.type !== "approval-requested") return undefined
     try {
-      this.#agents.require(provider).resolveApproval(event.requestId, "deny")
+      this.#answerProvider(provider, event.requestId, "deny")
       return undefined
     } catch (error) {
       this.#reportError("Domovoi could not deny a request held for the service handoff", error)
@@ -10938,11 +11452,17 @@ export class DomovoiDaemon {
 
     let approvalsDenied = 0
     for (const approval of this.#snapshot.approvals) {
+      if (this.#approvalsAnsweredElsewhere.has(approval.id)) {
+        this.#recordAnsweredElsewhereCard(approval, requestedAt)
+        continue
+      }
       try {
         if (approval.providerRequestId !== undefined) {
-          this.#agents.require(
+          this.#answerProvider(
             this.#snapshot.sessions.find(({ id }) => id === approval.sessionId)!.runtime.provider,
-          ).resolveApproval(approval.providerRequestId, "deny")
+            approval.providerRequestId,
+            "deny",
+          )
         }
         approvalsDenied += 1
         this.#snapshot.thread.push({
@@ -11321,6 +11841,10 @@ export class DomovoiDaemon {
     }
   }
 
+  // A recovered session joins the live snapshot, which holds only the open
+  // project's sessions, so only that project's creations are recovered here.
+  // Another project's wait until project.open loads it and calls this again.
+  // Each recovered record names its own repository path.
   async #recoverSessionCreations(): Promise<void> {
     const journal = this.#store.sessionCreations
     const projectId = this.#snapshot.project?.id
@@ -11452,6 +11976,33 @@ export class DomovoiDaemon {
         target: approval.id,
       })
     }
+  }
+
+  // A rule still pending delivery in a loaded snapshot belongs to a decision
+  // whose delivery to the agent was never confirmed: the daemon stopped, or
+  // could not save, between saving it and making it active (ruling Q285). It
+  // never answered a request and is not made active now; it is dropped and
+  // the audit log says so. It replaced no rule, so no link points to it.
+  #dropUndeliveredRules(
+    snapshot: WorkspaceSnapshot,
+    component: "startup-recovery" | "project-open",
+  ): WorkspaceSnapshot["approvalRules"] {
+    const isUndelivered = (rule: WorkspaceSnapshot["approvalRules"][number]) =>
+      rule.status === "inactive" && rule.inactiveReason === "pending-delivery"
+    const undelivered = snapshot.approvalRules.filter(isUndelivered)
+    if (undelivered.length === 0) return []
+    snapshot.approvalRules = snapshot.approvalRules.filter((rule) => !isUndelivered(rule))
+    for (const rule of undelivered) {
+      this.#appendAudit({
+        actor: { kind: "daemon", component },
+        action: "approval-rule.undelivered",
+        outcome: "cancelled",
+        projectId: rule.projectId,
+        target: rule.id,
+        detail: "The decision that made this standing rule was not confirmed delivered to the agent, so the rule was dropped without ever being in force.",
+      })
+    }
+    return undelivered
   }
 
   // Runs before the listener opens, so no client can act on a stored card
@@ -11709,12 +12260,18 @@ export class DomovoiDaemon {
     )
     const unresolvedApprovalIds = new Set<string>()
     for (const approval of approvals) {
+      if (this.#approvalsAnsweredElsewhere.has(approval.id)) {
+        // Another cleanup, such as an emergency stop, may have recorded it.
+        if (!this.#snapshot.approvals.some(({ id }) => id === approval.id)) continue
+        const answeredAt = new Date().toISOString()
+        this.#recordAnsweredElsewhereCard(approval, answeredAt)
+        this.#removeApprovals((candidate) => candidate.id === approval.id, answeredAt)
+        await this.#saveAgentState(false)
+        continue
+      }
       try {
         if (approval.providerRequestId !== undefined && !storedApprovalIds?.has(approval.id)) {
-          await this.#agents.require(session.runtime.provider).resolveApproval(
-            approval.providerRequestId,
-            "deny",
-          )
+          await this.#answerProvider(session.runtime.provider, approval.providerRequestId, "deny")
         }
       } catch (error) {
         unresolvedApprovalIds.add(approval.id)
@@ -11850,7 +12407,7 @@ export class DomovoiDaemon {
       // The archived notice names the kept branch and what the source never
       // received; both are read while the worktree still exists. A failure
       // here does not stop the archive: the notice then says less.
-      const sourcePath = this.#snapshot.project?.path
+      const sourcePath = this.#projectForSession(session)?.path
       if (this.#workspaceService.sessionBranchFacts && sourcePath) {
         try {
           const facts = await this.#withAbortTimeout(
@@ -12281,6 +12838,102 @@ export class DomovoiDaemon {
     }
     await this.#persistSnapshot()
     if (broadcast) this.#broadcastSnapshot()
+  }
+
+  // Round 6 of the Codex review of #691, P2 (ruling Q271): a cleanup that
+  // denies cards meets one whose request was answered outside Domovoi before
+  // the report was handled. The provider has its answer, so the card gets no
+  // deny and no deny receipt; the session says what became of it instead.
+  #recordAnsweredElsewhereCard(approval: WorkspaceSnapshot["approvals"][number], createdAt: string): void {
+    this.#snapshot.thread.push({
+      id: `system-${randomUUID()}`,
+      sessionId: approval.sessionId,
+      kind: "system",
+      body: "A request in this session was answered outside Domovoi, so Domovoi did not deny it.",
+      detail: answeredApprovalNotice(approval),
+      createdAt,
+    })
+  }
+
+  // Q243 A: the adapter saw an approval reply it did not send and has already
+  // stopped and unloaded the thread. The notice and the audit entry are
+  // recorded for every session the report can be traced to (Codex review of
+  // #691 at a609034e, P1). Only a session still running on that thread is
+  // stopped here: it fails with its own failure and lets its provider thread
+  // go. An archive, a transfer or an emergency stop that took the session
+  // first decides how it ends.
+  async #approvalAnsweredElsewhere(
+    provider: string,
+    threadId: string,
+    event: Extract<AgentEvent, { type: "approval-answered-elsewhere" }>,
+  ): Promise<void> {
+    const report = this.#answeredElsewhereReports.get(event)
+    // The incident is handled here. A card still shown after that, in a
+    // session this does not stop, stays marked until it is gone.
+    const answeredId = report?.answered?.id
+    if (answeredId !== undefined) this.#approvalsAnsweredElsewhere.set(answeredId, "recorded")
+    const forgetGoneCard = () => {
+      if (answeredId === undefined || this.#snapshot.approvals.some(({ id }) => id === answeredId)) return
+      this.#approvalsAnsweredElsewhere.delete(answeredId)
+    }
+    const session = this.#snapshot.sessions.find((candidate) => report === undefined
+      ? candidate.runtime.provider === provider && candidate.providerThreadId === threadId
+      : candidate.id === report.sessionId)
+    if (!session) {
+      forgetGoneCard()
+      return
+    }
+    const stoppedAt = new Date().toISOString()
+    // The card as it stood when the report arrived (Codex review of #691 at
+    // a609034e, P2, and round 6, P2): the provider's permission id means
+    // nothing to the person, the card's facts do.
+    const answered = report?.answered
+    const threadKey = providerThreadKey(provider, threadId)
+    const live = !sessionIsReadOnly(session)
+      && session.runtime.provider === provider
+      && session.providerThreadId === threadId
+      && !this.#emergencyBlockedThreads.has(threadKey)
+    if (live) {
+      this.#holdQueuedSessionSend(session.id, answeredElsewhereHoldReason)
+      this.#flushCommandOutputStreams(session.id)
+      for (const [key, run] of this.#approvedRuns) if (run.sessionId === session.id) this.#approvedRuns.delete(key)
+      this.#loadedAgentThreads.delete(threadKey)
+      // Never resumed (Codex review of #691, P1): the provider session may hold
+      // approvals made elsewhere. Like a quarantined session, it continues only
+      // once the person restarts its provider thread, which starts a new one.
+      // The adapter restarts the server, which the provider-disconnected that
+      // follows reports to every other session on it.
+      delete session.providerThreadId
+      delete session.activeTurnId
+      session.state = "failed"
+      session.providerFailure = { ...approvalAnsweredElsewhereFailure }
+      session.updatedAt = stoppedAt
+      this.#removeApprovals((approval) => approval.sessionId === session.id, stoppedAt)
+    }
+    forgetGoneCard()
+    this.#snapshot.thread.push({
+      id: `system-${randomUUID()}`,
+      sessionId: session.id,
+      kind: "system",
+      body: live
+        ? "An approval in this session was answered outside Domovoi, so Domovoi stopped the session."
+        : "An approval in this session was answered outside Domovoi.",
+      detail: `${answeredApprovalNotice(answered)} ${live
+        ? "A program on this machine that can read the provider server's password sent the answer, and what it approved may already have run. Review the session's changes, then restart the provider to continue: the session continues in a new provider session, without its earlier conversation."
+        : "A program on this machine that can read the provider server's password sent the answer, and what it approved may already have run. Review the session's changes."}`,
+      createdAt: stoppedAt,
+    })
+    this.#appendAudit({
+      actor: { kind: "provider", provider, providerThreadId: threadId },
+      action: "provider.approval-answered-elsewhere",
+      outcome: "denied",
+      sessionId: session.id,
+      projectId: session.projectId,
+      ...(event.permissionId ? { target: event.permissionId } : {}),
+      detail: `reply=${event.reply} ${answeredApprovalAuditFacts(answered)}`,
+    })
+    this.#sessionHistory.invalidate(session.id)
+    await this.#flushAgentState()
   }
 
   async #quarantineProviderThread(

@@ -26,6 +26,7 @@ import {
   redactInventoryProgram, redactInventoryText,
 } from "./inventory-redaction.js"
 import {
+  gitRequiredState,
   readRepositoryGitFilters,
   RepositoryGitConfigUnreadableError,
   type RepositoryGitConfigUnreadableReason,
@@ -1325,9 +1326,14 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
     unreadable = error instanceof RepositoryGitConfigUnreadableError ? error.reason : "git-failed"
     digestRecords.push(`git:filters:unreadable:${unreadable}`)
   }
-  for (const filter of gitFilters) digestRecords.push(`git:filter:${filter.scope}:${sha256(`${filter.key}\0${filter.value}`)}`)
+  // A driver's required setting is part of the record when the repository
+  // sets it, so a record without one stays as it was.
+  for (const filter of gitFilters) {
+    const required = filter.required === undefined ? "" : `\0required=${filter.required}`
+    digestRecords.push(`git:filter:${filter.scope}:${sha256(`${filter.key}\0${filter.value}${required}`)}`)
+  }
   const gitFilterBlock: ToolInventoryGitFilters | undefined = unreadable !== undefined
-    ? { files: [], entries: [], omittedEntries: 0, unreadable: { reason: unreadable } }
+    ? reviewed({ files: [], entries: [], omittedEntries: 0, unreadable: { reason: unreadable } })
     : gitFilters.length > 0 ? await gitFilterInventory(rootPath, gitFilters) : undefined
   return {
     configDigest: `sha256:${sha256(digestRecords.join("\n"))}`,
@@ -1338,10 +1344,26 @@ export async function readRepositoryProviderConfig(rootPath: string, options: Re
   }
 }
 
+// The block with its review digest: a hash over exactly what it lists, in
+// order (files, each entry's driver, operation, redacted command, required
+// state, file and scope, the omitted count and the unreadable reason), and
+// not over heldBack, which follows the grant. repository.trust's
+// acknowledgement must name the digest this read gives (ruling Q255).
+function reviewed(block: Omit<ToolInventoryGitFilters, "reviewDigest">): ToolInventoryGitFilters {
+  const listed = JSON.stringify([
+    "domovoi.git-filter-review.v1",
+    block.files.map(({ path, scope }) => [path, scope]),
+    block.entries.map(({ driver, operation, command, required, file, scope }) => [driver, operation, command, required ?? null, file, scope]),
+    block.omittedEntries,
+    block.unreadable?.reason ?? null,
+  ])
+  return { ...block, reviewDigest: `sha256:${sha256(listed)}` }
+}
+
 // The filters as tool.inventory lists them: by the file that sets each one,
 // relative to the root when inside it and absolute otherwise, the command
-// redacted. Every entry is held back: nothing runs a repository filter under
-// trust yet (P8, slice B). An entry Git names no file for, or past a cap, or
+// redacted. Every entry is marked held back here; the inventory clears the
+// mark under a trusted grant (gitFiltersUnder). An entry Git names no file for, or past a cap, or
 // whose redacted text the protocol still refuses, is counted, not listed.
 async function gitFilterInventory(rootPath: string, filters: readonly RepositoryGitFilter[]): Promise<ToolInventoryGitFilters> {
   const root = await realpath(rootPath).catch(() => resolve(rootPath))
@@ -1365,10 +1387,17 @@ async function gitFilterInventory(rootPath: string, filters: readonly Repository
       }
       files.push({ path, scope: filter.scope })
     }
+    const driverCommand = filter.operation === "clean" || filter.operation === "smudge" || filter.operation === "process"
+    const required = driverCommand ? gitRequiredState(filter.required) : undefined
+    if (driverCommand && required === undefined) {
+      omittedEntries += 1
+      continue
+    }
     const entry = toolInventoryGitFilterEntrySchema.safeParse({
       driver: redactInventoryText(filter.driver, maximumRepositoryGitFilterDriverNameLength),
       operation: filter.operation,
       command: redactInventoryCommand(filter.value),
+      ...(required === undefined ? {} : { required }),
       file: path,
       scope: filter.scope,
       heldBack: true,
@@ -1376,7 +1405,7 @@ async function gitFilterInventory(rootPath: string, filters: readonly Repository
     if (entry.success && entries.length < maximumToolInventoryGitFilters) entries.push(entry.data)
     else omittedEntries += 1
   }
-  const inventory = { files, entries, omittedEntries }
+  const inventory = reviewed({ files, entries, omittedEntries })
   // The error names no path or value.
   if (!toolInventoryGitFiltersSchema.safeParse(inventory).success) throw new Error("The repository's git filter inventory does not fit the protocol")
   return inventory

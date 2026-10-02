@@ -38,7 +38,7 @@ describe("CliProviderProbe", () => {
   it("reports versions and known authentication states without exposing account data", async () => {
     const run = vi.fn(async (command: string, args: string[]): Promise<CommandResult> => {
       const key = `${command} ${args.join(" ")}`
-      if (key === "claude --version") return { exitCode: 0, stdout: "2.1.280 (Claude Code)\n", stderr: "" }
+      if (key === "claude --version") return { exitCode: 0, stdout: "2.1.290 (Claude Code)\n", stderr: "" }
       if (key === "claude auth status") {
         return {
           exitCode: 0,
@@ -54,7 +54,7 @@ describe("CliProviderProbe", () => {
     const providers = await new CliProviderProbe(run, { platform: "linux" }).inspect()
 
     expect(providers).toEqual(expect.arrayContaining([
-      { id: "claude-code", command: "claude", status: "ready", version: "2.1.280" },
+      { id: "claude-code", command: "claude", status: "ready", version: "2.1.290" },
       { id: "codex", command: "codex", status: "ready", version: "0.149.0" },
       { id: "opencode", command: "opencode", status: "missing" },
     ]))
@@ -73,18 +73,18 @@ describe("CliProviderProbe", () => {
     await expect(new CliProviderProbe(run("2.1.100")).inspectProvider("claude-code")).resolves.toMatchObject({
       status: "ready",
       version: "2.1.100",
-      problem: "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100.",
+      problem: "Update Claude Code to 2.1.281 or newer. The claude on this machine is 2.1.100.",
     })
     // With no PATH the probe runs the bare name, which Windows starts as
     // claude.exe, so a bare claude is not a shim. A resolved script path is
     // (claude-install.test.ts).
-    const bare = await new CliProviderProbe(run("2.1.280", false), { platform: "win32" }).inspectProvider("claude-code")
+    const bare = await new CliProviderProbe(run("2.1.290", false), { platform: "win32" }).inspectProvider("claude-code")
     expect(bare).toMatchObject({ command: "claude", status: "ready" })
     expect(bare).not.toHaveProperty("problem")
-    const native = await new CliProviderProbe(run("2.1.280"), { platform: "win32" }).inspectProvider("claude-code")
+    const native = await new CliProviderProbe(run("2.1.290"), { platform: "win32" }).inspectProvider("claude-code")
     expect(native).toMatchObject({ command: "claude.exe", status: "ready" })
     expect(native).not.toHaveProperty("problem")
-    await expect(new CliProviderProbe(run("2.1.280")).inspectProvider("claude-code")).resolves.not.toHaveProperty("problem")
+    await expect(new CliProviderProbe(run("2.1.290")).inspectProvider("claude-code")).resolves.not.toHaveProperty("problem")
   })
 
   it("separates missing binaries, expired login, and unknown authentication", async () => {
@@ -107,7 +107,9 @@ describe("CliProviderProbe", () => {
       throw Object.assign(new Error("missing"), { code: "ENOENT" })
     }) satisfies ProviderCommandRunner
 
-    const providers = await new CliProviderProbe(run).inspect()
+    // Kilo is turned off by default (kilo-turned-off.test.ts); this checks
+    // how its readiness is read when it is turned back on.
+    const providers = await new CliProviderProbe(run, { kiloTurnedOff: false }).inspect()
 
     expect(providers.find((provider) => provider.id === "claude-code")).toMatchObject({
       status: "auth-required",
@@ -164,7 +166,7 @@ describe("CliProviderProbe", () => {
       throw Object.assign(new Error("missing"), { code: "ENOENT" })
     }) satisfies ProviderCommandRunner
 
-    const providers = await new CliProviderProbe(run).inspect()
+    const providers = await new CliProviderProbe(run, { kiloTurnedOff: false }).inspect()
 
     expect(providers.find((provider) => provider.id === "opencode")).toEqual({
       id: "opencode",

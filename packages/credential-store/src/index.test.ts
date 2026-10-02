@@ -2,9 +2,9 @@ import { chmod, lstat, mkdtemp as createTempDirectory, open, readFile, readdir, 
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { CredentialStoreError, CredentialStoreUnavailableError, nativeKeyring, openCredentialBackend, readPrivateFile, writePrivateFile, type Keyring } from "./index.js"
+import { CredentialStoreError, CredentialStoreUnavailableError, nativeKeyring, openCredentialBackend, publishFileDurably, readPrivateFile, writePrivateFile, type Keyring } from "./index.js"
 
 vi.mock("node:fs/promises", async (original) => ({
   ...await original<typeof import("node:fs/promises")>(),
@@ -286,5 +286,44 @@ describe("credential custody", () => {
     const ring = nativeKeyring({ service: "fixture", probeAccount: "probe", load: async () => { throw "native module unavailable" } })
     await expect(openCredentialBackend(options(ring))).rejects.toThrow("native module unavailable")
     await expect(ring.get("account")).rejects.toBe("native module unavailable")
+  })
+})
+
+// A caller that owned the staging file by its name needs to know when that
+// stops: once the rename is done, before the directory is flushed, whether
+// or not the flush then succeeds.
+describe("publishFileDurably", () => {
+  // An earlier test leaves its own open() in place.
+  beforeEach(() => { vi.mocked(open).mockImplementation((...args: Parameters<typeof open>) => actualOpen(...args)) })
+
+  it.skipIf(process.platform === "win32")("says the rename is done before a directory flush that fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "credential-store-publish-"))
+    const staging = join(root, "file.tmp")
+    const path = join(root, "file")
+    await writeFile(staging, "new")
+    const steps: string[] = []
+    vi.mocked(open).mockImplementationOnce(async () => {
+      steps.push("flush")
+      throw new Error("directory flush failed")
+    })
+
+    await expect(publishFileDurably(staging, path, () => { steps.push("renamed") })).rejects.toThrow("directory flush failed")
+
+    expect(steps).toEqual(["renamed", "flush"])
+    expect(await readFile(path, "utf8")).toBe("new")
+  })
+
+  it("does not say the rename is done when the rename fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "credential-store-publish-"))
+    const renamed = vi.fn()
+    await expect(publishFileDurably(join(root, "missing.tmp"), join(root, "file"), renamed)).rejects.toThrow()
+    expect(renamed).not.toHaveBeenCalled()
+  })
+
+  it("works as before without a caller to tell", async () => {
+    const root = await mkdtemp(join(tmpdir(), "credential-store-publish-"))
+    await writeFile(join(root, "file.tmp"), "new")
+    await publishFileDurably(join(root, "file.tmp"), join(root, "file"))
+    expect(await readFile(join(root, "file"), "utf8")).toBe("new")
   })
 })

@@ -293,6 +293,12 @@ function migrateStoredWorkspace(value: unknown): {
     return finalizeStoredWorkspace(workspaceSnapshotSchema.parse(value), false, [])
   }
   const migrated = structuredClone(value)
+  // This daemon keeps one project open and derives the list it sends from it.
+  // A stored list names only the focused project by now (keepsSeveralProjects
+  // refused any other), so it is dropped here and no later change of project
+  // can save it stale. The row keeps it until the next save.
+  delete migrated.projects
+  delete migrated.projectCap
   let repaired = false
   // These reviewed predecessors retain their state. Rules from 0.6 gain a zero
   // use count below; full validation still runs before any migrated write.
@@ -451,6 +457,62 @@ export class NewerWorkspaceStateError extends Error {
   }
 }
 
+// A newer Domovoi keeps several projects active and lists them in `projects`.
+// This daemon keeps one open at a time (J31 S1), and would otherwise serve
+// another project's sessions as if they were open. That state is that
+// version's to open: it is left exactly as it is and this daemon does not
+// start (ruling Q257).
+export class MultiProjectWorkspaceStateError extends NewerWorkspaceStateError {
+  constructor(path: string, storedProtocolVersion: string) {
+    super(path, storedProtocolVersion, protocolVersion)
+    this.message = `Domovoi state at ${path} was written by a newer Domovoi that keeps several projects open, and this daemon keeps one project open at a time. It was left as it is and this daemon did not start. Run the newer Domovoi again.`
+    this.name = "MultiProjectWorkspaceStateError"
+  }
+}
+
+// Stored state lists a project other than the focused one, or holds a session
+// or approval rule of another project, with or without a list (ruling Q258).
+// Such state does not parse as this daemon's snapshot, and moving it aside as
+// corrupt would replace that project's work with the seed.
+function keepsSeveralProjects(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  const focused = isRecord(value.project) ? value.project.id : undefined
+  const another = (projectId: unknown) => projectId !== focused
+  if (Array.isArray(value.projects) && value.projects.some((project) => !isRecord(project) || another(project.id))) return true
+  const records = (field: string): unknown[] => {
+    const listed = value[field]
+    return Array.isArray(listed) ? listed : []
+  }
+  return [...records("sessions"), ...records("approvalRules")]
+    .some((record) => isRecord(record) && another(record.projectId))
+}
+
+// A saved project row holds that project's records only: its own project
+// under its own key, no list naming another, and no session or approval rule
+// of another. Anything else is what a newer Domovoi that keeps several
+// projects open wrote, and is neither opened nor salvaged (ruling Q259).
+export const savedProjectStateRefusal =
+  "The saved state for this project holds another project's sessions or rules, as a newer Domovoi that keeps several projects open writes it. It was left as it is. Open this project with that version."
+
+export class SavedProjectStateError extends Error {
+  constructor(readonly projectId: string) {
+    super(savedProjectStateRefusal)
+    this.name = "SavedProjectStateError"
+  }
+}
+
+function holdsOneProject(value: unknown, projectId: string): boolean {
+  return isRecord(value)
+    && isRecord(value.project)
+    && value.project.id === projectId
+    && !keepsSeveralProjects(value)
+}
+
+function refuseSeveralProjects(path: string, value: unknown): MultiProjectWorkspaceStateError {
+  const stored = isRecord(value) && typeof value.protocolVersion === "string" ? value.protocolVersion : protocolVersion
+  return new MultiProjectWorkspaceStateError(path, stored)
+}
+
 function quarantineStamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-")
 }
@@ -504,12 +566,31 @@ function quotedColumn(name: string): string {
 // constructs its store only while it holds the profile lease, so no other
 // daemon writes the file or its log during this read.
 export function storedProtocolVersion(path: string): string | undefined {
+  return readStoredState(path, readStoredVersion)
+}
+
+// The stored workspace snapshot, read the same way and with the same limits,
+// before the store opens the file: the protocol that wrote it and whether it
+// keeps several projects decide whether this daemon opens it at all.
+function storedSnapshotValue(path: string): unknown {
+  return readStoredState(path, (database) => {
+    const row = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as StoredWorkspace | undefined
+    if (!row) return undefined
+    try {
+      return JSON.parse(row.snapshot) as unknown
+    } catch {
+      return undefined
+    }
+  })
+}
+
+function readStoredState<T>(path: string, read: (database: DatabaseSync) => T | undefined): T | undefined {
   if (path === ":memory:" || !existsSync(path)) return undefined
   const walPath = `${path}-wal`
   try {
     return existsSync(walPath) && statSync(walPath).size > 0
-      ? versionFromCopy(path)
-      : versionFromImmutable(path)
+      ? readFromCopy(path, read)
+      : readFromImmutable(path, read)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (isCorruption(error) || /no such table|malformed JSON/i.test(message)) return undefined
@@ -524,24 +605,24 @@ function readStoredVersion(database: DatabaseSync): string | undefined {
   return typeof row?.version === "string" ? row.version : undefined
 }
 
-function versionFromImmutable(path: string): string | undefined {
+function readFromImmutable<T>(path: string, read: (database: DatabaseSync) => T | undefined): T | undefined {
   const location = pathToFileURL(path)
   location.searchParams.set("immutable", "1")
   let database: DatabaseSync
   try {
     database = new DatabaseSync(location, { readOnly: true })
   } catch (error) {
-    if (error instanceof TypeError) return versionFromCopy(path)
+    if (error instanceof TypeError) return readFromCopy(path, read)
     throw error
   }
   try {
-    return readStoredVersion(database)
+    return read(database)
   } finally {
     database.close()
   }
 }
 
-function versionFromCopy(path: string): string | undefined {
+function readFromCopy<T>(path: string, read: (database: DatabaseSync) => T | undefined): T | undefined {
   const directory = mkdtempSync(join(tmpdir(), "domovoi-state-version-"))
   try {
     const copy = join(directory, "state.sqlite")
@@ -549,7 +630,7 @@ function versionFromCopy(path: string): string | undefined {
     if (existsSync(`${path}-wal`)) copyFileSync(`${path}-wal`, `${copy}-wal`)
     const database = new DatabaseSync(copy, { readOnly: true })
     try {
-      return readStoredVersion(database)
+      return read(database)
     } finally {
       database.close()
     }
@@ -639,6 +720,9 @@ function salvageWorkspace(
   try {
     const value: unknown = JSON.parse(snapshot.snapshot)
     if (newerStoredProtocol(value) !== undefined) return undefined
+    // Refused before the move when it could be read there. If only the moved
+    // copy reads, it is left in that copy rather than cut to one project.
+    if (keepsSeveralProjects(value)) return undefined
     migrated = migrateStoredWorkspace(value)
   } catch {
     return undefined
@@ -656,8 +740,10 @@ function salvageWorkspace(
   for (const project of projects) {
     if (project.project_id === migrated.snapshot.project?.id) continue
     try {
+      const state = JSON.parse(project.state) as unknown
+      if (!holdsOneProject(state, project.project_id)) continue
       const candidate = {
-        ...JSON.parse(project.state) as Record<string, unknown>,
+        ...state as Record<string, unknown>,
         protocolVersion,
         machine: migrated.snapshot.machine,
         skillEnablements: [],
@@ -950,9 +1036,15 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
     this.path = path
     const manageDirectoryPermissions = options.manageDirectoryPermissions === true
-    const storedVersion = storedProtocolVersion(path)
-    const newerVersion = storedVersion === undefined ? undefined : newerStoredProtocol({ protocolVersion: storedVersion })
+    // The stored snapshot is read before the file is opened for writing, from
+    // the file as it is or from a private copy when the write-ahead log holds
+    // changes: opening the live files would checkpoint that log into the main
+    // file and remove it. State this daemon must not open is refused here,
+    // with nothing on disk changed (rulings Q257 to Q259).
+    const storedValue = storedSnapshotValue(path)
+    const newerVersion = newerStoredProtocol(storedValue)
     if (newerVersion !== undefined) throw refuseNewerStoredState(path, newerVersion)
+    if (keepsSeveralProjects(storedValue)) throw refuseSeveralProjects(path, storedValue)
     if (path !== ":memory:") prepareStatePath(path, manageDirectoryPermissions)
     let recovery: WorkspaceStoreRecovery | undefined
     let salvagedWorkspace: ReturnType<typeof migrateStoredWorkspace> | undefined
@@ -965,6 +1057,8 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       // An operational failure is reported to the caller rather than repaired,
       // so a locked or unreadable file is never renamed aside.
       if (!isCorruption(error)) throw error
+      // State with several projects was refused above, before anything moved,
+      // when the workspace row could be read.
       const quarantinedPath = quarantineDatabase(path)
       prepareStatePath(path, manageDirectoryPermissions)
       opened = openState(path, integrityCheckMaximumBytes)
@@ -1005,6 +1099,11 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         this.#database.close()
         this.#databaseClosed = true
         throw refuseNewerStoredState(path, newer)
+      }
+      if (stored && keepsSeveralProjects(stored.value)) {
+        this.#database.close()
+        this.#databaseClosed = true
+        throw refuseSeveralProjects(path, stored.value)
       }
       try {
         migratedExisting = migrateStoredWorkspace(stored ? stored.value : JSON.parse(existing.snapshot))
@@ -1062,7 +1161,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")
       .get() as StoredWorkspace | undefined
     if (!row) throw new Error("Workspace state is not initialized")
-    const migrated = migrateStoredWorkspace(JSON.parse(row.snapshot))
+    const value: unknown = JSON.parse(row.snapshot)
+    if (keepsSeveralProjects(value)) throw refuseSeveralProjects(this.path, value)
+    const migrated = migrateStoredWorkspace(value)
     if (migrated.repaired) {
       try {
         this.save(migrated.snapshot)
@@ -1343,6 +1444,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       .get(projectId) as StoredProjectWorkspace | undefined
     if (!row) return undefined
     const stored = JSON.parse(row.state) as Record<string, unknown>
+    if (!holdsOneProject(stored, projectId)) throw new SavedProjectStateError(projectId)
     const candidate = {
       ...stored,
       protocolVersion,

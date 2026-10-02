@@ -10,7 +10,7 @@ import { afterAll, describe, expect, it } from "vitest"
 import type { AgentAdapter, AgentEvent } from "./agents.js"
 import { ClaudeAgentSdkAdapter } from "./claude.js"
 import { CodexAppServerAdapter } from "./codex.js"
-import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
+import { createAuthenticatedEmbeddedRuntime, embeddedServerCommand } from "./embedded-server.js"
 import { KiloSdkAdapter } from "./kilo.js"
 import { domovoiKiloConfig } from "./kilo-runtime.js"
 import { OpenCodeSdkAdapter, domovoiOpenCodeConfig, requireOpenCodeClient, type OpenCodeFactory } from "./opencode.js"
@@ -153,17 +153,19 @@ function embeddedFactory(provider: "opencode" | "kilo", mock: Mock): OpenCodeFac
   return async () => {
     if (provider === "kilo") {
       const sdkPackage = "@kilocode/sdk"
-      const sdk = await import(sdkPackage) as { createKiloServer: never; createKiloClient: never }
+      const sdk = await import(sdkPackage) as { createKiloClient: never }
       const runtime = await createAuthenticatedEmbeddedRuntime({
         passwordEnvironment: "KILO_SERVER_PASSWORD", usernameEnvironment: "KILO_SERVER_USERNAME", username: "kilo",
-        config: { ...domovoiKiloConfig, ...standIn } as never, startServer: sdk.createKiloServer, createClient: sdk.createKiloClient,
+        environment: { KILO_CONFIG_CONTENT: JSON.stringify({ ...domovoiKiloConfig, ...standIn }) },
+        startServer: embeddedServerCommand("kilo", "kilo server listening"), createClient: sdk.createKiloClient,
       })
       return { client: requireOpenCodeClient(runtime.client, "Kilo"), server: runtime.server }
     }
     const sdk = await import("@opencode-ai/sdk")
     const runtime = await createAuthenticatedEmbeddedRuntime({
       passwordEnvironment: "OPENCODE_SERVER_PASSWORD", usernameEnvironment: "OPENCODE_SERVER_USERNAME", username: "opencode",
-      config: { ...domovoiOpenCodeConfig, ...standIn } as never, startServer: sdk.createOpencodeServer, createClient: sdk.createOpencodeClient,
+      environment: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...domovoiOpenCodeConfig, ...standIn }) },
+      startServer: embeddedServerCommand("opencode", "opencode server listening"), createClient: sdk.createOpencodeClient,
     })
     return { client: requireOpenCodeClient(runtime.client, "OpenCode"), server: runtime.server }
   }

@@ -45,6 +45,12 @@ describe("service configuration", () => {
   const defaults = createServiceConfiguration({}, {
     platform: "linux", homeDirectory: "/home/test", workingDirectory: "/home/test",
   })
+  // Decided 2026-09-17 (SHIP-PLAN S1.1): whether Domovoi turned lingering on
+  // is saved with the service, so removal turns off only its own.
+  it.each([true, false])("keeps the Linux lingering record %s", (lingerEnabledByDomovoi) => {
+    const text = serializeServiceConfiguration({ ...defaults, lingerEnabledByDomovoi })
+    expect(parseServiceConfiguration(text)).toEqual({ ...defaults, lingerEnabledByDomovoi })
+  })
   it.each([
     { authToken: "s".repeat(43) },
     { environment: { DOMOVOI_AUTH_TOKEN: "s".repeat(43) } },
@@ -57,6 +63,7 @@ describe("service configuration", () => {
     { webAppUrl: "https://person:secret@app.example.com/" },
     { advertiseHost: "" },
     { extra: "unexpected" },
+    { lingerEnabledByDomovoi: "yes" },
   ])("refuses invalid or secret-bearing saved state without echoing it: %j", (override) => {
     expect(() => parseServiceConfiguration(JSON.stringify({ ...defaults, ...override })))
       .toThrow(/^Invalid service configuration\. Reinstall with valid non-secret daemon settings\.$/)

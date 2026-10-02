@@ -35,6 +35,7 @@ const failure = (kind: ProviderFailure["kind"]): ProviderFailure => {
     "context-window-exceeded": { kind: "context-window-exceeded", action: "shorten-context", message: "Turn exceeded the model context window", retryable: false },
     transport: { kind: "transport", action: "retry", message: "Provider connection failed", retryable: true },
     unknown: { kind: "unknown", action: "retry", message: "Provider request failed", retryable: true },
+    "approval-answered-elsewhere": { kind: "approval-answered-elsewhere", action: "review-changes", message: "An approval was answered outside Domovoi", retryable: false },
   } as const satisfies Record<ProviderFailure["kind"], ProviderFailure>
   return failures[kind]
 }
@@ -50,6 +51,9 @@ describe("desktop first-run provider diagnostics", () => {
     [ready, failure("model-unavailable"), "model-access-missing", false],
     [ready, failure("transport"), "retryable-error", false],
     [ready, failure("unknown"), "retryable-error", false],
+    [ready, failure("approval-answered-elsewhere"), "approval-answered-elsewhere", false],
+    // A turn too long for the model says nothing about the provider's setup.
+    [ready, failure("context-window-exceeded"), "ready", true],
     [{ ...ready, status: "unknown" }, undefined, "retryable-error", false],
     [{ ...ready, sessionCapable: false }, undefined, "adapter-unavailable", false],
   ] as const)("maps daemon truth to %s recovery", (provider, providerFailure, kind, canComplete) => {
@@ -85,6 +89,15 @@ describe("desktop first-run provider diagnostics", () => {
     expect(providerFirstRunRecovery(ready, failure("model-unavailable")).description).toContain("available model")
     expect(providerFirstRunRecovery(ready, failure("transport")).description).toContain("provider connection")
     expect(providerFirstRunRecovery(ready, failure("unknown")).description).toContain("Retry diagnostics")
+  })
+
+  it("shows an approval answered outside Domovoi as an incident to review, not a ready provider", () => {
+    expect(providerFirstRunRecovery(ready, failure("approval-answered-elsewhere"))).toEqual({
+      kind: "approval-answered-elsewhere",
+      title: "An approval was answered outside Domovoi",
+      description: "A program on this machine used the provider server's password to answer an approval, so Domovoi stopped that session. What it approved may have run. Review the changes in that session's worktree before you continue it.",
+      canComplete: false,
+    })
   })
 
   it("uses only the latest matching session failure", () => {

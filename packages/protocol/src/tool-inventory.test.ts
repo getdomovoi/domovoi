@@ -18,6 +18,7 @@ import {
   phoneAndTabletRpcMethods,
   repositoryGitConfigUnreadableReasons,
   repositoryGitFilterOperations,
+  repositoryGitFilterRequiredStates,
   rpcMethodAuthorizations,
   rpcMethodMutations,
   rpcMethods,
@@ -176,7 +177,9 @@ describe("tool inventory", () => {
 
   it("is an observe, read-only method", () => {
     expect(rpcMethods["tool.inventory"].params.safeParse({}).success).toBe(true)
-    expect(rpcMethods["tool.inventory"].params.safeParse({ projectId: "x" }).success).toBe(false)
+    // J31 S1: a request may name the project; nothing else.
+    expect(rpcMethods["tool.inventory"].params.safeParse({ projectId: "x" }).success).toBe(true)
+    expect(rpcMethods["tool.inventory"].params.safeParse({ path: "/x" }).success).toBe(false)
     expect(rpcMethods["tool.inventory"].result).toBe(toolInventorySchema)
     expect(rpcMethodAuthorizations["tool.inventory"]).toBe("observe")
     expect(rpcMethodMutations["tool.inventory"]).toBe("read-only")
@@ -200,15 +203,33 @@ describe("tool inventory git filters", () => {
       { path: ".git/config.worktree", scope: "worktree" },
     ],
     entries: [
-      { driver: "sops", operation: "smudge", command: "sops --decrypt /dev/stdin", file: ".git/config", scope: "local", heldBack: true },
-      { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", file: ".git/config", scope: "local", heldBack: true },
-      { driver: "crypt", operation: "process", command: "git-crypt filter-process", file: ".git/config.worktree", scope: "worktree", heldBack: true },
+      { driver: "sops", operation: "smudge", command: "sops --decrypt /dev/stdin", required: "true", file: ".git/config", scope: "local", heldBack: true },
+      { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", required: "true", file: ".git/config", scope: "local", heldBack: true },
+      { driver: "crypt", operation: "process", command: "git-crypt filter-process", required: "unset", file: ".git/config.worktree", scope: "worktree", heldBack: true },
     ],
     omittedEntries: 0,
+    reviewDigest: `sha256:${"b".repeat(64)}`,
   }
+  const reviewDigest = gitFilters.reviewDigest
   const inventory = (filters: unknown) => ({ ...sample, repository: { ...sample.repository, gitFilters: filters } })
   const parses = (filters: unknown) => toolInventorySchema.safeParse(inventory(filters)).success
   const entry = gitFilters.entries[0]!
+  const { required: _required, ...lfsEntry } = entry
+
+  // A driver's required setting decides whether Git stores unfiltered bytes
+  // when the filter fails, and the trust digest pins it: each driver command
+  // shows its effective state. A Git LFS setting has none.
+  it("shows each driver command's effective required state, and none for a Git LFS setting", () => {
+    expect(repositoryGitFilterRequiredStates).toEqual(["true", "false", "unset"])
+    for (const required of repositoryGitFilterRequiredStates) {
+      expect(parses({ ...gitFilters, entries: [{ ...entry, required }] }), required).toBe(true)
+    }
+    expect(parses({ ...gitFilters, entries: [lfsEntry] })).toBe(false)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, required: "yes" }] })).toBe(false)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, required: true }] })).toBe(false)
+    expect(parses({ ...gitFilters, entries: [{ ...lfsEntry, operation: "lfs-transfer-path" }] })).toBe(true)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, operation: "lfs-transfer-path" }] })).toBe(false)
+  })
 
   it("lists each driver the repository's own Git config sets, by the file that sets it", () => {
     expect(toolInventorySchema.parse(inventory(gitFilters))).toEqual(inventory(gitFilters))
@@ -227,7 +248,8 @@ describe("tool inventory git filters", () => {
       "lfs-transfer-path", "lfs-transfer-args", "lfs-standalone-agent", "lfs-extension-clean", "lfs-extension-smudge",
     ])
     for (const operation of repositoryGitFilterOperations) {
-      expect(parses({ ...gitFilters, entries: [{ ...entry, driver: "evil", operation }] }), operation).toBe(true)
+      const listed = operation.startsWith("lfs-") ? { ...lfsEntry, driver: "evil", operation } : { ...entry, driver: "evil", operation }
+      expect(parses({ ...gitFilters, entries: [listed] }), operation).toBe(true)
     }
   })
 
@@ -246,6 +268,7 @@ describe("tool inventory git filters", () => {
         { ...entry, file: "shared.gitconfig", scope: "worktree" },
       ],
       omittedEntries: 0,
+      reviewDigest,
     }
     expect(parses(shared)).toBe(true)
     expect(parses({ ...shared, entries: [{ ...entry, file: "shared.gitconfig", scope: "command" }] })).toBe(false)
@@ -264,17 +287,27 @@ describe("tool inventory git filters", () => {
     expect(parses(uncounted)).toBe(false)
   })
 
+  // repository.trust's acknowledgement names the block the client showed by
+  // this digest, which the daemon computes over exactly what it listed
+  // (ruling Q255). Every block carries it.
+  it("names the listed block by a review digest", () => {
+    const { reviewDigest: _, ...undigested } = gitFilters
+    expect(parses(undigested)).toBe(false)
+    expect(parses({ ...gitFilters, reviewDigest: "sha256:short" })).toBe(false)
+    expect(parses({ ...gitFilters, reviewDigest: "b".repeat(64) })).toBe(false)
+  })
+
   // Git config the daemon could not read: it pins the digest to that state and
   // lists nothing, so what the config holds is never shown as read.
   it("says the repository's Git config could not be read, with a reason code and nothing listed", () => {
     expect(repositoryGitConfigUnreadableReasons).toEqual(["too-large", "git-failed"])
     for (const reason of repositoryGitConfigUnreadableReasons) {
-      expect(parses({ files: [], entries: [], omittedEntries: 0, unreadable: { reason } }), reason).toBe(true)
+      expect(parses({ files: [], entries: [], omittedEntries: 0, reviewDigest, unreadable: { reason } }), reason).toBe(true)
     }
     expect(parses({ ...gitFilters, unreadable: { reason: "git-failed" } })).toBe(false)
-    expect(parses({ files: [], entries: [], omittedEntries: 2, unreadable: { reason: "git-failed" } })).toBe(false)
-    expect(parses({ files: [], entries: [], omittedEntries: 0, unreadable: { reason: "fatal: bad config line 1" } })).toBe(false)
-    expect(parses({ files: [], entries: [], omittedEntries: 0, unreadable: { reason: "git-failed", detail: "x" } })).toBe(false)
+    expect(parses({ files: [], entries: [], omittedEntries: 2, reviewDigest, unreadable: { reason: "git-failed" } })).toBe(false)
+    expect(parses({ files: [], entries: [], omittedEntries: 0, reviewDigest, unreadable: { reason: "fatal: bad config line 1" } })).toBe(false)
+    expect(parses({ files: [], entries: [], omittedEntries: 0, reviewDigest, unreadable: { reason: "git-failed", detail: "x" } })).toBe(false)
   })
 
   it("holds its caps and the inventory text rules", () => {
@@ -287,7 +320,7 @@ describe("tool inventory git filters", () => {
     expect(parses({ ...gitFilters, entries: Array.from({ length: maximumToolInventoryGitFilters }, () => entry) })).toBe(true)
     expect(parses({ ...gitFilters, entries: Array.from({ length: maximumToolInventoryGitFilters + 1 }, () => entry) })).toBe(false)
     const files = Array.from({ length: maximumToolInventoryGitFilterFiles + 1 }, (_, index) => ({ path: `.git/include-${index}`, scope: "local" }))
-    expect(parses({ files, entries: [], omittedEntries: 0 })).toBe(false)
+    expect(parses({ files, entries: [], omittedEntries: 0, reviewDigest })).toBe(false)
     expect(parses({ ...gitFilters, omittedEntries: -1 })).toBe(false)
   })
 })

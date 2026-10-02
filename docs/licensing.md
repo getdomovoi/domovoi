@@ -110,7 +110,7 @@ This is a known constraint, not a resolved one. What each artifact carries:
   executable provider readiness reports, and passes that path to the SDK. With no `claude`
   installed, Claude Code sessions do not start. On Windows it takes only the native `claude.exe`,
   because the SDK starts the executable without a shell and the npm `claude` and `claude.cmd`
-  shims need one. A `claude` older than the SDK's `claudeCodeVersion` (2.1.263 for SDK 0.3.263)
+  shims need one. A `claude` older than the SDK's `claudeCodeVersion` (2.1.281 for SDK 0.3.281)
   is refused with the version to install, and readiness says the same. Domovoi does not install,
   patch or re-sign that binary.
 

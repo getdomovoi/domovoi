@@ -211,6 +211,9 @@ export function LauncherDialog({
   const [modelsPending, setModelsPending] = useState(false)
   const [modelsError, setModelsError] = useState("")
   const modelRequest = useRef(0)
+  // The provider whose scale the runtime's reasoning id belongs to, set only
+  // while a provider pick waits for its models.
+  const reasoningProvider = useRef<string | undefined>(undefined)
   // The effect below reads the latest providers without depending on the
   // identity of the array they arrive in.
   const providersRef = useRef(providers)
@@ -239,6 +242,7 @@ export function LauncherDialog({
     }
 
     const request = ++modelRequest.current
+    reasoningProvider.current = undefined
     setRuntime({
       ...defaultRuntime,
       provider: provider.id,
@@ -270,6 +274,10 @@ export function LauncherDialog({
   const selectProvider = (provider: ProviderRuntime) => {
     if (!providerCanStartSession(provider)) return
     const request = ++modelRequest.current
+    // The runtime names the new provider at once, but its reasoning is still
+    // an id on the scale it was chosen on. Keep that provider until a model
+    // is picked, across picks that land before the models do.
+    reasoningProvider.current ??= runtime.provider
     setRuntime((current) => ({ ...current, provider: provider.id, model: "default" }))
     setModels([])
     setModelsPending(true)
@@ -279,8 +287,11 @@ export function LauncherDialog({
         if (request !== modelRequest.current) return
         setModels(nextModels)
         const selected = nextModels.find((model) => model.isDefault) ?? nextModels[0]
-        if (selected) setRuntime((current) => selectRuntimeModel(current, selected))
-        else setModelsError(`${providerDisplayName(provider.id)} did not report any models`)
+        if (selected) {
+          const from = reasoningProvider.current
+          reasoningProvider.current = undefined
+          setRuntime((current) => selectRuntimeModel(current, selected, from ?? current.provider))
+        } else setModelsError(`${providerDisplayName(provider.id)} did not report any models`)
       },
       (cause: unknown) => {
         if (request === modelRequest.current) {

@@ -19,6 +19,11 @@ const models: ProviderModel[] = [
   model("sonnet-4.6", ["low", "medium", "high", "max"], "high"),
   model("claude-opus-4.2", ["low", "medium", "high"], "high"),
   model("claude-haiku-4.1", [], "medium"),
+  // Reports the harness's own words for its levels, so a level carries by
+  // its shared word rather than by the value sent.
+  model("claude-think-1", ["think", "think-hard", "ultrathink"], "ultrathink"),
+  // Names no default among its levels.
+  model("claude-legacy-1", ["low", "medium", "high"], "none"),
 ]
 
 function workspace(runtime: Partial<Runtime> = {}): WorkspaceSnapshot {
@@ -94,13 +99,55 @@ it("says the effort moved when a model change could not carry it, until a level 
   expect(onSetRuntime).toHaveBeenLastCalledWith(expect.objectContaining({ model: "claude-opus-4.2", reasoning: "high" }))
   view.rerender(thread(workspace({ model: "claude-opus-4.2", reasoning: "high" }), onSetRuntime))
   await user.click(screen.getByRole("button", { name: "High" }))
-  expect(screen.getByText("claude-code has no Max, so this moved to High when you changed model. It stays there.")).toBeTruthy()
+  expect(screen.getByText("claude-code has no Max, so this moved to the model's default, High. It stays until you pick a level.")).toBeTruthy()
   await user.click(screen.getByRole("menuitemradio", { name: /^Low/ }))
   await settle()
   view.rerender(thread(workspace({ model: "claude-opus-4.2", reasoning: "low" }), onSetRuntime))
   await user.click(screen.getByRole("button", { name: "Low" }))
   expect(screen.queryByText(/so this moved to/)).toBeNull()
   expect(screen.getByText("Applies from the next turn. A turn already in flight keeps the effort it started with.")).toBeTruthy()
+})
+
+// The new model reports the same level under its own value, so the effort
+// keeps its level and nothing moved.
+it("keeps the effort's level when the new model reports the same level", async () => {
+  const user = userEvent.setup()
+  const onSetRuntime = vi.fn(async () => {})
+  const view = render(thread(workspace({ reasoning: "medium" }), onSetRuntime))
+  await settle()
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
+  await settle()
+  await user.click(screen.getByRole("option", { name: "claude-think-1, claude-code" }))
+  await user.click(screen.getByRole("button", { name: "Switch here" }))
+  await settle()
+  expect(onSetRuntime).toHaveBeenLastCalledWith(expect.objectContaining({ model: "claude-think-1", reasoning: "think-hard" }))
+  view.rerender(thread(workspace({ model: "claude-think-1", reasoning: "think-hard" }), onSetRuntime))
+  await user.click(screen.getByRole("button", { name: "Medium" }))
+  expect(screen.queryByText(/so this moved to/)).toBeNull()
+  expect(screen.getByText("Applies from the next turn. A turn already in flight keeps the effort it started with.")).toBeTruthy()
+})
+
+// Without a default among its levels, the effort moves to the nearest level
+// the new model reports, and the note does not call it the default.
+it("moves the effort to the nearest level when the new model names no default", async () => {
+  const user = userEvent.setup()
+  const onSetRuntime = vi.fn(async () => {})
+  const view = render(thread(workspace({ reasoning: "max" }), onSetRuntime))
+  await settle()
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
+  await settle()
+  await user.click(screen.getByRole("option", { name: "claude-legacy-1, claude-code" }))
+  await user.click(screen.getByRole("button", { name: "Switch here" }))
+  await settle()
+  expect(onSetRuntime).toHaveBeenLastCalledWith(expect.objectContaining({ model: "claude-legacy-1", reasoning: "high" }))
+  view.rerender(thread(workspace({ model: "claude-legacy-1", reasoning: "high" }), onSetRuntime))
+  await user.click(screen.getByRole("button", { name: "High" }))
+  expect(screen.getByText("claude-code has no Max, so this moved to High. It stays until you pick a level.")).toBeTruthy()
+  await user.click(screen.getByRole("menuitemradio", { name: /^Low/ }))
+  await settle()
+  view.rerender(thread(workspace({ model: "claude-legacy-1", reasoning: "low" }), onSetRuntime))
+  await user.click(screen.getByRole("button", { name: "Low" }))
+  expect(screen.queryByText(/so this moved to/)).toBeNull()
 })
 
 // Effort is its own chip in v2, so the model menu carries no effort group.
@@ -130,7 +177,7 @@ it("keeps the moved-effort note through a mode change", async () => {
   await settle()
   view.rerender(thread(workspace({ model: "claude-opus-4.2", reasoning: "high", permissionMode: "plan" }), onSetRuntime))
   await user.click(screen.getByRole("button", { name: "High" }))
-  expect(screen.getByText("claude-code has no Max, so this moved to High when you changed model. It stays there.")).toBeTruthy()
+  expect(screen.getByText("claude-code has no Max, so this moved to the model's default, High. It stays until you pick a level.")).toBeTruthy()
 })
 
 // A model that reports no levels shows no chip, so its value was never on

@@ -111,7 +111,7 @@ describe("Rules daemon support", () => {
       createdBy: "desktop", createdAt: "2026-09-01T00:00:00.000Z",
       inactivatedBy: "cli", inactivatedByConnectionId: connectionId, inactivatedByClientId: "rules-owner",
     })
-    expect(rule.status === "inactive" && Date.parse(rule.inactivatedAt)).toBeGreaterThan(0)
+    expect(rule.status === "inactive" && rule.inactiveReason === "revoked" && Date.parse(rule.inactivatedAt)).toBeGreaterThan(0)
     expect((await rpc(socket, "approvalRule.revoke", { ruleId: "rule-tests", client: "cli" })).result).toMatchObject({ approvalRules: [rule] })
     emit(3)
     const after = await rpc(socket, "workspace.get")
@@ -190,6 +190,10 @@ describe("Rules daemon support", () => {
     })
     expect(store.load().approvals).toEqual([])
     expect(agent.resolveApproval).not.toHaveBeenCalled()
+    // A provider's record about a session names that session's project.
+    expect(store.auditLog.query({ action: "provider.policy-refused" }).entries).toEqual([
+      expect.objectContaining({ sessionId: snapshot.sessions[0]!.id, projectId: snapshot.sessions[0]!.projectId }),
+    ])
     expect((await rpc(socket, "approval.resolve", { approvalId: refusal!.id, decision: "allow-once", revision: 0, client: "cli" })).error)
       .toMatchObject({ code: -32602, message: "Approval does not exist" })
     expect((await rpc(socket, "session.history", {

@@ -1,0 +1,150 @@
+import { accessSync, constants, statSync } from "node:fs"
+import { posix, win32 } from "node:path"
+
+// The command every daemon Git spawn runs (ruling Q301).
+//
+// Windows looks for a bare command name in the current directory before
+// PATH, and Node's spawn does the same with the cwd it is given. A session
+// worktree is that directory for most daemon Git commands, so a git.exe
+// committed to the repository would run as the person before any filter
+// isolation. On Windows the command is therefore an absolute path: the first
+// git.exe in a PATH entry that is itself absolute (a drive letter and a
+// separator, or a UNC path). Empty, relative and drive-relative entries,
+// which resolve against the current directory, are passed over, and the
+// current directory is never looked in on its own. Only git.exe counts:
+// Git for Windows puts cmd\git.exe on PATH, and a .cmd or .bat would need a
+// shell to run, which reads its arguments again. None found refuses.
+//
+// The result is kept per PATH value, so it is resolved once for the PATH the
+// daemon runs with.
+//
+// POSIX execvp searches PATH alone, never the current directory except
+// through an empty or "." PATH entry the person set, so the bare name stays
+// there and a test can put a stand-in on PATH. Isolated Git directories
+// resolve an absolute path on POSIX too (isolationGitCommand).
+export class GitNotFoundError extends Error {
+  constructor(platform: NodeJS.Platform = "win32") {
+    super(platform === "win32"
+      ? "Domovoi found no git.exe in an absolute PATH entry. Install Git for Windows, or put its cmd folder on PATH, then start Domovoi again."
+      : "Domovoi found no git in an absolute PATH entry. Install Git, or put the folder that holds it on PATH, then start Domovoi again.")
+    this.name = "GitNotFoundError"
+  }
+}
+
+function isExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false
+    accessSync(path, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// The Git binary an isolated Git directory runs, as an absolute path, on
+// every platform (ruling Q321): resolved once as isolation opens, from the
+// environment its commands get, then its version checked by that path and
+// every isolated command run with it. So the Git whose version was checked
+// is the Git that runs, whatever PATH or the current directory do later. On
+// POSIX the first `git` that is an executable file in an absolute PATH entry,
+// as execvp would find it; empty and relative entries, which resolve against
+// the current directory, are passed over, as on Windows. Not cached on POSIX:
+// a PATH entry can come to hold another Git. Windows uses gitCommand.
+export function isolationGitCommand(
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+  isFile: (path: string) => boolean = platform === "win32" ? isFileOnDisk : isExecutableFile,
+): string {
+  if (platform === "win32") return gitCommand(environment, platform, isFile)
+  for (const directory of (environment.PATH ?? "").split(":")) {
+    if (directory.includes("\0") || !posix.isAbsolute(directory)) continue
+    const candidate = posix.join(directory, "git")
+    if (isFile(candidate)) return candidate
+  }
+  throw new GitNotFoundError(platform)
+}
+
+const resolved = new Map<string, string>()
+
+function isFileOnDisk(path: string): boolean {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
+// The PATH the child gets. Windows environment names ignore case, and Node
+// hands the child, of the names that differ only in case, the first in
+// sorted order, inherited keys included, and none at all when its value is
+// undefined (Node 22 lib/child_process.js, normalizeSpawnArguments). The same
+// choice here keeps the resolver and the child on one PATH (ruling Q301).
+function windowsPath(environment: NodeJS.ProcessEnv): string {
+  const names: string[] = []
+  // for...in, as Node reads it: inherited enumerable keys count too.
+  for (const name in environment) names.push(name)
+  names.sort()
+  const chosen = names.find((name) => name.toUpperCase() === "PATH")
+  return chosen === undefined ? "" : environment[chosen] ?? ""
+}
+
+// PATH's entries as libuv splits them for its own search (src/win/process.c,
+// search_path): an entry that starts with a double or single quote runs to
+// the matching quote before the next ";" is looked for, so a quoted
+// directory can hold a ";". One leading and one trailing quote are dropped;
+// nothing is trimmed, so " C:\Git" stays a relative entry, which is passed
+// over. Empty entries are dropped.
+function pathEntries(path: string): string[] {
+  const entries: string[] = []
+  let start = 0
+  while (start <= path.length) {
+    let end = start
+    const quote = path[start]
+    if (quote === "\"" || quote === "'") {
+      const close = path.indexOf(quote, start + 1)
+      end = close === -1 ? path.length : close
+    }
+    let separator = path.indexOf(";", end)
+    if (separator === -1) separator = path.length
+    let entry = path.slice(start, separator)
+    if (entry.length > 0) {
+      if (entry.startsWith("\"") || entry.startsWith("'")) entry = entry.slice(1)
+      if (entry.endsWith("\"") || entry.endsWith("'")) entry = entry.slice(0, -1)
+      entries.push(entry)
+    }
+    start = separator + 1
+  }
+  return entries
+}
+
+// A path that names one place whatever the current directory and drive: a
+// drive letter and a separator (C:\...), or a UNC path with a server and a
+// share (\\server\share...), either separator allowed. win32.isAbsolute is not
+// enough: it also takes \dir, rooted on the current drive (ruling Q305).
+function fullyQualified(path: string): boolean {
+  return /^[A-Za-z]:[\\/]/u.test(path) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+(?:[\\/]|$)/u.test(path)
+}
+
+export function gitCommand(
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  isFile: (path: string) => boolean = isFileOnDisk,
+): string {
+  if (platform !== "win32") return "git"
+  const path = windowsPath(environment)
+  const cache = isFile === isFileOnDisk
+  const known = cache ? resolved.get(path) : undefined
+  if (known !== undefined) return known
+  for (const directory of pathEntries(path)) {
+    if (directory.includes("\0") || !fullyQualified(directory)) continue
+    const candidate = win32.join(directory, "git.exe")
+    // win32.join normalizes: a malformed prefix can collapse into a path
+    // rooted on the current drive, so the joined path is checked too.
+    if (!fullyQualified(candidate)) continue
+    if (isFile(candidate)) {
+      if (cache) resolved.set(path, candidate)
+      return candidate
+    }
+  }
+  throw new GitNotFoundError()
+}

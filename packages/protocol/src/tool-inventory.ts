@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { credentialShapeAt } from "./credential-backstop.js"
+import { projectIdSchema } from "./identifiers.js"
 import { inventoryText, toolInventoryPathSchema } from "./inventory-text.js"
 import {
   refineRepositoryTrustPin, repositoryGitFilterDriverNameSchema, repositoryGitFilterScopeSchema, repositoryTrustStateSchema,
@@ -191,10 +192,19 @@ export const repositoryGitFilterOperations = [
   "lfs-transfer-path", "lfs-transfer-args", "lfs-standalone-agent", "lfs-extension-clean", "lfs-extension-smudge",
 ] as const
 
+// A driver command's effective filter.<driver>.required, as Git reads the
+// repository's own config: true makes a failing filter fail the Git command;
+// false or unset lets Git store or check out the unfiltered bytes. The trust
+// digest pins the value, so the reviewed block shows it. A value Git would
+// not read as a boolean is not listed: the entry is counted in omittedEntries.
+export const repositoryGitFilterRequiredStates = ["true", "false", "unset"] as const
+
 export const toolInventoryGitFilterEntrySchema = z.object({
   driver: repositoryGitFilterDriverNameSchema,
   operation: z.enum(repositoryGitFilterOperations),
   command: text(maximumToolInventoryCommandLength),
+  // Present exactly on clean, smudge and process: a Git LFS setting has none.
+  required: z.enum(repositoryGitFilterRequiredStates).optional(),
   // The file and the scope Git read it in: one included file can be read
   // from the repository's config and from a worktree's config.worktree.
   file: toolInventoryPathSchema,
@@ -218,6 +228,12 @@ export const toolInventoryGitFiltersSchema = z.object({
   omittedEntries: z.number().int().nonnegative().max(1_000_000),
   // Present when the config could not be read: nothing is listed or counted.
   unreadable: z.object({ reason: z.enum(repositoryGitConfigUnreadableReasons) }).strict().optional(),
+  // The daemon's digest over exactly this block as listed: files, entries
+  // with their required state, file and scope, the omitted count and the
+  // unreadable reason, but not heldBack, which follows the grant. A client
+  // that showed the block sends it back in repository.trust's gitFilters, and
+  // the daemon grants the filters only when its own read gives the same one.
+  reviewDigest: skillContentDigestSchema,
 }).strict().superRefine((filters, context) => {
   if (filters.unreadable && (filters.files.length > 0 || filters.entries.length > 0 || filters.omittedEntries > 0)) {
     context.addIssue({ code: "custom", path: ["unreadable"], message: "Unreadable config lists nothing" })
@@ -231,6 +247,10 @@ export const toolInventoryGitFiltersSchema = z.object({
   }
   for (const [index, entry] of filters.entries.entries()) {
     if (!files.has(id(entry.file, entry.scope))) context.addIssue({ code: "custom", path: ["entries", index, "file"], message: "Entries come only from a listed file, in its scope" })
+    const driverCommand = entry.operation === "clean" || entry.operation === "smudge" || entry.operation === "process"
+    if (driverCommand !== (entry.required !== undefined)) {
+      context.addIssue({ code: "custom", path: ["entries", index, "required"], message: "A driver command shows its required state, and a Git LFS setting none" })
+    }
   }
 })
 
@@ -243,9 +263,13 @@ export const toolInventoryGitFiltersSchema = z.object({
 export const toolInventoryEnvelopeReserveBytes = 4 * 1_024
 export const maximumToolInventoryBytes = 256 * 1_024 - toolInventoryEnvelopeReserveBytes
 
+// projectId names the project whose repository to read; left out, the daemon
+// reads the focused project's.
+export const toolInventoryParamsSchema = z.object({ projectId: projectIdSchema.optional() }).strict()
+
 export const toolInventorySchema = wireRule(z.object({
   machine: skillInventoryMachineSchema,
-  // The open repository. configDigest covers its provider configuration files,
+  // The requested project's repository. configDigest covers its provider configuration files,
   // present or absent, so a trust decision pins to what the client was shown;
   // trust is this machine's trust in it against that digest.
   repository: z.object({

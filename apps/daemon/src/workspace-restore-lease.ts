@@ -106,6 +106,10 @@ export class RestoreOperationLease {
     return pending
   }
 
+  // A killed or aborted command leaves its descendants' liveness unknown,
+  // whatever ended its process group: a descendant can leave the group
+  // (setsid), so an emptied group proves nothing (fail closed, as ruling
+  // Q111 B).
   async #command<T>(launch: () => PromiseWithChild<T>): Promise<T> {
     if (this.#owner.descendantsUnknown) throw new Error("Git descendant liveness is unknown after an interrupted command")
     if (this.#owner.starting + this.#owner.children.length >= 32) throw new Error("Too many restore subprocesses")

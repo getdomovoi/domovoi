@@ -3,6 +3,7 @@ import {
   maximumRepositoryTrustThreadRestarts,
   type RepositoryTrustState,
   type ToolInventoryEntry,
+  type ToolInventoryGitFilters,
   type ToolInventoryProvider,
 } from "@getdomovoi/protocol"
 
@@ -10,6 +11,7 @@ import { claudeEntryHeldBack, claudeRepositoryFiles, claudeRepositoryLoad } from
 import { codexEntryHeldBack, codexRepositoryFiles, codexRepositoryLoad } from "./codex-repository-trust.js"
 import {
   readRepositoryProviderConfig,
+  repositoryProviderScopes,
   type RepositoryConfigDocuments,
   type RepositoryEntryHeldBack,
   type RepositoryProviderConfig,
@@ -110,12 +112,27 @@ export async function trustedRepositoryConfig(
 // consults for trust untrusted, so it loads nothing from .codex itself,
 // refuses a worktree holding a config.toml or hooks.json there unless it is
 // trusted, and is given only the servers trustedEntryHeldBack reports under a
-// trusted verdict (codex-repository-config.test.ts). Nothing else is claimed
-// (ruling Q128 A): Domovoi's own skill catalog reads the skill folders into
-// prompts, and OpenCode, Kilo and the ACP agents are stated in P7.
+// trusted verdict (codex-repository-config.test.ts); OpenCode and Kilo start
+// with their project switch set, so they load nothing from their config files
+// and folders (opencode-runtime.test.ts, and the servers' own source:
+// opencode v1.18.32 config/config.ts and config/paths.ts, kilo v7.8.1
+// config/config.ts), and Kilo's legacy files refuse the session
+// (opencode.test.ts). Nothing else is claimed (ruling Q128 A): Domovoi's own
+// skill catalog reads the skill folders into prompts, OpenCode and Kilo load
+// .claude/skills and .agents/skills with the switch set (opencode
+// skill/index.ts), and the reader has no scope for the ACP agents.
+const loadedWithTheSwitchSet: ReadonlySet<string> = new Set([".claude/skills", ".agents/skills"])
+const switchedOff = (provider: string): ReadonlySet<string> => {
+  const scope = repositoryProviderScopes.find((candidate) => candidate.provider === provider)
+  return new Set([...scope?.files ?? [], ...scope?.directories ?? []]
+    .map(({ path }) => path)
+    .filter((path) => !loadedWithTheSwitchSet.has(path)))
+}
 const heldBackFiles: Readonly<Record<string, ReadonlySet<string>>> = {
   "claude-code": claudeRepositoryFiles,
   codex: codexRepositoryFiles,
+  opencode: switchedOff("opencode"),
+  kilo: switchedOff("kilo"),
 }
 
 export const repositoryEntryHeldBack: RepositoryEntryHeldBack = (provider: string, entry: ToolInventoryEntry) => (
@@ -148,6 +165,33 @@ export function heldBackUnder(config: RepositoryProviderConfig, trust: Repositor
     ...provider,
     entries: provider.entries.map((entry) => ({ ...entry, heldBack: heldBack(provider.provider, entry) })),
   }))
+}
+
+// Whether `grant` reviewed exactly this git filter block: the block lists
+// every filter (nothing omitted, readable) and its review digest is the one
+// the grant recorded (ruling Q265). The trust digest does not cover the file
+// that sets a filter, so a grant can still match the configuration after
+// the shown block changed; the filters then stay held back.
+export function gitFilterBlockReviewed(
+  filters: ToolInventoryGitFilters | undefined,
+  grant: RepositoryTrustGrant | undefined,
+): boolean {
+  return filters !== undefined && filters.unreadable === undefined && filters.omittedEntries === 0
+    && grant?.gitFilterReviewDigest !== undefined && grant.gitFilterReviewDigest === filters.reviewDigest
+}
+
+// The repository's git filters as the inventory reports them under `trust`:
+// the reader marks every one held back, and a trusted grant for the digest
+// read now whose client reviewed the filters runs them (P8 PR B,
+// repository-git-filter-gate.ts), in every session worktree that reads the
+// same filters as the root.
+export function gitFiltersUnder(
+  filters: ToolInventoryGitFilters,
+  trust: RepositoryTrustState,
+  grant: RepositoryTrustGrant | undefined,
+): ToolInventoryGitFilters {
+  if (trust.state !== "trusted" || !gitFilterBlockReviewed(filters, grant)) return filters
+  return { ...filters, entries: filters.entries.map((entry) => ({ ...entry, heldBack: false })) }
 }
 
 // How tool.inventory and the trust step read the project root: entries marked

@@ -14,13 +14,13 @@ import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { AgentAdapter, AgentEvent } from "./agents.js"
-import type { RepositoryGitFilter } from "./repository-git-filters.js"
+import { RepositoryGitConfigUnreadableError, type RepositoryGitFilter } from "./repository-git-filters.js"
 import type { RepositoryProviderConfig, RepositoryProviderConfigOptions } from "./repository-provider-config.js"
 import { projectRootRead } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant, RepositoryTrustStore } from "./repository-trust-store.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
-import { RepositoryGitFilterRefusedError, type WorkspaceService } from "./workspace.js"
+import { RepositoryFilterRefusedError, RepositoryGitFilterRefusedError, type WorkspaceService } from "./workspace.js"
 
 // P8 slice A: a session.create or session.fork refused because checking the
 // repository out would run a filter its own Git config sets answers with its
@@ -87,11 +87,15 @@ async function fixture() {
     commit: "8".repeat(40), createdAt: "2026-09-30T12:00:00.000Z",
   })
   const trust = { current: undefined as RepositoryTrustGrant | undefined }
-  const repositoryTrust: RepositoryTrustStore = { find: () => trust.current, record: vi.fn(), revoke: vi.fn() }
-  const config = { digest: digest("a"), fails: false }
+  const repositoryTrust = {
+    find: () => trust.current,
+    record: vi.fn((input: Parameters<RepositoryTrustStore["record"]>[0]): RepositoryTrustGrant => ({ ...input, trustedAt: "2026-09-30T12:00:00.000Z" })),
+    revoke: vi.fn(),
+  } satisfies RepositoryTrustStore
+  const config = { digest: digest("a"), fails: false, gitFilters: undefined as RepositoryProviderConfig["gitFilters"] }
   const repositoryProviderConfig = vi.fn(async (_root: string, _options: RepositoryProviderConfigOptions): Promise<RepositoryProviderConfig> => {
     if (config.fails) throw new Error("git config failed")
-    return { configDigest: config.digest, providers: [], trustRefusals: [], documents: {} }
+    return { configDigest: config.digest, providers: [], trustRefusals: [], documents: {}, ...(config.gitFilters ? { gitFilters: config.gitFilters } : {}) }
   })
   const workspaceService = {
     inspect: vi.fn(async (path: string) => ({ root: path, name: "acme", branch: "main", head: "a".repeat(40) })),
@@ -100,6 +104,7 @@ async function fixture() {
     removeSessionWorkspace: vi.fn(async () => {}),
     checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
     restore: vi.fn(),
+    revertFile: vi.fn(),
   } satisfies WorkspaceService
   const agents = { "claude-code": agent() }
   const store = new SqliteWorkspaceStore(":memory:", snapshot)
@@ -129,10 +134,62 @@ async function fixture() {
     client: "desktop", sessionId: "session-source", checkpointId: "checkpoint-fork", requestId: "fork-refused", runtime: claude,
   })
   const sessionIds = async () => ((await rpc("workspace.get", {})).result as WorkspaceSnapshot).sessions.map(({ id }) => id)
-  return { agents, trust, config, repositoryProviderConfig, workspaceService, store, create, fork, sessionIds }
+  return { agents, trust, config, repositoryProviderConfig, repositoryTrust, workspaceService, store, create, fork, sessionIds, rpc }
 }
 
 type Refusal = { error: { code: number; message: string; data?: unknown } }
+
+// A grant records that its client showed the git filters only when the
+// client says so and the read listed every filter; anything less keeps them
+// held back.
+describe("repository.trust and the git filter acknowledgement", () => {
+  const listed = {
+    files: [{ path: ".git/config", scope: "local" as const }],
+    entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt", required: "unset" as const, file: ".git/config", scope: "local" as const, heldBack: true }],
+    omittedEntries: 0,
+    reviewDigest: digest("b"),
+  }
+  const shown = { reviewed: true, reviewDigest: digest("b") }
+
+  it.each([
+    ["the client showed every filter", shown, listed, true],
+    ["the client said nothing", undefined, listed, false],
+    ["an entry was past the cap", shown, { ...listed, omittedEntries: 1 }, false],
+    ["the config was unreadable", shown, { files: [], entries: [], omittedEntries: 0, reviewDigest: digest("b"), unreadable: { reason: "too-large" as const } }, false],
+  ])("records a reviewed grant only when %s", async (_label, gitFilters, inventory, reviewed) => {
+    const { config, repositoryTrust, rpc } = await fixture()
+    config.gitFilters = inventory
+
+    const reply = await rpc("repository.trust", { projectId, configDigest: digest("a"), client: "desktop", ...(gitFilters ? { gitFilters } : {}) })
+
+    expect(reply).toMatchObject({ result: { outcome: "trusted" } })
+    expect(repositoryTrust.record).toHaveBeenCalledOnce()
+    const recorded = repositoryTrust.record.mock.calls[0]![0]
+    // The grant keeps the digest of the block it reviewed (ruling Q265).
+    if (reviewed) expect(recorded.gitFilterReviewDigest).toBe(digest("b"))
+    else expect(recorded).not.toHaveProperty("gitFilterReviewDigest")
+  })
+
+  // The acknowledgement names the block the client fetched by its review
+  // digest; the daemon's own read must give the same one, or nothing is
+  // granted (ruling Q255). A client that never fetched the block, or fetched
+  // another one, cannot acknowledge it.
+  it.each([
+    ["names another block", listed],
+    ["acknowledges filters the repository does not set", undefined],
+  ])("grants nothing when the acknowledgement %s", async (_label, inventory) => {
+    const { config, repositoryTrust, rpc } = await fixture()
+    config.gitFilters = inventory
+
+    const reply = await rpc("repository.trust", {
+      projectId, configDigest: digest("a"), client: "desktop", gitFilters: { reviewed: true, reviewDigest: digest("c") },
+    }) as Refusal
+
+    expect(reply.error.code).toBe(-32602)
+    expect(reply.error.message).toContain("tool.inventory")
+    expect(repositoryTrust.record).not.toHaveBeenCalled()
+  })
+})
 
 describe("a session refused over a repository git filter", () => {
   it("answers session.create with the git filter code, the drivers and the trust read now, and keeps nothing", async () => {
@@ -224,6 +281,56 @@ describe("a session refused over a repository git filter", () => {
     expect(reply.error.code).toBe(-32602)
     expect(reply.error.message).toContain("filter.sops.smudge in local Git config")
     expect(reply.error).not.toHaveProperty("data")
+  })
+
+  // P8 PR B: the operations on an existing session worktree answer the same
+  // way, for the project their gate looked trust up for.
+  it("answers checkpoint.create, checkpoint.restore and session.revertFile refused over a filter with the git filter code", async () => {
+    const { trust, workspaceService, rpc } = await fixture()
+    trust.current = grant("b")
+    const refusal = () => new RepositoryFilterRefusedError([filter("sops", "clean")], { reason: "config-changed", projectId })
+    workspaceService.checkpoint.mockRejectedValueOnce(refusal())
+    workspaceService.restore.mockRejectedValueOnce(refusal())
+    workspaceService.revertFile.mockRejectedValueOnce(refusal())
+
+    const replies = [
+      await rpc("checkpoint.create", { sessionId: "session-source", label: "refused", client: "desktop" }),
+      await rpc("checkpoint.restore", { sessionId: "session-source", checkpointId: "checkpoint-fork", client: "desktop" }),
+      await rpc("session.revertFile", { sessionId: "session-source", path: "secret.txt", client: "desktop" }),
+    ] as Refusal[]
+
+    for (const reply of replies) {
+      expect(reply.error.code).toBe(repositoryGitFilterErrorCode)
+      expect(reply.error.message).toContain("filter.sops.clean in local Git config")
+      expect(reply.error.data).toEqual({
+        kind: "repository-git-filter",
+        projectId,
+        configDigest: digest("a"),
+        trust: { state: "untrusted", reason: "config-changed", trustedDigest: digest("b"), trustedAt: "2026-09-30T12:00:00.000Z", trustedBy: { client: "desktop" } },
+        drivers: [{ name: "sops", scope: "local" }],
+        omittedDrivers: 0,
+      })
+    }
+  })
+
+  it("keeps a refusal that names no project as plain text", async () => {
+    const { workspaceService, rpc } = await fixture()
+    workspaceService.checkpoint.mockRejectedValueOnce(new RepositoryFilterRefusedError([filter("sops", "clean")]))
+
+    const reply = await rpc("checkpoint.create", { sessionId: "session-source", label: "refused", client: "desktop" }) as Refusal
+
+    expect(reply.error.code).toBe(-32602)
+    expect(reply.error).not.toHaveProperty("data")
+  })
+
+  it("refuses with its reason when the repository's Git config cannot be read", async () => {
+    const { workspaceService, rpc } = await fixture()
+    workspaceService.checkpoint.mockRejectedValueOnce(new RepositoryGitConfigUnreadableError("too-large"))
+
+    const reply = await rpc("checkpoint.create", { sessionId: "session-source", label: "unreadable", client: "desktop" }) as Refusal
+
+    expect(reply.error.code).toBe(-32602)
+    expect(reply.error.message).toBe("The repository's Git config sets more filter settings than Domovoi reads")
   })
 
   it("keeps its record of the attempt when the new worktree could not be taken away", async () => {

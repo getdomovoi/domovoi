@@ -48,12 +48,22 @@ overrides:
 catalog:
   "@vitest/coverage-v8": ^5.0.0
   typescript: ^5.9.2
-  vite: ^8.2.2
+  vite: ^8.3.0
   vitest: ^5.0.0
-  zod: ^4.5.2
+  zod: ^4.6.5
 
 minimumReleaseAgeExclude:
   - '@expo/cli@57.0.22'
   - expo-modules-core@57.0.16
   - expo-modules-jsi@57.0.8
   - expo@57.0.20
+
+auditConfig:
+  ignoreGhsas:
+    # GHSA-86w9-cpqp-85rv, high: node-forge accepts extra nested DigestAlgorithm
+    # elements in RSA PKCS#1 v1.5 signature checks. Every node-forge release is
+    # affected (<= 1.4.0) and none is patched as of 2026-10-01. It reaches only
+    # apps/mobile, through Expo CLI's code-signing tools for development builds;
+    # the daemon, desktop, web and CLI do not depend on it. Ruling Q309 A,
+    # 2026-10-01. Remove once node-forge or Expo ships a fix.
+    - GHSA-86w9-cpqp-85rv

@@ -1746,9 +1746,10 @@ describe("the approval request handler", () => {
     const end = source.indexOf('if (event.type === "item") {', start)
     expect(start).toBeGreaterThan(0)
     expect(end).toBeGreaterThan(start)
-    // Comments name awaits too; only code counts.
+    // Comments name awaits too; only code counts. The provider is answered
+    // directly or through #answerProvider (ruling Q285).
     const branch = source.slice(start, end).split("\n").map((line) => line.replace(/\/\/.*$/, "")).join("\n")
-    const tokens = [...branch.matchAll(/\bawait\b|this\.#admitApprovalRequest\(|resolveApproval\(event\.requestId|this\.#putApproval\(/g)]
+    const tokens = [...branch.matchAll(/\bawait\b|this\.#admitApprovalRequest\(|(?:resolveApproval|this\.#answerProvider)\((?:provider, )?event\.requestId|this\.#putApproval\(/g)]
       .map((match) => match[0])
     expect(tokens).toContain("this.#admitApprovalRequest(")
     let admitted = false
