@@ -156,6 +156,8 @@ describe("repository.trust and the git filter acknowledgement", () => {
     ["the client said nothing", undefined, listed, false],
     ["an entry was past the cap", shown, { ...listed, omittedEntries: 1 }, false],
     ["the config was unreadable", shown, { files: [], entries: [], omittedEntries: 0, reviewDigest: digest("b"), unreadable: { reason: "too-large" as const } }, false],
+    // Redaction hid part of a command, so nobody saw what it runs (ruling Q323).
+    ["a filter command was hidden", shown, { ...listed, entries: [{ ...listed.entries[0]!, command: "[REDACTED]", commandHidden: true as const }] }, false],
   ])("records a reviewed grant only when %s", async (_label, gitFilters, inventory, reviewed) => {
     const { config, repositoryTrust, rpc } = await fixture()
     config.gitFilters = inventory

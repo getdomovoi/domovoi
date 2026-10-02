@@ -12,6 +12,7 @@ import {
   toolInventoryGitFilterEntrySchema,
   toolInventoryGitFiltersSchema,
   toolInventoryProviderSchema,
+  toolInventoryRedactionMarker,
   type ToolInventoryEntry,
   type ToolInventoryFile,
   type ToolInventoryGitFilterEntry,
@@ -1393,10 +1394,17 @@ async function gitFilterInventory(rootPath: string, filters: readonly Repository
       omittedEntries += 1
       continue
     }
+    // Redaction that hid any part of the command (a credential, text past
+    // the cap, words it could not read) leaves the person unable to see what
+    // runs, so the entry says so and the block cannot be acknowledged as
+    // reviewed (ruling Q323). The marker is the one signal: every cut writes
+    // it, and a rewrite that only requotes keeps the same words.
+    const command = redactInventoryCommand(filter.value)
     const entry = toolInventoryGitFilterEntrySchema.safeParse({
       driver: redactInventoryText(filter.driver, maximumRepositoryGitFilterDriverNameLength),
       operation: filter.operation,
-      command: redactInventoryCommand(filter.value),
+      command,
+      ...(command.includes(toolInventoryRedactionMarker) ? { commandHidden: true } : {}),
       ...(required === undefined ? {} : { required }),
       file: path,
       scope: filter.scope,

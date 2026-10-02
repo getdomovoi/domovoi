@@ -199,10 +199,18 @@ export const repositoryGitFilterOperations = [
 // not read as a boolean is not listed: the entry is counted in omittedEntries.
 export const repositoryGitFilterRequiredStates = ["true", "false", "unset"] as const
 
+// What the daemon's inventory redaction writes in place of text it hides.
+export const toolInventoryRedactionMarker = "[REDACTED]"
+
 export const toolInventoryGitFilterEntrySchema = z.object({
   driver: repositoryGitFilterDriverNameSchema,
   operation: z.enum(repositoryGitFilterOperations),
   command: text(maximumToolInventoryCommandLength),
+  // Present, and true, exactly when redaction hid part of the command, which
+  // then shows toolInventoryRedactionMarker. Nobody can review what a hidden
+  // command runs, so a block holding one cannot be acknowledged as reviewed
+  // (ruling Q323), whatever the hidden text was, a credential alone included.
+  commandHidden: z.literal(true).optional(),
   // Present exactly on clean, smudge and process: a Git LFS setting has none.
   required: z.enum(repositoryGitFilterRequiredStates).optional(),
   // The file and the scope Git read it in: one included file can be read
@@ -250,6 +258,9 @@ export const toolInventoryGitFiltersSchema = z.object({
     const driverCommand = entry.operation === "clean" || entry.operation === "smudge" || entry.operation === "process"
     if (driverCommand !== (entry.required !== undefined)) {
       context.addIssue({ code: "custom", path: ["entries", index, "required"], message: "A driver command shows its required state, and a Git LFS setting none" })
+    }
+    if (entry.command.includes(toolInventoryRedactionMarker) !== (entry.commandHidden === true)) {
+      context.addIssue({ code: "custom", path: ["entries", index, "commandHidden"], message: "A command says it is hidden exactly when it shows the redaction marker" })
     }
   }
 })

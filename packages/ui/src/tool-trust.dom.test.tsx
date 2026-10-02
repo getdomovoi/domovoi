@@ -438,7 +438,7 @@ describe("git filters in the review", () => {
       files: [{ path: ".git/config", scope: "local" }, { path: ".git/worktrees/w1/config.worktree", scope: "worktree" }],
       entries: [
         ...sopsFilters.entries,
-        { driver: "crypt", operation: "process", command: "./bin/crypt --token [REDACTED]", required: "unset", file: ".git/worktrees/w1/config.worktree", scope: "worktree", heldBack: true },
+        { driver: "crypt", operation: "process", command: "./bin/crypt --token [REDACTED]", commandHidden: true, required: "unset", file: ".git/worktrees/w1/config.worktree", scope: "worktree", heldBack: true },
       ],
       omittedEntries: 0,
       reviewDigest,
@@ -497,6 +497,22 @@ describe("git filters in the review", () => {
     expect(within(sheet).queryByRole("button", { name: "Trust for this machine" })).toBeNull()
     expect(within(sheet).getByText("This list is not complete")).toBeTruthy()
     expect(within(sheet).getByText("The repository's Git config could not be read: git config failed. Trust is not offered until it can be read.")).toBeTruthy()
+    expect(onTrust).not.toHaveBeenCalled()
+  })
+
+  // A command redaction hid part of cannot be reviewed, so neither trust nor
+  // the acknowledgement is offered for its block (ruling Q323).
+  it("offers no trust and sends nothing while a filter command is hidden", async () => {
+    const onTrust = vi.fn<Trust>()
+    show(withGitFilters(inventory(), {
+      ...sopsFilters,
+      entries: sopsFilters.entries.map((entry) => entry.operation === "smudge" ? { ...entry, command: "[REDACTED]", commandHidden: true as const } : entry),
+    }), { onTrust })
+    const { sheet } = await openSheet()
+
+    expect(within(sheet).queryByRole("button", { name: "Trust for this machine" })).toBeNull()
+    expect(within(sheet).getByText("This list is not complete")).toBeTruthy()
+    expect(within(sheet).getByText("Part of 1 filter command is hidden: Domovoi hides text that could hold a secret or that it cannot show exactly, so it cannot show what that command runs. Its filters stay held back, and trust is not offered while a command is hidden.")).toBeTruthy()
     expect(onTrust).not.toHaveBeenCalled()
   })
 

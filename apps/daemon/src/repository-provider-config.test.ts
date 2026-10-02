@@ -1971,8 +1971,9 @@ describe("readRepositoryProviderConfig: git filters", () => {
     expect(read.gitFilters).toEqual({
       files: [{ path: ".git/config", scope: "local" }, { path: included, scope: "local" }],
       entries: [
-        // Cut at its first trigger, the assignment, as every inventory command is (ruling Q101 A).
-        { driver: "sops", operation: "smudge", command: "[REDACTED]", required: "unset", file: ".git/config", scope: "local", heldBack: true },
+        // Cut at its first trigger, the assignment, as every inventory command is (ruling Q101 A),
+        // and marked hidden, so the block cannot be acknowledged as reviewed (ruling Q323).
+        { driver: "sops", operation: "smudge", command: "[REDACTED]", commandHidden: true, required: "unset", file: ".git/config", scope: "local", heldBack: true },
         { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", required: "unset", file: ".git/config", scope: "local", heldBack: true },
         { driver: "crypt", operation: "process", command: "git-crypt filter-process", required: "unset", file: included, scope: "local", heldBack: true },
       ],

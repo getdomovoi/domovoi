@@ -167,16 +167,24 @@ export function heldBackUnder(config: RepositoryProviderConfig, trust: Repositor
   }))
 }
 
-// Whether `grant` reviewed exactly this git filter block: the block lists
-// every filter (nothing omitted, readable) and its review digest is the one
-// the grant recorded (ruling Q265). The trust digest does not cover the file
-// that sets a filter, so a grant can still match the configuration after
-// the shown block changed; the filters then stay held back.
+// Whether a git filter block can be reviewed at all: it lists every filter
+// (nothing omitted, readable) and shows every command whole. A command
+// redaction hid part of cannot be reviewed, whatever was hidden (ruling Q323).
+export function gitFilterBlockReviewable(filters: ToolInventoryGitFilters | undefined): filters is ToolInventoryGitFilters {
+  return filters !== undefined && filters.unreadable === undefined && filters.omittedEntries === 0
+    && !filters.entries.some((entry) => entry.commandHidden === true)
+}
+
+// Whether `grant` reviewed exactly this git filter block: the block can be
+// reviewed and its review digest is the one the grant recorded (ruling Q265).
+// The trust digest does not cover the file that sets a filter, so a grant can
+// still match the configuration after the shown block changed; the filters
+// then stay held back.
 export function gitFilterBlockReviewed(
   filters: ToolInventoryGitFilters | undefined,
   grant: RepositoryTrustGrant | undefined,
 ): boolean {
-  return filters !== undefined && filters.unreadable === undefined && filters.omittedEntries === 0
+  return gitFilterBlockReviewable(filters)
     && grant?.gitFilterReviewDigest !== undefined && grant.gitFilterReviewDigest === filters.reviewDigest
 }
 

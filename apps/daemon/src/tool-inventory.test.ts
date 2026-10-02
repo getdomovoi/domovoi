@@ -87,6 +87,10 @@ describe("readToolInventory", () => {
     expect(heldBack(await readToolInventory({ machine, project, grant: { ...grant, gitFilterReviewDigest: `sha256:${"c".repeat(64)}` }, read }))).toEqual([true])
     const incomplete = async () => ({ ...await read(), gitFilters: { ...gitFilters, omittedEntries: 1 } })
     expect(heldBack(await readToolInventory({ machine, project, grant, read: incomplete }))).toEqual([true])
+    // A command redaction hid part of cannot have been reviewed, even under a
+    // grant that names this block's digest (ruling Q323).
+    const hidden = async () => ({ ...await read(), gitFilters: { ...gitFilters, entries: [{ ...gitFilters.entries[0]!, command: "[REDACTED]", commandHidden: true as const }] } })
+    expect(heldBack(await readToolInventory({ machine, project, grant, read: hidden }))).toEqual([true])
     expect(heldBack(await readToolInventory({ machine, project, read }))).toEqual([true])
     expect(heldBack(await readToolInventory({ machine, project, grant: { ...grant, trustedDigest: `sha256:${"b".repeat(64)}` }, read }))).toEqual([true])
     const refused = async () => ({ ...await read(), trustRefusals: [{ provider: "codex", reason: "nested-config" as const, path: "sub/.codex/config.toml" }] })

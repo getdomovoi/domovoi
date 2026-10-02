@@ -245,7 +245,7 @@ import type { RepositoryFilterTrustSource } from "./repository-git-filter-gate.j
 import { RepositoryGitConfigUnreadableError } from "./repository-git-filters.js"
 import { GitTooOldForIsolationError } from "./isolated-checkout.js"
 import { GitNotFoundError } from "./git-command.js"
-import { maximumRevokedTrustThreads, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
+import { gitFilterBlockReviewable, maximumRevokedTrustThreads, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant, RepositoryTrustStore } from "./repository-trust-store.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
@@ -7737,9 +7737,10 @@ export class DomovoiDaemon {
         // recorded, and the catch below answers it as a cancelled operation.
         signal?.throwIfAborted()
         // The grant runs the repository's git filters only when the client says
-        // it showed them, and this read listed every one: none omitted past a
-        // cap and none unreadable, so what was shown is all there is. Any other
-        // grant keeps them held back; a repository with none needs nothing.
+        // it showed them, and this read listed every one whole: none omitted
+        // past a cap, none unreadable and no command redaction hid part of
+        // (ruling Q323), so what was shown is all there is. Any other grant
+        // keeps them held back; a repository with none needs nothing.
         const filters = config.gitFilters
         // The acknowledgement names the block the client fetched by its review
         // digest. For the configuration read now, a digest other than this
@@ -7753,8 +7754,7 @@ export class DomovoiDaemon {
         }
         // The grant keeps the digest of the block it reviewed, and the gate
         // runs the filters only while the block read then has it (ruling Q265).
-        const gitFiltersReviewed = gitFilters?.reviewed === true && filters !== undefined
-          && filters.unreadable === undefined && filters.omittedEntries === 0
+        const gitFiltersReviewed = gitFilters?.reviewed === true && gitFilterBlockReviewable(filters)
         const record = () => store.record({
           projectId: project.id, trustedDigest: config.configDigest, trustedBy,
           ...(gitFiltersReviewed ? { gitFilterReviewDigest: filters.reviewDigest } : {}),
