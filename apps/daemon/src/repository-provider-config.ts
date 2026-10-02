@@ -1361,6 +1361,20 @@ function reviewed(block: Omit<ToolInventoryGitFilters, "reviewDigest">): ToolInv
   return { ...block, reviewDigest: `sha256:${sha256(listed)}` }
 }
 
+// A filter or Git LFS command as the inventory shows it. The command
+// redaction writes unquoted patterns and braces escaped, which changes what
+// the shell would expand, so a command it cuts nothing from is shown exactly
+// as configured: neither the text reading (which keeps patterns as written)
+// nor the command reading (which also cuts at a secret argument) changes it
+// past escaping, and every cut writes the marker. Anything else, a value
+// holding the marker text included, is shown as the command reading writes
+// it, and the caller marks it inexact.
+function shownFilterCommand(value: string): string {
+  const command = redactInventoryCommand(value)
+  if (value.includes(toolInventoryRedactionMarker) || command.includes(toolInventoryRedactionMarker)) return command
+  return redactInventoryText(value) === value ? value : command
+}
+
 // The filters as tool.inventory lists them: by the file that sets each one,
 // relative to the root when inside it and absolute otherwise, the command
 // redacted. Every entry is marked held back here; the inventory clears the
@@ -1394,17 +1408,17 @@ async function gitFilterInventory(rootPath: string, filters: readonly Repository
       omittedEntries += 1
       continue
     }
-    // Redaction that hid any part of the command (a credential, text past
-    // the cap, words it could not read) leaves the person unable to see what
-    // runs, so the entry says so and the block cannot be acknowledged as
-    // reviewed (ruling Q323). The marker is the one signal: every cut writes
-    // it, and a rewrite that only requotes keeps the same words.
-    const command = redactInventoryCommand(filter.value)
+    // A command is reviewable only when it is shown exactly as Git runs it
+    // (rulings Q323, Q325): the flag compares the shown text with the
+    // configured value byte for byte. A value holding the marker text itself
+    // is marked whatever is shown: it cannot be told apart from a cut.
+    const command = shownFilterCommand(filter.value)
+    const exact = command === filter.value && !filter.value.includes(toolInventoryRedactionMarker)
     const entry = toolInventoryGitFilterEntrySchema.safeParse({
       driver: redactInventoryText(filter.driver, maximumRepositoryGitFilterDriverNameLength),
       operation: filter.operation,
       command,
-      ...(command.includes(toolInventoryRedactionMarker) ? { commandHidden: true } : {}),
+      ...(exact ? {} : { commandInexact: true }),
       ...(required === undefined ? {} : { required }),
       file: path,
       scope: filter.scope,

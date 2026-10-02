@@ -363,27 +363,28 @@ export function gitFilterGroups(inventory: ToolInventory): GitFilterGroup[] {
 // daemon runs the filters only under a grant that acknowledges them, by the
 // review digest tool.inventory gave for the block (#688), so the review sends
 // it only for the block it drew: every filter listed, none left out, the
-// config read and every command shown whole. A block with nothing in it needs
-// no acknowledgement, and an incomplete one never gets one (the review offers
-// no trust then).
+// config read and every command shown exactly as Git runs it. A block with
+// nothing in it needs no acknowledgement, and an incomplete one never gets one
+// (the review offers no trust then).
 export function gitFiltersAcknowledgement(inventory: ToolInventory): RepositoryTrustParams["gitFilters"] {
   const filters = inventory.repository?.gitFilters
   if (!filters || filters.unreadable !== undefined || filters.omittedEntries > 0 || filters.entries.length === 0) return undefined
-  if (hiddenGitFilterCommands(inventory) > 0) return undefined
+  if (inexactGitFilterCommands(inventory) > 0) return undefined
   return { reviewed: true, reviewDigest: filters.reviewDigest }
 }
 
-// Filter commands redaction hid part of. Nobody can review what such a
-// command runs, so its block offers no trust (ruling Q323).
-export function hiddenGitFilterCommands(inventory: ToolInventory): number {
-  return inventory.repository?.gitFilters?.entries.filter((entry) => entry.commandHidden === true).length ?? 0
+// Filter commands the inventory does not show exactly as Git runs them, by
+// the daemon's flag: only it holds the configured value. Nobody can review
+// such a command, so its block offers no trust (rulings Q323, Q325).
+export function inexactGitFilterCommands(inventory: ToolInventory): number {
+  return inventory.repository?.gitFilters?.entries.filter((entry) => entry.commandInexact === true).length ?? 0
 }
 
-// Why trust is not offered while a filter command is hidden.
-export function hiddenGitFilterText(count: number): string {
+// Why trust is not offered while a filter command is not shown exactly.
+export function inexactGitFilterText(count: number): string {
   return count === 1
-    ? "Part of 1 filter command is hidden: Domovoi hides text that could hold a secret or that it cannot show exactly, so it cannot show what that command runs. Its filters stay held back, and trust is not offered while a command is hidden."
-    : `Parts of ${count} filter commands are hidden: Domovoi hides text that could hold a secret or that it cannot show exactly, so it cannot show what those commands run. Their filters stay held back, and trust is not offered while a command is hidden.`
+    ? "Domovoi cannot show 1 filter command exactly as Git runs it, because it hides text that could hold a secret or that it cannot show safely. Its filters stay held back, and trust is not offered until every filter command can be shown exactly."
+    : `Domovoi cannot show ${count} filter commands exactly as Git runs them, because it hides text that could hold a secret or that it cannot show safely. Their filters stay held back, and trust is not offered until every filter command can be shown exactly.`
 }
 
 export function gitFilterCount(group: GitFilterGroup): string {

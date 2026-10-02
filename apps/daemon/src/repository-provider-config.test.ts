@@ -1972,8 +1972,8 @@ describe("readRepositoryProviderConfig: git filters", () => {
       files: [{ path: ".git/config", scope: "local" }, { path: included, scope: "local" }],
       entries: [
         // Cut at its first trigger, the assignment, as every inventory command is (ruling Q101 A),
-        // and marked hidden, so the block cannot be acknowledged as reviewed (ruling Q323).
-        { driver: "sops", operation: "smudge", command: "[REDACTED]", commandHidden: true, required: "unset", file: ".git/config", scope: "local", heldBack: true },
+        // and marked inexact, so the block cannot be acknowledged as reviewed (rulings Q323, Q325).
+        { driver: "sops", operation: "smudge", command: "[REDACTED]", commandInexact: true, required: "unset", file: ".git/config", scope: "local", heldBack: true },
         { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", required: "unset", file: ".git/config", scope: "local", heldBack: true },
         { driver: "crypt", operation: "process", command: "git-crypt filter-process", required: "unset", file: included, scope: "local", heldBack: true },
       ],
@@ -1988,6 +1988,35 @@ describe("readRepositoryProviderConfig: git filters", () => {
       },
       providers: read.providers,
     }).success).toBe(true)
+  })
+
+  // A command is reviewable only when the inventory shows it exactly as Git
+  // runs it (ruling Q325). One with nothing to hide is shown as written, its
+  // patterns and braces unescaped; one shown any other way is marked, so its
+  // block cannot be acknowledged as reviewed.
+  it("shows a filter command exactly as configured, and marks every one it shows otherwise", async () => {
+    const root = await repository()
+    git(root, "config", "filter.plain.smudge", "git-crypt smudge")
+    git(root, "config", "filter.glob.clean", "sops --encrypt *.enc")
+    git(root, "config", "filter.brace.smudge", "cat {a,b}.txt")
+    git(root, "config", "filter.nested.clean", "sh -c 'sops -d *.enc | cat'")
+    git(root, "config", "filter.quoted.process", "sh -c 'sops -d --password=hunter2 in'")
+    git(root, "config", "filter.literal.smudge", "echo [REDACTED]")
+
+    const read = await readRepositoryProviderConfig(root, { heldBack: true })
+    const entry = (driver: string) => read.gitFilters!.entries.find((listed) => listed.driver === driver)!
+
+    for (const [driver, command] of [["plain", "git-crypt smudge"], ["glob", "sops --encrypt *.enc"], ["brace", "cat {a,b}.txt"], ["nested", "sh -c 'sops -d *.enc | cat'"]] as const) {
+      expect(entry(driver).command, driver).toBe(command)
+      expect(entry(driver), driver).not.toHaveProperty("commandInexact")
+    }
+    // A cut inside a nested script, and the rest of it requoted.
+    expect(entry("quoted").commandInexact).toBe(true)
+    expect(entry("quoted").command).not.toContain("hunter2")
+    // A value that holds the marker text itself cannot be told apart from a
+    // cut, so it is marked too: fail closed.
+    expect(entry("literal").commandInexact).toBe(true)
+    expect(read.gitFilters!.omittedEntries).toBe(0)
   })
 
   it("pins and lists a Git LFS setting that starts a program, and not the exact install lines", async () => {

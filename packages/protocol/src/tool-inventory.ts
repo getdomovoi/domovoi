@@ -206,11 +206,14 @@ export const toolInventoryGitFilterEntrySchema = z.object({
   driver: repositoryGitFilterDriverNameSchema,
   operation: z.enum(repositoryGitFilterOperations),
   command: text(maximumToolInventoryCommandLength),
-  // Present, and true, exactly when redaction hid part of the command, which
-  // then shows toolInventoryRedactionMarker. Nobody can review what a hidden
-  // command runs, so a block holding one cannot be acknowledged as reviewed
-  // (ruling Q323), whatever the hidden text was, a credential alone included.
-  commandHidden: z.literal(true).optional(),
+  // Present, and true, exactly when `command` is not the configured value byte
+  // for byte: redaction cut part of it (it then shows
+  // toolInventoryRedactionMarker), rewrote it, or it holds the marker text
+  // itself, which cannot be told apart from a cut. Nobody can review a command
+  // shown other than as Git runs it, so a block holding one cannot be
+  // acknowledged as reviewed (rulings Q323, Q325). Only the daemon holds the
+  // configured value, so a client reads this flag, never the text.
+  commandInexact: z.literal(true).optional(),
   // Present exactly on clean, smudge and process: a Git LFS setting has none.
   required: z.enum(repositoryGitFilterRequiredStates).optional(),
   // The file and the scope Git read it in: one included file can be read
@@ -259,8 +262,8 @@ export const toolInventoryGitFiltersSchema = z.object({
     if (driverCommand !== (entry.required !== undefined)) {
       context.addIssue({ code: "custom", path: ["entries", index, "required"], message: "A driver command shows its required state, and a Git LFS setting none" })
     }
-    if (entry.command.includes(toolInventoryRedactionMarker) !== (entry.commandHidden === true)) {
-      context.addIssue({ code: "custom", path: ["entries", index, "commandHidden"], message: "A command says it is hidden exactly when it shows the redaction marker" })
+    if (entry.command.includes(toolInventoryRedactionMarker) && entry.commandInexact !== true) {
+      context.addIssue({ code: "custom", path: ["entries", index, "commandInexact"], message: "A command that shows the redaction marker is not shown exactly" })
     }
   }
 })

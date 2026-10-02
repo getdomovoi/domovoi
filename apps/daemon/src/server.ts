@@ -7737,9 +7737,9 @@ export class DomovoiDaemon {
         // recorded, and the catch below answers it as a cancelled operation.
         signal?.throwIfAborted()
         // The grant runs the repository's git filters only when the client says
-        // it showed them, and this read listed every one whole: none omitted
-        // past a cap, none unreadable and no command redaction hid part of
-        // (ruling Q323), so what was shown is all there is. Any other grant
+        // it showed them, and this read listed every one exactly: none omitted
+        // past a cap, none unreadable and every command shown as Git runs it
+        // (rulings Q323, Q325), so what was shown is all there is. Any other grant
         // keeps them held back; a repository with none needs nothing.
         const filters = config.gitFilters
         // The acknowledgement names the block the client fetched by its review

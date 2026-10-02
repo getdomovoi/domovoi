@@ -168,11 +168,12 @@ export function heldBackUnder(config: RepositoryProviderConfig, trust: Repositor
 }
 
 // Whether a git filter block can be reviewed at all: it lists every filter
-// (nothing omitted, readable) and shows every command whole. A command
-// redaction hid part of cannot be reviewed, whatever was hidden (ruling Q323).
+// (nothing omitted, readable) and shows every command exactly as Git runs it.
+// A command shown any other way, cut or rewritten, cannot be reviewed
+// (rulings Q323, Q325).
 export function gitFilterBlockReviewable(filters: ToolInventoryGitFilters | undefined): filters is ToolInventoryGitFilters {
   return filters !== undefined && filters.unreadable === undefined && filters.omittedEntries === 0
-    && !filters.entries.some((entry) => entry.commandHidden === true)
+    && !filters.entries.some((entry) => entry.commandInexact === true)
 }
 
 // Whether `grant` reviewed exactly this git filter block: the block can be

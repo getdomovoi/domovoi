@@ -16,8 +16,8 @@ import {
   gitFilterRequiredText,
   gitFilterScopeLabel,
   gitFiltersAcknowledgement,
-  hiddenGitFilterCommands,
-  hiddenGitFilterText,
+  inexactGitFilterCommands,
+  inexactGitFilterText,
   repositoryFileGroups,
   repositoryHeldBack,
   repositoryName,
@@ -93,11 +93,11 @@ export function RepositoryTrustSheet({
   const notShown = omitted.reduce((total, provider) => total + provider.omittedEntries, 0) + gitOmitted
   const unreadable = groups.filter((group) => group.file.state === "unreadable").map((group) => group.file.path)
   const gitUnreadable = gitFilters?.unreadable
-  // A filter command redaction hid part of shows the person less than runs,
-  // so it blocks trust the same way (ruling Q323), credential-only cuts
-  // included: the inventory does not say what was hidden.
-  const hiddenCommands = loaded ? hiddenGitFilterCommands(loaded) : 0
-  const incomplete = notShown > 0 || unreadable.length > 0 || gitUnreadable !== undefined || hiddenCommands > 0
+  // A filter command not shown exactly as Git runs it (cut or rewritten)
+  // shows the person something other than what runs, so it blocks trust the
+  // same way (rulings Q323, Q325), credential-only cuts included.
+  const inexactCommands = loaded ? inexactGitFilterCommands(loaded) : 0
+  const incomplete = notShown > 0 || unreadable.length > 0 || gitUnreadable !== undefined || inexactCommands > 0
   const offerTrust = repository !== undefined && refused === undefined && inventory.state === "loaded" && !incomplete
   const canTrust = offerTrust && !pending
 
@@ -190,7 +190,7 @@ export function RepositoryTrustSheet({
                 {unreadable.map((path) => <p key={path} className="m-0">{`${path} could not be read. Trust is not offered until it can be read.`}</p>)}
                 {gitUnreadable ? <p className="m-0">{`The repository's Git config could not be read: ${gitConfigUnreadableText[gitUnreadable.reason]}. Trust is not offered until it can be read.`}</p> : null}
                 {notShown > 0 ? <p className="m-0">{`${notShown} ${notShown === 1 ? "entry is" : "entries are"} not shown. Trust is not offered until every entry can be listed.`}</p> : null}
-                {hiddenCommands > 0 ? <p className="m-0">{hiddenGitFilterText(hiddenCommands)}</p> : null}
+                {inexactCommands > 0 ? <p className="m-0">{inexactGitFilterText(inexactCommands)}</p> : null}
               </AlertDescription>
             </Alert>
           ) : null}

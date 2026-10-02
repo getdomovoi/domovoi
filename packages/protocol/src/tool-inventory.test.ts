@@ -311,17 +311,20 @@ describe("tool inventory git filters", () => {
     expect(parses({ files: [], entries: [], omittedEntries: 0, reviewDigest, unreadable: { reason: "git-failed", detail: "x" } })).toBe(false)
   })
 
-  // Redaction that hides any part of a filter command leaves the person unable
-  // to see what runs, so the entry says so and the block cannot be reviewed
-  // (ruling Q323). The flag is present exactly when the command shows the
-  // marker, so a client never has to read the marker out of the text.
-  it("marks a filter command redaction hid part of, and only that one", () => {
+  // A filter command is reviewable only when the inventory shows it exactly as
+  // Git runs it (rulings Q323, Q325). The daemon, which holds the configured
+  // value, marks every other one; the client cannot tell a rewrite from the
+  // text, so it reads the flag. A command showing the marker always carries
+  // it, so a cut can never pass as exact.
+  it("marks a filter command shown other than exactly as configured", () => {
     expect(toolInventoryRedactionMarker).toBe("[REDACTED]")
-    expect(parses({ ...gitFilters, entries: [{ ...entry, command: "[REDACTED]", commandHidden: true }] })).toBe(true)
-    expect(parses({ ...gitFilters, entries: [{ ...lfsEntry, operation: "lfs-transfer-args", command: "--token [REDACTED]", commandHidden: true }] })).toBe(true)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, command: "[REDACTED]", commandInexact: true }] })).toBe(true)
+    expect(parses({ ...gitFilters, entries: [{ ...lfsEntry, operation: "lfs-transfer-args", command: "--token [REDACTED]", commandInexact: true }] })).toBe(true)
+    // A rewrite with no marker, such as an escaped pattern.
+    expect(parses({ ...gitFilters, entries: [{ ...entry, command: "sops -d \\*.enc", commandInexact: true }] })).toBe(true)
     expect(parses({ ...gitFilters, entries: [{ ...entry, command: "[REDACTED]" }] })).toBe(false)
-    expect(parses({ ...gitFilters, entries: [{ ...entry, commandHidden: true }] })).toBe(false)
-    expect(parses({ ...gitFilters, entries: [{ ...entry, command: "[REDACTED]", commandHidden: false }] })).toBe(false)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, command: "[REDACTED]", commandInexact: false }] })).toBe(false)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, command: "[REDACTED]", commandHidden: true }] })).toBe(false)
   })
 
   it("holds its caps and the inventory text rules", () => {
@@ -330,7 +333,7 @@ describe("tool inventory git filters", () => {
     expect(parses({ ...gitFilters, entries: [{ ...entry, driver: "x".repeat(maximumToolInventoryNameLength + 1) }] })).toBe(false)
     expect(parses({ ...gitFilters, entries: [{ ...entry, command: "sops --decrypt\n/dev/stdin" }] })).toBe(false)
     expect(parses({ ...gitFilters, entries: [{ ...entry, command: "SOPS_AGE_KEY=AGE-SECRET-KEY-madeup sops -d" }] })).toBe(false)
-    expect(parses({ ...gitFilters, entries: [{ ...entry, command: "SOPS_AGE_KEY=[REDACTED] sops -d", commandHidden: true }] })).toBe(true)
+    expect(parses({ ...gitFilters, entries: [{ ...entry, command: "SOPS_AGE_KEY=[REDACTED] sops -d", commandInexact: true }] })).toBe(true)
     expect(parses({ ...gitFilters, entries: Array.from({ length: maximumToolInventoryGitFilters }, () => entry) })).toBe(true)
     expect(parses({ ...gitFilters, entries: Array.from({ length: maximumToolInventoryGitFilters + 1 }, () => entry) })).toBe(false)
     const files = Array.from({ length: maximumToolInventoryGitFilterFiles + 1 }, (_, index) => ({ path: `.git/include-${index}`, scope: "local" }))
