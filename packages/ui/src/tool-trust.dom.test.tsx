@@ -21,6 +21,7 @@ const digest = `sha256:${"a".repeat(64)}`
 const changedDigest = `sha256:${"c".repeat(64)}`
 // tool.inventory's digest over the git filter block it lists.
 const reviewDigest = `sha256:${"b".repeat(64)}`
+const gitConfigPinnedText = "In the Git config only the filter settings listed here are pinned, not the whole file: changing one of them, or the file that sets it, holds them back again. Other Git settings in that file are not pinned."
 const grant = { trustedDigest: digest, trustedAt: "2026-09-12T10:41:00.000Z", trustedBy: { client: "desktop" as const } }
 const readAt = new Date("2026-09-29T14:02:31")
 const notTrusted: RepositoryTrustState = { state: "untrusted", reason: "not-trusted" }
@@ -430,7 +431,10 @@ describe("git filters in the review", () => {
     const { sheet } = await openSheet()
     expect(within(sheet).getByText("Everything this repository would run for any agent here. None of it has run.")).toBeTruthy()
     expect(within(sheet).getByRole("button", { name: "Trust for this machine" })).toBeTruthy()
-    expect(within(sheet).getByText("It is pinned to one digest of this file. Any change, an agent's edit included, holds it back again.")).toBeTruthy()
+    // The digest pins the reviewed filter settings, not the whole Git config
+    // file, so the sheet does not promise that any change to it counts.
+    expect(within(sheet).queryByText(/^It is pinned to one digest of/u)).toBeNull()
+    expect(within(sheet).getByText(gitConfigPinnedText)).toBeTruthy()
   })
 
   it("shows a group per git config file and scope, each driver with its operations and redacted commands", async () => {
@@ -461,7 +465,9 @@ describe("git filters in the review", () => {
     expect(within(worktree).getByText("process ./bin/crypt --token [REDACTED]")).toBeTruthy()
     expect(within(worktree).getByText("Cut at a credential. Domovoi shows no secret.")).toBeTruthy()
 
-    expect(within(sheet).getByText("It is pinned to one digest of these four files. Any change, an agent's edit included, holds it back again.")).toBeTruthy()
+    // Provider files are pinned whole; the Git config only by its filter settings.
+    expect(within(sheet).getByText("It is pinned to one digest of these two files. Any change, an agent's edit included, holds it back again.")).toBeTruthy()
+    expect(within(sheet).getByText(gitConfigPinnedText)).toBeTruthy()
   })
 
   // The review digest covers each driver's required state, so the review

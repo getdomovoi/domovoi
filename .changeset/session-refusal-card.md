@@ -24,7 +24,9 @@ config file and scope, with each operation and its redacted command and its requ
 says that a filter runs whatever file its command names, an agent's edit included. A Git config
 the daemon could not read, or filter entries it left out, block trust as an unreadable config
 file does. The Tools tab's held back card lists the git config file with its count, so a
-repository whose only config is a filter can be reviewed.
+repository whose only config is a filter can be reviewed. The sheet's pinned line counts only the
+provider files, which are pinned by content, and a second line says that in the Git config only
+the filter settings listed are pinned, not the whole file.
 
 Trusting from the sheet now acknowledges the Git filters it showed: `repository.trust` carries
 `gitFilters: { reviewed: true, reviewDigest }` with the review digest of the block the sheet drew,
