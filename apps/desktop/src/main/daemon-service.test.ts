@@ -226,6 +226,16 @@ describe("DesktopDaemonService", () => {
     expect(calls).toEqual(["stage", "checks", "fence", "hold", "stop", "install", "attach", "unfence", "release"])
   })
 
+  // Ruling Q307 (review of #698, P2): a Linux install whose lingering could
+  // not be turned on is not a plain success. The daemon's own warning, the
+  // CLI's words, is carried to the renderer; one without it carries none.
+  it("carries the daemon's lingering warning with a successful install", async () => {
+    const lingerWarning = "Could not turn on lingering for dana: loginctl was not found. The service is installed, but systemd stops the daemon when dana logs out of every session and starts it again at the next login. To keep it running, run loginctl enable-linger; domovoid service remove will then leave lingering on."
+    const unit = { kind: "file" as const, path: "/home/dana/.config/systemd/user/domovoid.service", configurationPath: "/home/dana/.domovoi/service.json", linger: { kind: "failed" as const, detail: "loginctl was not found" }, lingerWarning }
+    const { service } = harness({ install: vi.fn(async (options: { releaseInAppDaemon?: () => Promise<void> }) => { await options.releaseInAppDaemon?.(); return unit }) })
+    await expect(service.install()).resolves.toEqual({ ok: true, kind: "file", target: unit.path, configurationPath: unit.configurationPath, daemonRunning: true, lingerWarning })
+  })
+
   it("reports a missing runtime without stopping anything", async () => {
     const { service, deps, calls } = harness({ stageRuntime: vi.fn(async () => { throw new DaemonServiceRuntimeMissingError("node", "/Applications/Domovoi.app/Contents/Resources/daemon-runtime/node/bin/node", "missing") }) })
     const outcome = await service.install()

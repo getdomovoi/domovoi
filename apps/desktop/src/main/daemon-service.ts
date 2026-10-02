@@ -57,7 +57,9 @@ function runtimeMissing(cause: unknown): { part: "node" | "daemon"; path: string
 // the same function before anything is stopped.
 
 export type DaemonServiceOutcome =
-  | { ok: true; kind: "file" | "task"; target: string; configurationPath: string; daemonRunning: true }
+  // lingerWarning: the daemon's own warning that Linux lingering could not be
+  // turned on (ruling Q307), shown with the install result.
+  | { ok: true; kind: "file" | "task"; target: string; configurationPath: string; daemonRunning: true; lingerWarning?: string }
   // daemonRunning: a daemon runs and this app reaches it. daemonAttached: that
   // daemon is one this app did not start, so quitting the app leaves it be.
   | { ok: true; kind: "file" | "task"; target: string; profileRecovery: DaemonServiceRemovalResult["profileRecovery"]; profileRecoveryDetail?: string; daemonRunning: boolean; daemonAttached: boolean }
@@ -559,7 +561,8 @@ export class DesktopDaemonService {
         return { ok: false, reason: "installed-not-attached", kind: installed.kind, target, message: "The daemon this window reached is not the running service." }
       }
       await this.#removeUnusedRuntimes(prepared, noted)
-      return { ok: true, kind: installed.kind, target, configurationPath: installed.configurationPath, daemonRunning: true }
+      const lingerWarning = installed.kind === "file" ? installed.lingerWarning : undefined
+      return { ok: true, kind: installed.kind, target, configurationPath: installed.configurationPath, daemonRunning: true, ...(lingerWarning === undefined ? {} : { lingerWarning }) }
     } finally {
       fence?.release()
       if (released) this.deps.daemon.endHandoff()

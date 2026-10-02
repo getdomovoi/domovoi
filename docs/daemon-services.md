@@ -161,8 +161,9 @@ lingering for <user>, which Domovoi turned on at install.` `false` prints `Linge
 on before Domovoi was installed, so it was left on.` No record, or a configuration that cannot be
 read, leaves lingering as found and prints nothing about it. A failed `disable-linger` does not undo
 the removal; it prints on stderr that lingering stays on and how to turn it off. The desktop's
-install and removal do the same and return the outcome as `linger`; the desktop does not show it
-yet.
+install and removal do the same and return the outcome as `linger`. When lingering could not be
+turned on, the install also returns the CLI's stderr text as `lingerWarning`, and Desktop shows it
+under the install result (ruling Q307). Desktop does not show the removal's outcome yet.
 
 `loginctl` is run by its bare name and found through `PATH`, as `systemctl` is: `PATH` is trusted
 for the Linux service commands. Every call passes the installing user's numeric uid, taken from

@@ -106,9 +106,11 @@ function serviceOutcome(value: unknown): DaemonServiceOutcome {
     const recovery = profileRecoveries.find((candidate) => candidate === result.profileRecovery)
     if (result.profileRecovery !== undefined && !recovery) throw new Error("Desktop returned an invalid service outcome")
     if (result.daemonAttached !== undefined && typeof result.daemonAttached !== "boolean") throw new Error("Desktop returned an invalid service outcome")
+    if (result.lingerWarning !== undefined && !serviceText(result.lingerWarning)) throw new Error("Desktop returned an invalid service outcome")
     return {
       ok: true, kind, target: result.target, daemonRunning: result.daemonRunning,
       ...(typeof result.daemonAttached === "boolean" ? { daemonAttached: result.daemonAttached } : {}),
+      ...(serviceText(result.lingerWarning) ? { lingerWarning: result.lingerWarning } : {}),
       ...(recovery ? { profileRecovery: recovery } : {}),
       ...(recovery && serviceText(result.profileRecoveryDetail) ? { profileRecoveryDetail: result.profileRecoveryDetail } : {}),
     }

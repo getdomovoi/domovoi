@@ -86,6 +86,23 @@ describe("installDaemonService", () => {
       .toEqual(["show-user", "enable-linger", "disable-linger"])
   })
 
+  // Ruling Q307 (review of #698, P2): a lingering that could not be turned on
+  // reaches the app as the CLI's own warning, from linger.ts, not as a plain
+  // success. Lingering that worked carries no warning.
+  it("carries the CLI's lingering warning when lingering could not be turned on", async () => {
+    const refused = vi.fn(async (command: string, args: string[]) => command === "loginctl" && args[0] === "show-user"
+      ? { code: 1, stdout: "", stderr: "spawn loginctl ENOENT" } : { code: 0, stdout: "" })
+    const installed = await installDaemonService({ runtime }, dependencies({ platform: "linux", home: "/home/dl", uid: 1000, user: "dl", capture: refused }))
+    expect(installed).toMatchObject({
+      kind: "file", linger: { kind: "failed", detail: "loginctl was not found" },
+      lingerWarning: "Could not turn on lingering for dl: loginctl was not found. The service is installed, but systemd stops the daemon when dl logs out of every session and starts it again at the next login. To keep it running, run loginctl enable-linger; domovoid service remove will then leave lingering on.",
+    })
+    const worked = vi.fn(async (command: string, args: string[]) => command === "loginctl" && args[0] === "show-user"
+      ? { code: 0, stdout: "no\n" } : { code: 0, stdout: "" })
+    expect(await installDaemonService({ runtime }, dependencies({ platform: "linux", home: "/home/dl", uid: 1000, user: "dl", capture: worked })))
+      .not.toHaveProperty("lingerWarning")
+  })
+
   it("refuses a runtime that is not there before claiming the profile or writing a file", async () => {
     for (const [part, missing] of [["node", runtime.nodePath], ["daemon", runtime.daemonEntryPath]] as const) {
       const effects = dependencies({ runtimeFile: vi.fn(async (path: string) => path === missing ? "missing" as const : "file" as const) })

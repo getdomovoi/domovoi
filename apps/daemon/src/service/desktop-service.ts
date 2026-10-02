@@ -27,7 +27,7 @@ import { launchdPlistProgram, systemdUnitProgram } from "./units.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { DaemonServiceUpdateError, publishFirst, runServiceUpdate, trackInFlight } from "./update-outcome.js"
 import { prepareWslUpdate } from "./wsl-install.js"
-import type { LingerInstallOutcome, LingerRemovalOutcome } from "./linger.js"
+import { lingerInstallLine, type LingerInstallOutcome, type LingerRemovalOutcome } from "./linger.js"
 import { windowsSchtasksPath } from "./windows-task.js"
 
 export { DaemonServiceUpdateError, type DaemonServiceUpdateOutcome } from "./update-outcome.js"
@@ -93,8 +93,10 @@ export type DaemonServiceStagedRuntime = {
 
 // linger: Linux only, what the install or removal did to lingering
 // (service/linger.ts). An update leaves lingering as it is and reports none.
+// lingerWarning: the CLI's own stderr line, from linger.ts, when lingering
+// could not be turned on, so the app shows it rather than a plain success.
 export type DaemonServiceInstallResult =
-  | { kind: "file"; path: string; configurationPath: string; linger?: LingerInstallOutcome }
+  | { kind: "file"; path: string; configurationPath: string; linger?: LingerInstallOutcome; lingerWarning?: string }
   | { kind: "task"; name: string; configurationPath: string }
 
 export type DaemonServiceRemovalResult =
@@ -197,9 +199,13 @@ export async function installDaemonService(
       },
     }),
   })
-  return plan.kind === "file"
-    ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path, ...(plan.linger === undefined ? {} : { linger: plan.linger }) }
-    : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
+  if (plan.kind !== "file") return { kind: "task", name: taskName, configurationPath: plan.configuration.path }
+  const warning = plan.linger === undefined ? undefined : lingerInstallLine(plan.linger, target(dependencies))
+  return {
+    kind: "file", path: plan.path, configurationPath: plan.configuration.path,
+    ...(plan.linger === undefined ? {} : { linger: plan.linger }),
+    ...(warning?.stream === "stderr" ? { lingerWarning: warning.text.trim() } : {}),
+  }
 }
 
 export type DaemonServiceUpdateOptions = {

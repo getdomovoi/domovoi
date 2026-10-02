@@ -31,6 +31,12 @@ describe("createDesktopWindowBridge", () => {
     expect(target.invoke).toHaveBeenCalledWith("domovoi:open-external", { editor: "system", path: "/project" })
     target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/c", daemonRunning: true }))
     await expect(bridge.daemonService?.install()).resolves.toEqual({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", daemonRunning: true })
+    // Ruling Q307 (review of #698, P2): the daemon's lingering warning reaches
+    // the renderer; one that is not text is refused like any other field.
+    target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/u", configurationPath: "/c", daemonRunning: true, lingerWarning: "Could not turn on lingering for dana: loginctl was not found." }))
+    await expect(bridge.daemonService?.install()).resolves.toEqual({ ok: true, kind: "file", target: "/u", daemonRunning: true, lingerWarning: "Could not turn on lingering for dana: loginctl was not found." })
+    target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/u", daemonRunning: true, lingerWarning: 5 }))
+    await expect(bridge.daemonService?.install()).rejects.toThrow("invalid service outcome")
     for (const [answer, drawn] of [
       [{ ok: true, kind: "task", target: "\\Domovoi\\domovoid", profileRecovery: "proof-unavailable", profileRecoveryDetail: "The service record could not be read", daemonRunning: false },
         { ok: true, kind: "task", target: "\\Domovoi\\domovoid", profileRecovery: "proof-unavailable", profileRecoveryDetail: "The service record could not be read", daemonRunning: false }],

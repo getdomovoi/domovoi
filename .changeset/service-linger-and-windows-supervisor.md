@@ -10,7 +10,8 @@ off, says so, and records `"lingerEnabledByDomovoi": true` in `service.json`. Li
 already on is left alone and recorded as `false`. `domovoid service remove` turns lingering off only
 on `true`. When `loginctl` is missing or refuses, the install still succeeds, records nothing, and
 says on stderr that the daemon stops at logout and starts again at the next login. The desktop's
-install and removal return what they did as `linger`.
+install and removal return what they did as `linger`, and Desktop shows that same warning with the
+install result.
 
 On Windows, the logon task still runs the daemon itself and has no crash supervision yet; that
 returns with the job-object work. Each registration now lifts Task Scheduler's default 72 hour
