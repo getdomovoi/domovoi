@@ -3674,6 +3674,37 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
   // command. Ordinary Git then runs nothing, and nor may the isolated Git
   // directory, which reads no repository config: the empty override is
   // carried into it (ruling Q317).
+  // Git refuses a filter command key with no value, and a required that is
+  // not a boolean, whatever scope sets it. Dropping either let the isolated
+  // directory, which reads no repository config, run the inherited command
+  // ordinary Git would have refused over. Each refuses before isolation
+  // opens, and the reason names the key (ruling Q318). The inherited command
+  // is an inert label that must never be reached.
+  it.each([
+    ["a filter command with no value", "[filter \"agent\"]\n\tclean\n", "filter.agent.clean"],
+    ["a required that is not a boolean", "[filter \"agent\"]\n\tclean =\n\trequired = maybe\n", "filter.agent.required"],
+  ])("refuses a repository config with %s, naming the key", async (_label, local, key) => {
+    const { scratch, repositoryPath, worktrees } = await filteredRepository("domovoi-invalid-filter-")
+    const home = join(scratch, "home")
+    await mkdir(home)
+    await writeFile(join(home, ".gitconfig"), "[filter \"agent\"]\n\tclean = domovoi-inert-label-never-run\n")
+    const config = join(repositoryPath, ".git", "config")
+    await writeFile(config, `${await readFile(config, "utf8")}${local}`)
+    const previous = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
+    process.env.HOME = home
+    process.env.XDG_CONFIG_HOME = join(home, ".config")
+    try {
+      await expect(new GitWorkspaceService(worktrees).createSessionWorkspace(repositoryPath, "session-invalid"))
+        .rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", message: expect.stringContaining(key) })
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+    await expect(lstat(join(worktrees, "session-invalid"))).rejects.toThrow()
+  })
+
   it("keeps a repository's empty override of a global filter command, and runs no tracked helper", async () => {
     const { scratch, repositoryPath, worktrees, git } = await filteredRepository("domovoi-global-override-")
     const marker = join(scratch, "helper-ran").replaceAll("\\", "/")

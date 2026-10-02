@@ -26,6 +26,7 @@ import {
   redactInventoryProgram, redactInventoryText,
 } from "./inventory-redaction.js"
 import {
+  gitRequiredState,
   readRepositoryGitFilters,
   RepositoryGitConfigUnreadableError,
   type RepositoryGitConfigUnreadableReason,
@@ -1357,41 +1358,6 @@ function reviewed(block: Omit<ToolInventoryGitFilters, "reviewDigest">): ToolInv
     block.unreadable?.reason ?? null,
   ])
   return { ...block, reviewDigest: `sha256:${sha256(listed)}` }
-}
-
-// A driver's filter.<driver>.required as Git reads a boolean: true, yes and
-// on, in any case, or a nonzero integer, are true; false, no, off, the empty
-// value and 0 are false; no value at all is unset. Git refuses any other
-// text, and so does this: undefined, and the entry is counted rather than
-// listed (ruling Q265).
-function gitRequiredState(value: string | undefined): "true" | "false" | "unset" | undefined {
-  if (value === undefined) return "unset"
-  const lower = value.toLowerCase()
-  if (lower === "true" || lower === "yes" || lower === "on") return "true"
-  if (lower === "false" || lower === "no" || lower === "off" || lower === "") return "false"
-  const number = gitConfigInt(value)
-  return number === undefined ? undefined : number === 0n ? "false" : "true"
-}
-
-const gitIntMinimum = -(2n ** 31n)
-const gitIntMaximum = 2n ** 31n - 1n
-const gitUnitFactors: Readonly<Record<string, bigint>> = { "": 1n, k: 1024n, m: 1024n ** 2n, g: 1024n ** 3n }
-
-// An int as Git's config reads one (git_parse_signed): strtoimax in base 0
-// after leading white space (an optional sign, then 0x and hex digits, a
-// leading 0 and octal digits, or decimal digits), then nothing or exactly one
-// k, m or g in either case, and the product within a C int. Checked against
-// `git config --bool` at the edges: 09, 018, 2147483648 and 2g are refused,
-// -2147483648 and -2097152k read.
-function gitConfigInt(value: string): bigint | undefined {
-  const match = /^[ \t\n\v\f\r]*([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)(.*)$/su.exec(value)
-  if (match === null) return undefined
-  const [, sign, digits, unit] = match as unknown as [string, string, string, string]
-  const factor = gitUnitFactors[unit.toLowerCase()]
-  if (factor === undefined || unit.length > 1) return undefined
-  const magnitude = /^0[xX]/u.test(digits) ? BigInt(digits) : digits.length > 1 && digits.startsWith("0") ? BigInt(`0o${digits.slice(1)}`) : BigInt(digits)
-  const product = (sign === "-" ? -magnitude : magnitude) * factor
-  return product < gitIntMinimum || product > gitIntMaximum ? undefined : product
 }
 
 // The filters as tool.inventory lists them: by the file that sets each one,

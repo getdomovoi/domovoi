@@ -23,8 +23,9 @@ file keep the configuration digest but hold the filters back until the repositor
 again. The trust store gains columns for the acknowledgement and that digest, 0 and NULL for the
 grants already in it, and refuses a table with a foreign key or a trigger that names it.
 A driver's `filter.<driver>.required` is reviewed with its commands and pinned to the reviewed
-value; `tool.inventory` shows its effective state with each driver command, and counts rather
-than lists a command whose `required` value Git would not read as a boolean. A trusted filter runs as you, including a command that runs a file in the repository,
+value; `tool.inventory` shows its effective state with each driver command. A `required` value Git
+would not read as a boolean, or a filter command written with no value, in any scope, is a config
+Git stops on: Domovoi reads it as unreadable and refuses, naming the key. A trusted filter runs as you, including a command that runs a file in the repository,
 which an agent's edit also changes.
 
 Checkpoint, snapshot, restore, file revert, transfer and evidence now run every Git command that

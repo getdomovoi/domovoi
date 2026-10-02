@@ -2107,10 +2107,12 @@ describe("readRepositoryProviderConfig: git filters", () => {
     expect(moved.configDigest).toBe(required.configDigest)
     expect(moved.gitFilters?.reviewDigest).not.toBe(required.gitFilters?.reviewDigest)
 
-    git(root, "config", "filter.other.smudge", "other")
-    git(root, "config", "filter.other.required", "maybe")
+    // Past the entry cap the rest are counted, and the count is in the digest.
+    const many = join(await realpath(await scratch()), "many.gitconfig")
+    await writeFile(many, Array.from({ length: 70 }, (_, index) => `[filter "d${index}"]\n\tsmudge = d${index}\n`).join(""))
+    git(root, "config", "--add", "include.path", many)
     const omitted = await readRepositoryProviderConfig(root, { heldBack: true })
-    expect(omitted.gitFilters?.omittedEntries).toBe(1)
+    expect(omitted.gitFilters?.omittedEntries).toBeGreaterThan(0)
     expect(omitted.gitFilters?.reviewDigest).not.toBe(moved.gitFilters?.reviewDigest)
   })
 
@@ -2136,18 +2138,20 @@ describe("readRepositoryProviderConfig: git filters", () => {
     }
     expect(gits).toBe(state)
     const read = await readRepositoryProviderConfig(root, { heldBack: true })
-    expect(read.gitFilters?.entries.map(({ required }) => required)).toEqual(state === undefined ? [] : [state])
-    expect(read.gitFilters?.omittedEntries).toBe(state === undefined ? 1 : 0)
+    // A value Git refuses makes the config one Git cannot read: nothing is
+    // listed, and the digest records it (ruling Q318; it was counted before).
+    if (state === undefined) expect(read.gitFilters).toMatchObject({ entries: [], omittedEntries: 0, unreadable: { reason: "git-failed" } })
+    else expect(read.gitFilters?.entries.map(({ required }) => required)).toEqual([state])
   })
 
-  it("counts a driver command whose required setting Git would not read as a boolean, and lists the rest", async () => {
+  it("reads a config whose required Git would not read as a boolean as unreadable, listing nothing", async () => {
     const root = await repository()
     git(root, "config", "filter.crypt.smudge", "git-crypt smudge")
     git(root, "config", "filter.crypt.required", "maybe")
     git(root, "config", "filter.sops.smudge", "sops --decrypt")
     const read = await readRepositoryProviderConfig(root, { heldBack: true })
-    expect(read.gitFilters?.entries.map(({ driver, required }) => [driver, required])).toEqual([["sops", "unset"]])
-    expect(read.gitFilters?.omittedEntries).toBe(1)
+    expect(read.gitFilters).toMatchObject({ entries: [], omittedEntries: 0, unreadable: { reason: "git-failed" } })
+    expect(read.configDigest).not.toBe(digestBeforeGitFilters)
   })
 
   it("lists a file the repository and the worktree config both include once per scope", async () => {

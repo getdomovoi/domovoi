@@ -9,6 +9,7 @@ import {
 import { gitCommand } from "./git-command.js"
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { isStandardLfsFilterLine } from "./git-read-config.js"
+import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
 
 const execute = promisify(execFile)
 
@@ -85,10 +86,12 @@ export type RepositoryGitConfigUnreadableReason = (typeof repositoryGitConfigUnr
 // a Git repository. Nothing is known about the filters it sets, so what asked
 // must not read it as setting none.
 export class RepositoryGitConfigUnreadableError extends Error {
-  constructor(readonly reason: RepositoryGitConfigUnreadableReason, options?: { cause?: unknown }) {
-    super(reason === "too-large"
+  // detail: what Git stops on, when Domovoi found it: the key, redacted.
+  constructor(readonly reason: RepositoryGitConfigUnreadableReason, options?: { cause?: unknown; detail?: string }) {
+    super(`${reason === "too-large"
       ? "The repository's Git config sets more filter settings than Domovoi reads"
-      : "Git could not read the repository's Git config", options)
+      : "Git could not read the repository's Git config"}${options?.detail === undefined ? "" : `: ${options.detail}`}`,
+    options?.cause === undefined ? undefined : { cause: options.cause })
     this.name = "RepositoryGitConfigUnreadableError"
   }
 }
@@ -173,14 +176,65 @@ export async function readGitFilterSettings(
     if (!trustedConfigScopes.has(scope) && !repositoryScopes.has(scope)) throw new RepositoryGitConfigUnreadableError("git-failed")
     const newline = record.indexOf("\n")
     const file = origin.startsWith("file:") ? resolve(directory, origin.slice("file:".length)) : undefined
-    // A key with no value is a config error for a filter or a program Git
-    // LFS would start: Git or git-lfs stops before running anything. A
-    // driver's `required` written alone is boolean true.
+    // A driver's `required` written alone is boolean true. A filter command
+    // written with no value is an error Git stops on, whatever scope sets it,
+    // and so is a required that is not a boolean; each refuses here, naming
+    // the key (ruling Q318). Dropping one would let a Git directory that
+    // reads less config, the isolated one, run an inherited command ordinary
+    // Git refuses over. Another key with no value starts no program: Git LFS
+    // stops on it before running anything.
     if (newline === -1) {
       if (/^filter\..+\.required$/u.test(record)) settings.push({ scope, key: record, value: "true", origin: file })
+      else if (filterCommandKey.test(record)) throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(record)} in ${scope} Git config has no value` })
       continue
     }
-    settings.push({ scope, key: record.slice(0, newline), value: record.slice(newline + 1), origin: file })
+    const key = record.slice(0, newline)
+    const value = record.slice(newline + 1)
+    if (/^filter\..+\.required$/u.test(key) && gitRequiredState(value) === undefined) {
+      throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${scope} Git config is not a boolean` })
+    }
+    settings.push({ scope, key, value, origin: file })
   }
   return settings
+}
+
+// A filter driver's command keys, as `git config` prints them.
+export const filterCommandKey = /^filter\..+\.(?:clean|smudge|process)$/u
+
+// A config key as a refusal shows it: the repository's own text, which can
+// hold a credential, so redacted as the tool inventory shows text.
+const shownKey = (key: string) => redactInventoryText(key, inventoryFieldCaps.detail)
+
+// A driver's filter.<driver>.required as Git reads a boolean: true, yes and
+// on, in any case, or a nonzero integer, are true; false, no, off, the empty
+// value and 0 are false; no value at all is unset. Git refuses any other
+// text, and so does this: undefined (rulings Q265, Q318).
+export function gitRequiredState(value: string | undefined): "true" | "false" | "unset" | undefined {
+  if (value === undefined) return "unset"
+  const lower = value.toLowerCase()
+  if (lower === "true" || lower === "yes" || lower === "on") return "true"
+  if (lower === "false" || lower === "no" || lower === "off" || lower === "") return "false"
+  const number = gitConfigInt(value)
+  return number === undefined ? undefined : number === 0n ? "false" : "true"
+}
+
+const gitIntMinimum = -(2n ** 31n)
+const gitIntMaximum = 2n ** 31n - 1n
+const gitUnitFactors: Readonly<Record<string, bigint>> = { "": 1n, k: 1024n, m: 1024n ** 2n, g: 1024n ** 3n }
+
+// An int as Git's config reads one (git_parse_signed): strtoimax in base 0
+// after leading white space (an optional sign, then 0x and hex digits, a
+// leading 0 and octal digits, or decimal digits), then nothing or exactly one
+// k, m or g in either case, and the product within a C int. Checked against
+// `git config --bool` at the edges: 09, 018, 2147483648 and 2g are refused,
+// -2147483648 and -2097152k read.
+function gitConfigInt(value: string): bigint | undefined {
+  const match = /^[ \t\n\v\f\r]*([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)(.*)$/su.exec(value)
+  if (match === null) return undefined
+  const [, sign, digits, unit] = match as unknown as [string, string, string, string]
+  const factor = gitUnitFactors[unit.toLowerCase()]
+  if (factor === undefined || unit.length > 1) return undefined
+  const magnitude = /^0[xX]/u.test(digits) ? BigInt(digits) : digits.length > 1 && digits.startsWith("0") ? BigInt(`0o${digits.slice(1)}`) : BigInt(digits)
+  const product = (sign === "-" ? -magnitude : magnitude) * factor
+  return product < gitIntMinimum || product > gitIntMaximum ? undefined : product
 }
