@@ -464,6 +464,30 @@ describe("git filters in the review", () => {
     expect(within(sheet).getByText("It is pinned to one digest of these four files. Any change, an agent's edit included, holds it back again.")).toBeTruthy()
   })
 
+  // The review digest covers each driver's required state, so the review
+  // shows it: it decides whether Git keeps unfiltered bytes when the filter fails.
+  it("shows each driver's required state", async () => {
+    const filters: ToolInventoryGitFilters = {
+      files: [{ path: ".git/config", scope: "local" }],
+      entries: [
+        ...sopsFilters.entries,
+        { driver: "crypt", operation: "process", command: "./bin/crypt", required: "unset", file: ".git/config", scope: "local", heldBack: true },
+        { driver: "lock", operation: "clean", command: "./bin/lock", required: "false", file: ".git/config", scope: "local", heldBack: true },
+      ],
+      omittedEntries: 0,
+      reviewDigest,
+    }
+    show(withGitFilters(inventory(), filters), { onTrust: vi.fn() })
+    const { sheet } = await openSheet()
+
+    const rows = within(within(sheet).getByRole("group", { name: ".git/config" })).getAllByRole("listitem")
+    expect(rows.map((row) => within(row).getAllByText(/^required is /u).map((line) => line.textContent))).toEqual([
+      ["required is true: if the filter fails, the Git command fails."],
+      ["required is not set: if the filter fails, Git stores or checks out the file unfiltered."],
+      ["required is false: if the filter fails, Git stores or checks out the file unfiltered."],
+    ])
+  })
+
   it("offers no trust while the repository's Git config could not be read", async () => {
     const onTrust = vi.fn<Trust>()
     show(withGitFilters(inventory(), { files: [], entries: [], omittedEntries: 0, unreadable: { reason: "git-failed" }, reviewDigest }), { onTrust })

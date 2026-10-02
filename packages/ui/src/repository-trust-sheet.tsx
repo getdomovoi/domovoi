@@ -13,6 +13,7 @@ import {
   gitConfigUnreadableText,
   gitFilterCount,
   gitFilterGroups,
+  gitFilterRequiredText,
   gitFilterScopeLabel,
   repositoryFileGroups,
   repositoryHeldBack,
@@ -241,6 +242,7 @@ function GitFilterFileGroup({ group }: { group: GitFilterGroup }) {
             <div className="flex min-w-0 flex-1 basis-64 flex-col gap-1">
               <span className={cn(mono, "text-[11.5px] break-all text-strong")}>{driver.driver}</span>
               <span className={cn(mono, "text-[10.5px] break-all text-faint")}>{driver.detail}</span>
+              {driver.required.map((state) => <span key={state} className="text-[11px] text-faint">{gitFilterRequiredText[state]}</span>)}
               {driver.detail.includes("[REDACTED]") || driver.driver.includes("[REDACTED]")
                 ? <span className="text-[11px] text-faint">Cut at a credential. Domovoi shows no secret.</span>
                 : null}

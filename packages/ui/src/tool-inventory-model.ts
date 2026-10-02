@@ -303,12 +303,26 @@ export const gitFilterScopeLabel: Record<RepositoryGitFilterScope, string> = {
   command: "command-line git config",
 }
 
+type RepositoryGitFilterRequiredState = NonNullable<ToolInventoryGitFilterEntry["required"]>
+
 export type GitFilterDriverRow = {
   key: string
   driver: string
   // Each operation the file sets for the driver, with its redacted command:
   // "smudge sops -d · clean sops -e".
   detail: string
+  // The driver's required state, once per distinct value its commands carry.
+  // Git reads one effective value per driver, so this is one state; a Git LFS
+  // setting carries none.
+  required: RepositoryGitFilterRequiredState[]
+}
+
+// What a driver's effective filter.<driver>.required means when its command
+// fails. The review digest pins the value, so the review shows it.
+export const gitFilterRequiredText: Record<RepositoryGitFilterRequiredState, string> = {
+  true: "required is true: if the filter fails, the Git command fails.",
+  false: "required is false: if the filter fails, Git stores or checks out the file unfiltered.",
+  unset: "required is not set: if the filter fails, Git stores or checks out the file unfiltered.",
 }
 
 export type GitFilterGroup = {
@@ -337,6 +351,8 @@ export function gitFilterGroups(inventory: ToolInventory): GitFilterGroup[] {
         key: `${scope}\u0000${path}\u0000${driver}`,
         driver,
         detail: entries.map((entry) => `${entry.operation} ${entry.command}`).join(" · "),
+        required: entries.flatMap((entry) => entry.required === undefined ? [] : [entry.required])
+          .filter((state, index, all) => all.indexOf(state) === index),
       })),
     }
   })
