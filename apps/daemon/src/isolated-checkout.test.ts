@@ -505,6 +505,41 @@ describe("openIsolatedGit filter configuration", () => {
     }
   })
 
+  // The snapshot copies Git's config bytes exactly or not at all (ruling
+  // Q320): a key or value that is not valid UTF-8 refuses before isolation
+  // opens, naming the key, or "a config key" when the key itself is not.
+  it.each([
+    ["a value", String.raw`[probe]\n\tbytes = a\377b\n`, "probe.bytes"],
+    ["a subsection name", String.raw`[probe "sub\377"]\n\tbytes = plain\n`, "a config key"],
+  ])("refuses a global config with %s that is not valid UTF-8", async (_label, text, named) => {
+    const { worktree, restore } = await sessionWorktree((scratch) => {
+      const raw = join(scratch, "raw.gitconfig")
+      execFileSync("sh", ["-c", `printf '${text}' > "${raw}"`])
+      return `[include]\n\tpath = ${raw.replaceAll("\\", "/")}\n`
+    })
+    try {
+      await expect(openIsolatedGit({ worktree, worktreeIndex: true }))
+        .rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", message: expect.stringContaining(named) })
+    } finally {
+      restore()
+    }
+  })
+
+  it("copies a value with a byte order mark and other multibyte text byte for byte", async () => {
+    const { worktree, restore } = await sessionWorktree(() => "[probe \"sübsection\"]\n\tbytes = ﻿é✓\n")
+    try {
+      const isolated = await openIsolatedGit({ worktree, worktreeIndex: true })
+      try {
+        const read = await isolated.run(["config", "--get", "probe.sübsection.bytes"])
+        expect(Buffer.from(read, "utf8").toString("hex")).toBe(Buffer.from("﻿é✓\n", "utf8").toString("hex"))
+      } finally {
+        await isolated.dispose()
+      }
+    } finally {
+      restore()
+    }
+  })
+
   // The isolated directory reads a snapshot of the worktree's config taken
   // as it opens, never the person's live global, system or included files
   // (ruling Q319): a key written to any of them afterwards is not seen by a

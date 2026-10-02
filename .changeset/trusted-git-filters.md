@@ -40,7 +40,9 @@ helper, core.fsmonitor, a Git LFS program setting, an included file) starts a pr
 trusted or not. That directory never reads your live global or system config: it reads a snapshot
 of it taken once as the operation starts, with includes and conditional includes followed as the
 worktree reads them, written to a private temporary directory, so a file edited during the
-operation changes nothing there. The snapshot reaches Git through `GIT_CONFIG_GLOBAL`, which Git
+operation changes nothing there. The snapshot copies Git's config bytes exactly, checked byte for
+byte when it is read back; a key or value that is not valid UTF-8 refuses the operation, naming the
+key, or saying a config key when the key itself is not valid. The snapshot reaches Git through `GIT_CONFIG_GLOBAL`, which Git
 added in 2.32, so these operations need Git 2.32 or newer: on an older Git, or when its version
 cannot be read, they refuse with a message that names the version found, with no fallback. Every filter driver's clean, smudge, process and required the
 worktree sets, in any scope, empty overrides included, is in it at the worktree's value, and a

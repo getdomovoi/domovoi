@@ -557,15 +557,18 @@ function sourceLfsPolicy(
 async function refuseUnpinnedFilters(environment: NodeJS.ProcessEnv, worktree: string, pins: ReadonlyArray<readonly [string, string]>): Promise<void> {
   const policyKey = (key: string) => filterPolicyKey.test(key) || lfsPolicyGroup(key) !== undefined
   const pinned = new Map(pins.filter(([key]) => policyKey(key)))
-  let output = ""
+  let bytes: Buffer = Buffer.alloc(0)
   try {
-    output = (await execute(gitCommand(environment), [...inertRepositoryConfig, "config", "-z", "--get-regexp", filterKeyPattern], {
-      env: environment, cwd: worktree, encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
+    bytes = (await execute(gitCommand(environment), [...inertRepositoryConfig, "config", "-z", "--get-regexp", filterKeyPattern], {
+      env: environment, cwd: worktree, encoding: "buffer", maxBuffer: 4 * 1024 * 1024,
     })).stdout
   } catch (error) {
     // Exit 1: no filter key at all, which only holds with nothing pinned.
     if ((error as { code?: unknown }).code !== 1) throw new RepositoryGitConfigUnreadableError("git-failed", { cause: error })
   }
+  // Decoded strictly, so two different byte strings never compare equal.
+  const output = strictUtf8(bytes)
+  if (output === undefined) throw new RepositoryGitConfigUnreadableError("git-failed", { detail: "the isolated Git directory reads a filter setting that is not valid UTF-8" })
   const seen = new Map<string, string>()
   for (const record of output.split("\0")) {
     if (record === "") continue
@@ -598,27 +601,65 @@ type ConfigEntry = { scope: string; key: string; value: string | undefined }
 // includes and conditional includes followed in the worktree's own context
 // (its Git directory, its branch). Read once per isolated directory: every
 // value the directory runs with comes from this one read (ruling Q319).
+//
+// Git's output is read as bytes and decoded strictly (ruling Q320): a key or
+// value that is not valid UTF-8 refuses, naming the key, or "a config key"
+// when the key itself is not, so every entry kept re-encodes to exactly the
+// bytes Git printed, which writeConfigSnapshot compares byte for byte.
 async function worktreeConfig(worktree: string, signal?: AbortSignal): Promise<ConfigEntry[]> {
-  let output = ""
+  let output: Buffer = Buffer.alloc(0)
   try {
-    output = await worktreeGit(worktree, ["config", "--list", "--show-scope", "-z"], signal)
+    const env = gitEnvironment()
+    output = (await execute(gitCommand(env), ["-C", worktree, ...inertRepositoryConfig, "config", "--list", "--show-scope", "-z"], {
+      env, encoding: "buffer", maxBuffer: 16 * 1024 * 1024, ...(signal ? { signal } : {}),
+    })).stdout
   } catch (error) {
     signal?.throwIfAborted()
     if ((error as { code?: unknown }).code !== 1) throw new RepositoryGitConfigUnreadableError("git-failed", { cause: error })
   }
-  const fields = output.split("\0")
+  const fields = splitBytes(output, 0)
   const entries: ConfigEntry[] = []
   // Each entry is scope NUL key, then LF value when it has one, NUL.
   for (let index = 0; index + 1 < fields.length; index += 2) {
-    const scope = fields[index]!
+    const scope = strictUtf8(fields[index]!)
+    if (scope === undefined) throw new RepositoryGitConfigUnreadableError("git-failed")
     const record = fields[index + 1]!
-    const newline = record.indexOf("\n")
-    const key = newline === -1 ? record : record.slice(0, newline)
-    const value = newline === -1 ? undefined : record.slice(newline + 1)
+    const newline = record.indexOf(0x0a)
+    const key = strictUtf8(newline === -1 ? record : record.subarray(0, newline))
+    if (key === undefined) {
+      throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `a config key in ${scope} Git config is not valid UTF-8, which Domovoi does not copy` })
+    }
+    const value = newline === -1 ? undefined : strictUtf8(record.subarray(newline + 1))
+    if (newline !== -1 && value === undefined) {
+      throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownFilterKey(key)} in ${scope} Git config has a value that is not valid UTF-8, which Domovoi does not copy` })
+    }
     if (filterSettingKey(key)) refuseFilterSettingGitStopsOn(scope, key, value)
     entries.push({ scope, key, value })
   }
   return entries
+}
+
+// `bytes` split at every `separator`, as String.prototype.split splits text.
+function splitBytes(bytes: Buffer, separator: number): Buffer[] {
+  const fields: Buffer[] = []
+  let start = 0
+  for (let at = bytes.indexOf(separator); at !== -1; at = bytes.indexOf(separator, start)) {
+    fields.push(bytes.subarray(start, at))
+    start = at + 1
+  }
+  fields.push(bytes.subarray(start))
+  return fields
+}
+
+// UTF-8 text, or undefined for bytes that are not valid UTF-8. A leading byte
+// order mark is kept, so the text re-encodes to the same bytes.
+const utf8Strict = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+function strictUtf8(bytes: Uint8Array): string | undefined {
+  try {
+    return utf8Strict.decode(bytes)
+  } catch {
+    return undefined
+  }
 }
 
 // A config file that Git reads as `entries`, in order: each entry under a
@@ -648,17 +689,16 @@ async function writeConfigSnapshot(entries: readonly { key: string; value: strin
     const file = join(directory, "config")
     await fs.writeFile(file, configFileText(entries), { mode: 0o600, flag: "wx" })
     const env = gitEnvironment()
-    let output = ""
+    let output: Buffer = Buffer.alloc(0)
     try {
-      output = (await execute(gitCommand(env), ["config", "--file", file, "--list", "-z"], { env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })).stdout
+      output = (await execute(gitCommand(env), ["config", "--file", file, "--list", "-z"], { env, encoding: "buffer", maxBuffer: 16 * 1024 * 1024 })).stdout
     } catch (error) {
       if ((error as { code?: unknown }).code !== 1 || entries.length > 0) throw error
     }
-    const read = output.split("\0").filter((record) => record !== "").map((record) => {
-      const newline = record.indexOf("\n")
-      return newline === -1 ? { key: record, value: undefined } : { key: record.slice(0, newline), value: record.slice(newline + 1) }
-    })
-    if (JSON.stringify(read) !== JSON.stringify(entries.map(({ key, value }) => ({ key, value })))) {
+    // Byte for byte (ruling Q320): each entry was strictly decoded from Git's
+    // own bytes, so it re-encodes to them exactly.
+    const expected = Buffer.from(entries.map(({ key, value }) => value === undefined ? `${key}\0` : `${key}\n${value}\0`).join(""), "utf8")
+    if (!output.equals(expected)) {
       throw new RepositoryGitConfigUnreadableError("git-failed", { detail: "Domovoi could not write a copy of the Git config that Git reads the same way" })
     }
     return { directory, file }
