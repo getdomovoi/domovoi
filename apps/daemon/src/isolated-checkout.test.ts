@@ -536,29 +536,80 @@ describe("openIsolatedGit filter configuration", () => {
   // Reviewed definitions only confirm the worktree's own values (ruling
   // Q319): a reviewed command a later empty override turns off stays off.
   // Through the real gate, with a grant made over the current digests.
+  const realGate = async (worktree: string, repository: string) => {
+    const config = await readRepositoryProviderConfig(repository, projectRootRead)
+    expect(config.gitFilters?.reviewDigest).toBeDefined()
+    const grant = {
+      projectId: "project-reviewed", trustedDigest: config.configDigest, trustedAt: "2026-10-01T00:00:00.000Z",
+      trustedBy: { client: "desktop" as const }, gitFilterReviewDigest: config.gitFilters!.reviewDigest,
+    }
+    return repositoryFilterGate({
+      worktree, anchor: worktree,
+      trust: () => ({ projectId: "project-reviewed", projectPath: repository, grant: () => grant, generation: () => 0 }),
+    })
+  }
+
   it("does not let a reviewed command replace a later empty override", async () => {
     const { worktree, repository, restore } = await sessionWorktree(
       () => "",
       "[filter \"agent\"]\n\tclean = domovoi-inert-label\n\tclean =\n",
     )
     try {
-      const config = await readRepositoryProviderConfig(repository, projectRootRead)
-      expect(config.gitFilters?.reviewDigest).toBeDefined()
-      const grant = {
-        projectId: "project-reviewed", trustedDigest: config.configDigest, trustedAt: "2026-10-01T00:00:00.000Z",
-        trustedBy: { client: "desktop" as const }, gitFilterReviewDigest: config.gitFilters!.reviewDigest,
-      }
-      const gate = await repositoryFilterGate({
-        worktree, anchor: worktree,
-        trust: () => ({ projectId: "project-reviewed", projectPath: repository, grant: () => grant, generation: () => 0 }),
-      })
-      expect(gate).toMatchObject({ open: true, reviewed: [["filter.agent.clean", "domovoi-inert-label"]] })
+      const gate = await realGate(worktree, repository)
+      // The gate carries its effective policy: each reviewed key's last value
+      // and the driver's required as Git reads it (ruling Q320).
+      expect(gate).toMatchObject({ open: true, reviewed: [["filter.agent.clean", ""], ["filter.agent.required", "false"]] })
       const isolated = await openIsolatedGit({ worktree, reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true })
       try {
         expect((await isolated.run(["config", "--get", "filter.agent.clean"])).replace(/\n$/u, "")).toBe("")
       } finally {
         await isolated.dispose()
       }
+    } finally {
+      restore()
+    }
+  })
+
+  // The gate's effective policy, not the set of values it ever saw, is what
+  // opening confirms (ruling Q320): a required the repository turns off after
+  // the gate, or a multi-valued key whose last value changes back to an
+  // earlier one, refuses, naming the key.
+  it("refuses when a reviewed driver's required changes after the gate", async () => {
+    const { worktree, repository, restore } = await sessionWorktree(
+      () => "",
+      "[filter \"agent\"]\n\tclean = domovoi-inert-label\n\trequired = true\n",
+    )
+    try {
+      const gate = await realGate(worktree, repository)
+      expect(gate).toMatchObject({ open: true, reviewed: [["filter.agent.clean", "domovoi-inert-label"], ["filter.agent.required", "true"]] })
+      execFileSync("git", ["-C", repository, "config", "filter.agent.required", "false"])
+      await expect(openIsolatedGit({ worktree, reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true }))
+        .rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", message: expect.stringContaining("filter.agent.required") })
+    } finally {
+      restore()
+    }
+  })
+
+  it.each([
+    "filter.agent.clean",
+    "lfs.extension.test.clean",
+    "lfs.customtransfer.test.path",
+  ])("refuses when %s goes back to an earlier reviewed value after the gate", async (key) => {
+    const first = key.indexOf(".")
+    const last = key.lastIndexOf(".")
+    const section = `[${key.slice(0, first)} "${key.slice(first + 1, last)}"]\n`
+    const variable = key.slice(last + 1)
+    const { worktree, repository, restore } = await sessionWorktree(
+      () => lfsLines,
+      `${section}\t${variable} = domovoi-inert-first\n\t${variable} = domovoi-inert-last\n`,
+    )
+    try {
+      const gate = await realGate(worktree, repository)
+      expect(gate.open).toBe(true)
+      expect(gate.open ? gate.reviewed.filter(([reviewedKey]) => reviewedKey === key) : []).toEqual([[key, "domovoi-inert-last"]])
+      execFileSync("git", ["-C", repository, "config", "--replace-all", key, "domovoi-inert-first"])
+      await expect(openIsolatedGit({ worktree, reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true }))
+        .rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", message: expect.stringContaining(key) })
     } finally {
       restore()
     }

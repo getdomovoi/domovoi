@@ -11,7 +11,10 @@ run at session create and fork, a transfer arriving,
 checkpoint, snapshot, restore, file revert, a transfer leaving and evidence. They run only as the
 values the digest covers: a reviewed definition confirms the value the operation reads, never
 supplies one, so a reviewed command changed after that read refuses the operation, naming the key,
-and runs neither the old command nor the new one, and a later empty override turns it off. A
+and runs neither the old command nor the new one, and a later empty override turns it off. The
+values confirmed are the trust step's effective ones: each reviewed key's last value, and each
+reviewed driver's `required` as Git reads it, so a `required` turned off after the check, or a key
+set twice that goes back to its first value, refuses the same way. A
 session worktree that reads other filters than the project
 root (an `includeIf "onbranch:"` include, an edited `config.worktree`), a configuration that
 changed since trust, or trust taken back while the operation runs refuses with

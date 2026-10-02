@@ -13,7 +13,7 @@ import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./gi
 import { isStandardLfsFilterLine } from "./git-read-config.js"
 import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
 import {
-  classify, filterKeyPattern, filterSettingKey, lfsPolicyGroup, refuseFilterSettingGitStopsOn, refuseUnmodelledLfsTransferKey,
+  classify, filterKeyPattern, filterSettingKey, gitRequiredState, lfsPolicyGroup, refuseFilterSettingGitStopsOn, refuseUnmodelledLfsTransferKey,
   RepositoryGitConfigUnreadableError,
 } from "./repository-git-filters.js"
 import { trackRestoreCommand } from "./workspace-restore-lease.js"
@@ -450,7 +450,7 @@ export type IsolatedGit = {
 // is pinned absent, no command and not required.
 function sourceFilterPins(
   entries: readonly ConfigEntry[],
-  reviewed: ReadonlyArray<readonly [string, string]>,
+  reviewed: ReadonlyMap<string, string>,
 ): Array<readonly [string, string]> {
   const effective = new Map<string, { scope: string; key: string; value: string }>()
   const drivers = new Set<string>()
@@ -463,14 +463,13 @@ function sourceFilterPins(
   }
   // A reviewed definition confirms a value, never supplies one: it counts
   // only where it is exactly the worktree's effective value (ruling Q319).
-  const confirmed = new Set(reviewed.map(([key, value]) => `${key}\0${value}`))
   const pins: Array<readonly [string, string]> = []
   for (const driver of drivers) {
     const commands = ["clean", "smudge", "process"].map((operation) => `filter.${driver}.${operation}`)
     const unconfirmed = commands.find((key) => {
       const setting = effective.get(key)
       return setting !== undefined && !trustedConfigScopes.has(setting.scope) && setting.value !== ""
-        && !isStandardLfsFilterLine(key, setting.value) && !confirmed.has(`${key}\0${setting.value}`)
+        && !isStandardLfsFilterLine(key, setting.value) && reviewed.get(key) !== setting.value
     })
     const heldBack = unconfirmed !== undefined
     refuseChangedReview(driverKeys(driver), heldBack ? unconfirmed : undefined, reviewed)
@@ -498,12 +497,33 @@ const driverKeys = (driver: string) => ["clean", "smudge", "process", "required"
 // after the gate): the operation refuses rather than run without it or with
 // the new value (rulings Q318, Q319). `unconfirmed` is the key that differs,
 // undefined when the group runs as reviewed.
-function refuseChangedReview(keys: readonly string[], unconfirmed: string | undefined, reviewed: ReadonlyArray<readonly [string, string]>): void {
+function refuseChangedReview(keys: readonly string[], unconfirmed: string | undefined, reviewed: ReadonlyMap<string, string>): void {
   if (unconfirmed === undefined) return
-  if (!reviewed.some(([key]) => keys.includes(key))) return
-  throw new RepositoryGitConfigUnreadableError("git-failed", {
-    detail: `${shownFilterKey(unconfirmed)} changed after the repository's filters were checked; check the repository again`,
-  })
+  if (!keys.some((key) => reviewed.has(key))) return
+  throw changedAfterReview(unconfirmed)
+}
+
+const changedAfterReview = (key: string) => new RepositoryGitConfigUnreadableError("git-failed", {
+  detail: `${shownFilterKey(key)} changed after the repository's filters were checked; check the repository again`,
+})
+
+// The gate's effective policy holds at open (ruling Q320): each reviewed
+// command, path or argument key the worktree reads now has exactly the value
+// the gate read last, and each reviewed driver's required reads as the same
+// Git boolean. Set membership among values the gate once saw is not enough.
+// A reviewed command now empty or unset runs nothing and stays allowed: a
+// later empty override turns the filter off (ruling Q319).
+function refuseChangedPolicy(entries: readonly ConfigEntry[], reviewed: ReadonlyMap<string, string>): void {
+  const effective = new Map<string, string>()
+  for (const { key, value } of entries) effective.set(key, value ?? "true")
+  for (const [key, value] of reviewed) {
+    const current = effective.get(key)
+    if (/^filter\..+\.required$/u.test(key)) {
+      if ((gitRequiredState(current) === "true" ? "true" : "false") !== value) throw changedAfterReview(key)
+    } else if (current !== undefined && current !== "" && current !== value) {
+      throw changedAfterReview(key)
+    }
+  }
 }
 
 // The Git LFS policy the isolated directory runs with (ruling Q319): every
@@ -513,19 +533,18 @@ function refuseChangedReview(keys: readonly string[], unconfirmed: string | unde
 // reviewed definitions hold that exact key and value.
 function sourceLfsPolicy(
   entries: readonly ConfigEntry[],
-  reviewed: ReadonlyArray<readonly [string, string]>,
+  reviewed: ReadonlyMap<string, string>,
 ): Array<readonly [string, string]> {
   const effective = new Map<string, { scope: string; value: string }>()
   for (const entry of entries) {
     if (lfsPolicyGroup(entry.key) !== undefined) effective.set(entry.key, { scope: entry.scope, value: entry.value ?? "true" })
   }
-  const confirmed = new Set(reviewed.map(([key, value]) => `${key}\0${value}`))
   const heldBack = new Set<string>()
   for (const [key, { scope, value }] of effective) {
-    if (!trustedConfigScopes.has(scope) && value !== "" && classify(key, value) !== undefined && !confirmed.has(`${key}\0${value}`)) {
+    if (!trustedConfigScopes.has(scope) && value !== "" && classify(key, value) !== undefined && reviewed.get(key) !== value) {
       const group = lfsPolicyGroup(key)!
       heldBack.add(group)
-      refuseChangedReview(reviewed.map(([reviewedKey]) => reviewedKey).filter((reviewedKey) => lfsPolicyGroup(reviewedKey) === group), key, reviewed)
+      refuseChangedReview([...reviewed.keys()].filter((reviewedKey) => lfsPolicyGroup(reviewedKey) === group), key, reviewed)
     }
   }
   return [...effective].filter(([key]) => !heldBack.has(lfsPolicyGroup(key)!)).map(([key, { value }]) => [key, value] as const)
@@ -719,8 +738,11 @@ export async function openIsolatedGit(input: {
   }
   const storage = last("lfs.storage")
   pins.push(["lfs.storage", storage === undefined || storage === "" ? join(commonDirectory, "lfs") : isAbsolute(storage) ? storage : resolve(commonDirectory, storage)])
-  const filterPins = sourceFilterPins(entries, input.reviewed ?? [])
-  const lfsPolicy = sourceLfsPolicy(entries, input.reviewed ?? [])
+  // The gate's policy, one value per key: its last one wins, as at the gate.
+  const reviewed = new Map(input.reviewed ?? [])
+  refuseChangedPolicy(entries, reviewed)
+  const filterPins = sourceFilterPins(entries, reviewed)
+  const lfsPolicy = sourceLfsPolicy(entries, reviewed)
   pins.push(...filterPins, ...lfsPolicy)
   for (const key of ["lfs.url", "lfs.pushurl"]) {
     const value = last(key)

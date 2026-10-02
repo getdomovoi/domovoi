@@ -1,4 +1,6 @@
-import { readGitFilterSettings, readRepositoryGitFilters, repositoryGitFilters, type GitFilterSetting, type RepositoryGitFilter } from "./repository-git-filters.js"
+import {
+  gitRequiredState, readGitFilterSettings, readRepositoryGitFilters, repositoryGitFilters, type GitFilterSetting, type RepositoryGitFilter,
+} from "./repository-git-filters.js"
 import { readRepositoryProviderConfig, type RepositoryProviderConfig } from "./repository-provider-config.js"
 import { gitFilterBlockReviewed, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant } from "./repository-trust-store.js"
@@ -82,7 +84,8 @@ export type RepositoryFilterGate =
       open: true
       settings: GitFilterSetting[]
       filters: RepositoryGitFilter[]
-      // Command-line config to add: empty unless trusted filters run.
+      // The effective policy the isolated directory confirms (reviewedPolicy):
+      // empty unless trusted filters run. Never pinned itself.
       reviewed: Array<readonly [string, string]>
       projectId: string | undefined
       // Why trust lapsed since the gate opened, or undefined while it holds.
@@ -103,6 +106,26 @@ const sameFilters = (left: readonly RepositoryGitFilter[], right: readonly Repos
     return filter.scope === other.scope && filter.key === other.key && filter.value === other.value && filter.required === other.required
   })
 )
+
+// The gate's effective policy, carried apart from the display inventory
+// (ruling Q320): each reviewed key once, at the last value the worktree reads
+// for it in any scope, and for each reviewed filter driver its required as
+// Git reads it, "true" or "false" (unset reads as false). Opening the
+// isolated directory confirms against exactly these values.
+function reviewedPolicy(settings: readonly GitFilterSetting[], reviewedFilters: readonly RepositoryGitFilter[]): Array<readonly [string, string]> {
+  const effective = new Map<string, string>()
+  for (const { key, value } of settings) effective.set(key, value)
+  const policy = new Map<string, string>()
+  for (const { key, driver } of reviewedFilters) {
+    // sameFilters holds every reviewed key in the worktree's own read.
+    policy.set(key, effective.get(key) ?? "")
+    if (key.startsWith("filter.")) {
+      const required = `filter.${driver}.required`
+      policy.set(required, gitRequiredState(effective.get(required)) === "true" ? "true" : "false")
+    }
+  }
+  return [...policy]
+}
 
 export async function repositoryFilterGate(input: {
   // The worktree the guarded commands run in.
@@ -135,17 +158,11 @@ export async function repositoryFilterGate(input: {
   if (grant.gitFilterReviewDigest === undefined) return refuse("filters-not-reviewed")
   if (!gitFilterBlockReviewed(config.gitFilters, grant)) return refuse("filters-changed")
   if (!sameFilters(filters, rootFilters)) return refuse("config-changed")
-  const reviewed: Array<readonly [string, string]> = rootFilters.map(({ key, value }) => [key, value] as const)
-  const requiredPins = new Map<string, string>()
-  for (const { driver, required } of rootFilters) {
-    if (required !== undefined) requiredPins.set(driver, required)
-  }
-  for (const [driver, required] of requiredPins) reviewed.push([`filter.${driver}.required`, required])
   return {
     open: true,
     settings,
     filters,
-    reviewed,
+    reviewed: reviewedPolicy(settings, rootFilters),
     projectId: source.projectId,
     confirm: () => {
       let current: RepositoryTrustGrant | undefined
