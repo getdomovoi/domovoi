@@ -4,6 +4,7 @@ import type { ApprovalRequest } from "@getdomovoi/protocol"
 
 import type { ConnectionNotice } from "../connection-notice"
 
+import { BlurBackdrop } from "../components/blur-backdrop"
 import { ConnectionBanner } from "../components/connection-banner"
 import { FloatingBar } from "../components/floating-bar"
 import { PageScroller } from "../components/page-scroller"
@@ -75,39 +76,42 @@ export function ApprovalScreen({
         {approval.risk === "hard-gate" ? <Badge label="Hard gate" tone="warning" pill /> : null}
       </View>
 
-      <PageScroller
-        contentContainerClassName="gap-3 px-3.5"
-        bottomInset={footprint}
-      >
-        <ConnectionBanner notice={notice} />
-        <Text variant="body">{approval.operation}</Text>
+      {/* What the decision bar blurs on Android. The bar stays outside it. */}
+      <BlurBackdrop style={{ flex: 1 }}>
+        <PageScroller
+          contentContainerClassName="gap-3 px-3.5"
+          bottomInset={footprint}
+        >
+          <ConnectionBanner notice={notice} />
+          <Text variant="body">{approval.operation}</Text>
 
-        <Card className="bg-code px-3.5 py-3.5">
-          <Text variant="machine" className="text-[12px] leading-[19px] text-warn-fg">
-            {approval.command}
-          </Text>
-        </Card>
+          <Card className="bg-code px-3.5 py-3.5">
+            <Text variant="machine" className="text-[12px] leading-[19px] text-warn-fg">
+              {approval.command}
+            </Text>
+          </Card>
 
-        <Card flush>
-          {approvalFacts(approval).map((fact, index) => (
-            <View
-              key={fact.key}
-              className={cn(
-                "flex-row items-baseline gap-2.5 px-[13px] py-2.5",
-                index > 0 && "border-t border-border",
-              )}
-            >
-              <Text variant="label" className="w-24">{fact.key}</Text>
-              <Text
-                variant="machine"
-                className={cn("flex-1 text-right text-[11px]", fact.tone ?? "text-strong")}
+          <Card flush>
+            {approvalFacts(approval).map((fact, index) => (
+              <View
+                key={fact.key}
+                className={cn(
+                  "flex-row items-baseline gap-2.5 px-[13px] py-2.5",
+                  index > 0 && "border-t border-border",
+                )}
               >
-                {fact.value}
-              </Text>
-            </View>
-          ))}
-        </Card>
-      </PageScroller>
+                <Text variant="label" className="w-24">{fact.key}</Text>
+                <Text
+                  variant="machine"
+                  className={cn("flex-1 text-right text-[11px]", fact.tone ?? "text-strong")}
+                >
+                  {fact.value}
+                </Text>
+              </View>
+            ))}
+          </Card>
+        </PageScroller>
+      </BlurBackdrop>
 
       {/* The decision sits in thumb reach at the foot of the screen rather than
           at the end of a scroll, and the affirmative one wears the warning the
