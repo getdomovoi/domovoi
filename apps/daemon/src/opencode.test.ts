@@ -2959,11 +2959,20 @@ describe("reconciling a turn with the server's own state", () => {
     stream.emit({ type: "session.created", properties: { info: { id: "ses_child", parentID: threadId } } })
     stream.emit({ type: "message.updated", properties: { info: { id: "msg_5", sessionID: threadId, role: "assistant", parentID: turnId, time: { created: 11 } } } })
     await tick(0)
-    // The steer's catalog read is held, so its last check comes later.
+    // The steer's catalog read is held, so its last check comes later. The
+    // steer reads the worktree's instruction files from disk before that
+    // read, which fake timers do not advance, so the test waits for the read
+    // itself rather than a number of ticks. Nothing else runs between here
+    // and the steer's read, so the held read is the steer's own.
     let readCatalog!: () => void
-    client.mcp.status.mockImplementationOnce(() => new Promise((resolve) => { readCatalog = () => resolve({ data: {} }) }))
+    const catalogRead = new Promise<void>((reached) => {
+      client.mcp.status.mockImplementationOnce(() => new Promise((resolve) => {
+        readCatalog = () => resolve({ data: {} })
+        reached()
+      }))
+    })
     const steer = adapter.steerTurn(threadId, turnId, "More").then(() => "sent", (failure: Error) => failure.message)
-    await tick(10)
+    await catalogRead
     // A catalog stop: the root abort is pending when the steer's last check runs.
     stream.emit({ type: "message.part.updated", properties: { part: { type: "tool", sessionID: threadId, messageID: "msg_5", callID: "c1", tool: "plan_enter", state: { status: "pending", input: {} } } } })
     await tick(10)
