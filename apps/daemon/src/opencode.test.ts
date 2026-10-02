@@ -3052,8 +3052,21 @@ describe("reconciling a turn with the server's own state", () => {
     const end = turnEnds(events, turnId)
     expect(end).toHaveLength(1)
     expect(end[0]).toMatchObject({ params: { turn: { status: "failed" }, failure: expect.anything() } })
+    endsBeforeNotices(events, turnId)
     await adapter.close()
   })
+
+  // Security review round 14 of #687 (ruling Q308): the daemon drops a
+  // thread's turn on the incident and on a disconnect, so the turn's end must
+  // reach it first, even when another stop deferred that end.
+  function endsBeforeNotices(events: AgentEvent[], turnId: string) {
+    const end = events.findIndex((event) => event.type === "turn-completed" && event.params.turnId === turnId)
+    const notices = events.flatMap((event, index) => (event.type === "approval-answered-elsewhere" || event.type === "provider-disconnected" ? [index] : []))
+    expect(end).toBeGreaterThanOrEqual(0)
+    expect(events.some((event) => event.type === "approval-answered-elsewhere")).toBe(true)
+    expect(events.some((event) => event.type === "provider-disconnected")).toBe(true)
+    for (const index of notices) expect(end).toBeLessThan(index)
+  }
 
   it("does not end the turn while a closed stream's stop and the server stop are still pending", async () => {
     const { adapter, client, server, events, stream, threadId, turnId, seen, tick } = await reconciledTurn()
@@ -3079,6 +3092,7 @@ describe("reconciling a turn with the server's own state", () => {
     stopped(true)
     await tick(10)
     expect(turnEnds(events, turnId)).toHaveLength(1)
+    endsBeforeNotices(events, turnId)
     await adapter.close()
   })
 

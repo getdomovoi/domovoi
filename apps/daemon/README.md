@@ -647,7 +647,12 @@ code or settings the repository brings:
   elsewhere, then a request the daemon cannot answer, then a closed event stream; a server stop's
   own reason counts only when none of them settled with one. A stop that settles while another is
   still under way leaves the thread loaded: the last to settle ends the turn and then unloads or
-  drops the thread, as does a server stop that one of them causes. A prompt or steer still
+  drops the thread, as does a server stop that one of them causes. The adapter reports the turn's
+  end before the approval answered elsewhere and before any disconnect, since the daemon drops
+  the thread and its turn when it hears either, so the stored turn ends failed with its failure,
+  is audited and finishes its usage as failed. A server stop itself is not delayed by this.
+  Removing a thread for good (closing, stopping it, the provider deleting it) ends its turn with
+  what the stops recorded and still sends every notice they held. A prompt or steer still
   waiting when its session is unloaded or the daemon's adapter closes is refused and not sent;
   that does not
   show that the provider or anything it started has stopped. With the session idle, the turn

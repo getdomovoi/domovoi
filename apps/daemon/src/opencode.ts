@@ -363,6 +363,11 @@ type ThreadStop = {
   turnId: string | undefined
   owners: number
   outcome?: StopOutcome
+  // Notices the daemon must hear after the turn's end, in the order they
+  // were raised: an approval answered elsewhere and a disconnect, whose
+  // handling drops the thread and its turn (#noticeAfterStops, security
+  // review round 14 of #687).
+  notices: Array<() => void>
   disposals: Array<() => void>
   // Settles when the last owner has settled or the session is gone.
   cleared: Promise<void>
@@ -1154,7 +1159,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
           this.#dropSession(session)
         })
       }
-      this.#emit({ type: "provider-disconnected", reason })
+      this.#noticeAfterStops(sessions, { type: "provider-disconnected", reason })
     }).finally(() => {
       for (const settle of settles) settle(outcome)
     })
@@ -1176,7 +1181,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     if (!stop) {
       let clear!: () => void
       const cleared = new Promise<void>((resolve) => { clear = resolve })
-      stop = { turnId: session.activeTurnId, owners: 0, disposals: [], cleared, clear }
+      stop = { turnId: session.activeTurnId, owners: 0, notices: [], disposals: [], cleared, clear }
       session.threadStop = stop
     }
     const held = stop
@@ -1206,9 +1211,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   }
 
   // Ends the stop record: the turn it concerns, if still open, fails once
-  // with the best recorded failure, and then what the owners would do with
-  // the session runs. Called when the last owner settles, and when the
-  // session is removed for good first (#dropSession).
+  // with the best recorded failure; then the notices raised meanwhile go
+  // out, in order; then what the owners would do with the session runs.
+  // Called when the last owner settles, and when the session is removed for
+  // good first (#dropSession), so no notice is lost either way.
   #endThreadStop(session: Session, stop: ThreadStop): void {
     if (session.threadStop === stop) delete session.threadStop
     const outcome = stop.outcome
@@ -1216,7 +1222,29 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       this.#complete(session, "failed", outcome.error, outcome.failure)
     }
     stop.clear()
+    for (const notice of stop.notices.splice(0)) notice()
     this.#runDisposals(stop)
+  }
+
+  // Emits a notice that drops the threads' turns on the daemon (an approval
+  // answered elsewhere, a disconnect) only after each of those threads'
+  // turns has ended. While a thread-wide stop of one of them still has
+  // owners, the notice waits on its record and goes out once the last of
+  // those records has ended, after their turns' ends (security review round
+  // 14 of #687). Otherwise it goes out now. No owner waits on it.
+  #noticeAfterStops(sessions: Session[], event: AgentEvent): void {
+    const held = sessions.flatMap((session) => (session.threadStop && session.threadStop.owners > 0 ? [session.threadStop] : []))
+    if (held.length === 0) {
+      this.#emit(event)
+      return
+    }
+    let remaining = held.length
+    for (const stop of held) {
+      stop.notices.push(() => {
+        remaining -= 1
+        if (remaining === 0) this.#emit(event)
+      })
+    }
   }
 
   #runDisposals(stop: ThreadStop): void {
@@ -2264,7 +2292,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       settle(outcome, () => {
         if (this.#sessions.get(session.threadId) === session) this.#unloadSession(session)
       })
-      this.#emit({
+      // The daemon drops the thread and its turn on this notice, so it goes
+      // out after the turn's end (security review round 14 of #687).
+      this.#noticeAfterStops([session], {
         type: "approval-answered-elsewhere",
         threadId: session.threadId,
         ...(turnId ? { turnId } : {}),
@@ -2342,7 +2372,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#directories.clear()
     this.#pendingApprovals.clear()
     this.#failedRefusals.clear()
-    for (const session of [...this.#sessions.values()]) {
+    const sessions = [...this.#sessions.values()]
+    for (const session of sessions) {
       const stop = session.threadStop
       if (stop && stop.owners > 0) {
         // A thread-wide stop still has owners: the session stays until the
@@ -2367,7 +2398,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // while this one is being stopped.
     const stopped = runtime ? await this.#retire(runtime.server) : true
     const name = this.#identity.providerName
-    this.#emit({
+    // After the turns of sessions a thread-wide stop still holds have ended
+    // (security review round 14 of #687); the retirement above does not wait.
+    this.#noticeAfterStops(sessions, {
       type: "provider-disconnected",
       reason: stopped
         ? reason
