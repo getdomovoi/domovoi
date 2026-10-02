@@ -1,6 +1,7 @@
 import type {
   repositoryGitConfigUnreadableReasons,
   RepositoryGitFilterScope,
+  RepositoryTrustParams,
   RepositoryTrustRefusal,
   RepositoryTrustState,
   ToolInventory,
@@ -356,6 +357,18 @@ export function gitFilterGroups(inventory: ToolInventory): GitFilterGroup[] {
       })),
     }
   })
+}
+
+// What repository.trust says about the git filters a review showed. The
+// daemon runs the filters only under a grant that acknowledges them, by the
+// review digest tool.inventory gave for the block (#688), so the review sends
+// it only for the block it drew: every filter listed, none left out and the
+// config read. A block with nothing in it needs no acknowledgement, and an
+// incomplete one never gets one (the review offers no trust then).
+export function gitFiltersAcknowledgement(inventory: ToolInventory): RepositoryTrustParams["gitFilters"] {
+  const filters = inventory.repository?.gitFilters
+  if (!filters || filters.unreadable !== undefined || filters.omittedEntries > 0 || filters.entries.length === 0) return undefined
+  return { reviewed: true, reviewDigest: filters.reviewDigest }
 }
 
 export function gitFilterCount(group: GitFilterGroup): string {

@@ -509,6 +509,74 @@ describe("git filters in the review", () => {
     expect(within(sheet).getByText("Git filters: 2 more entries were left out of this list.")).toBeTruthy()
   })
 
+  // The daemon runs the filters only under a grant that says the client showed
+  // them, naming the block by the review digest tool.inventory gave (#688).
+  it("acknowledges the git filters it showed, by the review digest it was given", async () => {
+    const onTrust = vi.fn<Trust>().mockResolvedValue(trustResult({
+      outcome: "trusted",
+      repository: { projectId: "project-acme", configDigest: digest, trust: { state: "trusted", ...grant } },
+    }))
+    show(withGitFilters(inventory(), sopsFilters), { onTrust })
+    const { user, sheet } = await openSheet()
+
+    await user.click(within(sheet).getByRole("button", { name: "Trust for this machine" }))
+
+    expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest, gitFilters: { reviewed: true, reviewDigest } })
+  })
+
+  it("acknowledges no git filter where it showed none", async () => {
+    const onTrust = vi.fn<Trust>().mockResolvedValue(trustResult({
+      outcome: "trusted",
+      repository: { projectId: "project-acme", configDigest: digest, trust: { state: "trusted", ...grant } },
+    }))
+    show(withGitFilters(inventory(), { files: [], entries: [], omittedEntries: 0, reviewDigest }), { onTrust })
+    const { user, sheet } = await openSheet()
+
+    await user.click(within(sheet).getByRole("button", { name: "Trust for this machine" }))
+
+    expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest })
+  })
+
+  it("says the files changed when its git filters change while it is open, and acknowledges only the ones it shows now", async () => {
+    const onTrust = vi.fn<Trust>().mockResolvedValue(trustResult({
+      outcome: "trusted",
+      repository: { projectId: "project-acme", configDigest: digest, trust: { state: "trusted", ...grant } },
+    }))
+    const { rerender } = show(withGitFilters(inventory(), sopsFilters), { onTrust })
+    const { user, sheet } = await openSheet()
+    expect(within(sheet).queryByText("The files changed while this was open")).toBeNull()
+
+    const newDigest = `sha256:${"d".repeat(64)}`
+    rerender(loaded(withGitFilters(inventory(), {
+      ...sopsFilters,
+      entries: sopsFilters.entries.map((entry) => entry.operation === "smudge" ? { ...entry, command: "sops -d --keep" } : entry),
+      reviewDigest: newDigest,
+    })))
+
+    const open = screen.getByRole("dialog")
+    expect(within(open).getByText("The files changed while this was open")).toBeTruthy()
+    expect(within(open).getByText("smudge sops -d --keep · clean sops -e")).toBeTruthy()
+    await user.click(within(open).getByRole("button", { name: "Trust for this machine" }))
+    expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest, gitFilters: { reviewed: true, reviewDigest: newDigest } })
+  })
+
+  it("reads the files again when the daemon refuses the git filters it showed, and says they changed", async () => {
+    const onTrust = vi.fn<Trust>().mockRejectedValue(new Error("Domovoi granted no trust: the git filters this client showed are not the ones Domovoi reads now."))
+    const { onRetry, rerender } = show(withGitFilters(inventory(), sopsFilters), { onTrust })
+    const { user, sheet } = await openSheet()
+
+    await user.click(within(sheet).getByRole("button", { name: "Trust for this machine" }))
+
+    expect(onRetry).toHaveBeenCalledOnce()
+    rerender({ state: "loading" })
+    rerender(loaded(withGitFilters(inventory(), { ...sopsFilters, reviewDigest: `sha256:${"d".repeat(64)}` })))
+    const open = screen.getByRole("dialog")
+    expect(within(open).getByText("The files changed while this was open")).toBeTruthy()
+    expect(within(open).queryByText("Trust was not granted")).toBeNull()
+    // Trusting what the files hold now is a second decision.
+    expect(onTrust).toHaveBeenCalledOnce()
+  })
+
   it("counts the filter's commands among the entries held back", async () => {
     const provider = claude({ entries: entries().map((entry) => entry.file === ".mcp.json" ? entry : { ...entry, heldBack: false }) })
     show(withGitFilters(inventory(notTrusted, [provider]), sopsFilters), { onTrust: vi.fn() })

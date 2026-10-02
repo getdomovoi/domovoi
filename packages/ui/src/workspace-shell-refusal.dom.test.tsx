@@ -145,7 +145,14 @@ it("reviews and trusts from the refusal, then starts again only when asked", asy
   await user.click(within(sheet).getByRole("button", { name: "Trust for this machine" }))
   await settle()
 
-  expect(sentRequests(socket, "repository.trust")[0]?.params).toEqual({ projectId: snapshot.project!.id, configDigest: digest, client: "web" })
+  // The grant acknowledges the git filters the sheet showed, by the review
+  // digest tool.inventory gave, so the daemon runs them (#688).
+  expect(sentRequests(socket, "repository.trust")[0]?.params).toEqual({
+    projectId: snapshot.project!.id,
+    configDigest: digest,
+    client: "web",
+    gitFilters: { reviewed: true, reviewDigest },
+  })
   await act(async () => {
     respond(socket, "repository.trust", {
       outcome: "trusted",
@@ -171,7 +178,7 @@ it("reviews and trusts from the refusal, then starts again only when asked", asy
   expect(screen.queryByRole("region", { name: "Domovoi did not start this session" })).toBeNull()
 })
 
-it("shows the daemon's second refusal when the filter is still held back after trust", async () => {
+it("shows the daemon's second refusal when the filters are still held back after trust, and offers the review again", async () => {
   const { socket, snapshot, user } = await refusedStart()
   const card = screen.getByRole("region", { name: "Domovoi did not start this session" })
   await user.click(within(card).getByRole("button", { name: "Review and trust" }))
@@ -194,8 +201,9 @@ it("shows the daemon's second refusal when the filter is still held back after t
   await settle()
 
   const again = screen.getByRole("region", { name: "Domovoi did not start this session" })
-  expect(within(again).getByText(`Checking out acme-api would run the sops filter driver. acme-api is trusted on ${snapshot.machine.name}, and Domovoi still does not run a filter the repository's own Git config sets.`)).toBeTruthy()
+  expect(within(again).getByText(`Checking out acme-api would run the sops filter driver. acme-api is trusted on ${snapshot.machine.name}, but its Git filters stay held back until they are reviewed: they were not shown when it was trusted, or they changed since.`)).toBeTruthy()
   expect(within(again).queryByRole("button", { name: "Start the session again" })).toBeNull()
+  expect(within(again).getByRole("button", { name: "Review and trust again" })).toBeTruthy()
 })
 
 it("opens the Tools tab from the refusal", async () => {

@@ -61,6 +61,7 @@ import { type ProviderSecretStatus } from "./provider-settings"
 import type { LocalDaemonDescription } from "./settings-shell"
 import type { SkillsSurfaceTab } from "./skills-surface"
 import type { ToolInventoryLoad } from "./tool-inventory-view"
+import type { RepositoryTrustRequestParams } from "./repository-trust-sheet"
 import { gitFilterRefusalFrom } from "./session-refusal"
 import { lazySurface, prefetchWhenIdle, SurfaceCodeReload } from "./lazy-surface"
 import { ThreadSkeleton } from "./loading-skeleton"
@@ -1615,7 +1616,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               // Trust is granted from desktop or web only (ruling Q67), and a
               // watching client changes nothing; the daemon checks both again.
               onTrust: !watching && (clientKind === "desktop" || clientKind === "web")
-                ? (params: { projectId: string; configDigest: string }) => trustRepository({ ...params, client: clientKind })
+                ? (params: RepositoryTrustRequestParams) => trustRepository({ ...params, client: clientKind })
                 : undefined,
             }}
             skills={{
@@ -1716,7 +1717,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                       loadInventory={(signal) => getToolInventory({ signal })}
                       // As on the Tools tab: desktop or web, never watching (ruling Q67).
                       onTrust={!watching && (clientKind === "desktop" || clientKind === "web")
-                        ? (params: { projectId: string; configDigest: string }) => trustRepository({ ...params, client: clientKind })
+                        ? (params: RepositoryTrustRequestParams) => trustRepository({ ...params, client: clientKind })
                         : undefined}
                       onOpenTools={() => {
                         setSkillsTab("tools")

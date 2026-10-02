@@ -39,14 +39,14 @@ function refusal(overrides: Partial<RepositoryGitFilterRefusal> = {}): Repositor
   })
 }
 
-function inventory(configDigest = digest): ToolInventory {
+function inventory(configDigest = digest, trust: RepositoryTrustState = notTrusted): ToolInventory {
   return toolInventorySchema.parse({
     machine: { id: "machine-1", name: "mac-mini-m4", platform: "darwin", arch: "arm64", version: "0.9.4" },
     repository: {
       projectId: "project-acme",
       root: "~/src/acme-api",
       configDigest,
-      trust: notTrusted,
+      trust,
       gitFilters: {
         files: [{ path: ".git/config", scope: "local" }],
         entries: [
@@ -146,12 +146,23 @@ describe("session refused for an untrusted git filter", () => {
     expect(within(card).getByRole("button", { name: "Open Tools" })).toBeTruthy()
   })
 
-  it("says so when the repository is trusted and the daemon still refused the filter", () => {
+  // A trusted refusal: the grant covers the configuration, but its client did
+  // not show the git filters, or the ones shown are not the ones read now
+  // (filters-not-reviewed, filters-changed). Trusting again from a client that
+  // shows them settles it.
+  it("says the filters stay held back until they are reviewed when the repository is trusted", () => {
     const { card } = show({ onTrust: vi.fn<Trust>(), refusal: refusal({ trust: { state: "trusted", ...grant } }) })
 
-    expect(within(card).getByText("Checking out acme-api would run the sops filter driver. acme-api is trusted on mac-mini-m4, and Domovoi still does not run a filter the repository's own Git config sets.")).toBeTruthy()
-    expect(within(card).queryByRole("button", { name: "Review and trust" })).toBeNull()
+    expect(within(card).getByText("Checking out acme-api would run the sops filter driver. acme-api is trusted on mac-mini-m4, but its Git filters stay held back until they are reviewed: they were not shown when it was trusted, or they changed since.")).toBeTruthy()
+    expect(within(card).getByRole("button", { name: "Review and trust again" })).toBeTruthy()
     expect(within(card).queryByRole("button", { name: "Start the session again" })).toBeNull()
+  })
+
+  it("says where trust is granted for a trusted refusal on a client that cannot grant it", () => {
+    const { card } = show({ refusal: refusal({ trust: { state: "trusted", ...grant } }) })
+
+    expect(within(card).queryByRole("button", { name: "Review and trust again" })).toBeNull()
+    expect(within(card).getByText("Granted from desktop or web only.")).toBeTruthy()
   })
 })
 
@@ -170,7 +181,8 @@ describe("review and trust from the refusal", () => {
 
     await user.click(within(sheet).getByRole("button", { name: "Trust for this machine" }))
 
-    expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest })
+    // The grant acknowledges the git filters the sheet showed (#688).
+    expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest, gitFilters: { reviewed: true, reviewDigest } })
     expect(screen.queryByRole("dialog")).toBeNull()
     expect(within(card).getByText("Trusted on mac-mini-m4. Nothing has started yet.")).toBeTruthy()
     // The refusal no longer says the filter is not trusted.
@@ -182,6 +194,22 @@ describe("review and trust from the refusal", () => {
 
     await user.click(within(card).getByRole("button", { name: "Start the session again" }))
     expect(onStartAgain).toHaveBeenCalledOnce()
+  })
+
+  it("reviews and trusts again from a trusted refusal, acknowledging the filters it shows", async () => {
+    const onTrust = vi.fn<Trust>().mockResolvedValue(trusted())
+    const loadInventory = vi.fn(async () => inventory(digest, { state: "trusted", ...grant }))
+    const { card, user } = show({ onTrust, loadInventory, refusal: refusal({ trust: { state: "trusted", ...grant } }) })
+
+    await user.click(within(card).getByRole("button", { name: "Review and trust again" }))
+    const sheet = await screen.findByRole("dialog")
+    expect(await within(sheet).findByRole("heading", { name: "Trust acme-api again on mac-mini-m4" })).toBeTruthy()
+    await user.click(within(sheet).getByRole("button", { name: "Trust for this machine" }))
+
+    expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest, gitFilters: { reviewed: true, reviewDigest } })
+    expect(within(card).getByText("Trusted on mac-mini-m4. Nothing has started yet.")).toBeTruthy()
+    expect(within(card).getByText("Checking out acme-api would run the sops filter driver.")).toBeTruthy()
+    expect(within(card).getByRole("button", { name: "Start the session again" })).toBeTruthy()
   })
 
   it("keeps the refusal when the files changed while the sheet was open, and reads them again", async () => {

@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { BotIcon, FileTextIcon, FilterIcon } from "lucide-react"
 
-import type { RepositoryTrust, RepositoryTrustResult, RepositoryTrustState } from "@getdomovoi/protocol"
+import type { RepositoryTrust, RepositoryTrustParams, RepositoryTrustResult, RepositoryTrustState } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Button } from "./components/ui/button"
@@ -15,6 +15,7 @@ import {
   gitFilterGroups,
   gitFilterRequiredText,
   gitFilterScopeLabel,
+  gitFiltersAcknowledgement,
   repositoryFileGroups,
   repositoryHeldBack,
   repositoryName,
@@ -27,7 +28,10 @@ import {
 import { eyebrow, GrantedWhere, kindIcon, mono, omittedText, TrustRefusals } from "./tool-inventory-parts"
 import type { ToolInventoryLoad } from "./tool-inventory-view"
 
-export type RepositoryTrustRequest = (params: { projectId: string; configDigest: string }) => Promise<RepositoryTrustResult>
+// gitFilters is present only when the sheet showed every git filter the
+// repository's own Git config sets (gitFiltersAcknowledgement).
+export type RepositoryTrustRequestParams = Omit<RepositoryTrustParams, "client">
+export type RepositoryTrustRequest = (params: RepositoryTrustRequestParams) => Promise<RepositoryTrustResult>
 
 // What the last trust request came back with, until the person acts again.
 type Outcome =
@@ -65,7 +69,9 @@ export function RepositoryTrustSheet({
   const repository = loaded?.repository
   const name = repository ? repositoryName(repository.root) : "this repository"
   const machine = loaded?.machine.name ?? "this machine"
-  const again = repository?.trust.state === "untrusted" && repository.trust.reason === "config-changed"
+  // A trusted repository is reviewed again when its git filters are held back
+  // under a grant that did not acknowledge them, or acknowledged others.
+  const again = repository?.trust.state === "trusted" || (repository?.trust.state === "untrusted" && repository.trust.reason === "config-changed")
   const refused = outcome?.kind === "cannot-trust"
     ? outcome.trust
     : repository?.trust.state === "untrusted" && repository.trust.reason === "cannot-trust" ? repository.trust : undefined
@@ -89,17 +95,36 @@ export function RepositoryTrustSheet({
   const offerTrust = repository !== undefined && refused === undefined && inventory.state === "loaded" && !incomplete
   const canTrust = offerTrust && !pending
 
+  // What the sheet shows is pinned by the configuration digest and the git
+  // filter block's review digest. When a read made while it is open shows
+  // other ones, the person is told before anything is trusted: trust always
+  // sends the digests drawn now, never ones from an earlier read.
+  const shownKey = open && repository ? `${repository.configDigest}\u0000${repository.gitFilters?.reviewDigest ?? ""}` : undefined
+  const [shown, setShown] = useState<string | undefined>(undefined)
+  // Adjusted during render rather than in an effect, so the notice and the
+  // new digests are drawn together.
+  if (!open && shown !== undefined) setShown(undefined)
+  if (shownKey !== undefined && shownKey !== shown) {
+    if (shown !== undefined) setOutcome({ kind: "changed" })
+    setShown(shownKey)
+  }
+
   const change = (next: boolean) => {
     if (!next) setOutcome(undefined)
     onOpenChange(next)
   }
 
   const trust = async () => {
-    if (!repository) return
+    if (!repository || !loaded) return
     setPending(true)
     setOutcome(undefined)
+    const gitFilters = gitFiltersAcknowledgement(loaded)
     try {
-      const result = await onTrust({ projectId: repository.projectId, configDigest: repository.configDigest })
+      const result = await onTrust({
+        projectId: repository.projectId,
+        configDigest: repository.configDigest,
+        ...(gitFilters ? { gitFilters } : {}),
+      })
       if (result.outcome === "trusted") {
         change(false)
         onTrusted?.(result.repository)
@@ -111,6 +136,10 @@ export function RepositoryTrustSheet({
       onReload()
     } catch (cause) {
       setOutcome({ kind: "failed", message: cause instanceof Error ? cause.message : "The daemon did not answer" })
+      // The daemon grants nothing when the git filters it reads are not the
+      // block acknowledged. The files are read again, and a block that changed
+      // says so above; trusting it is the person's next decision.
+      if (gitFilters) onReload()
     } finally {
       setPending(false)
     }

@@ -14,7 +14,8 @@ import type { ToolInventoryLoad } from "./tool-inventory-view"
 // A new session the daemon refused because checking the repository out would
 // run a git filter its own Git config sets (design step 15). Domovoi refused,
 // not an agent, and nothing ran. Review and trust opens the one trust sheet
-// over the files as they are now (ruling Q201 A); after a grant the card says
+// over the files as they are now (ruling Q201 A), and the grant acknowledges
+// the git filters the sheet showed (#688); after a grant the card says
 // so and waits for the person to start the session again: it never starts by
 // itself (ruling Q202 A).
 //
@@ -85,7 +86,11 @@ export function SessionRefusalCard({
     }
   }
 
-  const reviewable = !trusted && awaitsTrust(refusal.trust)
+  // A trusted refusal is one the daemon holds the filters back from under a
+  // grant that did not acknowledge them, or acknowledged others
+  // (filters-not-reviewed, filters-changed), so trusting again settles it too.
+  const reviewAgain = refusal.trust.state === "trusted"
+  const reviewable = !trusted && (reviewAgain || awaitsTrust(refusal.trust))
   const named = refusal.drivers.map((driver) => driver.name).filter((name, index, all) => all.indexOf(name) === index)
 
   return (
@@ -126,7 +131,7 @@ export function SessionRefusalCard({
         {trusted ? (
           <Button size="sm" disabled={starting} onClick={() => { void startAgain() }}>Start the session again</Button>
         ) : null}
-        {reviewable && onTrust ? <Button size="sm" onClick={() => setReviewing(true)}>Review and trust</Button> : null}
+        {reviewable && onTrust ? <Button size="sm" onClick={() => setReviewing(true)}>{reviewAgain ? "Review and trust again" : "Review and trust"}</Button> : null}
         <Button size="sm" variant="outline" onClick={onOpenTools}>Open Tools</Button>
         {reviewable && !onTrust ? <GrantedWhere /> : null}
       </div>
@@ -154,16 +159,17 @@ function driversPhrase(named: readonly string[], omitted: number): { phrase: str
 }
 
 // What the refusal says, by the trust the daemon read with it. Trusted means
-// the grant covers the configuration and the daemon still holds the filter
-// back, so the card does not point to trust. Once the person trusts from this
-// card, the trust clause no longer holds and the line below says so instead.
+// the grant covers the configuration but not these git filters: its client
+// did not show them, or showed others. The refusal carries no finer reason, so
+// the sentence names both. Once the person trusts from this card, the trust
+// clause no longer holds and the line below says so instead.
 function refusalSentence(refusal: RepositoryGitFilterRefusal, named: readonly string[], repository: string, machine: string, grantedHere: boolean): string {
   const { phrase, many } = driversPhrase(named, refusal.omittedDrivers)
   const lead = `Checking out ${repository} would run ${phrase}`
   if (grantedHere) return `${lead}.`
   const { trust } = refusal
   if (trust.state === "trusted") {
-    return `${lead}. ${repository} is trusted on ${machine}, and Domovoi still does not run a filter the repository's own Git config sets.`
+    return `${lead}. ${repository} is trusted on ${machine}, but its Git filters stay held back until they are reviewed: they were not shown when it was trusted, or they changed since.`
   }
   if (trust.reason === "cannot-trust") return `${lead}, and ${repository} cannot be trusted on ${machine}.`
   return `${lead}, which ${many ? "are" : "is"} not trusted on ${machine}.`
