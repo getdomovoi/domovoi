@@ -470,6 +470,18 @@ export async function openIsolatedGit(input: {
   for (const setting of settings) {
     if (!trustedConfigScopes.has(setting.scope) && isStandardLfsFilterLine(setting.key, setting.value)) pins.push([setting.key, setting.value])
   }
+  // A filter command the repository's own config empties, over one a global
+  // or system config sets: Git then runs no command for it. This directory
+  // reads no repository config, so the empty value is carried, or the
+  // inherited command would run here while ordinary Git runs nothing (ruling
+  // Q317). Only where the repository's empty value is the last one Git reads.
+  const lastFilterCommand = new Map<string, GitFilterSetting>()
+  for (const setting of settings) {
+    if (/^filter\..+\.(?:clean|smudge|process)$/u.test(setting.key)) lastFilterCommand.set(setting.key, setting)
+  }
+  for (const [key, setting] of lastFilterCommand) {
+    if (!trustedConfigScopes.has(setting.scope) && setting.value === "") pins.push([key, ""])
+  }
   for (const key of ["lfs.url", "lfs.pushurl"]) {
     const value = last(key)
     if (value !== undefined && carriedRemoteUrl(value)) pins.push([key, value])

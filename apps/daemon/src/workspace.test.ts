@@ -3669,6 +3669,50 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await ran()).toBe(true)
   })
 
+  // A person's global filter can name a helper the repository tracks, which a
+  // contributor controls; the repository turns it off with an empty local
+  // command. Ordinary Git then runs nothing, and nor may the isolated Git
+  // directory, which reads no repository config: the empty override is
+  // carried into it (ruling Q317).
+  it("keeps a repository's empty override of a global filter command, and runs no tracked helper", async () => {
+    const { scratch, repositoryPath, worktrees, git } = await filteredRepository("domovoi-global-override-")
+    const marker = join(scratch, "helper-ran").replaceAll("\\", "/")
+    await writeFile(join(repositoryPath, "helper.sh"), `echo ran >> "${marker}"\ncat\n`)
+    await git("add", "helper.sh")
+    await git("-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "helper")
+    const home = join(scratch, "home")
+    await mkdir(home)
+    await writeFile(join(home, ".gitconfig"), "[filter \"agent\"]\n\tclean = sh ./helper.sh\n\tsmudge = sh ./helper.sh\n\tprocess = sh ./helper.sh\n")
+    await git("config", "filter.agent.clean", "")
+    await git("config", "filter.agent.smudge", "")
+    await git("config", "filter.agent.process", "")
+    const ran = () => readFile(marker, "utf8").then(() => true, () => false)
+    const previous = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
+    process.env.HOME = home
+    process.env.XDG_CONFIG_HOME = join(home, ".config")
+    try {
+      // Ordinary Git honours the empty override.
+      await writeFile(join(repositoryPath, "victim.txt"), "ordinary\n")
+      await execute("git", ["-C", repositoryPath, "add", "victim.txt"])
+      await execute("git", ["-C", repositoryPath, "reset", "-q", "HEAD", "victim.txt"])
+      await execute("git", ["-C", repositoryPath, "checkout", "--", "victim.txt"])
+      expect(await ran()).toBe(false)
+
+      const service = new GitWorkspaceService(worktrees)
+      const workspace = await service.createSessionWorkspace(repositoryPath, "session-override")
+      await writeFile(join(workspace.path, "victim.txt"), "changed\n")
+      await service.checkpoint(workspace.path, "override")
+      await writeFile(join(workspace.path, "victim.txt"), "changed again\n")
+      await service.snapshot(workspace.path, "override")
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+    expect(await ran()).toBe(false)
+  })
+
   it("refuses to restore a transferred session where the target's config sets a filter for its branch", async () => {
     const { scratch, repositoryPath, filterFile, ran } = await filteredRepository("domovoi-transfer-filter-")
     const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
