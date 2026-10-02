@@ -1,3 +1,4 @@
+import { installDaemonService } from "@getdomovoi/daemon"
 import { describe, expect, it, vi } from "vitest"
 
 import { createDesktopWindowBridge, type IpcRendererAdapter } from "./desktop-bridge.js"
@@ -19,6 +20,39 @@ function ipc() {
 }
 
 describe("createDesktopWindowBridge", () => {
+  // Review of #698 round 4 (P2): the daemon's installer composes the warning
+  // from loginctl's own diagnostic, and this check refuses service text over
+  // 4,096 UTF-16 units. A long diagnostic must still reach the renderer as a
+  // successful install that carries the warning. The installer runs on fakes.
+  it("accepts the real installer's lingering warning after a long loginctl diagnostic", async () => {
+    const capture = vi.fn(async (command: string, args: string[]) => command === "loginctl" && args[0] === "show-user"
+      ? { code: 1, stdout: "", stderr: `Failed to connect to bus: ${"x".repeat(4_600)}` } : { code: 0, stdout: "" })
+    const installed = await installDaemonService({
+      runtime: { nodePath: "/opt/domovoi/runtime/node", daemonEntryPath: "/opt/domovoi/runtime/daemon/dist/index.js" },
+    }, {
+      platform: "linux", home: "/home/dana", uid: 1000, user: "dana",
+      runtimeFile: vi.fn(async () => "file" as const),
+      claimServiceOperation: vi.fn(() => ({ release: vi.fn() })),
+      claimProfile: vi.fn(() => ({ release: vi.fn() })),
+      removalSnapshot: vi.fn(() => ({ owner: undefined, configurationDigest: null })),
+      writeRemovalReceipt: vi.fn(),
+      write: vi.fn(async () => {}),
+      run: vi.fn(async () => {}),
+      capture,
+      exists: vi.fn(async () => true),
+      remove: vi.fn(async () => {}),
+    })
+    if (installed.kind !== "file" || installed.lingerWarning === undefined) throw new Error("expected a lingering warning")
+    const target = ipc()
+    target.invoke.mockImplementationOnce(async () => ({
+      ok: true, kind: "file", target: installed.path, configurationPath: installed.configurationPath, daemonRunning: true, lingerWarning: installed.lingerWarning,
+    }))
+    const answer = await createDesktopWindowBridge(target, "linux").daemonService?.install()
+    expect(answer).toEqual({ ok: true, kind: "file", target: installed.path, daemonRunning: true, lingerWarning: installed.lingerWarning })
+    expect(installed.lingerWarning).toContain("systemd stops the daemon when dana logs out of every session")
+    expect(installed.lingerWarning).toContain("To keep it running, run loginctl enable-linger")
+  })
+
   it("exposes typed narrow IPC methods instead of Electron", async () => {
     const target = ipc()
     const bridge = createDesktopWindowBridge(target, "linux")
@@ -31,6 +65,19 @@ describe("createDesktopWindowBridge", () => {
     expect(target.invoke).toHaveBeenCalledWith("domovoi:open-external", { editor: "system", path: "/project" })
     target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/c", daemonRunning: true }))
     await expect(bridge.daemonService?.install()).resolves.toEqual({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", daemonRunning: true })
+    // Ruling Q307 (review of #698, P2): the daemon's lingering warning reaches
+    // the renderer; one that is not text is refused like any other field.
+    target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/u", configurationPath: "/c", daemonRunning: true, lingerWarning: "Could not turn on lingering for dana: loginctl was not found." }))
+    await expect(bridge.daemonService?.install()).resolves.toEqual({ ok: true, kind: "file", target: "/u", daemonRunning: true, lingerWarning: "Could not turn on lingering for dana: loginctl was not found." })
+    target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/u", daemonRunning: true, lingerWarning: 5 }))
+    await expect(bridge.daemonService?.install()).rejects.toThrow("invalid service outcome")
+    // The length bound and the other optional fields are refused the same way.
+    for (const field of [{ lingerWarning: "x".repeat(4_097) }, { daemonAttached: "yes" }, { profileRecovery: "guessed" }]) {
+      target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/u", daemonRunning: true, ...field }))
+      await expect(bridge.daemonService?.install()).rejects.toThrow("invalid service outcome")
+    }
+    target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/u", daemonRunning: true, lingerWarning: "x".repeat(4_096) }))
+    await expect(bridge.daemonService?.install()).resolves.toMatchObject({ lingerWarning: "x".repeat(4_096) })
     for (const [answer, drawn] of [
       [{ ok: true, kind: "task", target: "\\Domovoi\\domovoid", profileRecovery: "proof-unavailable", profileRecoveryDetail: "The service record could not be read", daemonRunning: false },
         { ok: true, kind: "task", target: "\\Domovoi\\domovoid", profileRecovery: "proof-unavailable", profileRecoveryDetail: "The service record could not be read", daemonRunning: false }],

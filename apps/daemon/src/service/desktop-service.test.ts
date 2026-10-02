@@ -4,6 +4,7 @@ import { ProfileAlreadyOwnedError } from "../profile-lease.js"
 import {
   DaemonServiceRuntimeMissingError,
   installDaemonService,
+  readDaemonServiceRuntimeCopy,
   readDaemonServiceRuntimeVersion,
   readDaemonServiceStatus,
   removeDaemonService,
@@ -67,6 +68,59 @@ describe("installDaemonService", () => {
     expect(written).toContain(`<string>${runtime.nodePath}</string>`)
     expect(written).toContain(`<string>${runtime.daemonEntryPath}</string>`)
     expect(effects.run).toHaveBeenCalledWith("launchctl", ["bootstrap", "gui/501", installed.path], expect.anything())
+  })
+
+  // Decided 2026-09-17 (SHIP-PLAN S1.1): the desktop's Linux install turns
+  // lingering on as the CLI's does, and says what it did with the result.
+  it("reports what happened to Linux lingering on install and removal", async () => {
+    const loginctl = vi.fn(async (command: string, args: string[]) => command === "loginctl" && args[0] === "show-user"
+      ? { code: 0, stdout: "no\n" } : { code: 0, stdout: "" })
+    const installing = dependencies({ platform: "linux", home: "/home/dl", uid: 1000, capture: loginctl })
+    expect(await installDaemonService({ runtime }, installing)).toMatchObject({ kind: "file", linger: { kind: "enabled" } })
+    const removing = dependencies({
+      platform: "linux", home: "/home/dl", uid: 1000, capture: loginctl,
+      readConfiguration: vi.fn(() => ({ ...createServiceConfiguration({}, { platform: "linux", homeDirectory: "/home/dl", workingDirectory: "/home/dl" }), lingerEnabledByDomovoi: true })),
+    })
+    expect(await removeDaemonService(removing)).toMatchObject({ kind: "file", linger: { kind: "disabled" } })
+    expect(loginctl.mock.calls.filter(([command]) => command === "loginctl").map(([, args]) => args[0]))
+      .toEqual(["show-user", "enable-linger", "disable-linger"])
+  })
+
+  // Ruling Q307 (review of #698, P2): a lingering that could not be turned on
+  // reaches the app as the CLI's own warning, from linger.ts, not as a plain
+  // success. Lingering that worked carries no warning.
+  it("carries the CLI's lingering warning when lingering could not be turned on", async () => {
+    const refused = vi.fn(async (command: string, args: string[]) => command === "loginctl" && args[0] === "show-user"
+      ? { code: 1, stdout: "", stderr: "spawn loginctl ENOENT" } : { code: 0, stdout: "" })
+    const installed = await installDaemonService({ runtime }, dependencies({ platform: "linux", home: "/home/dl", uid: 1000, user: "dl", capture: refused }))
+    expect(installed).toMatchObject({
+      kind: "file", linger: { kind: "failed", detail: "loginctl was not found" },
+      lingerWarning: "Could not turn on lingering for dl: loginctl was not found. The service is installed, but systemd stops the daemon when dl logs out of every session and starts it again at the next login. To keep it running, run loginctl enable-linger; domovoid service remove will then leave lingering on.",
+    })
+    const worked = vi.fn(async (command: string, args: string[]) => command === "loginctl" && args[0] === "show-user"
+      ? { code: 0, stdout: "no\n" } : { code: 0, stdout: "" })
+    expect(await installDaemonService({ runtime }, dependencies({ platform: "linux", home: "/home/dl", uid: 1000, user: "dl", capture: worked })))
+      .not.toHaveProperty("lingerWarning")
+  })
+
+  // Review of #698 round 4 (P2): the app refuses service text over 4,096
+  // UTF-16 units. The warning stays inside that limit whatever loginctl says
+  // and whatever the user is called, characters outside the BMP included, and
+  // the logout limit and the advice are always in it.
+  it("keeps the lingering warning inside the app's text limit", async () => {
+    const advice = "starts it again at the next login. To keep it running, run loginctl enable-linger; domovoid service remove will then leave lingering on."
+    for (const [user, diagnostic] of [["dl", "x".repeat(4_600)], ["\u{1F600}".repeat(300), "\u{1F600}".repeat(2_300)]] as const) {
+      const refused = vi.fn(async (command: string, args: string[]) => command === "loginctl" && args[0] === "show-user"
+        ? { code: 1, stdout: "", stderr: diagnostic } : { code: 0, stdout: "" })
+      const installed = await installDaemonService({ runtime }, dependencies({ platform: "linux", home: "/home/dl", uid: 1000, user, capture: refused }))
+      if (installed.kind !== "file" || installed.lingerWarning === undefined) throw new Error("expected a lingering warning")
+      expect(installed.lingerWarning.length).toBeLessThanOrEqual(4_096)
+      expect(installed.lingerWarning).toContain("... (shortened). The service is installed, but systemd stops the daemon when ")
+      expect(installed.lingerWarning.endsWith(advice)).toBe(true)
+      if (installed.linger?.kind !== "failed") throw new Error("expected a failed lingering outcome")
+      expect(installed.linger.detail.endsWith("... (shortened)")).toBe(true)
+      expect(installed.lingerWarning).toContain(`: ${installed.linger.detail}. The service is installed`)
+    }
   })
 
   it("refuses a runtime that is not there before claiming the profile or writing a file", async () => {
@@ -212,7 +266,15 @@ describe("readDaemonServiceRuntimeVersion", () => {
     const capture = vi.fn(async () => ({ code: 0, stdout: xml }))
     await expect(readDaemonServiceRuntimeVersion({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture, readConfiguration: saved("win32", "C:\\Users\\dana") }))
       .resolves.toEqual({ installed: true, version: "0.9.2" })
-    expect(capture).toHaveBeenCalledWith("schtasks", ["/query", "/tn", "Domovoi daemon", "/xml"], expect.anything())
+    // Review F3: the schtasks under SystemRoot, never one found by name.
+    expect(capture).toHaveBeenCalledWith("C:\\Windows\\System32\\schtasks.exe", ["/query", "/tn", "Domovoi daemon", "/xml"], expect.anything())
+  })
+
+  it("reads the runtime copy through the schtasks under SystemRoot", async () => {
+    vi.stubEnv("SystemRoot", "D:\\Windows")
+    const capture = vi.fn(async () => ({ code: 0, stdout: "<Task></Task>" }))
+    await readDaemonServiceRuntimeCopy({ platform: "win32", home: "C:\\Users\\dana", readDefinition: vi.fn(), capture, readConfiguration: saved("win32", "C:\\Users\\dana") })
+    expect(capture).toHaveBeenCalledWith("D:\\Windows\\System32\\schtasks.exe", ["/query", "/tn", "Domovoi daemon", "/xml"], expect.anything())
   })
 
   // Security review round 3 of #577: the desktop stages under the selected
@@ -698,7 +760,8 @@ function managerFake(platform: "darwin" | "linux" | "win32", start: {
       return text === undefined ? undefined : parseServiceConfiguration(text)
     }),
     run: vi.fn(async (command: string, args: string[]) => {
-      const line = `${command} ${args[0]}`
+      // schtasks runs from its path under SystemRoot (review F3), named short here.
+      const line = `${command === "C:\\Windows\\System32\\schtasks.exe" ? "schtasks" : command} ${args[0]}`
       ran.push(line)
       if (start.failing === args[0] && failuresLeft > 0) {
         failuresLeft -= 1
@@ -814,7 +877,8 @@ describe("security review round 3", () => {
   it("reinstalls over the task Domovoi registered", async () => {
     const fake = managerFake("win32", { files: { [windowsConfigurationPath]: oldWindowsConfiguration }, task: oldWindowsTask })
     await installDaemonService({ runtime: windowsRuntime }, fake.effects)
-    expect(fake.ran).toEqual(["schtasks /create", "schtasks /run"])
+    // The PowerShell step between them lifts the 72 hour limit and battery stops.
+    expect(fake.ran).toEqual(["schtasks /create", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo", "schtasks /run"])
   })
 
   // Finding 4: a job still loaded from Domovoi's plist, but not running,

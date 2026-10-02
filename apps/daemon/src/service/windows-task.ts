@@ -30,15 +30,27 @@ export class WindowsTaskRemovalError extends Error {
   }
 }
 
-export function windowsPowerShellPath(): string {
-  // A bare executable name searches cwd before PATH on Windows. The project
-  // directory must never be able to supply the service-management executable.
-  // Missing or drive-relative SystemRoot must not turn this back into a search.
+// A bare executable name searches cwd before PATH on Windows. The project
+// directory must never be able to supply the service-management executable.
+// Missing or drive-relative SystemRoot must not turn this back into a search.
+// SystemRoot itself is trusted: the inherited environment names the Windows
+// directory.
+function windowsSystemRoot(): string {
   const root = process.env.SystemRoot
   if (root === undefined || !/^[A-Za-z]:[\\/]/.test(root) || root.includes("\0")) {
     throw new Error("SystemRoot must name the absolute local Windows directory before querying or removing a service")
   }
-  return win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+  return root
+}
+
+export function windowsPowerShellPath(): string {
+  return win32.join(windowsSystemRoot(), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+}
+
+// Review F3: schtasks by bare name could run a schtasks.exe from the working
+// directory, a repository included. Every call names this one.
+export function windowsSchtasksPath(): string {
+  return win32.join(windowsSystemRoot(), "System32", "schtasks.exe")
 }
 
 function taskCommand(executable: string, name: string, body: string): ServiceCommand {
@@ -64,6 +76,24 @@ ${body}
     command: executable,
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
   }
+}
+
+// schtasks /create cannot set these and registers Task Scheduler's defaults,
+// which Microsoft documents as a 72 hour execution limit, and battery rules
+// that keep a task from starting on battery and stop it when power is lost.
+// The logon task runs the daemon for the whole session, and the defaults
+// would end it there, so right after each /create this sets what the WSL task sets
+// (wsl-task.ts) and registers the change in place (TASK_UPDATE, 4) under the
+// task's own principal and logon type, with no password.
+// https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-executiontimelimit
+export function windowsTaskSettingsCommand(name: string): ServiceCommand {
+  return taskCommand(windowsPowerShellPath(), name, `
+$definition = $task.Definition
+$definition.Settings.ExecutionTimeLimit = 'PT0S'
+$definition.Settings.DisallowStartIfOnBatteries = $false
+$definition.Settings.StopIfGoingOnBatteries = $false
+$null = $folder.RegisterTaskDefinition($name, $definition, 4, $definition.Principal.UserId, $null, [int]$definition.Principal.LogonType, $null)
+[Console]::Out.WriteLine('domovoi-task:' + [int]$folder.GetTask($name).State)`)
 }
 
 export function windowsTaskRemovalPlan(name: string): WindowsTaskRemovalPlan {

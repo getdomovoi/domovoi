@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { OperationDeadline } from "../operation-deadline.js"
 import { ProfileAlreadyOwnedError } from "../profile-lease.js"
 import { createServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
-import { removeService, runServiceCommand, type ServiceEffects } from "./install.js"
+import { nodeServiceEffects, removeService, runServiceCommand, type ServiceEffects } from "./install.js"
 import { ServiceOperationBusyError } from "./operation-lease.js"
 import { windowsTaskRemovalPlan } from "./windows-task.js"
 
@@ -20,6 +20,12 @@ vi.mock("node:timers/promises", () => ({
     signal.addEventListener("abort", abort, { once: true })
   }),
 }))
+
+// The service effects' own subprocess calls are answered here, never run.
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>()
+  return { ...actual, execFile: vi.fn((_command: string, _args: string[], _options: unknown, callback: (error: null, stdout: string, stderr: string) => void) => { callback(null, "", "") }) }
+})
 
 // Ruled 2026-09-25: removal first reads the task's action and service.json to
 // check that Domovoi registered the task. These fakes answer that read with a
@@ -260,6 +266,27 @@ describe("refusals that never reach Task Scheduler", () => {
 })
 
 describe("Task Scheduler command boundary", () => {
+  // Review F3: a Windows tool named by its path under SystemRoot also runs
+  // from that directory, not the caller's, which may be a repository. A bare
+  // name (systemctl, launchctl, loginctl) keeps the caller's directory.
+  it("runs a Windows-directory command from that directory, and a bare name where it was", async () => {
+    const childProcess = await import("node:child_process")
+    const execFile = vi.mocked(childProcess.execFile as unknown as (...args: unknown[]) => void)
+    execFile.mockClear()
+    const deadline = OperationDeadline.start(1000)
+    try {
+      const effects = nodeServiceEffects()
+      await effects.run("C:\\Windows\\System32\\schtasks.exe", ["/run"], deadline)
+      await effects.capture("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", ["-NoLogo"], deadline)
+      await effects.run("systemctl", ["--user", "daemon-reload"], deadline)
+      expect(execFile.mock.calls.map(([command, , options]) => [command, (options as { cwd?: string }).cwd])).toEqual([
+        ["C:\\Windows\\System32\\schtasks.exe", "C:\\Windows\\System32"],
+        ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0"],
+        ["systemctl", undefined],
+      ])
+    } finally { deadline.clear() }
+  })
+
   it("pins the executable to the OS directory instead of searching the working directory", () => {
     vi.stubEnv("SystemRoot", "D:\\System Root")
     const plan = windowsTaskRemovalPlan("Domovoi daemon")

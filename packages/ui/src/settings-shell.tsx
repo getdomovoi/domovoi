@@ -79,7 +79,8 @@ type ServicePhase =
   | { kind: "idle" }
   | { kind: "installing" }
   | { kind: "removing" }
-  | { kind: "installed"; target: string }
+  // lingerWarning: the daemon's own text, shown as it is (ruling Q307).
+  | { kind: "installed"; target: string; lingerWarning?: string | undefined }
   | { kind: "removed"; daemonRunning: boolean; attached: boolean; recovery?: string | undefined }
   | { kind: "waits"; refusal: string }
   | { kind: "unchecked"; message: string }
@@ -194,7 +195,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
     setPhase({ kind: action === "install" ? "installing" : "removing" })
     try {
       const outcome = await (action === "install" ? live.install() : live.remove())
-      if (outcome.ok) setPhase(action === "install" ? { kind: "installed", target: outcome.target } : { kind: "removed", daemonRunning: outcome.daemonRunning, attached: outcome.daemonAttached === true, recovery: removalRecovery(outcome) })
+      if (outcome.ok) setPhase(action === "install" ? { kind: "installed", target: outcome.target, lingerWarning: outcome.lingerWarning } : { kind: "removed", daemonRunning: outcome.daemonRunning, attached: outcome.daemonAttached === true, recovery: removalRecovery(outcome) })
       else if (outcome.reason === "refused") setPhase({ kind: "waits", refusal: outcome.message })
       else if (outcome.reason === "check-failed") setPhase({ kind: "unchecked", message: outcome.message })
       else if (outcome.reason === "installed-not-attached") setPhase({ kind: "not-attached", message: outcome.message })
@@ -293,6 +294,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           <span className="font-machine text-[10.5px] opacity-80">{phase.target}</span>
         </div>
       ) : null}
+      {phase.kind === "installed" && phase.lingerWarning ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="status">{phase.lingerWarning}</p> : null}
       {phase.kind === "removed" ? (
         <div className="flex flex-col gap-1.5 rounded-md border px-3 py-2 text-[11.5px]" role="status">
           {phase.recovery ? (

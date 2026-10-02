@@ -31,7 +31,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 function configuration(homeDirectory: string, platform: string) {
   return createServiceConfiguration({}, { homeDirectory, platform, workingDirectory: homeDirectory })
 }
-const linux = { platform: "linux", execPath: "/usr/local/bin/domovoid", home: "/home/dl", configuration: configuration("/home/dl", "linux") }
+const linux = { platform: "linux", execPath: "/usr/local/bin/domovoid", home: "/home/dl", uid: 1000, user: "dl", configuration: configuration("/home/dl", "linux") }
 const darwin = { platform: "darwin", execPath: "/usr/local/bin/domovoid", home: "/Users/dl", uid: 501, configuration: configuration("/Users/dl", "darwin") }
 const windows = { platform: "win32", execPath: "C:\\Program Files\\Domovoi\\domovoid.exe", user: "dl", home: "C:\\Users\\dl", configuration: configuration("C:\\Users\\dl", "win32") }
 // Ruled 2026-09-25: Windows status and removal first read the task's action
@@ -77,10 +77,13 @@ function effects(overrides: Partial<ServiceEffects> = {}): ServiceEffects {
 afterEach(() => { vi.unstubAllEnvs() })
 
 // Security review round 3: a darwin or Windows install first asks the manager
-// what is registered under Domovoi's name. These answer that nothing is.
+// what is registered under Domovoi's name. These answer that nothing is. A
+// Linux install asks loginctl about lingering; this answers that it is
+// already on, so nothing is changed (Linux lingering, below).
 const nothingRegistered = () => vi.fn(async (command: string) => command === "launchctl"
   ? { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
-  : command.endsWith("powershell.exe") ? { code: 0, stdout: "domovoi-task:missing\r\n" } : { code: 0, stdout: "" })
+  : command.endsWith("powershell.exe") ? { code: 0, stdout: "domovoi-task:missing\r\n" }
+    : command === "loginctl" ? { code: 0, stdout: "yes\n" } : { code: 0, stdout: "" })
 
 function command(overrides: Partial<ServiceCommandDependencies> = {}): ServiceCommandDependencies {
   vi.stubEnv("SystemRoot", "C:\\Windows")
@@ -98,6 +101,23 @@ function command(overrides: Partial<ServiceCommandDependencies> = {}): ServiceCo
 }
 
 describe("servicePlan", () => {
+  // The Windows plan names PowerShell under SystemRoot for its settings step.
+  beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
+
+  // Review F3: a bare schtasks is looked up in the working directory first on
+  // Windows, so a repository could supply its own. Every schtasks call names
+  // the one under SystemRoot, as PowerShell and taskkill already do.
+  it("runs schtasks from the Windows directory, never by a searched name", () => {
+    vi.stubEnv("SystemRoot", "D:\\Windows")
+    const plan = servicePlan(windowsScript)
+    expect(plan.commands.filter(({ args }) => args[0] === "/create" || args[0] === "/run").map(({ command }) => command))
+      .toEqual(["D:\\Windows\\System32\\schtasks.exe", "D:\\Windows\\System32\\schtasks.exe"])
+    for (const root of ["", "Windows", "\\\\host\\Windows"]) {
+      vi.stubEnv("SystemRoot", root)
+      expect(() => servicePlan(windowsScript)).toThrow("SystemRoot must name the absolute local Windows directory")
+    }
+  })
+
   it("refuses an overlong Windows command before any files or manager calls", async () => {
     const dependencies = effects()
     await expect(installService({
@@ -137,7 +157,7 @@ describe("servicePlan", () => {
     const plan = servicePlan(windows)
     expect(plan.kind).toBe("task")
     expect(plan.commands[0]).toMatchObject({
-      command: "schtasks",
+      command: "C:\\Windows\\System32\\schtasks.exe",
       args: expect.arrayContaining(["/create", "/ru", "dl", "/rl", "LIMITED", "/sc", "onlogon"]),
     })
     expect(plan.commands[0]?.args).not.toContain("HIGHEST")
@@ -147,6 +167,26 @@ describe("servicePlan", () => {
     const plan = servicePlan(windowsScript)
     const target = plan.commands[0]?.args[plan.commands[0].args.indexOf("/tr") + 1]
     expect(target).toBe('"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\Domovoi\\dist\\index.js" --service-config "C:\\Users\\dl\\.domovoi\\service.json"')
+  })
+
+  // The daemon runs for the whole logon session. schtasks /create
+  // keeps Task Scheduler's defaults, a 72 hour execution limit and stops on
+  // battery, so a step right after it sets what the WSL task sets
+  // (wsl-task.ts), before the task is run.
+  it("lifts the execution limit and battery stops before running the task", () => {
+    const plan = servicePlan(windowsScript)
+    expect(plan.commands.map(({ command, args }) => command.endsWith("\\schtasks.exe") ? args[0] : command)).toEqual([
+      "/create", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "/run",
+    ])
+    const settings = plan.commands[1]!
+    expect(settings.args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
+    const script = Buffer.from(settings.args.at(-1)!, "base64").toString("utf16le")
+    expect(script).toContain("$name = 'Domovoi daemon'")
+    for (const line of ["$definition.Settings.ExecutionTimeLimit = 'PT0S'", "$definition.Settings.DisallowStartIfOnBatteries = $false", "$definition.Settings.StopIfGoingOnBatteries = $false"]) {
+      expect(script).toContain(line)
+    }
+    // TASK_UPDATE (4), under the task's own principal and logon type.
+    expect(script).toContain("$folder.RegisterTaskDefinition($name, $definition, 4, $definition.Principal.UserId, $null, [int]$definition.Principal.LogonType, $null)")
   })
 
   it("passes a real executable straight through", () => {
@@ -515,7 +555,7 @@ describe("serviceStatus", () => {
     // The ownership read, then the state read; neither is schtasks text.
     expect(dependencies.capture).toHaveBeenCalledTimes(2)
     for (const [command, args] of vi.mocked(dependencies.capture).mock.calls) {
-      expect(command).not.toBe("schtasks")
+      expect(command).not.toMatch(/schtasks/i)
       expect(Buffer.from(args.at(-1)!, "base64").toString("utf16le")).not.toMatch(/\$task\.Enabled\s*=|\$task\.Stop|DeleteTask/)
     }
     expect(dependencies.run).not.toHaveBeenCalled()
@@ -660,6 +700,8 @@ describe("runServiceCommand", () => {
       // Ruled 2026-09-24 (A): a service that runs a script through a named
       // runtime records both, so an update can put back only those.
       ...("runtime" in target ? { serviceRuntime: { executable: target.runtime, entry: target.execPath } } : {}),
+      // Lingering was already on (nothingRegistered), so not Domovoi's.
+      ...(target.platform === "linux" ? { lingerEnabledByDomovoi: false } : {}),
     })
     const launch = target.platform === "win32"
       ? vi.mocked(dependencies.run).mock.calls[0]?.[1].join(" ")
@@ -727,5 +769,192 @@ describe("runServiceCommand", () => {
     const dependencies = command()
     await expect(runServiceCommand(["pair"], dependencies)).resolves.toBe(1)
     expect(dependencies.stderr).not.toHaveBeenCalled()
+  })
+})
+
+// A reinstall over the logon task Domovoi registered replaces it with the
+// schtasks under SystemRoot and lifts Task Scheduler's run limit and battery
+// stops before running it. Every Task Scheduler answer here is mocked.
+it("reinstalls over the logon task Domovoi registered, lifting its run limit before it runs", async () => {
+  vi.stubEnv("SystemRoot", "C:\\Windows")
+  const configurationPath = "C:\\Users\\dl\\.domovoi\\service.json"
+  const action = { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\Program Files\\Domovoi\\dist\\index.js" --service-config "${configurationPath}"`, enabled: true, state: 3 }
+  const dependencies = effects({
+    readConfiguration: vi.fn(() => ({ ...windows.configuration, serviceRuntime: { executable: "C:\\Program Files\\nodejs\\node.exe", entry: "C:\\Program Files\\Domovoi\\dist\\index.js" } })),
+    capture: vi.fn(async () => ({ code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}\r\n` })),
+  })
+  await expect(installService(windowsScript, dependencies)).resolves.toMatchObject({ kind: "task" })
+  expect(vi.mocked(dependencies.run).mock.calls.map(([command, args]) => command === "C:\\Windows\\System32\\schtasks.exe" ? args[0] : "settings")).toEqual(["/create", "settings", "/run"])
+})
+
+// Decided 2026-09-17 (SHIP-PLAN S1.1): a Linux install turns lingering on and
+// records that Domovoi did; removal turns it off only on that record. Every
+// loginctl call here is answered by the mocked command runner; none runs.
+describe("Linux lingering", () => {
+  type Answers = { state?: CapturedRun | Error; enable?: CapturedRun; disable?: CapturedRun }
+  function loginctl(answers: Answers = {}, order: string[] = []) {
+    return vi.fn(async (name: string, args: string[]): Promise<CapturedRun> => {
+      if (name !== "loginctl") return { code: 0, stdout: "" }
+      order.push(`loginctl ${args[0]}`)
+      if (args[0] === "show-user") {
+        if (answers.state instanceof Error) throw answers.state
+        return answers.state ?? { code: 0, stdout: "no\n" }
+      }
+      if (args[0] === "enable-linger") return answers.enable ?? { code: 0, stdout: "" }
+      if (args[0] === "disable-linger") return answers.disable ?? { code: 0, stdout: "" }
+      throw new Error(`unexpected loginctl ${args.join(" ")}`)
+    })
+  }
+  const target = { ...linux, uid: 1000, user: "dl" }
+  const saved = (dependencies: ServiceEffects) => JSON.parse(vi.mocked(dependencies.write).mock.calls
+    .find(([path]) => path.endsWith("service.json"))![1]) as Record<string, unknown>
+  const loginctlCalls = (dependencies: ServiceEffects) => vi.mocked(dependencies.capture).mock.calls
+    .filter(([name]) => name === "loginctl").map(([, args]) => args)
+  const configured = (record: boolean | undefined) => vi.fn(() => ({
+    ...linux.configuration, ...(record === undefined ? {} : { lingerEnabledByDomovoi: record }),
+  }))
+
+  it("turns lingering on before saving the configuration that records it, and says so", async () => {
+    const order: string[] = []
+    const dependencies = command({
+      ...target,
+      capture: loginctl({}, order),
+      write: vi.fn(async (path: string) => { order.push(`write ${path}`) }),
+      run: vi.fn(async (name: string, args: string[]) => { order.push(`${name} ${args.join(" ")}`) }),
+    })
+    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(0)
+    expect(loginctlCalls(dependencies)).toEqual([["show-user", "1000", "--property=Linger", "--value"], ["enable-linger", "1000"]])
+    expect(order).toEqual([
+      "loginctl show-user", "loginctl enable-linger",
+      "write /home/dl/.domovoi/service.json", "write /home/dl/.config/systemd/user/domovoid.service",
+      "systemctl --user daemon-reload", "systemctl --user enable --now domovoid.service",
+    ])
+    expect(saved(dependencies)).toMatchObject({ lingerEnabledByDomovoi: true })
+    expect(vi.mocked(dependencies.stdout).mock.calls).toEqual([
+      ["Installed the Domovoi daemon service at /home/dl/.config/systemd/user/domovoid.service\n"],
+      ["Turned on lingering for dl with loginctl enable-linger, so the daemon keeps running after dl logs out and starts when the machine boots. domovoid service remove turns it off again.\n"],
+    ])
+    expect(dependencies.stderr).not.toHaveBeenCalled()
+  })
+
+  it("leaves lingering that was already on as it was, and records that it was not Domovoi's", async () => {
+    const dependencies = command({ ...target, capture: loginctl({ state: { code: 0, stdout: "yes\n" } }) })
+    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(0)
+    expect(loginctlCalls(dependencies)).toEqual([["show-user", "1000", "--property=Linger", "--value"]])
+    expect(saved(dependencies)).toMatchObject({ lingerEnabledByDomovoi: false })
+    expect(dependencies.stdout).toHaveBeenCalledWith("Lingering was already on for dl, so Domovoi left it as it was. domovoid service remove will leave it on.\n")
+  })
+
+  it("keeps an earlier install's record that Domovoi turned lingering on", async () => {
+    const dependencies = command({
+      ...target, readConfiguration: configured(true), capture: loginctl({ state: { code: 0, stdout: "yes\n" } }),
+    })
+    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(0)
+    expect(loginctlCalls(dependencies)).toEqual([["show-user", "1000", "--property=Linger", "--value"]])
+    expect(saved(dependencies)).toMatchObject({ lingerEnabledByDomovoi: true })
+    expect(dependencies.stdout).toHaveBeenCalledWith("Lingering for dl stays on from an earlier Domovoi install. domovoid service remove turns it off again.\n")
+  })
+
+  it.each([
+    { name: "loginctl missing", answers: { state: { code: 1, stdout: "", stderr: "spawn loginctl ENOENT" } }, detail: "loginctl was not found" },
+    { name: "no login manager", answers: { state: { code: 1, stdout: "", stderr: "Failed to connect to bus: No such file or directory\n" } }, detail: "Failed to connect to bus: No such file or directory" },
+    { name: "an unreadable answer", answers: { state: { code: 0, stdout: "maybe\n" } }, detail: "loginctl did not say whether lingering is on" },
+    { name: "a refused change", answers: { enable: { code: 1, stdout: "", stderr: "Could not enable linger: Access denied\n" } }, detail: "Could not enable linger: Access denied" },
+    { name: "a runner that could not start", answers: { state: new Error("runner refused loginctl") }, detail: "runner refused loginctl" },
+  ])("installs and warns plainly with $name, recording nothing", async ({ answers, detail }) => {
+    const dependencies = command({ ...target, capture: loginctl(answers) })
+    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(0)
+    expect(vi.mocked(dependencies.run).mock.calls.map(([, args]) => args.join(" "))).toEqual(["--user daemon-reload", "--user enable --now domovoid.service"])
+    expect(saved(dependencies)).not.toHaveProperty("lingerEnabledByDomovoi")
+    expect(dependencies.stderr).toHaveBeenCalledWith(`Could not turn on lingering for dl: ${detail}. The service is installed, but systemd stops the daemon when dl logs out of every session and starts it again at the next login. To keep it running, run loginctl enable-linger; domovoid service remove will then leave lingering on.\n`)
+  })
+
+  // Review of #698 round 4 (P2): loginctl's diagnostic is unbounded, and the
+  // app refuses service text over 4,096 UTF-16 units. The diagnostic is
+  // shortened, with a marker, before the line is composed, so the CLI and the
+  // app print the same bounded line and the logout limit and advice survive.
+  it("shortens a long loginctl diagnostic and keeps the logout limit and advice", async () => {
+    const diagnostic = `Failed to connect to bus: ${"x".repeat(4_600)}`
+    const dependencies = command({ ...target, capture: loginctl({ state: { code: 1, stdout: "", stderr: diagnostic } }) })
+    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(0)
+    const line = vi.mocked(dependencies.stderr).mock.calls.map(([text]) => text).find((text) => text.startsWith("Could not turn on lingering"))!
+    expect(line.length).toBeLessThanOrEqual(4_096)
+    expect(line).toMatch(/^Could not turn on lingering for dl: Failed to connect to bus: x+\.\.\. \(shortened\)\. The service is installed, but systemd stops the daemon when dl logs out of every session and starts it again at the next login\. To keep it running, run loginctl enable-linger; domovoid service remove will then leave lingering on\.\n$/u)
+  })
+
+  it("turns lingering off again when the install puts the previous service files back", async () => {
+    const dependencies = command({
+      ...target,
+      capture: loginctl(),
+      read: vi.fn(async () => "previous"),
+      run: vi.fn(async () => { throw new Error("Failed to connect to bus") }),
+    })
+    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+    expect(loginctlCalls(dependencies).map((args) => args[0])).toEqual(["show-user", "enable-linger", "disable-linger"])
+    expect(dependencies.stderr).toHaveBeenCalledWith("Failed to connect to bus\n")
+  })
+
+  it("says lingering stayed on when turning it off after a failed install also fails", async () => {
+    const dependencies = command({
+      ...target,
+      capture: loginctl({ disable: { code: 1, stdout: "", stderr: "Access denied" } }),
+      read: vi.fn(async () => "previous"),
+      run: vi.fn(async () => { throw new Error("Failed to connect to bus") }),
+    })
+    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+    expect(dependencies.stderr).toHaveBeenCalledWith("Failed to connect to bus. Lingering, which this install turned on, is still on: Access denied. Run loginctl disable-linger if nothing else needs it.\n")
+  })
+
+  it("never asks loginctl on macOS or Windows", async () => {
+    for (const platform of [darwin, windowsScript]) {
+      const capture = nothingRegistered()
+      const dependencies = command({ ...platform, capture })
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(0)
+      expect(capture.mock.calls.some(([name]) => name === "loginctl")).toBe(false)
+    }
+  })
+
+  it("turns lingering off on removal only after the service files are gone, when Domovoi turned it on", async () => {
+    const order: string[] = []
+    const dependencies = command({
+      ...target,
+      readConfiguration: configured(true),
+      capture: loginctl({}, order),
+      remove: vi.fn(async (path: string) => { order.push(`remove ${path}`) }),
+    })
+    expect(await runServiceCommand(["service", "remove"], dependencies)).toBe(0)
+    expect(loginctlCalls(dependencies)).toEqual([["disable-linger", "1000"]])
+    expect(order).toEqual(["remove /home/dl/.config/systemd/user/domovoid.service", "remove /home/dl/.domovoi/service.json", "loginctl disable-linger"])
+    expect(dependencies.stdout).toHaveBeenCalledWith("Turned off lingering for dl, which Domovoi turned on at install.\n")
+  })
+
+  it("leaves lingering on at removal when it was on before Domovoi", async () => {
+    const dependencies = command({ ...target, readConfiguration: configured(false), capture: loginctl() })
+    expect(await runServiceCommand(["service", "remove"], dependencies)).toBe(0)
+    expect(loginctlCalls(dependencies)).toEqual([])
+    expect(dependencies.stdout).toHaveBeenCalledWith("Lingering for dl was on before Domovoi was installed, so it was left on.\n")
+  })
+
+  it("asks loginctl nothing at removal when no record says Domovoi turned lingering on", async () => {
+    const dependencies = command({ ...target, readConfiguration: configured(undefined), capture: loginctl() })
+    expect(await runServiceCommand(["service", "remove"], dependencies)).toBe(0)
+    expect(loginctlCalls(dependencies)).toEqual([])
+    expect(vi.mocked(dependencies.stdout).mock.calls).toEqual([["Removed the Domovoi daemon service at /home/dl/.config/systemd/user/domovoid.service\n"]])
+  })
+
+  it("leaves lingering alone when the saved configuration cannot be read at removal", async () => {
+    const dependencies = effects({ capture: loginctl(), readConfiguration: vi.fn(() => { throw new Error("Invalid service configuration.") }) })
+    await expect(removeService(target, dependencies)).resolves.not.toHaveProperty("linger")
+    expect(loginctlCalls(dependencies)).toEqual([])
+    expect(dependencies.remove).toHaveBeenCalledWith("/home/dl/.domovoi/service.json", expect.any(OperationDeadline))
+  })
+
+  it("finishes the removal and warns when lingering cannot be turned off", async () => {
+    const dependencies = command({
+      ...target, readConfiguration: configured(true), capture: loginctl({ disable: { code: 1, stdout: "", stderr: "Access denied\n" } }),
+    })
+    expect(await runServiceCommand(["service", "remove"], dependencies)).toBe(0)
+    expect(dependencies.remove).toHaveBeenCalledWith("/home/dl/.domovoi/service.json", expect.any(OperationDeadline))
+    expect(dependencies.stderr).toHaveBeenCalledWith("Could not turn off lingering for dl, which Domovoi turned on at install: Access denied. Lingering stays on, so dl's user services keep running after logout. Run loginctl disable-linger if nothing else needs it.\n")
   })
 })
