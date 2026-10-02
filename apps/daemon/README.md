@@ -650,7 +650,9 @@ code or settings the repository brings:
   drops the thread, as does a server stop that one of them causes. The adapter reports the turn's
   end before the approval answered elsewhere and before any disconnect, since the daemon drops
   the thread and its turn when it hears either, so the stored turn ends failed with its failure,
-  is audited and finishes its usage as failed. A server stop itself is not delayed by this.
+  is audited and finishes its usage as failed. The daemon takes a disconnect as ending every turn
+  on that provider, so a disconnect, even of another directory's event stream, waits for every
+  such held turn in every directory. A server stop itself is not delayed by this.
   Removing a thread for good (closing, stopping it, the provider deleting it) ends its turn with
   what the stops recorded and still sends every notice they held. A prompt or steer still
   waiting when its session is unloaded or the daemon's adapter closes is refused and not sent;

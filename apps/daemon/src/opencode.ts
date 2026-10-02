@@ -1159,7 +1159,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
           this.#dropSession(session)
         })
       }
-      this.#noticeAfterStops(sessions, { type: "provider-disconnected", reason })
+      this.#noticeProviderWide({ type: "provider-disconnected", reason })
     }).finally(() => {
       for (const settle of settles) settle(outcome)
     })
@@ -1232,6 +1232,14 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // owners, the notice waits on its record and goes out once the last of
   // those records has ended, after their turns' ends (security review round
   // 14 of #687). Otherwise it goes out now. No owner waits on it.
+  // A disconnect: the daemon ends every turn on this provider when it hears
+  // one, whatever directory closed, so it waits for every thread-wide stop
+  // the adapter still holds, in any directory (security review round 15 of
+  // #687).
+  #noticeProviderWide(event: AgentEvent): void {
+    this.#noticeAfterStops([...this.#sessions.values()], event)
+  }
+
   #noticeAfterStops(sessions: Session[], event: AgentEvent): void {
     const held = sessions.flatMap((session) => (session.threadStop && session.threadStop.owners > 0 ? [session.threadStop] : []))
     if (held.length === 0) {
@@ -2399,8 +2407,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const stopped = runtime ? await this.#retire(runtime.server) : true
     const name = this.#identity.providerName
     // After the turns of sessions a thread-wide stop still holds have ended
-    // (security review round 14 of #687); the retirement above does not wait.
-    this.#noticeAfterStops(sessions, {
+    // (security review rounds 14 and 15 of #687); the retirement above does
+    // not wait.
+    this.#noticeProviderWide({
       type: "provider-disconnected",
       reason: stopped
         ? reason

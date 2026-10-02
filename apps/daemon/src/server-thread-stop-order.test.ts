@@ -72,23 +72,35 @@ class EventStream implements AsyncIterable<OpenCodeEvent> {
   }
 }
 
-function openCodeSession(workspacePath: string): WorkspaceSnapshot {
+// A second OpenCode session, in a directory of its own, on the same server.
+const otherSessionId = "session-audit"
+const otherThreadId = "ses_audit"
+
+function openCodeSession(workspacePath: string, otherPath?: string): WorkspaceSnapshot {
   const snapshot = structuredClone(demoWorkspace)
-  const session = snapshot.sessions.find((candidate) => candidate.id === sessionId)!
-  session.runtime = { ...session.runtime, provider: "opencode", model: "anthropic/sonnet", permissionMode: "build", auto: false }
-  session.state = "idle"
-  session.workspacePath = workspacePath
-  session.providerThreadId = threadId
-  delete session.activeTurnId
+  const sessions: Array<[string, string, string]> = [[sessionId, threadId, workspacePath]]
+  if (otherPath) sessions.push([otherSessionId, otherThreadId, otherPath])
+  for (const [id, thread, path] of sessions) {
+    const session = snapshot.sessions.find((candidate) => candidate.id === id)!
+    session.runtime = { ...session.runtime, provider: "opencode", model: "anthropic/sonnet", permissionMode: "build", auto: false }
+    session.state = "idle"
+    session.workspacePath = path
+    session.providerThreadId = thread
+    delete session.activeTurnId
+  }
   snapshot.approvals = []
   snapshot.approvalRules = []
   return workspaceSnapshotSchema.parse(snapshot)
 }
 
-async function start() {
+async function start({ second = false } = {}) {
   const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-stop-order-"))
   scratch.push(workspacePath)
+  const otherPath = second ? await mkdtemp(join(tmpdir(), "domovoi-stop-order-other-")) : undefined
+  if (otherPath) scratch.push(otherPath)
   const stream = new EventStream()
+  // Each directory has its own event stream.
+  const otherStream = new EventStream()
   // Aborts wait for a manual answer, by provider session.
   const waiting = new Map<string, Array<(ok: boolean) => void>>()
   let replyPost: { refuse: () => void } | undefined
@@ -108,7 +120,7 @@ async function start() {
     },
     session: {
       create: vi.fn(async () => ({ data: { id: threadId } })),
-      get: vi.fn(async () => ({ data: { id: threadId } })),
+      get: vi.fn(async (...args: unknown[]) => ({ data: { id: (args[0] as { path: { id: string } }).path.id } })),
       delete: vi.fn(async () => ({ data: true })),
       abort: vi.fn((...args: unknown[]) => {
         const id = (args[0] as { path: { id: string } }).path.id
@@ -122,7 +134,12 @@ async function start() {
       messages: vi.fn(async (_options?: unknown): Promise<{ data: unknown; response?: Response }> => ({ data: [] })),
       status: vi.fn(async (_options?: unknown): Promise<{ data?: unknown }> => ({ data: {} })),
     },
-    event: { subscribe: vi.fn(async () => ({ stream })) },
+    event: {
+      subscribe: vi.fn(async (...args: unknown[]) => {
+        const directory = (args[0] as { query?: { directory?: string } } | undefined)?.query?.directory
+        return { stream: directory !== undefined && directory === otherPath ? otherStream : stream }
+      }),
+    },
     postSessionIdPermissionsPermissionId: vi.fn(() => new Promise<{ data: boolean }>((_resolve, reject) => {
       replyPost = { refuse: () => reject(new Error("refused")) }
     })),
@@ -153,7 +170,7 @@ async function start() {
     archiveSessionWorkspace: vi.fn(async () => {}),
   } satisfies WorkspaceService
   const usageLedger = new UsageLedger()
-  const store = new SqliteWorkspaceStore(":memory:", openCodeSession(workspacePath))
+  const store = new SqliteWorkspaceStore(":memory:", openCodeSession(workspacePath, otherPath))
   const daemon = new DomovoiDaemon({
     port: 0, store, auditLog, usageLedger,
     agents: { opencode: adapter }, workspaceService, errorSink: vi.fn(),
@@ -180,13 +197,18 @@ async function start() {
   const sent = await rpc("session.send", { sessionId, prompt: "build it", client: "desktop" })
   expect(sent.error?.message).toBeUndefined()
   await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledOnce())
+  if (second) {
+    const sentOther = await rpc("session.send", { sessionId: otherSessionId, prompt: "audit it", client: "desktop" })
+    expect(sentOther.error?.message).toBeUndefined()
+    await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledTimes(2))
+  }
   const answer = async (id: string) => {
     await waitForDaemon(() => expect(waiting.get(id)?.length ?? 0).toBeGreaterThan(0))
     waiting.get(id)!.shift()!(true)
   }
   const settle = () => new Promise((resolve) => setTimeout(resolve, 30))
   return {
-    client, stream, rpc, snapshot, session, append, usageLedger, answer, settle,
+    client, stream, otherStream, rpc, snapshot, session, append, usageLedger, answer, settle,
     pendingAborts: (id: string) => waiting.get(id)?.length ?? 0,
     refuseReply: () => replyPost!.refuse(),
   }
@@ -246,5 +268,32 @@ describe("a turn ended by overlapping thread stops, through the daemon", () => {
     await settle()
     await answer("ses_child")
     await expectFailedTurn(started)
+  })
+
+  // Security review round 15 of #687 (ruling Q310): the daemon takes a
+  // disconnect as provider-wide, so a disconnect of one directory waits for
+  // a held turn in another.
+  it("is stored failed when another directory's stream closes while its approval stop is pending", async () => {
+    const started = await start({ second: true })
+    const { stream, otherStream, append, usageLedger, session, answer, settle, pendingAborts } = started
+    // Session A: an approval answered elsewhere; its abort stays pending.
+    stream.emit({ type: "permission.replied", properties: { sessionID: threadId, requestID: "per_elsewhere", reply: "once" } })
+    await waitForDaemon(() => expect(pendingAborts(threadId)).toBe(1))
+    // Session B's directory stream closes, and B's abort completes.
+    otherStream.close()
+    await answer(otherThreadId)
+    await settle()
+    await answer(threadId)
+    await waitForDaemon(() => expect(append).toHaveBeenCalledWith(expect.objectContaining({ action: "provider.turn-completed", sessionId })))
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({ action: "provider.turn-completed", outcome: "failed", sessionId }))
+    const stopped = await session()
+    expect(stopped.state).toBe("failed")
+    expect(stopped.providerFailure).toEqual(answeredElsewhere)
+    expect(usageLedger.lookup({ provider: "opencode", threadId, turnId })?.accounting?.status).toBe("failed")
+    // The disconnect reached the daemon after A's turn ended.
+    const actions = append.mock.calls.map(([input]) => input)
+    const completed = actions.findIndex((input) => input.action === "provider.turn-completed" && input.sessionId === sessionId)
+    const disconnected = actions.findIndex((input) => input.action === "provider.disconnected")
+    expect(disconnected).toBeGreaterThan(completed)
   })
 })
