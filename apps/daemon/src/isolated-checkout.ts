@@ -656,6 +656,38 @@ async function writeConfigSnapshot(entries: readonly { key: string; value: strin
   }
 }
 
+// The snapshot reaches Git as GIT_CONFIG_GLOBAL, which came in Git 2.32. An
+// older Git ignores it and reads the person's live global config and its
+// includes in every isolated command, so isolation refuses there, with no
+// fallback (ruling Q320). The version is read once per Git binary.
+export class GitTooOldForIsolationError extends Error {
+  constructor(readonly found: string | undefined) {
+    super(`Domovoi needs Git 2.32 or newer for this operation; ${found === undefined ? "it could not read the installed Git's version" : `it found Git ${found}`}. Update Git, then try again.`)
+    this.name = "GitTooOldForIsolationError"
+  }
+}
+
+const isolationGitVersions = new Map<string, Promise<string | undefined>>()
+
+function gitVersionOf(command: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  let version = isolationGitVersions.get(command)
+  if (version === undefined) {
+    version = execute(command, ["--version"], { env, encoding: "utf8" }).then(({ stdout }) => stdout.trim(), () => undefined)
+    isolationGitVersions.set(command, version)
+  }
+  return version
+}
+
+async function refuseGitTooOldForIsolation(read?: () => Promise<string | undefined>): Promise<void> {
+  const env = gitEnvironment()
+  const text = await (read ?? (() => gitVersionOf(gitCommand(env), env)))()
+  const match = text === undefined ? null : /^git version (\d+)\.(\d+)(?:\.(\d+))?/u.exec(text)
+  if (match === null) throw new GitTooOldForIsolationError(undefined)
+  const major = Number(match[1])
+  const minor = Number(match[2])
+  if (major < 2 || (major === 2 && minor < 32)) throw new GitTooOldForIsolationError(match[3] === undefined ? `${major}.${minor}` : `${major}.${minor}.${match[3]}`)
+}
+
 export async function openIsolatedGit(input: {
   worktree: string
   // A trusted repository's reviewed filter definitions, as key and value.
@@ -667,8 +699,11 @@ export async function openIsolatedGit(input: {
   // gate that allowed the reviewed definitions.
   beforeCommand?: (() => void) | undefined
   signal?: AbortSignal | undefined
+  // `git --version` of the Git isolation runs; a test seam.
+  gitVersion?: (() => Promise<string | undefined>) | undefined
 }): Promise<IsolatedGit> {
   const { worktree, signal } = input
+  await refuseGitTooOldForIsolation(input.gitVersion)
   // One rev-parse answers each on its own line, in the order asked.
   const [commonDirectory, infoAttributes, infoExclude, sparseCheckout, index, objectFormat] = (await worktreeGit(worktree, [
     "rev-parse", "--path-format=absolute", "--git-common-dir",

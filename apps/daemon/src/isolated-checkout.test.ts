@@ -477,6 +477,34 @@ describe("openIsolatedGit filter configuration", () => {
     }
   })
 
+  // GIT_CONFIG_GLOBAL, which points Git at the snapshot, came in Git 2.32:
+  // an older Git would read the person's live global config instead. So
+  // isolation refuses below 2.32, naming the version found (ruling Q320).
+  it.each([
+    ["git version 2.31.8", "2.31.8"],
+    ["git version 1.9.5", "1.9.5"],
+    ["not a version", undefined],
+  ])("refuses to open on %j", async (version, found) => {
+    const { worktree, restore } = await sessionWorktree(() => "")
+    try {
+      const error = await openIsolatedGit({ worktree, worktreeIndex: true, gitVersion: async () => version }).then(() => undefined, (failure: unknown) => failure)
+      expect(error).toMatchObject({ name: "GitTooOldForIsolationError", message: expect.stringContaining("Git 2.32 or newer") })
+      if (found !== undefined) expect((error as Error).message).toContain(found)
+    } finally {
+      restore()
+    }
+  })
+
+  it("opens on Git 2.32.0", async () => {
+    const { worktree, restore } = await sessionWorktree(() => "")
+    try {
+      const isolated = await openIsolatedGit({ worktree, worktreeIndex: true, gitVersion: async () => "git version 2.32.0" })
+      await isolated.dispose()
+    } finally {
+      restore()
+    }
+  })
+
   // The isolated directory reads a snapshot of the worktree's config taken
   // as it opens, never the person's live global, system or included files
   // (ruling Q319): a key written to any of them afterwards is not seen by a

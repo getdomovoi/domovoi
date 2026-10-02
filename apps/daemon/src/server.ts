@@ -243,6 +243,7 @@ import { readRepositoryProviderConfig } from "./repository-provider-config.js"
 import { RepositoryGitFilterRpcError, repositoryGitFilterRpcError } from "./repository-git-filter-refusal.js"
 import type { RepositoryFilterTrustSource } from "./repository-git-filter-gate.js"
 import { RepositoryGitConfigUnreadableError } from "./repository-git-filters.js"
+import { GitTooOldForIsolationError } from "./isolated-checkout.js"
 import { maximumRevokedTrustThreads, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant, RepositoryTrustStore } from "./repository-trust-store.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
@@ -10413,6 +10414,7 @@ export class DomovoiDaemon {
       if (
         error instanceof RepositoryConfigRefusedError
         || error instanceof RepositoryGitConfigUnreadableError
+        || error instanceof GitTooOldForIsolationError
         || error instanceof AgentProviderUnavailableError
       ) {
         this.#error(socket, request.id, invalidParams, error.message)

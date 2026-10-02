@@ -894,6 +894,16 @@ when the session opens. For OpenCode and Kilo it sends the first of `AGENTS.md`,
 128 KiB that resolve inside the worktree are read; an import or link that leaves it is skipped.
 `.claude/rules/` and instruction entries in project provider configuration are not read.
 
+### Git version for workspace operations
+
+Checkpoint, snapshot, restore, file revert, transfer, evidence and a new session's checkout run
+Git in a temporary Git directory that reads a snapshot of your global and system config, passed
+through `GIT_CONFIG_GLOBAL`. Git added that variable in 2.32; an older Git ignores it and reads
+your live global config instead. These operations therefore need Git 2.32 or newer. The daemon
+reads `git --version` of the Git it runs once per Git binary, and on an older Git, or when the
+version cannot be read, it refuses the operation with a message that names the version it found.
+There is no fallback for older Git.
+
 ## Supervise
 
 Install the daemon as a service for the user who asks for it:
