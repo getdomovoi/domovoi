@@ -471,4 +471,23 @@ describe("openIsolatedGit filter configuration", () => {
       restore()
     }
   })
+
+  // Git accepts a filter driver named by an empty subsection, `[filter ""]`,
+  // printed as filter..clean. Rather than follow it through every check,
+  // Domovoi refuses any such driver before isolation, naming the key (ruling
+  // Q319); so for an empty-named Git LFS extension or custom transfer.
+  it.each([
+    ["a local empty override of a global label", "[filter \"\"]\n\tclean = domovoi-inert-label\n", "[filter \"\"]\n\tclean =\n", "filter..clean"],
+    ["a required that is not a boolean", "", "[filter \"\"]\n\trequired = maybe\n", "filter..required"],
+    ["required=true with no command", "", "[filter \"\"]\n\trequired = true\n", "filter..required"],
+    ["an empty-named Git LFS extension", "", "[lfs \"extension.\"]\n\tclean =\n", "lfs.extension..clean"],
+  ])("refuses a filter driver with an empty name: %s", async (_label, global, local, key) => {
+    const { worktree, restore } = await sessionWorktree(() => global, local)
+    try {
+      await expect(readGitFilterSettings(worktree))
+        .rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", message: expect.stringContaining(key) })
+    } finally {
+      restore()
+    }
+  })
 })

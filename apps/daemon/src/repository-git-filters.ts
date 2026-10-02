@@ -183,6 +183,10 @@ export async function readGitFilterSettings(
     // reads less config, the isolated one, run an inherited command ordinary
     // Git refuses over. Another key with no value starts no program: Git LFS
     // stops on it before running anything.
+    const recordKey = newline === -1 ? record : record.slice(0, newline)
+    if (emptyNamedDriverKey.test(recordKey)) {
+      throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(recordKey)} in ${scope} Git config names a filter driver with an empty name, which Domovoi does not run` })
+    }
     if (newline === -1) {
       if (/^filter\..+\.required$/u.test(record)) settings.push({ scope, key: record, value: "true", origin: file })
       else if (filterCommandKey.test(record)) throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(record)} in ${scope} Git config has no value` })
@@ -197,6 +201,12 @@ export async function readGitFilterSettings(
   }
   return settings
 }
+
+// A key of a filter driver, Git LFS extension or custom transfer named by an
+// empty subsection (`[filter ""]`, printed filter..clean), which Git accepts.
+// Domovoi refuses such a config rather than follow the empty name through
+// every check that matches a driver by name (ruling Q319).
+export const emptyNamedDriverKey = /^(?:filter\.\.|lfs\.(?:extension|customtransfer)\.\.)/iu
 
 // A filter driver's command keys, as `git config` prints them.
 export const filterCommandKey = /^filter\..+\.(?:clean|smudge|process)$/u
