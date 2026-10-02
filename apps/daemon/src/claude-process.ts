@@ -81,7 +81,7 @@ export function runningClaudeProcesses(): RunningClaudeProcess[] {
   return [...running]
 }
 
-type TaskkillSpawn = (
+export type TaskkillSpawn = (
   command: string,
   args: string[],
   options: { cwd: string; windowsHide: true; shell: false; stdio: "ignore" },

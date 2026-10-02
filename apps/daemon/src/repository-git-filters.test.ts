@@ -46,6 +46,8 @@ describe("readRepositoryGitFilters", () => {
       operation: "smudge",
       value: "sops --decrypt /dev/stdin",
       origin: join(root, ".git", "config"),
+      // The driver's required setting travels with its command: trust reviews it.
+      required: "true",
     }])
   })
 

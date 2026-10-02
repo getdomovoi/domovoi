@@ -3,6 +3,7 @@ import {
   maximumRepositoryTrustThreadRestarts,
   type RepositoryTrustState,
   type ToolInventoryEntry,
+  type ToolInventoryGitFilters,
   type ToolInventoryProvider,
 } from "@getdomovoi/protocol"
 
@@ -164,6 +165,33 @@ export function heldBackUnder(config: RepositoryProviderConfig, trust: Repositor
     ...provider,
     entries: provider.entries.map((entry) => ({ ...entry, heldBack: heldBack(provider.provider, entry) })),
   }))
+}
+
+// Whether `grant` reviewed exactly this git filter block: the block lists
+// every filter (nothing omitted, readable) and its review digest is the one
+// the grant recorded (ruling Q265). The trust digest does not cover the file
+// that sets a filter, so a grant can still match the configuration after
+// the shown block changed; the filters then stay held back.
+export function gitFilterBlockReviewed(
+  filters: ToolInventoryGitFilters | undefined,
+  grant: RepositoryTrustGrant | undefined,
+): boolean {
+  return filters !== undefined && filters.unreadable === undefined && filters.omittedEntries === 0
+    && grant?.gitFilterReviewDigest !== undefined && grant.gitFilterReviewDigest === filters.reviewDigest
+}
+
+// The repository's git filters as the inventory reports them under `trust`:
+// the reader marks every one held back, and a trusted grant for the digest
+// read now whose client reviewed the filters runs them (P8 PR B,
+// repository-git-filter-gate.ts), in every session worktree that reads the
+// same filters as the root.
+export function gitFiltersUnder(
+  filters: ToolInventoryGitFilters,
+  trust: RepositoryTrustState,
+  grant: RepositoryTrustGrant | undefined,
+): ToolInventoryGitFilters {
+  if (trust.state !== "trusted" || !gitFilterBlockReviewed(filters, grant)) return filters
+  return { ...filters, entries: filters.entries.map((entry) => ({ ...entry, heldBack: false })) }
 }
 
 // How tool.inventory and the trust step read the project root: entries marked

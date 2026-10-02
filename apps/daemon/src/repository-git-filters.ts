@@ -6,8 +6,10 @@ import {
   repositoryGitConfigUnreadableReasons, repositoryGitFilterOperations, repositoryGitFilterScopes, type RepositoryGitFilterScope,
 } from "@getdomovoi/protocol"
 
+import { gitCommand } from "./git-command.js"
 import { gitEnvironment, inertRepositoryConfig, trustedConfigScopes } from "./git-environment.js"
 import { isStandardLfsFilterLine } from "./git-read-config.js"
+import { inventoryFieldCaps, redactInventoryText } from "./inventory-redaction.js"
 
 const execute = promisify(execFile)
 
@@ -28,8 +30,9 @@ const execute = promisify(execFile)
 // config and starts a custom transfer agent, or an extension's clean or
 // smudge command, that config names, so each such setting is listed like a
 // filter command. Keys as git-lfs v3.8.0 matches them: a custom transfer's
-// path by the unanchored, case-insensitive `customtransfer.<name>.path`
-// (tq/custom.go) and its args as `lfs.customtransfer.<name>.args`; the
+// path by the unanchored `lfs\.((?i)customtransfer\.([^.]+))\.path`
+// (tq/custom.go), in the one spelling Domovoi models (lfsPolicyGroup), and
+// its args as `lfs.customtransfer.<name>.args`; the
 // standalone agent plain or URL-scoped (tq/manifest.go, config.URLConfig);
 // lfs.extension.<name>.clean and .smudge (config/git_fetcher.go). The
 // tracked .lfsconfig cannot set any of them: git-lfs reads only its safeKeys
@@ -51,21 +54,64 @@ export type RepositoryGitFilter = {
   // The absolute path of the config file that sets it, or undefined when Git
   // names no file (a -c setting).
   origin: string | undefined
+  // For a filter.<driver>.* command, the value the repository's own config
+  // gives filter.<driver>.required, when it gives one. It decides whether Git
+  // stores unfiltered bytes when the filter fails, so the digest, the
+  // comparison and the reviewed pins carry it with the command.
+  required?: string
 }
 
-// Every filter and lfs setting; classify() picks the ones that start a program.
-const filterKeyPattern = String.raw`^(filter|lfs)\.`
+// Every filter and lfs setting, and every key with `lfs.customtransfer.` in
+// it, in any case, as an extended regular expression for `git config
+// --get-regexp`; classify() picks the ones that start a program.
+const caselessPattern = (text: string) => [...text].map((character) => /[a-z]/u.test(character) ? `[${character.toUpperCase()}${character}]` : character === "." ? "\\." : character).join("")
+export const filterKeyPattern = `^(filter|lfs)\\.|${caselessPattern("lfs.customtransfer.")}`
+
+// The keys every filter reader looks at, in JavaScript: filterKeyPattern.
+export const filterSettingKey = (key: string) => /^(?:filter|lfs)\.|lfs\.customtransfer\./iu.test(key)
 const repositoryScopes: ReadonlySet<string> = new Set(repositoryGitFilterScopes)
 
+// One model of the Git LFS keys that start or choose a program, for the gate,
+// the isolated directory's snapshot and its second check alike (ruling Q320).
+//
+// Git LFS v3.8.0 takes a custom transfer's path from any key its unanchored
+// `lfs\.((?i)customtransfer\.([^.]+))\.path` matches (tq/custom.go), and the
+// transfer's args, concurrency and direction from lfs.<that subsection>.args
+// and the rest. Domovoi models the keys that start `lfs.customtransfer.`, in
+// any case, and match that expression whole when they match it at all: a
+// key with `lfs.customtransfer.` anywhere else in it, or one the expression
+// matches only in part (lfs.customtransfer.<name>.pathname,
+// lfs.customtransfer.<name>.path.more), is one it cannot place in a group,
+// and it refuses the config, naming the key (refuseFilterSettingGitStopsOn).
+// Extensions are lfs.extension.<name>.<variable> (config/git_fetcher.go reads
+// exactly four parts); the standalone agent is plain or URL-scoped.
+export function unmodelledLfsTransferKey(key: string): boolean {
+  if (/.lfs\.customtransfer\./isu.test(key)) return true
+  const path = /lfs\.customtransfer\.[^.]+\.path/iu.exec(key)
+  return path !== null && path[0].length !== key.length
+}
+
+// The Git LFS settings that start a program or choose one, by the group they
+// belong to: an extension's or a custom transfer's keys (command, arguments,
+// priority, concurrency and the rest), or a standalone transfer agent.
+const lfsPolicyKey = /^lfs\.(?:extension\.(.+)\.[^.]+|customtransfer\.(.+)\.[^.]+|(?:.+\.)?standalonetransferagent)$/iu
+
+export function lfsPolicyGroup(key: string): string | undefined {
+  const match = lfsPolicyKey.exec(key)
+  if (match === null) return undefined
+  return match[1] !== undefined ? `extension\0${match[1]}` : match[2] !== undefined ? `customtransfer\0${match[2]}` : key
+}
+
 // The driver and operation of a setting that starts a program, or undefined.
-// `git config` prints section and variable names in lower case.
+// `git config` prints section and variable names in lower case. Every Git
+// LFS key it names is in an lfsPolicyGroup.
 export function classify(key: string, value: string): { driver: string; operation: RepositoryGitFilterOperation } | undefined {
   const filter = /^filter\.(.+)\.(clean|smudge|process)$/u.exec(key)
   if (filter) return { driver: filter[1]!, operation: filter[2] as RepositoryGitFilterOperation }
   if (!key.startsWith("lfs.")) return undefined
-  const path = /customtransfer\.([^.]+)\.path/iu.exec(key)
+  const path = /^lfs\.customtransfer\.([^.]+)\.path$/iu.exec(key)
   if (path) return { driver: path[1]!, operation: "lfs-transfer-path" }
-  const args = /customtransfer\.([^.]+)\.args$/iu.exec(key)
+  const args = /^lfs\.customtransfer\.([^.]+)\.args$/iu.exec(key)
   if (args) return { driver: args[1]!, operation: "lfs-transfer-args" }
   if (/^lfs\.(?:.+\.)?standalonetransferagent$/u.test(key)) return { driver: value, operation: "lfs-standalone-agent" }
   const extension = /^lfs\.extension\.([^.]+)\.(clean|smudge)$/iu.exec(key)
@@ -79,10 +125,12 @@ export type RepositoryGitConfigUnreadableReason = (typeof repositoryGitConfigUnr
 // a Git repository. Nothing is known about the filters it sets, so what asked
 // must not read it as setting none.
 export class RepositoryGitConfigUnreadableError extends Error {
-  constructor(readonly reason: RepositoryGitConfigUnreadableReason, options?: { cause?: unknown }) {
-    super(reason === "too-large"
+  // detail: what Git stops on, when Domovoi found it: the key, redacted.
+  constructor(readonly reason: RepositoryGitConfigUnreadableReason, options?: { cause?: unknown; detail?: string }) {
+    super(`${reason === "too-large"
       ? "The repository's Git config sets more filter settings than Domovoi reads"
-      : "Git could not read the repository's Git config", options)
+      : "Git could not read the repository's Git config"}${options?.detail === undefined ? "" : `: ${options.detail}`}`,
+    options?.cause === undefined ? undefined : { cause: options.cause })
     this.name = "RepositoryGitConfigUnreadableError"
   }
 }
@@ -107,6 +155,12 @@ export async function readRepositoryGitFilters(
 
 // The settings from the repository's own config that start a program.
 export function repositoryGitFilters(settings: readonly GitFilterSetting[]): RepositoryGitFilter[] {
+  // The last value the repository's own config gives each driver's required.
+  const required = new Map<string, string>()
+  for (const { scope, key, value } of settings) {
+    const driver = /^filter\.(.+)\.required$/u.exec(key)?.[1]
+    if (driver !== undefined && !trustedConfigScopes.has(scope)) required.set(driver, value)
+  }
   const filters: RepositoryGitFilter[] = []
   for (const { scope, key, value, origin } of settings) {
     if (trustedConfigScopes.has(scope)) continue
@@ -114,7 +168,10 @@ export function repositoryGitFilters(settings: readonly GitFilterSetting[]): Rep
     if (value === "" || isStandardLfsFilterLine(key, value)) continue
     const classified = classify(key, value)
     if (classified === undefined) continue
-    filters.push({ scope: scope as RepositoryGitFilterScope, key, ...classified, value, origin })
+    const driverRequired = key.startsWith("filter.") ? required.get(classified.driver) : undefined
+    filters.push({
+      scope: scope as RepositoryGitFilterScope, key, ...classified, value, origin, ...(driverRequired === undefined ? {} : { required: driverRequired }),
+    })
   }
   return filters
 }
@@ -129,11 +186,13 @@ export async function readGitFilterSettings(
 ): Promise<GitFilterSetting[]> {
   let output: string
   try {
-    output = (await execute("git", [
+    const env = gitEnvironment()
+    // No Git found reads as a Git that failed: git-failed below.
+    output = (await execute(gitCommand(env), [
       "-C", directory, ...inertRepositoryConfig,
       "config", "--show-scope", "--show-origin", "-z", "--get-regexp", filterKeyPattern,
     ], {
-      env: gitEnvironment(), encoding: "utf8", maxBuffer: maximumRepositoryGitConfigOutputBytes,
+      env, encoding: "utf8", maxBuffer: maximumRepositoryGitConfigOutputBytes,
       timeout: timeoutMs, killSignal: "SIGKILL", ...(signal ? { signal } : {}),
     })).stdout
   } catch (error) {
@@ -153,17 +212,119 @@ export async function readGitFilterSettings(
     const scope = fields[index]!
     const origin = fields[index + 1]!
     const record = fields[index + 2]!
-    if (!trustedConfigScopes.has(scope) && !repositoryScopes.has(scope)) throw new RepositoryGitConfigUnreadableError("git-failed")
     const newline = record.indexOf("\n")
-    // A key with no value is a config error for a filter or a program Git
-    // LFS would start: Git or git-lfs stops before running anything.
-    if (newline === -1) continue
-    settings.push({
-      scope,
-      key: record.slice(0, newline),
-      value: record.slice(newline + 1),
-      origin: origin.startsWith("file:") ? resolve(directory, origin.slice("file:".length)) : undefined,
-    })
+    const file = origin.startsWith("file:") ? resolve(directory, origin.slice("file:".length)) : undefined
+    const key = newline === -1 ? record : record.slice(0, newline)
+    const value = newline === -1 ? undefined : record.slice(newline + 1)
+    refuseAmbiguousConfigRecord(key, value, `${scope} Git config`)
+    refuseFilterSettingGitStopsOn(scope, key, value)
+    if (value !== undefined) settings.push({ scope, key, value, origin: file })
+    // A driver's `required` written alone is boolean true. Another key with
+    // no value starts no program: Git LFS stops on it before running anything.
+    else if (/^filter\..+\.required$/u.test(key)) settings.push({ scope, key, value: "true", origin: file })
   }
   return settings
+}
+
+// Refuses, naming the key, a filter or Git LFS setting Domovoi does not run
+// past: one from a scope it does not know, a filter driver, Git LFS
+// extension or custom transfer with an empty name (ruling Q319), a filter
+// command written with no value, or a required that is not a Git boolean.
+// The last two are errors Git stops on, whatever scope sets them (ruling
+// Q318); dropping one would let a Git directory that reads less config, the
+// isolated one, run an inherited command ordinary Git refuses over. `value`
+// undefined is a key written with no value.
+export function refuseFilterSettingGitStopsOn(scope: string, key: string, value: string | undefined): void {
+  if (!trustedConfigScopes.has(scope) && !repositoryScopes.has(scope)) throw new RepositoryGitConfigUnreadableError("git-failed")
+  if (emptyNamedDriverKey.test(key)) {
+    throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${scope} Git config names a filter driver with an empty name, which Domovoi does not run` })
+  }
+  refuseUnmodelledLfsTransferKey(key, `${scope} Git config`)
+  // A Git LFS extension, custom transfer or standalone agent key with no value
+  // stops git-lfs; it refuses here too, so no copy of the config writes it as
+  // a value (ruling Q319).
+  if (value === undefined && (filterCommandKey.test(key) || /^lfs\.(?:extension\.|customtransfer\.|(?:.+\.)?standalonetransferagent$)/iu.test(key))) {
+    throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${scope} Git config has no value` })
+  }
+  if (value !== undefined && /^filter\..+\.required$/u.test(key) && gitRequiredState(value) === undefined) {
+    throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${scope} Git config is not a boolean` })
+  }
+}
+
+// Refuses a config entry whose record Git LFS would frame differently from
+// Git (ruling Q321). Git LFS v3.8.0 reads `git config --includes -l`, splits
+// it at every newline and each line at its first "=" (git/config.go
+// ParseConfigLines, config/git_fetcher.go readGitConfig), so a value or key
+// on more than one line becomes settings Git never had, which no check here
+// sees, and a filter or Git LFS key holding "=" (only a subsection can)
+// becomes a shorter key. Every view that feeds isolation runs this on every
+// entry it reads: the gate's filter read, the snapshot's source read (which
+// the carried settings come from) and the check after the pins. A harmless
+// multiline value refuses too.
+export function refuseAmbiguousConfigRecord(key: string, value: string | undefined, where: string): void {
+  if (/[\r\n]/u.test(key)) {
+    throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `a config key in ${where} spans more than one line, which Git LFS reads as other settings` })
+  }
+  if (value !== undefined && /[\r\n]/u.test(value)) {
+    throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${where} has a value on more than one line, which Git LFS reads as other settings` })
+  }
+  if (key.includes("=") && filterSettingKey(key)) {
+    throw new RepositoryGitConfigUnreadableError("git-failed", { detail: `${shownKey(key)} in ${where} holds "=", which Git LFS reads as a shorter key` })
+  }
+}
+
+// Refuses a key Git LFS can read as a custom transfer's program in a spelling
+// Domovoi does not model (unmodelledLfsTransferKey), naming it and `where`.
+export function refuseUnmodelledLfsTransferKey(key: string, where: string): void {
+  if (!unmodelledLfsTransferKey(key)) return
+  throw new RepositoryGitConfigUnreadableError("git-failed", {
+    detail: `${shownKey(key)} in ${where} is a key Git LFS can read as a custom transfer program, in a form Domovoi does not check`,
+  })
+}
+
+// A key of a filter driver, Git LFS extension or custom transfer named by an
+// empty subsection (`[filter ""]`, printed filter..clean), which Git accepts.
+// Domovoi refuses such a config rather than follow the empty name through
+// every check that matches a driver by name (ruling Q319).
+export const emptyNamedDriverKey = /^(?:filter\.\.|lfs\.(?:extension|customtransfer)\.\.)/iu
+
+// A filter driver's command keys, as `git config` prints them.
+export const filterCommandKey = /^filter\..+\.(?:clean|smudge|process)$/u
+
+// A config key as a refusal shows it: the repository's own text, which can
+// hold a credential, so redacted as the tool inventory shows text.
+const shownKey = (key: string) => redactInventoryText(key, inventoryFieldCaps.detail)
+
+// A driver's filter.<driver>.required as Git reads a boolean: true, yes and
+// on, in any case, or a nonzero integer, are true; false, no, off, the empty
+// value and 0 are false; no value at all is unset. Git refuses any other
+// text, and so does this: undefined (rulings Q265, Q318).
+export function gitRequiredState(value: string | undefined): "true" | "false" | "unset" | undefined {
+  if (value === undefined) return "unset"
+  const lower = value.toLowerCase()
+  if (lower === "true" || lower === "yes" || lower === "on") return "true"
+  if (lower === "false" || lower === "no" || lower === "off" || lower === "") return "false"
+  const number = gitConfigInt(value)
+  return number === undefined ? undefined : number === 0n ? "false" : "true"
+}
+
+const gitIntMinimum = -(2n ** 31n)
+const gitIntMaximum = 2n ** 31n - 1n
+const gitUnitFactors: Readonly<Record<string, bigint>> = { "": 1n, k: 1024n, m: 1024n ** 2n, g: 1024n ** 3n }
+
+// An int as Git's config reads one (git_parse_signed): strtoimax in base 0
+// after leading white space (an optional sign, then 0x and hex digits, a
+// leading 0 and octal digits, or decimal digits), then nothing or exactly one
+// k, m or g in either case, and the product within a C int. Checked against
+// `git config --bool` at the edges: 09, 018, 2147483648 and 2g are refused,
+// -2147483648 and -2097152k read.
+function gitConfigInt(value: string): bigint | undefined {
+  const match = /^[ \t\n\v\f\r]*([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)(.*)$/su.exec(value)
+  if (match === null) return undefined
+  const [, sign, digits, unit] = match as unknown as [string, string, string, string]
+  const factor = gitUnitFactors[unit.toLowerCase()]
+  if (factor === undefined || unit.length > 1) return undefined
+  const magnitude = /^0[xX]/u.test(digits) ? BigInt(digits) : digits.length > 1 && digits.startsWith("0") ? BigInt(`0o${digits.slice(1)}`) : BigInt(digits)
+  const product = (sign === "-" ? -magnitude : magnitude) * factor
+  return product < gitIntMinimum || product > gitIntMaximum ? undefined : product
 }

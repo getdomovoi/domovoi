@@ -124,12 +124,28 @@ export const repositoryTrustSchema = z.object({
   refineRepositoryTrustPin(repository.configDigest, repository.trust, context, ["trust"])
 })
 
+// gitFilters.reviewed: the client showed the person every git filter the
+// repository's own config sets (tool.inventory's repository.gitFilters, read
+// with the same configDigest, which covers the filters). Only a grant made
+// with it lets the daemon run those filters; one made without it, by an
+// older client or for a repository the client showed no filters for, keeps
+// them held back. The daemon records it only when that inventory listed
+// every filter (nothing omitted or unreadable). reviewDigest is that block's
+// reviewDigest as the client received it: the daemon recomputes it from its
+// own read and grants nothing when the two differ, so the acknowledgement
+// covers the exact block the client fetched.
+export const repositoryTrustGitFiltersAcknowledgementSchema = z.object({
+  reviewed: z.literal(true),
+  reviewDigest: skillContentDigestSchema,
+}).strict()
+
 // configDigest is the digest the client showed the person. The daemon grants
 // trust only when it is still the repository's current digest.
 export const repositoryTrustParamsSchema = z.object({
   projectId: repositoryTrustProjectIdSchema,
   configDigest: repositoryConfigDigestSchema,
   client: repositoryTrustClientSchema,
+  gitFilters: repositoryTrustGitFiltersAcknowledgementSchema.optional(),
 }).strict()
 
 // config-changed: the configuration no longer matches the reviewed digest, so
@@ -196,13 +212,18 @@ export const repositoryGitFilterScopeSchema = z.enum(repositoryGitFilterScopes)
 export const maximumRepositoryGitFilterDriverNameLength = 256
 export const repositoryGitFilterDriverNameSchema = inventoryText(maximumRepositoryGitFilterDriverNameLength)
 
-// The data of a session.create, session.fork or transfer refusal because
-// checking the repository out would run a filter its own Git config sets. It
-// names the drivers, never their commands, and the repository's trust against
-// its current configuration digest, so a client can offer the trust review. A
-// trusted state means the grant covers the digest and the daemon still held
-// the filter back. At most maximumRepositoryGitFilterDrivers are named, and
-// omittedDrivers counts the rest.
+// The data of a refusal because Git would run a filter the repository's own
+// Git config sets and this machine's trust does not cover it: session.create,
+// session.fork, a checkpoint, restore or file revert, or a transfer on either
+// machine. It names the drivers, never their commands, and the repository's
+// trust against the configuration digest of the refused worktree, read now,
+// so a client can offer the trust review. A trusted state means the grant
+// was made without repository.trust gitFilters.reviewed (an older client),
+// so the filters stay held back until trust is given again from a client
+// that shows them, or that trust was taken back or changed while the
+// operation ran. At most
+// maximumRepositoryGitFilterDrivers are named, and omittedDrivers counts the
+// rest.
 export const maximumRepositoryGitFilterDrivers = 32
 export const repositoryGitFilterRefusalSchema = z.object({
   kind: z.literal("repository-git-filter"),

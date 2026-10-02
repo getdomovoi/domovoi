@@ -1,4 +1,7 @@
+import { execFile } from "node:child_process"
 import { join } from "node:path"
+
+import { gitCommand } from "./git-command.js"
 
 // How the daemon runs Git for its own bookkeeping, shared by workspace.ts and
 // the repository git filter reader so both read the configuration Git applies.
@@ -36,6 +39,14 @@ const droppedGitEnvironment = new Set([
   "GIT_EDITOR",
 ])
 
+// Daemon git runs offline too: in a partial clone a missing object fails
+// the command instead of being fetched from the promisor remote the
+// repository's config names, with that config's own transport settings
+// (core.sshCommand, a credential helper). Only the isolated Git directory
+// (isolated-checkout.ts), which carries the filtered transports and none of
+// the repository's transport config, takes this variable away and may fetch.
+// Git before 2.45 ignores it, so on such Git the workspace refuses a partial
+// clone before anything reads an object (workspace.ts, refuseLazyFetch).
 export function gitEnvironment(): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {}
   for (const [name, value] of Object.entries(process.env)) {
@@ -43,15 +54,45 @@ export function gitEnvironment(): NodeJS.ProcessEnv {
     if (droppedGitEnvironment.has(upper) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/u.test(upper)) continue
     environment[name] = value
   }
+  environment.GIT_NO_LAZY_FETCH = "1"
   return environment
+}
+
+// Whether this Git honours GIT_NO_LAZY_FETCH: 2.45 and later. A version that
+// cannot be read counts as older.
+export function gitSupportsNoLazyFetch(version: string | undefined): boolean {
+  const match = /(\d+)\.(\d+)/.exec(version ?? "")
+  if (!match) return false
+  const major = Number(match[1])
+  const minor = Number(match[2])
+  return major > 2 || (major === 2 && minor >= 45)
+}
+
+let installedVersion: Promise<string | undefined> | undefined
+
+// `git --version` as the daemon's Git prints it, read once.
+export function installedGitVersionText(): Promise<string | undefined> {
+  installedVersion ??= new Promise((done) => {
+    const env = gitEnvironment()
+    let command: string
+    try {
+      command = gitCommand(env)
+    } catch {
+      done(undefined)
+      return
+    }
+    execFile(command, ["--version"], { env, timeout: 3_000 }, (error, stdout) => done(error ? undefined : stdout.trim()))
+  })
+  return installedVersion
 }
 
 // A filter driver runs a command on every add, checkout and reset. One the
 // person set in their global or system config is their own tool (Git LFS). One
 // the repository's own config sets can point at a file the agent edits, and
 // switching it off would change what a checkpoint stores (git-crypt plaintext),
-// so the actions that would run it are refused until repositories can be
-// trusted.
+// so the actions that would run it are refused unless the repository is
+// trusted on this machine, and then run only its reviewed definitions
+// (repository-git-filter-gate.ts).
 // "unknown" is config git ships itself, such as Apple Git's credential helper.
 // "command" is left out: the daemon's own -c settings name no filter or
 // helper, and an inherited one is dropped with the environment above.

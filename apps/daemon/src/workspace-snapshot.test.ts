@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -187,12 +187,14 @@ describe("GitWorkspaceService.snapshot", () => {
   // Ruled 2026-09-23 (A): a checkpoint records a submodule by its commit, not
   // its files, so local changes inside one are refused rather than left out.
   describe("with a submodule", () => {
-    async function withSubmodule() {
+    async function withSubmodule(attributes?: string) {
       const scratch = await mkdtemp(join(tmpdir(), "domovoi-snapshot-submodule-"))
       scratchDirectories.push(scratch)
       const library = join(scratch, "library")
       await execute("git", ["init", "--initial-branch=main", library])
+      await execute("git", ["-C", library, "config", "core.autocrlf", "false"])
       await writeFile(join(library, "lib.txt"), "library\n")
+      if (attributes !== undefined) await writeFile(join(library, ".gitattributes"), attributes)
       await execute("git", ["-C", library, "add", "."])
       await execute("git", ["-C", library, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "library"])
       const path = join(scratch, "project")
@@ -202,8 +204,88 @@ describe("GitWorkspaceService.snapshot", () => {
       await execute("git", ["-C", path, "add", "."])
       await execute("git", ["-C", path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"])
       await writeFile(join(path, "tracked.txt"), "agent edit\n")
-      return { service: new GitWorkspaceService(join(scratch, "worktrees")), path }
+      return { service: new GitWorkspaceService(join(scratch, "worktrees")), path, scratch }
     }
+
+    // A submodule's own Git config is read by Git whenever the superproject's
+    // status, diff or staging looks into it, and no trust grant reviews it.
+    // The dirty-submodule check reads each submodule through an isolated Git
+    // directory of its own; staging, which always looks into a checked-out
+    // submodule, is refused while one sets a filter; and evidence keeps out
+    // of submodule worktrees.
+    async function withSubmoduleFilter() {
+      const repository = await withSubmodule("lib.txt filter=agent\n")
+      const { service, path, scratch } = repository
+      const checkpoint = await service.checkpoint(path, "before")
+      await writeFile(join(path, "tracked.txt"), "later edit\n")
+      const markerPath = join(scratch, "submodule-filter-ran").replaceAll("\\", "/")
+      const payload = join(scratch, "payload.sh").replaceAll("\\", "/")
+      await writeFile(payload, `echo ran >> "${markerPath}"\ncat\n`)
+      const submodule = join(path, "vendor", "library")
+      await execute("git", ["-C", submodule, "config", "filter.agent.clean", `sh ${payload}`])
+      await execute("git", ["-C", submodule, "config", "core.fsmonitor", `sh ${payload}`])
+      // The same bytes with a new time, so Git has to read the file again.
+      await writeFile(join(submodule, "lib.txt"), "library\n")
+      const later = new Date(Date.now() + 5_000)
+      await utimes(join(submodule, "lib.txt"), later, later)
+      const ran = async () => readFile(markerPath, "utf8").then(() => true, () => false)
+      return { ...repository, checkpoint, ran }
+    }
+
+    it.each(["restore", "snapshot", "checkpoint"] as const)("refuses a %s while a submodule's own config sets a filter, and runs it nowhere", async (operation) => {
+      const { service, path, checkpoint, ran } = await withSubmoduleFilter()
+      const head = (await gitOut(path, "rev-parse", "HEAD")).trim()
+
+      const attempt = operation === "restore"
+        ? service.restore(path, checkpoint.commit)
+        : operation === "snapshot" ? service.snapshot(path, "while the agent runs") : service.checkpoint(path, "after")
+
+      await expect(attempt).rejects.toMatchObject({
+        name: "SubmoduleFilterRefusedError",
+        message: expect.stringContaining("filter.agent.clean in local Git config"),
+      })
+      expect(await ran()).toBe(false)
+      expect((await gitOut(path, "rev-parse", "HEAD")).trim()).toBe(head)
+    })
+
+    it("reads evidence without looking into a submodule's worktree, so its filter never runs", async () => {
+      const { service, path, ran } = await withSubmoduleFilter()
+
+      const evidence = await service.evidence(path)
+
+      expect(evidence.files.map((file) => file.path)).toEqual(["tracked.txt"])
+      expect(await ran()).toBe(false)
+    })
+
+    // A submodule whose HEAD names an object it lacks, and whose own config
+    // makes it a partial clone with a promisor remote and a core.sshCommand:
+    // reading that HEAD must not fetch the object through the submodule's
+    // transport. The read runs offline, and the operation is refused.
+    it.each(["restore", "snapshot", "checkpoint"] as const)("fetches nothing through a submodule's own promisor when %s reads it", async (operation) => {
+      const { service, path, scratch } = await withSubmodule()
+      const checkpoint = await service.checkpoint(path, "before")
+      await writeFile(join(path, "tracked.txt"), "later edit\n")
+      const markerPath = join(scratch, "submodule-transport-ran").replaceAll("\\", "/")
+      const payload = join(scratch, "payload.sh").replaceAll("\\", "/")
+      await writeFile(payload, `echo ran >> "${markerPath}"\nexit 1\n`)
+      const submodule = join(path, "vendor", "library")
+      const subGit = (...args: string[]) => execute("git", ["-C", submodule, ...args])
+      await subGit("config", "core.repositoryformatversion", "1")
+      await subGit("config", "extensions.partialClone", "origin")
+      await subGit("config", "remote.origin.promisor", "true")
+      await subGit("config", "remote.origin.url", "ssh://git@example.invalid/library.git")
+      await subGit("config", "core.sshCommand", `sh ${payload}`)
+      // The branch now names a commit this submodule does not have.
+      const branch = (await subGit("rev-parse", "--path-format=absolute", "--git-path", "refs/heads/main")).stdout.trim()
+      await writeFile(branch, `${"1".repeat(40)}\n`)
+
+      const attempt = operation === "restore"
+        ? service.restore(path, checkpoint.commit)
+        : operation === "snapshot" ? service.snapshot(path, "while the agent runs") : service.checkpoint(path, "after")
+
+      await expect(attempt).rejects.toThrow()
+      await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+    })
 
     it("records a repository whose submodule is clean", async () => {
       const { service, path } = await withSubmodule()
@@ -225,6 +307,23 @@ describe("GitWorkspaceService.snapshot", () => {
       expect((await gitOut(path, "rev-parse", "HEAD")).trim()).toBe(head)
       expect((await readdir((await gitOut(path, "rev-parse", "--absolute-git-dir")).trim())).sort()).toEqual(gitDirectory)
       expect(await gitOut(path, "for-each-ref", "refs/domovoi/checkpoints")).toBe("")
+    })
+
+    // A restore's hard reset runs without the repository's submodule.recurse,
+    // and its recovery checkpoint cannot hold a submodule's local changes, so
+    // restore refuses them as snapshot does.
+    it("refuses a restore while the submodule has local changes, and changes nothing", async () => {
+      const { service, path } = await withSubmodule()
+      const checkpoint = await service.checkpoint(path, "clean submodule")
+      await writeFile(join(path, "tracked.txt"), "later edit\n")
+      await writeFile(join(path, "vendor", "library", "lib.txt"), "dirty\n")
+      const head = (await gitOut(path, "rev-parse", "HEAD")).trim()
+
+      await expect(service.restore(path, checkpoint.commit)).rejects.toBeInstanceOf(SubmoduleChangesRefusedError)
+
+      expect((await gitOut(path, "rev-parse", "HEAD")).trim()).toBe(head)
+      expect(await readFile(join(path, "tracked.txt"), "utf8")).toBe("later edit\n")
+      expect(await readFile(join(path, "vendor", "library", "lib.txt"), "utf8")).toBe("dirty\n")
     })
   })
 })

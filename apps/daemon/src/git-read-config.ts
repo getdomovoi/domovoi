@@ -2,6 +2,8 @@ import { execFile, spawn } from "node:child_process"
 import { access } from "node:fs/promises"
 import { resolve } from "node:path"
 
+import { gitCommand } from "./git-command.js"
+
 // A read-only Git command still runs whatever programs Git is configured to
 // run: an fsmonitor helper, an external diff or textconv, a filter,
 // a signature verifier, or a post-index-change hook when git status rewrites
@@ -74,9 +76,23 @@ export function isStandardLfsFilterLine(key: string, value: string): boolean {
   return allowedKey.startsWith("filter.") && Object.hasOwn(standardLfsFilter, allowedKey) && standardLfsFilter[allowedKey] === value
 }
 
+// These reads touch config, the index and paths, never an object; they run
+// offline all the same, as every daemon git command outside the isolated
+// directory does (git-environment.ts).
 function run(directory: string, args: string[], env: NodeJS.ProcessEnv): Promise<string | undefined> {
   return new Promise((done) => {
-    execFile("git", ["-C", directory, ...args], { ...limits, env }, (error, stdout) => {
+    // One environment object, built once, for the resolver and the child:
+    // a spread drops inherited keys, PATH among them (ruling Q305).
+    const childEnv = { ...env, GIT_NO_LAZY_FETCH: "1" }
+    let command: string
+    try {
+      command = gitCommand(childEnv)
+    } catch {
+      // No Git found reads as a failed read: the caller fails closed.
+      done(undefined)
+      return
+    }
+    execFile(command, ["-C", directory, ...args], { ...limits, env: childEnv }, (error, stdout) => {
       done(error ? undefined : stdout)
     })
   })
@@ -115,6 +131,14 @@ export async function gitReadCanRunProgram(directory: string, env: NodeJS.Proces
 // with or without a .gitmodules file. The index is read as a stream and the
 // scan stops at the first gitlink; a failed or slow read counts as one.
 function hasGitlink(directory: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+  // The same object for the resolver and the child (ruling Q305).
+  const childEnv = { ...env, GIT_NO_LAZY_FETCH: "1" }
+  let command: string
+  try {
+    command = gitCommand(childEnv)
+  } catch {
+    return Promise.resolve(true)
+  }
   return new Promise((done) => {
     let settled = false
     const finish = (found: boolean) => {
@@ -124,7 +148,7 @@ function hasGitlink(directory: string, env: NodeJS.ProcessEnv): Promise<boolean>
       child.kill()
       done(found)
     }
-    const child = spawn("git", ["-C", directory, "ls-files", "--stage", "-z"], { env, stdio: ["ignore", "pipe", "ignore"] })
+    const child = spawn(command, ["-C", directory, "ls-files", "--stage", "-z"], { env: childEnv, stdio: ["ignore", "pipe", "ignore"] })
     const timer = setTimeout(() => finish(true), limits.timeout)
     let pending = ""
     child.stdout.setEncoding("utf8")

@@ -45,8 +45,9 @@ describe("readToolInventory", () => {
   it("lists the repository's own git filters beside its trust, and nothing when it sets none", async () => {
     const gitFilters = {
       files: [{ path: ".git/config", scope: "local" as const }],
-      entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt /dev/stdin", file: ".git/config", scope: "local" as const, heldBack: true }],
+      entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt /dev/stdin", required: "unset" as const, file: ".git/config", scope: "local" as const, heldBack: true }],
       omittedEntries: 0,
+      reviewDigest: `sha256:${"b".repeat(64)}`,
     }
     const configDigest = `sha256:${"a".repeat(64)}`
     const project = { id: "project-acme", path: "/code/acme" }
@@ -58,6 +59,38 @@ describe("readToolInventory", () => {
       machine, project, read: async () => ({ configDigest, providers: [], trustRefusals: [], documents: {} }),
     })
     expect(without.repository).not.toHaveProperty("gitFilters")
+  })
+
+  // P8 PR B: under a grant for the digest read now that reviewed the git
+  // filters, they run, so their entries are not held back; under any other
+  // trust, a grant that never showed them included, they are.
+  it("reports the git filters running only under a grant for the current digest that reviewed them", async () => {
+    const gitFilters = {
+      files: [{ path: ".git/config", scope: "local" as const }],
+      entries: [{ driver: "sops", operation: "smudge" as const, command: "sops --decrypt /dev/stdin", required: "unset" as const, file: ".git/config", scope: "local" as const, heldBack: true }],
+      omittedEntries: 0,
+      reviewDigest: `sha256:${"b".repeat(64)}`,
+    }
+    const configDigest = `sha256:${"a".repeat(64)}`
+    const project = { id: "project-acme", path: "/code/acme" }
+    const read = async () => ({ configDigest, providers: [], trustRefusals: [], documents: {}, gitFilters })
+    const grant = {
+      projectId: "project-acme", trustedDigest: configDigest, trustedAt: "2026-09-30T12:00:00.000Z", trustedBy: { client: "desktop" as const },
+      gitFilterReviewDigest: gitFilters.reviewDigest,
+    }
+    const heldBack = (inventory: ToolInventory) => inventory.repository?.gitFilters?.entries.map((entry) => entry.heldBack)
+
+    expect(heldBack(await readToolInventory({ machine, project, grant, read }))).toEqual([false])
+    const { gitFilterReviewDigest: _, ...unreviewed } = grant
+    expect(heldBack(await readToolInventory({ machine, project, grant: unreviewed, read }))).toEqual([true])
+    // A grant that reviewed another block than the one read now (ruling Q265).
+    expect(heldBack(await readToolInventory({ machine, project, grant: { ...grant, gitFilterReviewDigest: `sha256:${"c".repeat(64)}` }, read }))).toEqual([true])
+    const incomplete = async () => ({ ...await read(), gitFilters: { ...gitFilters, omittedEntries: 1 } })
+    expect(heldBack(await readToolInventory({ machine, project, grant, read: incomplete }))).toEqual([true])
+    expect(heldBack(await readToolInventory({ machine, project, read }))).toEqual([true])
+    expect(heldBack(await readToolInventory({ machine, project, grant: { ...grant, trustedDigest: `sha256:${"b".repeat(64)}` }, read }))).toEqual([true])
+    const refused = async () => ({ ...await read(), trustRefusals: [{ provider: "codex", reason: "nested-config" as const, path: "sub/.codex/config.toml" }] })
+    expect(heldBack(await readToolInventory({ machine, project, grant, read: refused }))).toEqual([true])
   })
 
   // Slice P6b: a trusted Claude Code entry is reported as loading exactly

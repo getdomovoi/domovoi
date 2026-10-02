@@ -1972,11 +1972,12 @@ describe("readRepositoryProviderConfig: git filters", () => {
       files: [{ path: ".git/config", scope: "local" }, { path: included, scope: "local" }],
       entries: [
         // Cut at its first trigger, the assignment, as every inventory command is (ruling Q101 A).
-        { driver: "sops", operation: "smudge", command: "[REDACTED]", file: ".git/config", scope: "local", heldBack: true },
-        { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", file: ".git/config", scope: "local", heldBack: true },
-        { driver: "crypt", operation: "process", command: "git-crypt filter-process", file: included, scope: "local", heldBack: true },
+        { driver: "sops", operation: "smudge", command: "[REDACTED]", required: "unset", file: ".git/config", scope: "local", heldBack: true },
+        { driver: "sops", operation: "clean", command: "sops --encrypt /dev/stdin", required: "unset", file: ".git/config", scope: "local", heldBack: true },
+        { driver: "crypt", operation: "process", command: "git-crypt filter-process", required: "unset", file: included, scope: "local", heldBack: true },
       ],
       omittedEntries: 0,
+      reviewDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
     })
     expectNoSecret(read.gitFilters)
     expect(toolInventorySchema.safeParse({
@@ -2014,12 +2015,12 @@ describe("readRepositoryProviderConfig: git filters", () => {
     git(root, "config", "include.path", included)
     const tooLarge = await readRepositoryProviderConfig(root, { heldBack: true })
     expect(tooLarge.configDigest).not.toBe(digestBeforeGitFilters)
-    expect(tooLarge.gitFilters).toEqual({ files: [], entries: [], omittedEntries: 0, unreadable: { reason: "too-large" } })
+    expect(tooLarge.gitFilters).toEqual({ files: [], entries: [], omittedEntries: 0, unreadable: { reason: "too-large" }, reviewDigest: expect.stringMatching(/^sha256:/u) })
 
     await writeFile(join(root, ".git", "config"), "[filter \"broken\"\n\tsmudge = cat\n")
     const failed = await readRepositoryProviderConfig(root, { heldBack: true })
     expect(failed.configDigest).not.toBe(digestBeforeGitFilters)
-    expect(failed.gitFilters).toEqual({ files: [], entries: [], omittedEntries: 0, unreadable: { reason: "git-failed" } })
+    expect(failed.gitFilters).toEqual({ files: [], entries: [], omittedEntries: 0, unreadable: { reason: "git-failed" }, reviewDigest: expect.stringMatching(/^sha256:/u) })
     expect(toolInventorySchema.safeParse({
       machine: { id: "machine-1", name: "m", platform: "darwin", arch: "arm64", version: "0.0.0" },
       repository: {
@@ -2050,8 +2051,107 @@ describe("readRepositoryProviderConfig: git filters", () => {
     const read = await readRepositoryProviderConfig(root, { heldBack: true })
     expect(read.gitFilters?.files).toEqual([{ path: ".git/config.worktree", scope: "worktree" }])
     expect(read.gitFilters?.entries).toEqual([
-      { driver: "crypt", operation: "smudge", command: "git-crypt smudge", file: ".git/config.worktree", scope: "worktree", heldBack: true },
+      { driver: "crypt", operation: "smudge", command: "git-crypt smudge", required: "unset", file: ".git/config.worktree", scope: "worktree", heldBack: true },
     ])
+  })
+
+  // The digest pins a driver's required setting, so the listed block shows its
+  // effective state with each of the driver's commands (ruling Q255). Git reads
+  // it as a boolean; a value Git would not read as one is counted, not listed.
+  it.each([
+    [undefined, "unset"],
+    ["true", "true"],
+    ["yes", "true"],
+    ["On", "true"],
+    ["1", "true"],
+    ["false", "false"],
+    ["no", "false"],
+    ["0", "false"],
+  ])("shows a driver's required setting %s as %s", async (value, state) => {
+    const root = await repository()
+    git(root, "config", "filter.crypt.smudge", "git-crypt smudge")
+    git(root, "config", "filter.crypt.clean", "git-crypt clean")
+    git(root, "config", "lfs.customtransfer.evil.path", "/tmp/evil-agent")
+    if (value !== undefined) git(root, "config", "filter.crypt.required", value)
+    const read = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(read.gitFilters?.entries.map(({ operation, required }) => [operation, required])).toEqual([
+      ["smudge", state], ["clean", state], ["lfs-transfer-path", undefined],
+    ])
+    expect(read.gitFilters?.omittedEntries).toBe(0)
+  })
+
+  // repository.trust's acknowledgement names the block by this digest, and the
+  // daemon grants the filters only when its own read gives the same one
+  // (ruling Q255). It covers what the block shows: required, file, scope and
+  // the omitted count among them.
+  it("names the listed block by a digest over what it shows", async () => {
+    const root = await repository()
+    const review = async () => (await readRepositoryProviderConfig(root, { heldBack: true })).gitFilters?.reviewDigest
+    git(root, "config", "filter.crypt.smudge", "git-crypt smudge")
+    const first = await review()
+    expect(first).toMatch(/^sha256:[a-f0-9]{64}$/u)
+    expect(await review()).toBe(first)
+
+    git(root, "config", "filter.crypt.required", "true")
+    const required = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(required.gitFilters?.reviewDigest).not.toBe(first)
+
+    // The same settings from another file: the trust digest does not change,
+    // the block shown does.
+    git(root, "config", "--unset", "filter.crypt.smudge")
+    git(root, "config", "--unset", "filter.crypt.required")
+    const included = join(await realpath(await scratch()), "crypt.gitconfig")
+    await writeFile(included, "[filter \"crypt\"]\n\tsmudge = git-crypt smudge\n\trequired = true\n")
+    git(root, "config", "include.path", included)
+    const moved = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(moved.configDigest).toBe(required.configDigest)
+    expect(moved.gitFilters?.reviewDigest).not.toBe(required.gitFilters?.reviewDigest)
+
+    // Past the entry cap the rest are counted, and the count is in the digest.
+    const many = join(await realpath(await scratch()), "many.gitconfig")
+    await writeFile(many, Array.from({ length: 70 }, (_, index) => `[filter "d${index}"]\n\tsmudge = d${index}\n`).join(""))
+    git(root, "config", "--add", "include.path", many)
+    const omitted = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(omitted.gitFilters?.omittedEntries).toBeGreaterThan(0)
+    expect(omitted.gitFilters?.reviewDigest).not.toBe(moved.gitFilters?.reviewDigest)
+  })
+
+  // Git reads a numeric boolean as a C int: base 0 (0x hex, leading 0 octal),
+  // an optional k, m or g, within the signed 32-bit range. The shown state
+  // must be Git's own, so each probe is checked against
+  // `git config --bool` (ruling Q265).
+  it.each([
+    ["09", undefined], ["018", undefined], ["2147483648", undefined], ["-2147483649", undefined], ["0x80000000", undefined],
+    ["1kb", undefined], ["0x", undefined], ["2097152k", undefined], ["2g", undefined], ["1 ", undefined], ["- 1", undefined],
+    ["1.5", undefined], ["tru", undefined],
+    ["2147483647", "true"], ["-2147483648", "true"], ["-2097152k", "true"], ["0x10", "true"], ["010", "true"], ["0x0", "false"], ["00", "false"],
+    ["1k", "true"], ["2097151K", "true"], ["-1", "true"], ["+1", "true"], [" 1", "true"], ["TRUE", "true"], ["Off", "false"], ["", "false"],
+  ] as const)("reads required %j as Git does", async (value, state) => {
+    const root = await repository()
+    git(root, "config", "filter.crypt.smudge", "git-crypt smudge")
+    git(root, "config", "filter.crypt.required", value)
+    let gits: string | undefined
+    try {
+      gits = git(root, "config", "--bool", "--get", "filter.crypt.required").toString().trim()
+    } catch {
+      gits = undefined
+    }
+    expect(gits).toBe(state)
+    const read = await readRepositoryProviderConfig(root, { heldBack: true })
+    // A value Git refuses makes the config one Git cannot read: nothing is
+    // listed, and the digest records it (ruling Q318; it was counted before).
+    if (state === undefined) expect(read.gitFilters).toMatchObject({ entries: [], omittedEntries: 0, unreadable: { reason: "git-failed" } })
+    else expect(read.gitFilters?.entries.map(({ required }) => required)).toEqual([state])
+  })
+
+  it("reads a config whose required Git would not read as a boolean as unreadable, listing nothing", async () => {
+    const root = await repository()
+    git(root, "config", "filter.crypt.smudge", "git-crypt smudge")
+    git(root, "config", "filter.crypt.required", "maybe")
+    git(root, "config", "filter.sops.smudge", "sops --decrypt")
+    const read = await readRepositoryProviderConfig(root, { heldBack: true })
+    expect(read.gitFilters).toMatchObject({ entries: [], omittedEntries: 0, unreadable: { reason: "git-failed" } })
+    expect(read.configDigest).not.toBe(digestBeforeGitFilters)
   })
 
   it("lists a file the repository and the worktree config both include once per scope", async () => {

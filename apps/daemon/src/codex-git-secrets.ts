@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process"
 
 import { codexWorktreeSecretPatterns } from "./codex.js"
+import { gitCommand } from "./git-command.js"
+import { gitSupportsNoLazyFetch } from "./git-environment.js"
 import { gitReadCanRunProgram } from "./git-read-config.js"
 
 // The Codex sandbox refuses reads of these files on disk, but Git can still
@@ -31,17 +33,18 @@ export const historyScanGit = [
   ...["file", "ssh", "git", "http", "https", "ext"].flatMap((protocol) => ["-c", `protocol.${protocol}.allow=never`]),
 ] as const
 
-export function gitSupportsNoLazyFetch(version: string | undefined): boolean {
-  const match = /(\d+)\.(\d+)/.exec(version ?? "")
-  if (!match) return false
-  const major = Number(match[1])
-  const minor = Number(match[2])
-  return major > 2 || (major === 2 && minor >= 45)
-}
+export { gitSupportsNoLazyFetch }
 
 function gitVersion(): Promise<string | undefined> {
   return new Promise((done) => {
-    execFile("git", ["--version"], { timeout: 3_000 }, (error, stdout) => done(error ? undefined : stdout.trim()))
+    let command: string
+    try {
+      command = gitCommand()
+    } catch {
+      done(undefined)
+      return
+    }
+    execFile(command, ["--version"], { timeout: 3_000 }, (error, stdout) => done(error ? undefined : stdout.trim()))
   })
 }
 
@@ -59,9 +62,16 @@ export async function committedCodexSecretPaths(
     `--max-count=${limits.commits}`,
     "--", ...codexWorktreeSecretPatterns.map((pattern) => `:(glob)${pattern}`),
   ]
+  let command: string
+  try {
+    command = gitCommand(env)
+  } catch {
+    // No Git to read the history with: unknown, as for any failed read.
+    return undefined
+  }
   return new Promise((resolve) => {
     execFile(
-      "git",
+      command,
       args,
       { timeout: limits.timeoutMs, maxBuffer: limits.outputBytes, env },
       (error, stdout) => {

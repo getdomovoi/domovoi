@@ -31,7 +31,9 @@ import {
 import { SqliteWorkspaceStore } from "./store.js"
 import type { TerminalProcess } from "./terminal.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
-import type { WorkspaceService } from "./workspace.js"
+import type { RepositoryGitFilter } from "./repository-git-filters.js"
+import type { RepositoryProviderConfigReader } from "./tool-inventory.js"
+import { RepositoryFilterRefusedError, RepositoryGitFilterRefusedError, type WorkspaceService } from "./workspace.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const running: DomovoiDaemon[] = []
@@ -205,7 +207,10 @@ async function openClient(
   return socket
 }
 
-async function preparedTargetTransfer() {
+async function preparedTargetTransfer(options: {
+  restoreSessionFromBundle?: NonNullable<WorkspaceService["restoreSessionFromBundle"]>
+  repositoryProviderConfig?: RepositoryProviderConfigReader
+} = {}) {
   const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-rpc-"))
   scratchDirectories.push(scratch)
   const transactions = new FileTransferTransactions(join(scratch, "transactions"))
@@ -214,6 +219,7 @@ async function preparedTargetTransfer() {
     port: 0,
     store,
     authToken: testAuthToken("correct-horse-battery-staple"),
+    ...(options.repositoryProviderConfig ? { repositoryProviderConfig: options.repositoryProviderConfig } : {}),
     workspaceService: {
       inspect: async (path: string) => ({
         root: path,
@@ -226,11 +232,11 @@ async function preparedTargetTransfer() {
       checkpoint: async () => ({ commit: checkpointCommit, changedFiles: [] }),
       restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
       projectHasLineage: async () => true,
-      restoreSessionFromBundle: async (_path: string, sessionId: string) => ({
+      restoreSessionFromBundle: options.restoreSessionFromBundle ?? (async (_path: string, sessionId: string) => ({
         path: `/target/${sessionId}`,
         branch: `domovoi/${sessionId}`,
         baseCommit: checkpointCommit,
-      }),
+      })),
     } satisfies WorkspaceService,
     transferTransactions: transactions,
     artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
@@ -2379,6 +2385,111 @@ describe("transactional session transfer RPC", () => {
       baseCommit: checkpointCommit,
     })
     socket.close()
+  })
+
+  // P8 PR B: a transfer refused over a repository git filter answers with the
+  // git filter code and data, read for the project of the machine that
+  // refused it, so a client can offer that machine's trust review.
+  const sopsFilter: RepositoryGitFilter = {
+    scope: "local", key: "filter.sops.clean", driver: "sops", operation: "clean", value: "sops --encrypt", origin: undefined,
+  }
+  const readConfig: RepositoryProviderConfigReader = async () => ({
+    configDigest: `sha256:${"a".repeat(64)}`, providers: [], trustRefusals: [], documents: {},
+  })
+
+  it("answers session.transfer with the git filter code when the source refuses a repository filter", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-filter-source-"))
+    scratchDirectories.push(scratch)
+    const { source } = await transferFixture()
+    const session = source.sessions[0]!
+    const store = new SqliteWorkspaceStore(":memory:", source)
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "local",
+      capabilities: ["sessions"],
+      protocolVersion,
+      transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
+    }, Date.now())
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: testAuthToken("correct-horse-battery-staple"),
+      outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
+      repositoryProviderConfig: readConfig,
+      workspaceService: {
+        inspect: async () => ({
+          root: source.project!.path,
+          name: source.project!.name,
+          branch: source.project!.branch,
+          head: baseCommit,
+        }),
+        createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+        removeSessionWorkspace: async () => {},
+        checkpoint: async () => { throw new RepositoryFilterRefusedError([sopsFilter], { projectId: source.project!.id }) },
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        transferFingerprint: async () => ({ headCommit: baseCommit, digest: `sha256:${"e".repeat(64)}` }),
+        readIgnoredArtifactSource: async () => undefined,
+        bundleSession: async (_worktreePath, bundlePath) => ({ path: bundlePath, commit: checkpointCommit, incremental: false }),
+      },
+      readTransferBundle: async () => Buffer.from("repository"),
+      connectToMachine: async () => ({
+        call: async (method) => {
+          if (method === "transfer.preflight") {
+            return { allowed: true, targetProjectId: "project-target", lineageCommit: baseCommit }
+          }
+          throw new Error(`Unexpected ${method}`)
+        },
+        close: () => {},
+      }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const socket = await openClient(daemon)
+    const call = rpc(socket)
+    const preview = await call("session.transferPreview", { sessionId: session.id, targetMachineId, initiatedByClient: "desktop" })
+    const approved = preview.result as { contractVersion: 2; intentDigest: string }
+
+    const reply = await call("session.transfer", {
+      sessionId: session.id,
+      targetMachineId,
+      initiatedByClient: "desktop",
+      contractVersion: approved.contractVersion,
+      intentDigest: approved.intentDigest,
+    }) as { error: { code: number; message: string; data?: unknown } }
+
+    expect(reply.error.code).toBe(-32020)
+    expect(reply.error.message).toContain("filter.sops.clean in local Git config")
+    expect(reply.error.data).toMatchObject({
+      kind: "repository-git-filter",
+      projectId: source.project!.id,
+      trust: { state: "untrusted", reason: "not-trusted" },
+      drivers: [{ name: "sops", scope: "local" }],
+    })
+    expect(store.load().sessions[0]).toMatchObject({ id: session.id, state: "idle" })
+    socket.close()
+  })
+
+  it("answers transfer.commit with the git filter code when the target refuses a repository filter", async () => {
+    const { call, commitParams } = await preparedTargetTransfer({
+      repositoryProviderConfig: readConfig,
+      restoreSessionFromBundle: async () => {
+        throw new RepositoryGitFilterRefusedError([sopsFilter], { worktreeRemoved: true, branchRemoved: true }, { projectId: "project-target" })
+      },
+    })
+
+    const reply = await call("transfer.commit", commitParams) as { error: { code: number; data?: unknown } }
+
+    expect(reply.error.code).toBe(-32020)
+    expect(reply.error.data).toMatchObject({
+      kind: "repository-git-filter",
+      projectId: "project-target",
+      drivers: [{ name: "sops", scope: "local" }],
+    })
   })
 
   it("freezes and stages the source before committing one target owner", async () => {
