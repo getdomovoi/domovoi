@@ -62,9 +62,7 @@ export type CapturedRun = { code: number; stdout: string; stderr?: string }
 
 export type ServiceEffects = {
   readConfiguration?: (home: string, platform: string) => ServiceConfiguration | undefined
-  // Stops the supervisor loop for this service.json and proves it and its
-  // children dead. retire: false keeps the registration startable (an update).
-  stopSupervisor?: (path: string, deadline: OperationDeadline, options?: { retire?: boolean }) => Promise<unknown>
+  stopSupervisor?: (path: string, deadline: OperationDeadline) => Promise<unknown>
   claimServiceOperation: () => ReturnType<typeof claimServiceOperation>
   claimProfile: (homeDirectory: ProfileLocation) => ProfileLease
   registeredProfile?: (home: string, platform: string) => ProfileLocation | undefined
@@ -1498,7 +1496,7 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
       try { return parseServiceConfiguration(readLocalProfileFile(serviceConfigurationPath(home, platform), 64 * 1024)) }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error }
     },
-    stopSupervisor: (path, deadline, options) => stopGuestSupervisor(path, deadline, undefined, options),
+    stopSupervisor: stopGuestSupervisor,
     // Manager names are per OS user, not per caller-selected HOME or profile.
     // An alternate shell HOME must not create a second lock for the same job.
     // The override isolates tests from the operator's actual service lock.

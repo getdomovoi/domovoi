@@ -13,7 +13,7 @@ import { superviseGuest } from "./guest-supervisor.js"
 import type { ServiceStatus } from "./install.js"
 import { guestBootId, guestProcessAlive, guestProcessIdentity, launchGuestChild } from "./supervisor-process.js"
 import { prepareSupervisorDirectory, readSupervisorRecord, readSupervisorStopRequest, supervisorRecordPath, writeSupervisorRecord,
-  writeSupervisorStopRequest, clearSupervisorStopRequest, type GuestProcessIdentity, type SupervisorRecord } from "./supervisor-record.js"
+  writeSupervisorStopRequest, type GuestProcessIdentity, type SupervisorRecord } from "./supervisor-record.js"
 
 export const supervisorConfigurationDigest = (configuration: ServiceConfiguration): string =>
   createHash("sha256").update(serializeServiceConfiguration(
@@ -134,15 +134,11 @@ export function readGuestSupervisorStatus(home: string, alive = guestProcessAliv
   return { installed: null, running, detail, ...(supervisionFailure === undefined ? {} : { supervisionFailure }) }
 }
 
-// retire: removal's stop also retires the registration, so no loop for it
-// starts again before the task is deleted. A WSL update's stop proves the same
-// shutdown, then clears that marker once, under the startup lease: the update
-// registers the same registration again, with the old task disabled meanwhile.
 export async function stopGuestSupervisor(path: string, deadline: OperationDeadline, effects: {
   alive(identity: GuestProcessIdentity): boolean
   bootId?: () => string
   wait(): Promise<void>
-} = { alive: guestProcessAlive, wait: async () => { await delay(100, undefined, { signal: deadline.signal }) } }, options: { retire?: boolean } = {}): Promise<SupervisorRecord> {
+} = { alive: guestProcessAlive, wait: async () => { await delay(100, undefined, { signal: deadline.signal }) } }): Promise<SupervisorRecord> {
   deadline.throwIfExpired()
   const configuration = configurationAt(path)
   const initial = boundRecord(path)
@@ -170,14 +166,7 @@ export async function stopGuestSupervisor(path: string, deadline: OperationDeadl
         // A successor may hold the startup lease before publishing its record.
         // Re-read and prove death under that same lease; the retirement marker
         // then prevents another start after the proof releases it.
-        const [outcome] = await Promise.allSettled([Promise.resolve().then(() => {
-          deadline.throwIfExpired()
-          const stopped = proof()
-          if (stopped !== undefined && options.retire === false) {
-            clearSupervisorStopRequest(profileLocation(configuration.homeDirectory, configuration.profileDirectory))
-          }
-          return stopped
-        })])
+        const [outcome] = await Promise.allSettled([Promise.resolve().then(() => { deadline.throwIfExpired(); return proof() })])
         const stopped = await releaseGuestSupervisorLease(lease, outcome)
         if (stopped !== undefined) return stopped
       }

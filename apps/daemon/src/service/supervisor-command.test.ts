@@ -366,18 +366,14 @@ it.runIf(supervisedHost)("restarts a real crashed child after its backoff and st
   }
 }, realBudget + 5_000)
 
-// A WSL update re-registers the same registration, so its stop must not
-// retire it; removal's must.
-it.each([
-  { options: undefined, retired: true },
-  { options: { retire: false }, retired: false },
-])("a proven stop with $options leaves the registration retired: $retired", async ({ options, retired }) => {
+// Removal's stop retires the registration, so no loop for it starts again.
+it("a proven stop leaves the registration retired", async () => {
   const f = fixture()
   writeSupervisorRecord(f.home, { ...f.record, state: "stopped", reason: { kind: "deliberate-stop", at: f.record.updatedAt } })
   const deadline = OperationDeadline.start(1000)
   try {
-    await stopGuestSupervisor(f.path, deadline, { alive: () => false, wait: async () => {} }, options)
-    expect(readSupervisorStopRequest(f.home) !== undefined).toBe(retired)
+    await stopGuestSupervisor(f.path, deadline, { alive: () => false, wait: async () => {} })
+    expect(readSupervisorStopRequest(f.home)).toBeDefined()
   } finally { deadline.clear() }
 })
 

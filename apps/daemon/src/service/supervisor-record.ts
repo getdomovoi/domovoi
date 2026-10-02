@@ -127,12 +127,6 @@ export function writeSupervisorStopRequest(home: ProfileLocation, record: Superv
     supervisorId: record.supervisorId, registrationId: record.registrationId, loop: record.loop }))
 }
 
-// Only once shutdown is proved and nothing can start a loop for the
-// registration (supervisor-command.ts, stopGuestSupervisor's retire option).
-export function clearSupervisorStopRequest(home: ProfileLocation): void {
-  rmSync(supervisorStopPath(home), { force: true })
-}
-
 export function readSupervisorStopRequest(home: ProfileLocation): z.infer<typeof supervisorStopSchema> | undefined {
   try { return supervisorStopSchema.parse(JSON.parse(readLocalProfileFile(supervisorStopPath(home), 4096))) }
   catch (error) {
