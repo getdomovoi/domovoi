@@ -110,6 +110,15 @@ const audit = demoWorkspace.sessions.find((session) => session.id === "session-a
 const approval = demoWorkspace.approvals[0]!
 
 describe("App", () => {
+  it("names the session a gate belongs to above it", async () => {
+    expect(approval.sessionId).toBe(billing.id)
+    await openApp(workspace())
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+
+    expect(screen.getByRole("header", { name: "Waiting on you" })).toBeOnTheScreen()
+    expect(screen.getByText(billing.title)).toBeOnTheScreen()
+  })
+
   it("answers the gate it opened with one approval.resolve carrying that approval's id", async () => {
     const { socket } = await openApp(workspace())
     await fireEvent.press(screen.getByRole("button", { name: billing.title }))

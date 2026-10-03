@@ -43,6 +43,26 @@ function buttons(): string[] {
 }
 
 describe("ApprovalScreen", () => {
+  // Phone v2 frame 02: the gate names the session it belongs to above a
+  // headline that says whose turn it is, and states that the command has not
+  // run, because a person deciding needs to know nothing is undone yet.
+  it("heads the gate with its session and says it is waiting on you", async () => {
+    await draw({ sessionTitle: "Migrate billing webhooks" })
+
+    expect(screen.getByRole("header", { name: "Waiting on you" })).toBeOnTheScreen()
+    expect(screen.getByText("Migrate billing webhooks")).toBeOnTheScreen()
+    expect(screen.getByText("Nothing has run yet.")).toBeOnTheScreen()
+    expect(screen.queryByText("Approval")).toBeNull()
+  })
+
+  // A watching phone cannot answer, so the gate is not waiting on it.
+  it("does not tell a watching phone the gate waits on it", async () => {
+    await draw({ watching: true })
+
+    expect(screen.queryByText("Waiting on you")).toBeNull()
+    expect(screen.getByRole("header", { name: "Waiting on a full-access device" })).toBeOnTheScreen()
+  })
+
   it("shows a watching phone every fact and no decision", async () => {
     await draw({ watching: true })
 

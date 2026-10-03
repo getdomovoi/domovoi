@@ -664,6 +664,7 @@ export function App() {
           ) : (
             <ApprovalScreen
               approval={openApproval}
+              sessionTitle={snapshot?.sessions.find((session) => session.id === openApproval.sessionId)?.title}
               pending={deciding}
               notice={notice}
               problem={decideProblem}
