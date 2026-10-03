@@ -198,14 +198,12 @@ export function threadEntries(
 // Ruling Q357 A draws only the latest receipt of the open turn in full. The
 // daemon writes receipts without a turn id today, so a receipt belongs to the
 // open turn when the session holds one and no message of yours has started
-// another since; a receipt that does carry a turn id must name that turn. A
-// message that carries the open turn's id is a steer into it (a desktop can
-// write one), not a new turn, so the scan passes over it.
+// another since; a receipt that does carry a turn id must name that turn.
 function currentReceiptIndex(items: readonly ThreadItem[], activeTurnId: string | undefined): number | undefined {
   if (!activeTurnId) return undefined
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]!
-    if (item.kind === "user" && item.turnId !== activeTurnId) return undefined
+    if (item.kind === "user") return undefined
     if (item.kind === "receipt") {
       return item.turnId === undefined || item.turnId === activeTurnId ? index : undefined
     }
