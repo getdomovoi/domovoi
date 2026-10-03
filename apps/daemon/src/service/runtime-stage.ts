@@ -238,7 +238,10 @@ function inside(pathApi: typeof posix, root: string, path: string): boolean {
 // directory passes, one with the profile directory itself, by device and
 // inode, among its ancestors (round 3, P2-4); that holds the default TEMP
 // (%LOCALAPPDATA%\Temp) and the app's userData (%APPDATA%). A failure to
-// read fails the place.
+// read fails the place. That is a check of location only: Windows access
+// rules (ACLs) are not checked, so a grant inside the profile that lets
+// another account change a place is an accepted residual (round 3, P2-3,
+// Q416 B); only this user or an administrator can add one there.
 type StagingAccessOptions = {
   platform: string
   fileSystem: RuntimeFileSystem
