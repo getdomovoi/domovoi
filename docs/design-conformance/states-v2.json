@@ -48,10 +48,16 @@
         "nothing was written, nothing was lost",
         "idempotency"
       ],
-      "evidence": [
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "FailedReadState draws the frame, but its one caller is the provider-restart path in thread.tsx, not a failed session read. No caller passes attempts or Open the machine, so WHAT IT TRIED and the attempt count are never drawn. The line nothing was written, nothing was lost shows only where a caller says the failure only read, and no caller does: a provider can write files before it stops."
+      },
+      "presence": [
         "Could not read this session",
-        "WHAT IT TRIED",
-        "nothing was written, nothing was lost"
+        "WHAT IT TRIED"
+      ],
+      "evidence": [
+        "3 attempts"
       ]
     },
     {
