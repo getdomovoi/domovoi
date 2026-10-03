@@ -196,7 +196,16 @@ export class TailnetReach {
     const record = await this.deps.record.read()
     if (!record) return "off"
     const { name, certPath, keyPath } = record
-    const pending = await this.deps.files.privateDirectory(this.deps.tlsDirectory)
+    const failed = (cause: unknown, after = "") =>
+      this.#fail(`The certificate for ${name} could not be renewed: ${detail(cause instanceof Error ? cause.message : String(cause))}${sentence(after)}`)
+    // Round 4 review (P3-1): a directory that cannot be made (a full disk, a
+    // profile it may not write) is a failed renewal like any other.
+    let pending: string
+    try {
+      pending = await this.deps.files.privateDirectory(this.deps.tlsDirectory)
+    } catch (cause) {
+      return failed(cause)
+    }
     const swap = this.#swap(pending, [certPath, keyPath])
     let restarting = false
     try {
@@ -227,7 +236,7 @@ export class TailnetReach {
       // runs from a timer, so nothing may escape it.
       const undone = await swap.undo()
       if (restarting) await this.deps.recover?.().catch(() => {})
-      return this.#fail(`The certificate for ${name} could not be renewed: ${detail(cause instanceof Error ? cause.message : String(cause))}${sentence(undone)}`)
+      return failed(cause, undone)
     } finally {
       if (swap.removable()) await this.deps.files.removeDirectory(pending).catch(() => {})
     }

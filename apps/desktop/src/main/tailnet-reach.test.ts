@@ -46,6 +46,8 @@ function harness(options: {
   // tailscale cert exits 0 and writes nothing.
   certWritesNothing?: boolean
   handSet?: string
+  // Making the pending directory fails, as mkdir does on a full disk.
+  privateDirectoryThrows?: Error
 } = {}) {
   const calls: string[] = []
   const files = new Map<string, string>(Object.entries(options.files ?? {}))
@@ -87,6 +89,7 @@ function harness(options: {
       privateDirectory: async (parent) => {
         const path = `${parent}/.pending-${++temporary}`
         calls.push(`directory ${path}`)
+        if (options.privateDirectoryThrows) throw options.privateDirectoryThrows
         return path
       },
       move: async (from, to) => {
@@ -334,6 +337,21 @@ describe("turning TailnetReach on", () => {
     } })
     // Put back, so the directory holds nothing of the files in use.
     expect(calls).toContain(`remove directory ${tls}/.pending-1`)
+  })
+
+  // Round 4 review (P3-1): the pending directory is made before anything else,
+  // and renew runs from a timer, so a full disk must be a recorded failure.
+  it("records a renewal whose pending directory cannot be made", async () => {
+    const { reach, files, timers } = harness({
+      record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" },
+      privateDirectoryThrows: Object.assign(new Error("ENOSPC: no space left on device, mkdtemp"), { code: "ENOSPC" }),
+    })
+    await expect(reach.renew()).resolves.toBe("failed")
+    expect(files.get(certPath)).toBe("old certificate")
+    await expect(reach.status()).resolves.toMatchObject({ renewalFailed: {
+      message: `The certificate for ${name} could not be renewed: ENOSPC: no space left on device, mkdtemp`,
+    } })
+    expect(timers().map((timer) => timer.ms)).toEqual([60 * 60_000])
   })
 
   it("records a renewal whose tailscale cert exits 0 without writing anything", async () => {
