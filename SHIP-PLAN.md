@@ -494,12 +494,14 @@ Every ledger entry is now merged.
 - [x] Add variant metadata, thumbnail filmstrip, device-width presets, and optional compare layouts
 - [x] Add chat-inline Markdown quick views while keeping generated HTML canonical
 - [x] Add print/share-safe plan rendering without weakening the preview sandbox
-- [ ] Remove the legacy comment default before protocol 0.8.0 ships (ruling Q402)
+- [x] Remove the legacy comment default before protocol 0.8.0 ships (ruling Q402)
   - `session.send` carries `review`, the comments and build basis a message sends (rulings Q348 A
-    and Q342 A). Until every client sends it, a message without one still attaches every open
-    comment of its session: `legacyOpenCommentReview` in `apps/daemon/src/annotation-context.ts`.
-  - Remove that function, so a message without a review sends no comment, once desktop, web,
-    phone, tablet and the command line send `review`. Protocol 0.8.0 does not ship before then.
+    and Q342 A). A message without one sends no comment and no build basis; `review` stays
+    optional, and absent reads as `{ annotationIds: [] }`. The daemon never fills in a review.
+  - Desktop, web, phone and tablet send the open comments of the session as the review
+    (`openCommentReviewFor` in `packages/protocol`), the newest up to the per-message limit, since
+    none of them yet offers the drawn choice (desktop dock `dock.preview-comments`); the chosen
+    build basis stays a viewer bookmark until that lands. The command line sends no message.
 
 #### Skills
 
