@@ -133,6 +133,17 @@ it("draws the refusal card in the thread when the daemon refuses a new session o
   expect(within(card).getByText("Nothing from the repository ran.")).toBeTruthy()
 })
 
+// The card's code loads on first use, and its loading line takes focus while
+// it does. Focus then lands on the card's heading, not on the document, so a
+// keyboard or screen reader user meets the refusal (bot finding 4151622873).
+it("moves focus to the refusal's heading once the card has loaded", async () => {
+  await refusedStart()
+  await settle()
+
+  const heading = screen.getByRole("heading", { name: "Domovoi did not start this session" })
+  await vi.waitFor(() => expect(document.activeElement).toBe(heading))
+})
+
 it("reviews and trusts from the refusal, then starts again only when asked", async () => {
   const { socket, snapshot, user } = await refusedStart()
   const card = screen.getByRole("region", { name: "Domovoi did not start this session" })
@@ -205,6 +216,8 @@ it("shows the daemon's second refusal when the filters are still held back after
   expect(within(again).getByText(`Checking out acme-api would run the sops filter driver. acme-api is trusted on ${snapshot.machine.name}, but its Git filters are held back until they are reviewed again.`)).toBeTruthy()
   expect(within(again).queryByRole("button", { name: "Start the session again" })).toBeNull()
   expect(within(again).getByRole("button", { name: "Review and trust again" })).toBeTruthy()
+  // The card's code is loaded now; the new refusal still takes focus.
+  await vi.waitFor(() => expect(document.activeElement).toBe(within(again).getByRole("heading", { name: "Domovoi did not start this session" })))
 })
 
 it("opens the Tools tab from the refusal", async () => {

@@ -55,6 +55,17 @@ export function SessionRefusalCard({
   const loadRef = useRef(loadInventory)
   loadRef.current = loadInventory
   const { projectId } = refusal
+  const heading = useRef<HTMLHeadingElement>(null)
+
+  // The refusal replaces the launcher or fork dialog the person was in, and
+  // its code may load first behind a loading line that holds focus. Focus
+  // lands on its heading when it appears, so it is met rather than lost to
+  // the document (bot finding 4151622873). A dialog closing in the same turn
+  // restores focus to its trigger afterwards, so the move waits a frame.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => heading.current?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [])
 
   // The sheet reads the files while it is open, and again when it asks to
   // (the files changed under it). Each read retires the one before it.
@@ -114,7 +125,7 @@ export function SessionRefusalCard({
       <div className="flex items-start gap-2 py-2 pr-2 pl-[15px]">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 pt-1">
           <span data-slot="refusal-dot" className="size-2 shrink-0 rounded-full bg-destructive" aria-hidden />
-          <h2 id={titleId} className="m-0 text-[13px] font-semibold text-danger-foreground">Domovoi did not start this session</h2>
+          <h2 ref={heading} id={titleId} tabIndex={-1} className="m-0 text-[13px] font-semibold text-danger-foreground outline-none">Domovoi did not start this session</h2>
           <span className="flex-1" />
           <span className={cn(mono, "text-[10.5px] text-danger-dim")}>refused · untrusted git filter</span>
         </div>
