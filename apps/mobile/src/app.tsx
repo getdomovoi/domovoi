@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useWindowDimensions, View } from "react-native"
+import { useWindowDimensions } from "react-native"
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context"
 import {
   artifactAuthorizeResultSchema,
@@ -25,6 +25,7 @@ import { mutationCall, watchingReason } from "./client-access"
 import { previewChannel, previewParentOrigin, type PreviewSelection } from "./preview-bridge"
 import { connectionNotice } from "./connection-notice"
 import { decisionProblem } from "./decision-problem"
+import { BlurBackdrop } from "./components/blur-backdrop"
 import { ConfirmSheet } from "./components/confirm-sheet"
 import { FreshSessionSheet } from "./components/fresh-session-sheet"
 import { StopSheet } from "./components/stop-sheet"
@@ -902,7 +903,7 @@ export function App() {
           this view does not reserve the bottom edge. What the bar covers is
           measured and handed to each screen, which pads its own scroller. */}
       <SafeAreaView edges={["top", "left", "right"]} className="flex-1 bg-background">
-        <View className="flex-1">
+        <BlurBackdrop style={{ flex: 1 }}>
           {tab === "sessions" ? (
             unpaired ? (
               <UnpairedScreen
@@ -1007,7 +1008,7 @@ export function App() {
               bottomInset={tabFootprint}
             />
           ) : null}
-        </View>
+        </BlurBackdrop>
         <FreshSessionSheet
           open={freshOpen}
           project={snapshot?.project?.name ?? snapshot?.project?.path ?? "the open project"}
