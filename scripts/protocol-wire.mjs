@@ -38,6 +38,7 @@ export const notificationSchemas = {
   "terminal.ownership": "terminalOwnershipNotificationSchema",
   "fleet.changed": "fleetChangedNotificationSchema",
   "system.emergencyStopped": "systemEmergencyStoppedNotificationSchema",
+  "device.codeOutcome": "deviceCodeOutcomeNotificationSchema",
 }
 
 // Structured data attached to RPC errors.
@@ -50,6 +51,7 @@ export const errorDataSchemas = [
   "protocolMismatchSchema",
   "repositoryGitFilterRefusalSchema",
   "sessionAttachmentRefusalSchema",
+  "sessionReviewRefusalSchema",
   "skillInstallRefusalSchema",
   "turnSkillSelectionRefusalSchema",
 ]

@@ -411,6 +411,30 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("publishes what became of a pairing code this connection issued", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const received: unknown[] = []
+    const protocolErrors: string[] = []
+    client.addEventListener("device-code-outcome", (event) => {
+      received.push((event as CustomEvent).detail)
+    })
+    client.addEventListener("protocol-error", (event) => {
+      protocolErrors.push((event as CustomEvent<{ reason: string }>).detail.reason)
+    })
+    const outcome = { pairingId: `pairing-${"c".repeat(32)}`, outcome: "refused", reason: "device-limit", label: "iPad Pro" }
+    socket.receive({ jsonrpc: "2.0", method: "device.codeOutcome", params: outcome })
+    socket.receive({ jsonrpc: "2.0", method: "device.codeOutcome", params: { ...outcome, reason: "invented" } })
+
+    expect(received).toEqual([outcome])
+    expect(protocolErrors).toEqual(["Daemon sent a device.codeOutcome notification this client could not parse"])
+    client.disconnect()
+  })
+
   it("requests preview access scoped to the bridge channel", async () => {
     const client = new DomovoiClient("wss://machine.example/rpc", "tablet", { budgets })
     const connecting = client.connect()
