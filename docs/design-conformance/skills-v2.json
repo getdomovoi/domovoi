@@ -417,7 +417,7 @@
     {
       "id": "tools.tab",
       "since": "2026-09-29",
-      "note": "The Skills and Tools tabs sit in a strip at the top of the surface, not in the window bar, and an agent is named without its harness mark. Whether an entry runs at session start follows each entry's heldBack, so an untrusted repository whose entries the daemon does not hold back reads as running, and a trusted one never says trust made it so unless no entry is held back. An entry the daemon holds back from a trusted repository, or from one that cannot be trusted, reads Held back, without until you trust this repository. A cannot-trust repository lists its refusal codes in a card the design does not draw."
+      "note": "The Skills and Tools tabs sit in a strip at the top of the surface, not in the window bar, and an agent is named without its harness mark. Whether an entry runs at session start follows each entry's heldBack, so an untrusted repository whose entries the daemon does not hold back reads as running, and a trusted one never says trust made it so unless no entry is held back. An entry the daemon holds back from a trusted repository, or from one that cannot be trusted, reads Held back, without until you trust this repository. A cannot-trust repository lists its refusal codes in a card the design does not draw. Git filter settings a grant covers are listed in a panel the design does not draw, apart from the entries that run when a session starts, as reviewed settings rather than commands that run (ruling Q400); while any are covered, the empty runs line says no agent entry runs when a session starts instead of Nothing from this repository can run."
     },
     {
       "id": "trust.phone",

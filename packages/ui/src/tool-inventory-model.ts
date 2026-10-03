@@ -147,19 +147,38 @@ export function unreadableFiles(files: readonly ToolInventoryFile[]): Extract<To
 // any repository file counts all of its omissions here.
 export type RepositoryRuns = {
   runs: ToolRow[]
-  filters: FilterRun[]
+  filters: GitFilterSettingRow[]
   unreadable: number
   omitted: number
 }
 
-// A Git filter command the daemon runs, not held back: under a grant that
-// reviewed it, Git runs it whenever it checks out or stages a file (#688).
-export type FilterRun = {
+// A Git filter setting a grant covers, not held back (#688). It is a setting,
+// not a command that runs: Git runs the filters the effective settings define
+// (an empty process turns clean and smudge off, process is used before them,
+// a later value replaces an earlier one), and a Git LFS transfer agent's
+// program, arguments and selection are one agent. The client does not work
+// out which run; it lists every setting (ruling Q400).
+export type GitFilterSettingRow = {
   key: string
-  driver: string
-  operation: ToolInventoryGitFilterEntry["operation"]
-  command: string
+  // "Filter driver", "Git LFS transfer agent", ...
+  kind: string
+  // The driver, agent or extension name.
+  name: string
+  // "clean", "program", "arguments", "selects", ...
+  field: string
+  value: string
   file: string
+}
+
+const gitFilterSettingLabels: Record<ToolInventoryGitFilterEntry["operation"], { kind: string; field: string }> = {
+  clean: { kind: "Filter driver", field: "clean" },
+  smudge: { kind: "Filter driver", field: "smudge" },
+  process: { kind: "Filter driver", field: "process" },
+  "lfs-transfer-path": { kind: "Git LFS transfer agent", field: "program" },
+  "lfs-transfer-args": { kind: "Git LFS transfer agent", field: "arguments" },
+  "lfs-standalone-agent": { kind: "Git LFS standalone agent", field: "selects" },
+  "lfs-extension-clean": { kind: "Git LFS extension", field: "clean" },
+  "lfs-extension-smudge": { kind: "Git LFS extension", field: "smudge" },
 }
 
 export function repositoryRuns(inventory: ToolInventory): RepositoryRuns {
@@ -173,12 +192,12 @@ export function repositoryRuns(inventory: ToolInventory): RepositoryRuns {
     omitted += provider.omittedEntries
     runs.push(...providerRows(provider).filter((row) => fromRepository(row.file.source) && row.start === "runs"))
   }
-  // A filter that runs counts as running too, so the summary never says
-  // nothing runs while one does (bot finding 4151622860). A held-back,
-  // omitted or unreadable filter block runs nothing: the gate refuses it.
-  const filters = (inventory.repository?.gitFilters?.entries ?? []).flatMap((entry, index): FilterRun[] => entry.heldBack
+  // Settings a grant covers are listed beside what runs, so the summary never
+  // says nothing runs while they are covered (bot finding 4151622860). A
+  // held-back, omitted or unreadable block runs nothing: the gate refuses it.
+  const filters = (inventory.repository?.gitFilters?.entries ?? []).flatMap((entry, index): GitFilterSettingRow[] => entry.heldBack
     ? []
-    : [{ key: `git:${index}`, driver: entry.driver, operation: entry.operation, command: entry.command, file: entry.file }])
+    : [{ key: `git:${index}`, ...gitFilterSettingLabels[entry.operation], name: entry.driver, value: entry.command, file: entry.file }])
   return { runs, filters, unreadable, omitted }
 }
 

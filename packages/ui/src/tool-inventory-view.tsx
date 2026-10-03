@@ -39,6 +39,7 @@ import {
   toolSourceLabel,
   trustSummary,
   unreadableFiles,
+  type GitFilterSettingRow,
   type ToolRow,
 } from "./tool-inventory-model"
 import { commandWhitespace, eyebrow, GrantedWhere, kindIcon, mono, omittedText, TrustRefusals } from "./tool-inventory-parts"
@@ -249,20 +250,28 @@ function RepositoryRunsPanel({ inventory, meta }: { inventory: ToolInventory; me
   // A file not read or entries left out may hold more, so the list never
   // claims to be whole then.
   const incomplete = incompleteReason(summary)
-  const count = runs.length + filters.length
-  if (count === 0) {
+  // Git filter settings the grant covers are listed apart (ruling Q400): they
+  // may run during Git operations, so nothing is said to be unable to run
+  // while they are covered, and the empty line speaks of agent entries then.
+  const settings = filters.length > 0 ? <GitFilterSettingsPanel filters={filters} /> : null
+  if (runs.length === 0) {
+    const none = filters.length > 0
+      ? incomplete ? `No agent entry listed here runs when a session starts, but the list is not complete: ${incomplete}.` : "No agent entry from this repository runs when a session starts."
+      : incomplete ? `No entry listed here runs when a session starts, but the list is not complete: ${incomplete}.` : "Nothing from this repository can run when a session starts."
     return (
-      <div className="flex flex-wrap items-center gap-2.5 rounded-xl border border-dashed px-[15px] py-3 text-[12px] text-muted-foreground">
-        <FolderGit2Icon className="size-4 shrink-0" aria-hidden />
-        <span className="min-w-0 flex-1 basis-64">{incomplete ? `No entry listed here runs when a session starts, but the list is not complete: ${incomplete}.` : "Nothing from this repository can run when a session starts."}</span>
-        <span className={cn(mono, "text-[10.5px] text-faint")}>{meta}</span>
-      </div>
+      <>
+        <div className="flex flex-wrap items-center gap-2.5 rounded-xl border border-dashed px-[15px] py-3 text-[12px] text-muted-foreground">
+          <FolderGit2Icon className="size-4 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1 basis-64">{none}</span>
+          <span className={cn(mono, "text-[10.5px] text-faint")}>{meta}</span>
+        </div>
+        {settings}
+      </>
     )
   }
-  // A Git filter runs whenever Git checks out or stages a file, not only when
-  // a session starts, so the title says both once one is listed.
-  const title = `${plural(count, "entry", "entries")} from this repository ${count === 1 ? "runs" : "run"} when a session starts${filters.length > 0 ? " or Git checks out or stages a file" : ""}`
+  const title = `${plural(runs.length, "entry", "entries")} from this repository ${runs.length === 1 ? "runs" : "run"} when a session starts`
   return (
+    <>
     <section aria-labelledby={titleId} className="overflow-hidden rounded-xl border border-info-border bg-info-background text-info-foreground">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-[15px] py-3">
         <FolderGit2Icon className="size-4 shrink-0" aria-hidden />
@@ -283,23 +292,43 @@ function RepositoryRunsPanel({ inventory, meta }: { inventory: ToolInventory; me
             </li>
           )
         })}
+      </ul>
+      {incomplete ? <p className="m-0 border-t border-info-border px-[15px] py-[9px] text-[11.5px]">This list is not complete: {incomplete}.</p> : null}
+      <p className="m-0 border-t border-info-border px-[15px] pt-[9px] pb-[11px] text-[11.5px] text-info-dim">Listed before any session opens. Reading them does not start them.</p>
+    </section>
+    {settings}
+    </>
+  )
+}
+
+// The repository's Git filter settings a grant covers (#688), each one as the
+// review showed it: a setting, not a command that runs (ruling Q400).
+function GitFilterSettingsPanel({ filters }: { filters: readonly GitFilterSettingRow[] }) {
+  const titleId = useId()
+  const title = `${plural(filters.length, "reviewed Git filter setting", "reviewed Git filter settings")} ${filters.length === 1 ? "is" : "are"} covered by this repository's trust`
+  return (
+    <section aria-labelledby={titleId} className="overflow-hidden rounded-xl border border-info-border bg-info-background text-info-foreground">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-[15px] py-3">
+        <FilterIcon className="size-4 shrink-0" aria-hidden />
+        <h2 id={titleId} className="m-0 text-[13px] font-medium">{title}</h2>
+      </div>
+      <p className="m-0 px-[15px] pb-3 text-[11.5px] leading-[1.55] text-info-dim">Git may run the filters these settings define during checkout, staging and other Git operations on files the repository's .gitattributes select. Not every setting listed runs: an empty process turns a driver's clean and smudge off, process is used before clean and smudge, and a later value replaces an earlier one.</p>
+      <ul className="m-0 list-none p-0">
         {filters.map((filter) => (
           <li key={filter.key} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-info-border px-[15px] py-[9px]">
             <FilterIcon className="size-4 shrink-0 text-info-dim" aria-hidden />
-            <span className="w-[84px] shrink-0 text-[11.5px]">Filter driver</span>
-            <span className={cn(mono, "w-40 shrink-0 text-[11px] break-all")}>{filter.driver}</span>
-            {/* The operation and its command, the command a bounded block as
-                in the trust sheet (ruling Q335). */}
+            <span data-slot="setting-kind" className="w-[84px] shrink-0 text-[11.5px]">{filter.kind}</span>
+            <span data-slot="setting-name" className={cn(mono, "w-40 shrink-0 text-[11px] break-all")}>{filter.name}</span>
+            {/* The field and its value, the value a bounded block as in the
+                trust sheet (ruling Q335). */}
             <span className="flex min-w-0 flex-1 basis-64 flex-wrap items-start gap-x-2 gap-y-0.5">
-              <span className="pt-[3px] text-[11px] text-info-dim">{filter.operation}</span>
-              <code className={cn(mono, commandWhitespace, "min-w-0 flex-1 rounded-md bg-code px-1.5 py-0.5 text-[10.5px] break-all text-info-foreground")}>{filter.command}</code>
+              <span data-slot="setting-field" className="pt-[3px] text-[11px] text-info-dim">{filter.field}</span>
+              <code className={cn(mono, commandWhitespace, "min-w-0 flex-1 rounded-md bg-code px-1.5 py-0.5 text-[10.5px] break-all text-info-foreground")}>{filter.value}</code>
             </span>
             <span className={cn(mono, "text-[10.5px] text-info-dim")}>{filter.file}</span>
           </li>
         ))}
       </ul>
-      {incomplete ? <p className="m-0 border-t border-info-border px-[15px] py-[9px] text-[11.5px]">This list is not complete: {incomplete}.</p> : null}
-      <p className="m-0 border-t border-info-border px-[15px] pt-[9px] pb-[11px] text-[11.5px] text-info-dim">Listed before any session opens. Reading them does not start them.</p>
     </section>
   )
 }
