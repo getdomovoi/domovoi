@@ -108,9 +108,21 @@ function commandStagingRefusal(refused: DaemonRuntimeStagingRefusedError, dataDi
   const who = platform === "win32" ? "inside your user profile" : "that no other account can change"
   const where = `on the same volume as the profile directory ${refused.profileDirectory} and outside every profile and repository`
   const failed = refused.failed ?? dataDirectory
+  // Q413 A: when the access gate failed that directory, what fixes it. The
+  // chmod is offered only for this user's own directory, where it works; a
+  // directory another account owns only that account could change.
+  const access = refused.access?.path === failed ? refused.access?.access : undefined
+  const owner = access === "another-account" ? `${failed} belongs to another account. ` : ""
+  const chmod = access === "own-writable" && failed !== undefined ? `Run chmod go-w ${shellWord(failed)} and try again. ` : ""
   return failed === undefined
     ? `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, must be a directory, not a link, ${who}, ${where}, and it is not. Set ${platform === "win32" ? "TEMP" : "TMPDIR"} to a directory that is, and run this again. ${outcome}`
-    : `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, and ${failed} must each be a directory, not a link, ${who}, ${where}, and neither is. Set TMPDIR or XDG_STATE_HOME to a directory that is, and run this again. ${outcome}`
+    : `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, and ${failed} must each be a directory, not a link, ${who}, ${where}, and neither is. ${owner}Set TMPDIR or XDG_STATE_HOME to a directory that is, and run this again. ${chmod}${outcome}`
+}
+
+// A path as one POSIX shell word: as it is when it holds only characters a
+// shell leaves alone, else in single quotes, each ' written as '\''.
+function shellWord(path: string): string {
+  return /^[A-Za-z0-9_./+:@%-]+$/u.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`
 }
 
 // The copy to install from when execPath is an app's runtime, or undefined.

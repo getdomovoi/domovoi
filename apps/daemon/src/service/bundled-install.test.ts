@@ -269,23 +269,53 @@ describe.skipIf(process.platform === "win32")("domovoid service install from the
       return dependencies
     }
     // Names the directory that failed, and every directory made before it.
-    const refusal = (failed: string, made: string[] = []) => `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, and ${failed} must each be a directory, not a link, that no other account can change, on the same volume as the profile directory ${join(home, ".domovoi")} and outside every profile and repository, and neither is. Set TMPDIR or XDG_STATE_HOME to a directory that is, and run this again. ${made.length === 0 ? "Nothing was changed." : `It made ${made.join(", ")}, which hold no files, and changed nothing else.`}\n`
+    // remedy: what the access gate adds for the directory it named, if any.
+    const refusal = (failed: string, made: string[] = [], remedy: { owner?: string; chmod?: string } = {}) => `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, and ${failed} must each be a directory, not a link, that no other account can change, on the same volume as the profile directory ${join(home, ".domovoi")} and outside every profile and repository, and neither is. ${remedy.owner === undefined ? "" : `${remedy.owner} belongs to another account. `}Set TMPDIR or XDG_STATE_HOME to a directory that is, and run this again. ${remedy.chmod === undefined ? "" : `Run chmod go-w ${remedy.chmod} and try again. `}${made.length === 0 ? "Nothing was changed." : `It made ${made.join(", ")}, which hold no files, and changed nothing else.`}\n`
 
     // PR #712 security review round 2 (P2): a state directory another
     // account could change is refused like one on another volume, named.
-    it("refuses a state directory another account can write, naming it", async () => {
+    // Q413 A: a directory this user owns that group or others can write gets
+    // the chmod that fixes it; one another account owns does not, since
+    // that chmod would not work.
+    const gated = (state: string, answer: { uid: number; mode: number }) => {
+      const real = nodeRuntimeFileSystem()
+      return nodeRuntimeFileSystem({
+        identity: async (path) => path === tmpdir() ? "other-volume:1" : real.identity(path),
+        permissions: async (path) => path === state ? answer : real.permissions(path),
+      })
+    }
+    const me = process.getuid?.() ?? 0
+
+    it.each([
+      ["group", 0o40775],
+      ["others", 0o40777],
+    ])("refuses a state directory this user owns that %s can write, with the chmod that fixes it", async (_label, mode) => {
       const state = join(home, ".local", "state", "domovoi")
       await mkdir(state, { recursive: true })
-      const real = nodeRuntimeFileSystem()
-      const fileSystem = nodeRuntimeFileSystem({
-        identity: async (path) => path === tmpdir() ? "other-volume:1" : real.identity(path),
-        permissions: async (path) => path === state ? { uid: process.getuid?.() ?? 0, mode: 0o40777 } : real.permissions(path),
-      })
-      const dependencies = fromSystemPlaces({ runtimeFileSystem: fileSystem })
+      const dependencies = fromSystemPlaces({ runtimeFileSystem: gated(state, { uid: me, mode }) })
       expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
-      expect(dependencies.stderr).toHaveBeenCalledWith(refusal(state))
+      expect(dependencies.stderr).toHaveBeenCalledWith(refusal(state, [], { chmod: state }))
       expect(dependencies.write).not.toHaveBeenCalled()
       expect(await readdir(state)).toEqual([])
+    })
+
+    it("quotes a directory the chmod names when it holds a space", async () => {
+      const stateHome = join(root, "my state")
+      const state = join(stateHome, "domovoi")
+      await mkdir(state, { recursive: true })
+      const dependencies = fromSystemPlaces({ runtimeFileSystem: gated(state, { uid: me, mode: 0o40775 }), environment: { XDG_STATE_HOME: stateHome } })
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+      expect(dependencies.stderr).toHaveBeenCalledWith(refusal(state, [], { chmod: `'${state}'` }))
+    })
+
+    it("says a state directory belongs to another account, with no chmod", async () => {
+      const state = join(home, ".local", "state", "domovoi")
+      await mkdir(state, { recursive: true })
+      const dependencies = fromSystemPlaces({ runtimeFileSystem: gated(state, { uid: me + 1, mode: 0o40755 }) })
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+      expect(dependencies.stderr).toHaveBeenCalledWith(refusal(state, [], { owner: state }))
+      expect(vi.mocked(dependencies.stderr).mock.calls.join("")).not.toContain("chmod")
+      expect(dependencies.write).not.toHaveBeenCalled()
     })
 
     it("stages under ~/.local/state/domovoi, making only the directories it needs", async () => {

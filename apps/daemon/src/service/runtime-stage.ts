@@ -40,7 +40,15 @@ export class DaemonServiceRuntimeMissingError extends Error {
 // directory, when one did, and the directories made before the refusal,
 // outermost first.
 export class DaemonRuntimeStagingRefusedError extends Error {
-  constructor(readonly profileDirectory: string, readonly failed: string | undefined = undefined, readonly made: readonly string[] = []) {
+  constructor(
+    readonly profileDirectory: string,
+    readonly failed: string | undefined = undefined,
+    readonly made: readonly string[] = [],
+    // When the failed directory is one another account could change, why
+    // (round 2 of #712, Q413 A). The app's message does not name a
+    // directory, so it does not use this.
+    readonly access: StagingAccessFailure | undefined = undefined,
+  ) {
     super(`The profile directory ${profileDirectory} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`)
     this.name = "DaemonRuntimeStagingRefusedError"
   }
@@ -190,31 +198,46 @@ function inside(pathApi: typeof posix, root: string, path: string): boolean {
 // cannot read ACLs, so only a place inside this user's own profile
 // directory passes; that holds the default TEMP (%LOCALAPPDATA%\Temp) and
 // the app's userData (%APPDATA%). A failure to read fails the place.
-export async function unprotectedStagingDirectory(real: string, options: {
+type StagingAccessOptions = {
   platform: string
   fileSystem: RuntimeFileSystem
   // Windows: this user's profile directory; os.homedir() by default.
   userDirectory?: string
   // POSIX: this user's id; process.getuid() by default.
   uid?: number
-}): Promise<string | undefined> {
+}
+
+export async function unprotectedStagingDirectory(real: string, options: StagingAccessOptions): Promise<string | undefined> {
+  return (await stagingAccessFailure(real, options))?.path
+}
+
+// The directory that failed and why, so a refusal can say what fixes it
+// (Q413 A): "own-writable" is this user's own directory that group or others
+// can write, which `chmod go-w` fixes; "another-account" is one this user
+// does not own, which only its owner could change; "unknown" is a place
+// outside the profile on Windows, or one that could not be read.
+export type StagingAccessFailure = { path: string; access: "own-writable" | "another-account" | "unknown" }
+
+async function stagingAccessFailure(real: string, options: StagingAccessOptions): Promise<StagingAccessFailure | undefined> {
   const fs = options.fileSystem
   try {
     if (options.platform === "win32") {
       const user = (await fs.realpath(options.userDirectory ?? homedir())).toLowerCase()
-      return inside(win32, user, real.toLowerCase()) ? undefined : real
+      return inside(win32, user, real.toLowerCase()) ? undefined : { path: real, access: "unknown" }
     }
     const me = options.uid ?? process.getuid?.()
-    if (me === undefined) return real
+    if (me === undefined) return { path: real, access: "unknown" }
     for (let at = real; ; at = posix.dirname(at)) {
       const { uid, mode } = await fs.permissions(at)
       const othersWrite = (mode & 0o022) !== 0
       const rootSticky = uid === 0 && (mode & 0o1000) !== 0
-      if ((uid !== me && uid !== 0) || (othersWrite && !rootSticky)) return at
+      if ((uid !== me && uid !== 0) || (othersWrite && !rootSticky)) {
+        return { path: at, access: uid === me ? "own-writable" : "another-account" }
+      }
       if (posix.dirname(at) === at) return undefined
     }
   } catch {
-    return real
+    return { path: real, access: "unknown" }
   }
 }
 
@@ -409,16 +432,23 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
   // The directory that made the last usable() fail because another account
   // could change it (unprotectedStagingDirectory), so a refusal names it.
   let unprotected: string | undefined
+  let gate: StagingAccessFailure | undefined
   const usable = async (path: string) => {
     unprotected = undefined
+    gate = undefined
     if (!pathApi.isAbsolute(path) || await fs.entry(path) !== "directory") return false
     if (device(await fs.identity(path)) !== runtimeDevice) return false
     const real = await fs.realpath(path)
     if (inside(pathApi, profile, real) || await insideRepositoryOrProfile(real)) return false
-    unprotected = await unprotectedStagingDirectory(real, { platform: input.platform, fileSystem: fs })
-    return unprotected === undefined
+    gate = await stagingAccessFailure(real, { platform: input.platform, fileSystem: fs })
+    unprotected = gate?.path
+    return gate === undefined
   }
-  const refusal = (failed: string | undefined, made: readonly string[] = []) => new DaemonRuntimeStagingRefusedError(input.profileDirectory, failed, made)
+  // Q413 A: a refusal naming the directory the access gate failed carries
+  // why, so the command can say what fixes it. Every refusal follows the
+  // usable() call that decided it.
+  const refusal = (failed: string | undefined, made: readonly string[] = []) =>
+    new DaemonRuntimeStagingRefusedError(input.profileDirectory, failed, made, gate !== undefined && gate.path === failed ? gate : undefined)
   // The data directories this staging needs that are not there yet, outermost
   // first: made one at a time, each checked again with usable, at publish.
   // The app's data directory is always there; the one `domovoid service
