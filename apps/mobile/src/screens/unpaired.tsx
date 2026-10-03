@@ -43,13 +43,13 @@ export function UnpairedScreen({
         </View>
         <PageScroller contentContainerClassName="gap-[14px] px-3" bottomInset={bottomInset}>
           <View className="gap-3 rounded-2xl border border-info-border bg-info-bg p-4">
-            <Text className="font-sans-medium text-[15px] text-info-fg">Pair this phone</Text>
+            <Text className="font-sans-semibold text-[15px] tracking-[-0.01em] text-info-fg">Pair this phone</Text>
             <Text className="text-[13px] leading-[20px] text-info-dim">
               Pairing exchanges keys with one machine directly, over your tailnet. Nothing passes through a server, and the phone stores no code.
             </Text>
             <View className="flex-row gap-2">
-              <Button title="Scan a code" variant="primary" className="flex-1" onPress={onScanPairingCode} />
-              <Button title="Type it" variant="outline" className="flex-1" onPress={onTypePairingCode} />
+              <Button title="Scan a code" variant="info" className="flex-1" onPress={onScanPairingCode} />
+              <Button title="Type it" variant="info-outline" className="flex-1" onPress={onTypePairingCode} />
             </View>
           </View>
           <View className="overflow-hidden rounded-2xl border border-border">
