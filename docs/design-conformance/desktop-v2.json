@@ -1523,14 +1523,16 @@
         "PROBLEM",
         "APPROACH",
         "STOPS FOR APPROVAL",
-        "Looks right, carry on"
+        "Looks right, carry on",
+        "Comment on a step"
       ],
       "presence": [
-        "<WorkingPlanCard"
+        "<WorkingPlanCard",
+        "Looks right, carry on"
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "the plan renders with comments; the document sections and the two footer actions are not the design's"
+        "since": "2026-10-02",
+        "reason": "the working plan renders as a card with Looks right, carry on (working-plan.tsx); the document is not drawn: no PROBLEM, APPROACH, STOPS FOR APPROVAL, WHAT THIS DOES NOT FIX or STILL OPEN sections and no Comment on a step. A plan artifact is hidden whenever a working plan exists, and WorkingPlan carries text, status and blocker only. Q350 A (2026-10-02): when a plan artifact exists, show it as the document beside the working-plan card, with Comment on a step anchored to it by a text quote (client-only). The footer meta reads revision N where the design says revised once since <time>"
       }
     },
     {
@@ -1547,7 +1549,7 @@
       ],
       "evidence": [
         "RENDERED THIS SESSION",
-        "authorize to view",
+        "authorized · ",
         "Add a comment"
       ],
       "presence": [
@@ -1555,8 +1557,8 @@
         "Comments on this preview"
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "preview with widths and comments exists; the session list header, the authorize label and the annotate label are not the design's"
+        "since": "2026-10-02",
+        "reason": "preview with widths and comments exists. The RENDERED THIS SESSION list is missing, and that is functional: previewVariantsForActiveSession anchors on the latest preview, so a preview rendered earlier in the session outside that variant group cannot be opened anywhere in the dock. The toolbar is not the design's: no authorize chip, widths 390, 768 and 1440 (default 768) where the design has sm, md and lg (default lg), Annotate where the design says Add a comment, and no hints under the frame. Q379 A (2026-10-02) keeps automatic authorization and draws the chip as authorized · <time> left from expiresAt, re-authorizing on expiry, so authorize to view is not drawn; Q380 A keeps Print view, Download safe copy, Compare, the filmstrip, the Live badge and the safe-copies line behind one overflow control"
       }
     },
     {
@@ -1606,7 +1608,7 @@
       "blocked": {
         "since": "2026-09-23",
         "needs": "protocol",
-        "reason": "no RPC lists listening ports or authorizes a running app into the preview sandbox; J32 was drawn as an owner decision"
+        "reason": "no RPC lists listening ports or authorizes a running app into the preview sandbox. J32 is not in M1 (Q397 A, 2026-10-02): it stays blocked until after M1 and is still listed as not decided in SHIP-PLAN"
       }
     },
     {
@@ -1627,8 +1629,8 @@
         "Comments on this preview"
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "commenting exists with its own labels"
+        "since": "2026-10-02",
+        "reason": "commenting exists as a modal Annotate preview dialog with a Comment label, Cancel and Post; the design draws an inline draft card under the frame (new comment pill, the anchor and quote, Post the comment, Cancel, the agent reads it next turn). Under today's auto-carry every open comment reaches the next turn whether or not it is finished; Q348 A (2026-10-02) makes sending explicit (see dock.preview-comments)"
       }
     },
     {
@@ -1646,7 +1648,7 @@
       ],
       "partial": {
         "since": "2026-09-18",
-        "reason": "the dynamic variant heading and comment rows exist; the design's explicit decision to attach open comments to the next turn is absent, while production currently carries open annotations automatically"
+        "reason": "the dynamic variant heading and comment rows exist; the design's explicit decision to attach open comments to the next turn is absent, while the daemon carries every open annotation into every turn (annotation-context.ts). Q348 A (2026-10-02): an explicit send on every client through a protocol field and a daemon change. Rows also differ: no pin number, no anchor holds or unavailable state, Resolve where the design says Mark resolved, and a count of n open · m in all where the design says N on this document"
       }
     },
     {
@@ -1662,7 +1664,7 @@
       ],
       "partial": {
         "since": "2026-09-18",
-        "reason": "variants exist; the choose action copy is not the design's"
+        "reason": "variants exist as a thumbnail filmstrip with Use X as build basis; the design draws segmented A B C chips at the foot with a state line and Build on this or Unpick, and a none chosen state the code cannot reach because the basis defaults to the latest. The chosen basis lives only in local UI state and no turn carries it, so the agent never hears it. Q342 A (2026-10-02) carries the chosen variant with the explicit comment send (Q348, protocol) and, until then, words the choice as a viewer bookmark"
       }
     },
     {
@@ -1687,7 +1689,7 @@
       ],
       "partial": {
         "since": "2026-09-18",
-        "reason": "a terminal pane exists; the claim banner and the attach action are not drawn"
+        "reason": "a terminal pane exists, but it is an interactive daemon PTY the user creates, not the agent's read-only shell the design draws. The claim banner (who holds the shell, Take the shell) is a header strip with Take over and a client-owned label; Attach this output to the composer is not drawn (client-only: session.send takes a text attachment); a watching desktop gets an empty state where the design keeps the stream visible (terminal.watch exists and the desktop never calls it). Release the shell and since <time> need protocol. Q340 A (2026-10-02) keeps the PTY, corrects the tip and footer copy (the design's read-only, the agent owns this shell is false here) and asks Claude Design to redraw the tab"
       }
     },
     {
@@ -1712,15 +1714,14 @@
         "Fork"
       ],
       "evidence": [
-        "Every approved write takes one first",
-        "Revert to here"
+        "Every approved write takes one first"
       ],
       "presence": [
-        "checkpoints-panel"
+        "export function CheckpointsPanel("
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "the tab exists with restore actions; the note and action labels are not the design's"
+        "since": "2026-10-02",
+        "reason": "the tab draws Fork, Revert and Reset as the design does (the design renders Revert, not Revert to here, which the earlier evidence asked for); the gap is the intro note. checkpointsIntro omits the checkpoint the daemon takes before every command you allow (J34, since 5ee18251), and the dock tip says Reverting rewinds the worktree and the thread together, which is false: checkpoint.restore resets the worktree only. Q341 A (2026-10-02) keeps worktree-only revert and corrects the tip and the panel copy, so the design's thread half is not drawn. Row meta cannot say why an approved-command checkpoint exists: the daemon records it with no reason, and the reason enum has no before-approved-command value (protocol)"
       }
     },
     {
@@ -1741,7 +1742,7 @@
       ],
       "partial": {
         "since": "2026-09-23",
-        "reason": "mid-turn deferred take (design: taken at the next tool boundary) needs daemon support"
+        "reason": "Take a checkpoint and Take checkpoint work between turns; the mid-turn take (design: taken at the next tool boundary) is not drawn because checkpoint.create refuses during a turn. That is a daemon change only: the J34 silent snapshot already works mid-turn, so the RPC can stay as it is"
       }
     },
     {
@@ -1824,7 +1825,7 @@
       "blocked": {
         "since": "2026-09-23",
         "needs": "protocol",
-        "reason": "no daemon RPC groups a worktree's changes into commits or commits them (J27)"
+        "reason": "no daemon RPC groups a worktree's changes into commits or commits them (J27). J27 is not in M1 (Q397 A, 2026-10-02): it stays blocked until git from the app lands after M1, with the replace-herdr work"
       }
     },
     {
@@ -1849,7 +1850,7 @@
       "blocked": {
         "since": "2026-09-23",
         "needs": "protocol",
-        "reason": "no daemon RPC commits, pushes or opens a pull request from a session worktree (J27)"
+        "reason": "no daemon RPC commits, pushes or opens a pull request from a session worktree (J27). J27 is not in M1 (Q397 A, 2026-10-02): it stays blocked until git from the app lands after M1, with the replace-herdr work"
       },
       "evidence": [
         "Open it as a draft",
@@ -1880,11 +1881,21 @@
       ],
       "evidence": [
         "Transfer checks",
-        "Not sent either way"
+        "Not sent either way",
+        {
+          "absent": "check.ready).length} warnings</span>",
+          "in": "packages/ui/src/transfer-session-dialog.tsx"
+        },
+        "clone and worktree setup"
       ],
       "presence": [
-        "Transfer checks"
-      ]
+        "Transfer checks",
+        "Not sent either way"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the phase shows the already-chosen target and two client-derived checks with no values; the design draws a TARGET list of every machine with reachability (unreachable ones disabled), seven daemon-checked rows with values (repository present, common base, provider auth there, toolchain, clean checkout, payload size, unversioned files), a holdback toggle and the estimate clone and worktree setup, about 20s. The summary reads n pass · m warnings, so it says 1 warnings and 0 warnings where the design says 6 pass · 1 warning (client-only). Five of the rows, the holdback and the estimate need protocol: sessionTransferPreviewSchema carries project ids and commits only"
+      }
     },
     {
       "id": "handoff.recover",
@@ -1919,7 +1930,7 @@
       ],
       "partial": {
         "since": "2026-09-22",
-        "reason": "reclassified from blocked: session.transferResolveConflict (since b5b1aa90, #226) resolves an ownership conflict by keeping the target side, and the transfer outcome offers it; keeping the source side has no RPC, so the design's pick of either side and its Keep the chosen side copy are not drawn"
+        "reason": "reclassified from blocked: session.transferResolveConflict (since b5b1aa90, #226) resolves an ownership conflict by keeping the target side, and the transfer outcome offers it; keeping the source side has no RPC, so the design's pick of either side and its Keep the chosen side copy are not drawn. Q381 A (2026-10-02) keeps the resolution one-way (a local click is not the other machine's consent) and asks Claude Design for a change, so this stays partial until that edit is vendored"
       }
     },
     {
@@ -1931,10 +1942,19 @@
         "esc",
         "Post"
       ],
-      "evidence": [
+      "presence": [
         "Exit fullscreen",
         "setFullscreen(false)"
-      ]
+      ],
+      "evidence": [
+        "Exit fullscreen",
+        "setFullscreen(false)",
+        "Comments on variant"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "fullscreen is a dialog with the title, path · read-only · width line, the frame and an outline Exit fullscreen (the earlier evidence proved only the exit). The design draws a full surface with sm, md and lg widths, the esc hint, variant chips with state text and Build on this at the foot, and a 340px Comments on variant column with an annotate toggle, the explicit send and a draft with Post and Cancel. Annotating is impossible in fullscreen because the picker binds only to the dock frame. All client-only except the explicit send (Q348 A, protocol)"
+      }
     },
     {
       "id": "palette",
@@ -1967,8 +1987,18 @@
         "label: \"Pair a phone or tablet\"",
         "detail: \"settings\"",
         "label: \"Read the audit log\"",
-        "detail: \"on this machine\""
+        "detail: \"on this machine\"",
+        "re:<CommandDialog[^>]*660px"
       ],
+      "presence": [
+        "Search commands",
+        "label: \"Open the changes sheet\"",
+        "label: \"Read the audit log\""
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the commands and their meta are built; the palette is the shadcn CommandDialog unchanged (about 385px wide at top-1/3, list capped at max-h-72) where the design draws 660px at 96px from the top, with a plain query row and the scope on its right; rows are icons with two-line meta and a kind tag where the design draws a coloured dot, one line and the meta on the right. Q375 A (2026-10-02) takes the dots and right-aligned meta with the 660px restyle; Q376 A keeps the undrawn commands, with the design's COMMANDS first"
+      },
       "notes": [
         "2026-10-01 (S3.10 slice 2, ruling Q288 A): Run a migration on this machine is left out. It is the mockup's sample session acting through the palette, not a command. Its copy stays claimed here so the gate keeps reading it, and no disabled placeholder is drawn.",
         "2026-10-01 (ruling Q288 A): Open a pull request is left out until the git-from-app work lands; dock.changes-pr is blocked on protocol and claims its copy. No disabled placeholder is drawn.",
@@ -1987,9 +2017,17 @@
         "in summary",
         "Matches join this list as each machine answers."
       ],
-      "evidence": [
+      "presence": [
         "SESSIONS ON OTHER MACHINES"
-      ]
+      ],
+      "evidence": [
+        "SESSIONS ON OTHER MACHINES",
+        "Add it back"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the group, per-machine search and Search only what answered are built; leaving a silent machine out has no undo, so Add it back and the notice that the machine is left out until you add it back are not drawn; the machine header has no answer dot or asking sweep; picking a row closes the palette at once instead of showing switching to <machine>; the notice is danger-styled and adds a sentence the design does not draw; row meta is the session state where the design shows running 41m"
+      }
     },
     {
       "id": "composer.action-row",
@@ -2085,7 +2123,7 @@
       ],
       "partial": {
         "since": "2026-09-26",
-        "reason": "the effort menu from PR #622 lists the levels the model reports, the value sent in mono beside each word, and a level with no word as its value; it uses the 2026-09-23 scales, so the claude-code effort and codex none to xhigh words and lines, Model's own, the Model default marker, the No word yet tag and the neutral clamp note are not built"
+        "reason": "the effort menu from PR #622 lists the levels the model reports, the value sent in mono beside each word, and a level with no word as its value; it uses the 2026-09-23 scales, so the claude-code effort and codex none to xhigh words and lines, Model's own, the Model default marker, the No word yet tag and the neutral clamp note are not built. effort-scales.ts still names claude-code levels think, think-hard and ultrathink, which the daemon never reports (it reports the SDK's supported effort levels), so claude-code rows get shared words and no lines; the clamp note is amber where the design is neutral. Rulings Q31, Q34, Q35 and Q36 (2026-09-25) already settle the copy"
       }
     },
     {
@@ -2100,10 +2138,19 @@
       "copy": [
         "Prompt editor"
       ],
-      "evidence": [
+      "presence": [
         "PromptEditorDialog",
         "data-prompt-editor-scrim"
-      ]
+      ],
+      "evidence": [
+        "PromptEditorDialog",
+        "data-prompt-editor-scrim",
+        "re:export function PromptEditorDialog\\(\\{[^}]*attachments"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the editor matches in size, header, format control, inserts and footer; the design body draws the composer's attachments as removable chips (its comment: attachments carry through from the composer), and PromptEditorDialog takes no attachments: thread.tsx holds them and does not pass them"
+      }
     },
     {
       "id": "editor.format-toggle",
@@ -2180,6 +2227,66 @@
       "id": "settings.about-build",
       "since": "2026-09-23",
       "note": "Not signed is fixed copy for M1 (ND6); scripts/unsigned-build.mjs fails the release invariants once a signing build runs on an automatic trigger while the line stays. The update-checks line (Checks run only while this machine's update policy allows them) belongs to the design's later signed state and is not drawn. The About Domovoi menu dialog is not drawn; it is app-menu work."
+    },
+    {
+      "id": "dock.tabs",
+      "since": "2026-10-02",
+      "note": "Three tips copy the design's words and are false for the shipped product. Terminal (read-only. The agent owns this shell.): the tab is an interactive daemon PTY, and Q340 A corrects the tip and footer and asks Claude Design to redraw the tab. Checkpoints (Reverting rewinds the worktree and the thread together): checkpoint.restore resets the worktree only, and Q341 A keeps that and corrects the copy. History (Fork from any turn.): fork is checkpoint-only (turn-row fork closed as a design error, f3252e50), so the tip becomes Fork from any checkpoint. A tab that matches the design here is a tab that says something untrue."
+    },
+    {
+      "id": "conversation.approval",
+      "since": "2026-10-02",
+      "note": "Ruled differences from the drawn card: Q339 A, Deny decides at once as drawn, plus a quiet Deny with a note secondary the design does not draw, whose copy does not promise the agent hears the note (no adapter passes it on); Q371 A, the Always button reads Always for this command here, not the drawn Always for <command family> here, because rules match an execution record, not a family; the 2026-09-24 ruling (#545) hides Always on hard gates and unresolved requests."
+    },
+    {
+      "id": "titlebar.theme",
+      "since": "2026-10-02",
+      "note": "Open gap, ruled: the toggle is disabled while the client is watching (app-bar), though theme never reaches the daemon; the design keeps it live, and Q362 A unlocks client-only preferences. Open gap, unruled: the aria-label says Use light theme while the tooltip says Light appearance."
+    },
+    {
+      "id": "drawer.row",
+      "since": "2026-10-02",
+      "note": "The design's drawer mixes sessions from several machines (sample names). Q364 A keeps the M1 drawer to this machine with the machine name in each row's meta; a fleet-wide drawer comes with the replace-herdr work."
+    },
+    {
+      "id": "audit.facts",
+      "since": "2026-10-02",
+      "note": "Q377 A: the retention line takes the design's numbers, and the export line keeps the word redacted (Export writes a redacted file) where the design does not say it; that word is a dated deviation, because the export is redacted."
+    },
+    {
+      "id": "audit.export",
+      "since": "2026-10-02",
+      "note": "Q346 A: where the file lands depends on the client kind. A desktop writes it on this machine as drawn; a web tab says saves to this device, because the browser downloads it there."
+    },
+    {
+      "id": "composer.usage-chip",
+      "since": "2026-10-02",
+      "note": "Q374 A: the TODAY row is an addition the design does not draw and stays; the cost note is reworded without jargon."
+    },
+    {
+      "id": "palette",
+      "since": "2026-10-02",
+      "note": "Q376 A: Open project, New session, Pause, Emergency stop, Agent workspace, Provider settings, Skills, Checkpoints, Reconnect, Open in editor, Copy worktree path, First-run setup and the footer hint are not drawn and stay, after the design's COMMANDS."
+    },
+    {
+      "id": "dock.preview",
+      "since": "2026-10-02",
+      "note": "Q379 A: the preview authorizes on open, so the drawn authorize to view click is not built; the chip shows authorized and the time left. Q380 A: Print view, Download safe copy, Compare, the filmstrip, the Live badge and the safe-copies line are shipped features the design does not draw; they stay behind one overflow control in the design's toolbar."
+    },
+    {
+      "id": "dock.terminal",
+      "since": "2026-10-02",
+      "note": "Q340 A: the tab stays an interactive PTY the user creates, not the agent's read-only shell the design draws; the design's footer note read-only, the agent owns this shell is not drawn because it is false here, and the redraw is with Claude Design."
+    },
+    {
+      "id": "handoff.conflict",
+      "since": "2026-10-02",
+      "note": "Q381 A: keeping the source side is not built; the resolution stays one-way (the other machine keeps the session) and the drawn choice of either side goes back to Claude Design."
+    },
+    {
+      "id": "thread.session-notice",
+      "since": "2026-10-02",
+      "note": "Q361 A: after a client stop the thread shows a Stopped notice (the turn ended; the next send starts the next one) in place of the drawn Paused notice, which describes a held pause the daemon does not have; the paused copy goes back to Claude Design."
     }
   ],
   "annotations": [
