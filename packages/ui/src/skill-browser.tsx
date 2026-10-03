@@ -741,10 +741,15 @@ export function SkillBrowser({
                     {addTarget ? installTargetCopy(addTarget, addPreview.name) : "Choose where this skill lives."}
                   </p>
                 </section>
+                {/* Ruling Q360 A: a refusal on any file refuses the whole
+                    install, since the folder digest is what was reviewed. The
+                    design's "N files will not be copied" would read as the rest
+                    being copied, so the title says the install cannot proceed. */}
                 {addRefusals.length > 0 ? (
                   <Alert variant="destructive">
-                    <AlertTitle>Install refused</AlertTitle>
+                    <AlertTitle>The install cannot proceed</AlertTitle>
                     <AlertDescription>
+                      <span className="font-machine text-[10.5px]">typed refusals, not warnings</span>
                       <ul className="m-0 list-disc pl-4">
                         {addRefusals.map((refusal) => (
                           <li key={`${refusal.reason}:${refusal.path ?? ""}`}>{installRefusalCopy(refusal, addPreview.name)}</li>
@@ -756,7 +761,10 @@ export function SkillBrowser({
               </>
             ) : null}
           </div>
-          <DialogFooter>
+          <DialogFooter className="sm:items-center">
+            {addPreview ? (
+              <span className="text-[11.5px] text-faint sm:mr-auto">Installing does not enable it in any project.</span>
+            ) : null}
             <Button variant="outline" disabled={addPending} onClick={() => setAddOpen(false)}>Cancel</Button>
             {addPreview ? (
               <Button
