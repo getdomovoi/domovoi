@@ -65,6 +65,39 @@ describe("the login service assembled for this app's profile", () => {
     } as unknown as DesktopDaemon
   }
 
+  // Review of 049b1383 (P2-3): with the tailnet switch on, a login service
+  // installed afterwards keeps the tailnet listener the in-app daemon had.
+  it("installs the service with the tailnet listener the switch saved", async () => {
+    const { resourcesPath, home, profile } = await scratch()
+    const dataDirectory = join(home, "app-data")
+    await mkdir(dataDirectory)
+    const name = "studio.tail4c2e.ts.net"
+    const tls = join(profile, "tls")
+    await writeFile(join(dataDirectory, "tailnet-reach.json"), JSON.stringify({ version: 1, name, address: "100.101.102.103", certPath: join(tls, `${name}.crt`), keyPath: join(tls, `${name}.key`) }))
+    const daemon = daemonModule()
+    // A hand-set DOMOVOI_HOST belongs to this app's own daemon, not the service.
+    const service = createDesktopDaemonService(desktopDaemon(), { resourcesPath, version: "0.9.4", home, dataDirectory, environment: { DOMOVOI_PROFILE_DIR: profile, DOMOVOI_HOST: "0.0.0.0" } }, daemon as unknown as DaemonModule)
+    await expect(service.install()).resolves.toMatchObject({ ok: true })
+    expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: {
+      DOMOVOI_PROFILE_DIR: profile,
+      DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+      DOMOVOI_TAILNET_ADDRESS: "100.101.102.103",
+      DOMOVOI_TAILNET_TLS_CERT_PATH: join(tls, `${name}.crt`),
+      DOMOVOI_TAILNET_TLS_KEY_PATH: join(tls, `${name}.key`),
+      DOMOVOI_TAILNET_HOST: name,
+    } }))
+  })
+
+  it("installs the service on loopback alone when the switch is off", async () => {
+    const { resourcesPath, home, profile } = await scratch()
+    const dataDirectory = join(home, "app-data")
+    await mkdir(dataDirectory)
+    const daemon = daemonModule()
+    const service = createDesktopDaemonService(desktopDaemon(), { resourcesPath, version: "0.9.4", home, dataDirectory, environment: { DOMOVOI_PROFILE_DIR: profile } }, daemon as unknown as DaemonModule)
+    await expect(service.install()).resolves.toMatchObject({ ok: true })
+    expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: { DOMOVOI_PROFILE_DIR: profile } }))
+  })
+
   it("installs, updates and removes for the profile this app's environment names", async () => {
     const { resourcesPath, home, profile } = await scratch()
     const daemon = daemonModule()

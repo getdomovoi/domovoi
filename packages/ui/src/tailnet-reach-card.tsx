@@ -196,7 +196,13 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
   const isOn = report?.state === "on"
   const expiry = listener?.state === "listening" ? listener.certificateExpiresAt : named?.certificateExpiresAt
   const renewalFailed = isOn ? named?.renewalFailed : undefined
-  const notAnswering = isOn && listener?.state === "refused" ? listener : undefined
+  // The switch on is not the daemon listening (review of 049b1383, P2-3): only
+  // tailnet.status says that. Known and not listening is not answering; not
+  // known is said as not known, and reach is claimed only while listening.
+  const listening = listener?.state === "listening"
+  const notAnswering = isOn && listener !== undefined && !listening
+  const refusedListener = isOn && listener?.state === "refused" ? listener : undefined
+  const unconfirmed = isOn && listener === undefined
   const stoppedOn = failure?.direction === "on" && !isOn
 
   const [tone, label] = running
@@ -207,7 +213,7 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
           : report.state === "off" ? ["bg-faint", "Off"]
             : notAnswering ? ["bg-destructive", "Not answering"]
               : renewalFailed ? ["bg-destructive", "Renewal failed"]
-                : ["bg-success", "On"]
+                : [unconfirmed ? "bg-faint" : "bg-success", "On"]
   const line = running
     ? running.direction === "off" ? "Turning off. The steps run in this order."
       : running.renew ? "Renewing. Tailscale is asked for the certificate again, then the daemon restarts once."
@@ -218,7 +224,8 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
           : report.state === "off" ? "Off. Only this computer can reach the daemon."
             : notAnswering ? "On, but the daemon is not answering on the tailnet."
               : renewalFailed ? (expiry ? `Still on. The certificate did not renew and expires on ${day(expiry)}.` : "Still on. The certificate did not renew.")
-                : "Devices on your tailnet can reach the daemon. Each one still has to pair."
+                : unconfirmed ? "On. Whether the daemon answers on the tailnet is not known from here."
+                  : "Devices on your tailnet can reach the daemon. Each one still has to pair."
   const mono = report?.state === "none" ? report.detail : report?.state === "off" ? `${report.name} · read from Tailscale, not changed` : named?.name
   // Beside a hand-set DOMOVOI_HOST the daemon would not use the settings, so
   // the switch offers no turning on; turning off stays.
@@ -228,7 +235,7 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
     { label: "Tailnet name", value: named.name },
     ...(expiry ? [{ label: "Certificate", value: `expires ${day(expiry)}`, note: renewalFailed ? "Renewal failed. Retrying on its own." : "Renews on its own.", bad: Boolean(renewalFailed) }] : []),
     { label: "Stored in", value: named.stored },
-    { label: "Answers on", value: listener?.state === "listening" ? `127.0.0.1 · ${named.name}` : "127.0.0.1 only" },
+    { label: "Answers on", value: listening ? `127.0.0.1 · ${named.name}` : unconfirmed ? "127.0.0.1 · the tailnet not confirmed" : "127.0.0.1 only" },
   ] : []
 
   return (
@@ -329,13 +336,13 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
           after="Domovoi also tries again on its own."
         />
       ) : null}
-      {!running && notAnswering ? (
+      {!running && refusedListener ? (
         <Alert
           heading="The daemon is not answering on the tailnet"
-          body={notAnswering.reason}
-          mono={`tailnet.status · ${notAnswering.address}`}
+          body={refusedListener.reason}
+          mono={`tailnet.status · ${refusedListener.address}`}
           action="Renew now" onAction={() => void controller.turnOn()}
-          after={notAnswering.retrying ? "The daemon tries the address again on its own." : undefined}
+          after={refusedListener.retrying ? "The daemon tries the address again on its own." : undefined}
         />
       ) : null}
 

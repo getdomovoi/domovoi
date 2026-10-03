@@ -29,7 +29,7 @@ function Harness({ source }: { source: TailnetReachSource }) {
   return controller ? <TailnetReachCard controller={controller} /> : null
 }
 
-async function card(answers: Partial<Record<"status" | "on" | "off", unknown | (() => Promise<unknown>)>>, options: { inApp?: boolean; listener?: TailnetListenerStatus } = {}) {
+async function card(answers: Partial<Record<"status" | "on" | "off", unknown | (() => Promise<unknown>)>>, options: { inApp?: boolean; listener?: TailnetListenerStatus | "unknown" } = {}) {
   // A change that succeeds is what the next status read reports, as the desktop's is.
   let status = answers.status
   const act = vi.fn(async (action: "status" | "on" | "off") => {
@@ -40,7 +40,11 @@ async function card(answers: Partial<Record<"status" | "on" | "off", unknown | (
     if (settled.ok === true) status = settled.report
     return outcome
   })
-  const listener = vi.fn(async () => options.listener ?? { state: "off" as const })
+  // "unknown": the daemon did not answer tailnet.status.
+  const listener = vi.fn(async () => {
+    if (options.listener === "unknown") throw new Error("Daemon connection is not open")
+    return options.listener ?? { state: "off" as const }
+  })
   render(<Harness source={{ act, listener, inApp: options.inApp ?? true }} />)
   await settle()
   return { act, listener, user: userEvent.setup() }
@@ -184,6 +188,26 @@ it("draws a failed renewal with its expiry, and renews on request", async () => 
   renewing.resolve({ ok: true, report: on })
   await settle()
   expect(view.getByText("On")).toBeTruthy()
+})
+
+// Review of 049b1383 (P2-3): the switch on is not the daemon listening. A
+// hand-set DOMOVOI_HOST, a service installed without the setting or a daemon
+// this window did not reach all leave the record on and the listener off.
+it("says the daemon is not answering on the tailnet when it reports no listener", async () => {
+  await card({ status: on }, { listener: { state: "off" } })
+  const view = within(region())
+  expect(view.getByText("Not answering")).toBeTruthy()
+  expect(view.getByText("On, but the daemon is not answering on the tailnet.")).toBeTruthy()
+  expect(view.queryByText("Devices on your tailnet can reach the daemon. Each one still has to pair.")).toBeNull()
+  expect(view.getByText("127.0.0.1 only")).toBeTruthy()
+})
+
+it("does not claim reach when the daemon has not said", async () => {
+  await card({ status: on }, { listener: "unknown" })
+  const view = within(region())
+  expect(view.getByText("On. Whether the daemon answers on the tailnet is not known from here.")).toBeTruthy()
+  expect(view.queryByText("Devices on your tailnet can reach the daemon. Each one still has to pair.")).toBeNull()
+  expect(view.getByText("127.0.0.1 · the tailnet not confirmed")).toBeTruthy()
 })
 
 it("says when the daemon does not answer on the tailnet, in the daemon's words", async () => {
