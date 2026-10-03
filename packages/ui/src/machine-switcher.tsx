@@ -106,6 +106,7 @@ export function MachineSwitcher({
   transferEntries,
   openRequest,
   triggerHidden = false,
+  onCloseAutoFocus,
 }: {
   entries: FleetEntry[]
   currentMachineId: string
@@ -122,6 +123,9 @@ export function MachineSwitcher({
   // the trigger then stays out of the tab order. The caller hides it from
   // assistive technology.
   triggerHidden?: boolean | undefined
+  // Where focus goes when the menu closes. A hidden trigger cannot take it
+  // back, so its caller says where it goes instead.
+  onCloseAutoFocus?: ((event: Event) => void) | undefined
 }) {
   const [open, setOpen] = useState(false)
   const seenRequest = useRef(openRequest)
@@ -148,7 +152,7 @@ export function MachineSwitcher({
           <Badge variant="machine">{current?.label ?? "unknown"}</Badge>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-72">
+      <DropdownMenuContent align="start" className="w-72" {...(onCloseAutoFocus ? { onCloseAutoFocus } : {})}>
         <DropdownMenuLabel>Machines</DropdownMenuLabel>
         {current ? (
           <DropdownMenuItem disabled className="flex-col items-start gap-0.5">

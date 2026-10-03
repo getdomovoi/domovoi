@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { demoWorkspace } from "@getdomovoi/protocol"
 import { afterEach, expect, it, vi } from "vitest"
@@ -36,6 +36,48 @@ it("keeps the hidden machine trigger out of the tab order and the accessibility 
     reached.add(document.activeElement)
   }
   expect([...reached].some((element) => element?.getAttribute("aria-label")?.includes("open the device menu"))).toBe(false)
+})
+
+// The hidden trigger is inert, so focus cannot go back to it. Closing the menu,
+// or a dialog the menu opened, returns focus to where the person was when the
+// drawer asked for the menu.
+it("returns focus to where it was when the menu closes", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  render(<ThreadWithDrawerMove onQueuedChange={vi.fn()} snapshot={snapshot} connected {...handlers} />)
+  const origin = screen.getByRole("button", { name: "Move to another machine" })
+
+  await user.click(origin)
+  expect(screen.getByRole("menu")).toBeTruthy()
+  await user.keyboard("{Escape}")
+
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull())
+  await waitFor(() => expect(document.activeElement).toBe(origin))
+})
+
+it("returns focus to where it was when a dialog the menu opened closes", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  render(
+    <ThreadWithDrawerMove
+      onQueuedChange={vi.fn()}
+      snapshot={snapshot}
+      connected
+      currentMachineId={snapshot.machine.id}
+      onPairMachine={vi.fn(async () => { throw new Error("not in this test") })}
+      {...handlers}
+    />,
+  )
+  const origin = screen.getByRole("button", { name: "Move to another machine" })
+
+  await user.click(origin)
+  await user.click(screen.getByRole("menuitem", { name: "+ Pair a machine" }))
+  const dialog = await screen.findByRole("dialog")
+  await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
+  await user.keyboard("{Escape}")
+
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+  await waitFor(() => expect(document.activeElement).toBe(origin))
 })
 
 it("opens the device menu when the drawer asks to move the session", async () => {

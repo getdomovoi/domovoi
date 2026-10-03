@@ -521,6 +521,38 @@ export function Thread({
     sessionDraftStore.write(draftSessionId, { prompt, attachments, skillSelection, promptEditorOpen })
   }, [draftSessionId, prompt, attachments, skillSelection, promptEditorOpen])
   const [pairingMachine, setPairingMachine] = useState(false)
+  // The machine menu's trigger is hidden and inert, so focus cannot go back to
+  // it. Where focus was when the drawer asked for the menu is where it returns
+  // when the menu closes, or a dialog the menu opened closes; failing that,
+  // the message field.
+  const focusBeforeMachineMenu = useRef<Element | null>(null)
+  const seenMachineMenuRequest = useRef(machineMenuRequest)
+  useEffect(() => {
+    if (machineMenuRequest === undefined || machineMenuRequest === seenMachineMenuRequest.current) return
+    seenMachineMenuRequest.current = machineMenuRequest
+    focusBeforeMachineMenu.current = document.activeElement
+  }, [machineMenuRequest])
+  const returnFocusFromMachineMenu = (event: Event, { dialog }: { dialog: boolean }) => {
+    const target = focusBeforeMachineMenu.current
+    const focused = document.activeElement
+    // Focus already somewhere real when the menu finishes closing: a dialog
+    // the menu opened took it, and its own close returns it, or the person
+    // moved it. Either way it stays.
+    if (!dialog && focused && focused !== document.body && !focused.closest("[inert]")) {
+      event.preventDefault()
+      if (!focused.closest("[role=dialog], [role=alertdialog]")) focusBeforeMachineMenu.current = null
+      return
+    }
+    // Opened some other way, such as /handoff: the dialog's own default holds.
+    if (dialog && target === null) return
+    event.preventDefault()
+    focusBeforeMachineMenu.current = null
+    if (target instanceof HTMLElement && target.isConnected && !target.closest("[inert]") && target !== document.body) {
+      target.focus()
+      return
+    }
+    document.querySelector<HTMLTextAreaElement>("[data-workspace-composer] textarea")?.focus()
+  }
   const [ownTransferTargetId, setOwnTransferTargetId] = useState<string | null>(null)
   // The composer's machine menu and the launcher both name a target. The shell
   // owns it when it supplies one, so either route reaches the same dialog.
@@ -1126,6 +1158,7 @@ export function Thread({
                 entries={entries}
                 openRequest={machineMenuRequest}
                 triggerHidden
+                onCloseAutoFocus={(event) => returnFocusFromMachineMenu(event, { dialog: false })}
                 transferEntries={transferFleet}
                 admittedMachines={admittedMachines}
                 currentMachineId={currentMachineId ?? snapshot.machine.id}
@@ -1142,6 +1175,7 @@ export function Thread({
               onOpenChange={setPairingMachine}
               onClaim={onPairMachine}
               onPaired={() => setPairingMachine(false)}
+              onCloseAutoFocus={(event) => returnFocusFromMachineMenu(event, { dialog: true })}
             />
           ) : null}
           {!readOnly && onTransferSession && transferTarget ? (
@@ -1169,6 +1203,7 @@ export function Thread({
                   confirmation: "target-does-not-have-session",
                 }).then(() => undefined),
               } : {})}
+              onCloseAutoFocus={(event) => returnFocusFromMachineMenu(event, { dialog: true })}
             />
           ) : null}
         </ThreadComposer>

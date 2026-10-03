@@ -85,6 +85,7 @@ export function TransferSessionDialog({
   onTransferred,
   onOutcome,
   onRecoverSource,
+  onCloseAutoFocus,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -100,6 +101,9 @@ export function TransferSessionDialog({
   onTransferred: (machineId: string) => void
   onOutcome: (result: SessionTransferResult) => void
   onRecoverSource?: ((transferId: string) => Promise<void>) | undefined
+  // Where focus goes when the dialog closes, for an opener that cannot take
+  // it back.
+  onCloseAutoFocus?: ((event: Event) => void) | undefined
 }) {
   const [method, setMethod] = useState<TransferMethod>("git-bundle")
   const [remote, setRemote] = useState("")
@@ -264,7 +268,7 @@ export function TransferSessionDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[620px]">
+      <DialogContent className="sm:max-w-[620px]" {...(onCloseAutoFocus ? { onCloseAutoFocus } : {})}>
         <DialogHeader>
           <DialogTitle>Move this session to another machine</DialogTitle>
           <DialogDescription>
