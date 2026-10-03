@@ -180,7 +180,11 @@ describe("ArtifactScreen preview", () => {
     expect(screen.getByRole("button", { name: "Variant A" }).props.accessibilityState).toEqual({ selected: true })
     // Frame 17 says this once. The second wording said the same thing again.
     expect(screen.queryByText("Viewing a variant does not change the build basis. Choose the build basis on desktop.")).toBeNull()
-    expect(screen.getByText("Choosing which variant the agent builds on happens at a desktop. A comment is a note; a choice is a commitment.")).toBeOnTheScreen()
+    // Ruling Q342 A: until the chosen variant travels with a comment, a desktop
+    // choice is a bookmark for whoever is viewing and the agent is not told,
+    // so the phone does not say a choice decides what the agent builds on.
+    expect(screen.queryByText(/a choice is a commitment/)).toBeNull()
+    expect(screen.getByText("Marking a variant to build on happens at a desktop, and only as a bookmark for whoever is viewing; the agent is not told which one. To tell the agent, send a comment.")).toBeOnTheScreen()
   })
 
 })

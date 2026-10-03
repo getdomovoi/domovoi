@@ -664,16 +664,16 @@
       ],
       "evidence": [
         "The render stays on",
-        "builds on",
+        "only as a bookmark for whoever is viewing; the agent is not told which one.",
         "is the one the agent builds on"
       ],
       "presence": [
         "The render stays on",
-        "builds on"
+        "only as a bookmark for whoever is viewing; the agent is not told which one."
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "frame 17 names which variant the agent builds on and checks its tab; the phone cannot, because the build basis is per-client desktop state (previewBuildBasis in packages/ui/src/workspace-persistence.ts), not daemon state, and artifactVariantSchema has no such field. The variant switch, its note and Comment also sit at the top of the screen rather than in the floating card at the foot"
+        "reason": "frame 17 names which variant the agent builds on and checks its tab, and says a choice is a commitment. Under ruling Q342 A a desktop's choice is a bookmark for whoever is viewing until the chosen variant travels with a comment (Q348, protocol), so the phone says the agent is not told which one and does not draw the build-basis line (previewBuildBasis in packages/ui/src/workspace-persistence.ts is per-client state; artifactVariantSchema has no such field). The variant switch, its note and Comment also sit at the top of the screen rather than in the floating card at the foot"
       }
     },
     {
