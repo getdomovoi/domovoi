@@ -22,7 +22,7 @@ import { Input } from "./components/ui/input"
 import { Textarea } from "./components/ui/textarea"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
 import { composerPlaceholder, composerPlatform, sendHint } from "./composer-keys"
-import { slashCommands, type SlashCommand } from "./composer-slash"
+import { slashArgument, slashCommands, type SlashCommand, type SlashIntentContext } from "./composer-slash"
 import {
   attachmentFromBrowserFile,
   attachmentMeta,
@@ -63,6 +63,7 @@ export function ThreadComposer({
   attachments,
   onAttachmentsChange,
   slashOpen,
+  slashContext,
   onSlashDismissedChange,
   onSubmit,
   runtime,
@@ -107,6 +108,8 @@ export function ThreadComposer({
   attachments: SessionAttachment[]
   onAttachmentsChange: Dispatch<SetStateAction<SessionAttachment[]>>
   slashOpen: boolean
+  // What this session offers the slash commands: the list names it.
+  slashContext: SlashIntentContext
   onSlashDismissedChange: (dismissed: boolean) => void
   onSubmit: () => void
   runtime: Runtime
@@ -335,12 +338,13 @@ export function ThreadComposer({
           <div className="max-h-[216px] overflow-y-auto">
             {slashCommands.map((command) => {
               const match = command.name.startsWith(slashQuery)
+              const argument = slashArgument(command, slashContext)
               return (
                 <button
                   key={command.name}
                   type="button"
                   role="option"
-                  aria-label={`${command.name} ${command.argument}`}
+                  aria-label={`${command.name} ${argument}`}
                   aria-selected={false}
                   data-match={match}
                   title={command.note}
@@ -354,7 +358,7 @@ export function ThreadComposer({
                     "w-[70px] flex-none font-machine text-[11.5px]",
                     match ? "text-primary" : "text-muted-foreground",
                   )}>{command.name}</span>
-                  <span className="min-w-0 flex-1 truncate font-machine text-[10.5px] text-faint">{command.argument}</span>
+                  <span className="min-w-0 flex-1 truncate font-machine text-[10.5px] text-faint">{argument}</span>
                 </button>
               )
             })}

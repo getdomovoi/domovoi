@@ -2,42 +2,55 @@ import type { PermissionMode } from "@getdomovoi/protocol"
 
 export type SlashCommand = {
   name: string
-  argument: string
+  // The argument's shape, shown when this session has nothing of that kind.
+  // The design's own arguments name its fictional session, so none is used.
+  placeholder: string
   note: string
+  // A real argument from this session, when it has one to offer.
+  live?: (context: SlashIntentContext) => string | undefined
 }
 
 export const slashCommands: readonly SlashCommand[] = [
   {
     name: "/run",
-    argument: "pnpm prisma migrate deploy",
+    placeholder: "<command>",
     note: "Runs it now, in the worktree. Still gated if no rule covers it, and the gate says the request came from you.",
   },
   {
     name: "/revert",
-    argument: "ckpt_7f24",
+    placeholder: "<checkpoint-id>",
     note: "Rewinds the worktree and the thread together to that checkpoint. Nothing merged is touched.",
+    live: (context) => context.checkpointIds.at(-1),
   },
   {
     name: "/replan",
-    argument: "from step 3",
+    placeholder: "[from step N]",
     note: "Keeps the finished steps and asks for a new plan for the rest. The old plan stays readable in the thread.",
   },
   {
     name: "/mode",
-    argument: "plan · ask · build",
+    placeholder: "plan · ask · build",
     note: "Applies from the next turn. A turn already in flight keeps the mode it started with, and auto is only legal with build.",
   },
   {
     name: "/skill",
-    argument: "pr-triage",
+    placeholder: "<reviewed-skill>",
     note: "Loads a skill for this turn only. Unsigned skills stay blocked in auto modes.",
+    live: (context) => context.skills[0]?.name,
   },
   {
     name: "/handoff",
-    argument: "hetzner-cx42",
+    placeholder: "<target-machine>",
     note: "Opens the pre-flight checks first. Nothing moves until they pass and you confirm.",
+    live: (context) => context.machines.find((machine) => !machine.self)?.label,
   },
 ]
+
+// The latest checkpoint, the first reviewed skill and the first other machine
+// come from this session; every other argument shows its shape.
+export function slashArgument(command: SlashCommand, context: SlashIntentContext): string {
+  return command.live?.(context) ?? command.placeholder
+}
 
 export type SlashIntent =
   | { kind: "send", prompt: string }

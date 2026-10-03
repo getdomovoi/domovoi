@@ -95,7 +95,7 @@ import {
 import { FailedReadState } from "./failed-read-state"
 import { PolicyRefusalCard } from "./policy-refusal-card"
 import { ApprovalCard } from "./approval-card"
-import { slashIntent } from "./composer-slash"
+import { slashIntent, type SlashIntentContext } from "./composer-slash"
 import { ThreadComposer } from "./thread-composer"
 
 // The states name a meaning rather than a colour now, so the palette lives in
@@ -631,6 +631,11 @@ export function Thread({
   const activeCheckpointIds = snapshot.thread.flatMap((item) =>
     item.sessionId === active.id && item.kind === "checkpoint" && item.commit ? [item.id] : []
   )
+  const slashContext: SlashIntentContext = {
+    checkpointIds: activeCheckpointIds,
+    skills: selectableSkills,
+    machines,
+  }
 
   const providerRestartRequired = active.state === "failed" && !active.providerThreadId
   const forkCheckpoint = snapshot.thread.filter((item) =>
@@ -710,11 +715,7 @@ export function Thread({
     if (pending || providerRestartRequired || emergencyStopPending || readOnly) return
     let submittedText = prompt
     if (prompt.trimStart().startsWith("/")) {
-      const intent = slashIntent(prompt, {
-        checkpointIds: activeCheckpointIds,
-        skills: selectableSkills,
-        machines,
-      })
+      const intent = slashIntent(prompt, slashContext)
       if (intent.kind === "invalid") {
         setSendError(intent.message)
         return
@@ -1073,6 +1074,7 @@ export function Thread({
           attachments={attachments}
           onAttachmentsChange={setAttachments}
           slashOpen={slashOpen}
+          slashContext={slashContext}
           onSlashDismissedChange={setSlashDismissed}
           onSubmit={() => void submitPrompt()}
           runtime={active.runtime}
