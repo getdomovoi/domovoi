@@ -911,7 +911,10 @@ export function Thread({
   return (
     <main className="flex h-full min-w-0 flex-col bg-background">
       <ScrollArea className="min-h-0 flex-1" viewportRef={threadViewport} onViewportScroll={follow.onScroll}>
-        <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 pt-6 pb-14">
+        {/* One column with the composer: 24px of side padding inside the
+            maximum leaves the content box at --shell-thread, the composer
+            card's width. */}
+        <div data-thread-column="" className="mx-auto flex w-full max-w-[calc(var(--shell-thread)+3rem)] flex-col gap-5 px-6 pt-6 pb-14">
           <ThreadStartLine
             {...(snapshot.project ? { project: snapshot.project.name, branch: snapshot.project.branch } : {})}
             {...(active.workspacePath ? { workspacePath: active.workspacePath } : {})}
