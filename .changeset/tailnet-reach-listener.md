@@ -14,7 +14,9 @@ A certificate that cannot be read, has expired or does not match its key
 refuses only the tailnet listener: the daemon starts on loopback, logs why and
 answers `tailnet.status` with the reason. An address that is not on the machine
 yet, as when Tailscale is not up at login, is tried again every 30 seconds.
-While the listener answers, a pairing code names the host on its certificate,
+When the certificate passes its expiry while the daemon runs, the daemon closes
+the tailnet listener and its connections, logs why and reports it refused; it
+checks hourly and whenever `tailnet.status` is asked. While the listener answers, a pairing code names the host on its certificate,
 and the fleet advertises a tailnet route under `DOMOVOI_TAILNET_HOST`.
 
 `updateDaemonService` takes a `tailnet` change that sets or clears the listener
