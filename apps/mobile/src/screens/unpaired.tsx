@@ -16,7 +16,7 @@ type Unpaired = {
 
 const sessions: Unpaired = {
   title: "Sessions",
-  icon: "layers",
+  icon: "message-square-dashed",
   headline: "No machine is paired",
   body: "Sessions live on the machine that runs them. Until this phone is paired with one there is nothing to list, and nothing is being hidden from you.",
   footer: "The phone is a client. It never runs an agent itself.",
@@ -74,8 +74,10 @@ export function UnpairedScreen({
         contentContainerClassName="grow items-center justify-center gap-[11px] px-[26px]"
         bottomInset={bottomInset}
       >
-        <Icon name={sessions.icon} tone="faint" size={24} />
-        <Text className="text-center font-sans-medium text-[14.5px] text-foreground">
+        <View className="h-[52px] w-[52px] items-center justify-center rounded-full bg-accent">
+          <Icon name={sessions.icon} tone="muted" size={24} />
+        </View>
+        <Text className="text-center font-sans-semibold text-[17px] leading-[22px] tracking-[-0.01em] text-foreground">
           {sessions.headline}
         </Text>
         <Text variant="meta" className="text-center leading-[19px]">{sessions.body}</Text>
