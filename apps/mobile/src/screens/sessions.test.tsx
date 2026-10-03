@@ -256,6 +256,25 @@ describe("SessionsScreen", () => {
     expect(screen.queryByText(/cannot be reached/)).toBeNull()
   })
 
+  // A green light says a machine answers now. Read before the connection
+  // dropped, it no longer says that, so no row keeps a green light while the
+  // banner says the phone is not connected.
+  it("drops the answering lights while the connection is down", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    const fleet = [entry("mac-mini", "healthy", true), entry("hetzner", "healthy")]
+
+    await draw({ snapshot: idle, fleet })
+    expect(screen.getAllByTestId("fleet-dot").map((dot) => String(dot.props.className))).toEqual([
+      expect.stringContaining("bg-success"),
+      expect.stringContaining("bg-success"),
+    ])
+
+    await draw({ snapshot: idle, fleet, notice: { tone: "warning", headline: "Not connected", detail: "Nothing here is live." } })
+    for (const dot of screen.getAllByTestId("fleet-dot")) expect(String(dot.props.className)).not.toContain("bg-success")
+  })
+
   // A machine that answered and asked to be paired again is not a machine
   // that went quiet, so it says what it wants rather than when it was seen.
   it("says a machine that needs pairing again wants pairing", async () => {

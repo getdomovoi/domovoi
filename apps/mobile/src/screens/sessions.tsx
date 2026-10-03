@@ -101,7 +101,10 @@ const fleetDot: Record<MachineRow["health"], string> = {
 // when it was last seen. A machine that has stopped answering is dimmed. The
 // state is a few words on one line that gives way to the name, because the
 // row's note is a sentence that repeats the name and crowded it out.
-function IdleFleet({ fleet, now }: { fleet: FleetEntry[], now: number }) {
+//
+// A green light says a machine answers now. While the connection is down the
+// fleet was read before the drop, so every light goes faint.
+function IdleFleet({ fleet, now, stale }: { fleet: FleetEntry[], now: number, stale: boolean }) {
   const rows = machineRows(fleet, now)
   if (rows.length === 0) return null
   return (
@@ -125,7 +128,7 @@ function IdleFleet({ fleet, now }: { fleet: FleetEntry[], now: number }) {
               row.health === "gone" && "opacity-55",
             )}
           >
-            <View className={cn("h-[7px] w-[7px] rounded-full", fleetDot[row.health])} />
+            <View testID="fleet-dot" className={cn("h-[7px] w-[7px] rounded-full", stale ? "bg-faint" : fleetDot[row.health])} />
             <Text className="flex-1 font-mono text-[12.5px] text-strong" numberOfLines={1}>{row.label}</Text>
             <Text className="max-w-[50%] shrink font-sans text-[11.5px] text-faint" numberOfLines={1}>{state}</Text>
           </View>
@@ -248,7 +251,7 @@ export function SessionsScreen({
                 {idleSentence(snapshot.machine.name, fleet, notice !== undefined)}
               </Text>
             </Card>
-            {fleet ? <IdleFleet fleet={fleet} now={now} /> : null}
+            {fleet ? <IdleFleet fleet={fleet} now={now} stale={notice !== undefined} /> : null}
             <Button
               title="Start a session"
               variant="primary"

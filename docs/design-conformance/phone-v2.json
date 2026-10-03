@@ -536,7 +536,7 @@
         "Everything is idle",
         "Start a session",
         "{idleSentence(snapshot.machine.name, fleet, ",
-        "<IdleFleet fleet={fleet} now={now} />"
+        "<IdleFleet fleet={fleet} now={now}"
       ]
     },
     {
