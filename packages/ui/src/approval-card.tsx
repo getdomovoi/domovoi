@@ -101,6 +101,10 @@ export function ApprovalCard({
           // The client knows it is disconnected, not why, so no cause is named.
           <p className="text-[11px] text-warn-dim">Cannot answer this gate while this client is disconnected from the daemon.</p>
         ) : null}
+        {/* The decisions are held while the answer is out; this says why. */}
+        {deciding && !watching && connected ? (
+          <p role="status" className="text-[11px] text-warn-dim">Sending your decision</p>
+        ) : null}
         {explainOpen && !watching ? (
           // Ruled Q339 A. The daemon keeps the note on the receipt; no adapter
           // passes it to the provider, which hears a plain denial, so the copy

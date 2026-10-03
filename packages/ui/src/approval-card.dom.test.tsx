@@ -206,6 +206,22 @@ it("shows a refusal for a gate that has gone with the composer's alerts", async 
   expect(screen.getByText("Agent request failed")).toBeTruthy()
 })
 
+// While the answer is out, the card says so, so locked buttons are not a
+// mystery, and says nothing once the daemon has answered.
+it("says the decision is being sent while it is in flight", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  let settle: () => void = () => {}
+  const onResolve = vi.fn(() => new Promise<void>((done) => { settle = done }))
+  render(refusalThread(onResolve)(snapshot))
+
+  expect(screen.queryByText("Sending your decision")).toBeNull()
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+  expect(screen.getByRole("alert").textContent).toContain("Sending your decision")
+  await act(async () => { settle() })
+  expect(screen.queryByText("Sending your decision")).toBeNull()
+})
+
 // Two presses can land before React renders the first one's lock, as a held
 // key repeating does. The second must not send another decision.
 it("sends one decision for two presses that land before a render", async () => {
