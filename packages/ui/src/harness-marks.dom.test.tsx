@@ -17,7 +17,9 @@ afterEach(cleanup)
 // skill's source and an agent's name. Those are other companies' marks, and the
 // repository vendors only Domovoi's own, so Skills, Tools and the trust sheet
 // name a source in text only until the marks are vendored and their use is
-// checked. This pins that: no image, no masked glyph, no asset path.
+// checked. This pins that: no image, no masked glyph, no asset path, no inline
+// vector other than a lucide icon, and no element styled or named as a mark,
+// since a mark whose mask lives in the stylesheet leaves no trace in the markup.
 function expectNoMarks(root: HTMLElement) {
   const markup = root.innerHTML
   expect(markup).not.toMatch(/<img\b/u)
@@ -25,6 +27,13 @@ function expectNoMarks(root: HTMLElement) {
   expect(markup).not.toMatch(/mask(?:-image)?:/u)
   expect(markup).not.toMatch(/url\(/u)
   expect(markup).not.toMatch(/harness/u)
+  expect(root.querySelectorAll('[style*="background"], [style*="mask"], picture, object')).toHaveLength(0)
+  for (const vector of root.querySelectorAll("svg")) {
+    expect(vector.classList.contains("lucide")).toBe(true)
+  }
+  for (const element of root.querySelectorAll("[class]")) {
+    expect(element.getAttribute("class") ?? "").not.toMatch(/mark|logo|brand/iu)
+  }
 }
 
 const digest = `sha256:${"a".repeat(64)}`
@@ -42,8 +51,9 @@ const skill = (id: string, source: SkillSummary["source"]): SkillSummary => ({
   trust: { state: "untrusted", reason: "unsigned" },
 })
 
-it("names a skill's source in text with no harness mark", () => {
-  const view = render(
+it("names a skill's source in text with no harness mark", async () => {
+  const user = userEvent.setup()
+  render(
     <SkillBrowser
       skills={[
         skill("skill-111111111111", "claude"),
@@ -69,7 +79,11 @@ it("names a skill's source in text with no harness mark", () => {
   expect(screen.getByText("USER · CLAUDE")).toBeTruthy()
   expect(screen.getByText("USER · CODEX")).toBeTruthy()
   expect(screen.getByText("USER · KILO")).toBeTruthy()
-  expectNoMarks(view.container)
+  expectNoMarks(document.body)
+
+  await user.click(screen.getByRole("button", { name: "Trust it for acme-api" }))
+  expect(screen.getByRole("alertdialog")).toBeTruthy()
+  expectNoMarks(document.body)
 })
 
 it("names each agent in Tools and in the trust sheet with no harness mark", async () => {
