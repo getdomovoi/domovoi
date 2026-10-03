@@ -1,14 +1,15 @@
-import { useId, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react"
+import { useId, useRef, useState, type ClipboardEvent, type Dispatch, type ReactNode, type SetStateAction } from "react"
 import { ArrowUpIcon, Maximize2Icon, PaperclipIcon, SquareIcon, TerminalIcon, XIcon } from "lucide-react"
-import type {
-  ProviderModel,
-  ProviderRuntime,
-  Runtime,
-  RuntimeDiscoverResult,
-  SessionAttachment,
-  SessionTurn,
-  SessionUsage,
-  UsageWindow,
+import {
+  maximumTextAttachmentBytes,
+  type ProviderModel,
+  type ProviderRuntime,
+  type Runtime,
+  type RuntimeDiscoverResult,
+  type SessionAttachment,
+  type SessionTurn,
+  type SessionUsage,
+  type UsageWindow,
 } from "@getdomovoi/protocol"
 
 import { Button } from "./components/ui/button"
@@ -29,9 +30,13 @@ import {
   attachmentName,
   desktopAttachmentLimit,
   inlineTextPreview,
+  pasteBecomesFile,
+  pastedText,
+  pastedTextAttachment,
   terminalOutputAttachment,
   workspacePathAttachment,
 } from "./desktop-attachments"
+import { PastedTextCard } from "./pasted-text-card"
 import { FloatingSurface } from "./floating-surface"
 import { cn } from "./lib/utils"
 import { EffortChip, ModeChip } from "./mode-chip.js"
@@ -168,6 +173,27 @@ export function ThreadComposer({
       setAttachmentError(cause instanceof Error ? cause.message : "Terminal output could not be read from the clipboard")
     }
   }
+  // A paste past the inline limit goes with the message as a file instead of
+  // filling the field. When it cannot be a file, because the draft is full or
+  // the text is past the attachment limit, it stays in the field as before
+  // and the composer says why.
+  const pasteAsFile = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const text = event.clipboardData.getData("text/plain")
+    if (!pasteBecomesFile(text)) return
+    if (attachments.length >= desktopAttachmentLimit) {
+      setAttachmentError(`Attach up to ${desktopAttachmentLimit} items per message. The pasted text stayed in the message.`)
+      return
+    }
+    let attachment: SessionAttachment
+    try {
+      attachment = pastedTextAttachment(text, attachments)
+    } catch {
+      setAttachmentError(`Pasted text exceeds the ${maximumTextAttachmentBytes / 1024} KB attachment limit, so it stayed in the message.`)
+      return
+    }
+    event.preventDefault()
+    addAttachments([attachment])
+  }
   const takeSlashCommand = (command: SlashCommand) => {
     if (watching) return
     const accepted = `${command.name} `
@@ -234,9 +260,11 @@ export function ThreadComposer({
           <Button variant="ghost" size="icon-sm" aria-label="Unqueue the message" className="size-6 flex-none text-faint" disabled={readOnly} onClick={() => onQueuedChange(undefined)}><XIcon className="size-3" /></Button>
         </div>
       ) : null}
-      {attachments.length > 0 ? (
+      {attachments.some((attachment) => !pastedText(attachment)) ? (
         <div role="region" className="flex min-w-0 items-center gap-[7px] overflow-hidden" aria-label="Attachments">
           {attachments.map((attachment, index) => {
+            // A pasted file is drawn as its own card below the chips.
+            if (pastedText(attachment)) return null
             return (
               <div key={`${attachmentName(attachment)}-${index}`} className="flex min-w-0 max-w-[260px] items-center gap-[7px] rounded-md border bg-background px-2 py-1">
                 <span className="font-machine text-[10.5px] text-primary">{"kind" in attachment && attachment.kind === "text" ? "TXT" : "FILE"}</span>
@@ -248,9 +276,19 @@ export function ThreadComposer({
           })}
         </div>
       ) : null}
-      {attachments.some((attachment) => Boolean(inlineTextPreview(attachment))) ? (
+      {attachments.some((attachment) => !pastedText(attachment) && Boolean(inlineTextPreview(attachment))) ? (
         <p className="m-0 text-[10.5px] leading-[1.45] text-warning">Too long to send inline. The prompt carries the first 40 lines, the agent reads the rest on request.</p>
       ) : null}
+      {attachments.map((attachment, index) => {
+        const pasted = pastedText(attachment)
+        return pasted ? (
+          <PastedTextCard
+            key={`${pasted.name}-${index}`}
+            attachment={pasted}
+            onRemove={() => onAttachmentsChange((current) => current.filter((_, candidate) => candidate !== index))}
+          />
+        ) : null
+      })}
       {attachmentPathMode ? (
         <div className="flex items-center gap-2">
           <Input
@@ -305,6 +343,7 @@ export function ThreadComposer({
           ? "Steer it, or queue the next message"
           : composerPlaceholder({ offline: !connected, working: turnRunning })}
         value={prompt}
+        onPaste={pasteAsFile}
         onChange={(event) => {
           const next = event.target.value
           onPromptChange(next)
