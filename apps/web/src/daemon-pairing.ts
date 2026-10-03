@@ -1,7 +1,7 @@
 import { daemonAuthenticationErrorCode, devicePairingLimitErrorCode, devicePairResultSchema, pairingCodeSchema, protocolCompatibilitySchema, protocolVersion, protocolVersionMismatchErrorCode, type ClientKind } from "@getdomovoi/protocol"
 import type { PairingOutcome } from "@getdomovoi/ui"
 
-import { PairingTransportError } from "@/browser-pairing-client"
+import { PairingReplyError, PairingTransportError } from "@/browser-pairing-client"
 import { DaemonRpcError } from "@/client"
 
 import { daemonSessionFrom, isDaemonCredential, type DaemonSession } from "./credential"
@@ -100,14 +100,9 @@ export async function redeemBrowserCode(input: {
   }
 }
 
-// The daemon answered the code, but not with a device and credential this page
-// can read. It may have paired the browser.
-export class PairingReplyError extends Error {
-  constructor() {
-    super("The daemon's reply to the code could not be read")
-    this.name = "PairingReplyError"
-  }
-}
+// The pairing client raises it for a malformed envelope, and this page for a
+// result it cannot read; either way the daemon may have paired the browser.
+export { PairingReplyError }
 
 export class DeviceKindMismatchError extends Error {
   readonly bound: ClientKind | undefined

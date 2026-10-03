@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { daemonAuthenticationErrorCode, protocolVersion } from "@getdomovoi/protocol"
 
-import { CodeRedemptionClient, createBrowserPairingClient, PairingTransportError } from "./browser-pairing-client"
+import { CodeRedemptionClient, createBrowserPairingClient, PairingReplyError, PairingTransportError } from "./browser-pairing-client"
 import { DaemonRpcError, DomovoiClient } from "./client"
 import { installFakeWebSocket, type FakeWebSocketHarness } from "./test-support/fake-websocket"
 
@@ -124,6 +124,23 @@ describe("code redemption client", () => {
 
     const { client: twice } = await opened()
     await expect(twice.connect()).rejects.not.toBeInstanceOf(PairingTransportError)
+  })
+
+  // A frame carrying the request's id is the daemon's answer, even when the
+  // envelope is malformed: it may have spent the code, so this is an
+  // unreadable reply, never a timeout the page would retry.
+  it("rejects an unreadable answer to the request as a reply error, not a transport failure", async () => {
+    vi.useFakeTimers()
+    const { client, socket } = await opened()
+    const reply = client.request("device.redeemCode", params)
+    socket.receive({ jsonrpc: "2.0", id: 1 })
+    vi.advanceTimersByTime(1_000)
+    await expect(reply).rejects.toBeInstanceOf(PairingReplyError)
+
+    const { client: other, socket: otherSocket } = await opened()
+    const malformedError = other.request("device.redeemCode", params)
+    otherSocket.receive({ jsonrpc: "2.0", id: 1, error: { message: "no code" } })
+    await expect(malformedError).rejects.toBeInstanceOf(PairingReplyError)
   })
 
   it("rejects a pending call when the page disconnects", async () => {

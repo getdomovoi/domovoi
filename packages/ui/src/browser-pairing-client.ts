@@ -21,6 +21,17 @@ export class PairingTransportError extends Error {
   }
 }
 
+// The daemon answered the code, but not with anything this page can read: a
+// malformed envelope for the request, or a result that is not a device and
+// credential. It may have spent the code and paired the browser, so this is
+// never retried.
+export class PairingReplyError extends Error {
+  constructor() {
+    super("The daemon's reply to the code could not be read")
+    this.name = "PairingReplyError"
+  }
+}
+
 // A tab that holds no credential cannot greet the daemon: it refuses a
 // system.hello without one, and DomovoiClient greets before anything else, so a
 // code sent through it never arrives. Spending a code is the one call the
@@ -95,13 +106,21 @@ export class CodeRedemptionClient {
   }
 
   // Only the reply to the one request counts. Anything else on this socket is
-  // left for the deadline, which the page reports as no answer.
+  // left for the deadline, which the page reports as no answer. A frame that
+  // carries the request's id is the daemon's answer even when its envelope is
+  // malformed, so it settles as an unreadable reply, not as a timeout. A frame
+  // that is not JSON cannot be tied to the request and is left alone.
   #receive(data: unknown): void {
     if (!this.#sent || typeof data !== "string") return
     let parsed: unknown
     try { parsed = JSON.parse(data) } catch { return }
     const reply = rpcResponseSchema.safeParse(parsed)
-    if (!reply.success || reply.data.id !== redeemRequestId) return
+    if (!reply.success) {
+      const id = typeof parsed === "object" && parsed !== null ? (parsed as { id?: unknown }).id : undefined
+      if (id === redeemRequestId) this.#settle({ error: new PairingReplyError() })
+      return
+    }
+    if (reply.data.id !== redeemRequestId) return
     if (reply.data.error) {
       const { code, message, data: detail } = reply.data.error
       this.#settle({ error: new DaemonRpcError(code, message, detail) })
