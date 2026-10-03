@@ -161,8 +161,8 @@ export function PairScanScreen({
   // Injected so a test can spend a code without a daemon.
   redeem?: (payload: PairingPayload, label: string) => Promise<PairedCredential & { deviceId?: string }>
   onCancel: () => void
-  // What the floating tab bar covers, so Cancel and the paste field sit
-  // above it and the keyboard can push the field into view.
+  // What the floating tab bar covers, so the paste field sits above it and
+  // the keyboard can push the field into view. Cancel is in the nav row.
   bottomInset?: number
   // What the machine's device list will call this phone.
   deviceName?: string
