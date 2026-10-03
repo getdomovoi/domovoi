@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { CommandLinksProvider } from "./command-links"
 import { PairingCard, type IssuedPairingCode } from "./pairing-card"
+import type { TailnetReachController } from "./tailnet-reach-card"
 
 beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }) })
 afterEach(() => { cleanup(); vi.useRealTimers() })
@@ -102,6 +103,70 @@ it("draws no QR when a phone could not reach or trust the daemon, and says which
   await user.click(screen.getByRole("button", { name: "Show another" }))
   expect(await screen.findByText("No code: a phone would not trust this daemon")).toBeTruthy()
   expect(screen.getByText("This daemon serves no certificate, so a device has no address it can verify.")).toBeTruthy()
+})
+
+// TailnetReach (Q404 A): with the desktop's switch present, the two problem
+// boxes lead to it, as the design's pairing card does.
+function controller(overrides: Partial<TailnetReachController> = {}): TailnetReachController {
+  return {
+    report: { state: "off", name: "mac-mini-m4.tail4c2e.ts.net", address: "100.101.102.103", stored: "~/.domovoi/tls/mac-mini-m4.tail4c2e.ts.net.crt, .key", httpsCertificates: true },
+    readError: undefined, listener: undefined, running: undefined, failure: undefined, inApp: true,
+    check: vi.fn(), turnOn: vi.fn(async () => undefined), turnOff: vi.fn(async () => undefined), revealed: 0, reveal: vi.fn(),
+    ...overrides,
+  }
+}
+
+it("leads a loopback daemon to the tailnet setting", async () => {
+  const tailnet = controller()
+  const { onIssueCode, user } = card({ tailnet })
+  onIssueCode.mockResolvedValueOnce(issued({ pairingAddress: { url: "ws://127.0.0.1:47831/rpc", loopback: true } }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  await user.click(await screen.findByRole("button", { name: "Go to the tailnet setting" }))
+  expect(tailnet.reveal).toHaveBeenCalledOnce()
+})
+
+it("asks Tailscale for a certificate when a phone would not trust the daemon", async () => {
+  const tailnet = controller()
+  const { onIssueCode, user } = card({ tailnet })
+  onIssueCode.mockResolvedValueOnce(issued({ pairingAddress: { problem: "This daemon's certificate could not be read at /x, so there is no name to put in a pairing code." } }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  await user.click(await screen.findByRole("button", { name: "Get it from Tailscale" }))
+  expect(tailnet.turnOn).toHaveBeenCalledOnce()
+})
+
+it("says what runs while Tailscale is asked, and keeps the code button until it ends", async () => {
+  const onIssueCode = vi.fn(async () => issued({ pairingAddress: { problem: "No certificate." } }))
+  const props = { connected: true, onIssueCode, onCopy: vi.fn(async () => {}) }
+  const { rerender } = render(<PairingCard {...props} tailnet={controller()} />)
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  await screen.findByRole("button", { name: "Get it from Tailscale" })
+  rerender(<PairingCard {...props} tailnet={controller({ running: { direction: "on", renew: false } })} />)
+  expect(screen.getByText("Asking Tailscale for a certificate")).toBeTruthy()
+  expect(screen.getByText("tailscale cert mac-mini-m4.tail4c2e.ts.net")).toBeTruthy()
+  expect(screen.getByText("The daemon restarts once the certificate is stored.")).toBeTruthy()
+  expect(screen.getByText("The code button comes back when the certificate arrives.")).toBeTruthy()
+  expect((screen.getByRole("button", { name: "Show another" }) as HTMLButtonElement).disabled).toBe(true)
+})
+
+it("says HTTPS certificates are off when Tailscale's status lists none", async () => {
+  const tailnet = controller({ failure: { direction: "on", outcome: { ok: false, reason: "https-off", step: "certificate", message: "HTTPS certificates are off for tail4c2e.ts.net." } } })
+  const { onIssueCode, user } = card({ tailnet })
+  onIssueCode.mockResolvedValueOnce(issued({ pairingAddress: { problem: "No certificate." } }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  expect(await screen.findByText("No code: HTTPS certificates are off for this tailnet")).toBeTruthy()
+  expect(screen.getByText("Domovoi stopped and changed nothing.")).toBeTruthy()
+  expect(screen.getByText("A tailnet admin turns on HTTPS Certificates on the DNS page of the Tailscale admin console.")).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Try again" }))
+  expect(tailnet.turnOn).toHaveBeenCalledOnce()
+})
+
+it("offers neither action without the desktop's switch", async () => {
+  const { onIssueCode, user } = card()
+  onIssueCode.mockResolvedValueOnce(issued({ pairingAddress: { url: "ws://127.0.0.1:47831/rpc", loopback: true } }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  expect(await screen.findByText("No code: a phone cannot reach this daemon")).toBeTruthy()
+  expect(screen.queryByRole("button", { name: "Go to the tailnet setting" })).toBeNull()
 })
 
 it("names the chosen kind and drops the command-line tail when no code can be shown", async () => {
