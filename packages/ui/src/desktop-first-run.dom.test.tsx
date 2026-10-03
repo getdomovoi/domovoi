@@ -117,6 +117,23 @@ describe("desktop first run", () => {
     expect(screen.queryByRole("heading", { name: "The service was not installed" })).toBeNull()
   })
 
+  // Review P3-7: setup stays open while the install runs, so its outcome is
+  // never lost behind a closed dialog.
+  it("cannot be skipped or escaped while the install runs", async () => {
+    let finish: (outcome: DaemonServiceOutcome) => void = () => {}
+    const install = vi.fn(() => new Promise<DaemonServiceOutcome>((resolve) => { finish = resolve }))
+    const { props, user } = setup({ service: inApp(install) })
+    await user.click(screen.getByRole("button", { name: "Install the service" }))
+    expect(await screen.findByRole("heading", { name: "Installing the login service" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Skip for now" }).hasAttribute("disabled")).toBe(true)
+    await user.keyboard("{Escape}")
+    expect(props.onSkip).not.toHaveBeenCalled()
+    expect(screen.getByRole("dialog")).toBeTruthy()
+    finish({ ok: true, kind: "file", target: "/p", daemonRunning: true })
+    expect(await screen.findByRole("heading", { name: "The service is installed" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Skip for now" }).hasAttribute("disabled")).toBe(false)
+  })
+
   it("goes straight to the agents when the daemon is not this app's, or nothing can install it", () => {
     setup({ service: { owner: "outside", platform: "darwin", install: vi.fn() } })
     expect(screen.getByRole("heading", { name: "Connect an agent on mac-mini-m4" })).toBeTruthy()

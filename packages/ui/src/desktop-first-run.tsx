@@ -540,15 +540,19 @@ export function DesktopFirstRunDialog({
     }
   }
   const showService = screen === "service" && service !== undefined
+  const installing = phase.kind === "installing"
   const chip = !connected || !machine ? "no daemon"
     : phase.kind === "installing" ? "installing"
       : phase.kind === "done" ? `daemon ${machine.version} · login service`
         : service?.owner === "app" ? `daemon ${machine.version} · in this app` : `daemon ${machine.version}`
 
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) dismiss() }}>
+    // Review P3-7: while the install runs, setup cannot be closed, so its
+    // outcome is never lost behind a closed dialog.
+    <Dialog open={open} onOpenChange={(next) => { if (!next && !installing) dismiss() }}>
       <DialogContent
         showCloseButton={false}
+        onEscapeKeyDown={(event) => { if (installing) event.preventDefault() }}
         className="flex h-dvh max-h-none max-w-none flex-col gap-0 overflow-hidden rounded-none bg-background p-0 sm:max-w-none"
       >
         <div className="flex h-[46px] shrink-0 items-center gap-3 border-b px-3.5">
@@ -558,7 +562,7 @@ export function DesktopFirstRunDialog({
           <span className="text-[12px] text-muted-foreground">Setup</span>
           <span className="flex-1" />
           <span className="rounded-full bg-accent px-2 py-0.5 font-machine text-[10.5px] text-muted-foreground">{chip}</span>
-          <Button variant="ghost" size="sm" onClick={dismiss}>Skip for now</Button>
+          <Button variant="ghost" size="sm" disabled={installing} onClick={dismiss}>Skip for now</Button>
         </div>
         <div className="flex min-h-0 flex-1 justify-center overflow-y-auto px-6">
           {showService ? (
