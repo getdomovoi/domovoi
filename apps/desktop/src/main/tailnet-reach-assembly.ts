@@ -77,7 +77,7 @@ type ServiceSource = {
 
 export function createTailnetReach(input: {
   desktopDaemon: AcquisitionSource
-  daemon: Pick<DaemonModule, "readLocalServiceHandoffRefusal" | "holdServiceHandoffFence">
+  daemon: Pick<DaemonModule, "readLocalServiceHandoffRefusal" | "holdServiceHandoffFence" | "readLocalTailnetStatus">
   service: () => Promise<ServiceSource>
   dataDirectory: string
   home?: string
@@ -203,6 +203,14 @@ export function createTailnetReach(input: {
     // with these as set, so turning off cannot clear them.
     handSet: () => input.desktopDaemon.current()?.kind === "attached" || environment.DOMOVOI_TAILNET_ADDRESS === undefined ? undefined
       : "The tailnet listener comes from DOMOVOI_TAILNET_ADDRESS set by hand in this app's environment, and the switch cannot clear it.",
+    // Codex review round 1 (P2-5): tailnet.status from the daemon this window
+    // reaches after a restart, so a change counts only once it serves the new
+    // certificate on the tailnet.
+    listener: async () => {
+      const endpoint = input.desktopDaemon.current()
+      if (!endpoint || endpoint.kind === "refused") return undefined
+      return input.daemon.readLocalTailnetStatus({ endpoint, timeoutMs: 5_000 })
+    },
     preflight: async () => {
       const daemon = await reached()
       if ("refusal" in daemon) return daemon.refusal

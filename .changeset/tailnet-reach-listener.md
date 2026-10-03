@@ -27,3 +27,6 @@ and the fleet advertises a tailnet route under `DOMOVOI_TAILNET_HOST`.
 in the saved service configuration, written and restarted by the update. It
 changes nothing for a service that already listens beyond loopback or runs in a
 WSL guest.
+
+`readLocalTailnetStatus` reads `tailnet.status` from a local daemon endpoint
+and throws when the daemon cannot be read.

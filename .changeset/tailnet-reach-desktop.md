@@ -20,6 +20,13 @@ state. A hand-set `DOMOVOI_HOST` beyond loopback keeps the saved settings out of
 the in-app daemon, which starts without the tailnet listener; the switch says
 why and does not turn on.
 
+A certificate and key Tailscale hands back are used only when the certificate
+reads as X.509, has not expired, names this machine and the key belongs to it.
+After the restart, the change counts only once the daemon's `tailnet.status`
+says it serves that certificate on the tailnet, or holds it while the tailnet
+address is not up yet. When the daemon refused it, or could not be asked, the
+previous certificate, key and record go back and the daemon restarts on them.
+
 Turning on again and renewing set the files in use aside in a private pending
 directory first. Any failure before the restart succeeds, a thrown error
 included, puts those files back, and the record when turning on, and starts the

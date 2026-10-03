@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest"
 
+import { generateKeyPairSync } from "node:crypto"
+
+import type { TailnetListenerStatus } from "@getdomovoi/protocol"
+
 import type { TailnetReachRecord } from "./tailnet-reach-record.js"
-import { TailnetReach, type TailnetReachDependencies } from "./tailnet-reach.js"
+import { TailnetReach, tailnetMaterialCheck, type TailnetReachDependencies } from "./tailnet-reach.js"
 
 // TailnetReach (Q404 A), the switch's own steps, with every effect a fake that
 // records what it was asked. Nothing here runs Tailscale or touches a profile.
@@ -30,6 +34,8 @@ const running = JSON.stringify({
 })
 // The fake gives a file the identity <path>#mark, as if the switch had marked
 // it there, unless a test names another (a file the switch did not write).
+// The expiry the fake checks give every issued certificate.
+const issuedNotAfter = "2026-12-20T04:12:00.000Z"
 const ours: TailnetReachRecord = { version: 1, name, address: "100.101.102.103", certPath, keyPath, certIdentity: `${certPath}#mark`, keyIdentity: `${keyPath}#mark` }
 
 function harness(options: {
@@ -59,6 +65,11 @@ function harness(options: {
   setAside?: string
   // Identities other than the switch's mark, for files someone else wrote.
   identities?: Record<string, string>
+  // Why the issued certificate and key fail the checks before they are used.
+  invalid?: string
+  // What tailnet.status answers after a restart, or what reading it throws.
+  // Default: listening, with the issued certificate's expiry.
+  listener?: TailnetListenerStatus | Error
 } = {}) {
   const calls: string[] = []
   const files = new Map<string, string>(Object.entries(options.files ?? {}))
@@ -133,6 +144,11 @@ function harness(options: {
       write: async (value) => { calls.push("record write"); record = value },
       remove: async () => { calls.push("record remove"); record = undefined },
     },
+    check: vi.fn(() => options.invalid ? { refused: options.invalid } : { notAfter: issuedNotAfter }),
+    listener: vi.fn(async () => {
+      if (options.listener instanceof Error) throw options.listener
+      return options.listener ?? { state: "listening" as const, address: "100.101.102.103", port: 47831, certificateExpiresAt: issuedNotAfter }
+    }),
     preflight: vi.fn(async () => { calls.push("preflight"); return options.preflight }),
     restart: vi.fn(async (change) => {
       calls.push(`restart ${"set" in change ? "set" : "clear"}`)
@@ -358,6 +374,32 @@ describe("turning TailnetReach on", () => {
     expect(calls.filter((call) => call === "record write")).toHaveLength(2)
     expect(calls.indexOf("record write")).toBeLessThan(calls.indexOf("restart set"))
     expect(record()).toEqual(ours)
+  })
+
+  // Codex review round 1 (P2-5): a certificate Tailscale handed back is
+  // checked before it replaces anything, and a restart counts only once the
+  // daemon says it serves the new certificate on the tailnet.
+  it("stores nothing when the issued certificate fails the checks", async () => {
+    const { reach, files, record, deps } = harness({ invalid: "it expired on 2025-01-02." })
+    await expect(reach.turnOn()).resolves.toEqual({
+      ok: false, reason: "failed", step: "certificate",
+      message: `Tailscale's certificate for ${name} was not used: it expired on 2025-01-02. Nothing was stored and nothing restarted.`,
+    })
+    expect(files.size).toBe(0)
+    expect(record()).toBeUndefined()
+    expect(deps.restart).not.toHaveBeenCalled()
+  })
+
+  it("deletes the new files again when the daemon does not take the certificate on the tailnet", async () => {
+    const reason = "The tailnet certificate and key do not belong together, so the daemon answers on this computer only."
+    const { reach, files, record, deps } = harness({ listener: { state: "refused", address: "100.101.102.103", reason, retrying: false } })
+    await expect(reach.turnOn()).resolves.toEqual({
+      ok: false, reason: "failed", step: "restart",
+      message: `The daemon did not take the certificate for the tailnet: ${reason} The certificate and key were deleted again, and the switch stays off.`,
+    })
+    expect(files.size).toBe(0)
+    expect(record()).toBeUndefined()
+    expect(deps.restart).toHaveBeenLastCalledWith({ clear: true })
   })
 
   it("keeps the previous name's files when the new name's restart fails", async () => {
@@ -722,6 +764,53 @@ describe("TailnetReach renewal", () => {
     } })
   })
 
+  // Codex review round 1 (P2-5): a loopback restart is not proof the daemon
+  // took the new certificate. Until tailnet.status says it serves it, the
+  // previous pair stays in pending, and goes back if the daemon refused it.
+  it("replaces nothing with a certificate that fails the checks", async () => {
+    const { reach, files, deps } = harness({ record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" }, invalid: "the key does not belong to it." })
+    await expect(reach.renew()).resolves.toBe("failed")
+    expect(files.get(certPath)).toBe("old certificate")
+    expect(deps.restart).not.toHaveBeenCalled()
+    await expect(reach.status()).resolves.toMatchObject({ renewalFailed: {
+      message: `Tailscale's new certificate for ${name} was not used: the key does not belong to it. The current certificate stays.`,
+    } })
+  })
+
+  it("puts the previous pair back and restarts on it when the daemon refuses the new one", async () => {
+    const reason = "The tailnet certificate and key do not belong together, so the daemon answers on this computer only."
+    const { reach, files, record, deps } = harness({
+      record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" },
+      listener: { state: "refused", address: "100.101.102.103", reason, retrying: false, certificateExpiresAt: issuedNotAfter },
+    })
+    await expect(reach.renew()).resolves.toBe("failed")
+    expect(files.get(certPath)).toBe("old certificate")
+    expect(files.get(keyPath)).toBe("old key")
+    expect(record()).toEqual(ours)
+    expect(deps.restart).toHaveBeenCalledTimes(2)
+    await expect(reach.status()).resolves.toMatchObject({ renewalFailed: {
+      message: `The daemon did not take the new certificate for the tailnet: ${reason} The previous certificate was put back.`,
+    } })
+  })
+
+  it("keeps a new certificate the daemon took while the tailnet address is not up yet", async () => {
+    const { reach, files } = harness({
+      record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" },
+      listener: { state: "refused", address: "100.101.102.103", reason: "The tailnet address 100.101.102.103 is not on this machine (EADDRNOTAVAIL).", retrying: true, certificateExpiresAt: issuedNotAfter },
+    })
+    await expect(reach.renew()).resolves.toBe("renewed")
+    expect(files.get(certPath)).toBe(certificate)
+  })
+
+  it("puts the previous pair back when the daemon cannot say whether it took the new one", async () => {
+    const { reach, files } = harness({ record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" }, listener: new Error("No reply to tailnet.status") })
+    await expect(reach.renew()).resolves.toBe("failed")
+    expect(files.get(certPath)).toBe("old certificate")
+    await expect(reach.status()).resolves.toMatchObject({ renewalFailed: {
+      message: "Domovoi could not confirm that the daemon took the new certificate for the tailnet (No reply to tailnet.status). The previous certificate was put back.",
+    } })
+  })
+
   it("stops when the switch is turned off, and a new turn-on starts again", async () => {
     const { reach, timers } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" } })
     await reach.startRenewal()
@@ -737,5 +826,31 @@ describe("TailnetReach renewal", () => {
     await expect(reach.renew()).resolves.toBe("busy")
     await changing
     expect(timers()).toEqual([])
+  })
+})
+
+// Codex review round 1 (P2-5): the checks a certificate and key Tailscale
+// handed back pass before the switch uses them.
+describe("the checks before an issued certificate is used", () => {
+  const before = Date.parse("2025-01-01T12:00:00Z")
+
+  // A pair that passes every check is in tailnet-reach-assembly.test.ts,
+  // made with openssl; this fixture's own key was not kept.
+  it("refuses a key that does not belong to the certificate", () => {
+    const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" })
+    expect(tailnetMaterialCheck(Buffer.from(certificate), Buffer.from(privateKey.export({ type: "pkcs8", format: "pem" }) as string), name, before))
+      .toEqual({ refused: "the key does not belong to it." })
+  })
+
+  it.each([
+    ["an unreadable certificate", "-----BEGIN CERTIFICATE-----\nnot one\n-----END CERTIFICATE-----\n", name, before, "it is not a certificate Domovoi can read."],
+    ["an expired certificate", certificate, name, Date.parse("2026-10-02T00:00:00Z"), "it expired on 2025-01-02."],
+    ["another name", certificate, "other.tail4c2e.ts.net", before, "it is not for other.tail4c2e.ts.net."],
+  ])("refuses %s", (_label, cert, forName, now, refused) => {
+    expect(tailnetMaterialCheck(Buffer.from(cert), Buffer.from("private key"), forName, now)).toEqual({ refused })
+  })
+
+  it("refuses a key that cannot be read", () => {
+    expect(tailnetMaterialCheck(Buffer.from(certificate), Buffer.from("private key"), name, before)).toEqual({ refused: "the key could not be read." })
   })
 })

@@ -1,8 +1,13 @@
+import { execFile } from "node:child_process"
+import { X509Certificate } from "node:crypto"
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { promisify } from "node:util"
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+
+import type { TailnetListenerStatus } from "@getdomovoi/protocol"
 
 import { createTailnetReach } from "./tailnet-reach-assembly.js"
 import { savedTailnetReachEnvironment } from "./tailnet-reach-record.js"
@@ -12,18 +17,28 @@ import { savedTailnetReachEnvironment } from "./tailnet-reach-record.js"
 // Domovoi looks is the fake's directory.
 
 const name = "studio.tail4c2e.ts.net"
-// Generated with openssl for these tests: one name, valid 1 to 2 January 2025.
-const certificate = `-----BEGIN CERTIFICATE-----
-MIIBaDCCAQ+gAwIBAgIUb1E7VPfk5A/cEdedmwPUr2wbFbowCgYIKoZIzj0EAwIw
-ITEfMB0GA1UEAwwWc3R1ZGlvLnRhaWw0YzJlLnRzLm5ldDAeFw0yNTAxMDEwMDAw
-MDBaFw0yNTAxMDIwMDAwMDBaMCExHzAdBgNVBAMMFnN0dWRpby50YWlsNGMyZS50
-cy5uZXQwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATtu/OtBFdZfsoqrzwVyR6+
-Kw6di2N0m49ICmgVOyWw2mM98b5/dpL/aMcjKjV28mJyFhULKZzbkwwR2ux0jKDU
-oyUwIzAhBgNVHREEGjAYghZzdHVkaW8udGFpbDRjMmUudHMubmV0MAoGCCqGSM49
-BAMCA0cAMEQCIHBJbyVY310jQC8iDsLg0sa47JNbC7MgrCe+FFjhZBBeAiBVSgGo
-m0csbcFZN38Diwdag5/o/56dxngzn9HR6/RuwQ==
------END CERTIFICATE-----
-`
+// Codex review round 1 (P2-5): the switch uses only a certificate that is
+// valid now, names this machine and matches its key, so the fake hands back
+// such a pair, made with openssl once for this file: valid 30 days.
+let material = ""
+let certificate = ""
+let notAfter = ""
+
+beforeAll(async () => {
+  material = await mkdtemp(join(tmpdir(), "domovoi-tailnet-material-"))
+  await writeFile(join(material, "names.cnf"), `[req]\ndistinguished_name=dn\nx509_extensions=names\n[dn]\n[names]\nsubjectAltName=DNS:${name}\n`)
+  await promisify(execFile)("openssl", [
+    "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+    "-keyout", join(material, "key.pem"), "-out", join(material, "certificate.pem"), "-days", "30", "-subj", `/CN=${name}`,
+    "-config", join(material, "names.cnf"),
+  ], { timeout: 20_000 })
+  certificate = await readFile(join(material, "certificate.pem"), "utf8")
+  notAfter = new Date(new X509Certificate(certificate).validTo).toISOString()
+}, 30_000)
+
+afterAll(async () => {
+  await rm(material, { recursive: true, force: true })
+})
 
 let root = ""
 let home = ""
@@ -48,7 +63,7 @@ beforeEach(async () => {
     `echo "$@" >> "${join(root, "calls.log")}"`,
     `if [ "$1" = status ]; then /bin/cat "${join(root, "status.json")}"; exit 0; fi`,
     "while [ $# -gt 1 ]; do",
-    `  case "$1" in --cert-file) /bin/cp "${join(root, "certificate.pem")}" "$2"; shift 2;; --key-file) printf 'private key' > "$2"; shift 2;; *) shift;; esac`,
+    `  case "$1" in --cert-file) /bin/cp "${join(root, "certificate.pem")}" "$2"; shift 2;; --key-file) /bin/cp "${join(material, "key.pem")}" "$2"; shift 2;; *) shift;; esac`,
     "done",
   ].join("\n"))
   await chmod(join(bin, "tailscale"), 0o755)
@@ -58,7 +73,9 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
-function assemble(owned = true, environment: Record<string, string> = {}) {
+// listener: what the restarted daemon answers to tailnet.status. Default:
+// listening with the issued certificate.
+function assemble(owned = true, environment: Record<string, string> = {}, listener?: () => TailnetListenerStatus) {
   // The settings index.ts hands the in-app daemon at its next acquisition,
   // and what they were when the daemon was restarted.
   const settings: Record<string, string>[] = []
@@ -79,6 +96,7 @@ function assemble(owned = true, environment: Record<string, string> = {}) {
     daemon: {
       readLocalServiceHandoffRefusal: async () => undefined,
       holdServiceHandoffFence: async () => ({ release }),
+      readLocalTailnetStatus: async () => listener?.() ?? { state: "listening", address: "100.101.102.103", port: 47831, certificateExpiresAt: notAfter },
     },
     service: async () => ({ update, status: async () => ({ installed: true, running: true, detail: "running" }) }),
     dataDirectory: data,
@@ -104,7 +122,7 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
   it("says there is no tailnet when no tailscale command is where Domovoi looks", async () => {
     const reach = createTailnetReach({
       desktopDaemon: { current: () => undefined, stopOwned: async () => {}, restart: async () => ({ kind: "refused", reason: "port-in-use", message: "x" }), endHandoff: () => {} },
-      daemon: { readLocalServiceHandoffRefusal: async () => undefined, holdServiceHandoffFence: async () => ({ refusal: "x" }) },
+      daemon: { readLocalServiceHandoffRefusal: async () => undefined, holdServiceHandoffFence: async () => ({ refusal: "x" }), readLocalTailnetStatus: async () => ({ state: "off" }) },
       service: async () => { throw new Error("unused") },
       dataDirectory: data, home, environment: { PATH: join(root, "empty") }, platform: "darwin", tailscaleLocations: [],
     })
@@ -193,7 +211,7 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
     const timers = { set: (_run: () => void, ms: number) => { scheduled.push(ms); return ms }, clear: () => {} }
     const create = () => createTailnetReach({
       desktopDaemon: { current: () => undefined, stopOwned: async () => {}, restart: async () => ({ kind: "refused", reason: "port-in-use", message: "x" }), endHandoff: () => {} },
-      daemon: { readLocalServiceHandoffRefusal: async () => undefined, holdServiceHandoffFence: async () => ({ refusal: "x" }) },
+      daemon: { readLocalServiceHandoffRefusal: async () => undefined, holdServiceHandoffFence: async () => ({ refusal: "x" }), readLocalTailnetStatus: async () => ({ state: "off" }) },
       service: async () => { throw new Error("unused") },
       dataDirectory: data, home, environment: { PATH: bin }, platform: "darwin", tailscaleLocations: [], timers,
     })
@@ -208,7 +226,7 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
 
   it("stores a private certificate and key in the profile, records them for the in-app daemon, and restarts it", async () => {
     const { reach, stopOwned, restart, endHandoff, release, restartedWith } = assemble()
-    await expect(reach.turnOn()).resolves.toMatchObject({ ok: true, report: { state: "on", name, certificateExpiresAt: "2025-01-02T00:00:00.000Z" } })
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: true, report: { state: "on", name, certificateExpiresAt: notAfter } })
     const tls = join(home, ".domovoi", "tls")
     expect(((await stat(tls)).mode & 0o777).toString(8)).toBe("700")
     expect(((await stat(join(tls, `${name}.key`))).mode & 0o777).toString(8)).toBe("600")
@@ -330,6 +348,46 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
       await expect(reach.turnOff()).resolves.toMatchObject({ ok: false, reason: "failed", step: "delete" })
       await expect(readdir(elsewhere)).resolves.toEqual([`${name}.crt`, `${name}.key`])
     })
+  })
+
+  // Codex review round 1 (P2-5): the checks and the daemon's answer, with a
+  // real certificate and key, on this machine's files.
+  it("stores nothing when Tailscale hands back an expired certificate", async () => {
+    await writeFile(join(root, "certificate.pem"), [
+      "-----BEGIN CERTIFICATE-----",
+      "MIIBaDCCAQ+gAwIBAgIUb1E7VPfk5A/cEdedmwPUr2wbFbowCgYIKoZIzj0EAwIw",
+      "ITEfMB0GA1UEAwwWc3R1ZGlvLnRhaWw0YzJlLnRzLm5ldDAeFw0yNTAxMDEwMDAw",
+      "MDBaFw0yNTAxMDIwMDAwMDBaMCExHzAdBgNVBAMMFnN0dWRpby50YWlsNGMyZS50",
+      "cy5uZXQwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATtu/OtBFdZfsoqrzwVyR6+",
+      "Kw6di2N0m49ICmgVOyWw2mM98b5/dpL/aMcjKjV28mJyFhULKZzbkwwR2ux0jKDU",
+      "oyUwIzAhBgNVHREEGjAYghZzdHVkaW8udGFpbDRjMmUudHMubmV0MAoGCCqGSM49",
+      "BAMCA0cAMEQCIHBJbyVY310jQC8iDsLg0sa47JNbC7MgrCe+FFjhZBBeAiBVSgGo",
+      "m0csbcFZN38Diwdag5/o/56dxngzn9HR6/RuwQ==",
+      "-----END CERTIFICATE-----",
+      "",
+    ].join("\n"))
+    const { reach, restart } = assemble()
+    await expect(reach.turnOn()).resolves.toMatchObject({
+      ok: false, reason: "failed", step: "certificate",
+      message: `Tailscale's certificate for ${name} was not used: it expired on 2025-01-02. Nothing was stored and nothing restarted.`,
+    })
+    await expect(readdir(join(home, ".domovoi", "tls"))).resolves.toEqual([])
+    expect(restart).not.toHaveBeenCalled()
+  })
+
+  it("keeps the previous pair when the restarted daemon refuses the new one on the tailnet", async () => {
+    let answer: TailnetListenerStatus = { state: "listening", address: "100.101.102.103", port: 47831, certificateExpiresAt: notAfter }
+    const { reach, restart } = assemble(true, {}, () => answer)
+    await reach.turnOn()
+    const tls = join(home, ".domovoi", "tls")
+    const before = await readFile(join(tls, `${name}.crt`), "utf8")
+    await writeFile(join(root, "certificate.pem"), `${certificate}\n`)
+    answer = { state: "refused", address: "100.101.102.103", retrying: false, reason: "The tailnet certificate and key do not belong together, so the daemon answers on this computer only." }
+    await expect(reach.renew()).resolves.toBe("failed")
+    expect(await readFile(join(tls, `${name}.crt`), "utf8")).toBe(before)
+    expect(restart).toHaveBeenCalledTimes(3)
+    await expect(readdir(tls)).resolves.toEqual([`${name}.crt`, `${name}.key`])
+    reach.stopRenewal()
   })
 
   it("renews nothing over a certificate that is a link", async () => {

@@ -1,7 +1,8 @@
-import { X509Certificate } from "node:crypto"
+import { createPrivateKey, X509Certificate } from "node:crypto"
 import { isIPv4, isIPv6 } from "node:net"
 
 import type { DaemonServiceTailnetChange } from "@getdomovoi/daemon"
+import type { TailnetListenerStatus } from "@getdomovoi/protocol"
 
 import type { TailnetReachOutcome, TailnetReachReport, TailnetReachStep } from "../shared/tailnet-reach.js"
 import { tailnetFiles, tailnetName, type TailnetReachRecord } from "./tailnet-reach-record.js"
@@ -70,6 +71,12 @@ export type TailnetReachDependencies = {
   // files: from a change that could not put them back, or from one cut off
   // before it finished. The sweep cannot tell which.
   setAside?(): Promise<string | undefined>
+  // Codex review round 1 (P2-5): the checks an issued certificate and key
+  // pass before they replace anything (default tailnetMaterialCheck), and the
+  // daemon's tailnet.status after a restart, read from the daemon this window
+  // reaches; undefined when there is none to ask.
+  check?(cert: Buffer, key: Buffer, name: string, now: number): { notAfter: string } | { refused: string }
+  listener(): Promise<TailnetListenerStatus | undefined>
   // Renewal's timers and clock. Defaults: setTimeout, unref'd, and Date.now.
   timers?: { set(run: () => void, ms: number): unknown; clear(handle: unknown): void }
   now?(): number
@@ -115,6 +122,36 @@ function sentence(text: string): string {
 function certificateRefusal(result: TailscaleResult): string {
   const first = (result.stderr.trim().split("\n")[0] ?? "").trim().replace(/[.\s]+$/u, "").slice(0, 300)
   return `${first || `tailscale cert exited with ${result.code ?? "a signal"}`}.`
+}
+
+// Codex review round 1 (P2-5): what tailscale cert wrote is used only when the
+// certificate reads as X.509, has not expired, names this machine, and the key
+// belongs to it. The answer is its notAfter, as the daemon reports it in
+// tailnet.status, or why not, as a clause after "was not used:".
+export function tailnetMaterialCheck(cert: Buffer, key: Buffer, name: string, now: number): { notAfter: string } | { refused: string } {
+  let certificate: X509Certificate
+  try {
+    certificate = new X509Certificate(cert)
+  } catch {
+    return { refused: "it is not a certificate Domovoi can read." }
+  }
+  const notAfter = new Date(certificate.validTo)
+  if (Number.isNaN(notAfter.getTime())) return { refused: "it is not a certificate Domovoi can read." }
+  if (notAfter.getTime() <= now) return { refused: `it expired on ${notAfter.toISOString().slice(0, 10)}.` }
+  if (certificate.checkHost(name) === undefined) return { refused: `it is not for ${name}.` }
+  let privateKey
+  try {
+    privateKey = createPrivateKey(key)
+  } catch {
+    return { refused: "the key could not be read." }
+  }
+  let belongs: boolean
+  try {
+    belongs = certificate.checkPrivateKey(privateKey)
+  } catch {
+    belongs = false
+  }
+  return belongs ? { notAfter: notAfter.toISOString() } : { refused: "the key does not belong to it." }
 }
 
 function tailscaleAddress(addresses: unknown): string | undefined {
@@ -237,6 +274,8 @@ export class TailnetReach {
       if (issued.code !== 0) return this.#fail(`Tailscale did not renew the certificate for ${name}: ${certificateRefusal(issued)}`)
       const current = await this.deps.files.read(certPath).catch(() => undefined)
       if (current?.equals(await this.deps.files.read(pendingCert))) return "unchanged"
+      const checked = await this.#checked(pendingCert, pendingKey, name)
+      if ("refused" in checked) return this.#fail(`Tailscale's new certificate for ${name} was not used: ${checked.refused} The current certificate stays.`)
 
       const refusal = await this.deps.preflight()
       if (refusal !== undefined) return this.#fail(`A new certificate is ready, but the daemon cannot restart now: ${refusal} The current certificate stays until the next try.`)
@@ -246,10 +285,21 @@ export class TailnetReach {
       recorded = true
       await this.deps.record.write(renewed)
       restarting = true
-      const restarted = await this.deps.restart({ set: { address: record.address, name, certPath, keyPath } })
+      const change: DaemonServiceTailnetChange = { set: { address: record.address, name, certPath, keyPath } }
+      const restarted = await this.deps.restart(change)
       if (restarted.ok) {
-        swap.commit()
-        return "renewed"
+        const problem = await this.#taken(checked.notAfter, "the new certificate")
+        if (problem === undefined) {
+          swap.commit()
+          return "renewed"
+        }
+        // The daemon restarted on loopback without the new certificate on the
+        // tailnet: the previous pair goes back, and the daemon restarts on it.
+        const undone = await swap.undo()
+        await this.deps.record.write(record)
+        const back = await this.deps.restart(change).catch(() => ({ ok: false as const }))
+        if (!back.ok) await this.deps.recover?.()
+        return this.#fail(`${problem}${sentence(undone)}`)
       }
       const undone = await swap.undo()
       await this.deps.record.write(record)
@@ -323,6 +373,33 @@ export class TailnetReach {
       kept: () => setAside > 0,
       stranded: () => undone !== undefined && aside.length > 0,
     }
+  }
+
+  // Codex review round 1 (P2-5): the issued pair, read from pending, and the
+  // checks it passes or why not.
+  async #checked(pendingCert: string, pendingKey: string, name: string): Promise<{ notAfter: string } | { refused: string }> {
+    const cert = await this.deps.files.read(pendingCert)
+    const key = await this.deps.files.read(pendingKey)
+    return (this.deps.check ?? tailnetMaterialCheck)(cert, key, name, this.deps.now?.() ?? Date.now())
+  }
+
+  // Undefined once the restarted daemon reports it serves the certificate
+  // that expires at notAfter on the tailnet, or has it and waits for the
+  // address (Tailscale not up yet, retrying). Otherwise the sentence that says
+  // it did not take it, or that Domovoi could not find out.
+  async #taken(notAfter: string, what: string): Promise<string | undefined> {
+    let status: TailnetListenerStatus | undefined
+    try {
+      status = await this.deps.listener()
+    } catch (cause) {
+      return `Domovoi could not confirm that the daemon took ${what} for the tailnet (${detail(cause instanceof Error ? cause.message : String(cause))}).`
+    }
+    if (status === undefined) return `Domovoi could not confirm that the daemon took ${what} for the tailnet: this window reaches no daemon.`
+    if (status.state !== "off" && status.certificateExpiresAt === notAfter && (status.state === "listening" || status.retrying)) return undefined
+    const why = status.state === "refused" ? status.reason
+      : status.state === "off" ? "it reports no tailnet listener."
+        : "it serves another certificate on the tailnet."
+    return `The daemon did not take ${what} for the tailnet: ${why}`
   }
 
   // The same two paths the record parser holds a record to.
@@ -475,6 +552,13 @@ export class TailnetReach {
           ...(words ? { detail: words } : {}),
         }
       }
+      const checked = await this.#checked(pendingCert, pendingKey, name)
+      if ("refused" in checked) {
+        return {
+          ok: false, reason: "failed", step: "certificate",
+          message: `Tailscale's certificate for ${name} was not used: ${checked.refused} Nothing was stored and nothing restarted.`,
+        }
+      }
       for (const path of [certPath, keyPath]) {
         if (!owned.has(path) && await this.deps.files.exists(path)) {
           return {
@@ -500,16 +584,27 @@ export class TailnetReach {
       await this.deps.record.write(record)
       restarting = true
       const restarted = await this.deps.restart({ set: { address, name, certPath, keyPath } })
-      if (!restarted.ok) {
+      // Codex review round 1 (P2-5): a restart counts once the daemon says
+      // it serves the new certificate on the tailnet.
+      const problem = restarted.ok ? await this.#taken(checked.notAfter, "the certificate") : restarted.message
+      if (problem !== undefined) {
         const undone = await swap.undo()
         if (previous) await this.deps.record.write(previous)
         else await this.deps.record.remove()
-        await this.deps.recover?.()
+        if (restarted.ok) {
+          // It restarted without it: restart again on what was there before.
+          const back = await this.deps.restart(previous
+            ? { set: { address: previous.address, name: previous.name, certPath: previous.certPath, keyPath: previous.keyPath } }
+            : { clear: true }).catch(() => ({ ok: false as const }))
+          if (!back.ok) await this.deps.recover?.()
+        } else {
+          await this.deps.recover?.()
+        }
         return {
           ok: false, reason: "failed", step: "restart",
-          message: swap.stranded() ? `${restarted.message} ${undone}`
-            : previous ? `${restarted.message} ${swap.kept() ? "The previous certificate was put back" : "The previous certificate stays in use"}, and the switch stays on.`
-              : `${restarted.message} The certificate and key were deleted again, and the switch stays off.`,
+          message: swap.stranded() ? `${problem} ${undone}`
+            : previous ? `${problem} ${swap.kept() ? "The previous certificate was put back" : "The previous certificate stays in use"}, and the switch stays on.`
+              : `${problem} The certificate and key were deleted again, and the switch stays off.`,
         }
       }
       // Review of 049b1383 (P3-b): Tailscale renamed this machine. The
