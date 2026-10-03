@@ -781,6 +781,16 @@
       "id": "sessions.list",
       "since": "2026-10-02",
       "note": "the design's third group is UNREACHABLE, sessions on a machine that does not answer; the phone draws QUIET for idle sessions instead, because it holds one daemon's snapshot and has no sessions from a machine that is not answering. Arrangement, not copy: single-word labels are outside the script reading"
+    },
+    {
+      "id": "shell.tab-bar",
+      "since": "2026-10-02",
+      "note": "approved difference, ruling Q330 A: the design draws the tab bar as a solid card; the phone keeps the floating bar's wash and blur (FloatingBar in floating-bar.tsx), because fetzy asked for the Android blur to match iOS. A solid bar was built in 134db103 and reverted in c158c1ef"
+    },
+    {
+      "id": "pairing.camera",
+      "since": "2026-10-02",
+      "note": "approved difference, ruling Q331 A: the viewfinder hint says Point at the pairing code that domovoid pair prints on the machine., not the design's shown in Settings on the machine, because the camera path the phone documents is domovoid pair --client phone (apps/mobile/README.md). The evidence holds the shared opening, Point at the pairing code"
     }
   ],
   "scriptBacklog": {
