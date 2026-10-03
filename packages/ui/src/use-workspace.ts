@@ -5,7 +5,7 @@ import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, Devic
 import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, type DomovoiEndpoint } from "./client"
 import type { ClientAdmission } from "./client-admission-policy"
 import { Deadline } from "./deadline"
-import { applyWorkspaceDelta } from "@getdomovoi/protocol"
+import { applyWorkspaceDelta, openCommentReviewFor } from "@getdomovoi/protocol"
 import { fleetListingOverflow } from "./fleet-overflow"
 import { pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
 import { createRelayPinStore, reconcileRelayPin, type RelayPinStorage } from "./relay-pin"
@@ -142,6 +142,12 @@ export function useWorkspace(
   useEffect(() => {
     resolverRef.current = resolver
   }, [resolver])
+  // The snapshot a send reads for its review, held in a ref so sendMessage
+  // keeps one identity across snapshots.
+  const snapshotRef = useRef(snapshot)
+  useEffect(() => {
+    snapshotRef.current = snapshot
+  }, [snapshot])
   const resolves = resolver !== undefined
   const admissionMachineId = admission?.machineId
   const admissionDeviceId = admission?.deviceId
@@ -372,7 +378,14 @@ export function useWorkspace(
   ) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshotFrom(client, await client.sendMessage(sessionId, prompt, skillSelection, attachments))
+    // Desktop and web list the session's comments as open with no further
+    // choice, so the send names every open comment of that session (rulings
+    // Q348 A, Q402); the daemon attaches nothing a message did not name. The
+    // chosen build basis is dock state and stays a viewer bookmark here
+    // (ruling Q342 A) until the dock sends it.
+    const current = snapshotRef.current
+    const review = current ? openCommentReviewFor(current, sessionId) : { annotationIds: [] }
+    updateSnapshotFrom(client, await client.sendMessage(sessionId, prompt, skillSelection, attachments, review))
   }, [updateSnapshotFrom])
 
   const createCheckpoint = useCallback(async (sessionId: string, label?: string) => {

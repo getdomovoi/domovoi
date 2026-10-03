@@ -106,6 +106,61 @@ describe("useWorkspace connection lifecycle", () => {
     await expect(authorizing).resolves.toMatchObject({ artifactId: "artifact-preview" })
   })
 
+  // Rulings Q348 A and Q402: the daemon attaches only the comments a message
+  // names. Desktop and web list the active session's comments as open with no
+  // further choice, so a send names every open comment of that session as the
+  // snapshot held it at the moment of sending, and nothing from another
+  // session, nothing resolved, and no build basis.
+  it("sends every open comment of the session as the review, from the latest snapshot", async () => {
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    const base = workspaceSnapshot()
+    const annotation = base.annotations[0]!
+    const snapshot = workspaceSnapshot({
+      artifacts: [
+        ...base.artifacts,
+        { ...base.artifacts.find((artifact) => artifact.id === "artifact-plan")!, id: "artifact-plan-elsewhere", sessionId: "session-onboarding" },
+      ],
+      annotations: [
+        ...base.annotations,
+        { ...annotation, id: "annotation-resolved", status: "resolved" },
+        { ...annotation, id: "annotation-elsewhere", sessionId: "session-onboarding", artifactId: "artifact-plan-elsewhere" },
+      ],
+    })
+    await drive(() => completeHandshake(socket, snapshot))
+
+    const sending = view.result.current.sendMessage("session-billing", "Address these")
+    expect(sentRequests(socket, "session.send")).toHaveLength(1)
+    expect(sentRequests(socket, "session.send")[0]?.params).toEqual({
+      sessionId: "session-billing",
+      prompt: "Address these",
+      client: "web",
+      review: { annotationIds: ["annotation-migration-machine", "annotation-replay-copy"] },
+    })
+    const resolved = workspaceSnapshot({
+      artifacts: snapshot.artifacts,
+      annotations: snapshot.annotations.map((candidate) => candidate.id === "annotation-replay-copy" ? { ...candidate, status: "resolved" } : candidate),
+    })
+    await drive(() => respond(socket, "session.send", resolved))
+    await expect(sending).resolves.toBeUndefined()
+
+    // The next send reads the snapshot that answer installed.
+    const again = view.result.current.sendMessage("session-billing", "And this")
+    expect(sentRequests(socket, "session.send")[1]?.params).toMatchObject({
+      review: { annotationIds: ["annotation-migration-machine"] },
+    })
+    await drive(() => respond(socket, "session.send", resolved))
+    await expect(again).resolves.toBeUndefined()
+
+    const other = view.result.current.sendMessage("session-onboarding", "Elsewhere")
+    expect(sentRequests(socket, "session.send")[2]?.params).toMatchObject({
+      sessionId: "session-onboarding",
+      review: { annotationIds: ["annotation-elsewhere"] },
+    })
+    await drive(() => respond(socket, "session.send", resolved))
+    await expect(other).resolves.toBeUndefined()
+  })
+
   it("closes the previous socket and forgets its snapshot when the target changes", async () => {
     const view = mountWorkspace()
     const first = harness.socket(0)
