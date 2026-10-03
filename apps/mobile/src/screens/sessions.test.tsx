@@ -61,6 +61,23 @@ describe("SessionsScreen", () => {
     expect(screen.getAllByText(new RegExp(`^${snapshot.machine.name} · `))).toHaveLength(1)
   })
 
+  // The card opens the approval its clock counts from: the earliest one the
+  // session holds, whatever order the snapshot lists them in.
+  it("opens the approval the session has waited on longest", async () => {
+    const snapshot = workspace()
+    const later = snapshot.approvals[0]
+    if (!later) throw new Error("fixture needs a pending approval")
+    const earlier = { ...later, id: `${later.id}-earlier`, requestedAt: new Date(Date.parse(later.requestedAt) - 10 * 60_000).toISOString() }
+    snapshot.approvals.push(earlier)
+    const session = snapshot.sessions.find((candidate) => candidate.id === later.sessionId)
+    if (!session) throw new Error("fixture needs the approval's session")
+    const { onOpenApproval } = await draw({ snapshot, now: Date.parse(later.requestedAt) })
+
+    await fireEvent.press(screen.getByRole("button", { name: session.title }))
+
+    expect(onOpenApproval).toHaveBeenCalledWith(earlier.id)
+  })
+
   // Ruling Q358 A: idle sessions stay under QUIET, and fleet machines that do
   // not answer get an UNREACHABLE line of their own. The phone holds no
   // sessions from them, so the line names the machine and when it was last

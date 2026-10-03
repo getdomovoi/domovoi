@@ -262,7 +262,7 @@ export function SessionsScreen({
               <SessionCard
                 key={row.id}
                 row={row}
-                approvalId={snapshot.approvals.find((approval) => approval.sessionId === row.id)?.id}
+                approvalId={snapshot.approvals.find((approval) => approval.sessionId === row.id && approval.requestedAt === row.waitingSince)?.id}
                 now={now}
                 onOpen={onOpenSession}
                 onOpenApproval={onOpenApproval}

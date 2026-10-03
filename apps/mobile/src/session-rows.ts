@@ -43,9 +43,15 @@ const attentionRank: Record<"approval" | "preview" | "none", number> = {
 export function sessionRows(snapshot: WorkspaceSnapshot): SessionRow[] {
   // The snapshot carries only approvals still waiting on a person; decided ones
   // become receipts in the thread.
-  const awaiting = new Map(
-    snapshot.approvals.map((approval) => [approval.sessionId, approval.requestedAt]),
-  )
+  // A session holding more than one approval has waited since the earliest,
+  // whatever order the snapshot lists them in.
+  const awaiting = new Map<string, string>()
+  for (const approval of snapshot.approvals) {
+    const held = awaiting.get(approval.sessionId)
+    if (held === undefined || Date.parse(approval.requestedAt) < Date.parse(held)) {
+      awaiting.set(approval.sessionId, approval.requestedAt)
+    }
+  }
   const previewable = new Set(
     snapshot.artifacts.filter((artifact) => artifact.type === "plan" || artifact.type === "preview")
       .map((artifact) => artifact.sessionId),
