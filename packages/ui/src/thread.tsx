@@ -272,6 +272,12 @@ function ArchivedSessionNotice({ session }: { session: SessionSummary }) {
 
 const threadClock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
 
+// The rows the daemon writes when a pause ended a session's turn. A failed
+// interrupt writes "Pause failed for <client>." instead.
+function pauseRows(thread: readonly ThreadItem[], sessionId: string): ThreadItem[] {
+  return thread.filter((item) => item.sessionId === sessionId && item.kind === "system" && /^Paused by .+\.$/u.test(item.body))
+}
+
 // The design's paused notice, with copy that is true today: the turn ended and
 // the session holds nothing back, so there is nothing to resume (ruled Q361 A).
 function StoppedSessionNotice({ at }: { at: Date }) {
@@ -582,10 +588,13 @@ export function Thread({
     onPendingTransferTargetChange?.(machineId)
   }
   const [transferReceipt, setTransferReceipt] = useState<SessionTransferReceipt | null>(null)
-  // The turn this client stopped, and when. The wire has no paused state:
-  // session.pause ends the running turn and the next send starts another
-  // (ruled Q361 A). Any later turn retires the notice.
-  const [stopped, setStopped] = useState<{ turnId: string, at: Date }>()
+  // The turn this client stopped, and the pause rows the thread held before
+  // the stop. The wire has no paused state: session.pause ends the running
+  // turn and the next send starts another (ruled Q361 A). The daemon answers
+  // the RPC successfully either way and records the outcome as a system row,
+  // so only a new "Paused by <client>." row says the turn ended. Any later
+  // turn retires the notice.
+  const [stopped, setStopped] = useState<{ turnId: string, earlierPauseRows: ReadonlySet<string> }>()
   const runningTurnId = active?.activeTurnId
   useEffect(() => {
     if (runningTurnId && stopped && runningTurnId !== stopped.turnId) setStopped(undefined)
@@ -894,6 +903,13 @@ export function Thread({
     }
   }
 
+  // When the daemon recorded the pause this client asked for, if it has.
+  const stoppedAt = (() => {
+    if (!stopped) return undefined
+    const recorded = pauseRows(snapshot.thread, active.id).find((row) => !stopped.earlierPauseRows.has(row.id))
+    return recorded ? new Date(recorded.createdAt) : undefined
+  })()
+
   const pauseSession = async () => {
     if (watching || pending || !active.activeTurnId) return
     setPending(true)
@@ -902,9 +918,10 @@ export function Thread({
     // queue would leave at the boundary the stop itself created.
     if (queued) onQueuedChange(heldAfter(queued, "Held because this session was stopped. Send it when you want it to run."))
     const turnId = active.activeTurnId
+    const earlierPauseRows = new Set(pauseRows(snapshot.thread, active.id).map((row) => row.id))
     try {
       await onPauseSession(active.id)
-      setStopped({ turnId, at: new Date() })
+      setStopped({ turnId, earlierPauseRows })
     } catch (cause) {
       setSendError(cause instanceof Error ? cause.message : "The session could not be paused")
     } finally {
@@ -1043,7 +1060,7 @@ export function Thread({
     <main className="flex h-full min-w-0 flex-col bg-background">
       {/* Shown once the stopped turn has ended, where the design draws its
           session notice: a strip above the thread. */}
-      {stopped && !active.activeTurnId ? <StoppedSessionNotice at={stopped.at} /> : null}
+      {stoppedAt && !active.activeTurnId ? <StoppedSessionNotice at={stoppedAt} /> : null}
       {freshWorktree ? <WorktreeReadyHeader workspacePath={freshWorktree} baseCommit={active.baseCommit} /> : null}
       <ScrollArea className="min-h-0 flex-1" viewportRef={threadViewport} onViewportScroll={follow.onScroll}>
         {/* One column with the composer: 24px of side padding inside the
