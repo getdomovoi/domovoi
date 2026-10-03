@@ -47,6 +47,42 @@ it("shows the daemon's refusal of a decision inside the gate card", async () => 
   expect(onResolve).toHaveBeenCalledTimes(2)
 })
 
+// A refusal shown in its card belongs to that card. When the gate then leaves,
+// because another device answered it, the refusal goes with it rather than
+// reappearing above the composer about a gate that was decided.
+it("drops a card's refusal when its gate is answered elsewhere", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const refusal = "Domovoi could not take a checkpoint, so the command did not run; decide again"
+  const onResolve = vi.fn().mockRejectedValueOnce(new DaemonRpcError(-32603, refusal))
+  const thread = (current: typeof snapshot) => (
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={current}
+      connected
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />
+  )
+  const { rerender } = render(thread(snapshot))
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+  expect(screen.getByText(refusal)).toBeTruthy()
+
+  const answeredElsewhere = structuredClone(snapshot)
+  answeredElsewhere.approvals = []
+  rerender(thread(answeredElsewhere))
+
+  expect(screen.queryByText(refusal)).toBeNull()
+  expect(screen.queryByText("Agent request failed")).toBeNull()
+})
+
 // A refusal can arrive after the gate has left the snapshot: the agent stopped
 // waiting, the request was withdrawn or answered outside Domovoi. With no
 // card to hold it, it shows with the composer's alerts, as it did before.

@@ -572,6 +572,14 @@ export function Thread({
   const [runtimePending, setRuntimePending] = useState(false)
   const [sendError, setSendError] = useState("")
   const [approvalRefusal, setApprovalRefusal] = useState<{ approvalId: string, message: string }>()
+  // The gates pending in the latest snapshot, read when a refusal arrives to
+  // place it: a refusal can come back after the snapshot has moved on.
+  const pendingApprovalIds = useRef(new Set<string>())
+  useEffect(() => {
+    pendingApprovalIds.current = new Set(snapshot.approvals.map((pending) => pending.id))
+    // A refusal held for a gate that has gone leaves with it.
+    setApprovalRefusal((current) => current && !pendingApprovalIds.current.has(current.approvalId) ? undefined : current)
+  }, [snapshot.approvals])
   const [recoveryError, setRecoveryError] = useState("")
   const [runtimeError, setRuntimeError] = useState("")
   // A model change that could not carry the effort moved it to the new
@@ -932,11 +940,12 @@ export function Thread({
     }
   }
 
-  // The card holds a refusal only while its gate is on screen. A refusal for a
-  // gate that has gone (the agent stopped waiting, the request was withdrawn
-  // or answered outside Domovoi) shows with the composer's alerts instead.
+  // Where a refusal goes is decided when it arrives. While its gate is still
+  // pending, its card shows it, and it goes with the card when the gate leaves
+  // (answered elsewhere, for one). A refusal for a gate already gone (the
+  // agent stopped waiting, the request was withdrawn or answered outside
+  // Domovoi) has no card, so it shows with the composer's alerts.
   const cardShowsRefusal = Boolean(approval && !archiveReadOnly && approvalRefusal?.approvalId === approval.id)
-  const strayRefusal = approvalRefusal && !cardShowsRefusal ? approvalRefusal.message : ""
 
   const resolveCurrentApproval = (
     approval: ApprovalRequest,
@@ -952,7 +961,11 @@ export function Thread({
       // such as a dropped connection, did not reach an answer and stays
       // with the composer's alerts.
       if (cause instanceof DaemonRpcError) {
-        setApprovalRefusal({ approvalId: approval.id, message: cause.message })
+        if (pendingApprovalIds.current.has(approval.id)) {
+          setApprovalRefusal({ approvalId: approval.id, message: cause.message })
+        } else {
+          setSendError(cause.message)
+        }
         return
       }
       setSendError(cause instanceof Error ? cause.message : "The approval could not be resolved")
@@ -1089,7 +1102,6 @@ export function Thread({
       <div className="relative z-[1] -mt-5 bg-[linear-gradient(to_bottom,transparent_0,color-mix(in_oklab,var(--background)_58%,transparent)_9px,var(--background)_20px)] px-6 py-5">
         {runtimeError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Runtime update failed</AlertTitle><AlertDescription>{runtimeError}</AlertDescription></Alert> : null}
         {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
-        {strayRefusal ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{strayRefusal}</AlertDescription></Alert> : null}
         {recoveryError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Session could not be released</AlertTitle><AlertDescription>{recoveryError}</AlertDescription></Alert> : null}
         {planStrip}
         <ThreadComposer
