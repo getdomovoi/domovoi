@@ -110,11 +110,11 @@ export function pastedTextMeta(attachment: TextAttachment): string {
 }
 
 // What Peek shows: the lines the prompt carries, and how many more the agent
-// reads only on request.
+// reads only on request. The rest is counted as the card counts lines, so a
+// trailing newline does not add one.
 export function pastedTextPeek(attachment: TextAttachment): string {
-  const lines = attachment.content.split(/\r?\n/u)
-  const shown = lines.slice(0, desktopInlineLineLimit).join("\n")
-  const rest = lines.length - desktopInlineLineLimit
+  const shown = attachment.content.split(/\r?\n/u).slice(0, desktopInlineLineLimit).join("\n")
+  const rest = pastedLineCount(attachment.content) - desktopInlineLineLimit
   return rest > 0 ? `${shown}\n… ${rest} more ${rest === 1 ? "line" : "lines"}` : shown
 }
 

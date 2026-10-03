@@ -69,6 +69,20 @@ it("turns a paste over 40 lines into a text file the message carries", async () 
   )
 })
 
+// A trailing newline ends the last line. Peek counts the rest the same way
+// the card counts the lines, so the two never disagree.
+it("counts the lines Peek leaves out the way the card counts them", async () => {
+  const user = userEvent.setup()
+  renderThread()
+  await user.click(field())
+  await user.paste(`${log}\n`)
+
+  const card = screen.getByRole("group", { name: "pasted-text-1.txt" })
+  expect(within(card).getByText(/· 640 lines$/u)).toBeTruthy()
+  await user.click(within(card).getByRole("button", { name: "Peek" }))
+  expect(within(card).getByRole("region").textContent).toMatch(/… 600 more lines$/u)
+})
+
 it("keeps a paste of 40 lines or fewer in the message", async () => {
   const user = userEvent.setup()
   renderThread()
