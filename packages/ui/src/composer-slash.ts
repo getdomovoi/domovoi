@@ -22,7 +22,10 @@ export const slashCommands: readonly SlashCommand[] = [
   {
     name: "/revert",
     placeholder: "<checkpoint-id>",
-    note: "Rewinds the worktree and the thread together to that checkpoint. Nothing merged is touched.",
+    // Ruled Q341 A: revert is worktree-only. checkpoint.restore resets the
+    // files, records a checkpoint of the state before it and a system row,
+    // and leaves every turn in the thread.
+    note: "Resets the worktree to that checkpoint and keeps a checkpoint of the state before it. The thread keeps every turn.",
     live: (context) => context.checkpointIds.at(-1),
   },
   {
