@@ -42,11 +42,18 @@ describe("command links", () => {
 
   it("is unavailable where the app ships no launcher, and links nothing on Windows", async () => {
     await rm(launcher)
-    expect(await commandLinks("status", environment())).toEqual({ report: { available: false } })
-    expect(await commandLinks("link", environment())).toEqual({ report: { available: false } })
+    const noLauncher = { available: false, reason: "This build ships no domovoid launcher, so there is nothing to link." }
+    expect(await commandLinks("status", environment())).toEqual({ report: noLauncher })
+    expect(await commandLinks("link", environment())).toEqual({ report: noLauncher })
     await writeFile(launcher, "#!/bin/sh\n", { mode: 0o755 })
-    expect(await commandLinks("link", environment({ platform: "win32" }))).toEqual({ report: { available: false } })
+    expect(await commandLinks("link", environment({ platform: "win32" }))).toEqual({ report: { available: false, reason: "Domovoi links no commands on Windows." } })
     await expect(lstat(bin())).rejects.toThrow()
+  })
+
+  it("makes nothing when it only reads or unlinks", async () => {
+    expect((await commandLinks("status", environment())).report).toMatchObject({ commands: [{ state: "absent" }] })
+    expect((await commandLinks("unlink", environment())).report).toMatchObject({ commands: [{ state: "absent" }] })
+    await expect(lstat(join(home, ".local"))).rejects.toThrow()
   })
 
   it("links domovoid into ~/.local/bin, making the directory, and unlinks only that link", async () => {
@@ -89,19 +96,39 @@ describe("command links", () => {
     expect(await readlink(join(bin(), "domovoid"))).toBe(launcher)
   })
 
-  it("writes nothing when ~/.local or ~/.local/bin is a link to another directory", async () => {
+  // Review P2-2: a ~/.local/bin that is a link (a stow-folded dotfiles
+  // directory, say) is not read, written or cleaned through, for any action.
+  it("reads, writes and removes nothing through a ~/.local or ~/.local/bin that is a link", async () => {
     const elsewhere = join(root, "dotfiles", "bin")
     await mkdir(elsewhere, { recursive: true })
+    // The person's own link in their dotfiles, which happens to name this launcher.
+    await symlink(launcher, join(elsewhere, "domovoid"))
     await mkdir(join(home, ".local"))
     await symlink(elsewhere, bin())
-    const refused = await commandLinks("link", environment())
-    expect(refused.refused).toBe("~/.local/bin is a link to another directory, so Domovoi wrote nothing there.")
-    await expect(lstat(join(elsewhere, "domovoid"))).rejects.toThrow()
+    const binLinked = "~/.local/bin is a link to another directory, so Domovoi does not read or write there."
+    const unavailable = { report: { available: false, reason: binLinked } }
+    expect(await commandLinks("status", environment())).toEqual(unavailable)
+    expect(await commandLinks("unlink", environment())).toEqual({ ...unavailable, refused: binLinked })
+    expect(await commandLinks("link", environment())).toEqual({ ...unavailable, refused: binLinked })
+    expect(await readlink(join(elsewhere, "domovoid"))).toBe(launcher)
 
     await rm(join(home, ".local"), { recursive: true })
     await symlink(join(root, "dotfiles"), join(home, ".local"))
-    expect((await commandLinks("link", environment())).refused).toBe("~/.local is a link to another directory, so Domovoi wrote nothing there.")
-    await expect(lstat(join(root, "dotfiles", "bin", "domovoid"))).rejects.toThrow()
+    const localLinked = "~/.local is a link to another directory, so Domovoi does not read or write there."
+    expect(await commandLinks("status", environment())).toEqual({ report: { available: false, reason: localLinked } })
+    expect((await commandLinks("unlink", environment())).refused).toBe(localLinked)
+    expect((await commandLinks("link", environment())).refused).toBe(localLinked)
+    expect(await readlink(join(elsewhere, "domovoid"))).toBe(launcher)
+  })
+
+  it("refuses a ~/.local/bin that is not a directory, for every action", async () => {
+    await mkdir(join(home, ".local"))
+    await writeFile(bin(), "not a directory")
+    const reason = "~/.local/bin is not a directory, so Domovoi does not read or write there."
+    expect(await commandLinks("status", environment())).toEqual({ report: { available: false, reason } })
+    expect((await commandLinks("unlink", environment())).refused).toBe(reason)
+    expect((await commandLinks("link", environment())).refused).toBe(reason)
+    expect(await readFile(bin(), "utf8")).toBe("not a directory")
   })
 
   it("refuses an action it does not know", async () => {
