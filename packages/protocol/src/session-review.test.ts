@@ -1,19 +1,22 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  demoWorkspace,
   maximumReviewAnnotations,
+  openCommentReviewFor,
   phoneAndTabletRpcMethods,
   providerPromptAnnotationDeliverySchema,
   rpcMethods,
   sessionSendParamsSchema,
   sessionReviewRefusalSchema,
   sessionSendReviewSchema,
+  type WorkspaceSnapshot,
 } from "./index.js"
 
 // Rulings Q348 A and Q342 A: a message that carries a review sends only the
-// comments it names, and the preview variant chosen travels with them. Until
-// every client sends one (ruling Q402), a message without a review still
-// attaches every open comment; that is the daemon's legacy default.
+// comments it names, and the preview variant chosen travels with them. A
+// message without one sends no comment and no build basis (ruling Q402: the
+// legacy default that attached every open comment is gone).
 
 const send = { sessionId: "session-billing", prompt: "Address these", client: "desktop" }
 
@@ -28,12 +31,14 @@ describe("the review a person sends with a message", () => {
       .toEqual({ annotationIds: [], buildBasis: { artifactId: "artifact-preview-b" } })
   })
 
-  it("leaves review absent when the message names none, which the daemon reads as the Q402 legacy default", () => {
+  // Absent is read as none: the daemon never fills in a review the client did
+  // not send, so no comment reaches the agent without being named.
+  it("leaves review absent when the message carries none", () => {
     expect(sessionSendParamsSchema.parse(send)).not.toHaveProperty("review")
   })
 
-  // An empty review is the explicit "send no comments": without it a client
-  // could only omit review and fall into the Q402 legacy default.
+  // An empty review is the explicit "send no comments", the same on the wire
+  // as no review, and what a client sends when its surface attaches nothing.
   it("accepts an empty review as an explicit send of nothing", () => {
     expect(sessionSendReviewSchema.parse({ annotationIds: [] })).toEqual({ annotationIds: [] })
     expect(sessionSendParamsSchema.parse({ ...send, review: { annotationIds: [] } }).review).toEqual({ annotationIds: [] })
@@ -67,6 +72,57 @@ describe("the review a person sends with a message", () => {
       "annotation.reply",
       "annotation.setStatus",
     ])
+  })
+})
+
+// What a client sends while its surface offers no choice: every open comment
+// of the session, which is what desktop, web and the phone show as open. The
+// newest fill the per-message limit, the order the daemon delivered under the
+// legacy default, so a client never asks for more than a message may carry.
+describe("the review for every open comment of a session", () => {
+  const annotation = (id: string, overrides: Partial<WorkspaceSnapshot["annotations"][number]> = {}) => ({
+    ...demoWorkspace.annotations[0]!,
+    id,
+    thread: [],
+    createdAt: "2026-08-25T20:00:00.000Z",
+    updatedAt: "2026-08-25T20:00:00.000Z",
+    ...overrides,
+  })
+
+  it("names the open comments of that session and nothing else", () => {
+    const snapshot: WorkspaceSnapshot = {
+      ...demoWorkspace,
+      annotations: [
+        ...demoWorkspace.annotations,
+        annotation("annotation-resolved", { status: "resolved" }),
+        annotation("annotation-elsewhere", { sessionId: "session-other" }),
+      ],
+    }
+    expect(openCommentReviewFor(snapshot, "session-billing")).toEqual({
+      annotationIds: ["annotation-migration-machine", "annotation-replay-copy"],
+    })
+    expect(sessionSendReviewSchema.parse(openCommentReviewFor(snapshot, "session-billing")))
+      .toEqual(openCommentReviewFor(snapshot, "session-billing"))
+    expect(openCommentReviewFor(snapshot, "session-billing")).not.toHaveProperty("buildBasis")
+  })
+
+  it("is the explicit send of nothing when the session has no open comment", () => {
+    expect(openCommentReviewFor(demoWorkspace, "session-other")).toEqual({ annotationIds: [] })
+    expect(openCommentReviewFor({ ...demoWorkspace, annotations: [] }, "session-billing")).toEqual({ annotationIds: [] })
+  })
+
+  it("keeps the newest comments up to the limit a message may carry", () => {
+    const annotations = Array.from({ length: maximumReviewAnnotations + 3 }, (_, index) => annotation(
+      `annotation-${index}`,
+      { updatedAt: `2026-08-25T20:${String(index).padStart(2, "0")}:00.000Z` },
+    ))
+    const review = openCommentReviewFor({ ...demoWorkspace, annotations }, "session-billing")
+    expect(review.annotationIds).toHaveLength(maximumReviewAnnotations)
+    expect(review.annotationIds[0]).toBe(`annotation-${maximumReviewAnnotations + 2}`)
+    expect(review.annotationIds).not.toContain("annotation-0")
+    expect(review.annotationIds).not.toContain("annotation-2")
+    expect(review.annotationIds).toContain("annotation-3")
+    expect(sessionSendReviewSchema.safeParse(review).success).toBe(true)
   })
 })
 

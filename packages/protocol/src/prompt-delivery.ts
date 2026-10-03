@@ -73,11 +73,11 @@ const reviewBuildBasisSchema = z.object({
 
 // What a person sends with one message from the preview (rulings Q348 A and
 // Q342 A): the open comments they chose and the variant they chose as the
-// build basis. Only these reach the agent. Until every client sends a review
-// (ruling Q402), a message without one still attaches every open comment of
-// its session and no build basis; that default goes before 0.8.0 ships.
-// `{ annotationIds: [] }` is the explicit send of nothing: no comment and no
-// build basis, whatever comments are open.
+// build basis. Only these reach the agent. A message without a review sends
+// no comment and no build basis, whatever comments are open (ruling Q402: the
+// legacy default that attached every open comment went before 0.8.0).
+// `{ annotationIds: [] }` says the same thing explicitly, and is what a client
+// sends when its surface attaches nothing.
 export const sessionSendReviewSchema = z.object({
   annotationIds: z.array(reviewIdSchema).max(maximumReviewAnnotations).refine(
     (ids) => new Set(ids).size === ids.length,

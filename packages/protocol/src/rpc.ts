@@ -1323,9 +1323,11 @@ export const sessionSendParamsSchema = z.object({
   skillSelection: turnSkillSelectionSchema.optional(),
   attachments: z.array(sessionAttachmentSchema).max(maximumSessionAttachments).optional(),
   delivery: z.literal("next-turn-replace").optional(),
-  // The preview comments and build basis this message sends; with it, only
-  // those reach the agent. Absent, every open comment of the session still
-  // attaches, a legacy default removed before 0.8.0 ships (ruling Q402).
+  // The preview comments and build basis this message sends; only those reach
+  // the agent. Absent means none: no comment and no build basis, the same as
+  // `{ annotationIds: [] }` (ruling Q402). It stays optional so a daemon never
+  // fills in a review the client did not send, and a client built before the
+  // field keeps sending words; it loses the comments it never named.
   review: sessionSendReviewSchema.optional(),
 }).strict()
 
