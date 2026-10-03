@@ -30,12 +30,15 @@ it("names the mode on the chip and offers the three modes with their notes", asy
 })
 
 // What Plan and Ask enforce depends on the provider, as the daemon configures
-// it: Ask is read-only everywhere (Claude allows only reading tools, opencode
-// and kilo deny edit and bash, Codex runs in a read-only sandbox), and Codex
-// Plan still runs commands in that sandbox.
+// it: Ask refuses writes everywhere (Claude refuses edits and runs only its
+// read-only shell commands, opencode and kilo deny edit and bash, Codex runs
+// in a read-only sandbox), and Codex Plan still runs commands in that sandbox.
 it.each([
   ["codex", "Reads and proposes a plan. Commands run in a read-only sandbox, so nothing is written.", "Reads only. Commands run in a read-only sandbox, so nothing is written."],
-  ["claude-code", "Reads and proposes a plan. Claude's own plan mode makes no changes.", "Reads only. Edits and shell commands are refused."],
+  // Claude Code approves its own read-only Bash inside the working directory
+  // before Domovoi is asked (claude-read-scope.ts), so cat, ls and read-only
+  // git run in Ask.
+  ["claude-code", "Reads and proposes a plan. Claude's own plan mode makes no changes.", "Reads only. Edits are refused; only read-only shell commands inside the worktree run."],
   ["opencode", "Reads and proposes a plan. Edits and shell commands are refused.", "Reads only. Edits and shell commands are refused."],
 ] as const)("says what %s enforces in Plan and Ask", async (provider, plan, ask) => {
   const user = userEvent.setup()

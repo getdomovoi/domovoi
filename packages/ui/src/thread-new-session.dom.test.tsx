@@ -82,7 +82,7 @@ it.each(["desktop", "web"] as const)("draws Nothing has run yet on a %s session 
 it.each([
   ["claude-code", "plan", ["Read the repository and propose a plan. Claude's own plan mode makes no changes."]],
   ["codex", "plan", ["Read the repository and propose a plan. Commands run in a read-only sandbox, so nothing is written."]],
-  ["claude-code", "ask", ["Read the repository. Edits and shell commands are refused."]],
+  ["claude-code", "ask", ["Read the repository. Edits are refused; only read-only shell commands inside the worktree run."]],
   ["codex", "ask", ["Read the repository. Commands run in a read-only sandbox, so nothing is written."]],
   ["opencode", "ask", ["Read the repository. Edits and shell commands are refused."]],
 ] as const)("says what %s in %s will do first, from what the daemon enforces", (provider, mode, rows) => {
