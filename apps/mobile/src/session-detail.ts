@@ -199,6 +199,11 @@ export function threadEntries(
 // daemon writes receipts without a turn id today, so a receipt belongs to the
 // open turn when the session holds one and no message of yours has started
 // another since; a receipt that does carry a turn id must name that turn.
+//
+// Known limitation: a steer into the same running turn (from a desktop, say)
+// also writes a user item, so it folds the latest receipt to compact. Telling
+// a steer from a new turn needs the daemon's usage digest: a thread item's
+// turnId is that digest, not the raw provider id in session.activeTurnId.
 function currentReceiptIndex(items: readonly ThreadItem[], activeTurnId: string | undefined): number | undefined {
   if (!activeTurnId) return undefined
   for (let index = items.length - 1; index >= 0; index -= 1) {
