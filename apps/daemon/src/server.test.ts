@@ -7985,8 +7985,8 @@ describe("DomovoiDaemon", () => {
         sessionId: "session-billing",
         prompt: "Revise the migration plan.",
         client: "desktop",
-        // Only a sent comment reaches the agent (ruling Q348 A); naming the
-        // resolved one would refuse the message.
+        // With a review, only the comments it names reach the agent (ruling
+        // Q348 A); naming the resolved one would refuse the message.
         review: { annotationIds: ["annotation-migration-machine"] },
       },
     }))
@@ -8084,7 +8084,8 @@ describe("DomovoiDaemon", () => {
           sessionId: session.id,
           prompt,
           client: "desktop",
-          // Comments reach the agent only when sent (ruling Q348 A).
+          // An explicit review of every open comment (ruling Q348 A), so the
+          // order holds on the review path as well as the Q402 default.
           review: {
             annotationIds: snapshot.annotations
               .filter((annotation) => annotation.sessionId === session.id && annotation.status === "open")

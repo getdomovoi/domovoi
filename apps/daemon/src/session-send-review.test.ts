@@ -15,9 +15,11 @@ import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
-// Rulings Q348 A and Q342 A: preview comments reach the agent only when a
-// person sends them with a message, and the variant they chose as the build
-// basis travels with that send. A half-written comment no longer steers a turn.
+// Rulings Q348 A and Q342 A: a message that carries a review sends only the
+// comments it names, and the variant chosen as the build basis travels with
+// it, so a half-written comment no longer steers that turn. Ruling Q402: until
+// every client sends a review, a message without one still attaches every
+// open comment of its session.
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []

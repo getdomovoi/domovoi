@@ -10,8 +10,10 @@ import {
   sessionSendReviewSchema,
 } from "./index.js"
 
-// Rulings Q348 A and Q342 A: preview comments reach the agent only when a
-// person sends them, and the preview variant they chose travels with them.
+// Rulings Q348 A and Q342 A: a message that carries a review sends only the
+// comments it names, and the preview variant chosen travels with them. Until
+// every client sends one (ruling Q402), a message without a review still
+// attaches every open comment; that is the daemon's legacy default.
 
 const send = { sessionId: "session-billing", prompt: "Address these", client: "desktop" }
 
@@ -26,7 +28,7 @@ describe("the review a person sends with a message", () => {
       .toEqual({ annotationIds: [], buildBasis: { artifactId: "artifact-preview-b" } })
   })
 
-  it("sends nothing when the message names no review, so no open comment rides along", () => {
+  it("leaves review absent when the message names none, which the daemon reads as the Q402 legacy default", () => {
     expect(sessionSendParamsSchema.parse(send)).not.toHaveProperty("review")
   })
 

@@ -127,6 +127,9 @@ function snapshotFor(sections: Sections) {
 type PromptRunOptions = {
   prompt?: string
   mutateSnapshot?: (snapshot: ReturnType<typeof snapshotFor>) => void
+  // Send a review naming every comment in the snapshot. Without one, the
+  // message takes the Q402 legacy default: every open comment attaches.
+  sendEveryComment?: boolean
 }
 
 async function sendFor(sections: Sections, options: PromptRunOptions = {}) {
@@ -210,13 +213,13 @@ async function sendFor(sections: Sections, options: PromptRunOptions = {}) {
     clientVersion: "0.0.1",
     protocolVersion,
   })
-  // Comments reach the agent only when the message sends them (ruling Q348 A).
-  const sentComments = snapshot.annotations.map((annotation) => annotation.id)
   const sent = await rpc("session.send", {
     sessionId: snapshot.sessions[0]!.id,
     prompt: options.prompt ?? "Replay the duplicate delivery and report what changed.",
     client: "desktop",
-    ...(sentComments.length > 0 ? { review: { annotationIds: sentComments } } : {}),
+    ...(options.sendEveryComment
+      ? { review: { annotationIds: snapshot.annotations.map((annotation) => annotation.id) } }
+      : {}),
   })
   socket.close()
   return { durable, initial, prompts, sent }
@@ -248,6 +251,15 @@ for (const sections of combinations) {
     expect(await promptFor(sections)).toMatchSnapshot()
   })
 }
+
+// The snapshots above are messages without a review (the Q402 legacy default).
+// A review naming the same comments composes the same prompt (ruling Q348 A).
+it("composes the same prompt when a review sends every open comment", async () => {
+  const sections = { handoff: true, plan: true, annotations: true, skills: true }
+  const reviewed = await sendFor(sections, { sendEveryComment: true })
+  expect(reviewed.sent).not.toHaveProperty("error")
+  expect(reviewed.prompts).toEqual([await promptFor(sections)])
+})
 
 it("keeps the outer-to-inner order the call site produces", async () => {
   const prompt = await promptFor({ handoff: true, plan: true, annotations: true, skills: true })
