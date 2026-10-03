@@ -48,6 +48,8 @@ function harness(options: {
   handSet?: string
   // Making the pending directory fails, as mkdir does on a full disk.
   privateDirectoryThrows?: Error
+  // Reading the notes for the switch's state throws.
+  notesThrow?: Error
 } = {}) {
   const calls: string[] = []
   const files = new Map<string, string>(Object.entries(options.files ?? {}))
@@ -63,6 +65,7 @@ function harness(options: {
     now: () => Date.parse("2026-10-02T12:00:00.000Z"),
     ...(options.conflict ? { conflict: () => options.conflict } : {}),
     ...(options.handSet ? { handSet: () => options.handSet } : {}),
+    ...(options.notesThrow ? { keptPending: async () => { throw options.notesThrow } } : {}),
     recover: vi.fn(async () => { calls.push("recover") }),
     tailscale: vi.fn(async (args: readonly string[]) => {
       calls.push(`tailscale ${args.join(" ")}`)
@@ -374,6 +377,21 @@ describe("turning TailnetReach on", () => {
     expect(files.get(keyPath)).toBe("old key")
     expect(record()).toEqual(ours)
     expect(calls).toContain("recover")
+  })
+
+  // Round 4 review (P3-2): once the restart succeeded the change is made. A
+  // throw while describing it must not undo the files the daemon now uses.
+  it("keeps the new files and record when describing a committed turn-on throws", async () => {
+    const { reach, files, record, calls } = harness({
+      record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" },
+      notesThrow: new Error("EACCES: permission denied, scandir"),
+    })
+    await expect(reach.turnOn()).rejects.toThrow("EACCES: permission denied, scandir")
+    expect(files.get(certPath)).toBe(certificate)
+    expect(files.get(keyPath)).toBe("private key")
+    expect(record()).toEqual(ours)
+    expect(calls).not.toContain("recover")
+    expect(calls).toContain(`remove directory ${tls}/.pending-1`)
   })
 
   it("leaves nothing stored when a first turn-on's restart throws", async () => {
