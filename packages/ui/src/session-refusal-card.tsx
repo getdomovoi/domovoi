@@ -5,6 +5,7 @@ import type { RepositoryGitFilterRefusal, RepositoryTrust, ToolInventory } from 
 
 import { Alert, AlertDescription } from "./components/ui/alert"
 import { Button } from "./components/ui/button"
+import { closestComposed, containsComposed, focusedElement, focusIsOpaque } from "./composed-focus"
 import { cn } from "./lib/utils"
 import { RepositoryTrustSheet, type RepositoryTrustRequest } from "./repository-trust-sheet"
 import { awaitsTrust, gitFilterScopeLabel } from "./tool-inventory-model"
@@ -80,14 +81,15 @@ export function SessionRefusalCard({
     let frame = 0
     let waited = 0
     const attempt = () => {
-      const active = document.activeElement
-      const startDialog = focusFromRef.current?.within?.closest(dialogSelector)
-      if (startDialog?.isConnected && active && startDialog.contains(active) && waited < 120) {
+      const active = focusedElement()
+      const within = focusFromRef.current?.within
+      const startDialog = within ? closestComposed(within, dialogSelector) : null
+      if (startDialog?.isConnected && active && containsComposed(startDialog, active) && waited < 120) {
         waited += 1
         frame = requestAnimationFrame(attempt)
         return
       }
-      if (stillInStartFlow(active, focusFromRef.current?.trigger)) heading.current?.focus()
+      if (stillInStartFlow(focusFromRef.current?.trigger)) heading.current?.focus()
     }
     frame = requestAnimationFrame(attempt)
     return () => cancelAnimationFrame(frame)
@@ -209,15 +211,20 @@ export function SessionRefusalCard({
 // Whether focus is still where a refused start left it, so the card may take
 // it: nowhere (the document), the loading line its code loaded behind, or the
 // control that opened the start, which a closing dialog restores focus to.
-// Never from text entry or another dialog, wherever focus came from.
+// Never from text entry or another dialog, wherever focus came from. The
+// element judged is the one that holds focus inside any open shadow roots,
+// and focus in a frame or a host the card cannot see into stays there: the
+// person may be typing in it.
 const dialogSelector = "[role='dialog'], [role='alertdialog']"
 
-function stillInStartFlow(active: Element | null, trigger: Element | null | undefined): boolean {
+function stillInStartFlow(trigger: Element | null | undefined): boolean {
+  const active = focusedElement()
   if (!active || active === document.body || active === document.documentElement) return true
   if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) return false
   if (active instanceof HTMLElement && active.isContentEditable) return false
-  if (active.closest(dialogSelector)) return false
-  return active.closest("[data-surface-loading]") !== null || (trigger !== undefined && trigger !== null && active === trigger)
+  if (focusIsOpaque(active)) return false
+  if (closestComposed(active, dialogSelector)) return false
+  return closestComposed(active, "[data-surface-loading]") !== null || (trigger !== undefined && trigger !== null && active === trigger)
 }
 
 const otherScopeText = "Domovoi read the tools of another project or machine than the one that refused this session, so they are not shown for review."

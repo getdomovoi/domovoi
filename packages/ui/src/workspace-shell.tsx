@@ -36,6 +36,7 @@ import {
   AlertDialogTitle,
 } from "./components/ui/alert-dialog"
 import { Button } from "./components/ui/button"
+import { closestComposed, focusedElement, focusEventElement } from "./composed-focus"
 import { WorkspaceConnectionStatus } from "./connection-status"
 import { shouldCollapseDockForWidth } from "./dock-auto-collapse"
 import {
@@ -635,11 +636,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // The last control focused outside any dialog: the one that opened the
   // launcher or fork dialog a start came from, which that dialog restores
   // focus to when it closes. A refusal card may take focus from it, and from
-  // nothing else the person moved to (ruling Q400).
+  // nothing else the person moved to (ruling Q400). A focus inside an open
+  // shadow root reaches this listener retargeted to its host, so the element
+  // recorded is the first in the event's composed path.
   const focusOutsideDialogs = useRef<Element | null>(null)
   useEffect(() => {
     const track = (event: FocusEvent) => {
-      if (event.target instanceof Element && !event.target.closest("[role='dialog'], [role='alertdialog']")) focusOutsideDialogs.current = event.target
+      const target = focusEventElement(event)
+      if (target && !closestComposed(target, "[role='dialog'], [role='alertdialog']")) focusOutsideDialogs.current = target
     }
     document.addEventListener("focusin", track)
     return () => document.removeEventListener("focusin", track)
@@ -650,7 +654,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       machineId: attached?.machineId ?? snapshot?.machine.id ?? "",
       machine: snapshot?.machine.name ?? "this machine",
       repository: snapshot?.project?.name ?? "this repository",
-      focusFrom: { trigger: focusOutsideDialogs.current, within: document.activeElement },
+      focusFrom: { trigger: focusOutsideDialogs.current, within: focusedElement() },
     }
     try {
       if (attempt.kind === "create") await createSession(attempt.title, attempt.runtime)

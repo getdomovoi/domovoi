@@ -177,6 +177,54 @@ describe("focus when the refusal appears", () => {
     run()
     expect(document.activeElement).toBe(button)
   })
+
+  // document.activeElement names only the outermost shadow host, and a frame
+  // holds focus of its own. The saved trigger can be that host or frame while
+  // the person types inside it, so the card judges the element that holds
+  // focus, and never takes it from a host or frame it cannot see into.
+  function shadowInput(host: HTMLElement, mode: ShadowRootMode) {
+    return host.attachShadow({ mode }).appendChild(document.createElement("input"))
+  }
+  it.each([
+    ["an input in an open shadow root", () => {
+      const host = document.body.appendChild(document.createElement("div"))
+      return { trigger: host, focus: shadowInput(host, "open") }
+    }],
+    ["an input in nested open shadow roots", () => {
+      const host = document.body.appendChild(document.createElement("div"))
+      const inner = host.attachShadow({ mode: "open" }).appendChild(document.createElement("div"))
+      return { trigger: host, focus: shadowInput(inner, "open") }
+    }],
+    ["an input in a closed shadow root", () => {
+      const host = document.body.appendChild(document.createElement("div"))
+      return { trigger: host, focus: shadowInput(host, "closed") }
+    }],
+    ["a shadow host whose open root holds no focus", () => {
+      const host = document.body.appendChild(Object.assign(document.createElement("div"), { tabIndex: 0 }))
+      host.attachShadow({ mode: "open" }).appendChild(document.createElement("span"))
+      return { trigger: host, focus: host }
+    }],
+    ["a frame", () => {
+      const frame = document.body.appendChild(document.createElement("iframe"))
+      return { trigger: frame, focus: frame }
+    }],
+    ["a control in a shadow root inside another dialog", () => {
+      const dialog = document.body.appendChild(document.createElement("div"))
+      dialog.setAttribute("role", "dialog")
+      const host = dialog.appendChild(document.createElement("div"))
+      const button = host.attachShadow({ mode: "open" }).appendChild(document.createElement("button"))
+      return { trigger: button, focus: button }
+    }],
+  ])("leaves focus in %s, even when it is the saved trigger", (_label, make) => {
+    const run = frames()
+    const { trigger, focus } = make()
+    show({ focusFrom: { trigger, within: null } })
+    focus.focus()
+    const held = document.activeElement
+    run()
+    expect(document.activeElement).toBe(held)
+    expect(document.activeElement).not.toBe(screen.getByRole("heading", { name: "Domovoi did not start this session" }))
+  })
 })
 
 describe("reading a refusal", () => {
