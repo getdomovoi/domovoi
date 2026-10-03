@@ -10,7 +10,9 @@ names, so a half-written comment does not steer that turn. `review: { annotation
 the explicit send of nothing: no comment and no build basis. The review is checked when the message
 is sent, when it is queued and when a queued message is released: a comment that is not open on
 the session, or a build basis that is not one of its previews, refuses the whole message rather
-than sending less than the person chose. Only the named comments' crops are read. The build basis
+than sending less than the person chose. The refusal carries error data
+`{ kind: "session-review-refused", reason: "comment-unavailable" | "build-basis-unavailable" }`,
+so a queued message that meets it at release is refused, as attachment and skill faults are. Only the named comments' crops are read. The build basis
 is never dropped for the payload budget; comments still are, oldest first, as before. A turn's
 delivery record names the build basis it carried. A queued message keeps its review across a
 restart.

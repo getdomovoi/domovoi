@@ -9,6 +9,7 @@ import {
   rpcMethods,
   rpcResponseSchema,
   sessionAttachmentRefusalSchema,
+  sessionReviewRefusalSchema,
   skillInstallRefusalSchema,
   turnSkillSelectionRefusalSchema,
   type DeviceLabelMismatch,
@@ -21,6 +22,7 @@ import {
   type RpcMethod,
   type RpcResponse,
   type SessionAttachmentRefusal,
+  type SessionReviewRefusal,
   type SkillInstallRefusal,
   type TurnSkillSelectionRefusal,
 } from "@getdomovoi/protocol"
@@ -37,6 +39,7 @@ export type RpcErrorData =
   | ProtocolMismatch
   | SkillInstallRefusal
   | SessionAttachmentRefusal
+  | SessionReviewRefusal
   | RepositoryGitFilterRefusal
   | ProjectCapRefusal
   | ProjectCloseConfirmation
@@ -53,6 +56,7 @@ const errorDataSchemas = {
   "protocol-mismatch": protocolMismatchSchema,
   "skill-install-refused": skillInstallRefusalSchema,
   "session-attachment-refused": sessionAttachmentRefusalSchema,
+  "session-review-refused": sessionReviewRefusalSchema,
   "repository-git-filter": repositoryGitFilterRefusalSchema,
   "project_cap": projectCapRefusalSchema,
   "project-close-confirmation": projectCloseConfirmationSchema,

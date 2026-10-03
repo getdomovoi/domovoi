@@ -51,6 +51,7 @@ export const errorDataSchemas = [
   "protocolMismatchSchema",
   "repositoryGitFilterRefusalSchema",
   "sessionAttachmentRefusalSchema",
+  "sessionReviewRefusalSchema",
   "skillInstallRefusalSchema",
   "turnSkillSelectionRefusalSchema",
 ]

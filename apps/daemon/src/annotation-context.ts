@@ -1,5 +1,6 @@
 import type {
   ProviderPromptAnnotationDelivery,
+  SessionReviewRefusal,
   SessionSendReview,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -18,8 +19,16 @@ function escapedJson(value: unknown): string {
 // A review names comments and a preview by id. Each must still be what the
 // person saw when they sent it: an open comment, or a preview, of this
 // session. Anything else refuses the whole message rather than sending less
-// than the person chose.
-export class AnnotationReviewError extends Error {}
+// than the person chose. The refusal travels as error data, so a queued send
+// that meets it at release is refused, as attachment and skill faults are.
+export class AnnotationReviewError extends Error {
+  readonly refusal: SessionReviewRefusal
+
+  constructor(reason: SessionReviewRefusal["reason"]) {
+    super(reason === "comment-unavailable" ? unavailableCommentRefusal : unavailableBuildBasisRefusal)
+    this.refusal = { kind: "session-review-refused", reason }
+  }
+}
 
 const unavailableCommentRefusal = "A comment sent with this message is not open on this session, so the message was not sent. Send it again without that comment."
 const unavailableBuildBasisRefusal = "The build basis sent with this message is not a preview of this session, so the message was not sent."
@@ -64,7 +73,7 @@ export function resolveAnnotationReview(
   for (const annotationId of review.annotationIds) {
     const annotation = snapshot.annotations.find((candidate) => candidate.id === annotationId)
     if (!annotation || annotation.sessionId !== sessionId || annotation.status !== "open") {
-      throw new AnnotationReviewError(unavailableCommentRefusal)
+      throw new AnnotationReviewError("comment-unavailable")
     }
   }
   let buildBasis: BuildBasisContext | undefined
@@ -72,7 +81,7 @@ export function resolveAnnotationReview(
     const artifactId = review.buildBasis.artifactId
     const artifact = snapshot.artifacts.find((candidate) => candidate.id === artifactId)
     if (!artifact || artifact.sessionId !== sessionId || artifact.type !== "preview") {
-      throw new AnnotationReviewError(unavailableBuildBasisRefusal)
+      throw new AnnotationReviewError("build-basis-unavailable")
     }
     buildBasis = {
       artifactId: artifact.id,

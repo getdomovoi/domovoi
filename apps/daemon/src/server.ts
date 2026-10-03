@@ -9,6 +9,7 @@ import {
   buildVersion,
   maximumRpcMessageBytes,
   type SessionAttachmentRefusal,
+  type SessionReviewRefusal,
   boundedClientThread,
   canonicalBase64DecodedByteLength,
   credentialSchema,
@@ -3859,7 +3860,7 @@ export class DomovoiDaemon {
     code: number,
     message: string,
     data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal | SessionAttachmentRefusal
-      | RepositoryGitFilterRefusal,
+      | RepositoryGitFilterRefusal | SessionReviewRefusal,
   ): void {
     this.#send(socket, this.#errorFrame(id, { code, message, ...(data ? { data } : {}) }))
   }
@@ -4266,6 +4267,7 @@ export class DomovoiDaemon {
     const rpcError = result.error as { data?: { kind?: unknown }; message?: unknown }
     const refused = rpcError.data?.kind === "turn-skill-selection-refused"
       || rpcError.data?.kind === "session-attachment-refused"
+      || rpcError.data?.kind === "session-review-refused"
     const state = current?.activeTurnId ? "unconfirmed" : refused ? "refused" : "held"
     const reason = typeof rpcError.message === "string"
       ? rpcError.message
@@ -9932,7 +9934,7 @@ export class DomovoiDaemon {
             resolveAnnotationReview(this.#snapshot, session.id, params.review)
           } catch (error) {
             if (!(error instanceof AnnotationReviewError)) throw error
-            this.#error(socket, request.id, invalidParams, error.message)
+            this.#error(socket, request.id, invalidParams, error.message, error.refusal)
             return
           }
           this.#replaceQueuedSessionSend(
@@ -10011,7 +10013,7 @@ export class DomovoiDaemon {
           preparedTurn.visualContexts.push(...attachments)
         } catch (error) {
           if (error instanceof AnnotationReviewError) {
-            this.#error(socket, request.id, invalidParams, error.message)
+            this.#error(socket, request.id, invalidParams, error.message, error.refusal)
             return
           }
           if (error instanceof SessionAttachmentError) {

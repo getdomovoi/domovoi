@@ -6,6 +6,7 @@ import {
   providerPromptAnnotationDeliverySchema,
   rpcMethods,
   sessionSendParamsSchema,
+  sessionReviewRefusalSchema,
   sessionSendReviewSchema,
 } from "./index.js"
 
@@ -64,6 +65,16 @@ describe("the review a person sends with a message", () => {
       "annotation.reply",
       "annotation.setStatus",
     ])
+  })
+})
+
+describe("a refused review", () => {
+  it("names why in error data, and nothing else", () => {
+    for (const reason of ["comment-unavailable", "build-basis-unavailable"]) {
+      expect(sessionReviewRefusalSchema.parse({ kind: "session-review-refused", reason })).toEqual({ kind: "session-review-refused", reason })
+    }
+    expect(sessionReviewRefusalSchema.safeParse({ kind: "session-review-refused", reason: "invented" }).success).toBe(false)
+    expect(sessionReviewRefusalSchema.safeParse({ kind: "session-review-refused", reason: "comment-unavailable", annotationId: "a" }).success).toBe(false)
   })
 })
 

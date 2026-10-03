@@ -234,4 +234,25 @@ describe("a queued message", () => {
     expect(released?.unresolvedAnnotations.map((item) => item.annotationId)).toEqual(["comment-ready"])
     expect(released?.buildBasis).toMatchObject({ artifactId: "artifact-preview-b" })
   })
+
+  it("is refused at release when a comment it names closed while it waited, and the provider is not called", async () => {
+    const { provider, rpc, send, snapshot, emit } = await start()
+    expect((await send("First")).error).toBeUndefined()
+    expect((await send("Next", { delivery: "next-turn-replace", review: { annotationIds: ["comment-ready"] } })).error).toBeUndefined()
+    expect((await rpc("annotation.setStatus", { annotationId: "comment-ready", status: "resolved", client: "desktop" })).error).toBeUndefined()
+
+    emit({ type: "turn-completed", params: { threadId: "thread-billing", turn: { id: "turn-1", status: "completed" } } })
+    await waitForDaemon(async () => expect((await snapshot()).queuedSends?.find((queued) => queued.sessionId === sessionId)?.state).toBe("refused"))
+    expect((await snapshot()).queuedSends?.find((queued) => queued.sessionId === sessionId)?.reason)
+      .toBe("A comment sent with this message is not open on this session, so the message was not sent. Send it again without that comment.")
+    expect(provider.startTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it("answers a refused review with data naming why, as attachment and skill faults do", async () => {
+    const { send } = await start()
+    const comment = await send("Address", { review: { annotationIds: ["comment-missing"] } }) as { error?: { data?: unknown } }
+    expect(comment.error?.data).toEqual({ kind: "session-review-refused", reason: "comment-unavailable" })
+    const basis = await send("Build", { review: { annotationIds: [], buildBasis: { artifactId: "artifact-plan" } } }) as { error?: { data?: unknown } }
+    expect(basis.error?.data).toEqual({ kind: "session-review-refused", reason: "build-basis-unavailable" })
+  })
 })

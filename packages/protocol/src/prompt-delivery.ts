@@ -86,6 +86,15 @@ export const sessionSendReviewSchema = z.object({
   buildBasis: reviewBuildBasisSchema.optional(),
 }).strict()
 
+// The error data on a review the daemon refused: a named comment is not open
+// on the session, or the build basis is not one of its previews. The whole
+// message is refused. Like an attachment or skill refusal, a queued send that
+// meets it at release is refused rather than held.
+export const sessionReviewRefusalSchema = z.object({
+  kind: z.literal("session-review-refused"),
+  reason: z.enum(["comment-unavailable", "build-basis-unavailable"]),
+}).strict()
+
 export const providerPromptAnnotationDeliverySchema = z.object({
   availableCount: nonnegativeCountSchema,
   deliveredIds: z.array(z.string().trim().min(1).check(utf16MaxLength(256))).max(maximumReviewAnnotations).refine(
@@ -177,6 +186,7 @@ export type ProviderPromptHandoffDelivery = z.infer<typeof providerPromptHandoff
 export type ProviderPromptWorkingPlanDelivery = z.infer<typeof providerPromptWorkingPlanDeliverySchema>
 export type ProviderPromptAnnotationDelivery = z.infer<typeof providerPromptAnnotationDeliverySchema>
 export type SessionSendReview = z.infer<typeof sessionSendReviewSchema>
+export type SessionReviewRefusal = z.infer<typeof sessionReviewRefusalSchema>
 export type DeliveredPromptSkill = z.infer<typeof deliveredPromptSkillSchema>
 export type OmittedPromptSkills = z.infer<typeof omittedPromptSkillsSchema>
 export type ProviderPromptSkillDelivery = z.infer<typeof providerPromptSkillDeliverySchema>
