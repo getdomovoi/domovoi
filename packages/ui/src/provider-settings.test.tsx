@@ -191,5 +191,8 @@ describe("Settings shell and provider pane", () => {
       "opencode auth login",
       "kilo auth login",
     ])
+    // Review P3-9: a provider whose sign-in command Domovoi does not know
+    // gets none, rather than a help command labelled as one.
+    expect(providerAccountCommand({ ...providers[0]!, id: "aider", command: "aider" })).toBeUndefined()
   })
 })

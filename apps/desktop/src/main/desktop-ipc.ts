@@ -64,6 +64,9 @@ export type DesktopIpcDependencies = {
   releasePage: {
     open(): Promise<boolean>
   }
+  // Q336 A: ~/.local/bin links for domovoid and domovoi (command-links.ts),
+  // which checks the action itself.
+  commandLinks(action: unknown): Promise<unknown>
   notifications: {
     notify(input: unknown, activate: (sessionId: string) => void): boolean
   }
@@ -213,6 +216,11 @@ export function registerDesktopIpc(ipcMain: DesktopIpcMain, deps: DesktopIpcDepe
   ipcMain.handle("domovoi:open-release-page", (event) => {
     if (!deps.authorized(event)) throw new Error("Desktop request is not authorized")
     return deps.releasePage.open()
+  })
+
+  ipcMain.handle("domovoi:command-links", (event, action) => {
+    daemonRequest(event)
+    return deps.commandLinks(action)
   })
 
   ipcMain.on("domovoi:deep-link-ready", (event) => {

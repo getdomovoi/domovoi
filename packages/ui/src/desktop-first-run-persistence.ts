@@ -15,6 +15,14 @@ export type DesktopFirstRunState =
       auto: false
       completedAt: string
     }
+  // Closed without a ready agent: setup stays closed on later launches and
+  // opens again only from Settings or the command palette. No provider is
+  // remembered, so new sessions take the launcher's own default.
+  | {
+      version: 1
+      status: "dismissed"
+      dismissedAt: string
+    }
 
 type DesktopFirstRunStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">
 
@@ -38,6 +46,13 @@ export function parseDesktopFirstRunState(value: unknown): DesktopFirstRunState 
   if (value.status === "pending") {
     return hasExactKeys(value, ["version", "status"])
       ? defaultDesktopFirstRunState()
+      : undefined
+  }
+  if (value.status === "dismissed") {
+    return hasExactKeys(value, ["version", "status", "dismissedAt"])
+      && typeof value.dismissedAt === "string"
+      && Number.isFinite(Date.parse(value.dismissedAt))
+      ? { version: 1, status: "dismissed", dismissedAt: value.dismissedAt }
       : undefined
   }
   if (
@@ -88,6 +103,19 @@ export function completeDesktopFirstRun({
   })
   if (!completed) throw new Error("Desktop first-run completion is invalid")
   return completed
+}
+
+export function dismissDesktopFirstRun(dismissedAt = new Date().toISOString()): DesktopFirstRunState {
+  const dismissed = parseDesktopFirstRunState({ version: 1, status: "dismissed", dismissedAt })
+  if (!dismissed) throw new Error("Desktop first-run dismissal is invalid")
+  return dismissed
+}
+
+// Records that setup was closed, unless it was already completed: a
+// completion keeps the agent it chose.
+export function rememberDesktopFirstRunDismissed(storage: Pick<DesktopFirstRunStorage, "getItem" | "setItem"> | undefined): void {
+  if (loadDesktopFirstRunState(storage).status === "complete") return
+  saveDesktopFirstRunState(storage, dismissDesktopFirstRun())
 }
 
 export function browserDesktopFirstRunStorage(): DesktopFirstRunStorage | undefined {

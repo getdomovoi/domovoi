@@ -27,9 +27,12 @@ type ProviderSettingsProps = {
   providers: readonly ProviderRuntime[]
   secrets: readonly ProviderSecretStatus[]
   localDaemon?: { title: string; detail: string }
+  // Q336 A: names a command as it runs on the execution machine, when that
+  // is this one; otherwise commands print as written.
+  printCommand?: ((command: string) => string) | undefined
 }
 
-export function ProviderSettings({ providers, secrets, localDaemon }: ProviderSettingsProps) {
+export function ProviderSettings({ providers, secrets, localDaemon, printCommand }: ProviderSettingsProps) {
   return (
     <>
       <h2 className="m-0 text-[13px] font-medium">Providers and tokens</h2>
@@ -68,7 +71,9 @@ export function ProviderSettings({ providers, secrets, localDaemon }: ProviderSe
                     {provider.command}{provider.version ? ` · ${provider.version}` : ""}
                   </span>
                   <span id={`provider-account-${provider.id}`} className="text-micro text-muted-foreground">
-                    {provider.problem ?? <>Run <code className="font-machine">{providerAccountCommand(provider)}</code> in terminal</>}
+                    {provider.problem ?? (providerAccountCommand(provider)
+                      ? <>Run <code className="font-machine">{providerAccountCommand(provider)}</code> in terminal</>
+                      : <>Sign in with <code className="font-machine">{provider.command}</code>&apos;s own instructions in a terminal</>)}
                   </span>
                 </span>
                 <span className="ml-auto flex flex-wrap items-center gap-2">
@@ -103,7 +108,7 @@ export function ProviderSettings({ providers, secrets, localDaemon }: ProviderSe
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             {secrets.map((secret) => (
-              <ProviderKeyRow key={secret.provider} status={secret} />
+              <ProviderKeyRow key={secret.provider} status={secret} print={printCommand ?? ((command) => command)} />
             ))}
           </CardContent>
         </Card>
@@ -313,7 +318,7 @@ export function ExternalEditorSettings({
   )
 }
 
-function ProviderKeyRow({ status }: { status: ProviderSecretStatus }) {
+function ProviderKeyRow({ status, print }: { status: ProviderSecretStatus; print: (command: string) => string }) {
   const label = directProviderName(status.provider)
 
   return (
@@ -326,8 +331,8 @@ function ProviderKeyRow({ status }: { status: ProviderSecretStatus }) {
           </FieldDescription>
         </span>
         <span className="min-w-0 basis-64 flex-[2] text-micro leading-relaxed text-muted-foreground">
-          Run <code className="font-machine">domovoid secret set {status.provider}</code> locally on the execution machine.
-          {status.state === "stored" ? <><br />Delete with <code className="font-machine">domovoid secret delete {status.provider}</code>.</> : null}
+          Run <code className="font-machine">{print(`domovoid secret set ${status.provider}`)}</code> locally on the execution machine.
+          {status.state === "stored" ? <><br />Delete with <code className="font-machine">{print(`domovoid secret delete ${status.provider}`)}</code>.</> : null}
         </span>
       </div>
     </Field>
@@ -341,7 +346,9 @@ export function providerAccountAction(provider: ProviderRuntime): string {
   return "Check status"
 }
 
-export function providerAccountCommand(provider: ProviderRuntime): string {
+// The provider CLI's own sign-in command. Undefined for a provider whose
+// command Domovoi does not know (review P3-9): a help command is not one.
+export function providerAccountCommand(provider: ProviderRuntime): string | undefined {
   if (provider.id === "claude-code") return "claude auth login"
   if (provider.id === "codex") return "codex login"
   if (provider.id === "cursor-agent") return `${provider.command} login`
@@ -349,7 +356,7 @@ export function providerAccountCommand(provider: ProviderRuntime): string {
   if (provider.id === "opencode" || provider.id === "kilo") {
     return `${provider.command} auth login`
   }
-  return `${provider.command} --help`
+  return undefined
 }
 
 function directProviderName(provider: ProviderSecretStatus["provider"]): string {

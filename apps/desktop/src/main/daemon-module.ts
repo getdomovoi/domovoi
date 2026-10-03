@@ -35,6 +35,9 @@ export const daemonModuleExports = [
   "readDaemonServiceRuntimeCopy",
   "removeUnusedDaemonRuntimes",
   "DaemonServiceRuntimeMissingError",
+  // Q408 A: the runtime copy under the profile, shared with the CLI.
+  "prepareDaemonRuntime",
+  "nodeRuntimeFileSystem",
 ] as const
 
 export type DaemonModule = Pick<typeof Daemon, (typeof daemonModuleExports)[number]>
