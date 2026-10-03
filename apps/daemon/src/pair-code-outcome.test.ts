@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto"
 import { once } from "node:events"
 
 import {
@@ -18,6 +19,12 @@ import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { DomovoiDaemon } from "./server.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
+// Real codes unless a test repeats one on purpose.
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:crypto")>()
+  return { ...actual, randomInt: vi.fn(actual.randomInt) }
+})
+
 // Ruling Q354 A: the window that showed a pairing code learns what became of
 // it, redeemed or refused with a reason, and no other connection learns of the
 // code. The device spending it keeps the uniform refusal.
@@ -34,6 +41,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   vi.restoreAllMocks()
+  vi.mocked(randomInt).mockReset()
   for (const socket of sockets.splice(0)) socket.terminate()
   await Promise.all(daemons.splice(0).map((daemon) => daemon.stop()))
 })
@@ -207,6 +215,45 @@ describe("the window that issued a client code", () => {
     expect((await redeem(older, code, "old iPhone", "0.7.0")).error?.code).toBe(protocolVersionMismatchErrorCode)
     await waitForDaemon(async () => expect(issuer.outcomes).toHaveLength(1))
     expect(events).toEqual(["refusal written", "code matched"])
+  })
+
+  // Security review r2 P3: the mismatch is attributed after its refusal is
+  // written. A code issued in between that repeats the same words is another
+  // code, and its issuer hears nothing of the earlier refusal.
+  it("is not told of a mismatch refused before its code replaced the old one", async () => {
+    // Every code is the first word three times and the lowest number.
+    vi.mocked(randomInt).mockImplementation(((min: number, max?: number) => max === undefined ? 0 : min) as typeof randomInt)
+    const daemon = await start()
+    const first = await owner(daemon)
+    const second = await owner(daemon)
+    const replaced = await issue(first)
+
+    const { queued, release } = holdNextExclusive()
+    const replacing = call(second, "device.issueCode", { targetClient: "phone" })
+    await waitForDaemon(async () => expect(queued).toHaveBeenCalled())
+    // The replacement runs once the refusal is written, before attribution.
+    const send = WebSocket.prototype.send
+    vi.spyOn(WebSocket.prototype, "send").mockImplementation(function (this: WebSocket, data: unknown, ...rest: unknown[]) {
+      const sent: unknown = (send as (...args: unknown[]) => unknown).call(this, data, ...rest)
+      if (typeof data === "string" && data.includes("\"error\"") && data.includes("\"protocol-mismatch\"")) release()
+      return sent
+    })
+    const matched = vi.spyOn(PairingCodeService.prototype, "matchingPairing")
+
+    const older = await connect(daemon)
+    expect((await redeem(older, replaced.code, "old iPhone", "0.7.0")).error?.code).toBe(protocolVersionMismatchErrorCode)
+    const replacement = await replacing
+    expect(replacement.error).toBeUndefined()
+    const current = replacement.result as { pairingId: string, code: string }
+    expect(current.code).toBe(replaced.code)
+    // Attribution ran after the replacement and found the new code.
+    await waitForDaemon(async () => expect(matched).toHaveBeenCalledTimes(1))
+    expect(matched.mock.results[0]).toEqual({ type: "return", value: current.pairingId })
+
+    await settled(second)
+    expect(second.outcomes).toEqual([])
+    await settled(first)
+    expect(only(first.outcomes)).toEqual({ pairingId: replaced.pairingId, outcome: "closed", reason: "replaced" })
   })
 
   it("learns that the device list was full, with the refused device's label", async () => {

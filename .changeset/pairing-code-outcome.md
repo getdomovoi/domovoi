@@ -15,6 +15,8 @@ time sends nothing, since the issuer holds its expiry. The device that spent the
 same answers as before: the uniform refusal, or its own protocol-mismatch and device-limit
 errors. For a protocol mismatch, the daemon writes that refusal first and only then matches the
 code and tells its issuer, and the match costs the same whether the code is live, wrong, expired
-or spent. Codes issued without a client kind report nothing.
+or spent. Only the issuer of the code that was open when the refusal went out is told, so a code
+issued in between hears nothing of it, even when its words repeat. Codes issued without a client
+kind report nothing.
 
 The shared client accepts the notification and publishes it as a `device-code-outcome` event.

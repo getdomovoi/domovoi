@@ -6027,10 +6027,14 @@ export class DomovoiDaemon {
         // the code is live (security review r1 P3).
         const attributedAt = Date.now()
         const daemonProtocolVersion = this.#advertisedProtocolVersion
+        // Only the code whose issuer was waiting when the refusal went out can
+        // be told of it. A code issued before attribution runs is another
+        // code even when its words repeat (security review r2 P3).
+        const issuedPairingId = this.#pairingIssuer.current
         setImmediate(() => {
           try {
             const matched = this.#pairing?.matchingPairing(params.code, attributedAt)
-            if (matched === undefined) return
+            if (matched === undefined || matched !== issuedPairingId) return
             this.#notifyPairingIssuer(matched, {
               pairingId: matched,
               outcome: "refused",
