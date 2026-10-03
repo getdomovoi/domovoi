@@ -5,6 +5,12 @@ import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
 import { FloatingBar } from "./floating-bar"
 
+// A stand-in that a test can find, as blur-backdrop.test.tsx draws it.
+jest.mock("expo-blur", () => {
+  const { View: HostView } = jest.requireActual<typeof import("react-native")>("react-native")
+  return { BlurView: (props: object) => <HostView testID="blur" {...props} /> }
+})
+
 const notched: Metrics = {
   frame: { x: 0, y: 0, width: 390, height: 844 },
   insets: { top: 59, left: 0, right: 0, bottom: 34 },
@@ -43,6 +49,19 @@ async function layOut(height: number) {
 }
 
 describe("FloatingBar", () => {
+  // Phone v2 draws the tab bar as a solid card and keeps the wash and blur for
+  // the composer and the decision bar.
+  it("draws a solid card with nothing blurred behind it when asked", async () => {
+    await draw({ solid: true })
+    expect(screen.queryByTestId("blur")).toBeNull()
+    expect(screen.getByText("Sessions")).toBeOnTheScreen()
+  })
+
+  it("blurs what is behind it by default", async () => {
+    await draw()
+    expect(screen.queryByTestId("blur")).not.toBeNull()
+  })
+
   it("floats clear of both edges rather than filling the width", async () => {
     await draw()
     const style = barStyle()
