@@ -70,7 +70,14 @@ describe("browserLimits", () => {
   it("names what a tab never does, and where its credential lives", () => {
     const rows = browserLimits(environment(), "ws://127.0.0.1:47831/rpc", true)
     expect(row(rows, "Open the repository")).toMatchObject({ state: "not possible", tone: "never" })
-    expect(row(rows, "Attach a local file")).toMatchObject({ state: "not yet", tone: "conditional" })
+    // The composer sends a file from this device as a payload with the
+    // message, so the row says how it travels, not that it cannot.
+    expect(row(rows, "Attach a local file")).toEqual({
+      what: "Attach a local file",
+      state: "always a payload",
+      tone: "conditional",
+      why: "There is no shared filesystem, so a file from your device has to travel to the machine.",
+    })
     expect(row(rows, "Hold the credential")).toMatchObject({ state: "this tab only", tone: "conditional" })
 
     const blocked = browserLimits(environment(), "ws://127.0.0.1:47831/rpc", false)
