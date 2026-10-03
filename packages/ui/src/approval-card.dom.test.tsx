@@ -1,11 +1,51 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { demoWorkspace } from "@getdomovoi/protocol"
 import { afterEach, expect, it, vi } from "vitest"
 
+import { DaemonRpcError } from "./client"
 import { Thread } from "./workspace-shell.js"
 
 afterEach(cleanup)
+
+// J34: an allow takes a checkpoint first, and when it cannot the daemon
+// refuses the decision and the gate stays. The refusal belongs on the gate it
+// refused, in the daemon's words, not in a generic alert above the composer.
+it("shows the daemon's refusal of a decision inside the gate card", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const refusal = "Domovoi could not take a checkpoint, so the command did not run; decide again"
+  const onResolve = vi.fn()
+    .mockRejectedValueOnce(new DaemonRpcError(-32603, refusal))
+    .mockResolvedValueOnce(undefined)
+  render(
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={snapshot}
+      connected
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />,
+  )
+
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+
+  const card = screen.getByText(snapshot.approvals[0]!.command).closest("[role=alert]") as HTMLElement
+  expect(within(card).getByRole("alert").textContent).toBe(refusal)
+  expect(screen.queryByText("Agent request failed")).toBeNull()
+
+  // Deciding again clears it.
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+  expect(within(card).queryByRole("alert")).toBeNull()
+  expect(onResolve).toHaveBeenCalledTimes(2)
+})
 
 it("sends the selected approval-card decision", async () => {
   const user = userEvent.setup()

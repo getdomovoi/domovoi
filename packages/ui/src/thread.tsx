@@ -95,6 +95,7 @@ import {
 import { FailedReadState } from "./failed-read-state"
 import { PolicyRefusalCard } from "./policy-refusal-card"
 import { ApprovalCard } from "./approval-card"
+import { DaemonRpcError } from "./client"
 import { slashIntent, type SlashIntentContext } from "./composer-slash"
 import { ThreadComposer } from "./thread-composer"
 
@@ -536,6 +537,7 @@ export function Thread({
   const [sending, setSending] = useState<string | null>(null)
   const [runtimePending, setRuntimePending] = useState(false)
   const [sendError, setSendError] = useState("")
+  const [approvalRefusal, setApprovalRefusal] = useState<{ approvalId: string, message: string }>()
   const [recoveryError, setRecoveryError] = useState("")
   const [runtimeError, setRuntimeError] = useState("")
   // A model change that could not carry the effort moved it to the new
@@ -903,7 +905,16 @@ export function Thread({
   ) => {
     if (watching) return
     setSendError("")
+    setApprovalRefusal(undefined)
     void onResolve(approval.id, decision, explanation, approval.revision).catch((cause: unknown) => {
+      // The daemon answered and refused, a checkpoint it could not take
+      // among the reasons: the gate card shows its words. Anything else,
+      // such as a dropped connection, did not reach an answer and stays
+      // with the composer's alerts.
+      if (cause instanceof DaemonRpcError) {
+        setApprovalRefusal({ approvalId: approval.id, message: cause.message })
+        return
+      }
       setSendError(cause instanceof Error ? cause.message : "The approval could not be resolved")
     })
   }
@@ -1016,7 +1027,7 @@ export function Thread({
               <AlertDescription>{sessionTransferReceiptText(transferReceipt).detail}</AlertDescription>
             </Alert>
           ) : null}
-          {approval && !archiveReadOnly ? <ApprovalCard surface={surface} approval={approval} watching={watching} connected={connected} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
+          {approval && !archiveReadOnly ? <ApprovalCard surface={surface} approval={approval} watching={watching} connected={connected} refusal={approvalRefusal?.approvalId === approval.id ? approvalRefusal.message : undefined} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
       {followPill ? (

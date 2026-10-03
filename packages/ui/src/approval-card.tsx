@@ -14,6 +14,7 @@ export function ApprovalCard({
   surface,
   watching = false,
   connected,
+  refusal,
 }: {
   approval: ApprovalRequest
   onResolve: (
@@ -27,6 +28,10 @@ export function ApprovalCard({
   // A decision made with no daemon to hear it goes nowhere, so the card holds
   // every decision until the connection is back and says why.
   connected: boolean
+  // The daemon's answer when it refused the last decision on this gate, such
+  // as a checkpoint it could not take. Shown in its words: the cause is
+  // whatever the daemon reported, and nothing more.
+  refusal?: string | undefined
 }) {
   const explainTriggerRef = useRef<HTMLButtonElement>(null)
   const [explainOpen, setExplainOpen] = useState(false)
@@ -74,6 +79,11 @@ export function ApprovalCard({
             </div>
           ))}
         </dl>
+        {refusal ? (
+          <p role="alert" className="m-0 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] leading-[1.5] text-danger-foreground">
+            {refusal}
+          </p>
+        ) : null}
         {!watching && !connected ? (
           <p className="text-[11px] text-warn-dim">Cannot answer this gate, the daemon is not answering.</p>
         ) : null}
