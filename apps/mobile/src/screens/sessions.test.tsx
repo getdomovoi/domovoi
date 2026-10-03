@@ -256,6 +256,18 @@ describe("SessionsScreen", () => {
     expect(screen.queryByText(/cannot be reached/)).toBeNull()
   })
 
+  // A machine that answered and asked to be paired again is not a machine
+  // that went quiet, so it says what it wants rather than when it was seen.
+  it("says a machine that needs pairing again wants pairing", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    await draw({ snapshot: idle, now: Date.parse("2026-09-20T00:00:00.000Z"), fleet: [entry("mac-mini", "healthy", true), entry("old-box", "pairing-required")] })
+
+    expect(screen.getByText("Pair again")).toBeOnTheScreen()
+    expect(screen.queryByText(/last seen/)).toBeNull()
+  })
+
   // Frame 10 lists the fleet under the idle card, one row per machine.
   it("lists the fleet under the idle card", async () => {
     const idle = workspace()

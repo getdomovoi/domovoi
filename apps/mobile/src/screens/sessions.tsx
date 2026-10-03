@@ -108,7 +108,12 @@ function IdleFleet({ fleet, now }: { fleet: FleetEntry[], now: number }) {
     <View className="overflow-hidden rounded-2xl border border-border">
       {rows.map((row, index) => {
         const entry = fleet[index]
-        const state = row.health === "gone" && entry?.kind === "machine"
+        // Only a machine that does not answer is described by when it was
+        // last seen. One that answered with a demand (pair again, update)
+        // says the demand.
+        const silent = entry?.kind === "machine"
+          && (entry.machine.health === "unreachable" || entry.machine.health === "degraded")
+        const state = silent
           ? lastSeen(entry.machine.heartbeat.lastSeenAt, now) ?? row.badge
           : row.badge
         return (
