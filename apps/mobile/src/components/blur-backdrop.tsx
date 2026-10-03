@@ -15,6 +15,10 @@ import { useTheme } from "../theme/theme-provider"
 // itself. A backdrop therefore hides the target from everything drawn inside
 // it: a bar placed inside one gets no target and falls back to its wash.
 //
+// A provider holds one target, the backdrop that registered last. Every bar
+// under it blurs that one view, so a layout that shows two backdrops at once
+// under one provider blurs only the newer.
+//
 // iOS blurs whatever is behind the bar without being told, so none of this is
 // used there and the backdrop is a plain view.
 

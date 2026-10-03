@@ -35,9 +35,9 @@ function blurTarget(): { current: unknown } | undefined {
 // The ref resolves to the renderer's host instance for the target view. It is
 // read by testID and reported as a boolean: a failed toBe on a renderer
 // instance prints its whole fiber graph.
-function pointsAtBackdrop(): boolean {
+function pointsAtBackdrop(testID = "backdrop"): boolean {
   const current = blurTarget()?.current as { props?: { testID?: unknown } } | null | undefined
-  return current?.props?.testID === "backdrop"
+  return current?.props?.testID === testID
 }
 
 function usePlatform(os: "android" | "ios") {
@@ -73,6 +73,58 @@ describe("BlurBackdrop", () => {
       </SafeAreaProvider>,
     )
     expect(pointsAtBackdrop()).toBe(true)
+  })
+
+  // One screen replacing another swaps the backdrop while the tab bar stays.
+  it("follows the backdrop when one screen replaces another", async () => {
+    usePlatform("android")
+    const tree = (screenId: string) => (
+      <SafeAreaProvider initialMetrics={metrics}>
+        <BlurBackdropProvider>
+          <BlurBackdrop key={screenId} testID={screenId}><Probe /></BlurBackdrop>
+          <FloatingBar><Text>Sessions</Text></FloatingBar>
+        </BlurBackdropProvider>
+      </SafeAreaProvider>
+    )
+    await render(tree("sessions"))
+    expect(pointsAtBackdrop("sessions")).toBe(true)
+    await screen.rerender(tree("settings"))
+    expect(pointsAtBackdrop("settings")).toBe(true)
+  })
+
+  // The last backdrop to register is the target. One that registered earlier
+  // and leaves afterwards must not take the newer one's target with it.
+  it("keeps the newer backdrop when an older one leaves", async () => {
+    usePlatform("android")
+    const tree = (withOlder: boolean) => (
+      <SafeAreaProvider initialMetrics={metrics}>
+        <BlurBackdropProvider>
+          {withOlder ? <BlurBackdrop testID="older"><Probe /></BlurBackdrop> : null}
+          <BlurBackdrop testID="newer"><Probe /></BlurBackdrop>
+          <FloatingBar><Text>Sessions</Text></FloatingBar>
+        </BlurBackdropProvider>
+      </SafeAreaProvider>
+    )
+    await render(tree(true))
+    expect(pointsAtBackdrop("newer")).toBe(true)
+    await screen.rerender(tree(false))
+    expect(pointsAtBackdrop("newer")).toBe(true)
+  })
+
+  it("points the bar at nothing once its backdrop is gone", async () => {
+    usePlatform("android")
+    const tree = (withBackdrop: boolean) => (
+      <SafeAreaProvider initialMetrics={metrics}>
+        <BlurBackdropProvider>
+          {withBackdrop ? <BlurBackdrop testID="backdrop"><Probe /></BlurBackdrop> : null}
+          <FloatingBar><Text>Sessions</Text></FloatingBar>
+        </BlurBackdropProvider>
+      </SafeAreaProvider>
+    )
+    await render(tree(true))
+    expect(pointsAtBackdrop()).toBe(true)
+    await screen.rerender(tree(false))
+    expect(blurTarget()?.current ?? null).toBeNull()
   })
 
   // A blur that samples a view it sits inside would sample itself.
