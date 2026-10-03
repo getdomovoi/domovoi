@@ -55,6 +55,8 @@ describe("desktop first run", () => {
     expect(rows.textContent).toContain("~/Library/LaunchAgents/sh.domovoi.domovoid.plist")
     expect(rows.textContent).toContain("~/.domovoi/service.json")
     expect(rows.textContent).toContain("Hand this app's daemon to launchd")
+    // Q389 A: the real port, not the design's 7717 and not a paraphrase.
+    expect(rows.textContent).toContain("127.0.0.1:47831")
     expect(screen.getByRole("button", { name: "Install the service" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Not now" })).toBeTruthy()
     expect(screen.getByText("Remove it any time in Settings.")).toBeTruthy()

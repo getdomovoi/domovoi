@@ -207,7 +207,7 @@
     {
       "id": "onboarding.service-install",
       "since": "2026-10-02",
-      "note": "Q389 A substitutions in packages/ui/src/desktop-first-run.tsx, read against the design's installModel: no made-up command or port is drawn (the log with $ domovoi daemon install is not built, and 127.0.0.1:7717 reads over loopback); the rows follow the real installer, adding Copy this app's daemon runtime and naming the handover without launchctl bootstrap gui/501; the done line ends It answers on loopback only, because pairing does not change where the daemon listens; the foot reads domovoid <version> and uses the ND6 wording This build is not signed and does not update itself, held to Settings by scripts/unsigned-build.mjs."
+      "note": "Q389 A substitutions in packages/ui/src/desktop-first-run.tsx, read against the design's installModel: no made-up command or port is drawn (the log with $ domovoi daemon install is not built, and 127.0.0.1:7717 reads 127.0.0.1:47831, the daemon's default address); the rows follow the real installer, adding Copy this app's daemon runtime and naming the handover without launchctl bootstrap gui/501; the done line ends It answers on loopback only, because pairing does not change where the daemon listens; the foot reads domovoid <version> and uses the ND6 wording This build is not signed and does not update itself, held to Settings by scripts/unsigned-build.mjs."
     },
     {
       "id": "onboarding.account",

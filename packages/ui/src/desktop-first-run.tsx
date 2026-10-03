@@ -233,7 +233,9 @@ function installRows(platform: LoginServicePlatform): { label: string; detail: s
   const runtime = { label: "Copy this app's daemon runtime", detail: "~/.domovoi/runtime, so the service never runs from inside the app" }
   const record = { label: "Write the service record", detail: "~/.domovoi/service.json" }
   const hand = { label: `Hand this app's daemon to ${service.manager}`, detail: `the daemon stops here and ${service.manager} starts it` }
-  const attach = { label: "Attach this app to the service", detail: "over loopback" }
+  // Q389 A: the daemon's default address (apps/daemon/src/config.ts), not
+  // the design's sample port.
+  const attach = { label: "Attach this app to the service", detail: "127.0.0.1:47831" }
   if (platform === "darwin") return [runtime, { label: "Write the LaunchAgent", detail: service.definition }, record, hand, attach]
   if (platform === "linux") {
     return [runtime, { label: "Write the systemd user unit", detail: service.definition }, record, { label: "Turn on lingering", detail: "loginctl enable-linger · keeps it running after you log out" }, hand, attach]
