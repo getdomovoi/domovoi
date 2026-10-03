@@ -108,13 +108,12 @@ const statusTimeoutMs = 10_000
 const certificateTimeoutMs = 120_000
 const maximumDetailLength = 1_024
 
-// Codex review round 6 (P3-2): what a turn-off says when the restart fails
-// after the record was deleted but the files set aside could not be. The
-// sentence for that case awaits approval, so until it lands this says what a
-// restart failure after a turn-off always said, and takes the directory the
-// approved sentence will name.
-function restartFailedWithRetainedFiles(_directory: string, why: string): string {
-  return `The certificate and key were deleted, but the daemon did not restart: ${why}`
+// Codex review round 6 (P3-2) and round 7 (P3-3, Q419 A): what a turn-off
+// says when the restart fails after the record was deleted but the files set
+// aside could not be: the record is gone, the files remain in the named
+// directory, and the restart failed in its own words.
+function restartFailedWithRetainedFiles(directory: string, why: string): string {
+  return `The setting was removed, but the certificate and key in ${directory} could not be deleted, and the daemon did not restart: ${why}`
 }
 
 type Tailnet = { name: string; address: string; httpsCertificates: boolean }

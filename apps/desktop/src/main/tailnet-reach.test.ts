@@ -774,16 +774,16 @@ describe("turning TailnetReach off", () => {
     await expect(reach.status()).resolves.toEqual({ state: "none", detail: "Domovoi found no tailscale command on this computer.", setAside: "~/.domovoi/tls/.pending-7" })
   })
 
-  // Codex review round 6 (P3-2): a restart that fails after files could not
-  // be deleted says so with the directory, and the answer carries it, so the
-  // card does not mark the deletion done.
+  // Codex review round 6 (P3-2) and round 7 (P3-3, Q419 A): a restart that
+  // fails after files could not be deleted says so with the directory, and
+  // the answer carries it, so the card does not mark the deletion done.
   it("names the files it could not delete when the restart fails too", async () => {
     const { reach, record } = harness({
       record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, removeDirectoryThrows: new Error("EIO: rmdir"), restart: { ok: false, message: "The service did not report ready." },
     })
     await expect(reach.turnOff()).resolves.toEqual({
       ok: false, reason: "failed", step: "restart", undeleted: "~/.domovoi/tls/.pending-1",
-      message: "The certificate and key were deleted, but the daemon did not restart: The service did not report ready.",
+      message: "The setting was removed, but the certificate and key in ~/.domovoi/tls/.pending-1 could not be deleted, and the daemon did not restart: The service did not report ready.",
     })
     expect(record()).toBeUndefined()
     await expect(reach.status()).resolves.toMatchObject({ state: "off", undeleted: "~/.domovoi/tls/.pending-1" })

@@ -42,7 +42,9 @@ finish. When a turn-off has deleted the record but cannot delete the files it
 set aside, the switch is off and its state names that directory at once, while
 it still holds them, whether or not Tailscale can answer; these directories
 are named with every state. When the restart then fails as well, the answer
-carries that directory too. When the in-app daemon's tailnet listener comes from
+carries that directory too and says the setting was removed, the certificate
+and key in that directory could not be deleted, and the daemon did not restart,
+with the restart's own message. When the in-app daemon's tailnet listener comes from
 `DOMOVOI_TAILNET_ADDRESS` set by hand in the app's environment, the switch's
 state says so, because turning the switch off cannot clear it.
 
