@@ -238,8 +238,17 @@
       ],
       "evidence": [
         "NEEDS YOU",
+        "need you",
+        "UNREACHABLE"
+      ],
+      "presence": [
+        "NEEDS YOU",
         "need you"
-      ]
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "open gap, no ruling: the design's third group is UNREACHABLE, and the phone draws QUIET for idle sessions instead (decision D1 in the 2026-10-02 cross-check). The card also differs: the need-you count is a meta line, not a warning pill; group counts are plain, not tinted pills; NEEDS YOU cards sit on the card colour, not warn-bg; the gate shows as runtime and mode badges with an uppercase approval label, not a gate pill"
+      }
     },
     {
       "id": "sessions.gates-while-open",
@@ -307,8 +316,19 @@
         "Watch the rest of the turn",
         "Reverting happens on a desktop",
         "was taken first, then it ran in",
-        "Renaming the device later does not rewrite the record."
-      ]
+        "Renaming the device later does not rewrite the record.",
+        "allow once"
+      ],
+      "presence": [
+        "Allowed once",
+        "RECORDED AS",
+        "Watch the rest of the turn",
+        "Reverting happens on a desktop"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "RECORDED AS differs from frame 03: the Decision row shows the recorded value (allow-once) rather than the words allow once; Decided on shows the client kind (phone) rather than the device's label; the checkpoint is named by its commit because the receipt carries no short checkpoint id; and the phone adds a Decided after row the design does not draw. The last two are decision D4 in the 2026-10-02 cross-check"
+      }
     },
     {
       "id": "watching.screen",
@@ -406,8 +426,19 @@
         "Refused by policy",
         "THE RULE IT BROKE",
         "WHAT YOU CAN DO",
-        "There is no approve button here, because no decision of yours can permit it."
-      ]
+        "There is no approve button here, because no decision of yours can permit it.",
+        "Tell the agent"
+      ],
+      "presence": [
+        "Nothing to approve",
+        "Refused by policy",
+        "THE RULE IT BROKE",
+        "WHAT YOU CAN DO"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "frame 05 draws WHAT YOU CAN DO as rows with a green or amber dot each, and a button that tells the agent to take the alternative; the phone draws the refusal's one remedy as a paragraph and no button. The policy-refusal item carries a single remedy string, with no list of alternatives, tones or steer (decision D3 in the 2026-10-02 cross-check)"
+      }
     },
     {
       "id": "launch.screen",
@@ -509,7 +540,7 @@
     {
       "id": "sessions.idle",
       "name": "Nothing running, everything is idle",
-      "where": "frame 10: two machines answering and idle, Start a session is the only action (clone cut 2026-09-18)",
+      "where": "frame 10: the machines answering and idle, the fleet rows, Start a session is the only action (clone cut 2026-09-18)",
       "copy": [
         "Everything is idle",
         "Two machines are answering and neither has work in flight. Empty here is a healthy state, not a failure.",
@@ -517,10 +548,9 @@
       ],
       "evidence": [
         "Everything is idle",
-        "Start a session"
-      ],
-      "presence": [
-        "Everything is idle"
+        "Start a session",
+        "idleSentence(snapshot.machine.name, fleet)",
+        "<IdleFleet fleet={fleet} now={now} />"
       ]
     },
     {
@@ -648,8 +678,17 @@
       ],
       "evidence": [
         "The render stays on",
+        "builds on",
+        "is the one the agent builds on"
+      ],
+      "presence": [
+        "The render stays on",
         "builds on"
-      ]
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "frame 17 names which variant the agent builds on and checks its tab; the phone cannot, because the build basis is per-client desktop state (previewBuildBasis in packages/ui/src/workspace-persistence.ts), not daemon state, and artifactVariantSchema has no such field. The variant switch, its note and Comment also sit at the top of the screen rather than in the floating card at the foot"
+      }
     },
     {
       "id": "artifact.comment",
@@ -782,12 +821,17 @@
     {
       "id": "sessions.list",
       "since": "2026-10-02",
-      "note": "the design's third group is UNREACHABLE, sessions on a machine that does not answer; the phone draws QUIET for idle sessions instead, because it holds one daemon's snapshot and has no sessions from a machine that is not answering. Arrangement, not copy: single-word labels are outside the script reading"
+      "note": "open gap, not approved: the design's third group is UNREACHABLE, sessions on a machine that does not answer; the phone draws QUIET for idle sessions instead. The phone holds one daemon's snapshot, so it has no sessions from a machine that is not answering, and what to draw there is decision D1 of the 2026-10-02 cross-check. Single-word labels are outside the script reading, so the partial entry's evidence names UNREACHABLE"
+    },
+    {
+      "id": "sessions.idle",
+      "since": "2026-10-02",
+      "note": "open, not approved: the design's sentence says two machines answer and neither has work in flight. The phone counts the answering machines from the fleet's health, and vouches for no work in flight only on the machine whose snapshot it holds, because fleet.list carries no other machine's sessions. The card shows when that machine holds no sessions at all; idle sessions are listed under QUIET (see D1)"
     },
     {
       "id": "shell.tab-bar",
       "since": "2026-10-02",
-      "note": "approved difference, ruling Q330 A: the design draws the tab bar as a solid card; the phone keeps the floating bar's wash and blur (FloatingBar in floating-bar.tsx), because fetzy asked for the Android blur to match iOS. A solid bar was built in 134db103 and reverted in c158c1ef"
+      "note": "approved difference, ruling Q330 A: the design draws the tab bar as a solid card; the phone keeps the floating bar's wash and blur (FloatingBar in floating-bar.tsx), because fetzy asked for the Android blur to match iOS. A solid bar was built in c5361d0c and reverted in 6547a654"
     },
     {
       "id": "pairing.camera",
