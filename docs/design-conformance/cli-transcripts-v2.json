@@ -202,7 +202,7 @@
     {
       "id": "cli.exit-codes",
       "since": "2026-10-03",
-      "note": "Built for Q391 A: the whole table, adopted before 1.0, in apps/cli/src/exit-codes.ts, printed by --help and used by every exit. Daemon unreachable moved from 1 to 3; an unpaired client moved from usage (2) to a named code the design does not draw, not-paired (5), placed with the other nothing-was-sent codes (a substitution recorded under Q389). The row for 1 drops the design's clause that a log path is printed, because the CLI keeps no log. Codes 4 and 10 to 130 are reserved for the session commands, which cli.session-commands still lists as missing."
+      "note": "Built for Q391 A: the whole table, adopted before 1.0, in apps/cli/src/exit-codes.ts, printed by --help and used by every exit. Daemon unreachable moved from 1 to 3; an unpaired client moved from usage (2) to a named code the design does not draw, not-paired (5), placed with the other nothing-was-sent codes (a substitution recorded under Q389). The row for 1 drops the design's clause that a log path is printed, because the CLI keeps no log. Codes 4 and 10 to 130 are reserved for the session commands, which cli.session-commands still lists as missing. A failed doctor probe, a declined or refused skill install and a pairing the daemon refused have no row in the design and exit 1 for M1 (Q423 A, 2026-10-03)."
     },
     {
       "id": "cli.gate-prompt",
