@@ -55,8 +55,22 @@ function problemFor(report: PairingAddressReport, kind: Kind, tailnet: TailnetRe
   if (report.loopback) {
     // A browser on this machine can reach loopback; the one that cannot is
     // elsewhere (ruled 2026-09-23).
+    const who = kind === "browser" ? "a browser on another device" : noun
+    const name = tailnet?.report && tailnet.report.state !== "none" ? tailnet.report.name : "this machine's name"
+    if (tailnet?.running?.direction === "on") {
+      return { title: "Making this machine reachable from your tailnet", mono: `tailscale cert ${name}`, still: "The daemon restarts once the certificate is stored.", next: "The code button comes back when the service has restarted." }
+    }
+    if (tailnet?.failure?.outcome.reason === "https-off") {
+      return { title: "No code: HTTPS certificates are off for this tailnet", mono: name, still: "Domovoi stopped and changed nothing.", next: "A tailnet admin turns on HTTPS Certificates on the DNS page of the Tailscale admin console.", action: { label: "Go to the setting", primary: false, run: tailnet.reveal } }
+    }
+    if (tailnet?.report?.state === "none") {
+      return { title: "No code: there is no tailnet on this machine", mono: tailnet.report.detail, still: "Sessions and this window are unaffected.", next: "Domovoi does not set one up for you. Bring Tailscale up, then come back." }
+    }
+    if (tailnet?.report?.state === "off") {
+      return { title: `No code: ${who} cannot reach this machine yet`, mono: "not reachable from your tailnet", still: "Sessions and this window are unaffected.", next: "Turn on Reach this machine from my tailnet, then show a code.", action: { label: "Go to the setting", primary: true, run: tailnet.reveal } }
+    }
     return {
-      title: `No code: ${kind === "browser" ? "a browser on another device" : noun} cannot reach this daemon`, mono: "listening on 127.0.0.1 only", still: "Sessions and this window are unaffected.", next: "Let the daemon answer on your tailnet, then show a code.",
+      title: `No code: ${who} cannot reach this daemon`, mono: "listening on 127.0.0.1 only", still: "Sessions and this window are unaffected.", next: "Let the daemon answer on your tailnet, then show a code.",
       ...(tailnet ? { action: { label: "Go to the tailnet setting", primary: true, run: tailnet.reveal } } : {}),
     }
   }

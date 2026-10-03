@@ -116,12 +116,64 @@ function controller(overrides: Partial<TailnetReachController> = {}): TailnetRea
   }
 }
 
-it("leads a loopback daemon to the tailnet setting", async () => {
+const loopback = { url: "ws://127.0.0.1:47831/rpc", loopback: true } as const
+
+it("leads a loopback daemon to the tailnet setting while the switch is on or not yet read", async () => {
+  for (const report of [undefined, { state: "on", name: "mac-mini-m4.tail4c2e.ts.net", address: "100.101.102.103", stored: "x", httpsCertificates: true } as const]) {
+    const tailnet = controller({ report })
+    const { onIssueCode, user } = card({ tailnet })
+    onIssueCode.mockResolvedValueOnce(issued({ pairingAddress: loopback }))
+    await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+    expect(await screen.findByText("No code: a phone cannot reach this daemon")).toBeTruthy()
+    await user.click(screen.getByRole("button", { name: "Go to the tailnet setting" }))
+    expect(tailnet.reveal).toHaveBeenCalledOnce()
+    cleanup()
+  }
+})
+
+// The design's reach states, drawn from the switch the Settings card shows.
+it("says a phone cannot reach this machine yet while the switch is off", async () => {
   const tailnet = controller()
   const { onIssueCode, user } = card({ tailnet })
-  onIssueCode.mockResolvedValueOnce(issued({ pairingAddress: { url: "ws://127.0.0.1:47831/rpc", loopback: true } }))
+  onIssueCode.mockResolvedValueOnce(issued({ pairingAddress: loopback }))
   await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
-  await user.click(await screen.findByRole("button", { name: "Go to the tailnet setting" }))
+  expect(await screen.findByText("No code: a phone cannot reach this machine yet")).toBeTruthy()
+  expect(screen.getByText("not reachable from your tailnet")).toBeTruthy()
+  expect(screen.getByText("Turn on Reach this machine from my tailnet, then show a code.")).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Go to the setting" }))
+  expect(tailnet.reveal).toHaveBeenCalledOnce()
+})
+
+it("says there is no tailnet on this machine, in Tailscale's words", async () => {
+  const { onIssueCode, user } = card({ tailnet: controller({ report: { state: "none", detail: "Domovoi found no tailscale command on this computer." } }) })
+  onIssueCode.mockResolvedValueOnce(issued({ pairingAddress: loopback }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  expect(await screen.findByText("No code: there is no tailnet on this machine")).toBeTruthy()
+  expect(screen.getByText("Domovoi found no tailscale command on this computer.")).toBeTruthy()
+  expect(screen.getByText("Domovoi does not set one up for you. Bring Tailscale up, then come back.")).toBeTruthy()
+  expect(screen.queryByRole("button", { name: /Go to/ })).toBeNull()
+})
+
+it("says what runs while the machine is made reachable", async () => {
+  const props = { connected: true, onIssueCode: vi.fn(async () => issued({ pairingAddress: loopback })), onCopy: vi.fn(async () => {}) }
+  const { rerender } = render(<PairingCard {...props} tailnet={controller()} />)
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  await screen.findByRole("button", { name: "Go to the setting" })
+  rerender(<PairingCard {...props} tailnet={controller({ running: { direction: "on", renew: false } })} />)
+  expect(screen.getByText("Making this machine reachable from your tailnet")).toBeTruthy()
+  expect(screen.getByText("The daemon restarts once the certificate is stored.")).toBeTruthy()
+  expect(screen.getByText("The code button comes back when the service has restarted.")).toBeTruthy()
+})
+
+it("says HTTPS certificates are off after the switch stopped on them", async () => {
+  const tailnet = controller({ failure: { direction: "on", outcome: { ok: false, reason: "https-off", step: "certificate", message: "HTTPS certificates are off for tail4c2e.ts.net." } } })
+  const { onIssueCode, user } = card({ tailnet })
+  onIssueCode.mockResolvedValueOnce(issued({ pairingAddress: loopback }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  expect(await screen.findByText("No code: HTTPS certificates are off for this tailnet")).toBeTruthy()
+  expect(screen.getByText("Domovoi stopped and changed nothing.")).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Go to the setting" }))
   expect(tailnet.reveal).toHaveBeenCalledOnce()
 })
 
