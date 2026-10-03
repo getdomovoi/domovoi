@@ -185,7 +185,7 @@ describe("threadEntries receipt", () => {
       explanation: undefined,
       client: "phone",
       declaredClient: "device fcbd…cdf8",
-      connected: false,
+      connectionRecorded: false,
       checkpoint: "8f3c1de",
       checkpointTaken: true,
       ranFor: "12s",
@@ -195,9 +195,9 @@ describe("threadEntries receipt", () => {
     })
   })
 
-  // A receipt the daemon wrote for a decision on a verified connection names
-  // that connection and declares no client id.
-  it("says when a decision came over a verified connection", () => {
+  // A current receipt records the id of the connection the decision came
+  // over and declares no client id.
+  it("says when a receipt records the decision's connection", () => {
     const snapshot = workspace()
     snapshot.thread = [{
       id: "t-receipt",
@@ -211,7 +211,7 @@ describe("threadEntries receipt", () => {
       createdAt: "2026-08-25T21:52:00.000Z",
     }]
 
-    expect(threadEntries(snapshot, "session-billing").entries[0]).toMatchObject({ connected: true, declaredClient: undefined })
+    expect(threadEntries(snapshot, "session-billing").entries[0]).toMatchObject({ connectionRecorded: true, declaredClient: undefined })
   })
 
   it("says minutes for a command that ran past one", () => {
@@ -308,7 +308,7 @@ describe("threadEntries receipt", () => {
       explanation: "Not on the release branch.",
       client: "web",
       declaredClient: undefined,
-      connected: false,
+      connectionRecorded: false,
       checkpoint: "no checkpoint",
       checkpointTaken: false,
       ranFor: undefined,

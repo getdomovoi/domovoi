@@ -96,10 +96,12 @@ function Receipt({ entry, onWatch }: {
           </View>
         ))}
       </View>
-      {/* The note speaks of a phone's verified credential, so it is shown
-          only for a decision a phone made over a connection the daemon
-          verified. A legacy receipt holds a declared id instead. */}
-      {entry.client === "phone" && entry.connected ? (
+      {/* The note speaks of a phone's verified credential. It is shown only
+          for a phone decision whose receipt records its connection; a legacy
+          receipt holds a declared id instead. The connection id alone does
+          not say which credential opened it, so the note's wording is still
+          under review. */}
+      {entry.client === "phone" && entry.connectionRecorded ? (
         <Text className="font-sans text-[12px] leading-[19px] text-faint">
           The audit row names this phone's verified credential, not the label you gave it. Renaming the device later does not rewrite the record.
         </Text>

@@ -195,7 +195,7 @@ describe("SessionScreen decision receipt", () => {
     explanation: undefined,
     client: "phone",
     declaredClient: undefined as string | undefined,
-    connected: true,
+    connectionRecorded: true,
     checkpoint: "8f3c1de",
     checkpointTaken: true,
     ranFor: "12s" as string | undefined,
@@ -260,7 +260,7 @@ describe("SessionScreen decision receipt", () => {
   // vouches for it, so it is named as declared, never as a credential, and the
   // note about a verified credential is not shown for it.
   it("names a legacy client id as declared, not as a credential", async () => {
-    await drawReceipt({ ...allowed, declaredClient: "device fcbd…cdf8", connected: false })
+    await drawReceipt({ ...allowed, declaredClient: "device fcbd…cdf8", connectionRecorded: false })
 
     expect(screen.getByLabelText("Declared client, device fcbd…cdf8")).toBeOnTheScreen()
     expect(screen.queryByLabelText(/^Credential,/)).toBeNull()
