@@ -112,6 +112,9 @@ describe("ArtifactScreen plan", () => {
     expect(screen.getByRole("checkbox", { name: "claims an unseen event id", checked: true })).toBeOnTheScreen()
     expect(screen.getByRole("checkbox", { name: "releases an expired claim", checked: false })).toBeOnTheScreen()
     expect(screen.queryByText("# Idempotent billing webhooks")).toBeNull()
+    // Frame 16 draws a bullet as a dot, not a glyph a screen reader reads out.
+    expect(screen.queryByText("•")).toBeNull()
+    expect(screen.getByText("1.")).toBeOnTheScreen()
     openURL.mockRestore()
   })
 })

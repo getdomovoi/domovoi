@@ -9,7 +9,8 @@ function Inline({ spans }: { spans: readonly PlanInlineSpan[] }) {
     <>
       {spans.map((span, index) => {
         if (span.kind === "code") {
-          return <Text key={index} className="rounded bg-accent px-1.5 font-mono text-meta text-foreground">{span.text}</Text>
+          // The radius scale has no bare step, so the 4px corner is named.
+          return <Text key={index} className="rounded-[4px] bg-accent px-1.5 font-mono text-[12px] text-foreground">{span.text}</Text>
         }
         if (span.kind === "link") {
           return (
@@ -56,7 +57,7 @@ export function PlanMarkdown({ source }: { source: string }) {
         }
         if (block.kind === "code") {
           return (
-            <ScrollView key={index} horizontal showsHorizontalScrollIndicator={false} className="rounded-xl bg-code" contentContainerClassName="px-3.5 py-3">
+            <ScrollView key={index} horizontal showsHorizontalScrollIndicator={false} className="rounded-2xl bg-code" contentContainerClassName="px-3.5 py-3">
               <Text className="font-mono text-[11.5px] leading-[19px] text-strong">{block.text}</Text>
             </ScrollView>
           )
@@ -72,7 +73,7 @@ export function PlanMarkdown({ source }: { source: string }) {
               accessibilityState={{ checked: block.checked, disabled: true }}
               className="flex-row items-start gap-2.5"
             >
-              <View className={block.checked ? "mt-0.5 h-4 w-4 items-center justify-center rounded border border-success bg-success/20" : "mt-0.5 h-4 w-4 rounded border border-border"}>
+              <View className={block.checked ? "mt-0.5 h-4 w-4 items-center justify-center rounded-[4px] border border-success bg-success/20" : "mt-0.5 h-4 w-4 rounded-[4px] border border-border"}>
                 {block.checked ? <Icon name="check" tone="success" size={11} /> : null}
               </View>
               <Text className={block.checked ? "flex-1 text-[13px] leading-[20px] text-muted-foreground" : "flex-1 text-[13px] leading-[20px] text-strong"}>
@@ -81,9 +82,13 @@ export function PlanMarkdown({ source }: { source: string }) {
             </View>
           )
         }
+        // Frame 16 marks an unordered item with a small dot rather than a
+        // glyph, so a screen reader reads the item and not the mark.
         return (
-          <View key={index} className="flex-row items-start gap-2.5">
-            <Text className="w-5 text-right font-mono text-[12px] leading-[20px] text-faint">{block.ordered ? `${block.marker}.` : "•"}</Text>
+          <View key={index} className="flex-row items-start gap-[9px]">
+            {block.ordered
+              ? <Text className="w-5 text-right font-mono text-[12px] leading-[20px] text-faint">{`${block.marker}.`}</Text>
+              : <View className="mt-[8px] h-1 w-1 rounded-full bg-faint" />}
             <Text className="flex-1 text-[13px] leading-[20px] text-strong"><Inline spans={block.spans} /></Text>
           </View>
         )
