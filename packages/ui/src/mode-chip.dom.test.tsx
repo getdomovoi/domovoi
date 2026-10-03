@@ -34,7 +34,9 @@ it("names the mode on the chip and offers the three modes with their notes", asy
 // read-only shell commands, opencode and kilo deny edit and bash, Codex runs
 // in a read-only sandbox), and Codex Plan still runs commands in that sandbox.
 it.each([
-  ["codex", "Reads and proposes a plan. Commands run in a read-only sandbox, so nothing is written.", "Reads only. Commands run in a read-only sandbox, so nothing is written."],
+  // Codex Ask is approvalPolicy on-request in the read-only sandbox, and its
+  // approval requests become Domovoi gates; Codex Plan never asks.
+  ["codex", "Reads and proposes a plan. Commands run in a read-only sandbox, so nothing is written.", "Reads only. Commands run in a read-only sandbox. A command that needs more asks you first."],
   // Claude Code approves its own read-only Bash inside the working directory
   // before Domovoi is asked (claude-read-scope.ts), so cat, ls and read-only
   // git run in Ask.

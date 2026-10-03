@@ -13,7 +13,10 @@ export const permissionModes = [
 
 // What holds the provider in Plan and Ask, as the daemon configures it:
 // - Codex runs both in its read-only sandbox (codexPolicyFor: domovoi-read),
-//   so it can still run commands, and they cannot write.
+//   so it can still run commands, and they cannot write. Plan never asks
+//   (approvalPolicy never). Ask is approvalPolicy on-request, and every
+//   commandExecution approval request becomes a Domovoi gate, so a command
+//   that needs more than the sandbox gives asks first.
 // - opencode and kilo deny edit and bash to the plan and domovoi-ask agents.
 // - Claude in Ask: Claude Code approves its own read-only Bash and file reads
 //   inside the working directory before Domovoi's callback runs
@@ -23,10 +26,20 @@ export const permissionModes = [
 // - Any other provider: Ask is read-only where the daemon allows it at all,
 //   and Plan is the provider's own plan mode, which the daemon does not hold.
 export function readOnlyEnforcement(mode: "plan" | "ask", provider: string): string {
-  if (provider === "codex") return "Commands run in a read-only sandbox, so nothing is written."
+  if (provider === "codex") {
+    return mode === "plan"
+      ? "Commands run in a read-only sandbox, so nothing is written."
+      : "Commands run in a read-only sandbox. A command that needs more asks you first."
+  }
   if (provider === "opencode" || provider === "kilo") return "Edits and shell commands are refused."
   if (provider === "claude-code") return mode === "plan" ? "Claude's own plan mode makes no changes." : "Edits are refused; only read-only shell commands inside the worktree run."
   return mode === "plan" ? "The provider's own plan mode decides what it may run." : "Anything that would write is refused."
+}
+
+// Whether a provider can raise a gate in Ask, which an Allow answers with a
+// checkpoint first. Only Codex asks there; the others refuse.
+export function askRaisesGates(provider: string): boolean {
+  return provider === "codex"
 }
 
 export function permissionModeNote(mode: PermissionMode, provider: string): string {

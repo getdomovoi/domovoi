@@ -76,14 +76,19 @@ it.each(["desktop", "web"] as const)("draws Nothing has run yet on a %s session 
   expect((screen.getByLabelText("Message") as HTMLTextAreaElement).placeholder).toBe("Say what you want done in acme-api")
 })
 
-// Ask is read-only in the daemon for every provider that offers it, so it has
-// no gate to allow and no checkpoint to take. What Plan and Ask hold a
-// provider to is what the daemon configures for that provider.
+// What Plan and Ask hold a provider to is what the daemon configures for
+// that provider. Claude, opencode and kilo refuse in Ask rather than ask, so
+// they have no gate to allow and no checkpoint to take. Codex Ask runs with
+// approvalPolicy on-request in its read-only sandbox, and every approval
+// request becomes a Domovoi gate, so an Allow there takes a checkpoint.
 it.each([
   ["claude-code", "plan", ["Read the repository and propose a plan. Claude's own plan mode makes no changes."]],
   ["codex", "plan", ["Read the repository and propose a plan. Commands run in a read-only sandbox, so nothing is written."]],
   ["claude-code", "ask", ["Read the repository. Edits are refused; only read-only shell commands inside the worktree run."]],
-  ["codex", "ask", ["Read the repository. Commands run in a read-only sandbox, so nothing is written."]],
+  ["codex", "ask", [
+    "Read the repository. Commands run in a read-only sandbox. A command that needs more asks you first.",
+    "Take a checkpoint before any command you allow at a gate, so the worktree can go back to it.",
+  ]],
   ["opencode", "ask", ["Read the repository. Edits and shell commands are refused."]],
 ] as const)("says what %s in %s will do first, from what the daemon enforces", (provider, mode, rows) => {
   const snapshot = freshSession(mode)
