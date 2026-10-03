@@ -73,20 +73,37 @@ afterEach(async () => {
 const bin = () => join(home, ".local", "bin")
 const shipped = () => [{ name: "domovoid", launcher }]
 
-describe("command links", () => {
+// Linking is for macOS and Linux only: Windows gets no launcher to link
+// (scripts/daemon-runtime.mjs), and commandLinks reports every action
+// unavailable there before it reads or writes anything under ~/.local, so
+// the Settings row shows only its reason. That report is checked on every
+// host below.
+describe("command links on Windows", () => {
+  it("reports every action unavailable, with its reason, and makes nothing", async () => {
+    for (const action of ["status", "link", "unlink"] as const) {
+      expect(await commandLinks(action, environment({ platform: "win32" }))).toEqual({ report: { available: false, reason: "Domovoi links no commands on Windows." } })
+    }
+    await expect(lstat(join(home, ".local"))).rejects.toThrow()
+    await expect(lstat(join(root, "userData"))).rejects.toThrow()
+  })
+})
+
+// The rest is POSIX behaviour: real symbolic links, POSIX paths such as
+// /Volumes and /private/var/.../AppTranslocation, and link targets read back
+// as written. A Windows host turns those paths into drive paths, so these
+// run on macOS and Linux hosts, where linking is offered.
+describe.runIf(process.platform !== "win32")("command links", () => {
   it("reports the launcher this app ships and no link before one is made", async () => {
     expect(await commandLinks("status", environment())).toEqual({
       report: { available: true, directory: "~/.local/bin", onPath: false, commands: [{ name: "domovoid", launcher, state: "absent" }] },
     })
   })
 
-  it("is unavailable where the app ships no launcher, and links nothing on Windows", async () => {
+  it("is unavailable where the app ships no launcher", async () => {
     await rm(launcher)
     const noLauncher = { available: false, reason: "This build ships no domovoid launcher, so there is nothing to link." }
     expect(await commandLinks("status", environment())).toEqual({ report: noLauncher })
     expect(await commandLinks("link", environment())).toEqual({ report: noLauncher })
-    await writeFile(launcher, "#!/bin/sh\n", { mode: 0o755 })
-    expect(await commandLinks("link", environment({ platform: "win32" }))).toEqual({ report: { available: false, reason: "Domovoi links no commands on Windows." } })
     await expect(lstat(bin())).rejects.toThrow()
   })
 
