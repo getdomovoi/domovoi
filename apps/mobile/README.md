@@ -42,22 +42,31 @@ build it first. `apps/mobile/metro.config.js` points Metro at the workspace root
 `node_modules` directories so the shared package resolves. After a change to `app.json`,
 `app.config.ts`, `plugins/` or a native module, regenerate with `npx expo prebuild --clean`.
 
-Once the app is installed, `pnpm --filter @getdomovoi/mobile start` serves JavaScript changes
-without rebuilding. The development build loads the app from Metro on your computer, at the
-computer's local network address by default (`--host lan` in `expo start --help`). On iOS, allow
-the app's Local Network prompt. A phone running Tailscale reaches that address only with
-Tailscale's "Allow Local Network Access" on; otherwise, or when the phone only reaches your
-computer over the tailnet, advertise the tailnet address instead:
+Once the app is installed, start Metro on its own to serve JavaScript changes without
+rebuilding:
 
 ```bash
-REACT_NATIVE_PACKAGER_HOSTNAME=<your computer's tailnet address> \
-  pnpm --filter @getdomovoi/mobile start
+cd apps/mobile
+npx expo start --dev-client
 ```
 
-Expo CLI 57 reads that variable in `@expo/cli/build/src/start/server/UrlCreator.js` and marks it
-undocumented, so check the URL the terminal prints. An iOS debug build for a real iPhone also
-writes the computer's first local network address into the app at build time (`ip.txt`, from
-React Native's `scripts/react-native-xcode.sh`), and that script does not read the variable.
+Keep `--dev-client`. The app does not depend on `expo-dev-client`, so without the flag Expo CLI
+starts in Expo Go mode, and pressing `i` or `a` in that terminal opens Expo Go, which cannot load
+the native module.
+
+The installed app finds Metro on its own; it does not read the address the terminal prints:
+
+- iOS simulator: `localhost:8081`.
+- Android emulator or a phone on USB: `localhost:8081`, which `expo run:android` forwards to the
+  computer with `adb reverse`.
+- A real iPhone: the computer's first local network address, written into the app when it was
+  built (`ip.txt`, from React Native's `scripts/react-native-xcode.sh`). Allow the app's Local
+  Network prompt. A rebuild on another network writes a new address.
+
+To point an installed app at another address, such as the computer's tailnet address, open the
+in-app developer menu and use Configure Bundler on iOS or Change Bundle Location on Android. A
+phone whose Tailscale routes the computer's local network address, through an exit node or a
+subnet route, reaches it only with Tailscale's "Allow Local Network Access" on.
 
 ## Reach the daemon
 

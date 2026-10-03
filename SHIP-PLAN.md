@@ -821,7 +821,8 @@ Every ledger entry is now merged.
   - iOS, 2026-10-02: a development build from Xcode 27 on an Apple Silicon Mac ran the same probe
     on an iPhone 17 Pro Max. It reported `secure-enclave` custody, a 65 byte public point, a
     handle that survived a reopen, a 32 byte shared secret identical on both sides, and the probe
-    key deleted. The iPhone 17 Pro simulator on iOS 26.5 passes the same steps. One iPhone and
+    key deleted. The iPhone 17 Pro simulator on iOS 26.5 passes the same steps and also reports
+    `secure-enclave`, which shows nothing about custody on phone hardware. One iPhone and
     one Android device are still not a fleet, and neither run measured key-service latency.
   - Node 22 measurements compare option A's X25519/ChaChaPoly with option C's P-256/AES-GCM
     using built-in crypto, published A/B fixtures and explicitly derived P-256 fixtures. Full IK,
