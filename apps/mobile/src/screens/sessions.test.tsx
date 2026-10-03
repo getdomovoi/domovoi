@@ -64,7 +64,9 @@ describe("SessionsScreen", () => {
   // Phone v2 frames 01 and 10 put the Domovoi mark beside the title.
   it("marks the Sessions title with the Domovoi mark", async () => {
     await draw()
-    expect(screen.getByRole("image", { name: "Domovoi" })).toBeOnTheScreen()
+    expect(screen.getByTestId("domovoi-mark", { includeHiddenElements: true })).toBeOnTheScreen()
+    // The Sessions heading names the screen; the mark is not announced.
+    expect(screen.queryByRole("image", { name: "Domovoi" })).toBeNull()
   })
 
   it("has no global stop control in its header", async () => {

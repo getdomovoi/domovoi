@@ -64,10 +64,17 @@ describe("ShellNotice", () => {
   // answer. A refused credential is not launch, and keeps its own sign.
   it("leads launch with the Domovoi mark, and not a refusal", async () => {
     await draw()
-    expect(screen.getByRole("image", { name: "Domovoi" })).toBeOnTheScreen()
+    expect(screen.getByTestId("domovoi-mark", { includeHiddenElements: true })).toBeOnTheScreen()
     await draw({ shell: restoring })
-    expect(screen.getByRole("image", { name: "Domovoi" })).toBeOnTheScreen()
+    expect(screen.getByTestId("domovoi-mark", { includeHiddenElements: true })).toBeOnTheScreen()
     await draw({ shell: refused })
+    expect(screen.queryByTestId("domovoi-mark", { includeHiddenElements: true })).toBeNull()
+  })
+
+  // The heading names the screen, so the mark beside it says nothing more to
+  // a screen reader and is not announced.
+  it("does not announce the mark", async () => {
+    await draw({ shell: restoring })
     expect(screen.queryByRole("image", { name: "Domovoi" })).toBeNull()
   })
 

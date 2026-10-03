@@ -218,15 +218,14 @@
       "name": "Tab bar",
       "where": "bottom of every screen: Sessions, Machines, Settings; hidden while the composer has the keyboard",
       "copy": [
-        "Domovoi",
         "Sessions",
         "Machines",
         "Settings"
       ],
       "evidence": [
+        "label: \"Sessions\"",
         "label: \"Machines\"",
-        "label: \"Settings\"",
-        "accessibilityLabel=\"Domovoi\""
+        "label: \"Settings\""
       ]
     },
     {
@@ -443,13 +442,15 @@
     {
       "id": "launch.screen",
       "name": "Launch",
-      "where": "frame 06: the mark in its working variant, the phase named rather than a spinner",
+      "where": "frame 06: the mark in its working variant over the Domovoi wordmark, the phase named rather than a spinner",
       "copy": [
+        "Domovoi",
         "Reaching your machines over the routes you configured. No spinner, because the phase is knowable."
       ],
       "evidence": [
         "Reaching your machines over the routes you configured",
-        "<Mark size={62} />"
+        "<Mark size={62} />",
+        "re:>\\s*Domovoi\\s*</Text>"
       ]
     },
     {

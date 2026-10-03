@@ -38,9 +38,11 @@ describe("UnpairedScreen", () => {
   // Phone v2 frame 07 marks the Sessions title; frame 08 draws Machines bare.
   it("marks the unpaired Sessions title, and not Machines", async () => {
     await draw({ tab: "sessions" })
-    expect(screen.getByRole("image", { name: "Domovoi" })).toBeOnTheScreen()
-    await draw({ tab: "machines" })
+    expect(screen.getByTestId("domovoi-mark", { includeHiddenElements: true })).toBeOnTheScreen()
+    // The Sessions heading names the screen; the mark is not announced.
     expect(screen.queryByRole("image", { name: "Domovoi" })).toBeNull()
+    await draw({ tab: "machines" })
+    expect(screen.queryByTestId("domovoi-mark", { includeHiddenElements: true })).toBeNull()
   })
 
   it("keeps each tab's own title above its reason", async () => {
