@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react"
+import { useState } from "react"
 import { BotIcon, FileTextIcon, FilterIcon } from "lucide-react"
 
 import type { RepositoryTrust, RepositoryTrustParams, RepositoryTrustResult, RepositoryTrustState } from "@getdomovoi/protocol"
@@ -286,17 +286,19 @@ function GitFilterFileGroup({ group }: { group: GitFilterGroup }) {
             <span className="w-[84px] shrink-0 text-[11.5px] text-muted-foreground">Filter driver</span>
             <div className="flex min-w-0 flex-1 basis-64 flex-col gap-1">
               <span className={cn(mono, "text-[11.5px] break-all text-strong")}>{driver.driver}</span>
-              {/* Each command is its own text, apart from its operation, and
-                  keeps its whitespace: it is reviewed byte for byte (ruling Q328). */}
-              <span data-slot="filter-commands" className={cn(mono, "text-[10.5px] break-all text-faint")}>
+              {/* Each operation and its command is a row of its own: the
+                  operation a label in its own column, the command a bounded
+                  block that keeps its whitespace (ruling Q328). No delimiter
+                  text joins rows, so a command holding an operation's name
+                  cannot pass for another operation (ruling Q335). */}
+              <dl data-slot="filter-commands" className="m-0 flex flex-col gap-1">
                 {driver.commands.map(({ operation, command }, index) => (
-                  <Fragment key={index}>
-                    {index > 0 ? " · " : null}
-                    <span>{operation}</span>{" "}
-                    <span className={commandWhitespace}>{command}</span>
-                  </Fragment>
+                  <div key={index} className="flex flex-wrap items-start gap-x-2 gap-y-0.5">
+                    <dt className="min-w-[52px] shrink-0 pt-[3px] text-[11px] text-muted-foreground">{operation}</dt>
+                    <dd className={cn(mono, commandWhitespace, "m-0 min-w-0 flex-1 basis-48 rounded-md bg-code px-1.5 py-0.5 text-[10.5px] break-all text-strong")}>{command}</dd>
+                  </div>
                 ))}
-              </span>
+              </dl>
               {driver.required.map((state) => <span key={state} className="text-[11px] text-faint">{gitFilterRequiredText[state]}</span>)}
               {driver.detail.includes("[REDACTED]") || driver.driver.includes("[REDACTED]")
                 ? <span className="text-[11px] text-faint">Cut at a credential. Domovoi shows no secret.</span>

@@ -23,10 +23,13 @@ const digest = `sha256:${"a".repeat(64)}`
 const changedDigest = `sha256:${"c".repeat(64)}`
 // tool.inventory's digest over the git filter block it lists.
 const reviewDigest = `sha256:${"b".repeat(64)}`
-// A filter driver's line is drawn in parts, each operation apart from its
-// command (ruling Q328), so it is read whole, by its text content.
-const commandLine = (text: string) => (_: string, element: Element | null) =>
-  element?.getAttribute("data-slot") === "filter-commands" && element.textContent === text
+// A filter driver's commands are a definition list, one row per operation
+// and its command (rulings Q328, Q335), read here as [operation, command].
+const filterPairs = (scope: HTMLElement) =>
+  [...scope.querySelectorAll("dl[data-slot='filter-commands'] > div")].map((row) => [
+    row.querySelector("dt")?.textContent,
+    row.querySelector("dd")?.textContent,
+  ])
 const grant = { trustedDigest: digest, trustedAt: "2026-09-30T10:41:00.000Z", trustedBy: { client: "desktop" as const } }
 const notTrusted: RepositoryTrustState = { state: "untrusted", reason: "not-trusted" }
 
@@ -198,7 +201,8 @@ describe("review and trust from the refusal", () => {
     const sheet = await screen.findByRole("dialog")
     expect(loadInventory).toHaveBeenCalledOnce()
     expect(within(sheet).getByRole("heading", { name: "Trust acme-api on mac-mini-m4" })).toBeTruthy()
-    expect(await within(sheet).findByText(commandLine("smudge sops -d · clean sops -e"))).toBeTruthy()
+    await within(sheet).findByRole("group", { name: ".git/config" })
+    expect(filterPairs(sheet)).toEqual([["smudge", "sops -d"], ["clean", "sops -e"]])
 
     await user.click(within(sheet).getByRole("button", { name: "Trust for this machine" }))
 

@@ -298,10 +298,13 @@ describe("trust states", () => {
     expect(screen.queryByText("Nothing from this repository can run when a session starts.")).toBeNull()
     const runs = screen.getByRole("region", { name: "2 entries from this repository run when a session starts or Git checks out or stages a file" })
     const rows = within(runs).getAllByRole("listitem")
+    // The operation and its command are separate elements, the command a
+    // bounded block (ruling Q335), so the row's text joins them unspaced.
     expect(rows.map((row) => row.textContent)).toEqual([
-      "Filter driversopssmudge sops -d.git/config",
-      "Filter driversopsclean sops -e.git/config",
+      "Filter driversopssmudgesops -d.git/config",
+      "Filter driversopscleansops -e.git/config",
     ])
+    expect(rows.map((row) => row.querySelector("code")?.textContent)).toEqual(["sops -d", "sops -e"])
   })
 
   it("does not promise trust to a repository that cannot be trusted", () => {

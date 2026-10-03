@@ -288,9 +288,11 @@ function RepositoryRunsPanel({ inventory, meta }: { inventory: ToolInventory; me
             <FilterIcon className="size-4 shrink-0 text-info-dim" aria-hidden />
             <span className="w-[84px] shrink-0 text-[11.5px]">Filter driver</span>
             <span className={cn(mono, "w-40 shrink-0 text-[11px] break-all")}>{filter.driver}</span>
-            <span className={cn(mono, "min-w-0 flex-1 basis-64 text-[10.5px] break-all text-info-dim")}>
-              <span>{filter.operation}</span>{" "}
-              <span className={commandWhitespace}>{filter.command}</span>
+            {/* The operation and its command, the command a bounded block as
+                in the trust sheet (ruling Q335). */}
+            <span className="flex min-w-0 flex-1 basis-64 flex-wrap items-start gap-x-2 gap-y-0.5">
+              <span className="pt-[3px] text-[11px] text-info-dim">{filter.operation}</span>
+              <code className={cn(mono, commandWhitespace, "min-w-0 flex-1 rounded-md bg-code px-1.5 py-0.5 text-[10.5px] break-all text-info-foreground")}>{filter.command}</code>
             </span>
             <span className={cn(mono, "text-[10.5px] text-info-dim")}>{filter.file}</span>
           </li>

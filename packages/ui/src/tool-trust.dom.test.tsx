@@ -23,10 +23,13 @@ const changedDigest = `sha256:${"c".repeat(64)}`
 const reviewDigest = `sha256:${"b".repeat(64)}`
 // It promises nothing about moving a setting to another file: the review
 // digest names a file by its shown, redacted label (ruling Q325).
-// A filter driver's line is drawn in parts, each operation apart from its
-// command (ruling Q328), so it is read whole, by its text content.
-const commandLine = (text: string) => (_: string, element: Element | null) =>
-  element?.getAttribute("data-slot") === "filter-commands" && element.textContent === text
+// A filter driver's commands are a definition list, one row per operation
+// and its command (rulings Q328, Q335), read here as [operation, command].
+const filterPairs = (scope: HTMLElement) =>
+  [...scope.querySelectorAll("dl[data-slot='filter-commands'] > div")].map((row) => [
+    row.querySelector("dt")?.textContent,
+    row.querySelector("dd")?.textContent,
+  ])
 const gitConfigPinnedText = "In the Git config only the filter settings listed here are pinned, not the whole file: changing one of them holds them back again. Other Git settings in that file are not pinned."
 const grant = { trustedDigest: digest, trustedAt: "2026-09-12T10:41:00.000Z", trustedBy: { client: "desktop" as const } }
 const readAt = new Date("2026-09-29T14:02:31")
@@ -483,14 +486,14 @@ describe("git filters in the review", () => {
     expect(within(local).getByText("1 filter driver")).toBeTruthy()
     expect(within(local).getByText("Filter driver")).toBeTruthy()
     expect(within(local).getByText("sops")).toBeTruthy()
-    expect(within(local).getByText(commandLine("smudge sops -d · clean sops -e"))).toBeTruthy()
+    expect(filterPairs(local)).toEqual([["smudge", "sops -d"], ["clean", "sops -e"]])
     // A trusted filter runs whatever its command names (ruling Q205 A).
     expect(within(local).getByText("A filter driver runs its command whenever Git checks out or stages a file. If the command runs a file in this repository, it runs whatever that file holds, an agent's edit included.")).toBeTruthy()
 
     const worktree = within(sheet).getByRole("group", { name: ".git/worktrees/w1/config.worktree" })
     expect(within(worktree).getByText("worktree git config")).toBeTruthy()
     expect(within(worktree).getByText("crypt")).toBeTruthy()
-    expect(within(worktree).getByText(commandLine("process ./bin/crypt --token [REDACTED]"))).toBeTruthy()
+    expect(filterPairs(worktree)).toEqual([["process", "./bin/crypt --token [REDACTED]"]])
     expect(within(worktree).getByText("Cut at a credential. Domovoi shows no secret.")).toBeTruthy()
 
     // Provider files are pinned whole; the Git config only by its filter settings.
@@ -547,6 +550,49 @@ describe("git filters in the review", () => {
     // Shown exactly, so it can be reviewed.
     await user.click(within(sheet).getByRole("button", { name: "Trust for this machine" }))
     expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest, gitFilters: { reviewed: true, reviewDigest } })
+  })
+
+  // Two configurations that would read the same as one line: A sets smudge
+  // `review-label` and clean `review-clean`; B sets only smudge, to
+  // `review-label · clean review-clean`. Each operation and its command is a
+  // row of its own, the operation a term and the command its definition, with
+  // no delimiter text between rows, so A shows two rows and B one, and B's
+  // "clean" stays inside its command (ruling Q335).
+  it("draws each operation and its command as a bounded row, so a command cannot pass for another operation", async () => {
+    const pairs = (sheet: HTMLElement) => {
+      const list = within(sheet).getByRole("group", { name: ".git/config" }).querySelector("dl[data-slot='filter-commands']")
+      expect(list).not.toBeNull()
+      // No delimiter text between rows: every child is a row of one term and
+      // its definition.
+      for (const row of list!.childNodes) {
+        expect(row.nodeName).toBe("DIV")
+        expect([...row.childNodes].map((node) => node.nodeName)).toEqual(["DT", "DD"])
+      }
+      return within(list as HTMLElement).getAllByRole("term").map((term) => {
+        const definition = term.nextElementSibling as HTMLElement
+        expect(definition.tagName).toBe("DD")
+        expect(definition.className).toContain("whitespace-break-spaces")
+        expect(definition.className).toContain("bg-code")
+        expect(term.parentElement).toBe(definition.parentElement)
+        return [term.textContent, definition.textContent]
+      })
+    }
+    const entry = sopsFilters.entries[0]!
+    const a = withGitFilters(inventory(), {
+      ...sopsFilters,
+      entries: [{ ...entry, operation: "smudge", command: "review-label" }, { ...entry, operation: "clean", command: "review-clean" }],
+    })
+    const b = withGitFilters(inventory(), {
+      ...sopsFilters,
+      entries: [{ ...entry, operation: "smudge", command: "review-label · clean review-clean" }],
+      reviewDigest: `sha256:${"e".repeat(64)}`,
+    })
+
+    show(a, { onTrust: vi.fn() })
+    expect(pairs((await openSheet()).sheet)).toEqual([["smudge", "review-label"], ["clean", "review-clean"]])
+    cleanup()
+    show(b, { onTrust: vi.fn() })
+    expect(pairs((await openSheet()).sheet)).toEqual([["smudge", "review-label · clean review-clean"]])
   })
 
   // The same holds for a hook's or tool server's command the review lists.
@@ -651,7 +697,7 @@ describe("git filters in the review", () => {
 
     const open = screen.getByRole("dialog")
     expect(within(open).getByText("The files changed while this was open")).toBeTruthy()
-    expect(within(open).getByText(commandLine("smudge sops -d --keep · clean sops -e"))).toBeTruthy()
+    expect(filterPairs(open)).toEqual([["smudge", "sops -d --keep"], ["clean", "sops -e"]])
     await user.click(within(open).getByRole("button", { name: "Trust for this machine" }))
     expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest, gitFilters: { reviewed: true, reviewDigest: newDigest } })
   })
