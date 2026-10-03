@@ -174,7 +174,8 @@ export function ThreadComposer({
   // A paste past the inline limit goes with the message as a file instead of
   // filling the field. When it cannot be a file, because the draft is full or
   // the text is past the attachment limit, it stays in the field as before
-  // and the composer says why.
+  // and the composer says why. The note describes the last paste, so a paste
+  // without one clears what an earlier paste left.
   const pasteAsFile = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const field = event.currentTarget
     const outcome = pasteOutcome(
@@ -183,7 +184,7 @@ export function ThreadComposer({
       field.value.length - (field.selectionEnd - field.selectionStart),
     )
     if (outcome.kind === "inline") {
-      if (outcome.note) setAttachmentError(outcome.note)
+      setAttachmentError(outcome.note ?? "")
       return
     }
     event.preventDefault()

@@ -133,6 +133,23 @@ it("does not say a message under the cap cannot be sent", async () => {
   expect(screen.getByRole("alert").textContent).toBe("Pasted text exceeds the 256 KB attachment limit, so it stayed in the message.")
 })
 
+// The note describes the last paste. Replacing the kept text with a paste
+// that fits leaves nothing for the note to describe, so it goes.
+it("drops the paste note when the next paste fits", async () => {
+  const user = userEvent.setup()
+  renderThread()
+  const huge = Array.from({ length: 41 }, () => "x".repeat(7_000)).join("\n")
+  await user.click(field())
+  await user.paste(huge)
+  expect(screen.getByRole("alert")).toBeTruthy()
+
+  field().setSelectionRange(0, field().value.length)
+  await user.paste("short")
+
+  expect(field().value).toBe("short")
+  expect(screen.queryByRole("alert")).toBeNull()
+})
+
 // A message needs words: the daemon refuses an empty prompt, so a file with
 // nothing typed leaves Send off. The composer says what is missing.
 it("says a message is needed to send a pasted file", async () => {
