@@ -95,26 +95,34 @@ const fleetDot: Record<MachineRow["health"], string> = {
 }
 
 // Frame 10's fleet rows: each machine, its light, and how it is reached or
-// when it was last heard. A machine that has stopped answering is dimmed.
+// when it was last seen. A machine that has stopped answering is dimmed. The
+// state is a few words on one line that gives way to the name, because the
+// row's note is a sentence that repeats the name and crowded it out.
 function IdleFleet({ fleet, now }: { fleet: FleetEntry[], now: number }) {
   const rows = machineRows(fleet, now)
   if (rows.length === 0) return null
   return (
     <View className="overflow-hidden rounded-2xl border border-border">
-      {rows.map((row, index) => (
-        <View
-          key={row.id}
-          className={cn(
-            "min-h-[52px] flex-row items-center gap-[11px] bg-card px-[15px] py-3",
-            index > 0 && "border-t border-border",
-            row.health === "gone" && "opacity-55",
-          )}
-        >
-          <View className={cn("h-[7px] w-[7px] rounded-full", fleetDot[row.health])} />
-          <Text className="flex-1 font-mono text-[12.5px] text-strong" numberOfLines={1}>{row.label}</Text>
-          <Text className="font-sans text-[11.5px] text-faint">{row.note ?? row.badge}</Text>
-        </View>
-      ))}
+      {rows.map((row, index) => {
+        const entry = fleet[index]
+        const state = row.health === "gone" && entry?.kind === "machine"
+          ? lastSeen(entry.machine.heartbeat.lastSeenAt, now) ?? row.badge
+          : row.badge
+        return (
+          <View
+            key={row.id}
+            className={cn(
+              "min-h-[52px] flex-row items-center gap-[11px] bg-card px-[15px] py-3",
+              index > 0 && "border-t border-border",
+              row.health === "gone" && "opacity-55",
+            )}
+          >
+            <View className={cn("h-[7px] w-[7px] rounded-full", fleetDot[row.health])} />
+            <Text className="flex-1 font-mono text-[12.5px] text-strong" numberOfLines={1}>{row.label}</Text>
+            <Text className="max-w-[50%] shrink font-sans text-[11.5px] text-faint" numberOfLines={1}>{state}</Text>
+          </View>
+        )
+      })}
     </View>
   )
 }

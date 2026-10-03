@@ -208,6 +208,19 @@ describe("SessionsScreen", () => {
     expect(screen.getByText(`2 machines are answering. ${machine}, the one this phone reads, has no work in flight. Empty here is a healthy state, not a failure.`)).toBeOnTheScreen()
   })
 
+  // Frame 10's rows say a machine's state in a few words ("last seen 2d ago"),
+  // not a sentence that repeats the machine's name beside it.
+  it("says a quiet machine's state in the design's short words", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    const now = Date.parse("2026-09-20T00:00:00.000Z")
+    await draw({ snapshot: idle, now, fleet: [entry("mac-mini", "healthy", true), entry("wsl", "unreachable")] })
+
+    expect(screen.getByText("last seen 2d ago")).toBeOnTheScreen()
+    expect(screen.queryByText(/cannot be reached/)).toBeNull()
+  })
+
   // Frame 10 lists the fleet under the idle card, one row per machine.
   it("lists the fleet under the idle card", async () => {
     const idle = workspace()
