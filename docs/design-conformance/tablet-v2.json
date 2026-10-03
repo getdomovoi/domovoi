@@ -235,7 +235,7 @@
     {
       "id": "thread.gate",
       "since": "2026-10-02",
-      "note": "Ruled differences: the design draws Always here on a hard gate, and the card hides Always on hard gates and unresolved requests (ruled 2026-09-24, #545). Deny opens the full-screen explain flow (I68, 6542cb30). The design folds the facts behind What does this touch? under the decisions; Q355 A keeps all facts expanded but moves them below the decisions, so nothing is behind a tap. Today they sit above the decisions, which is an open gap until that fix."
+      "note": "Ruled differences: the design draws Always here on a hard gate, and the card hides Always on hard gates and unresolved requests (ruled 2026-09-24, #545). The design folds the facts behind What does this touch? under the decisions; Q355 A keeps all facts expanded but moves them below the decisions, so nothing is behind a tap. Today they sit above the decisions, which is an open gap until that fix. Open gap, not ruled for the tablet: Deny opens the full-screen deny-explain flow (an audit fix, I68, 6542cb30) where the design decides at once; Q339 A (Deny decides at once with a quiet Deny with a note) was ruled for the desktop gate card and does not settle the tablet."
     },
     {
       "id": "sheet",
@@ -245,7 +245,7 @@
     {
       "id": "pairing.success",
       "since": "2026-10-02",
-      "note": "Copy and structure match; sizes do not. The title is 11.5px against 17px, the limit line 11.5px against 14px, and Open Sessions a 12px pill against a 44px button. The card stands alone rather than floating over the shell, because no snapshot exists before pairing. Q338 A leaves tablet type sizes to S3.5."
+      "note": "Copy and structure match; sizes do not. The title is 11.5px against 17px, the limit line 11.5px against 14px, and Open Sessions a 12px pill against a 44px button; Q338 A leaves tablet type sizes to S3.5. Open gap, no ruling: the card stands alone rather than floating over the shell, because no snapshot exists before pairing."
     }
   ],
   "scriptBacklog": {
