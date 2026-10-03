@@ -4,7 +4,9 @@ import { createRoot } from "react-dom/client"
 import {
   applyStoredAppearanceTheme,
   bridgeRelayPinStorage,
+  CommandLinksProvider,
   FirstRunServiceContext,
+  useCommandLinkView,
   StartupError,
   WorkspaceErrorBoundary,
   WorkspaceShell,
@@ -43,6 +45,8 @@ function startupFailure(error: unknown): DesktopState {
 function DesktopApp() {
   const [state, setState] = useState<DesktopState>({ kind: "resolving" })
   const [retrying, setRetrying] = useState(false)
+  // Q336 A: printed commands name what runs, here and in the workspace.
+  const links = useCommandLinkView()
 
   useEffect(() => {
     let active = true
@@ -87,7 +91,7 @@ function DesktopApp() {
   if (state.kind === "failed") return <StartupError message={state.message} />
   if (window.domovoiLaunchSmoke) return <DesktopLaunchSmoke startup={state} />
   if (state.kind === "refused") {
-    return <DesktopDaemonRefused reason={state.reason} message={state.message} retrying={retrying} onRetry={retry} />
+    return <DesktopDaemonRefused reason={state.reason} message={state.message} retrying={retrying} onRetry={retry} links={links} />
   }
   return (
     <StrictMode>
@@ -112,4 +116,6 @@ function DesktopApp() {
   )
 }
 
-root.render(<DesktopApp />)
+// The ~/.local/bin links (Q336 A), read once at startup and after each change
+// from Settings.
+root.render(<CommandLinksProvider bridge={window.domovoiDesktop}><DesktopApp /></CommandLinksProvider>)

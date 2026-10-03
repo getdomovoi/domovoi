@@ -27,9 +27,12 @@ type ProviderSettingsProps = {
   providers: readonly ProviderRuntime[]
   secrets: readonly ProviderSecretStatus[]
   localDaemon?: { title: string; detail: string }
+  // Q336 A: names a command as it runs on the execution machine, when that
+  // is this one; otherwise commands print as written.
+  printCommand?: ((command: string) => string) | undefined
 }
 
-export function ProviderSettings({ providers, secrets, localDaemon }: ProviderSettingsProps) {
+export function ProviderSettings({ providers, secrets, localDaemon, printCommand }: ProviderSettingsProps) {
   return (
     <>
       <h2 className="m-0 text-[13px] font-medium">Providers and tokens</h2>
@@ -105,7 +108,7 @@ export function ProviderSettings({ providers, secrets, localDaemon }: ProviderSe
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             {secrets.map((secret) => (
-              <ProviderKeyRow key={secret.provider} status={secret} />
+              <ProviderKeyRow key={secret.provider} status={secret} print={printCommand ?? ((command) => command)} />
             ))}
           </CardContent>
         </Card>
@@ -315,7 +318,7 @@ export function ExternalEditorSettings({
   )
 }
 
-function ProviderKeyRow({ status }: { status: ProviderSecretStatus }) {
+function ProviderKeyRow({ status, print }: { status: ProviderSecretStatus; print: (command: string) => string }) {
   const label = directProviderName(status.provider)
 
   return (
@@ -328,8 +331,8 @@ function ProviderKeyRow({ status }: { status: ProviderSecretStatus }) {
           </FieldDescription>
         </span>
         <span className="min-w-0 basis-64 flex-[2] text-micro leading-relaxed text-muted-foreground">
-          Run <code className="font-machine">domovoid secret set {status.provider}</code> locally on the execution machine.
-          {status.state === "stored" ? <><br />Delete with <code className="font-machine">domovoid secret delete {status.provider}</code>.</> : null}
+          Run <code className="font-machine">{print(`domovoid secret set ${status.provider}`)}</code> locally on the execution machine.
+          {status.state === "stored" ? <><br />Delete with <code className="font-machine">{print(`domovoid secret delete ${status.provider}`)}</code>.</> : null}
         </span>
       </div>
     </Field>

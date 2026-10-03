@@ -4,6 +4,8 @@ import qrcode from "qrcode-generator"
 import { useEffect, useMemo, useState } from "react"
 
 import { Button } from "./components/ui/button"
+import { useCommandLinkView } from "./command-links.js"
+import { printedCommand } from "./printed-command.js"
 import { pairingAddressOf, type IssuedPairingCode, type PairingAddressReport } from "./pairing-address.js"
 
 export type { IssuedPairingCode, PairingAddressReport } from "./pairing-address.js"
@@ -80,6 +82,8 @@ export function PairingCard({
   onCopy: (text: string) => Promise<void>
 }) {
   const [kind, setKind] = useState<Kind>("phone")
+  // Q336 A: the printed command names what runs on this machine.
+  const links = useCommandLinkView()
   const [issued, setIssued] = useState<IssuedPairingCode | null>(null)
   // The kind the shown code was issued for; the picker can move on without it.
   const [issuedKind, setIssuedKind] = useState<Kind>("phone")
@@ -171,7 +175,7 @@ export function PairingCard({
               ) : (
                 <div className="flex flex-wrap items-baseline gap-2 text-[11px] text-muted-foreground">
                   <span>The same code as</span>
-                  <span className="font-machine text-foreground">{`domovoid pair --client ${kinds[kind].client}`}</span>
+                  <span className="font-machine text-foreground">{printedCommand(`domovoid pair --client ${kinds[kind].client}`, links)}</span>
                 </div>
               )}
             </>

@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { DaemonRpcError } from "./client.js"
+import { CommandLinksProvider } from "./command-links.js"
 import { defaultNotificationPreferences } from "./notification-preferences.js"
 import { SettingsShell } from "./settings-shell.js"
 
@@ -394,6 +395,33 @@ it("opens the release page from a watching window", () => {
 // J24 (2026-09-23): Settings opens with the daemon on this machine and says
 // what quitting does. Install and Remove are drawn locked until the app can
 // do them; the by-hand command is beside the lock so nobody is left guessing.
+// Q336 A: on a desktop that ships its launchers, the section offers to link
+// them and every command it prints names what runs.
+it("prints the shipped launcher's full path where no link exists, and offers to link it", async () => {
+  const launcher = "/Applications/Domovoi.app/Contents/Resources/daemon-runtime/bin/domovoid"
+  const commandLinks = vi.fn(async () => ({ report: { available: true, directory: "~/.local/bin", onPath: false, commands: [{ name: "domovoid", launcher, state: "absent" }] } }))
+  render(<CommandLinksProvider bridge={{ commandLinks }}><SettingsShell {...shellProps()} localDaemon={{ title: "Running Domovoi inside this app", detail: "", owner: "app", platform: "darwin" }} /></CommandLinksProvider>)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(await within(section).findByText(`${launcher} service install`)).toBeTruthy()
+  expect(within(section).queryByText("domovoid service install")).toBeNull()
+  expect(within(section).getByRole("region", { name: "Terminal commands" })).toBeTruthy()
+  expect(within(section).getByRole("button", { name: "Link the commands" })).toBeTruthy()
+})
+
+// The key commands run on the execution machine. When Settings shows the
+// local daemon, that is this machine; otherwise they print as written.
+it("prints the key commands by the shipped launcher only for this machine's daemon", async () => {
+  const launcher = "/Applications/Domovoi.app/Contents/Resources/daemon-runtime/bin/domovoid"
+  const commandLinks = vi.fn(async () => ({ report: { available: true, directory: "~/.local/bin", onPath: false, commands: [{ name: "domovoid", launcher, state: "absent" }] } }))
+  const secrets = [{ provider: "openai" as const, state: "stored" as const, source: "keychain" as const }]
+  const { unmount } = render(<CommandLinksProvider bridge={{ commandLinks }}><SettingsShell {...shellProps()} secrets={secrets} localDaemon={{ title: "Running Domovoi inside this app", detail: "", owner: "app", platform: "darwin" }} /></CommandLinksProvider>)
+  expect(await screen.findByText(`${launcher} secret set openai`)).toBeTruthy()
+  expect(screen.getByText(`${launcher} secret delete openai`)).toBeTruthy()
+  unmount()
+  render(<CommandLinksProvider bridge={{ commandLinks }}><SettingsShell {...shellProps()} secrets={secrets} /></CommandLinksProvider>)
+  expect(await screen.findByText("domovoid secret set openai")).toBeTruthy()
+})
+
 it("draws the daemon section for a daemon inside this app, with Install locked and the command beside it", () => {
   render(<SettingsShell {...shellProps()} localDaemon={{ title: "Running Domovoi inside this app", detail: "This app started the local daemon and stops it when the app quits.", owner: "app", platform: "darwin" }} />)
   const section = screen.getByRole("region", { name: "Daemon on this machine" })

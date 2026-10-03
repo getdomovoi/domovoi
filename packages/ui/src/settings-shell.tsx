@@ -19,6 +19,8 @@ import type { WorkspaceTheme } from "./appearance.js"
 import { DaemonRpcError } from "./client.js"
 import type { DaemonServiceOutcome, DaemonServiceStatusReport, DesktopExternalEditor, WorkspaceWindowDecoration } from "./desktop-platform.js"
 import { failedStill, loginServices, readBackFact, type FailedServiceOutcome } from "./login-service-copy.js"
+import { CommandLinksRow, useCommandLinkView } from "./command-links.js"
+import { printedCommand } from "./printed-command.js"
 import { NotificationSettings } from "./notification-settings.js"
 import type { NotificationPreferences } from "./notification-preferences.js"
 import type { WorkspaceClientCapabilities } from "./workspace-platform.js"
@@ -211,6 +213,9 @@ function RemoveServiceDialog({ open, platform, onOpenChange, onConfirm }: {
 // `footer` is the design's last row of the card: About this build.
 function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { owner: NonNullable<LocalDaemonDescription["owner"]>; platform: NonNullable<LocalDaemonDescription["platform"]> }; footer?: ReactNode }) {
   const service = loginServices[daemon.platform]
+  // Q336 A: every printed command names what runs on this machine.
+  const links = useCommandLinkView()
+  const printed = (command: string) => printedCommand(command, links)
   const [phase, setPhase] = useState<ServicePhase>({ kind: "idle" })
   const [confirmingRemove, setConfirmingRemove] = useState(false)
   const live = daemon.service
@@ -271,7 +276,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
     { label: "Record", value: "~/.domovoi/service.json", note: "What Domovoi installed, so removing undoes exactly that.", item: installed ? "written" : "will write" },
     ...(on ? [{ label: "After a crash", value: "", note: service.crash, item: "" }] : []),
   ]
-  const command = unknown ? "domovoid service status" : installed ? "domovoid service remove" : "domovoid service install"
+  const command = printed(unknown ? "domovoid service status" : installed ? "domovoid service remove" : "domovoid service install")
   const lockReason = busy
     ? (phase.kind === "installing" ? "Both wait until the install finishes." : "Both wait until the removal finishes.")
     : installed
@@ -330,7 +335,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           {phase.recovery ? (
             <>
               <span>{phase.recovery}</span>
-              <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{profileRecoverCommand}</span>
+              <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{printed(profileRecoverCommand)}</span>
             </>
           ) : phase.daemonRunning && !phase.attached ? <span>Removed. Quitting Domovoi now stops the daemon and every session on it.</span> : null}
           {phase.daemonRunning && phase.attached ? <span>{`${phase.recovery ? "" : "Removed. "}This app is connected to a daemon it did not start. Quitting this app leaves it running.`}</span> : null}
@@ -350,7 +355,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           <span className="font-machine text-[10.5px] opacity-80">{phase.message}</span>
           <span>{`The ${service.kind} is installed and the daemon inside this app is stopped. Whether the service started is not known from here.`}</span>
           <span>To check, run this in a terminal.</span>
-          <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />domovoid service status</span>
+          <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{printed("domovoid service status")}</span>
         </div>
       ) : null}
       {phase.kind === "failed" ? (
@@ -359,7 +364,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           <span className="font-machine text-[10.5px] opacity-80">{phase.message}</span>
           <span>{phase.still}</span>
           <span>To finish by hand, run this in a terminal.</span>
-          <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{phase.action === "install" ? "domovoid service install" : "domovoid service remove"}</span>
+          <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{printed(phase.action === "install" ? "domovoid service install" : "domovoid service remove")}</span>
         </div>
       ) : null}
       {unknown && !installed ? null : <div className="flex flex-col gap-1.5">
@@ -406,6 +411,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           void run("remove")
         }}
       />
+      <CommandLinksRow />
       {footer}
     </section>
   )
@@ -615,6 +621,9 @@ export function SettingsShell({
   const editorCapability = externalEditor !== undefined && onExternalEditorChange !== undefined
     ? { editor: externalEditor, onChange: onExternalEditorChange }
     : undefined
+  // Only for this machine's daemon: Settings for an attached machine gets no
+  // localDaemon, and its commands print as written.
+  const links = useCommandLinkView()
   const daemonSection = localDaemon?.owner && localDaemon.platform
     ? { ...localDaemon, owner: localDaemon.owner, platform: localDaemon.platform }
     : undefined
@@ -638,7 +647,7 @@ export function SettingsShell({
           {daemonSection ? <DaemonSection daemon={daemonSection} footer={about ? <AboutBuildSection about={about} inCard /> : undefined} /> : null}
 
           <section aria-label="Providers and tokens">
-            <ProviderSettings providers={providers} secrets={secrets} {...(localDaemon && !daemonSection ? { localDaemon } : {})} />
+            <ProviderSettings providers={providers} secrets={secrets} {...(localDaemon && !daemonSection ? { localDaemon } : {})} {...(localDaemon ? { printCommand: (command: string) => printedCommand(command, links) } : {})} />
           </section>
 
           {about && !daemonSection ? <AboutBuildSection about={about} /> : null}

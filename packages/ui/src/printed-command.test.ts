@@ -1,6 +1,32 @@
 import { describe, expect, it } from "vitest"
 
-import { printedCommand, type CommandLinkView } from "./printed-command"
+import { parseCommandLinkResult, printedCommand, type CommandLinkView } from "./printed-command"
+
+// The preload passes the main process's answer through unchecked, so the
+// renderer reads only the shape it knows.
+describe("command link answers", () => {
+  it("reads a report, an unavailable one with its launchers, and a refusal", () => {
+    const report = { available: true, directory: "~/.local/bin", onPath: false, commands: [{ name: "domovoid", launcher: "/A/daemon-runtime/bin/domovoid", state: "absent" }] }
+    expect(parseCommandLinkResult({ report })).toEqual({ report })
+    expect(parseCommandLinkResult({ report, refused: "~/.local/bin/domovoi is not a link Domovoi made, so it was left as it is." }))
+      .toEqual({ report, refused: "~/.local/bin/domovoi is not a link Domovoi made, so it was left as it is." })
+    const unavailable = { available: false, reason: "r", launchers: [{ name: "domovoi", launcher: "/A/daemon-runtime/bin/domovoi" }] }
+    expect(parseCommandLinkResult({ report: unavailable })).toEqual({ report: unavailable })
+  })
+
+  it.each([
+    ["nothing", undefined],
+    ["no report", {}],
+    ["an unknown command", { report: { available: true, directory: "~/.local/bin", onPath: false, commands: [{ name: "rm", launcher: "/x", state: "absent" }] } }],
+    ["an unknown state", { report: { available: true, directory: "~/.local/bin", onPath: false, commands: [{ name: "domovoid", launcher: "/x", state: "maybe" }] } }],
+    ["a relative launcher", { report: { available: true, directory: "~/.local/bin", onPath: false, commands: [{ name: "domovoid", launcher: "x/domovoid", state: "absent" }] } }],
+    ["another directory", { report: { available: true, directory: "/etc", onPath: false, commands: [] } }],
+    ["an unavailable report without a reason", { report: { available: false } }],
+    ["a refusal that is not text", { report: { available: false, reason: "r" }, refused: 5 }],
+  ])("refuses %s", (_label, value) => {
+    expect(() => parseCommandLinkResult(value)).toThrow("Desktop returned an invalid command link answer")
+  })
+})
 
 const launcher = "/Applications/Domovoi.app/Contents/Resources/daemon-runtime/bin/domovoid"
 const view = (state: "linked" | "absent" | "stale" | "other", onPath = false): CommandLinkView => ({

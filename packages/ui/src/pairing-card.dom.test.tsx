@@ -3,6 +3,7 @@ import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
+import { CommandLinksProvider } from "./command-links"
 import { PairingCard, type IssuedPairingCode } from "./pairing-card"
 
 beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }) })
@@ -31,6 +32,14 @@ it("offers a code for a phone, a tablet or a browser, and lists what a paired de
   const grants = screen.getByRole("list", { name: "A PAIRED DEVICE CAN" })
   for (const line of phoneAndTabletPromise) expect(within(grants).getByText(line.text)).toBeTruthy()
   expect(screen.getByText("While the daemon runs inside this app, quitting the app disconnects every paired device.")).toBeTruthy()
+})
+
+// Q336 A: the command beside the code runs as printed on this machine.
+it("names the shipped launcher by its full path where no link exists", async () => {
+  const launcher = "/Applications/Domovoi.app/Contents/Resources/daemon-runtime/bin/domovoid"
+  const commandLinks = vi.fn(async () => ({ report: { available: true, directory: "~/.local/bin", onPath: true, commands: [{ name: "domovoid", launcher, state: "absent" }] } }))
+  render(<CommandLinksProvider bridge={{ commandLinks }}><PairingCard connected onIssueCode={vi.fn()} onCopy={vi.fn()} /></CommandLinksProvider>)
+  expect(await screen.findByText(`${launcher} pair --client phone`)).toBeTruthy()
 })
 
 it("shows the daemon's code, its address and a countdown, and copies what the device pastes", async () => {
