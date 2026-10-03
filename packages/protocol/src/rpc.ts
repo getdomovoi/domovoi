@@ -1322,8 +1322,9 @@ export const sessionSendParamsSchema = z.object({
   skillSelection: turnSkillSelectionSchema.optional(),
   attachments: z.array(sessionAttachmentSchema).max(maximumSessionAttachments).optional(),
   delivery: z.literal("next-turn-replace").optional(),
-  // The preview comments and build basis this message sends. Absent, the
-  // message sends none: open comments never ride along on their own.
+  // The preview comments and build basis this message sends; with it, only
+  // those reach the agent. Absent, every open comment of the session still
+  // attaches, a legacy default removed before 0.8.0 ships (ruling Q402).
   review: sessionSendReviewSchema.optional(),
 }).strict()
 

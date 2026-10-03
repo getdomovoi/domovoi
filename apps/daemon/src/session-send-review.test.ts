@@ -118,16 +118,26 @@ function reviewContext(prompt: string): { unresolvedAnnotations: Array<{ annotat
 }
 
 describe("a message with no review", () => {
-  it("sends no comment, however many are open", async () => {
+  // Ruling Q402: until every client sends `review`, a message without one
+  // keeps the behaviour clients were built against: every open comment of the
+  // session attaches, and no build basis. Removed before 0.8.0 ships.
+  it("still attaches every open comment of its session, and no build basis", async () => {
     const { provider, send, lastUserItem } = await start()
     expect((await send("Carry on")).error).toBeUndefined()
-    const prompt = provider.startTurn.mock.calls[0]![0].prompt
-    expect(reviewContext(prompt)).toBeUndefined()
-    expect(prompt).not.toContain("maybe make the")
-    expect(prompt).not.toContain("comment-ready")
-    expect(await lastUserItem()).toMatchObject({
-      providerPromptDelivery: { annotations: { availableCount: 0, deliveredIds: [], omitted: { budget: 0, limit: 0 } } },
+    const context = reviewContext(provider.startTurn.mock.calls[0]![0].prompt)
+    expect(context?.unresolvedAnnotations.map((item) => item.annotationId))
+      .toEqual(["comment-half-written", "comment-ready", "comment-older"])
+    expect(context).not.toHaveProperty("buildBasis")
+    expect(((await lastUserItem()) as { providerPromptDelivery?: { annotations: unknown } }).providerPromptDelivery?.annotations).toEqual({
+      availableCount: 3, deliveredIds: ["comment-half-written", "comment-ready", "comment-older"], omitted: { budget: 0, limit: 0 },
     })
+  })
+
+  it("is the only path that attaches a comment the message did not name", async () => {
+    const { provider, send } = await start()
+    expect((await send("Only this", { review: { annotationIds: ["comment-older"] } })).error).toBeUndefined()
+    expect(reviewContext(provider.startTurn.mock.calls[0]![0].prompt)?.unresolvedAnnotations.map((item) => item.annotationId))
+      .toEqual(["comment-older"])
   })
 })
 

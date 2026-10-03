@@ -32,8 +32,8 @@ export type BuildBasisContext = {
 }
 
 // The comments and build basis one message sends (rulings Q348 A and Q342 A).
-// Nothing else reaches the agent: an open comment the message does not name
-// stays out of the turn.
+// When a message carries a review, nothing else reaches the agent: an open
+// comment it does not name stays out of the turn.
 export type AnnotationReview = {
   annotationIds: ReadonlySet<string>
   buildBasis?: BuildBasisContext
@@ -41,12 +41,26 @@ export type AnnotationReview = {
 
 export const noAnnotationReview: AnnotationReview = { annotationIds: new Set() }
 
+// LEGACY DEFAULT, ruling Q402. Until desktop, web, phone, tablet and the CLI
+// send `review`, a message without one keeps the behaviour those clients were
+// built against: every open comment of the session attaches, and no build
+// basis. This is the only path that attaches a comment a message did not name.
+// It is removed before protocol 0.8.0 ships (SHIP-PLAN.md, Preview and review);
+// a message without a review then sends no comment.
+export function legacyOpenCommentReview(snapshot: WorkspaceSnapshot, sessionId: string): AnnotationReview {
+  return {
+    annotationIds: new Set(snapshot.annotations
+      .filter((annotation) => annotation.sessionId === sessionId && annotation.status === "open")
+      .map((annotation) => annotation.id)),
+  }
+}
+
 export function resolveAnnotationReview(
   snapshot: WorkspaceSnapshot,
   sessionId: string,
   review: SessionSendReview | undefined,
 ): AnnotationReview {
-  if (!review) return noAnnotationReview
+  if (!review) return legacyOpenCommentReview(snapshot, sessionId)
   for (const annotationId of review.annotationIds) {
     const annotation = snapshot.annotations.find((candidate) => candidate.id === annotationId)
     if (!annotation || annotation.sessionId !== sessionId || annotation.status !== "open") {

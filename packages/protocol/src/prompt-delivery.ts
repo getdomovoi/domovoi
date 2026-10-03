@@ -73,8 +73,9 @@ const reviewBuildBasisSchema = z.object({
 
 // What a person sends with one message from the preview (rulings Q348 A and
 // Q342 A): the open comments they chose and the variant they chose as the
-// build basis. Only these reach the agent. A message without a review sends
-// no comment and no build basis, however many comments are open.
+// build basis. Only these reach the agent. Until every client sends a review
+// (ruling Q402), a message without one still attaches every open comment of
+// its session and no build basis; that default goes before 0.8.0 ships.
 export const sessionSendReviewSchema = z.object({
   annotationIds: z.array(reviewIdSchema).max(maximumReviewAnnotations).refine(
     (ids) => new Set(ids).size === ids.length,

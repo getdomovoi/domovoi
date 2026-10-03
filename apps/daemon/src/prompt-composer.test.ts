@@ -245,15 +245,27 @@ describe("composeProviderPrompt budget", () => {
 })
 
 describe("composeProviderPrompt review", () => {
-  it("carries no comment the message did not send, however many are open", async () => {
+  it("carries only the comments a review names", async () => {
     const snapshot = baseSnapshot()
     snapshot.annotations = [annotation(1), annotation(2)]
 
+    const result = await composeProviderPrompt({ ...input(snapshot, "Ship it"), review: { annotationIds: ["annotation-1"] } })
+
+    expect(result.providerPromptDelivery.annotations).toEqual({
+      availableCount: 1, deliveredIds: ["annotation-1"], omitted: { budget: 0, limit: 0 },
+    })
+    expect(result.prompt).not.toContain("annotation-2")
+  })
+
+  // Ruling Q402: the legacy default, removed before 0.8.0 ships.
+  it("carries every open comment when the message has no review", async () => {
+    const snapshot = baseSnapshot()
+    snapshot.annotations = [annotation(1), annotation(2), { ...annotation(3), status: "resolved" }]
+
     const result = await composeProviderPrompt(input(snapshot, "Ship it"))
 
-    expect(result.prompt).toBe("Ship it")
     expect(result.providerPromptDelivery.annotations).toEqual({
-      availableCount: 0, deliveredIds: [], omitted: { budget: 0, limit: 0 },
+      availableCount: 2, deliveredIds: ["annotation-2", "annotation-1"], omitted: { budget: 0, limit: 0 },
     })
   })
 

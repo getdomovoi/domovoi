@@ -43,7 +43,7 @@ export type ProviderPromptInput = {
   requireTrustedSkills: boolean
   skillSelection?: TurnSkillSelection
   // The preview comments and build basis the message sends. Absent, the turn
-  // carries none, whatever comments are open.
+  // takes legacyOpenCommentReview's default (ruling Q402).
   review?: SessionSendReview
   budgetCodeUnits?: number
 }

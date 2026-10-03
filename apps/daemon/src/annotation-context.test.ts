@@ -4,7 +4,9 @@ import { demoWorkspace, type Annotation } from "@getdomovoi/protocol"
 
 import {
   agentPromptWithAnnotations,
+  legacyOpenCommentReview,
   noAnnotationReview,
+  resolveAnnotationReview,
   type AnnotationReview,
 } from "./annotation-context.js"
 import { prepareAnnotationTurn } from "./annotation-visual-turn.js"
@@ -93,6 +95,21 @@ describe("agentPromptWithAnnotations", () => {
     const snapshot = structuredClone(demoWorkspace)
     expect(snapshot.annotations.some((annotation) => annotation.sessionId === "session-billing" && annotation.status === "open")).toBe(true)
     expect(agentPromptWithAnnotations(snapshot, "session-billing", noAnnotationReview, "Continue.")).toBe("Continue.")
+  })
+
+  // Ruling Q402: the one place a message without a review gets comments.
+  it("resolves a message without a review to every open comment of its session, and no build basis", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.annotations[1]!.status = "open"
+    snapshot.annotations.push({ ...structuredClone(snapshot.annotations[1]!), id: "annotation-closed", status: "resolved" })
+    snapshot.annotations.push({ ...structuredClone(snapshot.annotations[1]!), id: "annotation-elsewhere", sessionId: "session-onboarding" })
+    const legacy = resolveAnnotationReview(snapshot, "session-billing", undefined)
+    expect(legacy).toEqual(legacyOpenCommentReview(snapshot, "session-billing"))
+    expect([...legacy.annotationIds].sort()).toEqual(["annotation-migration-machine", "annotation-replay-copy"])
+    expect(legacy).not.toHaveProperty("buildBasis")
+    // A review, even one naming a single comment, never widens to the default.
+    expect([...resolveAnnotationReview(snapshot, "session-billing", { annotationIds: ["annotation-replay-copy"] }).annotationIds])
+      .toEqual(["annotation-replay-copy"])
   })
 
   it("leaves out an open comment the message did not name", () => {
