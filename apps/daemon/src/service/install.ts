@@ -25,6 +25,7 @@ import { readGuestSupervisorStatus } from "./supervisor-command.js"
 import { profileDirectory, profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
 import { bundledServiceRuntime } from "./bundled-runtime.js"
 import type { RuntimeFileSystem } from "./runtime-stage.js"
+import type { DaemonServiceRuntimeReader } from "./desktop-service.js"
 import { disableLinger, enableLinger, lingerAfterRestore, lingerInstallLine, lingerRecord, lingerRemovalLine, type LingerInstallOutcome, type LingerRemovalOutcome } from "./linger.js"
 
 const serviceName = "domovoid"
@@ -1401,6 +1402,9 @@ export type ServiceCommandDependencies = ServiceEffects & {
   version?: string
   runtimeStagingParent?: string
   runtimeFileSystem?: RuntimeFileSystem
+  // What reads the service definition for the removal of unused copies; by
+  // default the app's reader (desktop-service.ts).
+  runtimeReader?: DaemonServiceRuntimeReader
   stdout: (text: string) => void
   stderr: (text: string) => void
 }
@@ -1453,6 +1457,8 @@ export async function runServiceCommand(
       home: configuration.homeDirectory,
       ...(dependencies.runtimeFileSystem === undefined ? {} : { fileSystem: dependencies.runtimeFileSystem }),
       ...(dependencies.runtimeStagingParent === undefined ? {} : { stagingParent: dependencies.runtimeStagingParent }),
+      claimServiceOperation: dependencies.claimServiceOperation,
+      ...(dependencies.runtimeReader === undefined ? {} : { reader: dependencies.runtimeReader }),
     })
     if (dependencies.platform === "linux" && (savedWsl || installingFromWsl)) {
       const guest = bundled === undefined
@@ -1468,7 +1474,17 @@ export async function runServiceCommand(
       const plan = bundled === undefined
         ? await installService({ ...target, configuration }, dependencies)
         : await installService({ ...target, execPath: bundled.runtime.daemonEntryPath, runtime: bundled.runtime.nodePath, configuration }, dependencies, { beforeChanges: bundled.publish })
-      if (bundled !== undefined) dependencies.stdout(`Copied the daemon runtime out of the app to ${bundled.copy}, so the service does not run from inside the app.\n`)
+      if (bundled !== undefined) {
+        dependencies.stdout(`Copied the daemon runtime out of the app to ${bundled.copy}, so the service does not run from inside the app.\n`)
+        // #635: the app's Install removes unused copies once it has reached
+        // the running service. The command does not attach to it; it runs
+        // the cleanup once the service manager has accepted every command
+        // that registers and starts the service, and the cleanup itself
+        // reads the definition again and keeps the copy it names. A WSL
+        // guest service has no definition this can read, so its copies are
+        // kept (runtime-cleanup.ts).
+        await bundled.removeUnused()
+      }
       dependencies.stdout(
         plan.kind === "file"
           ? `Installed the Domovoi daemon service at ${plan.path}\n`

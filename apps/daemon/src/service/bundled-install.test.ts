@@ -4,6 +4,7 @@ import { dirname, join } from "node:path"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { parseServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { runServiceCommand, type ServiceCommandDependencies, type ServiceEffects } from "./install.js"
 import { daemonRuntimeLayout, nodeRuntimeFileSystem, type RuntimeFileSystem } from "./runtime-stage.js"
 import { systemdUnitProgram } from "./units.js"
@@ -152,6 +153,45 @@ describe.skipIf(process.platform === "win32")("domovoid service install from the
     expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
     expect(dependencies.stderr).toHaveBeenCalledWith("Another service change is in progress.\n")
     expect(await readdir(home)).toEqual([])
+  })
+
+  // #635 for the command: once its service is installed, the same cleanup the
+  // app's Install runs removes the copies no service runs. The copy the
+  // service runs now and the one it ran before this install are kept, as the
+  // app keeps them (runtime-cleanup.ts).
+  it("removes the copies no service runs once a reinstall is installed", async () => {
+    // The service manager's files, as the mocked writes leave them.
+    const files = new Map<string, string>()
+    const missing = (path: string) => Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" })
+    const readConfiguration = (at: string, platform: string) => {
+      const found = files.get(serviceConfigurationPath(at, platform))
+      return found === undefined ? undefined : parseServiceConfiguration(found)
+    }
+    const install = () => command({
+      write: vi.fn(async (path: string, contents: string) => { files.set(path, contents) }),
+      exists: vi.fn(async (path: string) => files.has(path)),
+      read: vi.fn(async (path: string) => { const found = files.get(path); if (found === undefined) throw missing(path); return found }),
+      readConfiguration: vi.fn(readConfiguration),
+      // What the cleanup reads the service definition with, here over the
+      // same files.
+      runtimeReader: {
+        platform: "linux", home,
+        readDefinition: async (path) => files.get(path),
+        capture: vi.fn(async () => ({ code: 0, stdout: "" })),
+        readConfiguration,
+      },
+    })
+    const versions = join(home, ".domovoi", "runtime", "0.9.4")
+    const copies: string[] = []
+    for (let run = 0; run < 3; run += 1) {
+      const dependencies = install()
+      const code = await runServiceCommand(["service", "install"], dependencies)
+      expect(code, `install ${run}: ${vi.mocked(dependencies.stderr).mock.calls.join("")}`).toBe(0)
+      copies.push(systemdUnitProgram(files.get(join(home, ".config", "systemd", "user", "domovoid.service"))!)!.args[0]!.split("/").at(-4)!)
+    }
+    // The first copy is gone; the one the service ran before the last
+    // install and the one it runs now stay.
+    expect((await readdir(versions)).sort()).toEqual([copies[1]!, copies[2]!].sort())
   })
 
   // Inside WSL the install registers a Windows task that starts the guest

@@ -2,7 +2,9 @@ import { tmpdir } from "node:os"
 import { posix, win32 } from "node:path"
 
 import type { DaemonEnvironment } from "../config.js"
-import type { DaemonServiceRuntime } from "./desktop-service.js"
+import type { FileLease } from "../file-lease.js"
+import { nodeDaemonServiceRuntimeReader, readDaemonServiceRuntimeCopy, type DaemonServiceRuntime, type DaemonServiceRuntimeCopy, type DaemonServiceRuntimeReader } from "./desktop-service.js"
+import { removeUnusedDaemonRuntimes, type DaemonRuntimeCleanupDependencies } from "./runtime-cleanup.js"
 import { DaemonRuntimeStagingRefusedError, DaemonServiceRuntimeMissingError, daemonRuntimeLayout, nodeRuntimeFileSystem, prepareDaemonRuntime, type RuntimeFileSystem } from "./runtime-stage.js"
 
 // Q408 A (2026-10-02): `domovoid service install` run from the runtime the
@@ -62,6 +64,13 @@ export type BundledServiceRuntime = {
   // bound to its removal, and a directory swapped in between would be removed
   // instead. It is only disk space.
   publish: () => Promise<void>
+  // #635, as the app's Install does: run once the new service is installed.
+  // Removes the copies under the profile that neither the service now nor the
+  // one before this install runs (removeUnusedDaemonRuntimes, under its own
+  // service-operation lease), only when this install published its copy and
+  // read what the service ran before. A failure keeps the copies and changes
+  // nothing about the install; the next one tries again.
+  removeUnused: () => Promise<void>
 }
 
 // Where the command stages the copy when the system temporary directory is
@@ -109,6 +118,11 @@ export async function bundledServiceRuntime(input: {
   home: string
   fileSystem?: RuntimeFileSystem
   stagingParent?: string
+  // The service-operation lease the cleanup takes, the installer's own.
+  claimServiceOperation: () => FileLease
+  // What reads the service definition, before the publish and again in the
+  // cleanup; by default the app's reader, for this home and platform.
+  reader?: DaemonServiceRuntimeReader
 }): Promise<BundledServiceRuntime | undefined> {
   const resources = appRuntimeResources(input.execPath, input.platform)
   if (resources === undefined) return undefined
@@ -130,14 +144,38 @@ export async function bundledServiceRuntime(input: {
     ...(input.stagingParent === undefined ? {} : { stagingParent: input.stagingParent }),
     ...(dataDirectory === undefined ? {} : { dataDirectory }),
   }).catch((error: unknown) => { throw worded(error) })
+  // As the app's Install notes them (apps/desktop/src/main/daemon-service.ts):
+  // what the service ran, read under this install's lease right before the
+  // publish, and whether the publish happened. A read that fails leaves the
+  // previous copy unknown, and then no cleanup runs.
+  let previous: DaemonServiceRuntimeCopy | undefined
+  let published = false
+  const cleanup: DaemonRuntimeCleanupDependencies = {
+    ...(input.reader ?? { ...nodeDaemonServiceRuntimeReader(), platform: input.platform, home: input.home }),
+    claimServiceOperation: input.claimServiceOperation,
+  }
   return {
     runtime: prepared.runtime,
     copy: paths.dirname(paths.dirname(paths.dirname(prepared.runtime.daemonEntryPath))),
     publish: async () => {
+      try {
+        previous = await readDaemonServiceRuntimeCopy(cleanup)
+      } catch {
+        previous = undefined
+      }
       await prepared.publish().catch((error: unknown) => { throw worded(error) })
+      published = true
       for (const [part, path] of [["node", prepared.runtime.nodePath], ["daemon", prepared.runtime.daemonEntryPath]] as const) {
         const found = await fileSystem.entry(path)
         if (found !== "file") throw new DaemonServiceRuntimeMissingError(part, path, found === "missing" ? "missing" : "not-file")
+      }
+    },
+    removeUnused: async () => {
+      if (!published || previous === undefined) return
+      try {
+        await removeUnusedDaemonRuntimes({ profileDirectory: input.profileDirectory, published: prepared.runtime, previous }, cleanup)
+      } catch {
+        // Kept: the next confirmed install tries again.
       }
     },
   }
