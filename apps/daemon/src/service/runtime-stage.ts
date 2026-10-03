@@ -1,8 +1,10 @@
+import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { constants } from "node:fs"
 import { access, cp, lstat, mkdir, mkdtemp, readdir, readlink, realpath } from "node:fs/promises"
-import { homedir, tmpdir } from "node:os"
+import { homedir, tmpdir, userInfo } from "node:os"
 import { posix, win32 } from "node:path"
+import { promisify } from "node:util"
 
 import { publishFileDurably } from "@getdomovoi/credential-store"
 import { isLoginServiceRuntimeVersion } from "@getdomovoi/protocol"
@@ -119,6 +121,30 @@ export type RuntimeFileSystem = {
   readOnly(path: string): Promise<boolean>
   // Owner and mode of the entry itself, never through a link (POSIX only).
   permissions(path: string): Promise<{ uid: number; mode: number }>
+  // The access control entries of the entry itself, never through a link
+  // (macOS only). Throws when they cannot be read.
+  accessControl(path: string): Promise<AccessControlEntry[]>
+}
+
+// One entry of a macOS access control list, as `ls -le` lists it: the
+// principal ("user:dana", "group:staff", or a UUID ls could not name),
+// whether it was inherited, allow or deny, and its rights and inheritance
+// flags.
+export type AccessControlEntry = { principal: string; inherited: boolean; allow: boolean; rights: readonly string[] }
+
+// The entries in the output of macOS `ls -lde <path>`: the long listing
+// line, then one line per entry, " <n>: <principal>[ inherited] <allow|deny>
+// <right>,<right>...", numbered from 0. Any other line fails the whole
+// listing, a name that holds a newline included, so a reader never takes a
+// listing it does not understand for one with no entries.
+export function parseAccessControlListing(listing: string): AccessControlEntry[] {
+  const lines = listing.endsWith("\n") ? listing.slice(0, -1).split("\n") : listing.split("\n")
+  if (lines[0] === undefined || lines[0] === "") throw new Error("ls listed nothing, so the access control list could not be read.")
+  return lines.slice(1).map((line, index) => {
+    const found = /^ (\d+): (\S.*?)( inherited)? (allow|deny) ([a-z_]+(?:,[a-z_]+)*)$/u.exec(line)
+    if (found === null || Number(found[1]) !== index) throw new Error(`ls listed an access control entry that could not be read: ${line}`)
+    return { principal: found[2]!, inherited: found[3] !== undefined, allow: found[4] === "allow", rights: found[5]!.split(",") }
+  })
 }
 
 // A read-only mount, by what access(2) answers when asked for write access
@@ -138,6 +164,8 @@ export async function readOnlyMount(path: string): Promise<boolean> {
     return (error as NodeJS.ErrnoException).code === "EROFS"
   }
 }
+
+const listAccessControl = promisify(execFile)
 
 export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}): RuntimeFileSystem {
   return {
@@ -173,6 +201,10 @@ export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}
       const found = await lstat(path)
       return { uid: found.uid, mode: found.mode }
     },
+    // Node cannot read an access control list, so the system's own ls lists
+    // it, by absolute path and with no shell. With -l, ls lists a link given
+    // on the command line as the link itself.
+    accessControl: async (path) => parseAccessControlListing((await listAccessControl("/bin/ls", ["-lde", "--", path], { encoding: "utf8" })).stdout),
     ...overrides,
   }
 }
@@ -194,10 +226,22 @@ function inside(pathApi: typeof posix, root: string, path: string): boolean {
 // root, and writable by neither group nor others, except a directory owned
 // by root with the sticky bit set, as /tmp is, where only an entry's owner
 // can rename or remove it. A group-writable directory fails even when only
-// this user is in the group: membership cannot be read here. Windows: Node
+// this user is in the group: membership cannot be read here. macOS, round 3
+// (P2-2, ruled Q415 A): an access control entry can let another account
+// change a directory whatever its owner and mode say, so each directory's
+// list is read too (`ls -le`), and one that allows any principal but this
+// user's own user entry a right that changes it fails; deny entries pass,
+// as the "group:everyone deny delete" macOS gives every home folder does.
+// Linux needs no such read: a POSIX ACL's mask, which bounds every named
+// entry, shows as the group mode bits checked here. Windows: Node
 // cannot read ACLs, so only a place inside this user's own profile
-// directory passes; that holds the default TEMP (%LOCALAPPDATA%\Temp) and
-// the app's userData (%APPDATA%). A failure to read fails the place.
+// directory passes, one with the profile directory itself, by device and
+// inode, among its ancestors (round 3, P2-4); that holds the default TEMP
+// (%LOCALAPPDATA%\Temp) and the app's userData (%APPDATA%). A failure to
+// read fails the place. That is a check of location only: Windows access
+// rules (ACLs) are not checked, so a grant inside the profile that lets
+// another account change a place is an accepted residual (round 3, P2-3,
+// Q416 B); only this user or an administrator can add one there.
 type StagingAccessOptions = {
   platform: string
   fileSystem: RuntimeFileSystem
@@ -205,6 +249,18 @@ type StagingAccessOptions = {
   userDirectory?: string
   // POSIX: this user's id; process.getuid() by default.
   uid?: number
+  // macOS: this user's name, as an access control entry names it;
+  // os.userInfo() by default.
+  user?: string
+}
+
+// macOS access control rights that let a principal add, remove or rename a
+// directory's entries, or change the directory's own attributes, access
+// rules or owner (Q415 A).
+const changingRights = new Set(["write", "add_file", "add_subdirectory", "append", "delete", "delete_child", "writeattr", "writeextattr", "writesecurity", "chown"])
+
+function grantsAnotherPrincipal(entries: readonly AccessControlEntry[], user: string): boolean {
+  return entries.some((entry) => entry.allow && entry.principal !== `user:${user}` && entry.rights.some((right) => changingRights.has(right)))
 }
 
 export async function unprotectedStagingDirectory(real: string, options: StagingAccessOptions): Promise<string | undefined> {
@@ -214,19 +270,33 @@ export async function unprotectedStagingDirectory(real: string, options: Staging
 // The directory that failed and why, so a refusal can say what fixes it
 // (Q413 A): "own-writable" is this user's own directory that group or others
 // can write, which `chmod go-w` fixes; "another-account" is one this user
-// does not own, which only its owner could change; "unknown" is a place
-// outside the profile on Windows, or one that could not be read.
-export type StagingAccessFailure = { path: string; access: "own-writable" | "another-account" | "unknown" }
+// does not own, which only its owner could change; "access-control" is one
+// whose macOS access control list lets another principal change it, which
+// `chmod go-w` does not fix; "unknown" is a place outside the profile on
+// Windows, or one that could not be read.
+export type StagingAccessFailure = { path: string; access: "own-writable" | "another-account" | "access-control" | "unknown" }
 
 async function stagingAccessFailure(real: string, options: StagingAccessOptions): Promise<StagingAccessFailure | undefined> {
   const fs = options.fileSystem
   try {
     if (options.platform === "win32") {
-      const user = (await fs.realpath(options.userDirectory ?? homedir())).toLowerCase()
-      return inside(win32, user, real.toLowerCase()) ? undefined : { path: real, access: "unknown" }
+      // PR #712 security review round 3 (P2-4): a directory can have
+      // per-directory case sensitivity, so names compared case-folded can
+      // match a sibling of the profile whose name differs only in case. The
+      // case-folded comparison only rules a place out early; it passes only
+      // when one of its ancestors is the profile directory itself, by device
+      // and inode. An identity that cannot be read fails the place.
+      const user = await fs.realpath(options.userDirectory ?? homedir())
+      if (!inside(win32, user.toLowerCase(), real.toLowerCase())) return { path: real, access: "unknown" }
+      const profile = await fs.identity(user)
+      for (let at = real; ; at = win32.dirname(at)) {
+        if (await fs.identity(at) === profile) return undefined
+        if (win32.dirname(at) === at) return { path: real, access: "unknown" }
+      }
     }
     const me = options.uid ?? process.getuid?.()
     if (me === undefined) return { path: real, access: "unknown" }
+    const user = options.platform === "darwin" ? options.user ?? userInfo().username : undefined
     for (let at = real; ; at = posix.dirname(at)) {
       const { uid, mode } = await fs.permissions(at)
       // A level that is no longer a directory (a link swapped in after the
@@ -238,6 +308,8 @@ async function stagingAccessFailure(real: string, options: StagingAccessOptions)
       if ((uid !== me && uid !== 0) || (othersWrite && !rootSticky)) {
         return { path: at, access: uid === me ? "own-writable" : "another-account" }
       }
+      // A list that cannot be read throws, and fails the place below.
+      if (user !== undefined && grantsAnotherPrincipal(await fs.accessControl(at), user)) return { path: at, access: "access-control" }
       if (posix.dirname(at) === at) return undefined
     }
   } catch {
@@ -437,16 +509,25 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
   // could change it (unprotectedStagingDirectory), so a refusal names it.
   let unprotected: string | undefined
   let gate: StagingAccessFailure | undefined
-  const usable = async (path: string) => {
+  // The real path of a place that can be used, or undefined.
+  //
+  // PR #712 security review round 3 (P2-1): the gate checks the real path,
+  // not the spelling given, so every later staging call (the missing levels,
+  // mkdtemp, the copy and the rename) goes through that real path. A link
+  // above the place, in a directory another account can write, could
+  // otherwise be retargeted after the check and send those calls elsewhere.
+  // A trusted alias such as macOS /tmp, a link to /private/tmp, keeps
+  // working: its real path is the one checked and used.
+  const usable = async (path: string): Promise<string | undefined> => {
     unprotected = undefined
     gate = undefined
-    if (!pathApi.isAbsolute(path) || await fs.entry(path) !== "directory") return false
-    if (device(await fs.identity(path)) !== runtimeDevice) return false
+    if (!pathApi.isAbsolute(path) || await fs.entry(path) !== "directory") return undefined
+    if (device(await fs.identity(path)) !== runtimeDevice) return undefined
     const real = await fs.realpath(path)
-    if (inside(pathApi, profile, real) || await insideRepositoryOrProfile(real)) return false
+    if (inside(pathApi, profile, real) || await insideRepositoryOrProfile(real)) return undefined
     gate = await stagingAccessFailure(real, { platform: input.platform, fileSystem: fs })
     unprotected = gate?.path
-    return gate === undefined
+    return gate === undefined ? real : undefined
   }
   // Q413 A: a refusal naming the directory the access gate failed carries
   // why, so the command can say what fixes it. Every refusal follows the
@@ -459,66 +540,72 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
   // install` passes (bundled-runtime.ts) may not be. A missing one is usable
   // when its nearest existing directory is and the whole path, resolved
   // through that directory, is outside every profile and repository, so a
-  // refusal makes nothing.
+  // refusal makes nothing. Round 3 of #712 (P2-1): each is named under the
+  // real path of that nearest directory, the path the gate checked.
   const missing: string[] = []
-  // The existing directory the first missing one is made in, with its device
-  // and inode when it was checked.
+  // The existing directory the first missing one is made in, by its real
+  // path, with its device and inode when it was checked.
   let anchor: { path: string; identity: string } | undefined
   // The directory under the data directory that could not be used, if any.
   let failed: string | undefined
-  const usableAhead = async (path: string) => {
+  // The real path of the data directory when it can be used, or undefined.
+  const usableAhead = async (path: string): Promise<string | undefined> => {
     failed = path
-    if (!pathApi.isAbsolute(path)) return false
-    if (await fs.entry(path) !== "missing") {
-      const identity = await fs.identity(path)
-      if (!await usable(path)) {
-        failed = unprotected ?? path
-        return false
-      }
-      anchor = { path, identity }
-      return true
-    }
-    // Each name above a missing path is made as written, so it must be
-    // written plainly: no "..", ".", or doubled separator.
-    if (pathApi.resolve(path) !== path) return false
+    if (!pathApi.isAbsolute(path)) return undefined
     let at = path
-    while (await fs.entry(at) === "missing" && pathApi.dirname(at) !== at) {
-      missing.unshift(at)
-      at = pathApi.dirname(at)
+    const names: string[] = []
+    if (await fs.entry(path) === "missing") {
+      // Each name above a missing path is made as written, so it must be
+      // written plainly: no "..", ".", or doubled separator.
+      if (pathApi.resolve(path) !== path) return undefined
+      while (await fs.entry(at) === "missing" && pathApi.dirname(at) !== at) {
+        names.unshift(pathApi.basename(at))
+        at = pathApi.dirname(at)
+      }
     }
     failed = at
     const identity = await fs.identity(at)
-    if (!await usable(at)) {
+    const real = await usable(at)
+    if (real === undefined) {
       failed = unprotected ?? at
-      return false
+      return undefined
     }
     failed = path
-    const real = pathApi.join(await fs.realpath(at), pathApi.relative(at, path))
-    if (inside(pathApi, profile, real) || await insideRepositoryOrProfile(real)) return false
-    anchor = { path: at, identity }
-    return true
+    // The real path checked must be the directory whose device and inode
+    // were read, the one the first missing level is made in.
+    if (await fs.identity(real) !== identity) return undefined
+    const levels = names.map((_name, index) => pathApi.join(real, ...names.slice(0, index + 1)))
+    const data = levels.at(-1) ?? real
+    if (levels.length > 0 && (inside(pathApi, profile, data) || await insideRepositoryOrProfile(data))) return undefined
+    missing.push(...levels)
+    anchor = { path: real, identity }
+    return data
   }
   // PR #712 security review round 1 (P2): the staging place chosen, pinned
   // by device, inode and real path when it was checked: here when it is
   // there now, at publish when publish makes it.
   type Pin = { identity: string; realpath: string }
-  const pinOf = async (path: string): Promise<Pin> => ({ identity: await fs.identity(path), realpath: await fs.realpath(path) })
   let stagingPin: Pin | undefined
+  // The staging place by the real path the gate checked (round 3, P2-1).
   let parent: string | undefined
   if (input.stagingParent !== undefined) {
-    if (await usable(input.stagingParent)) parent = input.stagingParent
-    else failed = unprotected
-  } else if (await usable(tmpdir())) {
-    parent = tmpdir()
-  } else if (input.dataDirectory !== undefined && await usableAhead(input.dataDirectory)) {
-    const candidate = pathApi.join(input.dataDirectory, "runtime-staging")
-    failed = candidate
-    if (await fs.entry(candidate) === "missing") missing.push(candidate)
-    if (missing.includes(candidate) || await usable(candidate)) parent = candidate
-    else failed = unprotected ?? candidate
+    parent = await usable(input.stagingParent)
+    if (parent === undefined) failed = unprotected
+  } else {
+    parent = await usable(tmpdir())
+    const data = parent === undefined && input.dataDirectory !== undefined ? await usableAhead(input.dataDirectory) : undefined
+    if (data !== undefined) {
+      const candidate = pathApi.join(data, "runtime-staging")
+      failed = candidate
+      if (await fs.entry(candidate) === "missing") missing.push(candidate)
+      parent = missing.includes(candidate) ? candidate : await usable(candidate)
+      if (parent === undefined) failed = unprotected ?? candidate
+    }
   }
   if (parent === undefined) throw refusal(failed)
-  if (!missing.includes(parent)) stagingPin = await pinOf(parent)
+  // Pinned to the real path checked, so publish refuses a place that no
+  // longer resolves to it.
+  if (!missing.includes(parent)) stagingPin = { identity: await fs.identity(parent), realpath: parent }
   const stagingParent = parent
   const destination = pathApi.join(versionDirectory, randomUUID().replaceAll("-", "").slice(0, 12))
   const layout = (at: string): DaemonServiceRuntime => ({
@@ -551,9 +638,13 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
         made.push(directory)
       }
       const identity = await fs.identity(directory)
-      if (!await usable(directory)) throw refusal(unprotected ?? directory, made)
+      const real = await usable(directory)
+      if (real === undefined) throw refusal(unprotected ?? directory, made)
+      // Round 3 (P2-1): each level is named by the real path checked, so it
+      // must still resolve to itself.
+      if (!samePath(real, directory)) throw refusal(directory, made)
       above = { path: directory, identity }
-      if (directory === stagingParent) stagingPin = { identity, realpath: await fs.realpath(directory) }
+      if (directory === stagingParent) stagingPin = { identity, realpath: directory }
     }
     await runtimeRoot(fs, pathApi, input.profileDirectory, true)
     pinned ??= await pin()
@@ -594,17 +685,26 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
       && await fs.entry(stagingParent) === "directory"
       && await fs.identity(stagingParent) === stagingPin.identity
       && samePath(await fs.realpath(stagingParent), stagingPin.realpath)
-      && await usable(stagingParent)
+      && await usable(stagingParent) !== undefined
     if (!placeIntact || stagingPin === undefined) throw new Error(`${stagingParent} changed after it was checked, so the runtime was not copied there.`)
     const holder = await fs.makePrivateDirectory(pathApi.join(stagingParent, `.domovoi-runtime-${input.version}.staging-`))
     const holderReal = pathApi.join(stagingPin.realpath, pathApi.basename(holder))
     // Round 2 (P2): the private staging directory is this user's and open to
     // no one else (mkdtemp makes it 0700). Windows has no POSIX mode; there
     // the place it is in was checked to be inside this user's profile.
+    // Round 3 (P2-2, Q415 A): on macOS it has no access control entry at
+    // all, since one inherited from the place could open it whatever its
+    // mode says; a list that cannot be read fails it.
     const holderPrivate = async () => {
       if (input.platform === "win32") return true
       const { uid, mode } = await fs.permissions(holder)
-      return uid === process.getuid?.() && (mode & 0o077) === 0
+      if (uid !== process.getuid?.() || (mode & 0o077) !== 0) return false
+      if (input.platform !== "darwin") return true
+      try {
+        return (await fs.accessControl(holder)).length === 0
+      } catch {
+        return false
+      }
     }
     if (await fs.entry(holder) !== "directory" || !samePath(await fs.realpath(holder), holderReal) || !await holderPrivate()) {
       throw new Error(`${holder} changed after it was made, so the runtime was not copied there.`)

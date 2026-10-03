@@ -1,9 +1,13 @@
-import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { execFile } from "node:child_process"
+import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises"
+import { tmpdir, userInfo } from "node:os"
 import { basename, dirname, join, sep } from "node:path"
+import { promisify } from "node:util"
 import { describe, expect, it, vi } from "vitest"
 
-import { daemonRuntimeLayout, nodeRuntimeFileSystem, prepareDaemonRuntime, profileRuntimeDirectory, stageDaemonRuntime, unprotectedStagingDirectory, type RuntimeFileSystem } from "./runtime-stage.js"
+import { daemonRuntimeLayout, nodeRuntimeFileSystem, parseAccessControlListing, prepareDaemonRuntime, profileRuntimeDirectory, stageDaemonRuntime, unprotectedStagingDirectory, type AccessControlEntry, type RuntimeFileSystem } from "./runtime-stage.js"
+
+const run = promisify(execFile)
 
 // Moved from the desktop (apps/desktop/src/main/daemon-service.test.ts) with
 // the copy routine itself (Q408 A), unchanged.
@@ -478,6 +482,199 @@ describe("staging the shipped runtime under the profile", () => {
       })
     })
 
+    // PR #712 security review round 3 (P2-1): the gate checks the real path
+    // of the place, so every later staging call goes through that real path,
+    // never the spelling given: a link above the place, in a directory
+    // another account can write, could otherwise be retargeted after the
+    // check. Here that account retargets it once the place is checked.
+    describe("reached through a link in a directory another account can write", () => {
+      async function linked(root: string) {
+        const open = join(root, "open")
+        const kept = join(root, "kept")
+        const elsewhere = join(root, "elsewhere")
+        await mkdir(open)
+        await mkdir(join(kept, "staging"), { recursive: true })
+        await mkdir(join(kept, "home"), { recursive: true })
+        await mkdir(join(elsewhere, "staging"), { recursive: true })
+        await mkdir(join(elsewhere, "home"), { recursive: true })
+        const link = join(open, "link")
+        await symlink(kept, link, directoryLink)
+        const retarget = async () => {
+          await unlink(link)
+          await symlink(elsewhere, link, directoryLink)
+        }
+        // The directory holding the link is one the gate refuses.
+        const answers = { [open]: { uid: me + 1, mode: 0o41777 } }
+        expect(await unprotectedStagingDirectory(open, { platform, fileSystem: permissions(answers) })).toBe(open)
+        return { kept, elsewhere, link, retarget, fileSystem: permissions(answers) }
+      }
+
+      it("stages the given place at its checked real path, writing nothing where the link is retargeted", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const { kept, elsewhere, link, retarget, fileSystem: real } = await linked(root)
+          const writes: string[] = []
+          const fileSystem: RuntimeFileSystem = {
+            ...real,
+            makePrivateDirectory: async (prefix) => {
+              await retarget()
+              writes.push(prefix)
+              return real.makePrivateDirectory(prefix)
+            },
+            copy: async (from, to) => { writes.push(to); await real.copy(from, to) },
+            rename: async (from, to) => { writes.push(from); await real.rename(from, to) },
+          }
+          const prepared = await prepare(resources, home, join(link, "staging"), fileSystem)
+          await prepared.publish()
+          expect(await readFile(prepared.runtime.daemonEntryPath, "utf8")).toBe("daemon")
+          expect(writes).toHaveLength(3)
+          expect(writes.filter((path) => !path.startsWith(`${join(kept, "staging")}${sep}`))).toEqual([])
+          expect(await readdir(join(elsewhere, "staging"))).toEqual([])
+          expect(await leftStaging(join(kept, "staging"))).toEqual([[]])
+        })
+      })
+
+      it("makes the missing data directories under the checked real path, writing nothing where the link is retargeted", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const { kept, elsewhere, link, retarget, fileSystem: real } = await linked(root)
+          const made: string[] = []
+          const fileSystem: RuntimeFileSystem = {
+            ...real,
+            // The system temporary directory is on another volume.
+            identity: async (path) => path === tmpdir() ? "other-volume:1" : real.identity(path),
+            makeDirectory: async (path) => {
+              if (made.length === 0) await retarget()
+              made.push(path)
+              await real.makeDirectory(path)
+            },
+            makePrivateDirectory: async (prefix) => { made.push(prefix); return real.makePrivateDirectory(prefix) },
+          }
+          const dataDirectory = join(link, "home", "state", "domovoi")
+          const prepared = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, dataDirectory, fileSystem })
+          await prepared.publish()
+          expect(await readFile(prepared.runtime.daemonEntryPath, "utf8")).toBe("daemon")
+          const state = join(kept, "home", "state")
+          expect(made.filter((path) => !path.startsWith(`${home}${sep}`))).toEqual([
+            state, join(state, "domovoi"), join(state, "domovoi", "runtime-staging"),
+            expect.stringMatching(/[\\/]runtime-staging[\\/]\.domovoi-runtime-0\.9\.4\.staging-$/u),
+          ])
+          expect(made.at(-1)!.startsWith(join(state, "domovoi", "runtime-staging"))).toBe(true)
+          expect(await readdir(join(elsewhere, "home"))).toEqual([])
+          expect(await leftStaging(join(state, "domovoi", "runtime-staging"))).toEqual([[]])
+        })
+      })
+    })
+
+    // PR #712 security review round 3 (P2-2), ruled Q415 A: on macOS an
+    // access control entry can let another account change a directory whose
+    // owner and mode pass. So each level's list is read too, and one that
+    // allows any principal but this user to change it fails the place. Deny
+    // entries pass: macOS gives every home folder "group:everyone deny
+    // delete". The private staging directory must have no entry at all.
+    describe("macOS access control entries", () => {
+      const allow = (principal: string, rights: string[], inherited = false): AccessControlEntry => ({ principal, inherited, allow: true, rights })
+      const deny = (principal: string, rights: string[]): AccessControlEntry => ({ principal, inherited: false, allow: false, rights })
+      // Entries as `ls -le` would list them for the paths named, none
+      // elsewhere; holder is what the private staging directory has.
+      const listed = (answers: Record<string, AccessControlEntry[] | Error>, holder: AccessControlEntry[] = []) => nodeRuntimeFileSystem({
+        accessControl: async (path) => {
+          const found = basename(path).startsWith(".domovoi-runtime-") ? holder : answers[path] ?? []
+          if (found instanceof Error) throw found
+          return found
+        },
+      })
+      const prepareOnMac = (resources: string, home: string, stagingParent: string, fileSystem: RuntimeFileSystem) =>
+        prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform: "darwin", stagingParent, fileSystem })
+
+      it.each([
+        ["lets a group add files", [allow("group:staff", ["add_file"])]],
+        ["lets everyone remove entries", [deny("group:everyone", ["delete"]), allow("group:everyone", ["list", "delete_child"])]],
+        ["lets another user change its access rules", [allow("user:someone", ["writesecurity"])]],
+        ["inherits a grant that lets a group make directories", [allow("group:staff", ["add_subdirectory", "file_inherit", "directory_inherit"], true)]],
+      ])("refuses a staging directory whose list %s, naming it without a chmod reason and writing nothing", async (_label, list) => {
+        await withScratch(async ({ root, resources, home }) => {
+          const staging = join(root, "staging")
+          await expect(prepareOnMac(resources, home, staging, listed({ [staging]: list })))
+            .rejects.toMatchObject({ name: "DaemonRuntimeStagingRefusedError", failed: staging, access: { path: staging, access: "access-control" } })
+          expect(await readdir(staging)).toEqual([])
+          expect(await entries(home)).toEqual([])
+        })
+      })
+
+      it("refuses a staging directory under one whose list lets another principal change it, naming that one", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const staging = join(root, "staging")
+          await expect(prepareOnMac(resources, home, staging, listed({ [root]: [allow("group:everyone", ["delete_child"])] })))
+            .rejects.toMatchObject({ name: "DaemonRuntimeStagingRefusedError", failed: root, access: { path: root, access: "access-control" } })
+          expect(await readdir(staging)).toEqual([])
+        })
+      })
+
+      it("refuses a staging directory whose list cannot be read", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const staging = join(root, "staging")
+          await expect(prepareOnMac(resources, home, staging, listed({ [root]: new Error("ls failed") })))
+            .rejects.toMatchObject({ name: "DaemonRuntimeStagingRefusedError", failed: staging, access: { path: staging, access: "unknown" } })
+          expect(await readdir(staging)).toEqual([])
+        })
+      })
+
+      it("accepts deny entries, grants that change nothing, and grants to this user", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const staging = join(root, "staging")
+          const fileSystem = listed({
+            [staging]: [deny("group:everyone", ["delete"]), allow("group:everyone", ["list", "search", "readattr", "readsecurity"]), allow(`user:${userInfo().username}`, ["add_file", "delete_child", "writesecurity"])],
+            [root]: [deny("group:everyone", ["delete"])],
+          })
+          const prepared = await prepareOnMac(resources, home, staging, fileSystem)
+          await prepared.publish()
+          expect(await readFile(prepared.runtime.daemonEntryPath, "utf8")).toBe("daemon")
+        })
+      })
+
+      it("refuses before copying when the private staging directory has any entry, even one that changes nothing", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const staging = join(root, "staging")
+          const copy = vi.fn(async () => {})
+          const fileSystem = { ...listed({}, [allow("group:staff", ["list"], true)]), copy }
+          const prepared = await prepareOnMac(resources, home, staging, fileSystem)
+          await expect(prepared.publish()).rejects.toThrow(/changed after it was made, so the runtime was not copied there\.$/u)
+          expect(copy).not.toHaveBeenCalled()
+        })
+      })
+
+      it("reads the entries `ls -le` lists, and refuses a listing it cannot read", () => {
+        expect(parseAccessControlListing("drwxr-xr-x@ 83 dana  staff  2656 Oct  3 02:26 /Users/dana\n 0: group:everyone deny delete\n")).toEqual([deny("group:everyone", ["delete"])])
+        expect(parseAccessControlListing("drwx------  2 dana  staff  64 Oct  3 02:27 /tmp/x\n")).toEqual([])
+        expect(parseAccessControlListing([
+          "drwxr-xr-x@ 2 dana  staff  64 Oct  3 02:27 /tmp/x",
+          " 0: group:everyone deny delete",
+          " 1: group:staff inherited allow add_file,delete_child,file_inherit,directory_inherit",
+          "",
+        ].join("\n"))).toEqual([deny("group:everyone", ["delete"]), allow("group:staff", ["add_file", "delete_child", "file_inherit", "directory_inherit"], true)])
+        for (const listing of ["", "drwx------ 2 dana staff 64 Oct 3 02:27 /tmp/x\n 0: group:staff maybe add_file\n", "drwx------ 2 dana staff 64 Oct 3 02:27 /tmp/x\n 1: group:staff allow add_file\n", "drwx------ 2 dana staff 64 Oct 3 02:27 /tmp/x\nwith a newline in its name\n"]) {
+          expect(() => parseAccessControlListing(listing), listing).toThrow()
+        }
+      })
+
+      // The real list, on a Mac: chmod +a adds an entry to a scratch
+      // directory, and chmod -N clears it again before the scratch is removed.
+      it.runIf(process.platform === "darwin")("accepts a real directory with no entries or a deny entry, and refuses one that lets a group add files", async () => {
+        await withScratch(async ({ root }) => {
+          const staging = join(root, "staging")
+          const check = () => unprotectedStagingDirectory(staging, { platform: "darwin", fileSystem: nodeRuntimeFileSystem() })
+          try {
+            expect(await check()).toBeUndefined()
+            await run("/bin/chmod", ["+a", "group:everyone deny delete", staging])
+            expect(await check()).toBeUndefined()
+            await run("/bin/chmod", ["+a", "group:staff allow add_file", staging])
+            expect(await check()).toBe(staging)
+          } finally {
+            await run("/bin/chmod", ["-N", staging])
+          }
+        })
+      })
+    })
+
     it("refuses at publish a staging directory others could change only after it was prepared", async () => {
       await withScratch(async ({ root, resources, home }) => {
         const staging = join(root, "staging")
@@ -496,19 +693,43 @@ describe("staging the shipped runtime under the profile", () => {
   // Windows: Node cannot read ACLs, so a staging place is accepted only
   // inside this user's own profile directory, where the default TEMP
   // (%LOCALAPPDATA%\Temp) and the app's userData (%APPDATA%) are.
+  //
+  // PR #712 security review round 3 (P2-4): inside the profile is decided by
+  // file system identity, an ancestor that is the profile directory itself,
+  // not by comparing names case-folded: a directory with per-directory case
+  // sensitivity can hold a sibling of the profile whose name differs only in
+  // case.
   describe("on Windows", () => {
-    const fileSystem = (directories: string[]) => nodeRuntimeFileSystem({
-      entry: async (path) => directories.includes(path) ? "directory" : "missing",
+    // Device and inode as lstat would report them. On a case-insensitive
+    // directory every spelling of a name is the same entry, so by default the
+    // identity follows the name case-folded; distinct lists entries that are
+    // not, and unreadable those whose identity cannot be read.
+    const fileSystem = (distinct: Record<string, string> = {}, unreadable: string[] = []) => nodeRuntimeFileSystem({
       realpath: async (path) => path,
+      identity: async (path) => {
+        if (unreadable.includes(path)) throw new Error("EPERM")
+        return distinct[path] ?? `7:${path.toLowerCase()}`
+      },
       permissions: async () => { throw new Error("Windows has no POSIX owner or mode to read") },
     })
+    const check = (path: string, files = fileSystem()) => unprotectedStagingDirectory(path, { platform: "win32", fileSystem: files, userDirectory: "C:\\Users\\dana" })
+
     it("accepts a place inside the user's profile and names one outside it", async () => {
-      const directories = ["C:\\Users\\dana", "C:\\Users\\dana\\AppData\\Local\\Temp", "D:\\shared\\temp"]
-      const check = (path: string) => unprotectedStagingDirectory(path, { platform: "win32", fileSystem: fileSystem(directories), userDirectory: "C:\\Users\\dana" })
       expect(await check("C:\\Users\\dana\\AppData\\Local\\Temp")).toBeUndefined()
       expect(await check("c:\\users\\DANA\\AppData\\Roaming\\Domovoi")).toBeUndefined()
       expect(await check("D:\\shared\\temp")).toBe("D:\\shared\\temp")
       expect(await check("C:\\Windows\\Temp")).toBe("C:\\Windows\\Temp")
+    })
+
+    it("refuses a place under a case-sensitive sibling of the profile whose name differs only in case", async () => {
+      const files = fileSystem({ "C:\\Users\\Dana": "7:sibling" })
+      expect(await check("C:\\Users\\Dana\\Temp", files)).toBe("C:\\Users\\Dana\\Temp")
+      expect(await check("C:\\Users\\dana\\AppData\\Local\\Temp", files)).toBeUndefined()
+    })
+
+    it("refuses a place whose ancestry or profile cannot be identified", async () => {
+      expect(await check("C:\\Users\\dana\\AppData\\Local\\Temp", fileSystem({}, ["C:\\Users\\dana\\AppData"]))).toBe("C:\\Users\\dana\\AppData\\Local\\Temp")
+      expect(await check("C:\\Users\\dana\\AppData\\Local\\Temp", fileSystem({}, ["C:\\Users\\dana"]))).toBe("C:\\Users\\dana\\AppData\\Local\\Temp")
     })
   })
 
