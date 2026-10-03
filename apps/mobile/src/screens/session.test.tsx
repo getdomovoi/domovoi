@@ -168,6 +168,23 @@ describe("SessionScreen pinned plan", () => {
   })
 })
 
+describe("SessionScreen messages", () => {
+  // Phone v2 frame 11: an agent reply is a bordered bubble and yours is filled
+  // with the primary colour. No glyph stands in for the agent, so a screen
+  // reader reads the reply rather than a diamond.
+  it("draws replies with no stand-in glyph for the agent", async () => {
+    await draw()
+    const snapshot = workspace()
+    const mine = snapshot.thread.find((item) => item.sessionId === "session-billing" && item.kind === "user")
+    const reply = snapshot.thread.find((item) => item.sessionId === "session-billing" && item.kind === "assistant")
+    if (mine?.kind !== "user" || reply?.kind !== "assistant") throw new Error("fixture needs a message each way")
+
+    expect(screen.queryByText("◆")).toBeNull()
+    expect(screen.getByText(mine.body)).toBeOnTheScreen()
+    expect(screen.getByText(reply.body)).toBeOnTheScreen()
+  })
+})
+
 describe("SessionScreen decision receipt", () => {
   const allowed = {
     id: "receipt-1",

@@ -111,20 +111,19 @@ const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWa
   if (entry.kind === "receipt") return <Receipt entry={entry} onWatch={onWatch} />
 
   if (entry.kind === "policy-refusal") return null
+  // Phone v2 frame 11: yours is filled with the primary colour and tails to
+  // the right, the agent's is a bordered card that tails to the left.
   if (entry.kind === "message" && entry.voice === "you") {
     return (
-      <View className="max-w-[84%] self-end rounded-[13px] rounded-br-[4px] border border-border bg-accent px-[13px] py-2.5">
-        <Text variant="body">{entry.body}</Text>
+      <View className="max-w-[86%] self-end rounded-[18px] rounded-br-[4px] bg-primary px-3.5 py-[11px]">
+        <Text className="font-sans text-[13.5px] leading-[21px] text-primary-foreground">{entry.body}</Text>
       </View>
     )
   }
   if (entry.kind === "message") {
     return (
-      <View className="flex-row gap-2.5">
-        <View className="h-[22px] w-[22px] items-center justify-center rounded-md border border-border">
-          <Text className="font-mono text-machine text-primary">◆</Text>
-        </View>
-        <AgentMarkdown body={entry.body} className="flex-1" />
+      <View className="max-w-[86%] self-start rounded-[18px] rounded-bl-[4px] border border-border bg-card px-3.5 py-[11px]">
+        <AgentMarkdown body={entry.body} />
       </View>
     )
   }
