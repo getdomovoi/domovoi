@@ -129,11 +129,19 @@ describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
 
   it("refuses status without a pairing, and refuses a code the daemon will not take without keeping anything", async () => {
     const credentialFile = join(home!, "empty-credentials.json")
-    expect(await runCli(["status", "--daemon", url, "--credential-file", credentialFile])).toMatchObject({ code: 2 })
+    const unpaired = await runCli(["status", "--daemon", url, "--credential-file", credentialFile])
+    expect(unpaired).toMatchObject({ code: 5 })
+    expect(unpaired.stderr).toMatch(/^Not paired with ws:\/\//m)
     const wrong = await runCli(["pair", "--daemon", url, "--credential-file", credentialFile], "hearth-quiet-ember-42\n")
     expect(wrong).toMatchObject({ code: 1 })
     expect(wrong.stderr).toMatch(/Pairing was refused/)
-    expect(await runCli(["status", "--daemon", url, "--credential-file", credentialFile])).toMatchObject({ code: 2 })
+    expect(await runCli(["status", "--daemon", url, "--credential-file", credentialFile])).toMatchObject({ code: 5 })
+  })
+
+  it("exits 3 when no daemon answers, before anything is sent", async () => {
+    const unreachable = await runCli(["pair", "--daemon", "ws://127.0.0.1:1/rpc", "--credential-file", join(home!, "unused.json")], "hearth-quiet-ember-42\n")
+    expect(unreachable.code).toBe(3)
+    expect(unreachable.stderr).toMatch(/Could not reach ws:\/\/127\.0\.0\.1:1\/rpc/)
   })
 
   it("doctor reports the daemon, credential and protocol probes against a real daemon", async () => {

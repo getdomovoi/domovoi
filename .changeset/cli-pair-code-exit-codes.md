@@ -10,3 +10,10 @@ credential yet, proves the minted credential with an authenticated hello, and ke
 device label the daemon recorded (`--label`, default the hostname). A code issued for another
 kind of client is refused and nothing is stored. The usage text that named a command that printed
 a credential is corrected.
+
+The CLI adopts the exit code table from the CLI transcripts design, whole, before 1.0: 0 ok,
+1 internal, 2 usage, 3 daemon-unreachable, 4 not-found, 5 not-paired, 10 gate-waiting,
+11 turn-failed, 12 refused-by-policy, 21 connection-lost, 22 stopped-unconfirmed,
+31 already-decided, 32 not-permitted, 33 needs-a-person, 130 detached. Two codes change for the
+commands that exist: a daemon that never answered exits 3 instead of 1, and no stored credential
+for the daemon exits 5 instead of 2. `--help` and the README print the table.

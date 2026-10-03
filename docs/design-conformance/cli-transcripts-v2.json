@@ -63,15 +63,22 @@
         "RETURNED BY"
       ],
       "evidence": [
-        "Unconfirmed and failed never share a code"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J44; the numbers are marked proposed in the design's own open questions"
-      }
+        "Unconfirmed and failed never share a code",
+        "{ code: 3, name: \"daemon-unreachable\"",
+        "{ code: 22, name: \"stopped-unconfirmed\"",
+        "{ code: 33, name: \"needs-a-person\"",
+        "{ code: 130, name: \"detached\"",
+        "exitCode(\"daemon-unreachable\")"
+      ]
     }
   ],
-  "humanRead": [],
+  "humanRead": [
+    {
+      "id": "cli.exit-codes",
+      "since": "2026-10-03",
+      "note": "Built for Q391 A: the whole table, adopted before 1.0, in apps/cli/src/exit-codes.ts, printed by --help and used by every exit. Daemon unreachable moved from 1 to 3; an unpaired client moved from usage (2) to a named code the design does not draw, not-paired (5), placed with the other nothing-was-sent codes (a substitution recorded under Q389). The row for 1 drops the design's clause that a log path is printed, because the CLI keeps no log. Codes 4 and 10 to 130 are reserved for the session commands, which cli.session-commands still lists as missing."
+    }
+  ],
   "scriptBacklog": {
     "since": "2026-09-26",
     "reason": "Copy the design builds in its data script, collected by the gate since audit G23 and not yet read against the implementation. Classify each string as an element's copy, sample or annotations, and remove it here.",

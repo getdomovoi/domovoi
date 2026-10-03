@@ -5,6 +5,7 @@ import { CredentialStoreError, nativeKeyring, openCredentialStore } from "./cred
 import { protocolVersion } from "@getdomovoi/protocol"
 
 import { diagnose, renderDoctor } from "./doctor.js"
+import { exitCode, renderExitCodes } from "./exit-codes.js"
 import { readLogs, renderLogs } from "./logs.js"
 import { pairWithDaemon, PairingError, readPairingCode, redeemPairingCode } from "./pair.js"
 import { readPlainLine, readSecretLine } from "./secret-input.js"
@@ -20,7 +21,7 @@ const usage = `Usage:
   domovoi skill install <path> [--scope user|project] [--yes]
 
 doctor: checks the daemon, your credential and the protocol, then for each fleet machine reports
-the route this daemon would choose for you and why the others lost. Exit 1 on any failed probe.
+the route this daemon would choose for you and why the others lost. Exits 1 on any failed probe.
 logs: your own copy of the machine's audit log, read over your channel; nothing is uploaded. It is
 a paged query, so there is no --follow; page with --before.
 skill install: previews (files, digests, signature, trust, target), then installs the previewed
@@ -35,7 +36,9 @@ daemon's address; --daemon overrides it.
 Credentials live in the OS keychain. Where there is none (a headless host, WSL, a container),
 pass --credential-file to keep them in a file you own; the CLI never writes one on its own.
 Default daemon: ${defaultEndpoint}
-`
+
+Exit codes, stable across releases so scripts can branch on them:
+${renderExitCodes()}`
 
 type Options = { positional: string[]; daemon: string; daemonGiven: boolean; credentialFile?: string; label?: string; limit: number; action?: string; outcome?: string; session?: string; before?: string; scope: "user" | "project"; yes: boolean }
 
@@ -79,6 +82,8 @@ function parse(argv: string[]): Options {
 }
 
 class UsageError extends Error {}
+// No credential is stored for the daemon named. Nothing was sent.
+class NotPairedError extends Error {}
 
 async function main(argv: string[]): Promise<number> {
   const options = parse(argv)
@@ -119,7 +124,7 @@ async function main(argv: string[]): Promise<number> {
       trusted: "Relay identity already pinned; unchanged.\n",
       unavailable: "The daemon refused the relay identity fetch: it is not provisioned for relay use, or the fetch was refused. No relay pin changed.\n",
     }[paired.relayPin])
-    return 0
+    return exitCode("ok")
   }
 
   const paired = async () => {
@@ -127,30 +132,27 @@ async function main(argv: string[]): Promise<number> {
     const record = await credentials.load(options.daemon)
     if (!record) {
       const pairCommand = `domovoi pair --daemon ${options.daemon}${options.credentialFile === undefined ? "" : ` --credential-file ${options.credentialFile}`}`
-      process.stderr.write(`Not paired with ${options.daemon}. Run 'domovoid pair --client cli --label <device label>' where the daemon runs, then paste its pairing code into '${pairCommand}'.\n`)
-      return undefined
+      throw new NotPairedError(`Not paired with ${options.daemon}. Run 'domovoid pair --client cli --label <device label>' where the daemon runs, then paste its pairing code into '${pairCommand}'.`)
     }
     return connectToDaemon({ endpoint: options.daemon, authToken: record.token })
   }
 
   if (command === "status") {
     const connection = await paired()
-    if (!connection) return 2
     try {
       process.stdout.write(renderStatus(await collectStatus({ endpoint: options.daemon, call: connection.call })))
     } finally {
       connection.close()
     }
-    return 0
+    return exitCode("ok")
   }
 
   if (command === "doctor") {
     const connection = await paired()
-    if (!connection) return 2
     try {
       const report = await diagnose({ endpoint: options.daemon, clientProtocolVersion: protocolVersion, call: connection.call })
       process.stdout.write(renderDoctor(report))
-      return report.failed ? 1 : 0
+      return report.failed ? exitCode("internal") : exitCode("ok")
     } finally {
       connection.close()
     }
@@ -158,12 +160,11 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === "logs") {
     const connection = await paired()
-    if (!connection) return 2
     try {
       const query = { limit: options.limit, ...(options.action ? { action: options.action } : {}), ...(options.outcome ? { outcome: options.outcome } : {}),
         ...(options.session ? { session: options.session } : {}), ...(options.before ? { before: options.before } : {}) }
       process.stdout.write(renderLogs(await readLogs({ call: connection.call, query })))
-      return 0
+      return exitCode("ok")
     } finally {
       connection.close()
     }
@@ -174,37 +175,49 @@ async function main(argv: string[]): Promise<number> {
     if (path === undefined) throw new UsageError("skill install needs the path of the skill directory")
     if (!/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(path)) throw new UsageError("skill install takes an absolute path; the daemon reads it, not this shell")
     const connection = await paired()
-    if (!connection) return 2
     try {
       const preview = await previewSkill({ call: connection.call, path })
       process.stdout.write(renderPreview(preview, options.scope))
       if (!options.yes) {
         const answer = (await readPlainLine("Install into the " + options.scope + " scope? [y/N] ")).trim().toLowerCase()
-        if (answer !== "y" && answer !== "yes") { process.stdout.write("not installed\n"); return 1 }
+        if (answer !== "y" && answer !== "yes") { process.stdout.write("not installed\n"); return exitCode("internal") }
       }
       const installed = await installSkill({ call: connection.call, path, scope: options.scope, preview })
       process.stdout.write(`installed ${installed.name} at ${installed.path} (${installed.scope}); enable it on the daemon when you have read it\n`)
-      return 0
+      return exitCode("ok")
     } finally {
       connection.close()
     }
   }
 
   process.stderr.write(usage)
-  return command === undefined || command === "--help" || command === "help" ? 0 : 2
+  return command === undefined || command === "--help" || command === "help" ? exitCode("ok") : exitCode("usage")
 }
 
+// Every exit goes through the table in exit-codes.ts (ruling Q391 A). A
+// daemon that never answered is its own code, distinct from a refusal, so a
+// script can tell "nothing was sent" from "the daemon said no".
 main(process.argv.slice(2)).then((code) => { process.exitCode = code }, (error: unknown) => {
   if (error instanceof UsageError) {
     process.stderr.write(`${error.message}\n\n${usage}`)
-    process.exitCode = 2
+    process.exitCode = exitCode("usage")
     return
   }
-  if (error instanceof CredentialStoreError || error instanceof PairingError || error instanceof DaemonUnreachableError || error instanceof SkillInstallError) {
+  if (error instanceof NotPairedError) {
     process.stderr.write(`${error.message}\n`)
-    process.exitCode = 1
+    process.exitCode = exitCode("not-paired")
+    return
+  }
+  if (error instanceof DaemonUnreachableError) {
+    process.stderr.write(`${error.message}\n`)
+    process.exitCode = exitCode("daemon-unreachable")
+    return
+  }
+  if (error instanceof CredentialStoreError || error instanceof PairingError || error instanceof SkillInstallError) {
+    process.stderr.write(`${error.message}\n`)
+    process.exitCode = exitCode("internal")
     return
   }
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-  process.exitCode = 1
+  process.exitCode = exitCode("internal")
 })
