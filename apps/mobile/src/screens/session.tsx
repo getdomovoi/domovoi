@@ -96,16 +96,11 @@ function Receipt({ entry, onWatch }: {
           </View>
         ))}
       </View>
-      {/* The note speaks of a phone's verified credential. It is shown only
-          for a phone decision whose receipt records its connection; a legacy
-          receipt holds a declared id instead. The connection id alone does
-          not say which credential opened it, so the note's wording is still
-          under review. */}
-      {entry.client === "phone" && entry.connectionRecorded ? (
-        <Text className="font-sans text-[12px] leading-[19px] text-faint">
-          The audit row names this phone's verified credential, not the label you gave it. Renaming the device later does not rewrite the record.
-        </Text>
-      ) : null}
+      {/* Frame 03's note, that the audit row names this phone's verified
+          credential, is not drawn. A receipt records a client kind and a
+          connection id, and a daemon bearer typed into Settings can declare
+          phone over a recorded connection too, so the phone cannot show the
+          claim is true for a given receipt. */}
       <Button title="Watch the rest of the turn" shape="block" onPress={onWatch} />
       <Text className="font-sans text-[12px] leading-[19px] text-faint">Reverting happens on a desktop. A phone answers what a machine proposed; it does not rewind the work.</Text>
       </> : null}

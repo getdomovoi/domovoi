@@ -195,7 +195,6 @@ describe("SessionScreen decision receipt", () => {
     explanation: undefined,
     client: "phone",
     declaredClient: undefined as string | undefined,
-    connectionRecorded: true,
     checkpoint: "8f3c1de",
     checkpointTaken: true,
     ranFor: "12s" as string | undefined,
@@ -221,9 +220,12 @@ describe("SessionScreen decision receipt", () => {
     expect(screen.getByText(/Reverting happens on a desktop/)).toBeOnTheScreen()
   })
 
-  // Phone v2 frame 03: the checkpoint is named before the duration, the
-  // record lists what the audit row holds, and the note says the row names
-  // the credential rather than the label.
+  // Phone v2 frame 03: the checkpoint is named before the duration and the
+  // record lists what the audit row holds. The design's note that the row
+  // names this phone's verified credential is not drawn: a receipt records a
+  // client kind and a connection id, and a daemon bearer typed into Settings
+  // can declare "phone" over a recorded connection too, so the phone cannot
+  // show the claim is true.
   it("names the checkpoint taken first and how long the command ran", async () => {
     await drawReceipt(allowed)
 
@@ -233,7 +235,7 @@ describe("SessionScreen decision receipt", () => {
     }
     // Ruling Q357 A drops the gate's wait from the record on the phone.
     expect(screen.queryByLabelText(/^Decided after,/)).toBeNull()
-    expect(screen.getByText("The audit row names this phone's verified credential, not the label you gave it. Renaming the device later does not rewrite the record.")).toBeOnTheScreen()
+    expect(screen.queryByText(/The audit row names this phone's verified credential/)).toBeNull()
   })
 
   // Ruling Q357 A: a receipt that is history, not the latest of the open
@@ -260,7 +262,7 @@ describe("SessionScreen decision receipt", () => {
   // vouches for it, so it is named as declared, never as a credential, and the
   // note about a verified credential is not shown for it.
   it("names a legacy client id as declared, not as a credential", async () => {
-    await drawReceipt({ ...allowed, declaredClient: "device fcbd…cdf8", connectionRecorded: false })
+    await drawReceipt({ ...allowed, declaredClient: "device fcbd…cdf8" })
 
     expect(screen.getByLabelText("Declared client, device fcbd…cdf8")).toBeOnTheScreen()
     expect(screen.queryByLabelText(/^Credential,/)).toBeNull()

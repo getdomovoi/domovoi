@@ -38,11 +38,6 @@ export type ThreadEntry =
     // credential vouches for it, so it is shown as declared, never as a
     // credential (packages/ui/src/session-history.ts names it the same way).
     declaredClient: string | undefined
-    // Whether the receipt records the id of the connection the decision came
-    // over, as current receipts do instead of a declared id. The id names a
-    // connection the daemon authenticated, by a paired device credential or by
-    // the daemon's own token, so it says nothing about which credential.
-    connectionRecorded: boolean
     checkpoint: string
     // True only when the daemon took this checkpoint before running the
     // command: an allow that names a commit. A deny records the session's
@@ -151,7 +146,6 @@ function entryFor(item: ThreadItem): ThreadEntry {
         explanation: item.explanation,
         client: item.client,
         declaredClient: item.clientId ? clientReference(item.clientId) : undefined,
-        connectionRecorded: item.connectionId !== undefined,
         checkpoint: item.checkpoint === "unavailable" ? "no checkpoint" : shortReference(item.checkpoint),
         checkpointTaken: allowed && item.checkpoint !== "unavailable",
         ranFor: item.ranForMs === undefined ? undefined : elapsed(item.ranForMs),
