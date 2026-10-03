@@ -81,10 +81,18 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
   // The link that opened the limits gets focus back once the connect page is
   // shown again, so the way back does not drop focus to the document body.
   const limitsOpener = useRef<HTMLElement | null>(null)
+  const connectPage = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     if (limitsOpen) return
-    limitsOpener.current?.focus()
+    const opener = limitsOpener.current
     limitsOpener.current = null
+    if (!opener) return
+    // A pairing that finished while the limits were open replaces the form's
+    // link with the outcome card, which carries the same link, so focus falls
+    // back to that one. The form's link shows exactly when no card does, so
+    // one of the two is always on the page.
+    const target = opener.isConnected ? opener : connectPage.current?.querySelector<HTMLElement>("[data-limits-link]")
+    target?.focus()
   }, [limitsOpen])
   const { host, secure } = hostOf(rpcUrl)
 
@@ -183,7 +191,7 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
         continueLabel={outcome?.tone === "ok" ? "Back" : "Back to pairing"}
         onContinue={() => setLimitsOpen(false)}
       /> : null}
-      <div hidden={limitsOpen} className="flex min-h-0 flex-1 flex-col">{connect}</div>
+      <div ref={connectPage} hidden={limitsOpen} className="flex min-h-0 flex-1 flex-col">{connect}</div>
     </PreSessionPage>
   }
 

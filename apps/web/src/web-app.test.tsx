@@ -501,6 +501,26 @@ describe("WebApp", () => {
     expect(document.activeElement).toBe(link)
   })
 
+  // The link that opened the limits goes away when pairing finishes while the
+  // limits are open, so focus falls back to the outcome card's link.
+  it("returns focus to the outcome card's link when pairing finished while the limits were open", async () => {
+    let answer: (value: unknown) => void = () => {}
+    const client = { ...pairingClient("pairs"), request: vi.fn(() => new Promise((resolve) => { answer = resolve })) }
+    await draw(memoryStorage(), vi.fn(() => client))
+    await submitCode("hearth-quiet-ember-42")
+    const formLink = button("What a browser tab can and cannot do")
+    await act(async () => { formLink.click() })
+    await act(async () => {
+      answer(pairedResult())
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(formLink.isConnected).toBe(false)
+    await act(async () => { button("Back").click() })
+    expect(document.activeElement).not.toBe(document.body)
+    expect(document.activeElement?.textContent).toBe("What a browser tab can and cannot do")
+    expect(document.activeElement?.closest("[role='status']")).not.toBeNull()
+  })
+
   // Opened from the accepted card, the tab is already paired, so the way back
   // is not back to pairing.
   it("labels the way back Back when the limits open from the accepted card", async () => {
