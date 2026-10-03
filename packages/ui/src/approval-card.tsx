@@ -91,12 +91,19 @@ export function ApprovalCard({
         {watching ? (
           <p className="text-[11px] text-warn-dim">Watching only. A device paired with full access answers this gate.</p>
         ) : explainOpen ? (
+          // Ruled Q339 A. The daemon keeps the note on the receipt; no adapter
+          // passes it to the provider, which hears a plain denial, so the copy
+          // promises the agent nothing.
           <div className="flex flex-col gap-2 rounded-md border border-warning/30 bg-background/40 p-3">
             <label htmlFor={`denial-${approval.id}`} className="text-[11px] font-medium text-warn-foreground">
-              Tell the agent why this command was denied
+              Note on this denial
             </label>
+            <p id={`denial-${approval.id}-help`} className="m-0 text-[11px] text-warn-dim">
+              Kept on the receipt. The agent is told only that you denied it.
+            </p>
             <Input
               id={`denial-${approval.id}`}
+              aria-describedby={`denial-${approval.id}-help`}
               autoFocus
               value={explanation}
               onChange={(event) => setExplanation(event.target.value)}
@@ -111,18 +118,16 @@ export function ApprovalCard({
                   decide("deny-explain", explanation.trim())
                 }
               }}
-              placeholder="Explain what should change before retrying"
             />
             <div className="flex justify-end gap-2">
               <Button variant="ghost" size="sm" onClick={closeExplanation}>Cancel</Button>
-              <Button variant="outline" size="sm" disabled={!connected} onClick={() => decide("deny")}>Deny without explanation</Button>
               <Button
                 variant="warning"
                 size="sm"
                 disabled={!connected || !explanation.trim()}
                 onClick={() => decide("deny-explain", explanation.trim())}
               >
-                Deny with explanation
+                Deny with this note
               </Button>
             </div>
           </div>
@@ -137,7 +142,8 @@ export function ApprovalCard({
             {approval.execution.state === "resolved" && approval.risk !== "hard-gate" ? (
               <Button variant="outline" size="sm" disabled={!connected} onClick={() => decide("always-project")}>Always for this command here</Button>
             ) : null}
-            <Button ref={explainTriggerRef} variant="outline" size="sm" disabled={!connected} onClick={() => setExplainOpen(true)}>Deny</Button>
+            <Button variant="outline" size="sm" disabled={!connected} onClick={() => decide("deny")}>Deny</Button>
+            <Button ref={explainTriggerRef} variant="ghost" size="sm" className="text-warn-dim" disabled={!connected} onClick={() => setExplainOpen(true)}>Deny with a note</Button>
             {surface === "web" ? <span className="ml-auto font-machine text-[10.5px] text-warn-dim">This tab holds the gate</span> : null}
           </div>
         )}

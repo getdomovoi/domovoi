@@ -280,11 +280,13 @@ it.each(["desktop", "web"] as const)("shows the rewritten file target on the %s 
   // record, not a command family, so it names "this command".
   await user.click(screen.getByRole("button", { name: "Always for this command here" }))
   await user.click(screen.getByRole("button", { name: "Deny" }))
-  await user.type(screen.getByLabelText("Tell the agent why this command was denied"), "Not that file")
-  await user.click(screen.getByRole("button", { name: "Deny with explanation" }))
+  await user.click(screen.getByRole("button", { name: "Deny with a note" }))
+  await user.type(screen.getByLabelText("Note on this denial"), "Not that file")
+  await user.click(screen.getByRole("button", { name: "Deny with this note" }))
   expect(onResolve.mock.calls).toEqual([
     [raised.id, "allow-once", undefined, 1],
     [raised.id, "always-project", undefined, 1],
+    [raised.id, "deny", undefined, 1],
     [raised.id, "deny-explain", "Not that file", 1],
   ])
 })
@@ -330,20 +332,44 @@ it.each(["desktop", "web"] as const)("offers no Always on a %s hard-gate card", 
   expect(screen.queryByRole("button", { name: /^Always/u })).toBeNull()
 })
 
-it("keeps optional explanation behind Deny instead of a fourth peer action", async () => {
+// Ruled Q339 A: Deny decides at once, as drawn. No adapter passes a denial's
+// words to the provider, so the note is a quiet secondary whose copy says the
+// agent is told only that it was denied.
+it("denies at once, and keeps a note as a quiet secondary that promises the agent nothing", async () => {
   const user = userEvent.setup()
-  renderThread("desktop", "normal")
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals[0]!.risk = "normal"
+  const onResolve = vi.fn(async () => {})
+  render(
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={snapshot}
+      connected
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />,
+  )
   const weight = (name: string) => screen.getByRole("button", { name }).className
   expect(weight("Allow once")).toContain("bg-warning")
   expect(weight("Always for this command here")).toContain("border-border")
   expect(weight("Deny")).toContain("border-border")
-  expect(screen.queryByRole("button", { name: "Deny and explain" })).toBeNull()
+  expect(weight("Deny with a note")).not.toContain("border-border")
 
   await user.click(screen.getByRole("button", { name: "Deny" }))
+  expect(onResolve).toHaveBeenCalledWith(snapshot.approvals[0]!.id, "deny", undefined, 0)
+  expect(screen.queryByLabelText("Note on this denial")).toBeNull()
 
-  expect(screen.getByLabelText("Tell the agent why this command was denied")).toBeTruthy()
-  expect(screen.getByRole("button", { name: "Deny without explanation" })).toBeTruthy()
-  expect(screen.getByRole("button", { name: "Deny with explanation" })).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Deny with a note" }))
+  const card = screen.getByRole("alert")
+  expect(card.textContent).toContain("Kept on the receipt. The agent is told only that you denied it.")
+  expect(card.textContent).not.toMatch(/tell the agent why/iu)
 })
 
 // A decision made while the daemon is gone reaches nothing, so the card says
@@ -381,14 +407,13 @@ it("holds every decision while the daemon is disconnected, and says why", async 
   // A denial already being written is held too, and the words stay.
   rerender(thread(true))
   expect(screen.getByRole("alert").textContent).not.toContain("disconnected from the daemon")
-  await user.click(screen.getByRole("button", { name: "Deny" }))
-  await user.type(screen.getByLabelText("Tell the agent why this command was denied"), "Not now")
+  await user.click(screen.getByRole("button", { name: "Deny with a note" }))
+  await user.type(screen.getByLabelText("Note on this denial"), "Not now")
   rerender(thread(false))
-  expect((screen.getByRole("button", { name: "Deny without explanation" }) as HTMLButtonElement).disabled).toBe(true)
-  expect((screen.getByRole("button", { name: "Deny with explanation" }) as HTMLButtonElement).disabled).toBe(true)
-  await user.type(screen.getByLabelText("Tell the agent why this command was denied"), "{Enter}")
+  expect((screen.getByRole("button", { name: "Deny with this note" }) as HTMLButtonElement).disabled).toBe(true)
+  await user.type(screen.getByLabelText("Note on this denial"), "{Enter}")
   expect(onResolve).not.toHaveBeenCalled()
-  expect((screen.getByLabelText("Tell the agent why this command was denied") as HTMLInputElement).value).toBe("Not now")
+  expect((screen.getByLabelText("Note on this denial") as HTMLInputElement).value).toBe("Not now")
 })
 
 it("cancels denial explanation without deciding", async () => {
@@ -412,11 +437,11 @@ it("cancels denial explanation without deciding", async () => {
     />,
   )
 
-  await user.click(screen.getByRole("button", { name: "Deny" }))
+  await user.click(screen.getByRole("button", { name: "Deny with a note" }))
   await user.click(screen.getByRole("button", { name: "Cancel" }))
 
   expect(onResolve).not.toHaveBeenCalled()
-  expect(screen.queryByLabelText("Tell the agent why this command was denied")).toBeNull()
+  expect(screen.queryByLabelText("Note on this denial")).toBeNull()
   expect(screen.getByRole("button", { name: "Deny" })).toBeTruthy()
 })
 

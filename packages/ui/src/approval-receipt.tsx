@@ -27,11 +27,11 @@ export function decisionSummary(receipt: Receipt): { verdict: string, rule: stri
       return { verdict: "Denied", rule: "Nothing ran, and no rule was saved." }
     case "deny-explain":
       return {
-        verdict: "Denied with an explanation",
-        // The daemon records the explanation on the receipt. No adapter passes
-        // it to the provider, which answers with a generic denial, so this
-        // cannot claim the agent heard it.
-        rule: "Nothing ran. The explanation is recorded here; the agent was told only that you denied it.",
+        verdict: "Denied with a note",
+        // The daemon records the note on the receipt. No adapter passes it to
+        // the provider, which answers with a generic denial, so this cannot
+        // claim the agent heard it. The card calls it a note (ruled Q339 A).
+        rule: "Nothing ran. The note is recorded here; the agent was told only that you denied it.",
       }
   }
 }
