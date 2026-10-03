@@ -247,6 +247,30 @@ describe("App", () => {
     expect(sent[0]?.params).toMatchObject({ sessionId: audit.id, prompt: "Run it against acme_dev instead.", client: "phone" })
   })
 
+  // A send's failure belongs to the session it was for. One that lands after
+  // the person has moved to another session must not show there.
+  it("keeps a late send failure on the session it was for", async () => {
+    const snapshot = workspace()
+    snapshot.approvals = []
+    for (const session of snapshot.sessions) {
+      session.workspacePath = `/worktrees/${session.id}`
+      session.providerThreadId = `provider-thread-${session.id}`
+    }
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    await fireEvent.changeText(screen.getByLabelText("Reply to this session"), "Check the lockfile too")
+    await fireEvent.press(screen.getByRole("button", { name: "Send" }))
+    await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    const request = socket.requests("session.send")[0]!
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32603, message: "The audit session refused the send" } }) })
+    })
+    await settle()
+
+    expect(screen.queryByText(/The audit session refused the send/)).toBeNull()
+  })
+
   it("sends one turn for a double tap on Send", async () => {
     const snapshot = workspace()
     const idle = snapshot.sessions.find((session) => session.id === audit.id)!

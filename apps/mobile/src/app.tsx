@@ -91,7 +91,12 @@ export function App() {
   const [confirmPauseSession, setConfirmPauseSession] = useState(false)
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
-  const [sendProblem, setSendProblem] = useState("")
+  // A send's problem belongs to the session it was sent to. A send can fail
+  // after the person has moved to another session, so the problem carries
+  // its session and is shown only there.
+  const [sendProblemFor, setSendProblemFor] = useState<{ sessionId: string | undefined, text: string }>({ sessionId: undefined, text: "" })
+  const sendProblem = sendProblemFor.text
+  const setSendProblem = (text: string, sessionId?: string) => setSendProblemFor({ sessionId, text })
   const [decideProblem, setDecideProblem] = useState("")
   // Frames 13 and 14: what the next turn carries besides words. Held here
   // and sent with the turn; nothing is kept once the send is answered.
@@ -600,7 +605,7 @@ export function App() {
     if (inFlightSend.current) return
     const problem = promptProblem(draft)
     if (problem) {
-      setSendProblem(problem)
+      setSendProblem(problem, sessionId)
       return
     }
     const { selection, missing } = turnSkillSelectionFor(chosenSkills, offeredSkills)
@@ -609,14 +614,14 @@ export function App() {
     // a request for two, and the daemon would accept it without complaint.
     const dropped = missingSkillProblem(missing)
     if (dropped) {
-      setSendProblem(dropped)
+      setSendProblem(dropped, sessionId)
       return
     }
     // The plus was offered on a hello that said yes; the connection may have
     // been replaced since by one that did not. The daemon would refuse the
     // whole send, so say so here rather than after the bytes went.
     if (attachments.length > 0 && !imageAttachments) {
-      setSendProblem("This daemon does not take images. Remove them to send the words.")
+      setSendProblem("This daemon does not take images. Remove them to send the words.", sessionId)
       return
     }
     inFlightSend.current = true
@@ -639,9 +644,9 @@ export function App() {
     } catch (cause) {
       const refusal = turnSkillRefusalFrom(cause)
       const refusedImage = attachmentRefusalMessage(cause)
-      if (refusal) setSendProblem(refusalMessage(refusal))
-      else if (refusedImage) setSendProblem(refusedImage)
-      else setSendProblem(cause instanceof Error ? cause.message : "The message was not sent")
+      if (refusal) setSendProblem(refusalMessage(refusal), sessionId)
+      else if (refusedImage) setSendProblem(refusedImage, sessionId)
+      else setSendProblem(cause instanceof Error ? cause.message : "The message was not sent", sessionId)
     } finally {
       inFlightSend.current = false
       setSending(false)
@@ -665,7 +670,7 @@ export function App() {
         ...(session ? sendDelivery(session) : {}),
       })
     } catch (cause) {
-      setSendProblem(cause instanceof Error ? cause.message : "The message was not sent")
+      setSendProblem(cause instanceof Error ? cause.message : "The message was not sent", sessionId)
     } finally {
       inFlightSend.current = false
       setSending(false)
@@ -807,7 +812,7 @@ export function App() {
             pausing={pausing}
             draft={draft}
             sending={sending}
-            sendProblem={sendProblem}
+            sendProblem={sendProblemFor.sessionId === openSession.id ? sendProblem : ""}
             skillLabel={skillSelectionLabel(chosenSkills)}
             access={clientAccess}
             onWatchReceipt={watchReceipt}
