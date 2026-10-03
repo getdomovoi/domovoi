@@ -25,7 +25,10 @@ domovoi skill install <path> [--scope user|project] [--yes]
   bare code, into `domovoi pair`. It reads stdin, so the code does not land in shell history or
   the process table. The code is spent with `device.redeemCode` on a socket that holds no
   credential yet, the minted credential is proven with an authenticated hello, and only then is
-  it kept. A code issued for another kind of client is refused and nothing is stored. `--label`
+  it kept. A code issued for another kind of client is refused and nothing is stored. Once the
+  code is spent, the daemon lists the device under its label whatever happens next; when the
+  hello is refused or the credential cannot be stored, the message names that device so it can
+  be revoked before another code is shown. `--label`
   names this device in the daemon's Devices list and defaults to the hostname. The pasted line's
   address is used unless `--daemon` is given. The daemon admits three redemptions per source per
   minute, successful ones included, and each code works once.

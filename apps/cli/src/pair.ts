@@ -16,8 +16,17 @@ export type RpcCall = (method: string, params: Record<string, unknown>) => Promi
 // The sentences this flow prints. One place, so a reworded line is one edit.
 const copy = {
   notACode: "That is not a pairing code. Paste the line 'domovoid pair --client cli --label <device label>' printed, or the code alone.",
-  issuedForAnother: (client: string, label: string) => `This code was issued for a ${client}, so nothing was kept. Revoke "${label}" on the machine, then show a code for the cli.`,
+  issuedForAnother: (client: string, label: string) => `This code was issued for a ${client}, so nothing was kept. ${revoke(label)}`,
+  // Both run after the code was spent: the daemon lists the device under its
+  // label with nobody holding its token, and it counts toward the device
+  // limit, so the person is told to revoke it before showing another code.
+  helloRefused: (reason: string | undefined, label: string) => `The daemon refused the credential this code minted${reason === undefined ? "" : ` (${reason})`}, so nothing was kept. ${revoke(label)}`,
+  notStored: (reason: string, label: string) => `The credential works but could not be stored (${reason}), so nothing was kept. ${revoke(label)}`,
   unreadableReply: "The daemon answered with something this client could not read.",
+}
+
+function revoke(label: string): string {
+  return `Revoke "${label}" on the machine, then show a code for the cli.`
 }
 
 // The daemon side of pairing is `domovoid pair --client cli --label <device
@@ -82,7 +91,9 @@ export async function redeemPairingCode(input: {
 export async function pairWithDaemon(input: {
   endpoint: string
   credential: string
-  label?: string
+  // The label the daemon recorded when the code was redeemed, so a failure
+  // after that point can name the device it left on the daemon.
+  label: string
   store: CredentialStore
   // Opens an authenticated connection and returns a caller for it; the
   // daemon's hello is where a wrong or revoked bearer is refused.
@@ -98,8 +109,8 @@ export async function pairWithDaemon(input: {
     if (error instanceof DaemonUnreachableError) throw error
     // The daemon's refusal is kept; anything that could quote the request is
     // not, because the request carries the bearer.
-    const message = error instanceof Error && !error.message.includes(input.credential) ? error.message : "The daemon refused this credential"
-    throw new PairingError(message)
+    const reason = error instanceof Error && !error.message.includes(input.credential) ? error.message : undefined
+    throw new PairingError(copy.helloRefused(reason, input.label))
   }
   try {
     const current = deviceCurrentResultSchema.parse(await connection.call("device.current", {}))
@@ -110,12 +121,11 @@ export async function pairWithDaemon(input: {
       // than silently re-enrolled from whatever the daemon now publishes. A
       // pin for a different machine at this address is dropped on purpose.
       await input.store.update(input.endpoint, (previous) => ({
-        endpoint: input.endpoint, deviceId: current.deviceId, machineId: current.machineId, token: input.credential,
-        ...(input.label === undefined ? {} : { label: input.label }),
+        endpoint: input.endpoint, deviceId: current.deviceId, machineId: current.machineId, token: input.credential, label: input.label,
         ...(previous?.relayPin !== undefined && previous.relayPin.identity.machineId === current.machineId ? { relayPin: previous.relayPin } : {}),
       }))
     } catch (error) {
-      throw new PairingError(`The credential works but could not be stored (${error instanceof Error ? error.message : String(error)}). Nothing was kept.`)
+      throw new PairingError(copy.notStored(error instanceof Error ? error.message : String(error), input.label))
     }
     // The bearer just proved this daemon is the one being paired, so what it
     // publishes now is the identity this client pins. A daemon without relay

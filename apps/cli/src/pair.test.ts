@@ -165,7 +165,7 @@ describe("pair", () => {
       channel: { suite: "Noise_IK_25519_ChaChaPoly_SHA256", responderPublicKey: channelKey(7) },
     }
     const daemon = fakeDaemon({ recovery: { identity } })
-    const result = await pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store, connect: daemon.connect })
+    const result = await pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store, connect: daemon.connect })
     expect(result.relayPin).toBe("enrolled")
     expect(store.saved[0]?.relayPin).toEqual({ version: 1, identity, state: "trusted" })
   })
@@ -174,24 +174,27 @@ describe("pair", () => {
     const store = memoryStore()
     const daemon = fakeDaemon({ recovery: { identity: { version: 1, machineId: `machine-${"9".repeat(32)}`, generation: 1,
       identityPublicKey, channel: { suite: "Noise_IK_25519_ChaChaPoly_SHA256", responderPublicKey: channelKey(7) } } } })
-    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store, connect: daemon.connect }))
+    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store, connect: daemon.connect }))
       .rejects.toThrow(/paired, but its relay identity was not enrolled.*another machine/)
     expect(store.saved).toHaveLength(1)
     expect(store.saved[0]?.relayPin).toBeUndefined()
   })
 
-  it("stores nothing when the daemon refuses the credential, and never quotes it", async () => {
+  it("stores nothing when the daemon refuses the credential, never quotes it, and names the device the spent code left behind", async () => {
     const store = memoryStore()
     const daemon = fakeDaemon({ helloRejects: `refused ${token}` })
-    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store, connect: daemon.connect }))
-      .rejects.toThrow(/^The daemon refused this credential$/)
+    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store, connect: daemon.connect }))
+      .rejects.toThrow(/^The daemon refused the credential this code minted, so nothing was kept\. Revoke "my shell" on the machine, then show a code for the cli\.$/)
     expect(store.saved).toEqual([])
+    const worded = fakeDaemon({ helloRejects: "Unknown or revoked device credential" })
+    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store, connect: worded.connect }))
+      .rejects.toThrow(/^The daemon refused the credential this code minted \(Unknown or revoked device credential\), so nothing was kept\. Revoke "my shell" on the machine/)
   })
 
   it("passes a daemon lost before the proving hello through as unreachable, not as a refusal", async () => {
     const store = memoryStore()
     const daemon = fakeDaemon({ helloRejects: new DaemonUnreachableError("Could not reach ws://127.0.0.1:47831/rpc: connect ECONNREFUSED") })
-    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store, connect: daemon.connect }))
+    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store, connect: daemon.connect }))
       .rejects.toThrow(DaemonUnreachableError)
     expect(store.saved).toEqual([])
   })
@@ -199,16 +202,16 @@ describe("pair", () => {
   it("refuses a daemon credential even though it authenticates", async () => {
     const store = memoryStore()
     const daemon = fakeDaemon({ current: { kind: "daemon", machineId } })
-    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store, connect: daemon.connect }))
+    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store, connect: daemon.connect }))
       .rejects.toThrow(/belongs to a daemon/)
     expect(store.saved).toEqual([])
     expect(daemon.closed()).toBe(1)
   })
 
-  it("says when the credential worked but could not be kept", async () => {
+  it("says when the credential worked but could not be kept, and names the device to revoke", async () => {
     const daemon = fakeDaemon()
-    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store: memoryStore(true), connect: daemon.connect }))
-      .rejects.toThrow(/could not be stored/)
+    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store: memoryStore(true), connect: daemon.connect }))
+      .rejects.toThrow(/^The credential works but could not be stored \(disk full\), so nothing was kept\. Revoke "my shell" on the machine, then show a code for the cli\.$/)
   })
 
   it("keeps a same-machine pin that needs recovery when pairing again, and recovers rather than re-enrols", async () => {
@@ -222,7 +225,7 @@ describe("pair", () => {
     // A daemon publishing a fresh identity with no successor is the stolen-profile shape.
     const foreign = { ...identity, channel: { ...identity.channel, responderPublicKey: channelKey(8) } }
     const daemon = fakeDaemon({ recovery: { identity: foreign } })
-    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store, connect: daemon.connect }))
+    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store, connect: daemon.connect }))
       .rejects.toThrow(/not enrolled.*No relay successor/)
     expect(store.saved[0]?.token).toBe(token)
     expect(store.saved[0]?.relayPin).toEqual({ version: 1, identity, state: "recovery-required" })
@@ -237,7 +240,7 @@ describe("pair", () => {
     store.saved.push({ endpoint: "ws://127.0.0.1:47831/rpc", deviceId, machineId: otherIdentity.machineId, token: "old",
       relayPin: { version: 1, identity: otherIdentity, state: "trusted" } })
     const daemon = fakeDaemon()
-    const result = await pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store, connect: daemon.connect })
+    const result = await pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store, connect: daemon.connect })
     expect(result.relayPin).toBe("unavailable")
     expect(store.saved).toHaveLength(1)
     expect(store.saved[0]?.relayPin).toBeUndefined()
@@ -250,7 +253,7 @@ describe("pair", () => {
   ])("does not read %s as the daemon being unprovisioned", async (_name, failure, expected) => {
     const store = memoryStore()
     const daemon = fakeDaemon({ recoveryThrows: failure })
-    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store, connect: daemon.connect }))
+    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store, connect: daemon.connect }))
       .rejects.toThrow(expected)
     expect(store.saved).toHaveLength(1)
   })
