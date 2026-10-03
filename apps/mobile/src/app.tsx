@@ -435,12 +435,13 @@ export function App() {
     void loadSkills()
   }, [catalogIncomplete, loadSkills, skillCatalog, skillsLoading, skillsOpen, status])
 
-  // The list is asked for when the tab is opened rather than polled. After that
-  // the daemon pushes every change on its own, so nothing here has to ask again
-  // to stay current. Depending on the status is what makes it ask once more
-  // when the connection comes back.
+  // The list is asked for when a tab that draws it is opened rather than
+  // polled: Machines, and Sessions for its idle card's fleet rows and its
+  // UNREACHABLE line. After that the daemon pushes every change on its own, so
+  // nothing here has to ask again to stay current. Depending on the status is
+  // what makes it ask once more when the connection comes back.
   useEffect(() => {
-    if (tab === "machines" && status === "open") void loadFleet()
+    if ((tab === "machines" || tab === "sessions") && status === "open") void loadFleet()
   }, [loadFleet, status, tab])
 
   // Sessions measures how long an approval has waited and Fleet measures how

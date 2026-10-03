@@ -110,6 +110,14 @@ const audit = demoWorkspace.sessions.find((session) => session.id === "session-a
 const approval = demoWorkspace.approvals[0]!
 
 describe("App", () => {
+  // Sessions draws the idle card's fleet rows and the UNREACHABLE line from
+  // the fleet, so opening on Sessions asks for it, without waiting for the
+  // Machines tab.
+  it("asks for the fleet when Sessions opens", async () => {
+    const { socket } = await openApp(workspace())
+    expect(socket.requests("fleet.list").length).toBeGreaterThan(0)
+  })
+
   it("names the session a gate belongs to above it", async () => {
     expect(approval.sessionId).toBe(billing.id)
     await openApp(workspace())
