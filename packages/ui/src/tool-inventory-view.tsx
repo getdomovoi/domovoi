@@ -233,8 +233,13 @@ function readMeta(inventory: ToolInventory, readAt: Date): string {
   const files = new Map<string, ToolInventoryFile>()
   for (const provider of inventory.providers) for (const file of provider.files) files.set(file.path, file)
   const all = [...files.values()]
-  const unreadable = unreadableFiles(all).length
-  return `read ${readTime.format(readAt)} · ${plural(readFileCount(all), "file", "files")}${unreadable > 0 ? ` · ${unreadable} unreadable` : ""}`
+  // The Git config files that set a filter are read too, each path once
+  // however many scopes read it, and a Git config that could not be read is
+  // one unreadable file (bot finding 4151622883).
+  const gitFilters = inventory.repository?.gitFilters
+  const gitFiles = new Set((gitFilters?.files ?? []).map((file) => file.path).filter((path) => !files.has(path))).size
+  const unreadable = unreadableFiles(all).length + (gitFilters?.unreadable ? 1 : 0)
+  return `read ${readTime.format(readAt)} · ${plural(readFileCount(all) + gitFiles, "file", "files")}${unreadable > 0 ? ` · ${unreadable} unreadable` : ""}`
 }
 
 function RepositoryRunsPanel({ inventory, meta }: { inventory: ToolInventory; meta: string }) {

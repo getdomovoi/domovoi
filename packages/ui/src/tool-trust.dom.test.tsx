@@ -428,6 +428,28 @@ describe("git filters in the review", () => {
     ])
   })
 
+  // The read line counts the Git config files the filters come from, once per
+  // path, and an unreadable Git config as unreadable (bot finding 4151622883).
+  it("counts the git config files it read, and an unreadable one", () => {
+    const none = claude({ files: [{ path: ".mcp.json", source: "repository-file", state: "absent" }], entries: [] })
+    const shared: ToolInventoryGitFilters = {
+      files: [{ path: ".git/config", scope: "local" }, { path: "shared.gitconfig", scope: "local" }, { path: "shared.gitconfig", scope: "worktree" }],
+      entries: [
+        sopsFilters.entries[0]!,
+        { ...sopsFilters.entries[0]!, file: "shared.gitconfig" },
+        { ...sopsFilters.entries[0]!, file: "shared.gitconfig", scope: "worktree" },
+      ],
+      omittedEntries: 0,
+      reviewDigest,
+    }
+    show(withGitFilters(inventory(notTrusted, [none]), shared), { onTrust: vi.fn() })
+    expect(screen.getByText("read 14:02:31 · 2 files")).toBeTruthy()
+    cleanup()
+
+    show(withGitFilters(inventory(notTrusted, [none]), { files: [], entries: [], omittedEntries: 0, unreadable: { reason: "git-failed" }, reviewDigest }), { onTrust: vi.fn() })
+    expect(screen.getByText("read 14:02:31 · 0 files · 1 unreadable")).toBeTruthy()
+  })
+
   it("offers trust for a repository whose only config is a git filter", async () => {
     const none = claude({ files: [{ path: ".mcp.json", source: "repository-file", state: "absent" }], entries: [] })
     show(withGitFilters(inventory(notTrusted, [none]), sopsFilters), { onTrust: vi.fn() })
