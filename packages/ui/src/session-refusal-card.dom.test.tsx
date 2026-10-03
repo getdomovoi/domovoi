@@ -120,6 +120,21 @@ describe("session refused for an untrusted git filter", () => {
     expect(within(card).queryByRole("button", { name: "Start the session again" })).toBeNull()
   })
 
+  // The Skills design draws the refusal (step 15) with the danger family: its
+  // border, background and text, and a destructive dot, so a refusal never
+  // reads as held-back inventory (bot finding 4151622864). jsdom lays nothing
+  // out, so the tokens are read from the classes.
+  it("draws the refusal with the danger tokens, as the design does", () => {
+    const { card } = show({ onTrust: vi.fn<Trust>() })
+
+    expect(card.className).toContain("border-danger-border")
+    expect(card.className).toContain("bg-danger-background")
+    expect(card.querySelector("[data-slot='refusal-dot']")?.className).toContain("bg-destructive")
+    expect(within(card).getByRole("heading", { name: "Domovoi did not start this session" }).className).toContain("text-danger-foreground")
+    expect(within(card).getByText("refused · untrusted git filter").className).toContain("text-danger-dim")
+    expect(within(card).getByText("Nothing from the repository ran.").className).toContain("text-danger-dim")
+  })
+
   it("names several drivers and counts the ones the daemon did not name", () => {
     const { card } = show({
       refusal: refusal({ drivers: [{ name: "sops", scope: "local" }, { name: "crypt", scope: "worktree" }], omittedDrivers: 2 }),

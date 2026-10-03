@@ -107,32 +107,39 @@ export function SessionRefusalCard({
   const named = refusal.drivers.map((driver) => driver.name).filter((name, index, all) => all.indexOf(name) === index)
 
   return (
-    <section aria-labelledby={titleId} className="overflow-hidden rounded-xl border bg-card">
+    // The design draws a refusal with the danger family (step 15): Domovoi
+    // refused, which is not inventory state, so it does not read as one.
+    <section aria-labelledby={titleId} className="overflow-hidden rounded-xl border border-danger-border bg-danger-background">
       {/* The dismiss button stays on the title row when a narrow card wraps. */}
       <div className="flex items-start gap-2 py-2 pr-2 pl-[15px]">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 pt-1">
-          <span className="size-2 shrink-0 rounded-full bg-faint" aria-hidden />
-          <h2 id={titleId} className="m-0 text-[13px] font-medium">Domovoi did not start this session</h2>
+          <span data-slot="refusal-dot" className="size-2 shrink-0 rounded-full bg-destructive" aria-hidden />
+          <h2 id={titleId} className="m-0 text-[13px] font-semibold text-danger-foreground">Domovoi did not start this session</h2>
           <span className="flex-1" />
-          <span className={cn(mono, "text-[10.5px] text-faint")}>refused · untrusted git filter</span>
+          <span className={cn(mono, "text-[10.5px] text-danger-dim")}>refused · untrusted git filter</span>
         </div>
-        <Button variant="ghost" size="icon-sm" aria-label="Dismiss" onClick={onClose}><XIcon /></Button>
+        <Button variant="ghost" size="icon-sm" aria-label="Dismiss" className="text-danger-foreground" onClick={onClose}><XIcon /></Button>
       </div>
-      <div className="flex flex-col gap-2 px-[15px] pb-3 text-[12px] leading-[1.6] text-muted-foreground">
+      <div className="flex flex-col gap-2 px-[15px] pb-3 text-[12px] leading-[1.6] text-danger-foreground">
         <p className="m-0">{refusalSentence(refusal, named, repository, machine, trusted)}</p>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-          <span className="text-[11.5px]">It names</span>
+          <span className="text-[11.5px] text-danger-dim">It names</span>
           {refusal.drivers.map((driver) => (
-            <code key={`${driver.scope}\u0000${driver.name}`} className={cn(mono, "rounded-md bg-accent px-1.5 py-0.5 text-[11px] break-all text-strong")}>
+            <code key={`${driver.scope}\u0000${driver.name}`} className={cn(mono, "text-[11px] break-all text-danger-foreground")}>
               {`${driver.name} · ${gitFilterScopeLabel[driver.scope]}`}
             </code>
           ))}
-          {refusal.omittedDrivers > 0 ? <span className="text-[11.5px]">{`and ${refusal.omittedDrivers} more`}</span> : null}
+          {refusal.omittedDrivers > 0 ? <span className="text-[11.5px] text-danger-dim">{`and ${refusal.omittedDrivers} more`}</span> : null}
         </div>
-        <p className="m-0">Nothing from the repository ran.</p>
+        <p className="m-0 text-[11.5px] text-danger-dim">Nothing from the repository ran.</p>
       </div>
       {trusted ? (
-        <p className="m-0 border-t px-[15px] py-2.5 text-[12px] text-strong">{`Trusted on ${machine}. Nothing has started yet.`}</p>
+        // After a grant the design draws the trusted line on the card ground
+        // with a success dot.
+        <p className="m-0 flex items-center gap-2.5 border-t border-danger-border bg-card px-[15px] py-2.5 text-[12px] text-strong">
+          <span className="size-2 shrink-0 rounded-full bg-success" aria-hidden />
+          {`Trusted on ${machine}. Nothing has started yet.`}
+        </p>
       ) : null}
       {startError ? (
         <Alert variant="destructive" className="rounded-none border-x-0 border-b-0">
@@ -140,12 +147,12 @@ export function SessionRefusalCard({
           <AlertDescription>{startError}</AlertDescription>
         </Alert>
       ) : null}
-      <div className="flex flex-wrap items-center gap-3 border-t px-[15px] py-2.5">
+      <div className={cn("flex flex-wrap items-center gap-3 px-[15px] py-2.5", trusted ? "bg-card" : "border-t border-danger-border")}>
         {trusted ? (
           <Button size="sm" disabled={starting} onClick={() => { void startAgain() }}>Start the session again</Button>
         ) : null}
         {reviewable && onTrust ? <Button size="sm" onClick={() => setReviewing(true)}>{reviewAgain ? "Review and trust again" : "Review and trust"}</Button> : null}
-        <Button size="sm" variant="outline" onClick={onOpenTools}>Open Tools</Button>
+        <Button size="sm" variant="outline" className="border-danger-border bg-transparent text-danger-foreground" onClick={onOpenTools}>Open Tools</Button>
         {reviewable && !onTrust ? <GrantedWhere /> : null}
       </div>
       {onTrust ? (

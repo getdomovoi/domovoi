@@ -33,6 +33,19 @@ describe("RefusalCard", () => {
     expect(onSeeHeldBack).toHaveBeenCalledTimes(1)
   })
 
+  // The design draws the phone refusal (step 16) with the danger family, as
+  // the desktop card (bot finding 4151622864).
+  it("draws the refusal with the danger tokens, as the design does", async () => {
+    await render(<RefusalCard refusal={refusal} onSeeHeldBack={jest.fn()} />)
+
+    const card = screen.getByLabelText(refusal.title)
+    expect(String(card.props.className)).toContain("border-danger-border")
+    expect(String(card.props.className)).toContain("bg-danger-bg")
+    expect(String(screen.getByTestId("refusal-dot").props.className)).toContain("bg-destructive")
+    expect(String(screen.getByText(refusal.title).props.className)).toContain("text-danger-fg")
+    expect(String(screen.getByText(refusal.code).props.className)).toContain("text-danger-dim")
+  })
+
   it("counts drivers it does not name, and does not point to trust that would not lift the refusal", async () => {
     await render(<RefusalCard refusal={{ ...refusal, omitted: 2, awaitsTrust: false }} onSeeHeldBack={jest.fn()} />)
 
