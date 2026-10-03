@@ -281,6 +281,11 @@ function pauseRows(thread: readonly ThreadItem[], sessionId: string): ThreadItem
 
 // The design's paused notice, with copy that is true today: the turn ended and
 // the session holds nothing back, so there is nothing to resume (ruled Q361 A).
+// The design's "from this client" is left out: the pause row names a client
+// kind, not a connection, and the daemon answers a pause of an idle session as
+// a success without writing one, so a pause another client made in the same
+// window is the row this client finds. Naming the pausing connection on the
+// row is a protocol change (#710 review).
 function StoppedSessionNotice({ at }: { at: Date }) {
   return (
     <div
@@ -290,7 +295,7 @@ function StoppedSessionNotice({ at }: { at: Date }) {
     >
       <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-info" />
       <span className="text-[12.5px] text-info-foreground">Stopped. The turn ended. The next message you send starts the next turn.</span>
-      <span className="font-machine text-[10.5px] text-info-dim">stopped {threadClock.format(at)} · from this client</span>
+      <span className="font-machine text-[10.5px] text-info-dim">stopped {threadClock.format(at)}</span>
     </div>
   )
 }
@@ -911,7 +916,9 @@ export function Thread({
     }
   }
 
-  // When the daemon recorded the pause this client asked for, if it has.
+  // When the daemon recorded a pause after this client asked for one, if it
+  // has. The row may be another client's (see StoppedSessionNotice), which
+  // still means the turn ended.
   const stoppedAt = (() => {
     if (!stopped) return undefined
     const recorded = pauseRows(snapshot.thread, active.id).find((row) => !stopped.earlierPauseRows.has(row.id))
