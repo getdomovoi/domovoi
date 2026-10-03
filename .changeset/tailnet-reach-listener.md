@@ -13,8 +13,9 @@ service configuration keeps it as `tailnetListener`.
 A certificate that cannot be read, has expired or does not match its key
 refuses only the tailnet listener: the daemon starts on loopback, logs why and
 answers `tailnet.status` with the reason. The certificate and key are read only
-when both are regular files, and within 5 seconds, so a FIFO, a directory or a
-stalled read cannot hold the daemon's start. An address that is not on the machine
+when both are regular files of at most 64 KiB that are not links, opened without
+following a link and checked on the opened file, and within 5 seconds, so a
+FIFO, a directory or a stalled read cannot hold the daemon's start. An address that is not on the machine
 yet, as when Tailscale is not up at login, is tried again every 30 seconds.
 When the certificate passes its expiry while the daemon runs, the daemon closes
 the tailnet listener and its connections, logs why and reports it refused. A

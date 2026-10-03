@@ -26,7 +26,7 @@ import {
 import { skillTrustPath } from "./skill-signing.js"
 import { profileDirectory, profileLocation } from "./profile-directory.js"
 import { loadTlsMaterial, type TlsMaterial, type TlsMaterialPaths } from "./tls-material.js"
-import { loadTailnetTls } from "./tailnet-listener.js"
+import { loadTailnetTls, readTailnetTlsMaterial } from "./tailnet-listener.js"
 import { wslHostFacts } from "./wsl-host.js"
 import { captureInheritedCredentials, refuseCredentialOverrides, withInheritedCredentials, withoutInheritedCredentials } from "./inherited-credentials.js"
 
@@ -86,6 +86,9 @@ export type ProductionDaemonDependencies = {
     defaults: { label: string },
   ): Promise<MachineIdentity>
   loadTls(paths: TlsMaterialPaths): Promise<TlsMaterial>
+  // The tailnet certificate and key, read without following a link
+  // (tailnet-listener.ts readTailnetTlsMaterial).
+  readTailnetTls(paths: TlsMaterialPaths): Promise<TlsMaterial>
   // The tailnet certificate's own bound; tests shorten it.
   tailnetTlsTimeoutMs?: number
   loadRelayChannel: typeof loadOrProvisionRelayChannel
@@ -101,6 +104,7 @@ export const productionDaemonDependencies = {
   loadOrCreateToken: loadOrCreateDaemonToken,
   loadOrCreateIdentity: loadOrCreateMachineIdentity,
   loadTls: loadTlsMaterial,
+  readTailnetTls: readTailnetTlsMaterial,
   loadRelayChannel: loadOrProvisionRelayChannel,
   resolveToolPath,
   createProviderProbe: (toolPath) => new CliProviderProbe(runProviderCommand, { path: toolPath }),
@@ -143,10 +147,11 @@ export async function createProductionDaemonWithDependencies(
     // TailnetReach (Q404 A): unlike the main listener's, a certificate that
     // cannot be read refuses only the tailnet listener. The daemon still
     // starts on loopback, which the desktop and the CLI attach on, and says
-    // why. Only regular files are read, within their own bound.
+    // why. Only regular files that are not links are read, within their own
+    // bound.
     const tailnetListener = config.tailnetListener ? {
       address: config.tailnetListener.address,
-      tls: await beforeDeadline(loadTailnetTls(dependencies.loadTls, config.tailnetListener.tls, dependencies.tailnetTlsTimeoutMs), deadline),
+      tls: await beforeDeadline(loadTailnetTls(dependencies.readTailnetTls, config.tailnetListener.tls, dependencies.tailnetTlsTimeoutMs), deadline),
     } : undefined
     deadline.throwIfExpired()
     lease ??= claimProfile(profile)

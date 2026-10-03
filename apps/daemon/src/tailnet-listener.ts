@@ -1,5 +1,6 @@
 import { X509Certificate } from "node:crypto"
-import { stat } from "node:fs/promises"
+import { constants } from "node:fs"
+import { lstat, open, type FileHandle } from "node:fs/promises"
 
 import type { TailnetListenerStatus } from "@getdomovoi/protocol"
 
@@ -28,21 +29,58 @@ export const defaultTailnetTlsTimeoutMs = 5_000
 // A certificate chain or a key is a few kilobytes; a larger file is not read.
 const maximumTailnetTlsBytes = 64 * 1_024
 
+// Codex review round 1 (P2-2): the file at path itself, never what a link
+// there names. It is opened without following a link (O_NOFOLLOW; an lstat
+// first says so where that flag does not exist), and without waiting on a
+// FIFO (O_NONBLOCK), and every check runs on the opened file, so a file
+// swapped in after a check is never the one read. The read stops past 64 KiB.
+async function readTailnetFile(path: string, what: "certificate" | "key"): Promise<Buffer> {
+  const refused = (why: string) => new Error(`The tailnet ${what} at ${path} ${why}, so the daemon answers on this computer only.`)
+  const unreadable = (error: unknown) => new Error(`Domovoi could not read the tailnet ${what} at ${path} (${(error as NodeJS.ErrnoException).code ?? "unreadable"}), so the daemon answers on this computer only.`)
+  let handle: FileHandle
+  try {
+    if ((await lstat(path)).isSymbolicLink()) throw refused("is a link")
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === "ELOOP" || code === "EMLINK") throw refused("is a link")
+    throw code === undefined && error instanceof Error ? error : unreadable(error)
+  }
+  try {
+    const entry = await handle.stat()
+    if (!entry.isFile()) throw refused("is not a regular file")
+    if (entry.size > maximumTailnetTlsBytes) throw refused("is larger than 64 KiB")
+    // A key any other account can read is already disclosed (tls-material.ts).
+    if (what === "key" && process.platform !== "win32" && (entry.mode & 0o077) !== 0) throw new Error(`TLS private key must not be readable by other users: ${path}`)
+    const buffer = Buffer.alloc(maximumTailnetTlsBytes + 1)
+    let length = 0
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length)
+      if (bytesRead === 0) break
+      length += bytesRead
+      if (length > maximumTailnetTlsBytes) throw refused("is larger than 64 KiB")
+    }
+    return Buffer.from(buffer.subarray(0, length))
+  } finally {
+    await handle.close()
+  }
+}
+
+// The tailnet certificate and key, read as readTailnetFile reads, with the
+// PEM checks the main listener's loader makes (tls-material.ts).
+export async function readTailnetTlsMaterial(paths: TlsMaterialPaths): Promise<TlsMaterial> {
+  const cert = await readTailnetFile(paths.certPath, "certificate")
+  const key = await readTailnetFile(paths.keyPath, "key")
+  if (!cert.toString("utf8").includes("BEGIN CERTIFICATE")) throw new Error(`TLS certificate is not PEM encoded: ${paths.certPath}`)
+  if (!key.toString("utf8").includes("PRIVATE KEY")) throw new Error(`TLS private key is not PEM encoded: ${paths.keyPath}`)
+  return { cert, key }
+}
+
 export async function loadTailnetTls(
   load: (paths: TlsMaterialPaths) => Promise<TlsMaterial>,
   paths: TlsMaterialPaths,
   timeoutMs = defaultTailnetTlsTimeoutMs,
 ): Promise<TlsMaterial | { refused: string }> {
-  for (const [path, what] of [[paths.certPath, "certificate"], [paths.keyPath, "key"]] as const) {
-    let entry
-    try {
-      entry = await stat(path)
-    } catch (error) {
-      return { refused: `Domovoi could not read the tailnet ${what} at ${path} (${(error as NodeJS.ErrnoException).code ?? "unreadable"}), so the daemon answers on this computer only.` }
-    }
-    if (!entry.isFile()) return { refused: `The tailnet ${what} at ${path} is not a regular file, so the daemon answers on this computer only.` }
-    if (entry.size > maximumTailnetTlsBytes) return { refused: `The tailnet ${what} at ${path} is larger than 64 KiB, so the daemon answers on this computer only.` }
-  }
   let timer: ReturnType<typeof setTimeout> | undefined
   const late = new Promise<{ refused: string }>((settle) => {
     timer = setTimeout(() => settle({ refused: `The tailnet certificate and key at ${paths.certPath} were not read within ${timeoutMs / 1_000} seconds, so the daemon answers on this computer only.` }), timeoutMs)
