@@ -8,7 +8,7 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 
 import { deviceIssueCodeResultSchema, protocolVersion, tailnetListenerStatusSchema } from "@getdomovoi/protocol"
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 
 import { DomovoiDaemon, type DaemonErrorEntry } from "./server.js"
@@ -172,6 +172,39 @@ describe("the tailnet listener", () => {
     const late = new WebSocket(`wss://[::1]:${port}/rpc`, trusting())
     sockets.push(late)
     await expect(once(late, "open", { signal: AbortSignal.timeout(3_000) })).rejects.toBeDefined()
+  })
+
+  // Q404 follow-up: when renewal keeps failing, the certificate lapses. A
+  // phone refuses an expired one, so the daemon stops answering on the
+  // tailnet at notAfter and says so; loopback answers as before. Only the
+  // clock is faked; sockets and timers are real.
+  it("stops answering on the tailnet once the certificate expires, and says so", async (context) => {
+    if (!ipv6) context.skip()
+    const errors: DaemonErrorEntry[] = []
+    const served = daemon({ address: "::1", tls: { cert: certificate, key } }, errors)
+    const { port } = await served.start()
+    const socket = await open(`ws://127.0.0.1:${port}/rpc`)
+    expect((await hello(socket, served.authToken)).error).toBeUndefined()
+    const remote = await open(`wss://[::1]:${port}/rpc`, trusting())
+    expect((await hello(remote, served.authToken)).error).toBeUndefined()
+    const notAfter = new Date(new X509Certificate(certificate).validTo)
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      vi.setSystemTime(notAfter.getTime() + 1_000)
+      const closed = once(remote, "close")
+      expect(tailnetListenerStatusSchema.parse((await call(socket, "tailnet.status")).result)).toEqual({
+        state: "refused", address: "::1", retrying: false, certificateExpiresAt: notAfter.toISOString(),
+        reason: `The tailnet certificate expired on ${notAfter.toISOString().slice(0, 10)}, so the daemon answers on this computer only.`,
+      })
+      await closed
+    } finally {
+      vi.useRealTimers()
+    }
+    const late = new WebSocket(`wss://[::1]:${port}/rpc`, trusting())
+    sockets.push(late)
+    await expect(once(late, "open", { signal: AbortSignal.timeout(3_000) })).rejects.toBeDefined()
+    expect((await call(socket, "workspace.get")).error).toBeUndefined()
+    expect(errors).toContainEqual({ context: "Domovoi stopped the tailnet listener", detail: expect.stringContaining("expired") })
   })
 
   it("refuses the listener, says why and keeps loopback when the certificate could not be read", async () => {

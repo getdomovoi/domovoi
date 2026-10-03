@@ -17,6 +17,8 @@ export type DaemonTailnetListenerOptions = {
 }
 
 export const defaultTailnetRetryMs = 30_000
+// How often a listening daemon checks its certificate against notAfter.
+export const tailnetExpiryCheckMs = 60 * 60_000
 
 // A reason travels in tailnet.status, bounded at 512 characters there.
 const maximumReasonLength = 512

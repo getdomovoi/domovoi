@@ -274,6 +274,7 @@ import { StoredMachineIdentityMismatchError, type MachineIdentity } from "./mach
 import type { TlsMaterial } from "./tls-material.js"
 import {
   defaultTailnetRetryMs,
+  tailnetExpiryCheckMs,
   tailnetCertificateCheck,
   tailnetStatusOf,
   type DaemonTailnetListenerOptions,
@@ -1633,7 +1634,9 @@ export class DomovoiDaemon {
   readonly #tailnetOptions: DaemonTailnetListenerOptions | undefined
   #tailnet: TailnetListenerState = { state: "off" }
   #tailnetHttp: HttpServer | undefined
+  #tailnetRpc: WebSocketServer | undefined
   #tailnetRetry: ReturnType<typeof setTimeout> | undefined
+  #tailnetExpiryCheck: ReturnType<typeof setInterval> | undefined
   #rpcClients = new Set<RpcOutboundSocket>()
   #relaySockets = new Set<DaemonRelaySocket>()
   #relayStaticKey: Uint8Array | undefined
@@ -3098,7 +3101,7 @@ export class DomovoiDaemon {
       // Node names only "key values mismatch" or a parse failure here.
       return refuse("The tailnet certificate and key do not belong together, so the daemon answers on this computer only.", false, notAfter)
     }
-    this.#rpcServer(server)
+    const rpc = this.#rpcServer(server)
     let listened = false
     return new Promise<void>((settle) => {
       server.once("error", (error: NodeJS.ErrnoException) => {
@@ -3130,9 +3133,32 @@ export class DomovoiDaemon {
           return
         }
         this.#tailnetHttp = server
+        this.#tailnetRpc = rpc
         this.#tailnet = { state: "listening", address, port, notAfter }
+        this.#tailnetExpiryCheck = setInterval(() => this.#expireTailnetIfDue(), tailnetExpiryCheckMs)
+        this.#tailnetExpiryCheck.unref?.()
       })
     })
+  }
+
+  // An expired certificate is refused by every device, so the tailnet
+  // listener closes at notAfter, with every connection it carried, and the
+  // daemon answers on this computer only until a restart serves a renewed one.
+  // Checked hourly and whenever tailnet.status is asked.
+  #expireTailnetIfDue(): void {
+    const state = this.#tailnet
+    const tls = this.#tailnetOptions?.tls
+    if (state.state !== "listening" || !tls || !("cert" in tls) || Date.now() < state.notAfter.getTime()) return
+    const checked = tailnetCertificateCheck(tls.cert, Date.now())
+    const reason = "refused" in checked && checked.refused ? checked.refused : "The tailnet certificate expired, so the daemon answers on this computer only."
+    this.#tailnet = { state: "refused", address: state.address, reason, retrying: false, notAfter: state.notAfter }
+    if (this.#tailnetExpiryCheck) clearInterval(this.#tailnetExpiryCheck)
+    this.#tailnetExpiryCheck = undefined
+    for (const client of this.#tailnetRpc?.clients ?? []) client.close(1001, "tailnet certificate expired")
+    this.#tailnetHttp?.close()
+    this.#tailnetHttp = undefined
+    this.#tailnetRpc = undefined
+    this.#reportError("Domovoi stopped the tailnet listener", reason)
   }
 
   stop(): Promise<void> {
@@ -3191,6 +3217,9 @@ export class DomovoiDaemon {
     }
     if (this.#tailnetRetry) clearTimeout(this.#tailnetRetry)
     this.#tailnetRetry = undefined
+    if (this.#tailnetExpiryCheck) clearInterval(this.#tailnetExpiryCheck)
+    this.#tailnetExpiryCheck = undefined
+    this.#tailnetRpc = undefined
     try {
       await new Promise<void>((resolve, reject) => {
         if (!this.#tailnetHttp) return resolve()
@@ -6264,6 +6293,7 @@ export class DomovoiDaemon {
         return
       }
       if (method === "tailnet.status") {
+        this.#expireTailnetIfDue()
         this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(tailnetStatusOf(this.#tailnet)) })
         return
       }
