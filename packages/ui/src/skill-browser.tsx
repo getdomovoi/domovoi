@@ -83,6 +83,38 @@ function comparisonVariant(state: SkillFleetCellState): "success" | "warning" | 
   return "secondary"
 }
 
+type OtherInventoryTone = "success" | "destructive" | "faint"
+
+type OtherInventoryRow = { id: string; name: string; platform: string; state: string; tone: OtherInventoryTone }
+
+const otherInventoryDot: Record<OtherInventoryTone, string> = {
+  success: "bg-success",
+  destructive: "bg-destructive",
+  faint: "bg-faint",
+}
+
+const otherInventoryText: Record<OtherInventoryTone, string> = {
+  success: "text-muted-foreground",
+  destructive: "text-destructive",
+  faint: "text-faint",
+}
+
+// One row for each machine this one is not, saying what its inventory says.
+// The first source is this machine (collectFleetInventories puts it there),
+// so it is left out. Per-skill comparison lives on the selected skill.
+function otherInventoryRows(sources: readonly SkillInventorySource[]): OtherInventoryRow[] {
+  return sources.slice(1).map((source): OtherInventoryRow => {
+    const machine = source.state === "available" ? source.inventory.machine : source.machine
+    const base = { id: machine.id, name: machine.name, platform: `${machine.platform} · ${machine.arch} · ${machine.version}` }
+    if (source.state === "available") {
+      const count = source.inventory.skills.length
+      return { ...base, state: `inventory available, ${count} ${count === 1 ? "skill" : "skills"}`, tone: "success" }
+    }
+    if (source.state === "unreachable") return { ...base, state: "unreachable, no inventory read", tone: "destructive" }
+    return { ...base, state: "unknown, it returned no inventory", tone: "faint" }
+  }).sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+}
+
 const installScopeLabel: Record<SkillInstallScope, string> = {
   project: "This project only",
   user: "All my projects",
@@ -250,6 +282,7 @@ export function SkillBrowser({
   const filtered = useMemo(() => filterSkills(skills, query), [query, skills])
   const groups = useMemo(() => groupSkills(filtered), [filtered])
   const comparisons = useMemo(() => compareSkillInventories(inventorySources), [inventorySources])
+  const otherInventories = useMemo(() => otherInventoryRows(inventorySources), [inventorySources])
   // The launcher names a skill before this pane has rendered, so the request
   // is honoured once the skill it names has been discovered.
   useEffect(() => {
@@ -471,13 +504,18 @@ export function SkillBrowser({
               <h2 id="skill-inventories-title" className="m-0 text-[13px] font-semibold">Inventories from your other machines</h2>
               <span className="text-[11px] text-muted-foreground">Usable only where installed.</span>
             </div>
-            {inventorySources.length > 1 ? comparisons.flatMap((comparison) => comparison.machines).map((machine, index) => (
-              <div key={`${machine.machineId}:${machine.state}:${index}`} className="flex items-center gap-3 border-t px-3.5 py-2.5 first:border-t-0">
-                <span className="size-1.5 rounded-full bg-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate font-machine text-[11px]">{machine.machineName}</span>
-                <Badge variant={comparisonVariant(machine.state)}>{comparisonLabel[machine.state]}</Badge>
-              </div>
-            )) : <p className="m-0 px-3.5 py-3 text-[11px] text-muted-foreground">No other paired machine reports the skills capability.</p>}
+            {otherInventories.length > 0 ? (
+              <ul aria-labelledby="skill-inventories-title" className="m-0 list-none p-0">
+                {otherInventories.map((row) => (
+                  <li key={row.id} className={cn("flex flex-wrap items-center gap-x-[11px] gap-y-1 border-t px-3.5 py-2.5 first:border-t-0", row.tone === "faint" && "opacity-60")}>
+                    <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", otherInventoryDot[row.tone])} />
+                    <span className="w-40 min-w-0 truncate font-machine text-[11px] text-strong">{row.name}</span>
+                    <span className="w-[190px] min-w-0 truncate font-machine text-[10.5px] text-muted-foreground">{row.platform}</span>
+                    <span className={cn("min-w-0 flex-1 text-[11.5px]", otherInventoryText[row.tone])}>{row.state}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="m-0 px-3.5 py-3 text-[11px] text-muted-foreground">No other paired machine reports the skills capability.</p>}
           </section>
 
           {selected && filtered.some((skill) => skill.id === selected.id) ? (
