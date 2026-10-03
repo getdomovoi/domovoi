@@ -740,10 +740,14 @@ export function Thread({
   }
 
   const providerRestartRequired = active.state === "failed" && !active.providerThreadId
-  // The worktree of a session nothing has run in yet: its thread is empty, no
-  // turn is running or being sent, and it has a worktree to be ready. Ruled
-  // Q368 A.
-  const freshWorktree = renderedThread.length === 0 && !active.activeTurnId && sending === null
+  // The worktree of a session nothing has run in yet: no turn is running or
+  // being sent, it has a worktree to be ready, and its thread holds only what
+  // session.create writes (a session-start checkpoint and system rows), no
+  // message, tool call, receipt or refusal. Ruled Q368 A.
+  const nothingHasRun = !renderedThread.some((item) =>
+    item.kind === "user" || item.kind === "assistant" || item.kind === "tool" || item.kind === "receipt" || item.kind === "policy-refusal"
+  )
+  const freshWorktree = nothingHasRun && !active.activeTurnId && sending === null
     && !archiveReadOnly && !active.providerFailure && active.state !== "failed"
     ? active.workspacePath
     : undefined

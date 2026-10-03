@@ -10,8 +10,29 @@ function freshSession(permissionMode: PermissionMode = "ask", auto = false): Wor
   const snapshot = structuredClone(demoWorkspace)
   snapshot.approvals = []
   snapshot.workingPlans = []
-  snapshot.thread = snapshot.thread.filter((item) => item.sessionId !== snapshot.activeSessionId)
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+  // What session.create writes: a session-start checkpoint and a system row
+  // naming the worktree. Nothing has run until a user or agent row appears.
+  snapshot.thread = [
+    ...snapshot.thread.filter((item) => item.sessionId !== snapshot.activeSessionId),
+    {
+      id: "checkpoint-start",
+      sessionId: active.id,
+      kind: "checkpoint",
+      reason: "session-start",
+      label: "Worktree created off main",
+      commit: `8f3c1de${"0".repeat(33)}`,
+      createdAt: "2026-10-02T12:00:00.000Z",
+    },
+    {
+      id: "system-created",
+      sessionId: active.id,
+      kind: "system",
+      body: "Created isolated worktree domovoi/wt-search-index.",
+      detail: "/Users/dev/.domovoi/worktrees/wt-search-index",
+      createdAt: "2026-10-02T12:00:00.000Z",
+    },
+  ]
   delete (active as { activeTurnId?: string }).activeTurnId
   active.state = "idle"
   active.workspacePath = "/Users/dev/.domovoi/worktrees/wt-search-index"
