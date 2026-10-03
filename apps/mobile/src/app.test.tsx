@@ -315,6 +315,12 @@ describe("App", () => {
     await settle()
 
     expect(screen.queryByText(/The audit session refused the send/)).toBeNull()
+
+    // The failure is kept for the session it was for, and shown there when the
+    // person comes back, because the draft it carried is gone.
+    await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    expect(screen.getByText(/The audit session refused the send/)).toBeOnTheScreen()
   })
 
   it("sends one turn for a double tap on Send", async () => {
