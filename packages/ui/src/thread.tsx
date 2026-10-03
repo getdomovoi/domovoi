@@ -571,23 +571,37 @@ export function Thread({
   const [sending, setSending] = useState<string | null>(null)
   const [runtimePending, setRuntimePending] = useState(false)
   const [sendError, setSendError] = useState("")
-  const [approvalRefusal, setApprovalRefusal] = useState<{ approvalId: string, message: string }>()
+  // `arrivedAt` is the pending gates (ids and revisions) when the refusal
+  // arrived. It is cleared by the first change to them that keeps the gate.
+  const [approvalRefusal, setApprovalRefusal] = useState<{ approvalId: string, message: string, arrivedAt?: string }>()
   // The gates pending in the latest snapshot, read when a refusal arrives to
   // place it: a refusal can come back after the snapshot has moved on.
   const pendingApprovalIds = useRef(new Set<string>())
+  // Compared by content, not identity: every snapshot is a new object, and a
+  // thread update that leaves the gates alone is not a change to them.
+  const pendingApprovalsKey = snapshot.approvals.map((pending) => `${pending.id}@${pending.revision}`).join(" ")
+  const latestApprovalsKey = useRef(pendingApprovalsKey)
   useEffect(() => {
     pendingApprovalIds.current = new Set(snapshot.approvals.map((pending) => pending.id))
-    if (!approvalRefusal || pendingApprovalIds.current.has(approvalRefusal.approvalId)) return
-    // The card held this refusal, and its gate has gone. A receipt for it
-    // (the daemon names one receipt-<approval id>-...) says someone decided
-    // it, so the refusal leaves with the card. With no receipt the gate was
-    // withdrawn or the agent stopped waiting: the daemon answers with the
-    // error before the snapshot that drops the gate, so the refusal moves
-    // above the composer rather than vanishing.
+    latestApprovalsKey.current = pendingApprovalsKey
+    if (!approvalRefusal || pendingApprovalsKey === approvalRefusal.arrivedAt) return
+    if (pendingApprovalIds.current.has(approvalRefusal.approvalId)) {
+      if (approvalRefusal.arrivedAt !== undefined) setApprovalRefusal({ approvalId: approvalRefusal.approvalId, message: approvalRefusal.message })
+      return
+    }
+    // The card held this refusal, and its gate has gone. The daemon answers
+    // a withdrawn or no-longer-waiting gate with the error before the
+    // snapshot that drops it. So a gate that leaves in the first change
+    // after its refusal, with no receipt saying someone decided it (the
+    // daemon names one receipt-<approval id>-...), was withdrawn: the
+    // refusal moves above the composer rather than vanishing. A gate that
+    // outlived a change and then left went for another reason, such as a
+    // pause, a quarantine or an answer outside Domovoi. The refusal is then
+    // about a decision nobody can make now, and it leaves with the card.
     const decided = snapshot.thread.some((item) => item.kind === "receipt" && item.id.startsWith(`receipt-${approvalRefusal.approvalId}-`))
-    if (!decided) setSendError(approvalRefusal.message)
+    if (approvalRefusal.arrivedAt !== undefined && !decided) setSendError(approvalRefusal.message)
     setApprovalRefusal(undefined)
-  }, [snapshot.approvals, snapshot.thread, approvalRefusal])
+  }, [snapshot.approvals, snapshot.thread, pendingApprovalsKey, approvalRefusal])
   const [recoveryError, setRecoveryError] = useState("")
   const [runtimeError, setRuntimeError] = useState("")
   // A model change that could not carry the effort moved it to the new
@@ -949,8 +963,9 @@ export function Thread({
   }
 
   // Where a refusal goes is decided when it arrives. While its gate is still
-  // pending, its card shows it, and it goes with the card when the gate leaves
-  // (answered elsewhere, for one). A refusal for a gate already gone (the
+  // pending, its card shows it, and it goes with the card when the gate leaves,
+  // unless the gate was withdrawn in answer to it (the effect that places it
+  // says how that is told apart). A refusal for a gate already gone (the
   // agent stopped waiting, the request was withdrawn or answered outside
   // Domovoi) has no card, so it shows with the composer's alerts.
   const cardShowsRefusal = Boolean(approval && !archiveReadOnly && approvalRefusal?.approvalId === approval.id)
@@ -970,7 +985,7 @@ export function Thread({
       // with the composer's alerts.
       if (cause instanceof DaemonRpcError) {
         if (pendingApprovalIds.current.has(approval.id)) {
-          setApprovalRefusal({ approvalId: approval.id, message: cause.message })
+          setApprovalRefusal({ approvalId: approval.id, message: cause.message, arrivedAt: latestApprovalsKey.current })
         } else {
           setSendError(cause.message)
         }

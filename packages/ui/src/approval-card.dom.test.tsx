@@ -135,6 +135,40 @@ it("drops a card's refusal when its gate is answered elsewhere", async () => {
   expect(screen.queryByText("Agent request failed")).toBeNull()
 })
 
+// Only a gate that leaves in the first approvals change after the refusal
+// was withdrawn in answer to it. A gate that outlived a later change and
+// then left with no receipt went for another reason, a pause here, and the
+// refusal is about a decision nobody can make now: it goes with the card.
+it("drops a card's refusal when its gate leaves later without a receipt", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const refusal = "Domovoi could not take a checkpoint, so the command did not run; decide again"
+  const thread = refusalThread(vi.fn(async () => { throw new DaemonRpcError(-32603, refusal) }))
+  const { rerender } = render(thread(snapshot))
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+  expect(screen.getByText(refusal)).toBeTruthy()
+
+  const approval = snapshot.approvals[0]!
+  const anotherGate = structuredClone(snapshot)
+  anotherGate.approvals.push({ ...structuredClone(approval), id: "approval-onboarding", sessionId: "session-onboarding" })
+  rerender(thread(anotherGate))
+  expect(screen.getByText(refusal)).toBeTruthy()
+
+  const paused = structuredClone(anotherGate)
+  paused.approvals = paused.approvals.filter((pending) => pending.id !== approval.id)
+  paused.thread.push({
+    id: "thread-paused-phone",
+    sessionId: approval.sessionId,
+    kind: "system",
+    body: "Paused by phone.",
+    createdAt: "2026-10-02T12:00:00.000Z",
+  })
+  rerender(thread(paused))
+
+  expect(screen.queryByText(refusal)).toBeNull()
+  expect(screen.queryByText("Agent request failed")).toBeNull()
+})
+
 // A refusal can arrive after the gate has left the snapshot: the agent stopped
 // waiting, the request was withdrawn or answered outside Domovoi. With no
 // card to hold it, it shows with the composer's alerts, as it did before.
