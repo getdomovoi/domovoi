@@ -285,12 +285,21 @@ async function stagingAccessFailure(real: string, options: StagingAccessOptions)
       // match a sibling of the profile whose name differs only in case. The
       // case-folded comparison only rules a place out early; it passes only
       // when one of its ancestors is the profile directory itself, by device
-      // and inode. An identity that cannot be read fails the place.
+      // and inode. An identity that cannot be read fails the place, and so
+      // does a file id of 0 or all ones (round 4): a file system with no
+      // unique 64-bit id answers one of those, so two equal answers need not
+      // be the same directory.
       const user = await fs.realpath(options.userDirectory ?? homedir())
       if (!inside(win32, user.toLowerCase(), real.toLowerCase())) return { path: real, access: "unknown" }
-      const profile = await fs.identity(user)
+      const identify = async (path: string) => {
+        const found = await fs.identity(path)
+        const ino = found.slice(found.lastIndexOf(":") + 1)
+        if (ino === "0" || ino === "18446744073709551615") throw new Error(`${path} has no unique file id.`)
+        return found
+      }
+      const profile = await identify(user)
       for (let at = real; ; at = win32.dirname(at)) {
-        if (await fs.identity(at) === profile) return undefined
+        if (await identify(at) === profile) return undefined
         if (win32.dirname(at) === at) return { path: real, access: "unknown" }
       }
     }
