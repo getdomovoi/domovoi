@@ -77,8 +77,11 @@ function UnreachableMachines({ fleet, now }: { fleet: FleetEntry[], now: number 
 // The idle card's sentence, from what the phone was given. The count comes
 // from the fleet's health; with no fleet read yet it is the one machine the
 // phone talks to. Idleness is vouched for only for that machine, because
-// fleet.list carries no other machine's sessions.
-function idleSentence(machine: string, fleet: FleetEntry[] | undefined): string {
+// fleet.list carries no other machine's sessions. While a connection notice is
+// up, what was read may no longer hold, so the count goes and the sentence
+// speaks of the last read.
+function idleSentence(machine: string, fleet: FleetEntry[] | undefined, stale: boolean): string {
+  if (stale) return `${machine} had no work in flight when last read.`
   const answering = fleet
     ? fleet.filter((entry) => entry.kind === "machine" && entry.machine.health === "healthy").length
     : 1
@@ -237,7 +240,7 @@ export function SessionsScreen({
             <Card className="gap-2 border-ok-border bg-ok-bg">
               <Text variant="title" className="text-ok-fg">Everything is idle</Text>
               <Text variant="meta" className="text-ok-dim">
-                {idleSentence(snapshot.machine.name, fleet)}
+                {idleSentence(snapshot.machine.name, fleet, notice !== undefined)}
               </Text>
             </Card>
             {fleet ? <IdleFleet fleet={fleet} now={now} /> : null}

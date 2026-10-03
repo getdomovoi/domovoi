@@ -208,6 +208,24 @@ describe("SessionsScreen", () => {
     expect(screen.getByText(`2 machines are answering. ${machine}, the one this phone reads, has no work in flight. Empty here is a healthy state, not a failure.`)).toBeOnTheScreen()
   })
 
+  // A fleet read before the connection dropped says nothing about now. While
+  // the banner says so, the idle card drops the count and speaks of the last
+  // read rather than claiming machines are answering.
+  it("does not count answering machines while the connection is down", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    const machine = idle.machine.name
+    await draw({
+      snapshot: idle,
+      fleet: [entry(machine, "healthy", true), entry("hetzner", "healthy")],
+      notice: { tone: "warning", headline: "Not connected", detail: "Nothing here is live. This is the last state the phone was sent." },
+    })
+
+    expect(screen.getByText(`${machine} had no work in flight when last read.`)).toBeOnTheScreen()
+    expect(screen.queryByText(/answering/)).toBeNull()
+  })
+
   // Frame 10's rows say a machine's state in a few words ("last seen 2d ago"),
   // not a sentence that repeats the machine's name beside it.
   it("says a quiet machine's state in the design's short words", async () => {
