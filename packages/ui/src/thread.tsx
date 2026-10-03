@@ -577,9 +577,17 @@ export function Thread({
   const pendingApprovalIds = useRef(new Set<string>())
   useEffect(() => {
     pendingApprovalIds.current = new Set(snapshot.approvals.map((pending) => pending.id))
-    // A refusal held for a gate that has gone leaves with it.
-    setApprovalRefusal((current) => current && !pendingApprovalIds.current.has(current.approvalId) ? undefined : current)
-  }, [snapshot.approvals])
+    if (!approvalRefusal || pendingApprovalIds.current.has(approvalRefusal.approvalId)) return
+    // The card held this refusal, and its gate has gone. A receipt for it
+    // (the daemon names one receipt-<approval id>-...) says someone decided
+    // it, so the refusal leaves with the card. With no receipt the gate was
+    // withdrawn or the agent stopped waiting: the daemon answers with the
+    // error before the snapshot that drops the gate, so the refusal moves
+    // above the composer rather than vanishing.
+    const decided = snapshot.thread.some((item) => item.kind === "receipt" && item.id.startsWith(`receipt-${approvalRefusal.approvalId}-`))
+    if (!decided) setSendError(approvalRefusal.message)
+    setApprovalRefusal(undefined)
+  }, [snapshot.approvals, snapshot.thread, approvalRefusal])
   const [recoveryError, setRecoveryError] = useState("")
   const [runtimeError, setRuntimeError] = useState("")
   // A model change that could not carry the effort moved it to the new

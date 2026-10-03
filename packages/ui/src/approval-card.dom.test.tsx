@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { demoWorkspace } from "@getdomovoi/protocol"
+import type { ComponentProps } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { DaemonRpcError } from "./client"
@@ -47,9 +48,49 @@ it("shows the daemon's refusal of a decision inside the gate card", async () => 
   expect(onResolve).toHaveBeenCalledTimes(2)
 })
 
-// A refusal shown in its card belongs to that card. When the gate then leaves,
-// because another device answered it, the refusal goes with it rather than
-// reappearing above the composer about a gate that was decided.
+function refusalThread(onResolve: ComponentProps<typeof Thread>["onResolve"]) {
+  return (current: typeof demoWorkspace) => (
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={current}
+      connected
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />
+  )
+}
+
+// The daemon answers a withdrawn or no-longer-waiting gate with an error
+// before it broadcasts the snapshot that removes the gate, so the refusal
+// lands in the card first. When the gate then leaves with no receipt, nobody
+// decided it: the refusal moves above the composer rather than vanishing.
+it("moves a card's refusal above the composer when its gate leaves without a receipt", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const refusal = "The approval was withdrawn before it could be allowed"
+  const thread = refusalThread(vi.fn(async () => { throw new DaemonRpcError(-32602, refusal) }))
+  const { rerender } = render(thread(snapshot))
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+  expect(screen.getByText(refusal)).toBeTruthy()
+
+  const withdrawn = structuredClone(snapshot)
+  withdrawn.approvals = []
+  rerender(thread(withdrawn))
+
+  expect(screen.getByText(refusal)).toBeTruthy()
+  expect(screen.getByText("Agent request failed")).toBeTruthy()
+})
+
+// A refusal shown in its card belongs to that card. When the gate then leaves
+// because another device answered it, the receipt says what was decided, so
+// the refusal goes with the card rather than reappearing above the composer.
 it("drops a card's refusal when its gate is answered elsewhere", async () => {
   const user = userEvent.setup()
   const snapshot = structuredClone(demoWorkspace)
@@ -76,7 +117,18 @@ it("drops a card's refusal when its gate is answered elsewhere", async () => {
   expect(screen.getByText(refusal)).toBeTruthy()
 
   const answeredElsewhere = structuredClone(snapshot)
+  const approval = answeredElsewhere.approvals[0]!
   answeredElsewhere.approvals = []
+  answeredElsewhere.thread.push({
+    id: `receipt-${approval.id}-phone`,
+    sessionId: approval.sessionId,
+    kind: "receipt",
+    decision: "allow-once",
+    operation: approval.operation,
+    checkpoint: "unavailable",
+    client: "phone",
+    createdAt: "2026-10-02T12:00:00.000Z",
+  })
   rerender(thread(answeredElsewhere))
 
   expect(screen.queryByText(refusal)).toBeNull()
