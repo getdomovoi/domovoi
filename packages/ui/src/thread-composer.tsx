@@ -60,6 +60,7 @@ export function ThreadComposer({
   emergencyStopPending,
   providerRestartRequired,
   surface,
+  freshProject,
   machineName,
   prompt,
   onPromptChange,
@@ -105,6 +106,9 @@ export function ThreadComposer({
   emergencyStopPending: boolean
   providerRestartRequired: boolean
   surface: "desktop" | "web"
+  // Set while nothing has run in the session: the field asks for the first
+  // message in this project, as the design's fresh worktree does.
+  freshProject?: string | undefined
   machineName: string
   prompt: string
   onPromptChange: (prompt: string) => void
@@ -341,9 +345,11 @@ export function ThreadComposer({
         className={slashOpen
           ? "sr-only"
           : "max-h-[172px] min-h-[22px] resize-none overflow-y-auto border-0 bg-transparent p-0 text-[13.5px] leading-[1.6] shadow-none [field-sizing:content] focus-visible:ring-0 md:text-[13.5px] dark:bg-transparent"}
-        placeholder={surface === "web" && connected
-          ? "Steer it, or queue the next message"
-          : composerPlaceholder({ offline: !connected, working: turnRunning })}
+        placeholder={connected && freshProject
+          ? `Say what you want done in ${freshProject}`
+          : surface === "web" && connected
+            ? "Steer it, or queue the next message"
+            : composerPlaceholder({ offline: !connected, working: turnRunning })}
         value={prompt}
         onPaste={pasteAsFile}
         onChange={(event) => {

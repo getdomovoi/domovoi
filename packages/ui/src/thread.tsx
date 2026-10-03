@@ -99,6 +99,7 @@ import { DaemonRpcError } from "./client"
 import { slashIntent, type SlashIntentContext } from "./composer-slash"
 import { ThreadComposer } from "./thread-composer"
 import { attachmentName, desktopInlineLineLimit, pasteOutcome } from "./desktop-attachments"
+import { NothingHasRunYet, WorktreeReadyHeader } from "./thread-new-session"
 
 // The states name a meaning rather than a colour now, so the palette lives in
 // StatusDot alone instead of being restated per surface.
@@ -728,6 +729,13 @@ export function Thread({
   }
 
   const providerRestartRequired = active.state === "failed" && !active.providerThreadId
+  // The worktree of a session nothing has run in yet: its thread is empty, no
+  // turn is running or being sent, and it has a worktree to be ready. Ruled
+  // Q368 A.
+  const freshWorktree = renderedThread.length === 0 && !active.activeTurnId && sending === null
+    && !archiveReadOnly && !active.providerFailure && active.state !== "failed"
+    ? active.workspacePath
+    : undefined
   const forkCheckpoint = snapshot.thread.filter((item) =>
     item.sessionId === active.id && item.kind === "checkpoint" && item.commit
   ).at(-1)
@@ -1026,16 +1034,19 @@ export function Thread({
       {/* Shown once the stopped turn has ended, where the design draws its
           session notice: a strip above the thread. */}
       {stopped && !active.activeTurnId ? <StoppedSessionNotice at={stopped.at} /> : null}
+      {freshWorktree ? <WorktreeReadyHeader workspacePath={freshWorktree} baseCommit={active.baseCommit} /> : null}
       <ScrollArea className="min-h-0 flex-1" viewportRef={threadViewport} onViewportScroll={follow.onScroll}>
         {/* One column with the composer: 24px of side padding inside the
             maximum leaves the content box at --shell-thread, the composer
             card's width. */}
         <div data-thread-column="" className="mx-auto flex w-full max-w-[calc(var(--shell-thread)+3rem)] flex-col gap-5 px-6 pt-6 pb-14">
-          <ThreadStartLine
-            {...(snapshot.project ? { project: snapshot.project.name, branch: snapshot.project.branch } : {})}
-            {...(active.workspacePath ? { workspacePath: active.workspacePath } : {})}
-            {...(threadStartedAt ? { startedAt: threadStartedAt } : {})}
-          />
+          {freshWorktree ? <NothingHasRunYet runtime={active.runtime} /> : (
+            <ThreadStartLine
+              {...(snapshot.project ? { project: snapshot.project.name, branch: snapshot.project.branch } : {})}
+              {...(active.workspacePath ? { workspacePath: active.workspacePath } : {})}
+              {...(threadStartedAt ? { startedAt: threadStartedAt } : {})}
+            />
+          )}
           {active.state === "archived" ? <ArchivedSessionNotice session={active} /> : null}
           {providerRestartRequired ? (
             <FailedReadState
@@ -1187,6 +1198,7 @@ export function Thread({
           emergencyStopPending={emergencyStopPending}
           providerRestartRequired={providerRestartRequired}
           surface={surface}
+          {...(freshWorktree && snapshot.project ? { freshProject: snapshot.project.name } : {})}
           machineName={snapshot.machine.name}
           prompt={prompt}
           onPromptChange={setPrompt}
