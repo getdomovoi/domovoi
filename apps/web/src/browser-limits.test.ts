@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 
+import { maximumImageUploadBytes, maximumSessionAttachments, maximumTextAttachmentBytes } from "@getdomovoi/protocol"
+
 import { browserLimits, type BrowserLimitRow } from "./browser-limits"
 import type { BrowserPlatformEnvironment } from "./browser-platform"
 import { browserRefusalMessage } from "./platform-refusals"
@@ -71,13 +73,15 @@ describe("browserLimits", () => {
     const rows = browserLimits(environment(), "ws://127.0.0.1:47831/rpc", true)
     expect(row(rows, "Open the repository")).toMatchObject({ state: "not possible", tone: "never" })
     // The composer sends a file from this device as a payload with the
-    // message, so the row says how it travels, not that it cannot.
+    // message, so the row says how it travels and the limits it enforces
+    // (attachmentFromBrowserFile and the composer's attachment count).
     expect(row(rows, "Attach a local file")).toEqual({
       what: "Attach a local file",
       state: "always a payload",
       tone: "conditional",
-      why: "There is no shared filesystem, so a file from your device has to travel to the machine.",
+      why: "There is no shared filesystem, so a file from your device has to travel to the machine. A PNG or JPEG image up to 1.5 MB, or a text file up to 256 KB, two per message.",
     })
+    expect([maximumImageUploadBytes, maximumTextAttachmentBytes, maximumSessionAttachments]).toEqual([1_500_000, 262_144, 2])
     expect(row(rows, "Hold the credential")).toMatchObject({ state: "this tab only", tone: "conditional" })
 
     const blocked = browserLimits(environment(), "ws://127.0.0.1:47831/rpc", false)
