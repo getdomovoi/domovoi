@@ -4,14 +4,14 @@ import { fireEvent, render, screen, within } from "@testing-library/react-native
 
 import { SessionsScreen } from "./sessions"
 
-function entry(label: string, health: FleetMachine["health"]): FleetEntry {
+function entry(label: string, health: FleetMachine["health"], self = false): FleetEntry {
   return {
     kind: "machine",
     machine: {
       id: `machine-${label.padEnd(32, "0")}`, label, platform: "linux", arch: "x64", version: "0.0.1",
       connection: "tailnet", capabilities: ["sessions"], protocolVersion: "0.2.0", transports: [],
       heartbeat: { state: health === "unreachable" ? "offline" : "online", lastSeenAt: "2026-09-18T00:00:00.000Z" },
-      health, self: false,
+      health, self,
     },
   }
 }
@@ -146,8 +146,37 @@ describe("SessionsScreen", () => {
     await draw({ snapshot: idle, fleet: [entry("a", "healthy"), entry("b", "healthy")] })
 
     expect(screen.getByText("Everything is idle")).toBeOnTheScreen()
-    expect(screen.getByText("Two machines are answering and neither has work in flight. Empty here is a healthy state, not a failure.")).toBeOnTheScreen()
     expect(tappable()).toEqual(["Start a session"])
+  })
+
+  // The sentence is a fact about the fleet the phone was given. One machine
+  // must not read as two, and the phone holds only its own machine's
+  // sessions, so it vouches for that machine's idleness and no other's.
+  it("says how many machines answer from the fleet, and vouches only for its own", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    const machine = idle.machine.name
+
+    await draw({ snapshot: idle, fleet: undefined })
+    expect(screen.getByText(`${machine} is answering and has no work in flight. Empty here is a healthy state, not a failure.`)).toBeOnTheScreen()
+    expect(screen.queryByText(/Two machines/)).toBeNull()
+
+    await draw({ snapshot: idle, fleet: [entry(machine, "healthy", true)] })
+    expect(screen.getByText(`${machine} is answering and has no work in flight. Empty here is a healthy state, not a failure.`)).toBeOnTheScreen()
+
+    await draw({ snapshot: idle, fleet: [entry(machine, "healthy", true), entry("hetzner", "healthy"), entry("wsl", "unreachable")] })
+    expect(screen.getByText(`2 machines are answering. ${machine}, the one this phone reads, has no work in flight. Empty here is a healthy state, not a failure.`)).toBeOnTheScreen()
+  })
+
+  // Frame 10 lists the fleet under the idle card, one row per machine.
+  it("lists the fleet under the idle card", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    await draw({ snapshot: idle, fleet: [entry("mac-mini", "healthy", true), entry("hetzner", "healthy"), entry("wsl", "unreachable")] })
+
+    for (const label of ["mac-mini", "hetzner", "wsl"]) expect(screen.getByText(label)).toBeOnTheScreen()
   })
 
   it("keeps Start a session visible and disabled with the exact no-project reason", async () => {
