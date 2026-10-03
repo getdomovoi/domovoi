@@ -258,7 +258,6 @@ export function ArtifactScreen({
                 )
               })}
             </View>
-            <Text variant="note" className="text-center">Viewing a variant does not change the build basis. Choose the build basis on desktop.</Text>
             <Text variant="note" className="text-center">Choosing which variant the agent builds on happens at a desktop. A comment is a note; a choice is a commitment.</Text>
           </View>
         ) : null}
