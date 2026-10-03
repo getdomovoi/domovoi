@@ -8618,6 +8618,7 @@ export class DomovoiDaemon {
             id: approvedCheckpoint.id,
             sessionId: approval.sessionId,
             kind: "checkpoint",
+            reason: "before-approved-command",
             label: `${approvedCheckpoint.commit.slice(0, 8)} · before an approved command`,
             commit: approvedCheckpoint.commit,
             createdAt: decidedAt,

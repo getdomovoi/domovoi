@@ -6,7 +6,7 @@ const checkpoint = { id: "checkpoint", sessionId: "session", kind: "checkpoint",
 const history = { id: "thread:checkpoint", sourceId: checkpoint.id, sessionId: checkpoint.sessionId, category: "checkpoints", label: checkpoint.label, commit: checkpoint.commit, createdAt: checkpoint.createdAt }
 
 describe("checkpoint reasons", () => {
-  it.each(["session-start", "fork", "manual", "before-restore", "before-revert", "before-provider-handoff", "before-provider-recovery", "before-archive"])("preserves %s independently of the label and commit", (reason) => {
+  it.each(["session-start", "fork", "manual", "before-restore", "before-revert", "before-provider-handoff", "before-provider-recovery", "before-archive", "before-approved-command"])("preserves %s independently of the label and commit", (reason) => {
     expect(threadItemSchema.parse({ ...checkpoint, reason })).toEqual({ ...checkpoint, reason })
     expect(sessionHistoryEntrySchema.parse({ ...history, reason })).toEqual({ ...history, reason })
   })
