@@ -68,7 +68,9 @@ export function ProviderSettings({ providers, secrets, localDaemon }: ProviderSe
                     {provider.command}{provider.version ? ` · ${provider.version}` : ""}
                   </span>
                   <span id={`provider-account-${provider.id}`} className="text-micro text-muted-foreground">
-                    {provider.problem ?? <>Run <code className="font-machine">{providerAccountCommand(provider)}</code> in terminal</>}
+                    {provider.problem ?? (providerAccountCommand(provider)
+                      ? <>Run <code className="font-machine">{providerAccountCommand(provider)}</code> in terminal</>
+                      : <>Sign in with <code className="font-machine">{provider.command}</code>&apos;s own instructions in a terminal</>)}
                   </span>
                 </span>
                 <span className="ml-auto flex flex-wrap items-center gap-2">
@@ -341,7 +343,9 @@ export function providerAccountAction(provider: ProviderRuntime): string {
   return "Check status"
 }
 
-export function providerAccountCommand(provider: ProviderRuntime): string {
+// The provider CLI's own sign-in command. Undefined for a provider whose
+// command Domovoi does not know (review P3-9): a help command is not one.
+export function providerAccountCommand(provider: ProviderRuntime): string | undefined {
   if (provider.id === "claude-code") return "claude auth login"
   if (provider.id === "codex") return "codex login"
   if (provider.id === "cursor-agent") return `${provider.command} login`
@@ -349,7 +353,7 @@ export function providerAccountCommand(provider: ProviderRuntime): string {
   if (provider.id === "opencode" || provider.id === "kilo") {
     return `${provider.command} auth login`
   }
-  return `${provider.command} --help`
+  return undefined
 }
 
 function directProviderName(provider: ProviderSecretStatus["provider"]): string {

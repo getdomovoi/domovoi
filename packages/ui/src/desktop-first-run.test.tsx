@@ -70,6 +70,10 @@ describe("desktop first-run provider diagnostics", () => {
       description: "Install it with the provider's own instructions so that codex is on the PATH the daemon searches, then press Retry diagnostics.",
     })
     expect(missing.copyGuidance).toBeUndefined()
+    // Review P3-9: no Copy sign-in command for a CLI whose command is unknown.
+    const unknownCli = providerFirstRunRecovery({ ...ready, id: "aider", command: "aider", status: "auth-required" })
+    expect(unknownCli.copyGuidance).toBeUndefined()
+    expect(unknownCli.copyLabel).toBeUndefined()
     expect(providerFirstRunRecovery({ ...ready, status: "auth-required" })).toMatchObject({
       description: expect.stringContaining("provider-owned sign-in command"),
       copyGuidance: "codex login",

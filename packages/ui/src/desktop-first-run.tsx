@@ -67,6 +67,13 @@ export function firstRunFailureForProvider(
     ?.providerFailure
 }
 
+// The copy action, only when Domovoi knows the CLI's own sign-in command
+// (review P3-9).
+function signInCopy(provider: ProviderRuntime): Pick<ProviderFirstRunRecovery, "copyGuidance" | "copyLabel"> {
+  const command = providerAccountCommand(provider)
+  return command ? { copyGuidance: command, copyLabel: "Copy sign-in command" } : {}
+}
+
 export function providerFirstRunRecovery(
   provider: ProviderRuntime,
   failure?: ProviderFailure,
@@ -88,8 +95,7 @@ export function providerFirstRunRecovery(
       title: expired ? "Provider authentication expired" : `${providerDisplayName(provider.id)} sign-in required`,
       description: "Run the provider-owned sign-in command in a terminal on this machine, then retry diagnostics.",
       canComplete: false,
-      copyGuidance: providerAccountCommand(provider),
-      copyLabel: "Copy sign-in command",
+      ...signInCopy(provider),
     }
   }
   if (provider.problem !== undefined) {
@@ -156,8 +162,7 @@ function failureRecovery(
         title: failure.message,
         description: "Run the provider-owned sign-in command in a terminal on this machine, then retry diagnostics.",
         canComplete: false,
-        copyGuidance: providerAccountCommand(provider),
-        copyLabel: "Copy sign-in command",
+        ...signInCopy(provider),
       }
     case "rate-limit":
       return {
