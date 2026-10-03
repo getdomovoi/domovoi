@@ -206,6 +206,22 @@ it("shows a refusal for a gate that has gone with the composer's alerts", async 
   expect(screen.getByText("Agent request failed")).toBeTruthy()
 })
 
+// Two presses can land before React renders the first one's lock, as a held
+// key repeating does. The second must not send another decision.
+it("sends one decision for two presses that land before a render", async () => {
+  const snapshot = structuredClone(demoWorkspace)
+  const onResolve = vi.fn(() => new Promise<void>(() => {}))
+  render(refusalThread(onResolve)(snapshot))
+  const allow = screen.getByRole("button", { name: "Allow once" })
+
+  await act(async () => {
+    allow.click()
+    allow.click()
+  })
+
+  expect(onResolve).toHaveBeenCalledTimes(1)
+})
+
 // Deny decides on the first press. A second press, or a double click, must
 // not send a second decision, and must never land on the next gate when it
 // takes the same place on screen before the first answer is back.
