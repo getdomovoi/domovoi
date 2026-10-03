@@ -48,6 +48,8 @@ export type TailnetReachDependencies = {
   display(path: string): string
   files: TailnetReachFiles
   record: {
+    // Where the record is saved, named when it cannot be deleted (Q418 A).
+    path: string
     read(): Promise<TailnetReachRecord | undefined>
     write(record: TailnetReachRecord): Promise<void>
     remove(): Promise<void>
@@ -684,7 +686,7 @@ export class TailnetReach {
   // files go back, so the switch stays on as it was: both files and the
   // record. A file that cannot be put back stays in pending, and the switch's
   // state says where, as for a change that turned on. A record that cannot be
-  // deleted throws as it did before, once the files are back.
+  // deleted is named as a file is (Q418 A), once the files are back.
   async #forgetRecorded(present: readonly string[]): Promise<TailnetReachOutcome | undefined> {
     const stays = (path: string, cause: unknown): TailnetReachOutcome => ({
       ok: false, reason: "failed", step: "delete",
@@ -692,7 +694,11 @@ export class TailnetReach {
       detail: detail(cause instanceof Error ? cause.message : String(cause)),
     })
     if (!present.length) {
-      await this.deps.record.remove()
+      try {
+        await this.deps.record.remove()
+      } catch (cause) {
+        return stays(this.deps.record.path, cause)
+      }
       return undefined
     }
     let pending: string
@@ -715,7 +721,7 @@ export class TailnetReach {
         await this.deps.record.remove()
       } catch (cause) {
         await swap.undo()
-        throw cause
+        return stays(this.deps.record.path, cause)
       }
       swap.commit()
       return undefined

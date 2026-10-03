@@ -27,6 +27,7 @@ const name = "studio.tail4c2e.ts.net"
 const tls = "/Users/dana/.domovoi/tls"
 const certPath = `${tls}/${name}.crt`
 const keyPath = `${tls}/${name}.key`
+const recordPath = "/Users/dana/Library/Application Support/Domovoi/tailnet-reach.json"
 const running = JSON.stringify({
   BackendState: "Running",
   Self: { DNSName: `${name}.`, TailscaleIPs: ["fd7a:115c:a1e0::1", "100.101.102.103"] },
@@ -151,6 +152,7 @@ function harness(options: {
       },
     },
     record: {
+      path: recordPath,
       read: async () => record,
       write: async (value) => { calls.push("record write"); record = value },
       remove: async () => {
@@ -656,14 +658,30 @@ describe("turning TailnetReach off", () => {
     await expect(reach.status()).resolves.not.toHaveProperty("kept")
   })
 
+  // Q418 A: the same sentence as for a file, with the record's path.
   it("puts both files back when the record cannot be deleted, and stays on", async () => {
-    const refusal = new Error("EACCES: permission denied, unlink '/Users/dana/Library/Application Support/Domovoi/tailnet-reach.json'")
+    const refusal = new Error(`EACCES: permission denied, unlink '${recordPath}'`)
     const { reach, deps, files, record } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, recordRemoveThrows: refusal })
-    await expect(reach.turnOff()).rejects.toBe(refusal)
+    await expect(reach.turnOff()).resolves.toEqual({
+      ok: false, reason: "failed", step: "delete",
+      message: "~/Library/Application Support/Domovoi/tailnet-reach.json could not be deleted, so the switch stays on.",
+      detail: `EACCES: permission denied, unlink '${recordPath}'`,
+    })
     expect(Object.fromEntries(files)).toEqual({ [certPath]: certificate, [keyPath]: "key" })
     expect(record()).toEqual(ours)
     expect(deps.restart).not.toHaveBeenCalled()
     await expect(reach.status()).resolves.toMatchObject({ state: "on" })
+  })
+
+  it("says the record could not be deleted when its files are already gone", async () => {
+    const { reach, deps, record } = harness({ record: ours, recordRemoveThrows: new Error("EACCES: permission denied") })
+    await expect(reach.turnOff()).resolves.toEqual({
+      ok: false, reason: "failed", step: "delete",
+      message: "~/Library/Application Support/Domovoi/tailnet-reach.json could not be deleted, so the switch stays on.",
+      detail: "EACCES: permission denied",
+    })
+    expect(record()).toEqual(ours)
+    expect(deps.restart).not.toHaveBeenCalled()
   })
 
   it("says where the certificate is when it cannot be put back either", async () => {

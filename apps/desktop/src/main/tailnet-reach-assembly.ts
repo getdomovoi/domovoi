@@ -178,6 +178,7 @@ export function createTailnetReach(input: {
       },
     },
     record: {
+      path: recordPath,
       // Codex review round 1 (P2-3): read as startup reads it, never through
       // a link, a FIFO or past 4 KiB.
       read: async () => {

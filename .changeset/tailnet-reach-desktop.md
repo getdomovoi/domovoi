@@ -11,7 +11,8 @@ login service through its update. Off, it deletes only the files it wrote and
 restarts the daemon on 127.0.0.1 only. It sets those files aside in a private
 pending directory first and deletes them only once the saved record is gone,
 so a turn-off that cannot move a file or delete the record puts the files back
-and leaves the switch on with both files and the record. It refuses while a
+and leaves the switch on with both files and the record, naming the file or
+the record that could not be deleted. It refuses while a
 turn runs or a gate waits, and never replaces a file it did not write.
 
 While the switch is on, the desktop runs
