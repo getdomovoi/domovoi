@@ -1012,7 +1012,7 @@ export function Thread({
               <AlertDescription>{sessionTransferReceiptText(transferReceipt).detail}</AlertDescription>
             </Alert>
           ) : null}
-          {approval && !archiveReadOnly ? <ApprovalCard surface={surface} approval={approval} watching={watching} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
+          {approval && !archiveReadOnly ? <ApprovalCard surface={surface} approval={approval} watching={watching} connected={connected} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
       {followPill ? (

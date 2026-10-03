@@ -146,6 +146,49 @@ it("keeps optional explanation behind Deny instead of a fourth peer action", asy
   expect(screen.getByRole("button", { name: "Deny with explanation" })).toBeTruthy()
 })
 
+// A decision made while the daemon is gone reaches nothing, so the card says
+// why and offers none until the connection is back.
+it("holds every decision while the daemon is disconnected, and says why", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals[0]!.risk = "normal"
+  const onResolve = vi.fn(async () => {})
+  const thread = (connected: boolean) => (
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={snapshot}
+      connected={connected}
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />
+  )
+  const { rerender } = render(thread(false))
+  const card = screen.getByRole("alert")
+  expect(card.textContent).toContain("Cannot answer this gate, the daemon is not answering.")
+  for (const name of ["Allow once", "Always in this project", "Deny"]) {
+    expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(true)
+  }
+
+  // A denial already being written is held too, and the words stay.
+  rerender(thread(true))
+  expect(screen.getByRole("alert").textContent).not.toContain("the daemon is not answering")
+  await user.click(screen.getByRole("button", { name: "Deny" }))
+  await user.type(screen.getByLabelText("Tell the agent why this command was denied"), "Not now")
+  rerender(thread(false))
+  expect((screen.getByRole("button", { name: "Deny without explanation" }) as HTMLButtonElement).disabled).toBe(true)
+  expect((screen.getByRole("button", { name: "Deny with explanation" }) as HTMLButtonElement).disabled).toBe(true)
+  await user.type(screen.getByLabelText("Tell the agent why this command was denied"), "{Enter}")
+  expect(onResolve).not.toHaveBeenCalled()
+  expect((screen.getByLabelText("Tell the agent why this command was denied") as HTMLInputElement).value).toBe("Not now")
+})
+
 it("cancels denial explanation without deciding", async () => {
   const user = userEvent.setup()
   const snapshot = structuredClone(demoWorkspace)
