@@ -10,6 +10,7 @@ afterEach(() => { cleanup(); vi.useRealTimers() })
 
 const address = { url: "wss://mac-mini-m4.tail4c2e.ts.net:47831/rpc", label: "mac-mini-m4.tail4c2e.ts.net", loopback: false }
 const issued = (overrides: Partial<IssuedPairingCode> = {}): IssuedPairingCode => ({
+  pairingId: `pairing-${"c".repeat(32)}`,
   code: "hearth-quiet-ember-42",
   expiresAt: new Date(Date.now() + 180_000).toISOString(),
   pairingAddress: address,

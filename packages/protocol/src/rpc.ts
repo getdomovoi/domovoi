@@ -74,6 +74,7 @@ import {
 import {
   clientAccessSchema,
   deviceClaimParamsSchema,
+  deviceCodeOutcomeNotificationSchema,
   deviceCurrentResultSchema,
   deviceClaimResultSchema,
   deviceConfirmClaimParamsSchema,
@@ -1785,6 +1786,8 @@ export const notificationMethods = {
   "terminal.ownership": terminalOwnershipNotificationSchema,
   "fleet.changed": fleetChangedNotificationSchema,
   "system.emergencyStopped": systemEmergencyStoppedNotificationSchema,
+  // Sent only to the connection that issued the code it names.
+  "device.codeOutcome": deviceCodeOutcomeNotificationSchema,
 } as const
 
 export type NotificationMethod = keyof typeof notificationMethods

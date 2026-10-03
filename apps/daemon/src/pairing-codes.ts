@@ -1,8 +1,13 @@
-import { createHash, randomInt, timingSafeEqual } from "node:crypto"
+import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto"
 
 import type { ClientAccess, ClientKind } from "@getdomovoi/protocol"
 
-import type { DeviceClaim, DevicePairing, DeviceRegistry } from "./device-registry.js"
+import {
+  DeviceLimitReachedError,
+  type DeviceClaim,
+  type DevicePairing,
+  type DeviceRegistry,
+} from "./device-registry.js"
 
 export const pairingCodeTtlMs = 180_000
 // A spoken code is short, so guessing is bounded rather than merely slow.
@@ -16,14 +21,37 @@ const codeWords = [
   "timber", "umber", "velvet", "walnut", "yarrow", "zephyr", "basalt", "cinder",
 ] as const
 
+// Why a spend was refused. The daemon answers the spender with one uniform
+// refusal whatever this says; the reason is for the code's issuer.
+export type PairingCodeRefusal = "invalid" | "expired" | "attempts-exhausted" | "wrong-kind"
+
 export class PairingCodeError extends Error {
-  constructor(message: string) {
+  readonly refusal: PairingCodeRefusal
+  // The open code this refusal ended, when it ended one. A wrong guess that
+  // leaves the code open names none.
+  readonly closedPairingId: string | undefined
+
+  constructor(message: string, refusal: PairingCodeRefusal = "invalid", closedPairingId?: string) {
     super(message)
     this.name = "PairingCodeError"
+    this.refusal = refusal
+    this.closedPairingId = closedPairingId
+  }
+}
+
+// The right code was spent, but the device list had no room for its device.
+export class PairingDeviceLimitError extends DeviceLimitReachedError {
+  readonly pairingId: string
+
+  constructor(pairingId: string) {
+    super()
+    this.name = "PairingDeviceLimitError"
+    this.pairingId = pairingId
   }
 }
 
 type OpenPairing = {
+  id: string
   digest: string
   expiresAtMs: number
   attempts: number
@@ -52,24 +80,49 @@ export class PairingCodeService {
     this.#devices = devices
   }
 
-  issue(nowMs: number, targetClient?: ClientKind, clientAccess?: ClientAccess): { code: string; expiresAt: string } {
+  // Issuing ends any code still open; replacedPairingId names it so its issuer
+  // can be told.
+  issue(nowMs: number, targetClient?: ClientKind, clientAccess?: ClientAccess): {
+    pairingId: string
+    code: string
+    expiresAt: string
+    replacedPairingId?: string
+  } {
     const words = Array.from({ length: 3 }, () => codeWords[randomInt(codeWords.length)])
     const code = `${words.join("-")}-${String(randomInt(10, 100))}`
+    const replaced = this.pairingOpen(nowMs) ? this.#open?.id : undefined
+    const pairingId = `pairing-${randomBytes(16).toString("hex")}`
     // Keep plaintext out of incidental inspection, but do not treat this
     // low-entropy digest as protection from an offline search. Pairing stays
     // direct-only, with online guesses bounded by maximumPairingAttempts.
     this.#open = {
+      id: pairingId,
       digest: digestOf(code),
       expiresAtMs: nowMs + pairingCodeTtlMs,
       attempts: 0,
       ...(targetClient === undefined ? {} : { targetClient }),
       ...(clientAccess === undefined ? {} : { clientAccess }),
     }
-    return { code, expiresAt: new Date(nowMs + pairingCodeTtlMs).toISOString() }
+    return {
+      pairingId,
+      code,
+      expiresAt: new Date(nowMs + pairingCodeTtlMs).toISOString(),
+      ...(replaced === undefined ? {} : { replacedPairingId: replaced }),
+    }
   }
 
   pairingOpen(nowMs: number): boolean {
     return this.#open !== undefined && this.#open.expiresAtMs > nowMs
+  }
+
+  // The id of the open, unexpired code this one is, or undefined. It neither
+  // spends the code nor counts a guess, so it is for attributing a refusal
+  // that happens before a spend, never for deciding one. The caller's answer
+  // to the spender must not depend on it.
+  matchingPairing(code: string, nowMs: number): string | undefined {
+    const open = this.#open
+    if (!open || open.expiresAtMs <= nowMs) return undefined
+    return codesMatch(open.digest, digestOf(code)) ? open.id : undefined
   }
 
   claim(code: string, input: { label: string; machineId: string; channelPublicKey?: string }, nowMs: number): DeviceClaim {
@@ -77,24 +130,31 @@ export class PairingCodeService {
     // A code shown for a phone is not a machine pairing, and says only that it
     // is not valid: which kind a code was for is not worth confirming to
     // something spending codes it was not shown.
-    if (open.targetClient !== undefined) throw new PairingCodeError("Pairing code is not valid")
+    if (open.targetClient !== undefined) throw new PairingCodeError("Pairing code is not valid", "wrong-kind", open.id)
     return this.#devices.claim(input, nowMs)
   }
 
   // Spending a client code is one step: the device is paired and holds its
   // credential when this returns. The kind comes from the open pairing, never
   // from the caller, and the code is spent whether or not the reply arrives.
-  redeem(code: string, input: { label: string }, nowMs: number): DevicePairing {
+  redeem(code: string, input: { label: string }, nowMs: number): DevicePairing & { pairingId: string } {
     const open = this.#spend(code, nowMs)
-    if (open.targetClient === undefined) throw new PairingCodeError("Pairing code is not valid")
-    return this.#devices.pair({
-      label: input.label,
-      binding: {
-        kind: "client",
-        client: open.targetClient,
-        clientAccess: open.clientAccess ?? "full",
-      },
-    })
+    if (open.targetClient === undefined) throw new PairingCodeError("Pairing code is not valid", "wrong-kind", open.id)
+    let paired: DevicePairing
+    try {
+      paired = this.#devices.pair({
+        label: input.label,
+        binding: {
+          kind: "client",
+          client: open.targetClient,
+          clientAccess: open.clientAccess ?? "full",
+        },
+      })
+    } catch (error) {
+      if (error instanceof DeviceLimitReachedError) throw new PairingDeviceLimitError(open.id)
+      throw error
+    }
+    return { ...paired, pairingId: open.id }
   }
 
   #spend(code: string, nowMs: number): OpenPairing {
@@ -102,11 +162,14 @@ export class PairingCodeService {
     if (!open) throw new PairingCodeError("Pairing code is not valid")
     if (open.expiresAtMs <= nowMs) {
       this.#open = undefined
-      throw new PairingCodeError("Pairing code has expired")
+      throw new PairingCodeError("Pairing code has expired", "expired", open.id)
     }
     if (!codesMatch(open.digest, digestOf(code))) {
       open.attempts += 1
-      if (open.attempts >= maximumPairingAttempts) this.#open = undefined
+      if (open.attempts >= maximumPairingAttempts) {
+        this.#open = undefined
+        throw new PairingCodeError("Pairing code is not valid", "attempts-exhausted", open.id)
+      }
       throw new PairingCodeError("Pairing code is not valid")
     }
     this.#open = undefined

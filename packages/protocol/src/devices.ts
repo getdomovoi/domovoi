@@ -5,7 +5,7 @@ import { offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
 
 import { clientKindSchema, credentialSchema, machineIdSchema } from "./identifiers.js"
 import { fleetMachineDescriptorSchema } from "./fleet.js"
-import { protocolVersionSchema } from "./protocol-version.js"
+import { protocolCompatibilitySchema, protocolVersionSchema } from "./protocol-version.js"
 import { relayChannelPinSchema, relayPublicKeySchema } from "./relay-admission.js"
 import { relayIdentityPinSchema } from "./relay-identity.js"
 
@@ -241,12 +241,75 @@ export const webAppUrlSchema = z.string().check(utf16MaxLength(maximumWebAppUrlL
 // that leaves it nothing to dial, so the desktop card, the web connect page
 // and the command line draw one address and none of them guesses it. The web
 // app address is there only when the daemon's owner configured one.
+// pairingId names one issued code without repeating it, so the outcome the
+// daemon later reports can say which code it was about.
+export const pairingIdSchema = z.string().regex(/^pairing-[0-9a-f]{32}$/)
+
 export const deviceIssueCodeResultSchema = z.object({
+  pairingId: pairingIdSchema,
   code: pairingCodeSchema,
   expiresAt: offsetDateTimeSchema,
   pairingAddress: pairingAddressSchema,
   webAppUrl: webAppUrlSchema.optional(),
 }).strict()
+
+// What became of a client code (one issued with a targetClient), told only to
+// the connection whose device.issueCode returned it (ruling Q354 A). Every
+// other connection, including others holding the same daemon credential and
+// the device that spent the code, hears nothing of it. The device that spent
+// it still gets the uniform "Pairing was refused" answer.
+//
+// - redeemed: the code paired this device. The code is spent.
+// - refused protocol-mismatch: a device holding the right code speaks another
+//   protocol. The code was not spent and still pairs until it expires.
+// - refused device-limit: the right code, but the paired device list is full.
+//   The code is spent.
+// - refused wrong-kind: the right code, spent as a machine pairing. The code is
+//   spent and nothing was paired.
+// - closed attempts-exhausted: wrong codes used up the attempts. The code is
+//   spent.
+// - closed replaced: another code was issued, which ends this one.
+//
+// A code that runs out its time sends nothing: the issuer has its expiresAt.
+// label is the name the redeeming device gave itself; it is that device's
+// text, bounded like a device label.
+const pairedClientDeviceSchema = pairedDeviceSchema.refine(
+  (device) => device.binding.kind === "client" && device.revokedAt === undefined,
+  { message: "A redeemed client code pairs a live client device" },
+)
+
+export const deviceCodeOutcomeNotificationSchema = z.union([
+  z.object({
+    pairingId: pairingIdSchema,
+    outcome: z.literal("redeemed"),
+    device: pairedClientDeviceSchema,
+  }).strict(),
+  z.object({
+    pairingId: pairingIdSchema,
+    outcome: z.literal("refused"),
+    reason: z.literal("protocol-mismatch"),
+    label: deviceLabelSchema,
+    daemonProtocolVersion: protocolVersionSchema,
+    clientProtocolVersion: protocolVersionSchema,
+    compatibility: protocolCompatibilitySchema.exclude(["compatible"]),
+  }).strict(),
+  z.object({
+    pairingId: pairingIdSchema,
+    outcome: z.literal("refused"),
+    reason: z.literal("device-limit"),
+    label: deviceLabelSchema,
+  }).strict(),
+  z.object({
+    pairingId: pairingIdSchema,
+    outcome: z.literal("refused"),
+    reason: z.literal("wrong-kind"),
+  }).strict(),
+  z.object({
+    pairingId: pairingIdSchema,
+    outcome: z.literal("closed"),
+    reason: z.enum(["attempts-exhausted", "replaced"]),
+  }).strict(),
+])
 
 // Redeeming is one step, unlike a machine claim: a client stores its
 // credential before it answers anything, so there is nothing to confirm
@@ -265,6 +328,7 @@ export const devicesResultSchema = z.object({
 
 export type ClientAccess = z.infer<typeof clientAccessSchema>
 export type DeviceIssueCodeResult = z.infer<typeof deviceIssueCodeResultSchema>
+export type DeviceCodeOutcomeNotification = z.infer<typeof deviceCodeOutcomeNotificationSchema>
 export type PendingDeviceClaim = z.infer<typeof pendingDeviceClaimSchema>
 export type DeviceClaimResult = z.infer<typeof deviceClaimResultSchema>
 export type PairedDeviceSummary = z.infer<typeof pairedDeviceSchema>

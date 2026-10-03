@@ -273,7 +273,7 @@ import { usageIdentity } from "./usage-accounting.js"
 import { StoredMachineIdentityMismatchError, type MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
 import { wslSharePath } from "./wsl-open-target.js"
-import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
+import { PairingCodeError, PairingCodeService, PairingDeviceLimitError } from "./pairing-codes.js"
 import {
   DeviceLabelMismatchError,
   DeviceLimitReachedError,
@@ -1831,6 +1831,10 @@ export class DomovoiDaemon {
   #wsl: MachineWslFacts | undefined
   #advertisedProtocolVersion: string
   #pairing: PairingCodeService | undefined
+  // Ruling Q354 A. The open client code's issuing connection, the one place
+  // its outcome goes. A later code, or the outcome that ends this one, clears
+  // it, so a connection is never told about a code it did not issue.
+  #pairingIssuer: { pairingId: string, socket: RpcOutboundSocket } | undefined
   #machineCredentials: AsyncMachineCredentials | undefined
   #fleetEnrollment: FleetEnrollmentService
   #readTransferBundle: ((bundlePath: string) => Promise<Buffer>) | undefined
@@ -2866,7 +2870,44 @@ export class DomovoiDaemon {
 
   issuePairingCode(): { code: string; expiresAt: string } {
     if (!this.#pairing) throw new Error("Device pairing is unavailable")
-    return this.#pairing.issue(Date.now())
+    const { replacedPairingId, ...issued } = this.#pairing.issue(Date.now())
+    this.#codeReplaced(replacedPairingId)
+    return issued
+  }
+
+  #notifyPairingIssuer(
+    pairingId: string,
+    outcome: NotificationParams<"device.codeOutcome">,
+    codeEnded: boolean,
+  ): void {
+    const issuer = this.#pairingIssuer
+    if (issuer?.pairingId !== pairingId) return
+    if (codeEnded) this.#pairingIssuer = undefined
+    // notifyClients writes only to an open, authenticated client connection.
+    this.#notifyClients([issuer.socket], "device.codeOutcome", outcome)
+  }
+
+  #codeReplaced(replacedPairingId: string | undefined): void {
+    if (replacedPairingId !== undefined) {
+      this.#notifyPairingIssuer(replacedPairingId, { pairingId: replacedPairingId, outcome: "closed", reason: "replaced" }, true)
+    }
+    // Whatever was open is gone, reported or not.
+    this.#pairingIssuer = undefined
+  }
+
+  // A refusal that ended the open code tells its issuer why. An expired code
+  // says nothing: its issuer holds the expiry. A plain wrong guess leaves the
+  // code open and names no code.
+  #reportPairingRefusal(error: PairingCodeError): void {
+    const pairingId = error.closedPairingId
+    if (pairingId === undefined) return
+    if (error.refusal === "attempts-exhausted") {
+      this.#notifyPairingIssuer(pairingId, { pairingId, outcome: "closed", reason: "attempts-exhausted" }, true)
+    } else if (error.refusal === "wrong-kind") {
+      this.#notifyPairingIssuer(pairingId, { pairingId, outcome: "refused", reason: "wrong-kind" }, true)
+    } else if (this.#pairingIssuer?.pairingId === pairingId) {
+      this.#pairingIssuer = undefined
+    }
   }
 
   get authToken(): string {
@@ -5896,7 +5937,21 @@ export class DomovoiDaemon {
       const compatibility = protocolCompatibility(this.#advertisedProtocolVersion, params.protocolVersion)
       if (compatibility !== "compatible") {
         // Checked before the code is spent, so an old client does not burn the
-        // code the machine is showing and leave the operator reissuing.
+        // code the machine is showing and leave the operator reissuing. The
+        // issuer of the code it holds is told; the answer here is the same
+        // whether or not the code matched.
+        const matched = this.#pairing?.matchingPairing(params.code, Date.now())
+        if (matched !== undefined) {
+          this.#notifyPairingIssuer(matched, {
+            pairingId: matched,
+            outcome: "refused",
+            reason: "protocol-mismatch",
+            label: params.label,
+            daemonProtocolVersion: this.#advertisedProtocolVersion,
+            clientProtocolVersion: params.protocolVersion,
+            compatibility,
+          }, false)
+        }
         this.#error(socket, request.id, protocolVersionMismatchErrorCode,
           "Client and daemon protocol versions are incompatible",
           { kind: "protocol-mismatch", daemonProtocolVersion: this.#advertisedProtocolVersion, clientProtocolVersion: params.protocolVersion, compatibility })
@@ -5907,13 +5962,14 @@ export class DomovoiDaemon {
         return
       }
       try {
-        const paired = this.#pairing.redeem(params.code, { label: params.label }, Date.now())
+        const { pairingId, ...paired } = this.#pairing.redeem(params.code, { label: params.label }, Date.now())
         this.#appendAudit({
           actor: { kind: "daemon", component: "rpc" },
           action: "device.redeemCode",
           outcome: "succeeded",
           target: paired.device.id,
         })
+        this.#notifyPairingIssuer(pairingId, { pairingId, outcome: "redeemed", device: paired.device }, true)
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -5921,11 +5977,17 @@ export class DomovoiDaemon {
         })
       } catch (error) {
         if (error instanceof DeviceLimitReachedError) {
+          if (error instanceof PairingDeviceLimitError) {
+            this.#notifyPairingIssuer(error.pairingId, {
+              pairingId: error.pairingId, outcome: "refused", reason: "device-limit", label: params.label,
+            }, true)
+          }
           this.#appendPreAuthAudit("pairing", "The paired device limit is reached")
           this.#error(socket, request.id, devicePairingLimitErrorCode, "The paired device limit is reached")
           return
         }
         if (!(error instanceof PairingCodeError)) throw error
+        this.#reportPairingRefusal(error)
         // The same uniform refusal a machine claim gets, for the same reason:
         // whoever is spending codes must not learn from the answer whether one
         // exists, was spent, expired, or was shown for another kind of device.
@@ -5982,6 +6044,7 @@ export class DomovoiDaemon {
           return
         }
         if (!(error instanceof PairingCodeError)) throw error
+        this.#reportPairingRefusal(error)
         // The reason is recorded for an operator but never returned: an
         // unauthenticated caller must not learn whether a code exists, has
         // expired, or was simply wrong.
@@ -7490,11 +7553,15 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, daemonAuthenticationErrorCode, desktopPairingRefusal)
           return
         }
+        const { replacedPairingId, ...issued } = this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess)
+        this.#codeReplaced(replacedPairingId)
+        // Only a client code reports its outcome, and only to this connection.
+        if (params.targetClient !== undefined) this.#pairingIssuer = { pairingId: issued.pairingId, socket }
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({
-            ...this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
+            ...issued,
             pairingAddress: this.#pairingAddress(),
             ...(this.#webAppUrl ? { webAppUrl: this.#webAppUrl } : {}),
           }),
