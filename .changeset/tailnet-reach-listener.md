@@ -20,7 +20,11 @@ yet, as when Tailscale is not up at login, is tried again every 30 seconds.
 When the certificate passes its expiry while the daemon runs, the daemon closes
 the tailnet listener, logs why and reports it refused. Each tailnet connection
 ends at once, without waiting for the client to answer a close, and nothing it
-sent that has not started is handled. Loopback connections stay open. A
+sent that has not started is handled. A request that had already started
+before expiry may still finish and take effect; its reply is not delivered.
+The listener admits no connection from then on, including one whose upgrade
+began before expiry and finishes after it; such a connection is ended before
+anything it sends is handled. Loopback connections stay open. A
 timer armed for the certificate's expiry does this, re-armed when the expiry is
 further off than one timer can wait. While the listener answers, a pairing code names the host on its certificate,
 and the fleet advertises a tailnet route under `DOMOVOI_TAILNET_HOST`.

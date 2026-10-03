@@ -1707,8 +1707,9 @@ export class DomovoiDaemon {
   #closedTerminals = new Map<string, ClosedTerminal>()
   #authToken: string
   #authenticatedClients = new WeakSet<RpcOutboundSocket>()
-  // Tailnet connections open when its certificate expired. Nothing more
-  // they send is handled; see #expireTailnetIfDue.
+  // Tailnet connections open when its certificate expired, or upgraded once
+  // their listener stopped admitting. Nothing more they send is handled; see
+  // #expireTailnetIfDue and #rpcServer.
   #expiredTailnetClients = new WeakSet<RpcOutboundSocket>()
   #deviceCredentials = new WeakMap<RpcOutboundSocket, {
     token: string
@@ -2990,10 +2991,12 @@ export class DomovoiDaemon {
   }
 
   // The RPC endpoint on one listener. Every listener admits, authenticates and
-  // budgets a connection the same way; nothing here depends on which one.
-  #rpcServer(server: HttpServer): WebSocketServer {
+  // budgets a connection the same way; nothing here depends on which one,
+  // except that a listener may stop admitting while the daemon runs:
+  // listening is false from then on, for that listener only.
+  #rpcServer(server: HttpServer, listening: () => boolean = () => true): WebSocketServer {
     const verifyClient: VerifyClientCallbackSync = ({ origin, req }) =>
-      !this.#stopping && !this.#stopped
+      !this.#stopping && !this.#stopped && listening()
       && (!origin || this.allowedOrigins.has(origin) || namesThisDaemon(origin, req))
 
     const websocket = new WebSocketServer({
@@ -3021,6 +3024,14 @@ export class DomovoiDaemon {
       }
     })
     websocket.on("connection", (socket, request) => {
+      // Codex review round 3 (P3): an upgrade verified as its listener
+      // stopped. Fenced and ended before anything it sends is read.
+      if (!listening()) {
+        this.#expiredTailnetClients.add(socket)
+        socket.on("error", () => {})
+        socket.terminate()
+        return
+      }
       this.#rpcClients.add(socket)
       // Use the socket peer, never caller-authored forwarding headers. NAT or
       // proxy peers share a budget; neither a reconnect nor hello resets it.
@@ -3110,12 +3121,15 @@ export class DomovoiDaemon {
       // Node names only "key values mismatch" or a parse failure here.
       return refuse("The tailnet certificate and key do not belong together, so the daemon answers on this computer only.", false, notAfter)
     }
-    const rpc = this.#rpcServer(server)
+    // Admits only while this server is the tailnet listener: not before it
+    // listens, and not once expiry, a refusal or the daemon's stop let it go.
+    const rpc = this.#rpcServer(server, () => this.#tailnetHttp === server && this.#tailnet.state === "listening")
     let listened = false
     return new Promise<void>((settle) => {
       server.once("error", (error: NodeJS.ErrnoException) => {
         // After listening, the RPC server's own handler reports errors.
         if (listened) return
+        rpc.close()
         server.close()
         settle()
         if (this.#stopping || this.#stopped) return
@@ -3138,6 +3152,7 @@ export class DomovoiDaemon {
         listened = true
         settle()
         if (this.#stopping || this.#stopped) {
+          rpc.close()
           server.close()
           return
         }
@@ -3178,6 +3193,11 @@ export class DomovoiDaemon {
     // and its messages arriving, while the client answers it, up to 30 seconds.
     // The fence drops what arrives from now on, and what was queued but has
     // not started; terminate ends the transport at once. Loopback is untouched.
+    // Codex review round 3 (P3): an upgrade still in flight on a transport
+    // accepted before expiry is not in the sweep. Closing the WebSocket
+    // server detaches its upgrade handler first, and the listener's
+    // admission check (#rpcServer) refuses and ends any socket it still makes.
+    this.#tailnetRpc?.close()
     for (const client of this.#tailnetRpc?.clients ?? []) {
       this.#expiredTailnetClients.add(client)
       client.terminate()
@@ -3246,6 +3266,7 @@ export class DomovoiDaemon {
     this.#tailnetRetry = undefined
     if (this.#tailnetExpiryCheck) clearTimeout(this.#tailnetExpiryCheck)
     this.#tailnetExpiryCheck = undefined
+    this.#tailnetRpc?.close()
     this.#tailnetRpc = undefined
     try {
       await new Promise<void>((resolve, reject) => {

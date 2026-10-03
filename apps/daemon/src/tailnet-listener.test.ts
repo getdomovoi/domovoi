@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process"
-import { X509Certificate } from "node:crypto"
+import { X509Certificate, randomBytes } from "node:crypto"
 import { once } from "node:events"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { request as httpsRequest } from "node:https"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
+import { connect as tlsConnect } from "node:tls"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
@@ -95,6 +96,16 @@ async function open(url: string, options: WebSocket.ClientOptions = {}): Promise
 
 async function hello(socket: WebSocket, authToken?: string) {
   return call(socket, "system.hello", { client: "desktop", clientVersion: "0.0.1", protocolVersion, ...(authToken ? { authToken } : {}) })
+}
+
+// One client-to-server WebSocket text frame, masked as a client must.
+function maskedTextFrame(message: unknown): Buffer {
+  const payload = Buffer.from(JSON.stringify(message))
+  const mask = randomBytes(4)
+  const length = payload.length < 126
+    ? Buffer.from([0x80 | payload.length])
+    : Buffer.from([0x80 | 126, payload.length >> 8, payload.length & 0xff])
+  return Buffer.concat([Buffer.from([0x81]), length, mask, payload.map((byte, index) => byte ^ mask[index % 4]!)])
 }
 
 // The client checks the certificate against its name, as a phone does.
@@ -312,6 +323,58 @@ describe("the tailnet listener", () => {
       await closed
     } finally {
       clearInterval(sending)
+    }
+  })
+
+  // Codex review round 3 (P3): a TLS connection accepted before expiry whose
+  // WebSocket upgrade finishes after it was missed by the expiry sweep and
+  // reached RPC dispatch. Its request headers arrive in two parts, the
+  // second after expiry, followed by frames that would authenticate and ask
+  // device.current. No upgrade succeeds and nothing is handled.
+  it("admits no upgrade that finishes after expiry", async (context) => {
+    if (!ipv6) context.skip()
+    const served = daemon({ address: "::1", tls: { cert: certificate, key } })
+    const { port } = await served.start()
+    const socket = await open(`ws://127.0.0.1:${port}/rpc`)
+    expect((await hello(socket, served.authToken)).error).toBeUndefined()
+    const lastHandled = async () => auditQueryPageSchema.parse((await call(socket, "audit.query", { action: "device.current", limit: 1 })).result).entries[0]?.id
+    const transport = tlsConnect({ host: "::1", port, ca: certificate, servername: name })
+    transport.on("error", () => {})
+    const received: Buffer[] = []
+    transport.on("data", (chunk: Buffer) => received.push(chunk))
+    const ended = once(transport, "close")
+    try {
+      await once(transport, "secureConnect", { signal: AbortSignal.timeout(3_000) })
+      transport.write([
+        "GET /rpc HTTP/1.1", `Host: ${name}:${port}`, "Upgrade: websocket", "Connection: Upgrade",
+        `Sec-WebSocket-Key: ${randomBytes(16).toString("base64")}`, "Sec-WebSocket-Version: 13", "",
+      ].join("\r\n"))
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const notAfter = new Date(new X509Certificate(certificate).validTo)
+      vi.useFakeTimers({ toFake: ["Date"] })
+      try {
+        vi.setSystemTime(notAfter.getTime() + 1_000)
+        expect(tailnetListenerStatusSchema.parse((await call(socket, "tailnet.status")).result)).toMatchObject({ state: "refused" })
+      } finally {
+        vi.useRealTimers()
+      }
+      transport.write(`Authorization: Bearer ${served.authToken}\r\n\r\n`)
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      // hello settles the connection's identity before device.current is asked.
+      if (!transport.destroyed) {
+        transport.write(maskedTextFrame({ jsonrpc: "2.0", id: ++nextId, method: "system.hello", params: { client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: served.authToken } }))
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      if (!transport.destroyed) {
+        transport.write(maskedTextFrame({ jsonrpc: "2.0", id: ++nextId, method: "device.current", params: {} }))
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      expect(await lastHandled()).toBeUndefined()
+      expect(Buffer.concat(received).toString("latin1")).not.toMatch(/^HTTP\/1\.1 101/)
+      expect((await call(socket, "workspace.get")).error).toBeUndefined()
+    } finally {
+      transport.destroy()
+      await ended
     }
   })
 
