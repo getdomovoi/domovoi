@@ -1,12 +1,14 @@
-import type {
-  ProviderPromptAnnotationDelivery,
-  SessionReviewRefusal,
-  SessionSendReview,
-  WorkspaceSnapshot,
+import {
+  maximumReviewAnnotations,
+  type ProviderPromptAnnotationDelivery,
+  type SessionReviewRefusal,
+  type SessionSendReview,
+  type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
 const contextBudget = 20_000
-const maxAnnotations = 20
+// The delivery record holds at most this many delivered ids.
+const maxAnnotations = maximumReviewAnnotations
 
 function truncate(value: string, length: number): string {
   return value.length <= length ? value : `${value.slice(0, length - 1)}…`
