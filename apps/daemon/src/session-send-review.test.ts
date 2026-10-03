@@ -63,6 +63,7 @@ function reviewWorkspace(): WorkspaceSnapshot {
     ...snapshot.artifacts.filter((artifact) => artifact.sessionId !== sessionId || artifact.type !== "preview"),
     preview("artifact-preview-a", "A", 0),
     preview("artifact-preview-b", "B", 1),
+    { id: "artifact-preview-lone", sessionId, title: "Checkout alone", type: "preview" as const, revision: 1, path: ".domovoi/previews/lone.html", mimeType: "text/html" },
     { ...preview("artifact-preview-elsewhere", "C", 0), sessionId: "session-onboarding" },
   ]
   snapshot.annotations = [
@@ -196,7 +197,7 @@ describe("a message that sends a build basis", () => {
       artifactRevision: 1,
       variant: { id: "variant-b", groupId: "checkout", label: "B" },
     })
-    expect(prompt).toContain("The person chose the preview in buildBasis as the build basis. Build on that variant.")
+    expect(prompt).toContain("The person chose the preview in buildBasis as the build basis. Build on that preview.")
     expect(((await lastUserItem()) as { providerPromptDelivery?: { annotations: unknown } }).providerPromptDelivery?.annotations).toEqual({
       availableCount: 1, deliveredIds: ["comment-ready"], omitted: { budget: 0, limit: 0 }, buildBasis: { artifactId: "artifact-preview-b" },
     })
@@ -208,6 +209,14 @@ describe("a message that sends a build basis", () => {
     const context = reviewContext(provider.startTurn.mock.calls[0]![0].prompt)
     expect(context?.unresolvedAnnotations).toEqual([])
     expect(context?.buildBasis).toMatchObject({ artifactId: "artifact-preview-a", variant: { label: "A" } })
+  })
+
+  it("can be a lone render with no variants, and the agent is told to build on that preview", async () => {
+    const { provider, send } = await start()
+    expect((await send("Build it", { review: { annotationIds: [], buildBasis: { artifactId: "artifact-preview-lone" } } })).error).toBeUndefined()
+    const prompt = provider.startTurn.mock.calls[0]![0].prompt
+    expect(reviewContext(prompt)?.buildBasis).toEqual({ artifactId: "artifact-preview-lone", artifactTitle: "Checkout alone", artifactRevision: 1 })
+    expect(prompt).toContain("Build on that preview.")
   })
 
   it.each([

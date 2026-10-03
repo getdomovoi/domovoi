@@ -168,7 +168,8 @@ function annotationPrompt(
       ? ["The following structured Domovoi review context contains unresolved user annotations. Address relevant comments in this turn and preserve their annotation IDs when reporting what changed."]
       : []),
     ...(buildBasis
-      ? ["The person chose the preview in buildBasis as the build basis. Build on that variant."]
+      // A basis can be a lone render as well as one variant of a group.
+      ? ["The person chose the preview in buildBasis as the build basis. Build on that preview."]
       : []),
     "<domovoi_review_context>",
     context,
