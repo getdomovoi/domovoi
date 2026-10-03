@@ -34,7 +34,12 @@ const inAppInstall = "use Install under Daemon on this machine in Settings"
 // Translocation's temporary copy, a mounted disk image, and an AppImage,
 // which mounts at a new path on every launch. The desktop offers no command
 // links there either (apps/desktop/src/main/command-links.ts).
-export function unstableAppLocation(resources: string, environment: DaemonEnvironment): string | undefined {
+//
+// Review of #712 (P2): an external drive also mounts under /Volumes, and an
+// app kept there stays at its path. A /Volumes path is a disk image only when
+// it is on a read-only mount (readOnlyMount, runtime-stage.ts), as the
+// downloaded disk image is; a writable disk image is not caught.
+export async function unstableAppLocation(resources: string, environment: DaemonEnvironment, readOnly: (path: string) => Promise<boolean>): Promise<string | undefined> {
   const where = "so its commands are not where a login service can keep running them."
   if (environment.APPIMAGE !== undefined || /(?:^|[\\/])\.mount_[^\\/]*(?:[\\/]|$)/u.test(resources)) {
     return `Domovoi is running as an AppImage, which mounts at a new path on every launch, ${where} Use Install under Daemon on this machine in Settings, which copies the runtime out of the AppImage. Nothing was installed.`
@@ -42,7 +47,7 @@ export function unstableAppLocation(resources: string, environment: DaemonEnviro
   if (resources.includes("/AppTranslocation/")) {
     return `macOS is running Domovoi from a temporary copy, ${where} Move Domovoi to Applications and open it once from there, then run this again, or ${inAppInstall}. Nothing was installed.`
   }
-  if (resources.startsWith("/Volumes/")) {
+  if (resources.startsWith("/Volumes/") && await readOnly(resources)) {
     return `Domovoi is running from a disk image, ${where} Copy Domovoi to Applications and run this again from there, or ${inAppInstall}. Nothing was installed.`
   }
   return undefined
@@ -126,10 +131,10 @@ export async function bundledServiceRuntime(input: {
 }): Promise<BundledServiceRuntime | undefined> {
   const resources = appRuntimeResources(input.execPath, input.platform)
   if (resources === undefined) return undefined
-  const unstable = unstableAppLocation(resources, input.environment)
+  const fileSystem = input.fileSystem ?? nodeRuntimeFileSystem()
+  const unstable = await unstableAppLocation(resources, input.environment, (path) => fileSystem.readOnly(path))
   if (unstable) throw new Error(unstable)
   if (input.version === undefined) throw new Error("This domovoid could not read its own version, so no runtime was copied. Nothing was installed.")
-  const fileSystem = input.fileSystem ?? nodeRuntimeFileSystem()
   const paths = input.platform === "win32" ? win32 : posix
   const dataDirectory = commandStateDirectory(input.environment, input.home, input.platform)
   const worded = (error: unknown) => error instanceof DaemonRuntimeStagingRefusedError

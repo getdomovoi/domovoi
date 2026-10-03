@@ -8,7 +8,11 @@ import { commandLinks, type CommandLinkEnvironment } from "./command-links.js"
 
 // A hook run right after one read, to change the file system between the
 // module's read and its write, as another process could.
-const race = vi.hoisted(() => ({ afterRead: undefined as ((call: "lstat" | "readlink", path: string) => Promise<void>) | undefined }))
+const race = vi.hoisted(() => ({
+  afterRead: undefined as ((call: "lstat" | "readlink", path: string) => Promise<void>) | undefined,
+  // Volumes mounted read only, as a disk image is.
+  readOnly: ["/Volumes/Domovoi 0.9.4"],
+}))
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>()
   const hooked = async <T>(call: "lstat" | "readlink", path: string, read: () => Promise<T>): Promise<T> => {
@@ -21,6 +25,14 @@ vi.mock("node:fs/promises", async (original) => {
   }
   return {
     ...actual,
+    // A disk image mounts read only under /Volumes, so asking for write
+    // access there answers EROFS. No real disk image is mounted here.
+    access: (async (path: string, mode?: number) => {
+      if (race.readOnly.some((volume) => path === volume || path.startsWith(`${volume}/`))) {
+        throw Object.assign(new Error(`EROFS: read-only file system, access '${path}'`), { code: "EROFS" })
+      }
+      return actual.access(path, mode)
+    }) as typeof actual.access,
     lstat: ((path: string) => hooked("lstat", path, () => actual.lstat(path))) as typeof actual.lstat,
     readlink: ((path: string) => hooked("readlink", path, () => actual.readlink(path))) as typeof actual.readlink,
   }
@@ -98,6 +110,17 @@ describe("command links", () => {
       } })
     }
     await expect(lstat(join(home, ".local"))).rejects.toThrow()
+  })
+
+  // An external drive also mounts under /Volumes, writable, and the app stays
+  // there between launches, so it is not refused as a disk image. Here it goes
+  // on to look for the launchers, which this made-up path does not hold.
+  it("offers links for an app on a writable volume under /Volumes", async () => {
+    const external = "/Volumes/External SSD/Applications/Domovoi.app/Contents/Resources"
+    expect(await commandLinks("status", environment({ resourcesPath: external }))).toEqual({ report: {
+      available: false,
+      reason: "This build ships no domovoid launcher, so there is nothing to link.",
+    } })
   })
 
   // Review P3-5 (Q336 A): the CLI is linked beside the daemon when the

@@ -120,19 +120,37 @@ describe.skipIf(process.platform === "win32")("domovoid service install from the
   // An app that will not be at this path once it quits: a service copied
   // from it now would still be named after a mount that goes away, and the
   // in-app Install makes the same copy from a running app.
+  //
+  // A disk image mounts read only under /Volumes; the file system answers
+  // that here, since no real disk image is mounted.
+  const diskImage = "/Volumes/Domovoi 0.9.4"
+  const volumes = (readOnly: string[]) => nodeRuntimeFileSystem({
+    readOnly: async (path) => readOnly.some((volume) => path === volume || path.startsWith(`${volume}/`)),
+  })
   it.each([
-    ["a disk image", "/Volumes/Domovoi 0.9.4/Domovoi.app/Contents/Resources", {}, "Domovoi is running from a disk image, so its commands are not where a login service can keep running them. Copy Domovoi to Applications and run this again from there, or use Install under Daemon on this machine in Settings. Nothing was installed."],
+    ["a disk image", `${diskImage}/Domovoi.app/Contents/Resources`, {},"Domovoi is running from a disk image, so its commands are not where a login service can keep running them. Copy Domovoi to Applications and run this again from there, or use Install under Daemon on this machine in Settings. Nothing was installed."],
     ["macOS App Translocation", "/private/var/folders/x/T/AppTranslocation/1A2B/d/Domovoi.app/Contents/Resources", {}, "macOS is running Domovoi from a temporary copy, so its commands are not where a login service can keep running them. Move Domovoi to Applications and open it once from there, then run this again, or use Install under Daemon on this machine in Settings. Nothing was installed."],
     ["an AppImage mount", "/tmp/.mount_DomovoXyZ12/resources", {}, "Domovoi is running as an AppImage, which mounts at a new path on every launch, so its commands are not where a login service can keep running them. Use Install under Daemon on this machine in Settings, which copies the runtime out of the AppImage. Nothing was installed."],
     ["an AppImage named by APPIMAGE", "/opt/odd/resources", { APPIMAGE: "/home/dana/Domovoi.AppImage" }, "Domovoi is running as an AppImage, which mounts at a new path on every launch, so its commands are not where a login service can keep running them. Use Install under Daemon on this machine in Settings, which copies the runtime out of the AppImage. Nothing was installed."],
   ])("refuses an app running from %s, writing nothing", async (_label, at, environment, reason) => {
     const shipped = daemonRuntimeLayout(at, "linux")
-    const dependencies = command({ execPath: shipped.daemonEntryPath, runtime: shipped.nodePath, environment })
+    const dependencies = command({ execPath: shipped.daemonEntryPath, runtime: shipped.nodePath, environment, runtimeFileSystem: volumes([diskImage]) })
     expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
     expect(dependencies.stderr).toHaveBeenCalledWith(`${reason}\n`)
     expect(dependencies.write).not.toHaveBeenCalled()
     expect(dependencies.run).not.toHaveBeenCalled()
     expect(dependencies.claimServiceOperation).not.toHaveBeenCalled()
+    expect(await readdir(home)).toEqual([])
+  })
+
+  // An external drive also mounts under /Volumes, writable, and the app
+  // stays there between launches. It is not refused as a disk image: here it
+  // goes on to the runtime check, which finds no runtime at this made-up path.
+  it("installs from an app on a writable volume under /Volumes", async () => {
+    const shipped = daemonRuntimeLayout("/Volumes/External SSD/Applications/Domovoi.app/Contents/Resources", "linux")
+    const dependencies = command({ execPath: shipped.daemonEntryPath, runtime: shipped.nodePath, runtimeFileSystem: volumes([diskImage]) })
+    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+    expect(dependencies.stderr).toHaveBeenCalledWith(`The Node runtime this app ships was not found at ${shipped.nodePath}. No service was installed and no service files were changed.\n`)
     expect(await readdir(home)).toEqual([])
   })
 

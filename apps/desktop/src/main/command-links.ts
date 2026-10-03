@@ -1,4 +1,5 @@
-import { lstat, mkdir, readlink, symlink, unlink } from "node:fs/promises"
+import { constants } from "node:fs"
+import { access, lstat, mkdir, readlink, symlink, unlink } from "node:fs/promises"
 import { delimiter, dirname, join, resolve } from "node:path"
 
 // Q336 A (2026-10-02): one reversible desktop action links Domovoi's own
@@ -146,16 +147,37 @@ async function shippedLaunchers(resourcesPath: string): Promise<{ name: CommandN
 // breaks once the app quits, so commands print as written and the reason
 // points to the in-app Install, which copies the runtime out of the app.
 const inAppInstall = " To keep Domovoi running after you quit, use Install under Daemon on this machine in Settings."
-function unstableLocation(environment: CommandLinkEnvironment): string | undefined {
+
+// Review of #712 (P2): an external drive also mounts under /Volumes, and an
+// app kept there stays at its path. A /Volumes path is a disk image only when
+// it is on a read-only mount, as the downloaded disk image is: write access
+// there answers EROFS, which macOS and Linux return for a read-only file
+// system whatever the permissions. No tool is spawned. Any other answer is
+// not read only, and a disk image mounted writable is not caught. The same
+// check as the daemon's `domovoid service install` (readOnlyMount in
+// apps/daemon/src/service/runtime-stage.ts); kept in each because this
+// module loads before, and without, the daemon the app ships.
+async function readOnlyMount(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.W_OK)
+    return false
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EROFS"
+  }
+}
+
+async function unstableLocation(environment: CommandLinkEnvironment): Promise<string | undefined> {
   if (environment.appImage) return `Domovoi is running as an AppImage, which mounts at a new path on every launch, so a link to it would break.${inAppInstall}`
   if (environment.resourcesPath.includes("/AppTranslocation/")) return `macOS is running Domovoi from a temporary copy. Move Domovoi to Applications and open it from there to link its commands.${inAppInstall}`
-  if (environment.resourcesPath.startsWith("/Volumes/")) return `Domovoi is running from a disk image. Copy it to Applications and open it from there to link its commands.${inAppInstall}`
+  if (environment.resourcesPath.startsWith("/Volumes/") && await readOnlyMount(environment.resourcesPath)) {
+    return `Domovoi is running from a disk image. Copy it to Applications and open it from there to link its commands.${inAppInstall}`
+  }
   return undefined
 }
 
 async function inspect(environment: CommandLinkEnvironment, directories: DirectoryState): Promise<Inspected> {
   if (environment.platform === "win32") return { available: false, reason: "Domovoi links no commands on Windows." }
-  const unstable = unstableLocation(environment)
+  const unstable = await unstableLocation(environment)
   if (unstable) return { available: false, reason: unstable }
   const shipped = await shippedLaunchers(environment.resourcesPath)
   const unavailable = (reason: string): Inspected => shipped.length > 0 ? { available: false, reason, launchers: shipped } : { available: false, reason }

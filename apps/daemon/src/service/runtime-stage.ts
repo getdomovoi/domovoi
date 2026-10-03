@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { cp, lstat, mkdir, mkdtemp, readdir, readlink, realpath } from "node:fs/promises"
+import { constants } from "node:fs"
+import { access, cp, lstat, mkdir, mkdtemp, readdir, readlink, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { posix, win32 } from "node:path"
 
@@ -105,6 +106,27 @@ export type RuntimeFileSystem = {
   // A new directory only this user can use, named by the prefix plus a random
   // suffix.
   makePrivateDirectory(prefix: string): Promise<string>
+  // Whether the path is on a read-only mount, as a disk image is
+  // (bundled-runtime.ts, unstableAppLocation).
+  readOnly(path: string): Promise<boolean>
+}
+
+// A read-only mount, by what access(2) answers when asked for write access
+// to the path: EROFS, which macOS and Linux return for a file on a read-only
+// file system whatever its permissions. A disk image macOS mounts under
+// /Volumes is read only (the compressed and read-only formats a download
+// uses); an external drive there is not. It spawns no tool and needs no
+// mount table. Any other answer, a missing path or a permission refusal
+// included, is not read only. Limit: a disk image mounted writable answers
+// like an external drive. The desktop's command links ask the same way
+// (apps/desktop/src/main/command-links.ts).
+export async function readOnlyMount(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.W_OK)
+    return false
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EROFS"
+  }
 }
 
 export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}): RuntimeFileSystem {
@@ -136,6 +158,7 @@ export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}
       return `${found.dev}:${found.ino}`
     },
     makePrivateDirectory: (prefix) => mkdtemp(prefix),
+    readOnly: readOnlyMount,
     ...overrides,
   }
 }
