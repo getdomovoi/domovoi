@@ -40,7 +40,7 @@ function setup({ service, ...overrides }: Partial<ComponentProps<typeof DesktopF
   return { props, user: userEvent.setup() }
 }
 
-const inApp = (install: () => Promise<DaemonServiceOutcome>, platform: FirstRunService["platform"] = "darwin"): FirstRunService => ({ owner: "app", platform, install })
+const inApp = (install: () => Promise<DaemonServiceOutcome>, platform: FirstRunService["platform"] = "darwin"): FirstRunService => ({ owner: "app", platform, install, endpoint: "ws://127.0.0.1:47831/rpc" })
 
 describe("desktop first run", () => {
   // Q351 A: the daemon ships inside the app, so setup starts at keeping it
@@ -67,6 +67,21 @@ describe("desktop first run", () => {
     expect(text).not.toContain("No daemon is running")
     expect(text).not.toContain("A good spirit lives in your machines.")
     expect(text).not.toMatch(/daemon install|machine add|domovoi join|brew install|7717/u)
+  })
+
+  // Review P3-B: the service is installed with the app's own environment, so
+  // DOMOVOI_HOST or DOMOVOI_PORT move it. The attach row names the address
+  // of the daemon this window reached, and only loopback when none is known.
+  it("names the address this window reached, not a fixed port", () => {
+    setup({ service: { ...inApp(vi.fn()), endpoint: "ws://127.0.0.1:52101/rpc" } })
+    const moved = screen.getByRole("list", { name: "What installing does" })
+    expect(moved.textContent).toContain("Attach this app to the service127.0.0.1:52101")
+    expect(moved.textContent).not.toContain("47831")
+    cleanup()
+    setup({ service: { owner: "app", platform: "darwin", install: vi.fn() } })
+    const unknown = screen.getByRole("list", { name: "What installing does" })
+    expect(unknown.textContent).toContain("Attach this app to the serviceloopback")
+    expect(unknown.textContent).not.toMatch(/127\.0\.0\.1|47831/u)
   })
 
   // Q352 A: no permission-mode step; new sessions default to Build manual.

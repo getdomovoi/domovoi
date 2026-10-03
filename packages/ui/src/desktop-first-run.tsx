@@ -228,14 +228,26 @@ type FirstRunMachine = {
 
 // The commands each platform's step names come from the daemon's installer
 // (service/install.ts) and the desktop's runtime copy (daemon-service.ts).
-function installRows(platform: LoginServicePlatform): { label: string; detail: string }[] {
+// host:port of the daemon this window reached, when its URL names a port.
+function endpointAddress(endpoint: string | undefined): string | undefined {
+  if (endpoint === undefined) return undefined
+  try {
+    const url = new URL(endpoint)
+    return url.port ? url.host : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function installRows(platform: LoginServicePlatform, endpoint: string | undefined): { label: string; detail: string }[] {
   const service = loginServices[platform]
   const runtime = { label: "Copy this app's daemon runtime", detail: "~/.domovoi/runtime, so the service never runs from inside the app" }
   const record = { label: "Write the service record", detail: "~/.domovoi/service.json" }
   const hand = { label: `Hand this app's daemon to ${service.manager}`, detail: `the daemon stops here and ${service.manager} starts it` }
-  // Q389 A: the daemon's default address (apps/daemon/src/config.ts), not
-  // the design's sample port.
-  const attach = { label: "Attach this app to the service", detail: "127.0.0.1:47831" }
+  // Q389 A: a real address, not the design's sample port. Review P3-B: the
+  // one this window reached, since DOMOVOI_HOST and DOMOVOI_PORT move the
+  // service with it; loopback alone when no address is known.
+  const attach = { label: "Attach this app to the service", detail: endpointAddress(endpoint) ?? "loopback" }
   if (platform === "darwin") return [runtime, { label: "Write the LaunchAgent", detail: service.definition }, record, hand, attach]
   if (platform === "linux") {
     return [runtime, { label: "Write the systemd user unit", detail: service.definition }, record, { label: "Turn on lingering", detail: "loginctl enable-linger · keeps it running after you log out" }, hand, attach]
@@ -290,7 +302,7 @@ function ServiceStep({ service, machine, phase, onInstall, onContinue }: {
   onContinue: () => void
 }) {
   const platform = service.platform
-  const rows = installRows(platform)
+  const rows = installRows(platform, service.endpoint)
   const title = phase.kind === "installing" ? "Installing the login service"
     : phase.kind === "done" ? "The service is installed"
       : phase.kind === "failed" ? (phase.notInstalled ? "The service was not installed" : "The install did not finish")

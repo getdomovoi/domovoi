@@ -14,9 +14,11 @@ function factsOf(read: DaemonServiceStatusReport | undefined): ServiceFacts {
 // Settings uses. After an install that may have moved who holds the daemon,
 // the window resolves its daemon again (as the shell does after its own
 // service changes), carrying the service as read back.
-export function desktopFirstRunService({ bridge, owner, onDaemonMoved }: {
+export function desktopFirstRunService({ bridge, owner, endpoint, onDaemonMoved }: {
   bridge: Pick<DesktopWindowBridge, "platform" | "daemonService">
   owner: FirstRunService["owner"]
+  // The URL of the daemon this window reached, for setup's attach row.
+  endpoint?: string | undefined
   onDaemonMoved: (facts: ServiceFacts) => void
 }): FirstRunService | undefined {
   const service = bridge.daemonService
@@ -25,6 +27,7 @@ export function desktopFirstRunService({ bridge, owner, onDaemonMoved }: {
   return {
     owner,
     platform: bridge.platform,
+    endpoint,
     install: async () => {
       let outcome
       try {

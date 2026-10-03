@@ -79,6 +79,7 @@ function DesktopApp() {
     () => workspace ? desktopFirstRunService({
       bridge: window.domovoiDesktop,
       owner: daemonConnectionCopy(workspace.daemon).owner,
+      endpoint: workspace.rpcUrl,
       onDaemonMoved: (facts) => {
         setServiceFacts(facts)
         retry()

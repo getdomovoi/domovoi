@@ -28,6 +28,17 @@ describe("desktop first-run service", () => {
     expect(onDaemonMoved).toHaveBeenCalledWith({ serviceInstalled: true, serviceRunning: true })
   })
 
+  // Review P3-B: setup names the address of the daemon this window reached.
+  it("carries the endpoint this window reached", () => {
+    const service = desktopFirstRunService({
+      bridge: bridge(vi.fn(), vi.fn()),
+      owner: "app",
+      endpoint: "ws://127.0.0.1:52101/rpc",
+      onDaemonMoved: vi.fn(),
+    })
+    expect(service?.endpoint).toBe("ws://127.0.0.1:52101/rpc")
+  })
+
   it("leaves the window alone after an install that moved nothing", async () => {
     const onDaemonMoved = vi.fn()
     const service = desktopFirstRunService({

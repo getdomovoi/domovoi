@@ -12,6 +12,11 @@ export type FirstRunService = {
   owner: "app" | "other-app" | "outside" | undefined
   platform: "darwin" | "linux" | "win32"
   install: () => Promise<DaemonServiceOutcome>
+  // The URL of the daemon this window reached. The service is installed with
+  // the same environment as the app's own daemon (createServiceConfiguration),
+  // and the window attaches to it after an install, so setup names this
+  // address rather than the default one.
+  endpoint?: string | undefined
 }
 
 export const FirstRunServiceContext = createContext<FirstRunService | undefined>(undefined)
