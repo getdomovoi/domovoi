@@ -80,6 +80,7 @@ import {
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
   type SessionTurn,
+  type SnapshotTurn,
   type SessionTransferReconciliationReason,
   type SessionTransferCoverage,
   type SessionTransferPreview,
@@ -1054,7 +1055,42 @@ export class ActiveAssistantItemCache {
 // Every snapshot a client receives states the active projects and the cap.
 // The daemon keeps one project open (J31 S1), so the list is that project
 // alone. It is built here, the one place snapshots are built for clients.
-export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
+// Reads the usage ledger's record of the named turns of one session.
+export type ClientTurnLoader = (sessionId: string, turnIds: readonly string[]) => readonly SessionTurn[]
+
+// Ruling Q401: the start, end and status of every turn the client thread
+// links, from the ledger, for "Worked for N" and the header clock. A turn the
+// ledger recorded at a daemon restart gets no end: the restart time is when the
+// daemon noticed, not when the turn ended.
+function clientTurns(thread: WorkspaceSnapshot["thread"], loadTurns: ClientTurnLoader): SnapshotTurn[] {
+  const linked = new Map<string, Set<string>>()
+  for (const item of thread) {
+    if (!item.turnId) continue
+    const ids = linked.get(item.sessionId) ?? new Set<string>()
+    ids.add(item.turnId)
+    linked.set(item.sessionId, ids)
+  }
+  const turns: SnapshotTurn[] = []
+  for (const [sessionId, ids] of linked) {
+    for (const turn of loadTurns(sessionId, [...ids])) {
+      if (turn.sessionId !== sessionId || !ids.has(turn.id)) continue
+      ids.delete(turn.id)
+      turns.push({
+        id: turn.id,
+        sessionId,
+        ordinal: turn.ordinal,
+        startedAt: turn.startedAt,
+        ...(turn.completedAt !== undefined && turn.completedAtSource !== "daemon-restart"
+          ? { completedAt: turn.completedAt }
+          : {}),
+        status: turn.status,
+      })
+    }
+  }
+  return turns
+}
+
+export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot, loadTurns?: ClientTurnLoader): WorkspaceSnapshot {
   const projects = snapshot.project ? [snapshot.project] : []
   // The store refuses state with several projects (ruling Q257), so nothing
   // here belongs to a project the list leaves out. If something ever does,
@@ -1068,12 +1104,16 @@ export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): Workspa
   }
   const thread = boundedClientThread(snapshot.thread, snapshot.activeSessionId)
   const historyTruncated = thread.length < snapshot.thread.length
+  // Turns are derived for each client snapshot and never stored.
+  const { turns: _stored, ...state } = snapshot
+  const turns = loadTurns ? clientTurns(thread, loadTurns) : []
   return {
-    ...snapshot,
+    ...state,
     projects,
     projectCap: activeProjectCap,
     thread,
     ...(historyTruncated ? { historyTruncated: true } : {}),
+    ...(turns.length > 0 ? { turns } : {}),
   }
 }
 
@@ -2933,7 +2973,9 @@ export class DomovoiDaemon {
     signal?.throwIfAborted()
     await this.#recoverSessionArchives()
     signal?.throwIfAborted()
-    this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.())
+    // Every turn still pending ran into this daemon's previous stop; when it
+    // ended is unknown (ruling Q401).
+    this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.([], { daemonRestart: true }))
     if (this.#dropUndeliveredRules(this.#snapshot, "startup-recovery").length > 0) {
       workspaceSnapshotSchema.parse(this.#snapshot)
       this.#store.save(this.#snapshot)
@@ -3558,7 +3600,7 @@ export class DomovoiDaemon {
         : []),
     ))
     this.#sealUnsettledApprovals()
-    this.#broadcastNotification("workspace.changed", workspaceSnapshotForClient(this.#snapshot), true)
+    this.#broadcastNotification("workspace.changed", this.#clientSnapshot(), true)
     this.#syncArtifactWatchActivity()
   }
 
@@ -3575,6 +3617,21 @@ export class DomovoiDaemon {
     try { update() } catch (error) {
       this.#reportError("Domovoi could not persist provider usage", error)
     }
+  }
+
+  // The snapshot a client receives, with the ledger's turn timing (ruling
+  // Q401). A ledger that cannot be read leaves turns out rather than failing
+  // the snapshot.
+  #clientSnapshot(): WorkspaceSnapshot {
+    return workspaceSnapshotForClient(this.#snapshot, (sessionId, turnIds) => {
+      let turns: readonly SessionTurn[] = []
+      try {
+        turns = this.#usageLedger.turns?.(sessionId, turnIds) ?? []
+      } catch (error) {
+        this.#reportError("Domovoi could not read turn times for a snapshot", error)
+      }
+      return turns
+    })
   }
 
   #turnLink(sessionId: string, provider: string, threadId: string, turnId: string | undefined): { turnId?: string } {
@@ -3752,7 +3809,7 @@ export class DomovoiDaemon {
           frame,
           () => {
             this.#flushPendingWorkspaceDeltas()
-            return this.#notificationMessage("workspace.changed", workspaceSnapshotForClient(this.#snapshot))
+            return this.#notificationMessage("workspace.changed", this.#clientSnapshot())
           },
         )
       }
@@ -6791,7 +6848,7 @@ export class DomovoiDaemon {
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
-          result: rpcMethods[method].result.parse(workspaceSnapshotForClient(this.#snapshot)),
+          result: rpcMethods[method].result.parse(this.#clientSnapshot()),
         })
         return
       }
@@ -7257,7 +7314,7 @@ export class DomovoiDaemon {
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
-          result: workspaceSnapshotForClient(this.#snapshot),
+          result: this.#clientSnapshot(),
         })
         return
       }
@@ -7359,7 +7416,7 @@ export class DomovoiDaemon {
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
-            result: workspaceSnapshotForClient(this.#snapshot),
+            result: this.#clientSnapshot(),
           })
           return
         }
@@ -7373,7 +7430,7 @@ export class DomovoiDaemon {
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
-            result: workspaceSnapshotForClient(this.#snapshot),
+            result: this.#clientSnapshot(),
           })
           return
         }
@@ -7425,7 +7482,7 @@ export class DomovoiDaemon {
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
-          result: workspaceSnapshotForClient(this.#snapshot),
+          result: this.#clientSnapshot(),
         })
         return
       }
@@ -8386,7 +8443,7 @@ export class DomovoiDaemon {
         workspaceSnapshotSchema.parse(this.#snapshot)
         await this.#persistSnapshot()
         this.#flushPendingWorkspaceDeltas()
-        const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
+        const clientSnapshot = structuredClone(this.#clientSnapshot())
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -8474,7 +8531,7 @@ export class DomovoiDaemon {
         workspaceSnapshotSchema.parse(this.#snapshot)
         await this.#persistSnapshot()
         this.#flushPendingWorkspaceDeltas()
-        const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
+        const clientSnapshot = structuredClone(this.#clientSnapshot())
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -9613,7 +9670,7 @@ export class DomovoiDaemon {
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
-            result: workspaceSnapshotForClient(this.#snapshot),
+            result: this.#clientSnapshot(),
           })
           return
         }
@@ -9825,7 +9882,7 @@ export class DomovoiDaemon {
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
-          result: workspaceSnapshotForClient(this.#snapshot),
+          result: this.#clientSnapshot(),
         })
         this.#broadcastSnapshot()
         return
@@ -10440,8 +10497,8 @@ export class DomovoiDaemon {
       if (changed && !alreadyPersisted) await this.#persistSnapshot()
       this.#flushPendingWorkspaceDeltas()
       const clientSnapshot = changed
-        ? structuredClone(workspaceSnapshotForClient(this.#snapshot))
-        : workspaceSnapshotForClient(this.#snapshot)
+        ? structuredClone(this.#clientSnapshot())
+        : this.#clientSnapshot()
       const helloConnectionId = this.#connectionIds.get(socket)
       const actor = this.#authenticatedActors.get(socket)
       const helloCredential = this.#deviceCredentials.get(socket)?.verified
@@ -11757,7 +11814,7 @@ export class DomovoiDaemon {
       }
     }
     const result: SystemEmergencyStopResult = {
-      snapshot: workspaceSnapshotForClient(this.#snapshot),
+      snapshot: this.#clientSnapshot(),
       stopId,
       requestedAt,
       client,
@@ -12827,7 +12884,7 @@ export class DomovoiDaemon {
       this.#reportError("Domovoi could not stream a workspace delta", validated.error)
       this.#broadcastNotification(
         "workspace.changed",
-        structuredClone(workspaceSnapshotForClient(this.#snapshot)),
+        structuredClone(this.#clientSnapshot()),
         duringStop,
       )
       return
@@ -12864,7 +12921,7 @@ export class DomovoiDaemon {
     this.#flushPendingWorkspaceDeltas()
     this.#broadcastNotification(
       "workspace.changed",
-      structuredClone(workspaceSnapshotForClient(this.#snapshot)),
+      structuredClone(this.#clientSnapshot()),
     )
   }
 
