@@ -76,7 +76,10 @@ it("locks the code for a watching window and names the refusal", () => {
   card({ readOnly: true })
   expect(screen.getByRole("button", { name: "Show a pairing code" }).hasAttribute("disabled")).toBe(true)
   expect(screen.getByText("Locked: this window is watching only, and only a full client can ask for a code.")).toBeTruthy()
-  expect(screen.getByText("pair.issue refused · watch_only_client")).toBeTruthy()
+  // Q347 A: the daemon refuses device.issueCode from a watching credential
+  // ("Watching-only credentials may only observe", apps/daemon/src/server.ts).
+  expect(screen.getByText("device.issueCode refused · watching-only credential")).toBeTruthy()
+  expect(screen.queryByText(/pair\.issue|watch_only_client/)).toBeNull()
 })
 
 it("draws no QR when a phone could not reach or trust the daemon, and says which", async () => {

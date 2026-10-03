@@ -165,7 +165,8 @@ export function PairingCard({
               {readOnly ? (
                 <div className="flex flex-col gap-1">
                   <span className="text-[11.5px] text-warn-dim">Locked: this window is watching only, and only a full client can ask for a code.</span>
-                  <span className="font-machine text-[10.5px] text-faint">pair.issue refused · watch_only_client</span>
+                  {/* The daemon's refusal of a watching credential (Q347 A). */}
+                  <span className="font-machine text-[10.5px] text-faint">device.issueCode refused · watching-only credential</span>
                 </div>
               ) : (
                 <div className="flex flex-wrap items-baseline gap-2 text-[11px] text-muted-foreground">
