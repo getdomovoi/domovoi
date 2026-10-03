@@ -223,6 +223,7 @@ describe("heldBackView", () => {
     const view = loaded(heldBackView(filtered))
     const git = view.files.at(-1)!
     expect(git).toEqual({
+      key: "git\u0000local\u0000.git/config",
       path: ".git/config",
       source: "local git config",
       providers: [],
@@ -232,6 +233,31 @@ describe("heldBackView", () => {
     // Each command is an entry, as the daemon lists it.
     expect(view.held).toBe(9)
     expect(view.lead).toBe("None of it loads for any agent.")
+  })
+
+  // One included file can be read from the repository's config and from a
+  // worktree's config.worktree: it is one group per scope, and each group has
+  // its own identity, so the screen keeps both (bot finding 4151622854).
+  it("keeps one group per git config file and scope, each with its own key", () => {
+    const shared = toolInventorySchema.parse({
+      ...inventory(),
+      repository: {
+        ...inventory().repository,
+        gitFilters: {
+          files: [{ path: "shared.gitconfig", scope: "local" }, { path: "shared.gitconfig", scope: "worktree" }],
+          entries: [
+            { driver: "sops", operation: "smudge", command: "sops -d", required: "true", file: "shared.gitconfig", scope: "local", heldBack: true },
+            { driver: "sops", operation: "smudge", command: "sops -d", required: "true", file: "shared.gitconfig", scope: "worktree", heldBack: true },
+          ],
+          omittedEntries: 0,
+          reviewDigest,
+        },
+      },
+    })
+    const groups = loaded(heldBackView(shared)).files.filter((file) => file.path === "shared.gitconfig")
+    expect(groups.map((file) => file.source)).toEqual(["local git config", "worktree git config"])
+    const keys = loaded(heldBackView(shared)).files.map((file) => file.key)
+    expect(new Set(keys).size).toBe(keys.length)
   })
 
   it("does not call the list whole when the git config could not be read", () => {

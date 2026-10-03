@@ -67,6 +67,9 @@ export type HeldBackRow = {
 }
 
 export type HeldBackFile = {
+  // The group's identity: one agent file is one group, and one Git config file
+  // is one group per scope Git reads it in, so a path alone is not unique.
+  key: string
   path: string
   source: string
   // Every agent that reads this file and holds something in it back.
@@ -211,7 +214,7 @@ export function heldBackView(inventory: ToolInventory): HeldBackView {
       held += 1
       let group = files.get(file.path)
       if (!group) {
-        group = { path: file.path, source: sourceLabel[file.source], providers: [], counts: "", rows: [], kinds: [] }
+        group = { key: `agent\u0000${file.path}`, path: file.path, source: sourceLabel[file.source], providers: [], counts: "", rows: [], kinds: [] }
         files.set(file.path, group)
       }
       if (!group.providers.includes(provider.provider)) group.providers.push(provider.provider)
@@ -248,6 +251,7 @@ export function heldBackView(inventory: ToolInventory): HeldBackView {
     const drivers = new Map<string, string[]>()
     for (const entry of heldEntries) drivers.set(entry.driver, [...drivers.get(entry.driver) ?? [], `${entry.operation} ${entry.command}`])
     gitFiles.push({
+      key: `git\u0000${file.scope}\u0000${file.path}`,
       path: file.path,
       source: gitScopeLabel[file.scope],
       providers: [],
