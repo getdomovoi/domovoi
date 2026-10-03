@@ -11,7 +11,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent } from "./codex.js"
-import { DomovoiDaemon } from "./server.js"
+import { DomovoiDaemon, workspaceSnapshotForClient } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { waitForDaemon } from "./test-wait-for.js"
 import { usageIdentity } from "./usage-accounting.js"
@@ -43,7 +43,7 @@ function workspace(): WorkspaceSnapshot {
   return workspaceSnapshotSchema.parse(snapshot)
 }
 
-async function start(options: { snapshot?: WorkspaceSnapshot, ledger?: UsageLedger } = {}) {
+async function start(options: { snapshot?: WorkspaceSnapshot, ledger?: UsageLedger, errorSink?: (report: unknown) => void } = {}) {
   let emit: (event: AgentEvent) => void = () => {}
   const provider = {
     connect: vi.fn(async () => {}), listModels: vi.fn(async () => []),
@@ -55,7 +55,7 @@ async function start(options: { snapshot?: WorkspaceSnapshot, ledger?: UsageLedg
   } satisfies AgentAdapter
   const store = new SqliteWorkspaceStore(":memory:", options.snapshot ?? workspace())
   const daemon = new DomovoiDaemon({
-    port: 0, store, agents: { codex: provider }, errorSink: vi.fn(),
+    port: 0, store, agents: { codex: provider }, errorSink: options.errorSink ?? vi.fn(),
     usageLedger: options.ledger ?? new UsageLedger(":memory:"),
   })
   daemons.push(daemon)
@@ -121,5 +121,43 @@ describe("the snapshot's turns", () => {
   it("are absent when the thread links no turn", async () => {
     const { snapshot } = await start()
     expect(await snapshot()).not.toHaveProperty("turns")
+  })
+
+  // Review P3-5: a turn id the ledger answers twice, in one session or in two,
+  // appears once, so it can never make the snapshot fail its schema.
+  it("list a turn id once, however often the ledger answers it", () => {
+    const snapshot = workspace()
+    const turnId = "e".repeat(64)
+    const other = snapshot.sessions.find((session) => session.id !== sessionId)!.id
+    snapshot.thread.push(
+      { id: "user-a", sessionId, kind: "user", body: "A", turnId, createdAt: "2026-10-02T12:00:00.000Z" },
+      { id: "user-b", sessionId: other, kind: "user", body: "B", turnId, createdAt: "2026-10-02T12:00:00.000Z" },
+    )
+    const turn = (session: string) => ({
+      id: turnId, sessionId: session, ordinal: 1, startedAt: "2026-10-02T12:00:00.000Z", provider: "codex",
+      requestedModel: "model", reportedModels: [], status: "pending" as const, coverage: "pending" as const,
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, costSource: "unavailable" as const },
+      recordedToolCount: 0,
+    })
+    const client = workspaceSnapshotForClient(snapshot, (session) => [turn(session), turn(session)])
+    expect(client.turns?.map((entry) => entry.id)).toEqual([turnId])
+    expect(workspaceSnapshotSchema.safeParse(client).success).toBe(true)
+  })
+})
+
+describe("a usage ledger that cannot be read", () => {
+  // Review P3-6: the snapshot still goes out without turns, and the failure is
+  // reported once rather than on every snapshot.
+  it("leaves turns out and reports once", async () => {
+    const ledger = new UsageLedger(":memory:")
+    const turns = vi.spyOn(ledger, "turns").mockImplementation(() => { throw new Error("ledger unreadable") })
+    const errorSink = vi.fn()
+    const snapshot = workspace()
+    snapshot.thread.push({ id: "user-linked", sessionId, kind: "user", body: "Run it", turnId: "f".repeat(64), createdAt: "2026-10-02T12:00:00.000Z" })
+    const { snapshot: read } = await start({ snapshot, ledger, errorSink })
+    for (let attempt = 0; attempt < 3; attempt += 1) expect(await read()).not.toHaveProperty("turns")
+    expect(turns.mock.calls.length).toBeGreaterThanOrEqual(3)
+    expect(errorSink.mock.calls.filter(([report]) => (report as { context?: string }).context === "Domovoi could not read turn times for a snapshot"))
+      .toHaveLength(1)
   })
 })

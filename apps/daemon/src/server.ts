@@ -1072,10 +1072,13 @@ function clientTurns(thread: WorkspaceSnapshot["thread"], loadTurns: ClientTurnL
     linked.set(item.sessionId, ids)
   }
   const turns: SnapshotTurn[] = []
+  // Turn ids are unique in a snapshot. One the ledger answers twice, in this
+  // session or another, is listed once rather than failing the snapshot.
+  const emitted = new Set<string>()
   for (const [sessionId, ids] of linked) {
     for (const turn of loadTurns(sessionId, [...ids])) {
-      if (turn.sessionId !== sessionId || !ids.has(turn.id)) continue
-      ids.delete(turn.id)
+      if (turn.sessionId !== sessionId || !ids.has(turn.id) || emitted.has(turn.id)) continue
+      emitted.add(turn.id)
       turns.push({
         id: turn.id,
         sessionId,
@@ -1877,6 +1880,9 @@ export class DomovoiDaemon {
   // its outcome goes. A later code, or the outcome that ends this one, clears
   // it, so a connection is never told about a code it did not issue.
   #pairingIssuer: { pairingId: string, socket: RpcOutboundSocket } | undefined
+  // Set while the usage ledger cannot answer a snapshot's turn times, so the
+  // failure is reported once (ruling Q401, review P3-6).
+  #turnTimesUnreadable = false
   #machineCredentials: AsyncMachineCredentials | undefined
   #fleetEnrollment: FleetEnrollmentService
   #readTransferBundle: ((bundlePath: string) => Promise<Buffer>) | undefined
@@ -3622,14 +3628,19 @@ export class DomovoiDaemon {
 
   // The snapshot a client receives, with the ledger's turn timing (ruling
   // Q401). A ledger that cannot be read leaves turns out rather than failing
-  // the snapshot.
+  // the snapshot. It reports the failure once, not on every snapshot, and
+  // again only after a read has succeeded in between.
   #clientSnapshot(): WorkspaceSnapshot {
     return workspaceSnapshotForClient(this.#snapshot, (sessionId, turnIds) => {
       let turns: readonly SessionTurn[] = []
       try {
         turns = this.#usageLedger.turns?.(sessionId, turnIds) ?? []
+        this.#turnTimesUnreadable = false
       } catch (error) {
-        this.#reportError("Domovoi could not read turn times for a snapshot", error)
+        if (!this.#turnTimesUnreadable) {
+          this.#turnTimesUnreadable = true
+          this.#reportError("Domovoi could not read turn times for a snapshot", error)
+        }
       }
       return turns
     })
