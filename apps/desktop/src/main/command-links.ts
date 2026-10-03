@@ -55,7 +55,10 @@ async function stateOf(path: string, launcher: string): Promise<CommandLinkState
   if (!found.isSymbolicLink()) return "other"
   const target = await readlink(path)
   if (target === launcher) return "linked"
-  return ownLauncher.test(target) ? "stale" : "other"
+  // Review P3-1: stale only when the launcher it names is gone (the app
+  // moved or was deleted). A link to another Domovoi install that still
+  // exists belongs to that install and is left alone.
+  return ownLauncher.test(target) && !await entry(target) ? "stale" : "other"
 }
 
 // Review P2-2: ~/.local and ~/.local/bin are checked for every action. A

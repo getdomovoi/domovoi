@@ -96,6 +96,20 @@ describe("command links", () => {
     expect(await readlink(join(bin(), "domovoid"))).toBe(launcher)
   })
 
+  // Review P3-1: a link to another Domovoi install that still exists is that
+  // install's, not a stale one of ours.
+  it("leaves a link to another live Domovoi install alone", async () => {
+    await mkdir(bin(), { recursive: true })
+    const other = join(root, "Other", "Domovoi.app", "Contents", "Resources", "daemon-runtime", "bin", "domovoid")
+    await mkdir(join(other, ".."), { recursive: true })
+    await writeFile(other, "#!/bin/sh\n", { mode: 0o755 })
+    await symlink(other, join(bin(), "domovoid"))
+    expect((await commandLinks("status", environment())).report).toMatchObject({ commands: [{ state: "other" }] })
+    expect((await commandLinks("link", environment())).refused).toBe("~/.local/bin/domovoid is not a link Domovoi made, so it was left as it is.")
+    expect((await commandLinks("unlink", environment())).refused).toBe("~/.local/bin/domovoid is not a link Domovoi made, so it was left as it is.")
+    expect(await readlink(join(bin(), "domovoid"))).toBe(other)
+  })
+
   // Review P2-2: a ~/.local/bin that is a link (a stow-folded dotfiles
   // directory, say) is not read, written or cleaned through, for any action.
   it("reads, writes and removes nothing through a ~/.local or ~/.local/bin that is a link", async () => {
