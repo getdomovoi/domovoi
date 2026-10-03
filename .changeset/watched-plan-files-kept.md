@@ -9,3 +9,5 @@ working plan, folded it into the working plan and moved its comments there; the 
 after it changed on disk. Turn-scoped working plans from older profiles are still folded into the
 working plan. A saved working plan that kept a plan file's path from that fold is taken over as the
 working plan and loses the path, so a session never holds two working plans with the same id.
+Streamed plan text now reaches clients as appends while a watched plan file exists, instead of a full
+workspace snapshot for every chunk.

@@ -10524,8 +10524,10 @@ export class DomovoiDaemon {
         (plan) => plan.sessionId === session.id,
       )
       if (!canonical) {
+        // Watched plan files are not part of the merge, so they must not
+        // force a full snapshot for every streamed chunk.
         const previousPlanIds = new Set(this.#snapshot.artifacts.filter((artifact) =>
-          artifact.sessionId === session.id && artifact.type === "plan"
+          isWorkingPlanArtifact(artifact, session.id)
         ).map((artifact) => artifact.id))
         const artifact = appendPlanDelta(
           this.#snapshot.artifacts,

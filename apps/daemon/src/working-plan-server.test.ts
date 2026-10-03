@@ -1047,4 +1047,89 @@ describe("working plan RPC", () => {
     expectFileKept()
     context.socket.close()
   })
+
+  it("streams plan text as appends while a watched plan file exists", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.workspacePath = "/worktrees/plan-stream"
+    session.providerThreadId = "thread-plan-stream"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.workingPlans = []
+    snapshot.artifacts = snapshot.artifacts.filter((artifact) => artifact.sessionId !== session.id)
+    snapshot.annotations = snapshot.annotations.filter(
+      (annotation) => annotation.sessionId !== session.id,
+    )
+    snapshot.artifacts.push(
+      {
+        id: `plan-${session.id}`,
+        sessionId: session.id,
+        title: "Working plan",
+        type: "plan",
+        revision: 1,
+        mimeType: "text/markdown",
+        content: "1. Inspect\n",
+      },
+      {
+        id: `plan-${session.id}-0123456789abcdef`,
+        sessionId: session.id,
+        title: "Plan",
+        type: "plan",
+        revision: 1,
+        path: "PLAN.md",
+        mimeType: "text/markdown",
+        content: "# Agent plan\n",
+      },
+    )
+    let emit: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => []),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-plan-stream"),
+      steerTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        emit = listener
+        return () => { emit = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const context = await startedDaemon(snapshot, { "claude-code": agent })
+    const notifications: Array<{ method: string, params?: { operations?: unknown[] } }> = []
+    context.socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as (typeof notifications)[number]
+      if (message.method) notifications.push(message)
+    })
+    const started = await context.rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Go",
+      client: "desktop",
+    })
+    expect(started).not.toHaveProperty("error")
+    await context.rpc("workspace.get", {})
+    notifications.length = 0
+
+    emit!({
+      type: "plan-delta",
+      threadId: "thread-plan-stream",
+      turnId: "turn-plan-stream",
+      delta: "2. Verify",
+    })
+
+    await waitForDaemon(() => expect(notifications.map(({ method }) => method)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^workspace\.(delta|changed)$/)]),
+    ))
+    expect(notifications.map(({ method }) => method)).not.toContain("workspace.changed")
+    expect(notifications.find(
+      (notification) => notification.method === "workspace.delta",
+    )?.params?.operations).toEqual([
+      expect.objectContaining({ kind: "plan.append", id: `plan-${session.id}`, delta: "2. Verify" }),
+    ])
+    context.socket.close()
+  })
 })
