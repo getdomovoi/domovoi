@@ -410,7 +410,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "a card per machine exists with Move a session here; it is not the drawn card. The design draws a dot, mono name and status pill, four fact rows (TRANSPORT, AGENTS, SESSIONS, LAST HEARD), one primary action (Open its N sessions, or See what stalled when unreachable) and a danger border when unreachable. fleet-view draws a sans name with a Badge, Use, Move, Terminal and Forget buttons, a platform, arch and version line, capability badges and a transports list, and dims an unreachable card with no border. LAST HEARD is buildable from heartbeat.lastSeenAt; other machines' agents and session counts need a protocol change (FleetMachine carries capabilities, not providers); the domovoi cloud transport is M2"
+        "reason": "a card per machine exists with Move a session here; it is not the drawn card. The design draws a dot, mono name and status pill, four fact rows (TRANSPORT, AGENTS, SESSIONS, LAST HEARD), one primary action (Open its N sessions, or See what stalled when unreachable) and a danger border when unreachable. fleet-view draws a sans name with a Badge, Use, Move, Terminal and Forget buttons, a platform, arch and version line, capability badges and a transports list, and dims an unreachable card with no border. LAST HEARD is buildable from heartbeat.lastSeenAt. Agents and session counts for another machine are client work for admitted machines: FleetAccessSession opens an authenticated DomovoiClient per admitted machine, and its connect() returns that machine's WorkspaceSnapshot with machine.providers and sessions. A machine this client holds no credential for stays unknown, and the card must say so rather than guess. The domovoi cloud transport is M2"
       }
     },
     {
@@ -432,7 +432,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the heading and keychain note are drawn inside this machine's own card and list only this machine's providers; the design draws a panel below the cards with one row per machine and agent, a state, and an action only where one is needed (Authenticate there). Other machines' agents need a protocol change: FleetMachine carries capabilities, not providers"
+        "reason": "the heading and keychain note are drawn inside this machine's own card and list only this machine's providers; the design draws a panel below the cards with one row per machine and agent, a state, and an action only where one is needed (Authenticate there). Other machines' agents are client work for admitted machines: FleetAccessSession's per-machine DomovoiClient connect() returns that machine's WorkspaceSnapshot, whose machine.providers lists them; machines without an admitted credential stay unknown"
       }
     },
     {
@@ -659,7 +659,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "rows rename, rotate and revoke; they are not the drawn rows. Every row says Revoke where the design says Unpair, and Sign this device out on a web tab's own row (Q378 A, 2026-10-02: Unpair for client rows, Sign this device out for a tab's own row through device.revokeCurrent, Revoke kept for machine bindings); the per-row notes are tooltips only, there is no self-row highlight, the layout is a five-column table where the design has card rows, and the rotated secret panel is accent, not info-tinted, without the Shown once line"
+        "reason": "rows rename, rotate and revoke; they are not the drawn rows. Every row says Revoke where the design says Unpair, and Sign this device out on a web tab's own row (Q378 A, 2026-10-02: Unpair for client rows, Sign this device out for a tab's own row, Revoke kept for machine bindings). Sign this device out has no path today: Q378 named device.revokeCurrent, but that method is machine-only by contract and the daemon refuses any caller without a machine-paired credential, and device.revoke requires the daemon credential, so a web tab cannot revoke itself. It needs a client self-revocation method (protocol and daemon); the per-row notes are tooltips only, there is no self-row highlight, the layout is a five-column table where the design has card rows, and the rotated secret panel is accent, not info-tinted, without the Shown once line"
       }
     },
     {
@@ -687,7 +687,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the section lists this machine's providers under SUBSCRIPTION CLIS and DIRECT API KEYS; the design draws one row per provider and machine across the fleet with a dot, state and an action only when one is needed (Authenticate there). Every row carries a permanently disabled Manage, Re-authenticate or Install button; the header adds a sentence; with no providers the card is empty with no empty state. Other machines' providers need a protocol change (FleetMachine carries capabilities, not providers); harness marks stay text-only while the marks are not vendored (the reason Q388 A gives for Skills and Tools)"
+        "reason": "the section lists this machine's providers under SUBSCRIPTION CLIS and DIRECT API KEYS; the design draws one row per provider and machine across the fleet with a dot, state and an action only when one is needed (Authenticate there). Every row carries a permanently disabled Manage, Re-authenticate or Install button; the header adds a sentence; with no providers the card is empty with no empty state. Other machines' providers are client work for admitted machines (FleetAccessSession's per-machine connect() returns that machine's WorkspaceSnapshot with machine.providers); machines without an admitted credential stay unknown; harness marks stay text-only while the marks are not vendored (the reason Q388 A gives for Skills and Tools)"
       }
     },
     {
@@ -990,7 +990,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "ThreadStartLine draws repo, branch and worktree, then started HH:MM, and carries no controls; the gap is the clock. The design draws started 14:02 · 4m 18s when done, started 14:02 · running 1m 09s while working and started 13:41 · stalled at 14:06 when the daemon is lost. Q390 A (2026-10-02) puts turn start and end on the protocol (0.8.0) and shows no duration until then, so the elapsed and running parts wait on that change"
+        "reason": "ThreadStartLine draws repo, branch and worktree, then started HH:MM, and carries no controls; the gap is the clock. The design draws started 14:02 · 4m 18s when done, started 14:02 · running 1m 09s while working and started 13:41 · stalled at 14:06 when the daemon is lost. The clock is client work: session.history entries carry turn (sessionTurnSchema) with startedAt and completedAt, and usage-chip.tsx already reads the latest turn through latestTurnFromHistory. Q390 A (2026-10-02) rests on the premise that no turn duration is on the wire, which the code contradicts; the ruling needs revisiting before anyone adds protocol fields"
       }
     },
     {
@@ -1066,7 +1066,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "activity groups exist and read N tool calls[, N failed]; the design's Working, Worked for 4m 18s, show the steps and Stopped labels are not drawn, step dots show online or offline only where the design colours them by outcome, and Output is a text button where the design toggles the whole row. Q390 A (2026-10-02): no turn duration is on the wire; turn start and end go on the protocol and no duration shows until then"
+        "reason": "activity groups exist and read N tool calls[, N failed]; the design's Working, Worked for 4m 18s, show the steps and Stopped labels are not drawn, step dots show online or offline only where the design colours them by outcome, and Output is a text button where the design toggles the whole row. Worked for N is client work: session.history entries carry turn (sessionTurnSchema) with startedAt and completedAt, which usage-chip.tsx already reads through latestTurnFromHistory. Q390 A (2026-10-02) assumed no turn duration is on the wire, which the code contradicts; the ruling needs revisiting"
       }
     },
     {
