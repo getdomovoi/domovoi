@@ -5,8 +5,9 @@ import { Text } from "./ui/text"
 
 // The launch screen the handoff draws: the mark over the wordmark. The design
 // draws the mark's working variant here, mark-working.svg, which the
-// repository does not carry, so the reduced mark from design/assets (#514)
-// stands in rather than a variant nobody designed.
+// repository does not carry, so the full mark from design/assets (#514), the
+// form the brand handoff gives this size, stands in rather than a variant
+// nobody designed.
 //
 // This is the only screen that draws before the faces are registered, so the
 // wordmark can come up in the platform face for the moment the gate is open.
