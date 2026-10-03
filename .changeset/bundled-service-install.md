@@ -1,0 +1,5 @@
+---
+"@getdomovoi/daemon": minor
+---
+
+`domovoid service install` run from the runtime the Domovoi app ships (its launcher in `<resources>/daemon-runtime/bin`) no longer points the login service into the app. It first copies that runtime under the profile, to `<profile>/runtime/<version>/<id>`, the same copy the app's Install makes, publishes it under the service-operation lease after the profile checks, and records the service and `service.json` against the copy. It prints where the copy went. Run from an app on a disk image, from macOS App Translocation's temporary copy or as an AppImage, it refuses and installs nothing, and says to move the app or use Install under Daemon on this machine in Settings. A run from an installed copy, a package install or a checkout installs as before. The copy routine moved from the desktop into the daemon and is exported as `prepareDaemonRuntime`, `stageDaemonRuntime`, `nodeRuntimeFileSystem`, `daemonRuntimeLayout` and `profileRuntimeDirectory`; the desktop now calls it through the daemon it loads.
