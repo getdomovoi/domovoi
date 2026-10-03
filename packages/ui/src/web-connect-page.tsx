@@ -61,7 +61,8 @@ export function WebConnectPage({
   pending: boolean
   outcome?: PairingOutcome | undefined
   onPair: (code: string) => void
-  onOpenLimits: () => void
+  // Handed the link that was pressed, so focus can return to it.
+  onOpenLimits: (opener: HTMLElement) => void
   onUseCredential?: (() => void) | undefined
 }) {
   const [code, setCode] = useState(initialCode)
@@ -140,7 +141,7 @@ export function WebConnectPage({
               <Button type="submit" disabled={!ready || pending}>{pending ? "Pairing this browser" : "Pair this browser"}</Button>
               <span className="text-[11.5px] text-muted-foreground">{ready ? "Pairs this tab only" : "Locked until the code is complete"}</span>
               <span className="flex-1" />
-              <button type="button" className="text-[11.5px] text-muted-foreground underline-offset-2 hover:underline" onClick={onOpenLimits}>What a browser tab can and cannot do</button>
+              <button type="button" className="text-[11.5px] text-muted-foreground underline-offset-2 hover:underline" onClick={(event) => onOpenLimits(event.currentTarget)}>What a browser tab can and cannot do</button>
             </div>
           ) : null}
         </form>
@@ -158,7 +159,7 @@ export function WebConnectPage({
             <div className="flex flex-wrap items-center gap-3">
               {outcome.action ? <Button type="button" size="sm" variant={outcome.tone === "ok" ? "default" : "outline"} onClick={outcome.action.run}>{outcome.action.label}</Button> : null}
               <span className="flex-1" />
-              <button type="button" className="text-[11.5px] underline-offset-2 hover:underline" onClick={onOpenLimits}>What a browser tab can and cannot do</button>
+              <button type="button" className="text-[11.5px] underline-offset-2 hover:underline" onClick={(event) => onOpenLimits(event.currentTarget)}>What a browser tab can and cannot do</button>
             </div>
           </div>
         ) : null}

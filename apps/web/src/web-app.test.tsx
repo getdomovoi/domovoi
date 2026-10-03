@@ -418,6 +418,32 @@ describe("WebApp", () => {
     expect(client.request).toHaveBeenCalledWith("device.redeemCode", expect.objectContaining({ code: "hearth-quiet-ember-42" }))
   })
 
+  // Focus follows the page: to the limits heading on open, and back to the
+  // link that opened them, not to the document body.
+  it("moves focus to the limits heading on open and back to the link on Back", async () => {
+    await draw(memoryStorage(), vi.fn(() => pairingClient("pairs")))
+    const link = button("What a browser tab can and cannot do")
+    await act(async () => { link.click() })
+    expect(document.activeElement?.tagName).toBe("H1")
+    expect(document.activeElement?.textContent).toBe("What a browser tab can and cannot do")
+    await act(async () => { button("Back to pairing").click() })
+    expect(document.activeElement).toBe(link)
+  })
+
+  // Opened from the accepted card, the tab is already paired, so the way back
+  // is not back to pairing.
+  it("labels the way back Back when the limits open from the accepted card", async () => {
+    await draw(memoryStorage(), vi.fn(() => pairingClient("pairs")))
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("This browser is paired with")
+    await act(async () => { button("What a browser tab can and cannot do").click() })
+    expect(() => button("Back to pairing")).toThrow()
+    await act(async () => { button("Back").click() })
+    expect(text()).toContain("This browser is paired with")
+    await act(async () => { button("Open sessions").click() })
+    expect(text()).toContain("Workspace open with the device credential")
+  })
+
   // The link on the connect page opens the limits before this tab is paired,
   // and the way back keeps what the person typed.
   it("opens the limits from the connect page before pairing, then goes back with the code kept", async () => {

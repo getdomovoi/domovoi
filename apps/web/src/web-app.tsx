@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 
 import type { ClientKind } from "@getdomovoi/protocol"
 import { BrowserLimitsPanel, DaemonCredentialPrompt, WebConnectPage, type PairingOutcome } from "@getdomovoi/ui"
@@ -64,6 +64,14 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
   // The same limits, asked for from the connect page before this tab pairs.
   // Read there, they count as stated, so pairing goes on to the session.
   const [limitsOpen, setLimitsOpen] = useState(false)
+  // The link that opened the limits gets focus back once the connect page is
+  // shown again, so the way back does not drop focus to the document body.
+  const limitsOpener = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    if (limitsOpen) return
+    limitsOpener.current?.focus()
+    limitsOpener.current = null
+  }, [limitsOpen])
   const { host, secure } = hostOf(rpcUrl)
 
   const keep = (next: DaemonSession) => {
@@ -140,7 +148,8 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
           setPairing(false)
         })
       }}
-      onOpenLimits={() => {
+      onOpenLimits={(opener) => {
+        limitsOpener.current = opener
         setLimitsOpen(true)
         setLimitsSeen(true)
       }}
@@ -151,7 +160,9 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
     return <>
       {limitsOpen ? <BrowserLimitsPanel
         rows={browserLimits(environment, rpcUrl, markBrowserLimitsSeen(storage))}
-        continueLabel="Back to pairing"
+        // From the accepted card this tab is already paired, so the way back
+        // is only back.
+        continueLabel={outcome?.tone === "ok" ? "Back" : "Back to pairing"}
         onContinue={() => setLimitsOpen(false)}
       /> : null}
       <div hidden={limitsOpen}>{connect}</div>

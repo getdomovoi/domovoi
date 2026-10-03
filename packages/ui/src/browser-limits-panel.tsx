@@ -1,3 +1,5 @@
+import { useEffect, useRef } from "react"
+
 import { Button } from "./components/ui/button"
 import {
   Card,
@@ -46,6 +48,10 @@ export function BrowserLimitsPanel({ rows, onContinue, continueLabel = "Continue
   onContinue: () => void
   continueLabel?: string
 }) {
+  // The panel replaces the page it was opened from, so focus starts at its
+  // heading rather than falling to the document body.
+  const heading = useRef<HTMLHeadingElement>(null)
+  useEffect(() => { heading.current?.focus() }, [])
   return (
     <main className="flex min-h-dvh items-center justify-center bg-background p-6 text-foreground">
       <Card className="w-full max-w-2xl">
@@ -53,7 +59,7 @@ export function BrowserLimitsPanel({ rows, onContinue, continueLabel = "Continue
           <div className="mb-2 flex size-9 items-center justify-center rounded-md bg-accent text-primary">
             <DomovoiMark reduced className="size-5" />
           </div>
-          <CardTitle asChild><h1>What a browser tab can and cannot do</h1></CardTitle>
+          <CardTitle asChild><h1 ref={heading} tabIndex={-1} className="outline-none">What a browser tab can and cannot do</h1></CardTitle>
           <CardDescription>
             Each difference follows from one fact: no daemon, no repository, no keychain.
           </CardDescription>
