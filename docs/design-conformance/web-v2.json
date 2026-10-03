@@ -102,14 +102,12 @@
       "presence": [
         "Works once, for 180 seconds",
         "Pair this browser",
-        "HOW THIS TAB IS TRUSTED",
-        "device.redeemCode"
+        "HOW THIS TAB IS TRUSTED"
       ],
       "evidence": [
         "Works once, for 180 seconds",
         "Pair this browser",
         "HOW THIS TAB IS TRUSTED",
-        "device.redeemCode",
         "Reload this page",
         {
           "absent": "mono: `credential ${next.deviceId.slice(-8)} · this tab only`",
@@ -371,7 +369,7 @@
     {
       "id": "gate",
       "since": "2026-10-02",
-      "note": "The design draws Always here on a hard gate; the code hides Always on hard gates and on requests it could not resolve (ruled 2026-09-24, #545). The holder line's second half, the phone is watching, is not drawn: per-gate presence of other devices is not on the wire. Q371 A changes the Always label to Always for this command here on every client."
+      "note": "The design draws Always here on a hard gate; the code hides Always on hard gates and on requests it could not resolve (ruled 2026-09-24, #545). Open gap, no ruling: the holder line's second half, the phone is watching, is not drawn, because per-gate presence of other devices is not on the wire. Q371 A changes the Always label to Always for this command here on the desktop and web gate card, which the web shares."
     }
   ],
   "annotations": [
