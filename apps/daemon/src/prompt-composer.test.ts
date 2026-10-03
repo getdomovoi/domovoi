@@ -244,6 +244,55 @@ describe("composeProviderPrompt budget", () => {
   })
 })
 
+// Security review r1 P2: the first send after a provider handoff also carries a
+// handoff context. With a review, current comments reach the provider only
+// through the review section, so the whole prompt holds what the review
+// names and deliveredIds says so. Without one (Q402), the handoff keeps them.
+describe("composeProviderPrompt review after a provider handoff", () => {
+  function afterHandoff() {
+    const snapshot = baseSnapshot()
+    const sessionId = snapshot.sessions[0]!.id
+    snapshot.annotations = [
+      { ...annotation(1), body: "Selected comment body" },
+      { ...annotation(2), body: "Unselected draft body" },
+    ]
+    snapshot.artifacts = [{
+      id: "artifact-preview-b", sessionId, title: "Checkout B", type: "preview", revision: 1,
+      variant: { id: "variant-b", groupId: "checkout", label: "B", order: 1 },
+    }]
+    snapshot.thread = [{
+      id: "handoff-1", sessionId, kind: "system", body: "Handed off codex to claude-code.", createdAt: "2026-09-03T13:00:00.000Z",
+    }]
+    return snapshot
+  }
+
+  it.each([
+    ["a subset review", { annotationIds: ["annotation-1"] }, ["annotation-1"]],
+    ["a build-basis-only review", { annotationIds: [], buildBasis: { artifactId: "artifact-preview-b" } }, []],
+    ["an empty review", { annotationIds: [] }, []],
+  ])("holds only what %s names, in the whole prompt", async (_label, review, sent) => {
+    const result = await composeProviderPrompt({ ...input(afterHandoff(), "Continue"), review })
+
+    expect(result.prompt).toContain("<domovoi_handoff_context>")
+    expect(result.providerPromptDelivery.annotations.deliveredIds).toEqual(sent)
+    expect(result.prompt).not.toContain("annotation-2")
+    expect(result.prompt).not.toContain("Unselected draft body")
+    if (sent.length === 0) {
+      expect(result.prompt).not.toContain("annotation-1")
+      expect(result.prompt).not.toContain("Selected comment body")
+    } else {
+      expect(result.prompt.split("Selected comment body")).toHaveLength(2)
+    }
+  })
+
+  it("keeps every open comment in the handoff for a message without a review (Q402)", async () => {
+    const result = await composeProviderPrompt(input(afterHandoff(), "Continue"))
+    const handoff = /<domovoi_handoff_context>\n(.+)\n<\/domovoi_handoff_context>/.exec(result.prompt)![1]!
+    expect(handoff).toContain("annotation-1")
+    expect(handoff).toContain("annotation-2")
+  })
+})
+
 describe("composeProviderPrompt review", () => {
   it("carries only the comments a review names", async () => {
     const snapshot = baseSnapshot()
@@ -385,9 +434,10 @@ describe("composeProviderPrompt drop order", () => {
         createdAt: "2026-09-03T13:00:00.000Z",
       },
     ]
+    // No review: the Q402 legacy default, the one path on which the handoff
+    // still carries open comments, so every drop step is exercised.
     const request = {
       ...input(snapshot, "Continue"),
-      ...sendingAll(snapshot),
       skillCatalog: {
         list: vi.fn(async () => [alpha.summary, beta.summary]),
         read: vi.fn(async (skillId: string) =>

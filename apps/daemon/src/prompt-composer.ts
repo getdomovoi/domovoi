@@ -194,7 +194,9 @@ export async function composeProviderPrompt(
   // Checked first: a review naming a comment that is no longer open refuses
   // the message before anything else is prepared.
   const review = resolveAnnotationReview(input.snapshot, input.sessionId, input.review)
-  const handoff = prepareHandoffContext(input.snapshot, input.sessionId)
+  // With a review, current comments reach the provider only through the
+  // review section; the handoff carries none (security review r1 P2).
+  const handoff = prepareHandoffContext(input.snapshot, input.sessionId, input.review ? "none" : "all")
   const renderRequired = (inclusion: HandoffInclusion) => {
     const handoffTurn = renderHandoffContext(handoff, inclusion, input.userPrompt)
     return {

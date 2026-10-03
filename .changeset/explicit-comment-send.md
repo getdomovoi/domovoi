@@ -21,5 +21,7 @@ Ruling Q402: until desktop, web, phone, tablet and the command line send `review
 without one keeps today's behaviour: every open comment of its session attaches, and no build
 basis. That legacy default lives in one function, `legacyOpenCommentReview`, and is removed before
 protocol 0.8.0 ships, when a message without a review will send no comment. Phone and tablet keep
-the same methods: `review` rides on `session.send`, which they already hold. A cross-provider
-handoff still carries the session's open comments as session state.
+the same methods: `review` rides on `session.send`, which they already hold. The first message
+after a cross-provider handoff follows the same rule: with a review, the handoff context carries
+no current comment and only the review's comments reach the provider; without one, the handoff
+still carries every open comment, as before.

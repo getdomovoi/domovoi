@@ -254,11 +254,20 @@ for (const sections of combinations) {
 
 // The snapshots above are messages without a review (the Q402 legacy default).
 // A review naming the same comments composes the same prompt (ruling Q348 A).
+// Without a handoff, that is the whole difference. After a handoff, a review
+// also keeps current comments out of the handoff context (security review r1
+// P2), so the prompts differ there by the handoff's openAnnotations alone.
 it("composes the same prompt when a review sends every open comment", async () => {
-  const sections = { handoff: true, plan: true, annotations: true, skills: true }
+  const sections = { handoff: false, plan: true, annotations: true, skills: true }
   const reviewed = await sendFor(sections, { sendEveryComment: true })
   expect(reviewed.sent).not.toHaveProperty("error")
   expect(reviewed.prompts).toEqual([await promptFor(sections)])
+
+  const afterHandoff = { ...sections, handoff: true }
+  const reviewedHandoff = (await sendFor(afterHandoff, { sendEveryComment: true })).prompts[0]!
+  const handoff = (prompt: string) => JSON.parse(/<domovoi_handoff_context>\n(.+)\n<\/domovoi_handoff_context>/.exec(prompt)![1]!) as { openAnnotations: unknown[] }
+  expect(handoff(reviewedHandoff).openAnnotations).toEqual([])
+  expect(handoff(await promptFor(afterHandoff)).openAnnotations).toHaveLength(1)
 })
 
 it("keeps the outer-to-inner order the call site produces", async () => {
