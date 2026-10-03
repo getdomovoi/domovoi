@@ -19,7 +19,10 @@ import {
 const home = "/Users/dana"
 const tls = "/Users/dana/.domovoi/tls"
 const name = "studio.tail4c2e.ts.net"
-const record = { version: 1, name, address: "100.101.102.103", certPath: `${tls}/${name}.crt`, keyPath: `${tls}/${name}.key` } as const
+const record = {
+  version: 1, name, address: "100.101.102.103", certPath: `${tls}/${name}.crt`, keyPath: `${tls}/${name}.key`,
+  certIdentity: "16777232:48213377:1104537600000", keyIdentity: "16777232:48213378:1262304000000",
+} as const
 const text = (overrides: Record<string, unknown> = {}) => JSON.stringify({ ...record, ...overrides })
 
 describe("where the switch keeps its certificate", () => {
@@ -75,6 +78,11 @@ describe("the TailnetReach record", () => {
     ["the key in the certificate's place", text({ certPath: record.keyPath, keyPath: record.certPath })],
     ["a relative path", text({ certPath: `tls/${name}.crt` })],
     ["a number for a path", text({ keyPath: 7 })],
+    // Codex review round 1 (P2-4): the identity of each file the switch wrote.
+    ["no certificate identity", text({ certIdentity: undefined })],
+    ["no key identity", text({ keyIdentity: undefined })],
+    ["an identity that is not device, inode and time", text({ certIdentity: "../x" })],
+    ["a number for an identity", text({ keyIdentity: 7 })],
   ])("refuses %s", (_label, value) => {
     expect(parseTailnetReachRecord(value, tls)).toBeUndefined()
   })

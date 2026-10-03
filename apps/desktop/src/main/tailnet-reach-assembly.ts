@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process"
+import { randomInt } from "node:crypto"
 import { constants } from "node:fs"
-import { access, chmod, lstat, mkdir, mkdtemp, open, readdir, rm, writeFile } from "node:fs/promises"
+import { access, chmod, lstat, mkdir, mkdtemp, open, readdir, rm, rmdir, utimes, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { delimiter, dirname, isAbsolute, join, sep } from "node:path"
 
@@ -15,6 +16,7 @@ import {
   readTailnetReachRecordText,
   savedTailnetReachEnvironment,
   tailnetHostConflict,
+  tailnetName,
   tailnetReachRecordFile,
   tailnetTlsDirectory,
   type TailnetReachRecord,
@@ -139,7 +141,9 @@ export function createTailnetReach(input: {
         await mkdir(parent, { recursive: true, mode: 0o700 })
         await confinedTls(tlsDirectory, display)
         await chmod(parent, 0o700)
-        return mkdtemp(join(parent, ".pending-"))
+        const made = await mkdtemp(join(parent, ".pending-"))
+        await writeFile(join(made, stagingMarker), "", { mode: 0o600, flag: "wx" })
+        return made
       },
       // Codex review round 1 (P2-1): the file's bytes are flushed before it
       // is published under its new name, renamed reports the rename before
@@ -156,13 +160,21 @@ export function createTailnetReach(input: {
         await ownPath(tlsDirectory, path, display)
         await chmod(path, 0o600)
       },
+      identity: async (path) => {
+        await ownPath(tlsDirectory, path, display)
+        return fileIdentity(path)
+      },
+      mark: async (path) => {
+        await ownPath(tlsDirectory, path, display)
+        await markFile(path)
+      },
       remove: async (path) => {
         await ownPath(tlsDirectory, path, display)
         await rm(path, { force: true })
       },
       removeDirectory: async (path) => {
         await ownPath(tlsDirectory, path, display)
-        await rm(path, { recursive: true, force: true })
+        await removeStaging(path)
       },
     },
     record: {
@@ -282,7 +294,8 @@ async function flush(path: string, directory = false): Promise<void> {
 // Review of 049b1383 (P3-c): a crash while a certificate was being issued
 // leaves <tls>/.pending-XXXXXX holding a private key. When the module loads no
 // change is running, so every directory by that name (mkdtemp's six
-// characters) inside tls goes. A link by that name is left alone, never
+// characters) inside tls that the switch marked and that holds only what it
+// writes goes (Codex review round 1, P2-4). A link by that name is left alone, never
 // followed, and so is anything else. A directory holding previous files a
 // change could not put back stays, and is answered so the switch can say
 // where it is (round 3 re-review, P3-3).
@@ -301,14 +314,61 @@ async function sweepPending(tlsDirectory: string): Promise<string | undefined> {
     const path = join(tlsDirectory, name)
     try {
       if (!(await lstat(path)).isDirectory()) continue
-      if ((await readdir(path)).some((entry) => entry.startsWith("previous."))) {
+      // Codex review round 1 (P2-4): only a directory the switch marked when
+      // it made it, holding only what the switch writes there, is the
+      // switch's. Anything else stays whole, and is not reported.
+      const entries = await readdir(path)
+      if (!entries.includes(stagingMarker) || !entries.every(stagingEntry)) continue
+      if (entries.some((entry) => entry.startsWith("previous."))) {
         kept ??= path
         continue
       }
-      await rm(path, { recursive: true, force: true })
+      await removeStaging(path)
     } catch {
       // Gone already, or not ours to remove: the next load tries again.
     }
   }
   return kept
+}
+
+// Codex review round 1 (P2-4): the switch marks each pending directory it
+// makes with this empty file. A process of this user could forge it too, the
+// accepted residual (Q411 A); nothing else makes it.
+const stagingMarker = ".domovoi-tailnet-staging"
+
+// What the switch writes in a pending directory: the marker, what tailscale
+// cert writes for a tailnet name, and the previous files it sets aside.
+function stagingEntry(entry: string): boolean {
+  if (entry === stagingMarker || entry === "previous.crt" || entry === "previous.key") return true
+  return /\.(?:crt|key)$/u.test(entry) && tailnetName(entry.slice(0, -4))
+}
+
+// Removes a pending directory's own entries, each a file, then the directory
+// itself, which fails while anything else is in it. Never recursive, so what
+// the switch did not write there stays.
+async function removeStaging(directory: string): Promise<void> {
+  for (const entry of await readdir(directory)) {
+    const path = join(directory, entry)
+    if (stagingEntry(entry) && (await lstat(path)).isFile()) await rm(path, { force: true })
+  }
+  await rmdir(directory)
+}
+
+// Codex review round 1 (P2-4): device, inode and modification time, read
+// without following a link. The switch sets the time itself (mark), to a
+// random whole second in 2000 to 2019, so a file put at the path later,
+// even on a reused inode, does not carry it.
+async function fileIdentity(path: string): Promise<string | undefined> {
+  try {
+    const found = await lstat(path, { bigint: true })
+    return `${found.dev}:${found.ino}:${found.mtimeMs}`
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+    throw error
+  }
+}
+
+async function markFile(path: string): Promise<void> {
+  const seconds = randomInt(946_684_800, 1_577_836_800)
+  await utimes(path, seconds, seconds)
 }

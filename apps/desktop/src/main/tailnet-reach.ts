@@ -30,6 +30,11 @@ export type TailnetReachFiles = {
   move(from: string, to: string, renamed?: () => void): Promise<void>
   // Owner read and write only.
   restrict(path: string): Promise<void>
+  // Codex review round 1 (P2-4): who a file is, as device:inode:mark, or
+  // undefined when nothing is at path; and the mark the switch sets on each
+  // file it writes, which a file put there later does not carry.
+  identity(path: string): Promise<string | undefined>
+  mark(path: string): Promise<void>
   // A file; one that is already gone is not an error.
   remove(path: string): Promise<void>
   removeDirectory(path: string): Promise<void>
@@ -201,6 +206,18 @@ export class TailnetReach {
     const { name, certPath, keyPath } = record
     const failed = (cause: unknown, after = "") =>
       this.#fail(`The certificate for ${name} could not be renewed: ${detail(cause instanceof Error ? cause.message : String(cause))}${sentence(after)}`)
+    // Codex review round 1 (P2-4): only over files that are still the ones
+    // the switch wrote. A file that is gone is replaced; a different one is
+    // left alone.
+    for (const [path, recorded] of [[certPath, record.certIdentity], [keyPath, record.keyIdentity]] as const) {
+      let found: string | undefined
+      try {
+        found = await this.deps.files.identity(path)
+      } catch (cause) {
+        return failed(cause)
+      }
+      if (found !== undefined && found !== recorded) return this.#fail(`${this.deps.display(path)} is not the file the switch wrote, so Domovoi does not renew over it.`)
+    }
     // Round 4 review (P3-1): a directory that cannot be made (a full disk, a
     // profile it may not write) is a failed renewal like any other.
     let pending: string
@@ -210,6 +227,7 @@ export class TailnetReach {
       return failed(cause)
     }
     const swap = this.#swap(pending, [certPath, keyPath])
+    let recorded = false
     let restarting = false
     try {
       const pendingCert = `${pending}/${name}.crt`
@@ -223,6 +241,10 @@ export class TailnetReach {
       const refusal = await this.deps.preflight()
       if (refusal !== undefined) return this.#fail(`A new certificate is ready, but the daemon cannot restart now: ${refusal} The current certificate stays until the next try.`)
       await swap.place(pendingCert, pendingKey, certPath, keyPath)
+      // The new files are new files: marked, and their identities recorded.
+      const renewed = await this.#marked(record)
+      recorded = true
+      await this.deps.record.write(renewed)
       restarting = true
       const restarted = await this.deps.restart({ set: { address: record.address, name, certPath, keyPath } })
       if (restarted.ok) {
@@ -230,6 +252,7 @@ export class TailnetReach {
         return "renewed"
       }
       const undone = await swap.undo()
+      await this.deps.record.write(record)
       await this.deps.recover?.()
       return this.#fail(`A new certificate is ready, but the daemon did not restart: ${restarted.message}${sentence(undone)}`)
     } catch (cause) {
@@ -238,6 +261,7 @@ export class TailnetReach {
       // failed renewal like the others: put back, recovered, reported. renew
       // runs from a timer, so nothing may escape it.
       const undone = await swap.undo()
+      if (recorded) await this.deps.record.write(record).catch(() => {})
       if (restarting) await this.deps.recover?.().catch(() => {})
       return failed(cause, undone)
     } finally {
@@ -413,7 +437,9 @@ export class TailnetReach {
 
     const { certPath, keyPath } = this.#paths(name)
     const previous = await this.deps.record.read()
-    const owned = new Set(previous ? [previous.certPath, previous.keyPath] : [])
+    // Codex review round 1 (P2-4): the previous files are the switch's only
+    // while they carry the identities it recorded.
+    const owned = previous ? await this.#owned(previous) : new Set<string>()
     // tailscale cert writes into a private directory first, so a refused or
     // failed request leaves nothing in the profile. Turned on again (Renew
     // now), the files in use are set aside there too and put back, with the
@@ -457,8 +483,10 @@ export class TailnetReach {
           }
         }
       }
+      let record: TailnetReachRecord
       try {
         await swap.place(pendingCert, pendingKey, certPath, keyPath)
+        record = await this.#marked({ version: 1, name, address, certPath, keyPath })
       } catch (cause) {
         const undone = await swap.undo()
         return {
@@ -468,7 +496,6 @@ export class TailnetReach {
         }
       }
 
-      const record: TailnetReachRecord = { version: 1, name, address, certPath, keyPath }
       recorded = true
       await this.deps.record.write(record)
       restarting = true
@@ -488,7 +515,7 @@ export class TailnetReach {
       // Review of 049b1383 (P3-b): Tailscale renamed this machine. The
       // previous name's files were the switch's own; the record named them.
       swap.commit()
-      if (previous && previous.certPath !== certPath) await this.#forget([previous.certPath, previous.keyPath])
+      if (previous && previous.certPath !== certPath) await this.#forgetOwned(previous)
       this.#renewalFailure = undefined
       this.#schedule(renewalCheckMs)
       return { ok: true, report: await this.#onReport(record) }
@@ -514,6 +541,26 @@ export class TailnetReach {
     if (refused) return refused
     const record = await this.deps.record.read()
     if (record) {
+      // Codex review round 1 (P2-4): nothing is deleted unless both files
+      // are gone or still the ones the switch wrote.
+      for (const [path, recorded] of [[record.certPath, record.certIdentity], [record.keyPath, record.keyIdentity]] as const) {
+        let found: string | undefined
+        try {
+          found = await this.deps.files.identity(path)
+        } catch (cause) {
+          return {
+            ok: false, reason: "failed", step: "delete",
+            message: `${this.deps.display(path)} could not be deleted, so the switch stays on.`,
+            detail: detail(cause instanceof Error ? cause.message : String(cause)),
+          }
+        }
+        if (found !== undefined && found !== recorded) {
+          return {
+            ok: false, reason: "refused", step: "delete",
+            message: `${this.deps.display(path)} is not the file the switch wrote. Domovoi deletes only files it wrote, so nothing was deleted and the switch stays on. Move that file away, then turn the switch off again.`,
+          }
+        }
+      }
       for (const path of [record.certPath, record.keyPath]) {
         try {
           await this.deps.files.remove(path)
@@ -541,5 +588,34 @@ export class TailnetReach {
 
   async #forget(paths: readonly string[]): Promise<void> {
     for (const path of paths) await this.deps.files.remove(path).catch(() => {})
+  }
+
+  // Codex review round 1 (P2-4): the record's paths whose files carry the
+  // identities it holds. One that cannot be read is not owned.
+  async #owned(record: TailnetReachRecord): Promise<Set<string>> {
+    const owned = new Set<string>()
+    for (const [path, recorded] of [[record.certPath, record.certIdentity], [record.keyPath, record.keyIdentity]] as const) {
+      if (await this.deps.files.identity(path).catch(() => undefined) === recorded) owned.add(path)
+    }
+    return owned
+  }
+
+  // Deletes the record's files that are still the switch's, read again just
+  // before.
+  async #forgetOwned(record: TailnetReachRecord): Promise<void> {
+    await this.#forget([...await this.#owned(record)])
+  }
+
+  // Marks the two files just placed as the switch's (a mark a file put there
+  // later does not carry) and gives the record that names them.
+  async #marked(base: Omit<TailnetReachRecord, "certIdentity" | "keyIdentity">): Promise<TailnetReachRecord> {
+    const identities: string[] = []
+    for (const path of [base.certPath, base.keyPath]) {
+      await this.deps.files.mark(path)
+      const identity = await this.deps.files.identity(path)
+      if (identity === undefined) throw new Error(`${this.deps.display(path)} was gone before it could be recorded.`)
+      identities.push(identity)
+    }
+    return { version: 1, name: base.name, address: base.address, certPath: base.certPath, keyPath: base.keyPath, certIdentity: identities[0]!, keyIdentity: identities[1]! }
   }
 }

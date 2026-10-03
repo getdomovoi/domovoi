@@ -30,3 +30,14 @@ the app starts is reported apart, since it may be from a change that did not
 finish. When the in-app daemon's tailnet listener comes from
 `DOMOVOI_TAILNET_ADDRESS` set by hand in the app's environment, the switch's
 state says so, because turning the switch off cannot clear it.
+
+The switch marks each certificate and key it writes with a modification time
+of its own choosing and records each file's device, inode and that time. It
+replaces or deletes a file only while the file still carries them; turning off
+otherwise deletes nothing, stays on and says which file to move away. A pending
+directory is marked when the switch makes it, and the sweep at load removes
+only marked directories that hold nothing but what the switch writes there,
+file by file. `<profile>/tls`, the certificate and the key are never used
+through a link, and the saved record is read only as a regular file of at most
+4 KiB that is not a link, so nothing placed there can hold startup. A process
+running as the same user can still forge the record and the marks.

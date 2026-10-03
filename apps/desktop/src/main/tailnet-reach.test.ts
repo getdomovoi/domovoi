@@ -28,7 +28,9 @@ const running = JSON.stringify({
   Self: { DNSName: `${name}.`, TailscaleIPs: ["fd7a:115c:a1e0::1", "100.101.102.103"] },
   CertDomains: [name],
 })
-const ours: TailnetReachRecord = { version: 1, name, address: "100.101.102.103", certPath, keyPath }
+// The fake gives a file the identity <path>#mark, as if the switch had marked
+// it there, unless a test names another (a file the switch did not write).
+const ours: TailnetReachRecord = { version: 1, name, address: "100.101.102.103", certPath, keyPath, certIdentity: `${certPath}#mark`, keyIdentity: `${keyPath}#mark` }
 
 function harness(options: {
   status?: string | "missing" | { code: number; stderr: string }
@@ -55,9 +57,13 @@ function harness(options: {
   notesThrow?: Error
   // The directory the sweep at load left because it holds previous files.
   setAside?: string
+  // Identities other than the switch's mark, for files someone else wrote.
+  identities?: Record<string, string>
 } = {}) {
   const calls: string[] = []
   const files = new Map<string, string>(Object.entries(options.files ?? {}))
+  const identities = new Map<string, string>(Object.entries(options.identities ?? {}))
+  const marked: string[] = []
   let record = options.record
   let temporary = 0
   // Timers are recorded, not run: a test runs the one it wants.
@@ -107,11 +113,16 @@ function harness(options: {
         if (!files.has(from)) throw Object.assign(new Error(`ENOENT: rename ${from}`), { code: "ENOENT" })
         files.set(to, files.get(from)!)
         files.delete(from)
+        // A rename keeps the file, and so its identity.
+        identities.set(to, identities.get(from) ?? `${from}#mark`)
+        identities.delete(from)
         renamed?.()
         if (options.failAfterRename?.(from, to)) throw Object.assign(new Error(`EIO: fsync ${to}`), { code: "EIO" })
       },
       restrict: async (path) => { calls.push(`restrict ${path}`) },
-      remove: async (path) => { calls.push(`remove ${path}`); files.delete(path) },
+      identity: async (path) => files.has(path) ? identities.get(path) ?? `${path}#mark` : undefined,
+      mark: async (path) => { marked.push(path); identities.set(path, `${path}#mark`) },
+      remove: async (path) => { calls.push(`remove ${path}`); files.delete(path); identities.delete(path) },
       removeDirectory: async (path) => {
         calls.push(`remove directory ${path}`)
         for (const file of [...files.keys()]) if (file.startsWith(`${path}/`)) files.delete(file)
@@ -130,7 +141,7 @@ function harness(options: {
     }),
   }
   const pending = () => timers.filter((timer) => !timer.cleared)
-  return { reach: new TailnetReach(deps), deps, calls, files, record: () => record, timers: pending }
+  return { reach: new TailnetReach(deps), deps, calls, files, marked, record: () => record, timers: pending }
 }
 
 describe("TailnetReach actions from the renderer", () => {
@@ -285,16 +296,73 @@ describe("turning TailnetReach on", () => {
   // files replace the record, and the old name's files go once it works.
   it("removes the previous name's files once the new name's are in use", async () => {
     const oldName = "old-studio.tail4c2e.ts.net"
-    const old = { version: 1 as const, name: oldName, address: "100.101.102.103", certPath: `${tls}/${oldName}.crt`, keyPath: `${tls}/${oldName}.key` }
+    const old = { version: 1 as const, name: oldName, address: "100.101.102.103", certPath: `${tls}/${oldName}.crt`, keyPath: `${tls}/${oldName}.key`, certIdentity: `${tls}/${oldName}.crt#mark`, keyIdentity: `${tls}/${oldName}.key#mark` }
     const { reach, files, record } = harness({ record: old, files: { [old.certPath]: "old certificate", [old.keyPath]: "old key", [`${tls}/kept.crt`]: "kept" } })
     await expect(reach.turnOn()).resolves.toMatchObject({ ok: true })
     expect(record()).toEqual(ours)
     expect([...files.keys()].sort()).toEqual([certPath, keyPath, `${tls}/kept.crt`].sort())
   })
 
+  // Codex review round 1 (P2-4): a record is no proof the files at its paths
+  // are the switch's. The switch marks each file it writes and records its
+  // device, inode and mark; a file that does not carry them is someone
+  // else's, and is never replaced or deleted.
+  it("records the identity of each file it wrote", async () => {
+    const { reach, marked, record } = harness()
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: true })
+    expect(marked).toEqual([certPath, keyPath])
+    expect(record()).toEqual(ours)
+  })
+
+  it("deletes nothing it cannot show it wrote when turned off", async () => {
+    const { reach, files, record, deps } = harness({
+      record: ours, files: { [certPath]: "someone's certificate", [keyPath]: "someone's key" }, identities: { [keyPath]: "16777232:9:1700000000000" },
+    })
+    await expect(reach.turnOff()).resolves.toEqual({
+      ok: false, reason: "refused", step: "delete",
+      message: `~/.domovoi/tls/${name}.key is not the file the switch wrote. Domovoi deletes only files it wrote, so nothing was deleted and the switch stays on. Move that file away, then turn the switch off again.`,
+    })
+    expect([...files.keys()].sort()).toEqual([certPath, keyPath])
+    expect(record()).toEqual(ours)
+    expect(deps.restart).not.toHaveBeenCalled()
+  })
+
+  it("renews over nothing it cannot show it wrote", async () => {
+    const { reach, files, deps } = harness({
+      record: ours, files: { [certPath]: "someone's certificate", [keyPath]: "someone's key" }, identities: { [certPath]: "16777232:9:1700000000000" },
+    })
+    await expect(reach.renew()).resolves.toBe("failed")
+    await expect(reach.status()).resolves.toMatchObject({ renewalFailed: {
+      message: `~/.domovoi/tls/${name}.crt is not the file the switch wrote, so Domovoi does not renew over it.`,
+    } })
+    expect(files.get(certPath)).toBe("someone's certificate")
+    expect(deps.restart).not.toHaveBeenCalled()
+  })
+
+  it("replaces nothing it cannot show it wrote when turned on again", async () => {
+    const { reach, files } = harness({
+      record: ours, files: { [certPath]: "someone's certificate", [keyPath]: "someone's key" }, identities: { [certPath]: "16777232:9:1700000000000" },
+    })
+    await expect(reach.turnOn()).resolves.toMatchObject({
+      ok: false, reason: "refused", step: "store",
+      message: `A file Domovoi did not write is already at ~/.domovoi/tls/${name}.crt. Domovoi does not replace it. Nothing was stored and nothing restarted.`,
+    })
+    expect(files.get(certPath)).toBe("someone's certificate")
+  })
+
+  it("records the renewed files and puts the record back when the restart fails", async () => {
+    const { reach, calls, record } = harness({
+      record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" }, restart: { ok: false, message: "The daemon did not start again." },
+    })
+    await expect(reach.renew()).resolves.toBe("failed")
+    expect(calls.filter((call) => call === "record write")).toHaveLength(2)
+    expect(calls.indexOf("record write")).toBeLessThan(calls.indexOf("restart set"))
+    expect(record()).toEqual(ours)
+  })
+
   it("keeps the previous name's files when the new name's restart fails", async () => {
     const oldName = "old-studio.tail4c2e.ts.net"
-    const old = { version: 1 as const, name: oldName, address: "100.101.102.103", certPath: `${tls}/${oldName}.crt`, keyPath: `${tls}/${oldName}.key` }
+    const old = { version: 1 as const, name: oldName, address: "100.101.102.103", certPath: `${tls}/${oldName}.crt`, keyPath: `${tls}/${oldName}.key`, certIdentity: `${tls}/${oldName}.crt#mark`, keyIdentity: `${tls}/${oldName}.key#mark` }
     const { reach, files, record } = harness({ record: old, files: { [old.certPath]: "old certificate", [old.keyPath]: "old key" }, restart: { ok: false, message: "The daemon did not start again." } })
     await expect(reach.turnOn()).resolves.toMatchObject({ ok: false, step: "restart" })
     expect(record()).toEqual(old)
@@ -602,6 +670,8 @@ describe("TailnetReach renewal", () => {
       `move ${tls}/.pending-1/${name}.crt ${certPath}`,
       `move ${tls}/.pending-1/${name}.key ${keyPath}`,
       `restrict ${keyPath}`,
+      // Codex review round 1 (P2-4): the new files' identities.
+      "record write",
       "restart set",
       `remove directory ${tls}/.pending-1`,
     ])
@@ -638,10 +708,12 @@ describe("TailnetReach renewal", () => {
     await expect(reach.renew()).resolves.toBe("failed")
     expect(files.get(certPath)).toBe("old certificate")
     expect(files.get(keyPath)).toBe("old key")
-    expect(calls.slice(-5)).toEqual([
+    expect(calls.slice(-6)).toEqual([
       `move ${tls}/.pending-1/previous.crt ${certPath}`,
       `move ${tls}/.pending-1/previous.key ${keyPath}`,
       `restrict ${keyPath}`,
+      // Codex review round 1 (P2-4): the previous files' identities again.
+      "record write",
       "recover",
       `remove directory ${tls}/.pending-1`,
     ])

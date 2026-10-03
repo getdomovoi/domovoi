@@ -73,7 +73,7 @@ describe("the login service assembled for this app's profile", () => {
     await mkdir(dataDirectory)
     const name = "studio.tail4c2e.ts.net"
     const tls = join(profile, "tls")
-    await writeFile(join(dataDirectory, "tailnet-reach.json"), JSON.stringify({ version: 1, name, address: "100.101.102.103", certPath: join(tls, `${name}.crt`), keyPath: join(tls, `${name}.key`) }))
+    await writeFile(join(dataDirectory, "tailnet-reach.json"), JSON.stringify({ version: 1, name, address: "100.101.102.103", certPath: join(tls, `${name}.crt`), keyPath: join(tls, `${name}.key`), certIdentity: "1:2:946684800000", keyIdentity: "1:3:946684800000" }))
     const daemon = daemonModule()
     // A hand-set DOMOVOI_HOST belongs to this app's own daemon, not the service.
     const service = createDesktopDaemonService(desktopDaemon(), { resourcesPath, version: "0.9.4", home, dataDirectory, environment: { DOMOVOI_PROFILE_DIR: profile, DOMOVOI_HOST: "0.0.0.0" } }, daemon as unknown as DaemonModule)

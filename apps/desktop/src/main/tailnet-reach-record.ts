@@ -18,7 +18,16 @@ export type TailnetReachRecord = {
   address: string
   certPath: string
   keyPath: string
+  // Codex review round 1 (P2-4): the certificate and key the switch wrote,
+  // each as device:inode:mark (tailnet-reach-assembly.ts fileIdentity). A
+  // file at the path that does not carry it is not the switch's to replace or
+  // delete. The record lives in userData; a process of this user that edits
+  // it can name any identity, the accepted residual (Q411 A).
+  certIdentity: string
+  keyIdentity: string
 }
+
+const identityPattern = /^\d{1,40}:\d{1,40}:\d{1,20}$/u
 
 // A DNS name of lower-case labels whose last label holds a letter, so it is
 // never an IP literal: the daemon refuses a loopback or wildcard address as
@@ -77,12 +86,13 @@ export function parseTailnetReachRecord(text: string, tlsDirectory: string): Tai
   try {
     const value: unknown = JSON.parse(text)
     if (typeof value !== "object" || value === null) return undefined
-    const { version, name, address: bound, certPath, keyPath, ...rest } = value as Record<string, unknown>
+    const { version, name, address: bound, certPath, keyPath, certIdentity, keyIdentity, ...rest } = value as Record<string, unknown>
     if (version !== 1 || Object.keys(rest).length > 0) return undefined
     if (typeof name !== "string" || !tailnetName(name) || typeof bound !== "string" || !tailscaleAddress(bound)) return undefined
     const files = tailnetFiles(tlsDirectory, name)
     if (certPath !== files.certPath || keyPath !== files.keyPath) return undefined
-    return { version, name, address: bound, ...files }
+    if (typeof certIdentity !== "string" || !identityPattern.test(certIdentity) || typeof keyIdentity !== "string" || !identityPattern.test(keyIdentity)) return undefined
+    return { version, name, address: bound, ...files, certIdentity, keyIdentity }
   } catch {
     return undefined
   }

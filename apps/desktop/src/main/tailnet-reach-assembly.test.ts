@@ -120,6 +120,8 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
     const outside = join(root, "outside")
     await mkdir(join(tls, ".pending-Ab3xYz"), { recursive: true })
     await writeFile(join(tls, ".pending-Ab3xYz", `${name}.key`), "private key")
+    // Codex review round 1 (P2-4): marked as made by the switch.
+    await writeFile(join(tls, ".pending-Ab3xYz", ".domovoi-tailnet-staging"), "")
     await mkdir(outside)
     await writeFile(join(outside, "keep.txt"), "kept")
     await symlink(outside, join(tls, ".pending-Lnk123"))
@@ -132,6 +134,38 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
     expect(await readFile(join(outside, "keep.txt"), "utf8")).toBe("kept")
   })
 
+  // Codex review round 1 (P2-4): a name is no proof the switch made a
+  // directory. The sweep removes only a directory the switch marked when it
+  // made it, holding nothing but what the switch writes there; anything else
+  // stays whole.
+  it("sweeps no pending directory it cannot show it made, or that holds anything else", async () => {
+    const tls = join(home, ".domovoi", "tls")
+    await mkdir(join(tls, ".pending-Unmrkd"), { recursive: true })
+    await writeFile(join(tls, ".pending-Unmrkd", `${name}.key`), "someone's key")
+    await mkdir(join(tls, ".pending-Others"))
+    await writeFile(join(tls, ".pending-Others", ".domovoi-tailnet-staging"), "")
+    await writeFile(join(tls, ".pending-Others", "notes.txt"), "someone's notes")
+    assemble()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    await expect(readdir(join(tls, ".pending-Unmrkd"))).resolves.toEqual([`${name}.key`])
+    await expect(readdir(join(tls, ".pending-Others"))).resolves.toEqual([".domovoi-tailnet-staging", "notes.txt"])
+  })
+
+  it("deletes nothing a forged record names when turned off", async () => {
+    const tls = join(home, ".domovoi", "tls")
+    await mkdir(tls, { recursive: true })
+    await writeFile(join(tls, `${name}.crt`), "someone's certificate")
+    await writeFile(join(tls, `${name}.key`), "someone's key")
+    await writeFile(join(data, "tailnet-reach.json"), JSON.stringify({
+      version: 1, name, address: "100.101.102.103", certPath: join(tls, `${name}.crt`), keyPath: join(tls, `${name}.key`),
+      certIdentity: "1:2:946684800000", keyIdentity: "1:3:946684800000",
+    }))
+    const { reach, restart } = assemble()
+    await expect(reach.turnOff()).resolves.toMatchObject({ ok: false, reason: "refused", step: "delete" })
+    await expect(readdir(tls)).resolves.toEqual([`${name}.crt`, `${name}.key`])
+    expect(restart).not.toHaveBeenCalled()
+  })
+
   // Re-review of 10dba4a2 (P3-1): a change that could not put the previous
   // files back keeps them in its pending directory and says so; the sweep
   // leaves that one for the person to recover.
@@ -139,6 +173,7 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
     const tls = join(home, ".domovoi", "tls")
     await mkdir(join(tls, ".pending-Kept12"), { recursive: true })
     await writeFile(join(tls, ".pending-Kept12", "previous.key"), "the only copy")
+    await writeFile(join(tls, ".pending-Kept12", ".domovoi-tailnet-staging"), "")
     const { reach } = assemble()
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(await readFile(join(tls, ".pending-Kept12", "previous.key"), "utf8")).toBe("the only copy")
@@ -165,7 +200,7 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
     create()
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(scheduled).toEqual([])
-    await writeFile(join(data, "tailnet-reach.json"), JSON.stringify({ version: 1, name, address: "100.101.102.103", certPath: join(home, ".domovoi", "tls", `${name}.crt`), keyPath: join(home, ".domovoi", "tls", `${name}.key`) }))
+    await writeFile(join(data, "tailnet-reach.json"), JSON.stringify({ version: 1, name, address: "100.101.102.103", certPath: join(home, ".domovoi", "tls", `${name}.crt`), keyPath: join(home, ".domovoi", "tls", `${name}.key`), certIdentity: "1:2:946684800000", keyIdentity: "1:3:946684800000" }))
     create()
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(scheduled).toEqual([60_000])
@@ -212,10 +247,13 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
     const tls = join(home, ".domovoi", "tls")
     await expect(reach.renew()).resolves.toBe("unchanged")
     expect(restart).toHaveBeenCalledOnce()
-    await writeFile(join(tls, `${name}.crt`), "an older certificate")
+    // Tailscale hands back another certificate. (Writing over the switch's
+    // own file instead would make it someone else's: Codex review round 1,
+    // P2-4.)
+    await writeFile(join(root, "certificate.pem"), `${certificate}\n`)
     await expect(reach.renew()).resolves.toBe("renewed")
     expect(restart).toHaveBeenCalledTimes(2)
-    expect(await readFile(join(tls, `${name}.crt`), "utf8")).toBe(certificate)
+    expect(await readFile(join(tls, `${name}.crt`), "utf8")).toBe(`${certificate}\n`)
     expect(((await stat(join(tls, `${name}.key`))).mode & 0o777).toString(8)).toBe("600")
     await expect(readdir(tls)).resolves.toEqual([`${name}.crt`, `${name}.key`])
     expect((await readFile(join(root, "calls.log"), "utf8")).trim().split("\n").at(-1)).toMatch(new RegExp(`^cert --cert-file \\S+ --key-file \\S+ --min-validity 720h ${name}$`))
@@ -287,7 +325,7 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
       const { tls, elsewhere } = await linkedTls()
       await writeFile(join(elsewhere, `${name}.crt`), "someone's certificate")
       await writeFile(join(elsewhere, `${name}.key`), "someone's key")
-      await writeFile(join(data, "tailnet-reach.json"), JSON.stringify({ version: 1, name, address: "100.101.102.103", certPath: join(tls, `${name}.crt`), keyPath: join(tls, `${name}.key`) }))
+      await writeFile(join(data, "tailnet-reach.json"), JSON.stringify({ version: 1, name, address: "100.101.102.103", certPath: join(tls, `${name}.crt`), keyPath: join(tls, `${name}.key`), certIdentity: "1:2:946684800000", keyIdentity: "1:3:946684800000" }))
       const { reach } = assemble()
       await expect(reach.turnOff()).resolves.toMatchObject({ ok: false, reason: "failed", step: "delete" })
       await expect(readdir(elsewhere)).resolves.toEqual([`${name}.crt`, `${name}.key`])
