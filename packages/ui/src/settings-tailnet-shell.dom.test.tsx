@@ -56,10 +56,13 @@ it("draws the switch as a row of the daemon card, with the daemon's own listener
   const { socket } = await openSettings(bridge(tailnetReach))
   const daemon = screen.getByRole("region", { name: "Daemon on this machine" })
   const reach = within(daemon).getByRole("region", { name: "Reach this machine from my tailnet" })
-  expect(within(reach).getByText("Off. Only this computer can reach the daemon.")).toBeTruthy()
+  // Codex review round 1 (P3-6): until the daemon answers, where it listens
+  // is not known, and the card does not say only this computer.
+  expect(within(reach).getByText("Off. Whether the daemon answers anywhere but this computer is not known from here.")).toBeTruthy()
   expect(tailnetReach).toHaveBeenCalledWith("status")
   expect(pendingRequest(socket, "tailnet.status").params).toEqual({})
   await act(async () => { respond(socket, "tailnet.status", { state: "off" }) })
+  expect(within(reach).getByText("Off. Only this computer can reach the daemon.")).toBeTruthy()
 })
 
 it("has no switch when the desktop offers none", async () => {

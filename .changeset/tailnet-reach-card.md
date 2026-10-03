@@ -19,3 +19,9 @@ instead of offering to turn it off again. When a change could not put the
 previous certificate and key back, the row says which directory holds them; a
 directory found when the app started is named with a softer line, since it may
 be from a change that did not finish.
+
+Off, the row says only this computer can reach the daemon only when the daemon
+has said it has no tailnet listener and no hand-set `DOMOVOI_HOST` beyond
+loopback is in the app's environment. Beside such a `DOMOVOI_HOST` it says the
+daemon listens beyond this computer, and while `tailnet.status` has not
+answered it says that is not known.

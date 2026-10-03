@@ -68,6 +68,20 @@ it("says there is no tailnet in Tailscale's words, and checks again on request",
   expect(ask).toHaveBeenCalledTimes(2)
 })
 
+// Codex review round 1 (P3-6): "Only this computer" is said only when it is
+// known: not beside a hand-set DOMOVOI_HOST beyond loopback, and not while
+// the daemon's tailnet listener is not known, set by hand or not.
+it.each([
+  ["a hand-set DOMOVOI_HOST", { ...off, ignored: "DOMOVOI_HOST is set to 0.0.0.0 in this app's environment, so the daemon inside this app listens there and starts without the tailnet listener." }, undefined, "Off. The daemon also listens where DOMOVOI_HOST says, beyond this computer."],
+  ["the tailnet listener not known", off, "unknown" as const, "Off. Whether the daemon answers anywhere but this computer is not known from here."],
+  ["a hand-set listener not known", { ...off, handSet: "The tailnet listener comes from DOMOVOI_TAILNET_ADDRESS set by hand in this app's environment, and the switch cannot clear it." }, "unknown" as const, "Off. Whether the daemon answers anywhere but this computer is not known from here."],
+])("does not say only this computer reaches the daemon with %s", async (_label, status, listener, line) => {
+  await card({ status }, listener ? { listener } : {})
+  const view = within(region())
+  expect(view.getByText(line)).toBeTruthy()
+  expect(view.queryByText("Off. Only this computer can reach the daemon.")).toBeNull()
+})
+
 it("lists what turning it on changes and what Domovoi never touches while off", async () => {
   await card({ status: off })
   const view = within(region())
