@@ -2,9 +2,30 @@ import { lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } fro
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { commandLinks, type CommandLinkEnvironment } from "./command-links.js"
+
+// A hook run right after one read, to change the file system between the
+// module's read and its write, as another process could.
+const race = vi.hoisted(() => ({ afterRead: undefined as ((call: "lstat" | "readlink", path: string) => Promise<void>) | undefined }))
+vi.mock("node:fs/promises", async (original) => {
+  const actual = await original<typeof import("node:fs/promises")>()
+  const hooked = async <T>(call: "lstat" | "readlink", path: string, read: () => Promise<T>): Promise<T> => {
+    try {
+      return await read()
+    } finally {
+      const hook = race.afterRead
+      if (hook) await hook(call, path)
+    }
+  }
+  return {
+    ...actual,
+    lstat: ((path: string) => hooked("lstat", path, () => actual.lstat(path))) as typeof actual.lstat,
+    readlink: ((path: string) => hooked("readlink", path, () => actual.readlink(path))) as typeof actual.readlink,
+  }
+})
+afterEach(() => { race.afterRead = undefined })
 
 // Every test runs against a temporary home and a temporary resources
 // directory. The real ~/.local/bin is never read or written.
@@ -108,6 +129,40 @@ describe("command links", () => {
     expect((await commandLinks("link", environment())).refused).toBe("~/.local/bin/domovoid is not a link Domovoi made, so it was left as it is.")
     expect((await commandLinks("unlink", environment())).refused).toBe("~/.local/bin/domovoid is not a link Domovoi made, so it was left as it is.")
     expect(await readlink(join(bin(), "domovoid"))).toBe(other)
+  })
+
+  // Review P3-2: what was read is read again right before the write, so a
+  // change in between is never removed or written through.
+  it("does not unlink a link that changed after it was read", async () => {
+    await commandLinks("link", environment())
+    const command = join(bin(), "domovoid")
+    let swapped = false
+    race.afterRead = async (call, path) => {
+      if (swapped || call !== "readlink" || path !== command) return
+      swapped = true
+      race.afterRead = undefined
+      await rm(command)
+      await symlink("/opt/mine/domovoid", command)
+    }
+    const result = await commandLinks("unlink", environment())
+    expect(result.refused).toBe("~/.local/bin/domovoid changed while Domovoi was reading it, so it was left as it is.")
+    expect(await readlink(command)).toBe("/opt/mine/domovoid")
+  })
+
+  it("does not link through a ~/.local/bin that became a link after it was read", async () => {
+    await mkdir(bin(), { recursive: true })
+    const elsewhere = join(root, "dotfiles", "bin")
+    await mkdir(elsewhere, { recursive: true })
+    const command = join(bin(), "domovoid")
+    race.afterRead = async (call, path) => {
+      if (call !== "lstat" || path !== command) return
+      race.afterRead = undefined
+      await rm(bin(), { recursive: true })
+      await symlink(elsewhere, bin())
+    }
+    const result = await commandLinks("link", environment())
+    expect(result.refused).toBe("~/.local/bin is a link to another directory, so Domovoi does not read or write there.")
+    await expect(lstat(join(elsewhere, "domovoid"))).rejects.toThrow()
   })
 
   // Review P2-2: a ~/.local/bin that is a link (a stow-folded dotfiles
