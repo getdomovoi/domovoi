@@ -247,7 +247,17 @@ type ServicePhase =
   | { kind: "installing" }
   | { kind: "done"; lingerWarning?: string | undefined }
   | { kind: "not-attached"; message: string }
-  | { kind: "failed"; what: string; message: string; still: string }
+  // notInstalled: known from the outcome or the read-back that nothing was
+  // installed. Otherwise the install did not finish (review P3-6).
+  | { kind: "failed"; notInstalled: boolean; what: string; message: string; still: string }
+
+// What a failure is called follows what is known: an unread service, or one
+// read back installed, is an install that did not finish, not a failure to
+// install.
+function failedPhase(platform: LoginServicePlatform, message: string, still: string, notInstalled: boolean): ServicePhase {
+  const kind = loginServices[platform].kind
+  return { kind: "failed", notInstalled, what: notInstalled ? `Domovoi could not install the ${kind}.` : `Domovoi could not confirm the install of the ${kind}.`, message, still }
+}
 
 function phaseAfter(outcome: DaemonServiceOutcome, platform: LoginServicePlatform): ServicePhase {
   const service = loginServices[platform]
@@ -255,9 +265,9 @@ function phaseAfter(outcome: DaemonServiceOutcome, platform: LoginServicePlatfor
   if (outcome.reason === "refused" || outcome.reason === "busy") return { kind: "idle", waits: `The install waits: ${outcome.message} Nothing is interrupted.` }
   if (outcome.reason === "check-failed") return { kind: "idle", waits: "Could not check for running turns or waiting gates, so the install waits. Nothing is interrupted." }
   if (outcome.reason === "installed-not-attached") return { kind: "not-attached", message: outcome.message }
-  if (outcome.reason === "runtime-missing") return { kind: "failed", what: "Domovoi could not install the service.", message: outcome.message, still: "No service was installed and no service files were changed." }
-  if (outcome.reason === "update-failed") return { kind: "failed", what: "Domovoi could not install the service.", message: outcome.message, still: "Nothing changed." }
-  return { kind: "failed", what: `Domovoi could not install the ${service.kind}.`, message: outcome.message, still: failedStill(service.kind, "install", outcome) }
+  if (outcome.reason === "runtime-missing") return failedPhase(platform, outcome.message, "No service was installed and no service files were changed.", true)
+  if (outcome.reason === "update-failed") return failedPhase(platform, outcome.message, "Nothing changed.", true)
+  return failedPhase(platform, outcome.message, failedStill(service.kind, "install", outcome), outcome.service?.installed === false)
 }
 
 function StepMark({ tone, children }: { tone: "done" | "none"; children: ReactNode }) {
@@ -276,7 +286,7 @@ function ServiceStep({ service, machine, phase, onInstall, onContinue }: {
   const rows = installRows(platform)
   const title = phase.kind === "installing" ? "Installing the login service"
     : phase.kind === "done" ? "The service is installed"
-      : phase.kind === "failed" ? "The service was not installed"
+      : phase.kind === "failed" ? (phase.notInstalled ? "The service was not installed" : "The install did not finish")
         : phase.kind === "not-attached" ? "The service is installed, but this window could not reach it"
           : "Keep Domovoi running after you quit"
   const subtitle = phase.kind === "installing" ? "The window says what happened when it finishes. Nothing else changes while it runs."
@@ -526,7 +536,7 @@ export function DesktopFirstRunDialog({
       setPhase(phaseAfter(await service.install(), service.platform))
     } catch (cause) {
       const kind = loginServices[service.platform].kind
-      setPhase({ kind: "failed", what: "Domovoi could not install the service.", message: cause instanceof Error ? cause.message : "The desktop did not answer.", still: `Whether the ${kind} is installed is not known from here.` })
+      setPhase(failedPhase(service.platform, cause instanceof Error ? cause.message : "The desktop did not answer.", `Whether the ${kind} is installed is not known from here.`, false))
     }
   }
   const showService = screen === "service" && service !== undefined

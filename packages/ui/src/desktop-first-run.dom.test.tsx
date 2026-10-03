@@ -104,6 +104,19 @@ describe("desktop first run", () => {
     expect(screen.getByRole("heading", { name: "Connect an agent on mac-mini-m4" })).toBeTruthy()
   })
 
+  // Review P3-6: "was not installed" only when the read-back says so. An
+  // unread answer, or a service read back installed, did not finish.
+  it.each([
+    ["the service could not be read back", async (): Promise<DaemonServiceOutcome> => ({ ok: false, reason: "failed", message: "launchctl exited 5", daemon: "untouched", service: null })],
+    ["the service reads back installed", async (): Promise<DaemonServiceOutcome> => ({ ok: false, reason: "failed", message: "launchctl exited 5", daemon: "restarted", service: { installed: true, running: false } })],
+    ["the answer could not be read", async (): Promise<DaemonServiceOutcome> => { throw new Error("Desktop returned an invalid service outcome") }],
+  ])("says the install did not finish when %s", async (_label, install) => {
+    const { user } = setup({ service: inApp(install) })
+    await user.click(screen.getByRole("button", { name: "Install the service" }))
+    expect(await screen.findByRole("heading", { name: "The install did not finish" })).toBeTruthy()
+    expect(screen.queryByRole("heading", { name: "The service was not installed" })).toBeNull()
+  })
+
   it("goes straight to the agents when the daemon is not this app's, or nothing can install it", () => {
     setup({ service: { owner: "outside", platform: "darwin", install: vi.fn() } })
     expect(screen.getByRole("heading", { name: "Connect an agent on mac-mini-m4" })).toBeTruthy()
