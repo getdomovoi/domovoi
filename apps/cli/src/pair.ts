@@ -2,7 +2,7 @@ import { decodePairingPayload, deviceCurrentResultSchema, devicePairResultSchema
 
 import type { CredentialStore } from "./credentials.js"
 import { reconcileRelayPin } from "./relay-pin.js"
-import { DaemonRefusedError } from "./rpc.js"
+import { DaemonRefusedError, DaemonUnreachableError } from "./rpc.js"
 
 export class PairingError extends Error {
   constructor(message: string) {
@@ -92,6 +92,10 @@ export async function pairWithDaemon(input: {
   try {
     connection = await input.connect(input.credential)
   } catch (error) {
+    // A daemon that stopped answering between the redeem and this hello is
+    // still unreachable, not a refusal, so it keeps its class and exit code.
+    // Its messages name the endpoint and the method, never the request.
+    if (error instanceof DaemonUnreachableError) throw error
     // The daemon's refusal is kept; anything that could quote the request is
     // not, because the request carries the bearer.
     const message = error instanceof Error && !error.message.includes(input.credential) ? error.message : "The daemon refused this credential"
@@ -120,6 +124,10 @@ export async function pairWithDaemon(input: {
     try {
       relayPin = await reconcileRelayPin({ store: input.store, endpoint: input.endpoint, machineId: current.machineId, call: connection.call })
     } catch (error) {
+      // A daemon lost here is not passed through as unreachable: the credential
+      // is already stored, so exit 3's "nothing was sent" would be false, and
+      // a script that re-pairs on 3 would spend another code and leave another
+      // device on the daemon. The line below says what stands and what does not.
       throw new PairingError(`The daemon is paired, but its relay identity was not enrolled (${error instanceof Error ? error.message : String(error)}). Relay use will need pairing again.`)
     }
     return { deviceId: current.deviceId, machineId: current.machineId, relayPin }

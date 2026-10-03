@@ -55,11 +55,12 @@ function memoryStore(failSave = false): CredentialStore & { saved: PairedDaemon[
   }
 }
 
-function fakeDaemon(options: { helloRejects?: string; current?: unknown; recovery?: unknown; recoveryThrows?: Error } = {}) {
+function fakeDaemon(options: { helloRejects?: string | Error; current?: unknown; recovery?: unknown; recoveryThrows?: Error } = {}) {
   const calls: string[] = []
   let closed = 0
   const connect = async (authToken: string) => {
     calls.push(`hello ${authToken === token ? "ok" : "bad"}`)
+    if (options.helloRejects instanceof Error) throw options.helloRejects
     if (options.helloRejects) throw new Error(options.helloRejects)
     return {
       call: async (method: string) => {
@@ -184,6 +185,14 @@ describe("pair", () => {
     const daemon = fakeDaemon({ helloRejects: `refused ${token}` })
     await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store, connect: daemon.connect }))
       .rejects.toThrow(/^The daemon refused this credential$/)
+    expect(store.saved).toEqual([])
+  })
+
+  it("passes a daemon lost before the proving hello through as unreachable, not as a refusal", async () => {
+    const store = memoryStore()
+    const daemon = fakeDaemon({ helloRejects: new DaemonUnreachableError("Could not reach ws://127.0.0.1:47831/rpc: connect ECONNREFUSED") })
+    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store, connect: daemon.connect }))
+      .rejects.toThrow(DaemonUnreachableError)
     expect(store.saved).toEqual([])
   })
 
