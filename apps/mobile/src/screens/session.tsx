@@ -45,27 +45,71 @@ const textTone: Record<PlanRow["tone"], string> = {
 // Memoized, with a stable onWatch from the screen: a keystroke or a streamed
 // batch re-renders the screen, and a row that has not changed is not drawn or
 // parsed again.
+function Receipt({ entry, onWatch }: {
+  entry: Extract<ThreadEntry, { kind: "receipt" }>
+  onWatch: () => void
+}) {
+  // A deny is not a success, so it does not wear the success colours.
+  const denied = entry.recorded === "deny" || entry.recorded === "deny-explain"
+  const dim = denied ? "text-muted-foreground" : "text-ok-dim"
+  const record: Array<[string, string]> = [
+    ["Decision", entry.recorded],
+    ["Decided on", entry.client],
+    ...(entry.credential ? [["Credential", entry.credential] as [string, string]] : []),
+    ["Checkpoint", entry.checkpoint],
+    ...(entry.decidedAfter ? [["Decided after", entry.decidedAfter] as [string, string]] : []),
+  ]
+  return (
+    <View className="gap-3">
+      <View className={cn("gap-[7px] rounded-2xl border px-4 py-[15px]", denied ? "border-border bg-card" : "border-ok-border bg-ok-bg")}>
+        <View className="flex-row items-center gap-2.5">
+          <View className={cn("h-[9px] w-[9px] rounded-full", denied ? "bg-faint" : "bg-success")} />
+          <Text className={cn("font-sans-semibold text-[19px] leading-[24px] tracking-[-0.015em]", denied ? "text-strong" : "text-ok-fg")}>{entry.decision}</Text>
+        </View>
+        {/* The checkpoint comes before the run, so the line names it first.
+            It is named by the commit the daemon recorded, which is the only
+            name the receipt carries for it. */}
+        {entry.checkpointTaken ? (
+          <Text className={cn("font-sans text-[13px] leading-[20px]", dim)}>
+            Checkpoint <Text className="font-mono text-[12px]">{entry.checkpoint}</Text>{" "}
+            {entry.ranFor
+              ? <>was taken first, then it ran in <Text className="font-mono text-[12px]">{entry.ranFor}</Text>.</>
+              : "was taken first."}
+          </Text>
+        ) : null}
+        <Text className={cn("font-sans text-[13px] leading-[20px]", dim)}>{entry.operation}</Text>
+        {entry.explanation ? <Text className={cn("font-sans text-[13px] leading-[20px]", dim)}>{entry.explanation}</Text> : null}
+      </View>
+      <View className="overflow-hidden rounded-2xl border border-border">
+        <Text variant="label" className="border-b border-border px-[15px] py-[11px] tracking-[0.13em]">RECORDED AS</Text>
+        {record.map(([key, value], index) => (
+          <View
+            key={key}
+            accessible
+            accessibilityLabel={`${key}, ${value}`}
+            className={cn("flex-row items-baseline gap-3 bg-card px-[15px] py-[11px]", index > 0 && "border-t border-border")}
+          >
+            <Text className="font-sans text-[12.5px] text-muted-foreground">{key}</Text>
+            <Text className="flex-1 text-right font-mono text-[12px] text-strong">{value}</Text>
+          </View>
+        ))}
+      </View>
+      {/* The note speaks of a phone's credential, so it is shown only for a
+          decision a phone made. */}
+      {entry.client === "phone" ? (
+        <Text className="font-sans text-[12px] leading-[19px] text-faint">
+          The audit row names this phone's verified credential, not the label you gave it. Renaming the device later does not rewrite the record.
+        </Text>
+      ) : null}
+      <Button title="Watch the rest of the turn" shape="block" onPress={onWatch} />
+      <Text className="font-sans text-[12px] leading-[19px] text-faint">Reverting happens on a desktop. A phone answers what a machine proposed; it does not rewind the work.</Text>
+    </View>
+  )
+}
+
 const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWatch: () => void }) {
-  if (entry.kind === "receipt") {
-    return (
-      <Card className="gap-3 border-ok-border bg-ok-bg">
-        <View className="flex-row items-center gap-2">
-          <View className="h-2 w-2 rounded-full bg-success" />
-          <Text variant="nav" className="text-ok-fg">{entry.decision}</Text>
-        </View>
-        <Text variant="meta" className="text-ok-dim">{entry.operation}</Text>
-        {entry.explanation ? <Text variant="meta" className="text-ok-dim">{entry.explanation}</Text> : null}
-        <View className="gap-2 rounded-xl border border-border bg-card p-3">
-          <Text variant="label">RECORDED AS</Text>
-          <Text variant="machine">Attribution · {entry.attribution}</Text>
-          <Text variant="machine">Checkpoint · {entry.checkpoint}</Text>
-          {entry.duration ? <Text variant="machine">Duration · {entry.duration}</Text> : null}
-        </View>
-        <Button title="Watch the rest of the turn" shape="block" onPress={onWatch} />
-        <Text variant="note">Reverting happens on a desktop. A phone answers what a machine proposed; it does not rewind the work.</Text>
-      </Card>
-    )
-  }
+  if (entry.kind === "receipt") return <Receipt entry={entry} onWatch={onWatch} />
+
   if (entry.kind === "policy-refusal") return null
   if (entry.kind === "message" && entry.voice === "you") {
     return (

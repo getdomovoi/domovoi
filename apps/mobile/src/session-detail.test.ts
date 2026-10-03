@@ -107,7 +107,10 @@ describe("threadEntries", () => {
 })
 
 describe("threadEntries receipt", () => {
-  it("names the outcome, who decided, the credential, the checkpoint and how long it took", () => {
+  // decisionDurationMs is how long the gate waited for an answer; ranForMs is
+  // how long the allowed command took once answered. The design's "ran in" is
+  // the second, so the two are carried apart.
+  it("names the outcome, who decided, the credential, the checkpoint and how long it ran", () => {
     const snapshot = workspace()
     snapshot.thread = [{
       id: "t-receipt",
@@ -119,6 +122,7 @@ describe("threadEntries receipt", () => {
       client: "phone",
       clientId: "device-fcbd4c3f99c7294586f0c5ca22f9cdf8",
       decisionDurationMs: 38_400,
+      ranForMs: 12_300,
       createdAt: "2026-08-25T21:52:00.000Z",
     }]
 
@@ -128,12 +132,68 @@ describe("threadEntries receipt", () => {
       id: "t-receipt",
       kind: "receipt",
       decision: "Allowed once",
+      recorded: "allow-once",
       operation: "pnpm -w prisma migrate deploy",
       explanation: undefined,
-      attribution: "phone · device fcbd…cdf8",
+      client: "phone",
+      credential: "device fcbd…cdf8",
       checkpoint: "8f3c1de",
-      duration: "38s",
+      checkpointTaken: true,
+      ranFor: "12s",
+      decidedAfter: "38s",
     })
+  })
+
+  it("says minutes for a command that ran past one", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "t-receipt",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "always-project",
+      operation: "pnpm test",
+      checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+      client: "phone",
+      ranForMs: 252_000,
+      createdAt: "2026-08-25T21:52:00.000Z",
+    }]
+
+    expect(threadEntries(snapshot, "session-billing").entries[0]).toMatchObject({
+      checkpointTaken: true,
+      ranFor: "4m 12s",
+    })
+  })
+
+  // Only an allow takes a checkpoint before the command, and only when the
+  // daemon could take one. A deny records the session's reference instead.
+  it("does not claim a checkpoint was taken for a deny or when none could be", () => {
+    const snapshot = workspace()
+    snapshot.thread = [
+      {
+        id: "t-deny",
+        sessionId: "session-billing",
+        kind: "receipt",
+        decision: "deny",
+        operation: "pnpm test",
+        checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+        client: "phone",
+        createdAt: "2026-08-25T21:52:00.000Z",
+      },
+      {
+        id: "t-none",
+        sessionId: "session-billing",
+        kind: "receipt",
+        decision: "allow-once",
+        operation: "pnpm test",
+        checkpoint: "unavailable",
+        client: "phone",
+        createdAt: "2026-08-25T21:53:00.000Z",
+      },
+    ]
+
+    const { entries } = threadEntries(snapshot, "session-billing")
+
+    expect(entries.map((entry) => entry.kind === "receipt" && entry.checkpointTaken)).toEqual([false, false])
   })
 
   it("keeps the explanation with the decision and the facts with the record", () => {
@@ -157,9 +217,12 @@ describe("threadEntries receipt", () => {
       decision: "Denied with an explanation",
       operation: "rm -rf node_modules",
       explanation: "Not on the release branch.",
-      attribution: "web",
+      client: "web",
+      credential: undefined,
       checkpoint: "no checkpoint",
-      duration: undefined,
+      checkpointTaken: false,
+      ranFor: undefined,
+      decidedAfter: undefined,
     })
   })
 })

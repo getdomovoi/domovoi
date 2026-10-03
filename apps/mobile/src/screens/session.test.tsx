@@ -169,29 +169,71 @@ describe("SessionScreen pinned plan", () => {
 })
 
 describe("SessionScreen decision receipt", () => {
-  it("turns an allowed receipt into the v2 receipt with its watch action and desktop boundary", async () => {
-    const { props } = await draw()
-    const detail = {
-      ...props.detail,
-      approvalId: undefined,
-      entries: [{
-        id: "receipt-1",
-        kind: "receipt" as const,
-        decision: "Allowed once",
-        operation: "pnpm -w prisma migrate deploy",
-        explanation: undefined,
-        attribution: "phone · device fcbd…cdf8",
-        checkpoint: "8f3c1de",
-        duration: "38s",
-      }],
-    }
+  const allowed = {
+    id: "receipt-1",
+    kind: "receipt" as const,
+    decision: "Allowed once",
+    recorded: "allow-once" as "allow-once" | "deny",
+    operation: "pnpm -w prisma migrate deploy",
+    explanation: undefined,
+    client: "phone",
+    credential: "device fcbd…cdf8",
+    checkpoint: "8f3c1de",
+    checkpointTaken: true,
+    ranFor: "12s",
+    decidedAfter: "38s",
+  }
 
-    await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={detail} /></SafeAreaProvider>)
+  async function drawReceipt(entry: typeof allowed | (Omit<typeof allowed, "ranFor" | "credential"> & { ranFor: undefined, credential: undefined })) {
+    const { props } = await draw()
+    await render(
+      <SafeAreaProvider initialMetrics={metrics}>
+        <SessionScreen {...props} detail={{ ...props.detail, approvalId: undefined, entries: [entry] }} />
+      </SafeAreaProvider>,
+    )
+  }
+
+  it("turns an allowed receipt into the v2 receipt with its watch action and desktop boundary", async () => {
+    await drawReceipt(allowed)
 
     expect(screen.getByText("Allowed once")).toBeOnTheScreen()
     expect(screen.getByText("RECORDED AS")).toBeOnTheScreen()
     expect(screen.getByRole("button", { name: "Watch the rest of the turn" })).toBeOnTheScreen()
     expect(screen.getByText(/Reverting happens on a desktop/)).toBeOnTheScreen()
+  })
+
+  // Phone v2 frame 03: the checkpoint is named before the duration, the
+  // record lists what the audit row holds, and the note says the row names
+  // the credential rather than the label.
+  it("names the checkpoint taken first and how long the command ran", async () => {
+    await drawReceipt(allowed)
+
+    expect(screen.getByText("Checkpoint 8f3c1de was taken first, then it ran in 12s.")).toBeOnTheScreen()
+    for (const [key, value] of [["Decision", "allow-once"], ["Decided on", "phone"], ["Credential", "device fcbd…cdf8"], ["Checkpoint", "8f3c1de"], ["Decided after", "38s"]]) {
+      expect(screen.getByLabelText(`${key}, ${value}`)).toBeOnTheScreen()
+    }
+    expect(screen.getByText("The audit row names this phone's verified credential, not the label you gave it. Renaming the device later does not rewrite the record.")).toBeOnTheScreen()
+  })
+
+  it("names the checkpoint alone while the command has not finished", async () => {
+    await drawReceipt({ ...allowed, ranFor: undefined, credential: undefined })
+
+    expect(screen.getByText("Checkpoint 8f3c1de was taken first.")).toBeOnTheScreen()
+    expect(screen.queryByLabelText(/^Credential,/)).toBeNull()
+  })
+
+  it("does not speak of a phone's credential for a decision made elsewhere", async () => {
+    await drawReceipt({ ...allowed, client: "desktop" })
+
+    expect(screen.getByLabelText("Decided on, desktop")).toBeOnTheScreen()
+    expect(screen.queryByText(/The audit row names this phone's verified credential/)).toBeNull()
+  })
+
+  it("claims no checkpoint for a receipt that took none", async () => {
+    await drawReceipt({ ...allowed, decision: "Denied", recorded: "deny", checkpointTaken: false, ranFor: undefined, credential: undefined })
+
+    expect(screen.queryByText(/was taken first/)).toBeNull()
+    expect(screen.getByText("pnpm -w prisma migrate deploy")).toBeOnTheScreen()
   })
 })
 

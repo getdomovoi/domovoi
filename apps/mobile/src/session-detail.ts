@@ -29,11 +29,21 @@ export type ThreadEntry =
     id: string
     kind: "receipt"
     decision: string
+    // The decision as the record holds it, for the RECORDED AS rows.
+    recorded: ApprovalDecision
     operation: string
     explanation: string | undefined
-    attribution: string
+    client: string
+    credential: string | undefined
     checkpoint: string
-    duration: string | undefined
+    // True only when the daemon took this checkpoint before running the
+    // command: an allow that names a commit. A deny records the session's
+    // reference, and an allow that could not take one says unavailable.
+    checkpointTaken: boolean
+    // How long the allowed command ran, once it has finished.
+    ranFor: string | undefined
+    // How long the gate waited for this answer.
+    decidedAfter: string | undefined
   }
   | ({ id: string, kind: "policy-refusal" } & Pick<
     PolicyRefusalThreadItem,
@@ -78,6 +88,14 @@ function shortReference(reference: string): string {
   return /^[0-9a-f]{40}$/.test(reference) ? reference.slice(0, 7) : reference
 }
 
+// Seconds, and minutes past one, rounded to the second the daemon measured in.
+function elapsed(ms: number): string {
+  const seconds = Math.round(ms / 1_000)
+  if (seconds < 60) return `${seconds}s`
+  const rest = seconds % 60
+  return rest === 0 ? `${Math.floor(seconds / 60)}m` : `${Math.floor(seconds / 60)}m ${rest}s`
+}
+
 function credentialReference(clientId: string): string {
   const normalized = clientId.replace(/^device-/, "device ")
   if (normalized.length <= 16) return normalized
@@ -106,20 +124,20 @@ function entryFor(item: ThreadItem): ThreadEntry {
         meta: item.commit ? item.commit.slice(0, 7) : undefined,
       }
     case "receipt": {
-      const attribution = item.clientId
-        ? `${item.client} · ${credentialReference(item.clientId)}`
-        : item.client
+      const allowed = item.decision === "allow-once" || item.decision === "always-project"
       return {
         id: item.id,
         kind: "receipt",
         decision: decisionLabels[item.decision],
+        recorded: item.decision,
         operation: item.operation,
         explanation: item.explanation,
-        attribution,
+        client: item.client,
+        credential: item.clientId ? credentialReference(item.clientId) : undefined,
         checkpoint: item.checkpoint === "unavailable" ? "no checkpoint" : shortReference(item.checkpoint),
-        duration: item.decisionDurationMs === undefined
-          ? undefined
-          : `${Math.round(item.decisionDurationMs / 1_000)}s`,
+        checkpointTaken: allowed && item.checkpoint !== "unavailable",
+        ranFor: item.ranForMs === undefined ? undefined : elapsed(item.ranForMs),
+        decidedAfter: item.decisionDurationMs === undefined ? undefined : elapsed(item.decisionDurationMs),
       }
     }
     case "policy-refusal":

@@ -307,17 +307,7 @@
         "Reverting happens on a desktop",
         "was taken first, then it ran in",
         "Renaming the device later does not rewrite the record."
-      ],
-      "presence": [
-        "Allowed once",
-        "RECORDED AS",
-        "Watch the rest of the turn",
-        "Reverting happens on a desktop"
-      ],
-      "partial": {
-        "since": "2026-09-23",
-        "reason": "the 2026-09-23 design names the checkpoint by id before the duration; the receipt shows the operation there instead. It also lacks the audit-row note, which the element's copy claimed without evidence (re-read 2026-10-02)"
-      }
+      ]
     },
     {
       "id": "watching.screen",
