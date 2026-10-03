@@ -58,9 +58,37 @@ export const providerPromptWorkingPlanDeliverySchema = z.discriminatedUnion("sta
   }).strict(),
 ])
 
+// The most preview comments one message can send, and so the most one turn
+// can deliver.
+export const maximumReviewAnnotations = 20
+
+// Request identifiers are read as sent: an id is never trimmed into another.
+const reviewIdSchema = z.string().min(1).check(utf16MaxLength(256))
+
+const reviewBuildBasisSchema = z.object({
+  // The preview artifact, one variant of a group or a lone render, that the
+  // person chose for the agent to build on.
+  artifactId: reviewIdSchema,
+}).strict()
+
+// What a person sends with one message from the preview (rulings Q348 A and
+// Q342 A): the open comments they chose and the variant they chose as the
+// build basis. Only these reach the agent. A message without a review sends
+// no comment and no build basis, however many comments are open.
+export const sessionSendReviewSchema = z.object({
+  annotationIds: z.array(reviewIdSchema).max(maximumReviewAnnotations).refine(
+    (ids) => new Set(ids).size === ids.length,
+    "Each comment is sent once",
+  ),
+  buildBasis: reviewBuildBasisSchema.optional(),
+}).strict().refine(
+  (review) => review.annotationIds.length > 0 || review.buildBasis !== undefined,
+  "A review sends at least one comment or a build basis",
+)
+
 export const providerPromptAnnotationDeliverySchema = z.object({
   availableCount: nonnegativeCountSchema,
-  deliveredIds: z.array(z.string().trim().min(1).check(utf16MaxLength(256))).max(20).refine(
+  deliveredIds: z.array(z.string().trim().min(1).check(utf16MaxLength(256))).max(maximumReviewAnnotations).refine(
     (ids) => new Set(ids).size === ids.length,
     "Delivered annotation IDs must be unique",
   ),
@@ -68,6 +96,8 @@ export const providerPromptAnnotationDeliverySchema = z.object({
     budget: nonnegativeCountSchema,
     limit: nonnegativeCountSchema,
   }).strict(),
+  // Present when the message sent a build basis; it is always delivered.
+  buildBasis: reviewBuildBasisSchema.optional(),
 }).strict().superRefine((delivery, context) => {
   const accounted = delivery.deliveredIds.length
     + delivery.omitted.budget
@@ -146,6 +176,7 @@ export type ProviderPromptBudget = z.infer<typeof providerPromptBudgetSchema>
 export type ProviderPromptHandoffDelivery = z.infer<typeof providerPromptHandoffDeliverySchema>
 export type ProviderPromptWorkingPlanDelivery = z.infer<typeof providerPromptWorkingPlanDeliverySchema>
 export type ProviderPromptAnnotationDelivery = z.infer<typeof providerPromptAnnotationDeliverySchema>
+export type SessionSendReview = z.infer<typeof sessionSendReviewSchema>
 export type DeliveredPromptSkill = z.infer<typeof deliveredPromptSkillSchema>
 export type OmittedPromptSkills = z.infer<typeof omittedPromptSkillsSchema>
 export type ProviderPromptSkillDelivery = z.infer<typeof providerPromptSkillDeliverySchema>

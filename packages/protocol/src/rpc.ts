@@ -112,7 +112,7 @@ import {
   toolStatusSchema,
 } from "./identifiers.js"
 import { previewBridgeChannelSchema, previewParentOriginSchema } from "./preview-bridge.js"
-import { maximumProviderPromptCodeUnits } from "./prompt-delivery.js"
+import { maximumProviderPromptCodeUnits, sessionSendReviewSchema } from "./prompt-delivery.js"
 import {
   repositoryRevokeTrustParamsSchema,
   repositoryRevokeTrustResultSchema,
@@ -1322,6 +1322,9 @@ export const sessionSendParamsSchema = z.object({
   skillSelection: turnSkillSelectionSchema.optional(),
   attachments: z.array(sessionAttachmentSchema).max(maximumSessionAttachments).optional(),
   delivery: z.literal("next-turn-replace").optional(),
+  // The preview comments and build basis this message sends. Absent, the
+  // message sends none: open comments never ride along on their own.
+  review: sessionSendReviewSchema.optional(),
 }).strict()
 
 export const sessionCancelQueuedSendParamsSchema = z.object({

@@ -210,10 +210,13 @@ async function sendFor(sections: Sections, options: PromptRunOptions = {}) {
     clientVersion: "0.0.1",
     protocolVersion,
   })
+  // Comments reach the agent only when the message sends them (ruling Q348 A).
+  const sentComments = snapshot.annotations.map((annotation) => annotation.id)
   const sent = await rpc("session.send", {
     sessionId: snapshot.sessions[0]!.id,
     prompt: options.prompt ?? "Replay the duplicate delivery and report what changed.",
     client: "desktop",
+    ...(sentComments.length > 0 ? { review: { annotationIds: sentComments } } : {}),
   })
   socket.close()
   return { durable, initial, prompts, sent }

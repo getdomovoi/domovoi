@@ -49,6 +49,36 @@ function damage(path: string, statement: string, ...values: string[]) {
   } finally { database.close() }
 }
 
+describe("a queued send's review", () => {
+  it("survives a restart with the comments and build basis it names, and nothing else", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-queued-review-"))
+    scratchDirectories.push(scratch)
+    const path = join(scratch, "state.sqlite")
+    const review = { annotationIds: ["annotation-replay-copy"], buildBasis: { artifactId: "artifact-preview" } }
+    const writer = new SqliteWorkspaceStore(path, demoWorkspace)
+    writer.replaceQueuedSessionSend({ ...queued("session-billing", "queue-review"), review })
+    writer.replaceQueuedSessionSend(queued("session-audit", "queue-plain"))
+    await writer.close()
+
+    const reader = new SqliteWorkspaceStore(path, demoWorkspace)
+    try {
+      const loaded = new Map(reader.loadQueuedSessionSends().map((send) => [send.id, send]))
+      expect(loaded.get("queue-review")?.review).toEqual(review)
+      expect(loaded.get("queue-plain")).not.toHaveProperty("review")
+    } finally { await reader.close() }
+  })
+
+  it("refuses to store a review the wire would refuse", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    try {
+      expect(() => store.replaceQueuedSessionSend({
+        ...queued("session-billing", "queue-empty-review"),
+        review: { annotationIds: [] },
+      })).toThrow()
+    } finally { await store.close() }
+  })
+})
+
 describe("queued sends that cannot be read", () => {
   it.each([
     ["a truncated payload", "UPDATE queued_session_sends SET payload = substr(payload, 1, 20) WHERE queue_id = ?"],

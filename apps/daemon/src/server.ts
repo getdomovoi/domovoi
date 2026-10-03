@@ -221,6 +221,7 @@ import {
   AnnotationVisualContextService,
   type AnnotationVisualContextReader,
 } from "./annotation-visual-context.js"
+import { AnnotationReviewError, resolveAnnotationReview } from "./annotation-context.js"
 import {
   composeProviderPrompt,
   PromptCompositionLimitError,
@@ -4076,6 +4077,7 @@ export class DomovoiDaemon {
       prompt: params.prompt,
       ...(params.skillSelection ? { skillSelection: params.skillSelection } : {}),
       ...(params.attachments ? { uploads: params.attachments } : {}),
+      ...(params.review ? { review: params.review } : {}),
       ...(credentialDeviceId ? { credentialDeviceId } : {}),
     }
     this.#store.replaceQueuedSessionSend?.(queued)
@@ -4185,6 +4187,7 @@ export class DomovoiDaemon {
         client: queued.origin.client,
         ...(queued.skillSelection ? { skillSelection: queued.skillSelection } : {}),
         ...(queued.uploads ? { attachments: queued.uploads } : {}),
+        ...(queued.review ? { review: queued.review } : {}),
       },
     }), signal)
     const result = await response
@@ -9865,6 +9868,16 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, invalidParams, "Queued sends require an authenticated connection identity")
             return
           }
+          // Checked now so a bad review is refused while the person is there,
+          // and again when the send is released, since a comment can close
+          // in between.
+          try {
+            resolveAnnotationReview(this.#snapshot, session.id, params.review)
+          } catch (error) {
+            if (!(error instanceof AnnotationReviewError)) throw error
+            this.#error(socket, request.id, invalidParams, error.message)
+            return
+          }
           this.#replaceQueuedSessionSend(
             params,
             actor,
@@ -9936,9 +9949,14 @@ export class DomovoiDaemon {
             requireTrustedSkills:
               session.runtime.permissionMode === "build" && session.runtime.auto,
             ...(params.skillSelection ? { skillSelection: params.skillSelection } : {}),
+            ...(params.review ? { review: params.review } : {}),
           })
           preparedTurn.visualContexts.push(...attachments)
         } catch (error) {
+          if (error instanceof AnnotationReviewError) {
+            this.#error(socket, request.id, invalidParams, error.message)
+            return
+          }
           if (error instanceof SessionAttachmentError) {
             this.#error(socket, request.id, invalidParams, error.message, error.refusal)
             return

@@ -82,6 +82,11 @@ function annotation(index: number): Annotation {
   }
 }
 
+// The message sends every comment in the snapshot (rulings Q348 A, Q342 A).
+function sendingAll(snapshot: WorkspaceSnapshot) {
+  return { review: { annotationIds: snapshot.annotations.map((annotation) => annotation.id) } }
+}
+
 function input(snapshot: WorkspaceSnapshot, userPrompt: string) {
   return {
     snapshot,
@@ -125,6 +130,7 @@ describe("composeProviderPrompt budget", () => {
 
     const result = await composeProviderPrompt({
       ...input(snapshot, "u".repeat(250_000)),
+      ...sendingAll(snapshot),
       skillCatalog: fixture.catalog,
     })
 
@@ -174,7 +180,7 @@ describe("composeProviderPrompt budget", () => {
     const snapshot = baseSnapshot()
     snapshot.annotations = Array.from({ length: 10 }, (_, index) => annotation(index))
 
-    const result = await composeProviderPrompt(input(snapshot, "u".repeat(250_000)))
+    const result = await composeProviderPrompt({ ...input(snapshot, "u".repeat(250_000)), ...sendingAll(snapshot) })
 
     expect(result.prompt.length).toBeLessThanOrEqual(maximumProviderPromptCodeUnits)
     expect(result.providerPromptDelivery.annotations.omitted.budget).toBeGreaterThan(0)
@@ -201,6 +207,7 @@ describe("composeProviderPrompt budget", () => {
 
     const result = await composeProviderPrompt({
       ...input(snapshot, "u".repeat(257_000)),
+      ...sendingAll(snapshot),
       capabilities: { vision: true },
       annotationVisualContext: { read },
     })
@@ -237,13 +244,50 @@ describe("composeProviderPrompt budget", () => {
   })
 })
 
+describe("composeProviderPrompt review", () => {
+  it("carries no comment the message did not send, however many are open", async () => {
+    const snapshot = baseSnapshot()
+    snapshot.annotations = [annotation(1), annotation(2)]
+
+    const result = await composeProviderPrompt(input(snapshot, "Ship it"))
+
+    expect(result.prompt).toBe("Ship it")
+    expect(result.providerPromptDelivery.annotations).toEqual({
+      availableCount: 0, deliveredIds: [], omitted: { budget: 0, limit: 0 },
+    })
+  })
+
+  it("keeps the build basis after the budget has dropped every comment", async () => {
+    const snapshot = baseSnapshot()
+    const sessionId = snapshot.sessions[0]!.id
+    snapshot.annotations = [annotation(1)]
+    snapshot.artifacts = [{
+      id: "artifact-preview-b", sessionId, title: "Checkout B", type: "preview", revision: 2,
+      variant: { id: "variant-b", groupId: "checkout", label: "B", order: 1 },
+    }]
+    const request = {
+      ...input(snapshot, "Build it"),
+      review: { annotationIds: ["annotation-1"], buildBasis: { artifactId: "artifact-preview-b" } },
+    }
+    const full = await composeProviderPrompt(request)
+    expect(full.providerPromptDelivery.annotations.deliveredIds).toEqual(["annotation-1"])
+
+    const tight = await composeProviderPrompt({ ...request, budgetCodeUnits: full.prompt.length - 1 })
+    expect(tight.providerPromptDelivery.annotations).toEqual({
+      availableCount: 1, deliveredIds: [], omitted: { budget: 1, limit: 0 }, buildBasis: { artifactId: "artifact-preview-b" },
+    })
+    expect(tight.prompt).toContain('"buildBasis":{"artifactId":"artifact-preview-b","artifactTitle":"Checkout B","artifactRevision":2,"variant":{"id":"variant-b","groupId":"checkout","label":"B"}}')
+    expect(tight.prompt).not.toContain("Review 1")
+  })
+})
+
 describe("composeProviderPrompt budget option", () => {
   it("keeps a prompt under the configured budget untouched", async () => {
     const snapshot = baseSnapshot()
     const fixture = skillFixture()
     snapshot.annotations = [annotation(1)]
     snapshot.skillEnablements = [fixture.review]
-    const request = { ...input(snapshot, "Ship it"), skillCatalog: fixture.catalog }
+    const request = { ...input(snapshot, "Ship it"), ...sendingAll(snapshot), skillCatalog: fixture.catalog }
 
     const unbounded = await composeProviderPrompt(request)
     const bounded = await composeProviderPrompt({
@@ -331,6 +375,7 @@ describe("composeProviderPrompt drop order", () => {
     ]
     const request = {
       ...input(snapshot, "Continue"),
+      ...sendingAll(snapshot),
       skillCatalog: {
         list: vi.fn(async () => [alpha.summary, beta.summary]),
         read: vi.fn(async (skillId: string) =>
