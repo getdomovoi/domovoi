@@ -106,9 +106,13 @@ function entryFor(item: ThreadItem): ThreadEntry {
         meta: item.commit ? item.commit.slice(0, 7) : undefined,
       }
     case "receipt": {
+      // Ruling Q424 A: the paired device the daemon verified on the deciding
+      // connection names the decider, label first as the design's line reads;
+      // a receipt without one names the client alone.
+      const decider = item.device ? `${item.device.label} · ${item.client}` : item.client
       const attribution = item.clientId
-        ? `${item.client} · ${credentialReference(item.clientId)}`
-        : item.client
+        ? `${decider} · ${credentialReference(item.clientId)}`
+        : decider
       return {
         id: item.id,
         kind: "receipt",

@@ -2,6 +2,7 @@
 "@getdomovoi/protocol": minor
 "@getdomovoi/daemon": minor
 "@getdomovoi/ui": patch
+"@getdomovoi/mobile": patch
 ---
 
 A receipt now names the paired device that decided. The receipt thread item and the approval
@@ -13,6 +14,6 @@ paired device and writes none, and an archive resumed at startup has no connecti
 none. Renaming the device later does not rewrite a receipt.
 
 The web and desktop receipt reads the label from the wire, before the client kind, as
-`decided from dana · phone, connection ...`; history rows read `decided on dana · phone`. A
-receipt without a device, from the daemon credential or a snapshot written before the field,
-reads as before.
+`decided from dana · phone, connection ...`; history rows read `decided on dana · phone`; the
+phone and tablet receipt reads `dana · phone · device fcbd…cdf8`. A receipt without a device,
+from the daemon credential or a snapshot written before the field, reads as before.

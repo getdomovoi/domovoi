@@ -136,6 +136,29 @@ describe("threadEntries receipt", () => {
     })
   })
 
+  // Ruling Q424 A: the paired device's label travels on the receipt, so the
+  // attribution reads as the design's line does, label first, then the client
+  // and the credential; a receipt without one reads as before.
+  it("names the paired device's label first when the receipt carries it", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "t-receipt",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "pnpm -w prisma migrate deploy",
+      checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+      client: "phone",
+      clientId: "device-fcbd4c3f99c7294586f0c5ca22f9cdf8",
+      device: { id: "device-fcbd4c3f99c7294586f0c5ca22f9cdf8", label: "dana" },
+      createdAt: "2026-08-25T21:52:00.000Z",
+    }]
+
+    const { entries } = threadEntries(snapshot, "session-billing")
+
+    expect(entries[0]).toMatchObject({ kind: "receipt", attribution: "dana · phone · device fcbd…cdf8" })
+  })
+
   it("keeps the explanation with the decision and the facts with the record", () => {
     const snapshot = workspace()
     snapshot.thread = [{
