@@ -55,6 +55,8 @@ describe("desktop daemon assembly", () => {
       "captureInheritedCredentials",
       "holdServiceHandoffFence",
       "installDaemonService",
+      "nodeRuntimeFileSystem",
+      "prepareDaemonRuntime",
       "readDaemonServiceRuntimeCopy",
       "readDaemonServiceRuntimeVersion",
       "readDaemonServiceStatus",

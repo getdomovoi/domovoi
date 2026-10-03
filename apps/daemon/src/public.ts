@@ -57,3 +57,14 @@ export {
   type DaemonRuntimeCleanupOptions,
   type DaemonRuntimeCleanupResult,
 } from "./service/runtime-cleanup.js"
+export {
+  daemonRuntimeLayout,
+  nodeRuntimeFileSystem,
+  prepareDaemonRuntime,
+  profileRuntimeDirectory,
+  stageDaemonRuntime,
+  type DaemonRuntimeStageInput,
+  type PreparedDaemonRuntime,
+  type RuntimeEntry,
+  type RuntimeFileSystem,
+} from "./service/runtime-stage.js"

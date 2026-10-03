@@ -263,7 +263,7 @@ test("keeps the conpty files a Windows package needs", async () => {
 })
 
 // The copy the app makes of the shipped tree (nodeRuntimeFileSystem in
-// src/main/daemon-service.ts) is fs.cp with verbatimSymlinks under Electron's
+// apps/daemon/src/service/runtime-stage.ts) is fs.cp with verbatimSymlinks under Electron's
 // Node 24.21.0, which gives each link the type of what the source link names.
 // Node 22's fs.cp, which this suite also runs under, gives no type. Node on
 // Windows then picks one from the copy, where the directory a link names may
