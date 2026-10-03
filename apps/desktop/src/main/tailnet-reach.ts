@@ -67,6 +67,12 @@ function detail(text: string): string {
   return trimmed.length <= maximumDetailLength ? trimmed : `${trimmed.slice(0, maximumDetailLength - 1)}…`
 }
 
+// The first line tailscale cert wrote, ending in one full stop, or its exit.
+function certificateRefusal(result: TailscaleResult): string {
+  const first = (result.stderr.trim().split("\n")[0] ?? "").trim().replace(/[.\s]+$/u, "").slice(0, 300)
+  return `${first || `tailscale cert exited with ${result.code ?? "a signal"}`}.`
+}
+
 function tailscaleAddress(addresses: unknown): string | undefined {
   if (!Array.isArray(addresses)) return undefined
   const strings = addresses.filter((value): value is string => typeof value === "string")
@@ -195,13 +201,11 @@ export class TailnetReach {
       if (issued === "missing") return { ok: false, reason: "none", step: "certificate", message: "Domovoi found no tailscale command on this computer." }
       if (issued.code !== 0) {
         const words = detail(issued.stderr)
-        // Tailscale's words when the tailnet's admin has not turned on HTTPS.
-        if (/does not support getting TLS certs|HTTPS (?:cert(?:ificate)?s? )?(?:support )?(?:is |are )?not enabled|enable HTTPS/iu.test(words)) {
-          return { ok: false, reason: "https-off", step: "certificate", message: httpsOff, ...(words ? { detail: words } : {}) }
-        }
+        // No cause is read into Tailscale's words: the message carries its
+        // first line as it is, and the detail the rest.
         return {
           ok: false, reason: "failed", step: "certificate",
-          message: `Tailscale did not issue a certificate for ${name}. Nothing was stored and nothing restarted.`,
+          message: `Tailscale did not issue a certificate for ${name}: ${certificateRefusal(issued)} Nothing was stored and nothing restarted.`,
           ...(words ? { detail: words } : {}),
         }
       }

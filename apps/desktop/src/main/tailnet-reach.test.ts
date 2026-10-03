@@ -191,23 +191,25 @@ describe("turning TailnetReach on", () => {
     expect(calls).toEqual(["preflight", "tailscale status --json"])
   })
 
-  it("stores nothing and restarts nothing when Tailscale does not issue the certificate", async () => {
-    const { reach, calls, files, record } = harness({ cert: { code: 1, stderr: "500 Internal Server Error: your Tailscale account does not support getting TLS certs\n" } })
+  // Domovoi has no sample of Tailscale's own refusal wording, so it guesses no
+  // cause from stderr: the message names the first line, whatever it says.
+  it("stores nothing and restarts nothing when Tailscale does not issue the certificate, in Tailscale's first line", async () => {
+    const { reach, calls, files, record } = harness({ cert: { code: 1, stderr: "some refusal from the control server.\nsecond line\n" } })
     await expect(reach.turnOn()).resolves.toEqual({
-      ok: false, reason: "https-off", step: "certificate", message: "HTTPS certificates are off for tail4c2e.ts.net.",
-      detail: "500 Internal Server Error: your Tailscale account does not support getting TLS certs",
+      ok: false, reason: "failed", step: "certificate",
+      message: `Tailscale did not issue a certificate for ${name}: some refusal from the control server. Nothing was stored and nothing restarted.`,
+      detail: "some refusal from the control server.\nsecond line",
     })
     expect(calls.at(-1)).toBe(`remove directory ${tls}/.pending-1`)
     expect(files.size).toBe(0)
     expect(record()).toBeUndefined()
   })
 
-  it("says Tailscale's words when the certificate fails for another reason", async () => {
-    const { reach } = harness({ cert: { code: 1, stderr: "context deadline exceeded" } })
+  it("names the exit code when Tailscale says nothing", async () => {
+    const { reach } = harness({ cert: { code: 3, stderr: "" } })
     await expect(reach.turnOn()).resolves.toEqual({
       ok: false, reason: "failed", step: "certificate",
-      message: `Tailscale did not issue a certificate for ${name}. Nothing was stored and nothing restarted.`,
-      detail: "context deadline exceeded",
+      message: `Tailscale did not issue a certificate for ${name}: tailscale cert exited with 3. Nothing was stored and nothing restarted.`,
     })
   })
 
