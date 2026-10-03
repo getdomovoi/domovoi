@@ -48,7 +48,7 @@ export function decisionSummary(receipt: Receipt): { verdict: string, rule: stri
 export function recoveryNote(receipt: Receipt, checkpointTaken = false): string {
   const ran = receipt.ranForMs === undefined ? undefined : runTime(receipt.ranForMs)
   if (checkpointTaken && receipt.checkpoint !== "unavailable") {
-    const taken = `Checkpoint ${shortReference(receipt.checkpoint)} was taken first${ran ? `, then it ran in ${ran}` : ""}.`
+    const taken = `Checkpoint ${shortReference(receipt.checkpoint, checkpointRowLength)} was taken first${ran ? `, then it ran in ${ran}` : ""}.`
     return `${taken} Going back to it restores files in the worktree; it cannot undo effects outside it.`
   }
   const ranNote = ran ? ` It ran in ${ran}.` : ""
@@ -82,9 +82,13 @@ export function receiptCheckpointTaken(receipt: Receipt, thread: readonly Thread
 
 // Only a full commit SHA is safe to shorten. Every other id the daemon may put
 // here is a name, and half a name is a different name.
-function shortReference(reference: string): string {
-  return /^[0-9a-f]{40}$/.test(reference) ? reference.slice(0, 7) : reference
+function shortReference(reference: string, length = 7): string {
+  return /^[0-9a-f]{40}$/.test(reference) ? reference.slice(0, length) : reference
 }
+
+// A checkpoint the allow took is named as its row in the thread names it: the
+// daemon labels that row with the commit's first 8 characters.
+const checkpointRowLength = 8
 
 export function ApprovalReceipt({
   receipt,
@@ -101,7 +105,7 @@ export function ApprovalReceipt({
   const { verdict, rule } = decisionSummary(receipt)
   const named = !denied && checkpointTaken && receipt.checkpoint !== "unavailable"
   const meta = denied ? "" : [
-    named ? shortReference(receipt.checkpoint) : undefined,
+    named ? shortReference(receipt.checkpoint, checkpointRowLength) : undefined,
     receipt.ranForMs === undefined ? undefined : runTime(receipt.ranForMs),
   ].filter(Boolean).join(" · ")
   const decidedFrom = receipt.connectionId

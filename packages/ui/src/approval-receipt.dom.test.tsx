@@ -92,19 +92,20 @@ const sha = `abcdef1${"0".repeat(33)}`
 // Since 5ee18251 a person's allow takes a checkpoint before the command runs
 // and the receipt names it; ranForMs follows once the command completes. The
 // design: meta "ckpt_7f24 · 38s", body "Checkpoint ckpt_7f24 was taken first,
-// then it ran in 38s".
+// then it ran in 38s". The checkpoint is named by the same 8 characters its
+// row in the thread shows ("abcdef10 · before an approved command").
 it("names the checkpoint taken before the command and how long it ran", () => {
   render(<ApprovalReceipt receipt={receipt({ checkpoint: sha, ranForMs: 38_000 })} checkpointTaken />)
-  expect(screen.getByText("abcdef1 · 38s")).toBeTruthy()
-  expect(screen.getByText(/^Checkpoint abcdef1 was taken first, then it ran in 38s\. /u)).toBeTruthy()
+  expect(screen.getByText("abcdef10 · 38s")).toBeTruthy()
+  expect(screen.getByText(/^Checkpoint abcdef10 was taken first, then it ran in 38s\. /u)).toBeTruthy()
   expect(screen.getByText(/cannot undo effects outside it/u)).toBeTruthy()
   expect(screen.queryByText(/Recorded against/u)).toBeNull()
 })
 
 it("names the checkpoint before the command has finished", () => {
   render(<ApprovalReceipt receipt={receipt({ checkpoint: sha })} checkpointTaken />)
-  expect(screen.getByText("abcdef1")).toBeTruthy()
-  expect(screen.getByText(/^Checkpoint abcdef1 was taken first\. /u)).toBeTruthy()
+  expect(screen.getByText("abcdef10")).toBeTruthy()
+  expect(screen.getByText(/^Checkpoint abcdef10 was taken first\. /u)).toBeTruthy()
 })
 
 it.each([
@@ -114,7 +115,7 @@ it.each([
   [3_720_000, "1h 02m"],
 ])("reads %i ms of run time as %s", (ranForMs, text) => {
   render(<ApprovalReceipt receipt={receipt({ checkpoint: sha, ranForMs })} checkpointTaken />)
-  expect(screen.getByText(`abcdef1 · ${text}`)).toBeTruthy()
+  expect(screen.getByText(`abcdef10 · ${text}`)).toBeTruthy()
 })
 
 // A receipt written before the change holds the session's base commit, and
@@ -162,7 +163,7 @@ it("finds the checkpoint row taken at the decision in the thread", () => {
     />,
   )
   const receipts = screen.getAllByRole("region", { name: "Decision receipt" })
-  expect(receipts[0]!.textContent).toContain("Checkpoint abcdef1 was taken first, then it ran in 38s.")
+  expect(receipts[0]!.textContent).toContain("Checkpoint abcdef10 was taken first, then it ran in 38s.")
   expect(receipts[1]!.textContent).not.toContain("was taken first")
   expect(receipts[1]!.textContent).toContain("Recorded against bbbbbbb.")
 })
