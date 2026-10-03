@@ -96,9 +96,11 @@ it.each([
 })
 
 it.each([
+  // A standing rule allows without a person, and J34 checkpoints only a
+  // person's allow, so the row says so in Build as it does with Auto.
   ["build", false, [
     "Write and run inside the worktree. Gates still stop it for your decision.",
-    "Take a checkpoint before any command you allow, so the worktree can go back to it.",
+    "Take a checkpoint before any command you allow at a gate. A command a rule allows runs without one.",
   ]],
   ["build", true, [
     "Write and run inside the worktree, step after step without stopping. Hard gates and policy refusals still stop it.",

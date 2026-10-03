@@ -27,7 +27,7 @@ export function whatItWillDoFirst(runtime: Pick<Runtime, "provider" | "permissio
   }
   return [
     { text: "Write and run inside the worktree. Gates still stop it for your decision.", tone: "success" },
-    { text: "Take a checkpoint before any command you allow, so the worktree can go back to it.", tone: "info" },
+    { text: "Take a checkpoint before any command you allow at a gate. A command a rule allows runs without one.", tone: "info" },
   ]
 }
 
