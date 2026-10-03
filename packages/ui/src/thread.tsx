@@ -98,6 +98,7 @@ import { ApprovalCard } from "./approval-card"
 import { DaemonRpcError } from "./client"
 import { slashIntent, type SlashIntentContext } from "./composer-slash"
 import { ThreadComposer } from "./thread-composer"
+import { attachmentName, desktopInlineLineLimit, pasteOutcome } from "./desktop-attachments"
 
 // The states name a meaning rather than a colour now, so the palette lives in
 // StatusDot alone instead of being restated per surface.
@@ -515,6 +516,7 @@ export function Thread({
     : threadFollowPillText(follow.state, follow.unseen)
   const [skillSelection, setSkillSelection] = useState<ReadonlySet<string> | undefined>(() => sessionDraftStore.read(draftSessionId).skillSelection)
   const [promptEditorOpen, setPromptEditorOpen] = useState(() => sessionDraftStore.read(draftSessionId).promptEditorOpen)
+  const [editorPasteNote, setEditorPasteNote] = useState("")
   // A send clears the prompt, which writes an empty draft, which the store reads
   // as no draft at all. So nothing has to clear it by hand.
   useEffect(() => {
@@ -1213,7 +1215,10 @@ export function Thread({
             draft={prompt}
             pending={pending}
             sendDisabled={!prompt.trim() || providerRestartRequired || emergencyStopPending}
-            onOpenChange={setPromptEditorOpen}
+            onOpenChange={(open) => {
+              setPromptEditorOpen(open)
+              setEditorPasteNote("")
+            }}
             onDraftChange={setPrompt}
             onSend={() => {
               setPromptEditorOpen(false)
@@ -1226,6 +1231,19 @@ export function Thread({
             machineReachable={snapshot.machine.reachable}
             modelLabel={active.runtime.model}
             modeLabel={permissionModeLabel(active.runtime.permissionMode, active.runtime.auto).toLowerCase()}
+            onPaste={(event) => {
+              // The same draft as the composer, so the same conversion. The
+              // file is drawn in the composer; the editor says where it went.
+              const outcome = pasteOutcome(event.clipboardData.getData("text/plain"), attachments)
+              if (outcome.kind === "inline") {
+                setEditorPasteNote(outcome.note ?? "")
+                return
+              }
+              event.preventDefault()
+              setAttachments((current) => [...current, outcome.attachment])
+              setEditorPasteNote(`${attachmentName(outcome.attachment)} goes with the message as a file. The prompt carries its first ${desktopInlineLineLimit} lines.`)
+            }}
+            pasteNote={editorPasteNote || undefined}
           />
         ) : null}
       </div>

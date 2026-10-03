@@ -103,7 +103,39 @@ it("leaves a paste past the attachment limit in the message and says why", async
 
   expect(field().value).toBe(huge)
   expect(screen.queryByRole("group", { name: /pasted-text/u })).toBeNull()
-  expect(screen.getByRole("alert").textContent).toBe("Pasted text exceeds the 256 KB attachment limit, so it stayed in the message.")
+  // The prompt is capped at 262,144 code units too, so a paste this long left
+  // in the message cannot be sent either, and the note says so.
+  expect(screen.getByRole("alert").textContent).toBe("Pasted text exceeds the 256 KB attachment limit, so it stayed in the message. A message over 262,144 characters cannot be sent.")
+})
+
+// A message needs words: the daemon refuses an empty prompt, so a file with
+// nothing typed leaves Send off. The composer says what is missing.
+it("says a message is needed to send a pasted file", async () => {
+  const user = userEvent.setup()
+  renderThread()
+  await user.click(field())
+  await user.paste(log)
+
+  expect((screen.getByRole("button", { name: "Send message" }) as HTMLButtonElement).disabled).toBe(true)
+  expect(screen.getByText("Add a message to send the file")).toBeTruthy()
+  await user.type(field(), "Why?")
+  expect(screen.queryByText("Add a message to send the file")).toBeNull()
+})
+
+// The expanded editor is the same draft in a larger field, so a long paste
+// there becomes the same file.
+it("turns a long paste in the prompt editor into the same file", async () => {
+  const user = userEvent.setup()
+  renderThread()
+  await user.click(screen.getByRole("button", { name: "Expand prompt editor" }))
+  const editor = screen.getByLabelText("Prompt editor message") as HTMLTextAreaElement
+  await user.click(editor)
+  await user.paste(log)
+
+  expect(editor.value).toBe("")
+  expect(screen.getByText("pasted-text-1.txt goes with the message as a file. The prompt carries its first 40 lines.")).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Keep as draft" }))
+  expect(screen.getByRole("group", { name: "pasted-text-1.txt" })).toBeTruthy()
 })
 
 it("numbers each pasted file and drops one without touching the other", async () => {

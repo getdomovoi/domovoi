@@ -1,15 +1,14 @@
 import { useId, useRef, useState, type ClipboardEvent, type Dispatch, type ReactNode, type SetStateAction } from "react"
 import { ArrowUpIcon, Maximize2Icon, PaperclipIcon, SquareIcon, TerminalIcon, XIcon } from "lucide-react"
-import {
-  maximumTextAttachmentBytes,
-  type ProviderModel,
-  type ProviderRuntime,
-  type Runtime,
-  type RuntimeDiscoverResult,
-  type SessionAttachment,
-  type SessionTurn,
-  type SessionUsage,
-  type UsageWindow,
+import type {
+  ProviderModel,
+  ProviderRuntime,
+  Runtime,
+  RuntimeDiscoverResult,
+  SessionAttachment,
+  SessionTurn,
+  SessionUsage,
+  UsageWindow,
 } from "@getdomovoi/protocol"
 
 import { Button } from "./components/ui/button"
@@ -30,9 +29,8 @@ import {
   attachmentName,
   desktopAttachmentLimit,
   inlineTextPreview,
-  pasteBecomesFile,
+  pasteOutcome,
   pastedText,
-  pastedTextAttachment,
   terminalOutputAttachment,
   workspacePathAttachment,
 } from "./desktop-attachments"
@@ -178,21 +176,13 @@ export function ThreadComposer({
   // the text is past the attachment limit, it stays in the field as before
   // and the composer says why.
   const pasteAsFile = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const text = event.clipboardData.getData("text/plain")
-    if (!pasteBecomesFile(text)) return
-    if (attachments.length >= desktopAttachmentLimit) {
-      setAttachmentError(`Attach up to ${desktopAttachmentLimit} items per message. The pasted text stayed in the message.`)
-      return
-    }
-    let attachment: SessionAttachment
-    try {
-      attachment = pastedTextAttachment(text, attachments)
-    } catch {
-      setAttachmentError(`Pasted text exceeds the ${maximumTextAttachmentBytes / 1024} KB attachment limit, so it stayed in the message.`)
+    const outcome = pasteOutcome(event.clipboardData.getData("text/plain"), attachments)
+    if (outcome.kind === "inline") {
+      if (outcome.note) setAttachmentError(outcome.note)
       return
     }
     event.preventDefault()
-    addAttachments([attachment])
+    addAttachments([outcome.attachment])
   }
   const takeSlashCommand = (command: SlashCommand) => {
     if (watching) return
@@ -318,6 +308,13 @@ export function ThreadComposer({
         }}
       />
       {attachmentError ? <p role="alert" className="m-0 text-[11px] text-destructive">{attachmentError}</p> : null}
+      {/* The daemon refuses a message with no words, so a file alone leaves
+          Send off. Say what is missing rather than leave it unexplained. */}
+      {attachments.length > 0 && !prompt.trim() && !readOnly ? (
+        <p className="m-0 text-[11px] text-muted-foreground">
+          {attachments.length === 1 ? "Add a message to send the file" : "Add a message to send the files"}
+        </p>
+      ) : null}
       {slashOpen ? (
         <div aria-hidden className="flex min-h-[22px] items-center gap-px">
           <span className="font-machine text-[13.5px] text-foreground">{prompt}</span>

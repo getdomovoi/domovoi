@@ -1,6 +1,7 @@
 import {
   maximumImageUploadBytes,
   maximumSessionAttachments,
+  maximumSessionPromptCharacters,
   maximumTextAttachmentBytes,
   sessionAttachmentSchema,
   type SessionAttachment,
@@ -100,6 +101,30 @@ export function pastedTextAttachment(content: string, draft: readonly SessionAtt
     mimeType: "text/plain",
     content,
   })
+}
+
+export type PasteOutcome =
+  | { kind: "inline", note?: string }
+  | { kind: "file", attachment: SessionAttachment }
+
+// What a paste becomes, for every field that takes one. A paste past the
+// inline limit goes as a file. When it cannot, because the draft holds the
+// most attachments or the text is past the attachment limit, it stays in the
+// message and the note says why, and says too when the message is then past
+// the prompt limit and cannot be sent.
+export function pasteOutcome(text: string, draft: readonly SessionAttachment[]): PasteOutcome {
+  if (!pasteBecomesFile(text)) return { kind: "inline" }
+  if (draft.length >= desktopAttachmentLimit) {
+    return { kind: "inline", note: `Attach up to ${desktopAttachmentLimit} items per message. The pasted text stayed in the message.` }
+  }
+  try {
+    return { kind: "file", attachment: pastedTextAttachment(text, draft) }
+  } catch {
+    const unsendable = text.length > maximumSessionPromptCharacters
+      ? ` A message over ${maximumSessionPromptCharacters.toLocaleString("en-US")} characters cannot be sent.`
+      : ""
+    return { kind: "inline", note: `Pasted text exceeds the ${maximumTextAttachmentBytes / 1024} KB attachment limit, so it stayed in the message.${unsendable}` }
+  }
 }
 
 export function pastedTextMeta(attachment: TextAttachment): string {
