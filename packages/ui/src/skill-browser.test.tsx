@@ -80,15 +80,15 @@ describe("skill browser", () => {
     expect(markup).toContain("Enablement is a review, and it is per project")
     expect(markup).toContain("Manual review also grants trust.")
     expect(markup).toContain("View SKILL.md")
-    expect(markup).toContain("Trust it for acme-api")
-    expect(markup).not.toContain("Revoke")
     expect(markup).toContain("Trust and revoke are the only two decisions.")
     expect(markup).toContain("sha256:")
     expect(markup).toContain("No declared capabilities")
     expect(markup).not.toContain("Settings navigation")
   })
 
-  it("shows project-scoped reviewed state and offers revoke", () => {
+  // Which decisions are offered is asserted by role in
+  // skill-browser-trust.dom.test.tsx, not by markup here.
+  it("shows project-scoped reviewed state", () => {
     const markup = renderToStaticMarkup(
       <SkillBrowser
         skills={skills}
@@ -116,7 +116,6 @@ describe("skill browser", () => {
     )
 
     expect(markup).toContain("Enabled for this project")
-    expect(markup).toContain(">Revoke<")
     expect(markup).toMatch(/acme-api · reviewed \d{2} Aug \d{2}:\d{2} by desktop/)
     expect(markup).not.toContain("Enablement does not change signature or trust state")
     expect(markup).not.toContain("does not grant trust")

@@ -70,6 +70,7 @@ it("trusts a skill for the project by enabling it and then recording the machine
 
   expect(screen.queryByRole("button", { name: "Mark reviewed on this machine" })).toBeNull()
   expect(screen.queryByRole("button", { name: /Review & / })).toBeNull()
+  expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull()
   expect(screen.getByText("Trust and revoke are the only two decisions.")).toBeTruthy()
 
   await user.click(screen.getByRole("button", { name: "Trust it for acme-api" }))
