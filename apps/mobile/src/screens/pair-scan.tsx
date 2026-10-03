@@ -87,7 +87,10 @@ function machineName(payload: PairingPayload): string {
   try { return new URL(payload.url).hostname } catch { return payload.url }
 }
 
-type Paired = { machine: string, route: string, deviceId: string | undefined }
+// client is the kind of the credential the code minted, which the machine
+// fixed when it issued the code. It can differ from the device: a tablet that
+// spends a phone's code holds a phone credential.
+type Paired = { machine: string, route: string, deviceId: string | undefined, client: HandheldClient }
 
 // The machine's id for this device, shortened the way the design draws it. The
 // token is never shown; this id is not a secret.
@@ -116,6 +119,11 @@ function PairedCard({ paired, device, onDone }: {
           <Text variant="section" className="flex-1">{`Paired with ${paired.machine}`}</Text>
         </View>
         <Text variant="machine" className="pl-[17px] text-faint">{facts}</Text>
+        {paired.client !== device ? (
+          <Text variant="meta" className="pl-[17px]">
+            {`Paired as a ${paired.client}, because the code was issued for one.`}
+          </Text>
+        ) : null}
       </View>
       <View className="flex-row items-start gap-2.5 border-t border-border pt-3">
         <View className="mt-[7px] h-1.5 w-1.5 rounded-full bg-info" />
@@ -228,7 +236,10 @@ export function PairScanScreen({
               ))}
             </View>
             <Text variant="note">
-              {`That is the scope of a credential the machine minted with domovoid pair --client ${device}; the daemon refuses everything else to it. The ${device} cannot tell that credential from the machine's own, which can do anything on that machine. Either way it stays in this ${device}'s keychain.`}
+              {/* The payload names no kind, so before the code is spent the
+                  note cannot say which one it mints; the paired card says so
+                  if the kind is not this device's. */}
+              {`That is the scope of a credential the machine minted with domovoid pair for a phone or a tablet; the daemon refuses everything else to it. The ${device} cannot tell that credential from the machine's own, which can do anything on that machine. Either way it stays in this ${device}'s keychain.`}
             </Text>
             <Text variant="label">{device === "tablet" ? "Name this tablet" : "Name this phone"}</Text>
             <TextInput
@@ -258,7 +269,7 @@ export function PairScanScreen({
                   (result) => {
                     if (attempt.current !== mine) return
                     const { deviceId, ...credential } = result
-                    setPaired({ machine: machineName(found), route: route(found.url).kind, deviceId })
+                    setPaired({ machine: machineName(found), route: route(found.url).kind, deviceId, client: credential.client })
                     onPaired(credential)
                   },
                   (cause: unknown) => {

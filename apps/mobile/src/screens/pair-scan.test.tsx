@@ -68,13 +68,39 @@ describe("pairing by camera", () => {
     await render(
       <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPad" onDone={jest.fn()} device="tablet" />,
     )
-    expect(screen.getByText(/domovoid pair --client tablet/)).toBeTruthy()
+    // Before the code is spent the phone cannot know which kind it mints (the
+    // payload carries none), so the note names the device holding the
+    // credential and not the credential's kind.
+    expect(screen.getByText(/minted with domovoid pair for a phone or a tablet/)).toBeTruthy()
     expect(screen.getByText(/stays in this tablet's keychain/)).toBeTruthy()
-    expect(screen.queryByText(/--client phone|this phone's keychain/)).toBeNull()
+    expect(screen.queryByText(/--client (phone|tablet)|this phone's keychain/)).toBeNull()
     // The field the machine's device list will show names the tablet too.
     expect(screen.getByText("Name this tablet")).toBeTruthy()
     expect(screen.getByLabelText("Tablet name")).toBeTruthy()
     expect(screen.queryByText("Name this phone")).toBeNull()
+  }, cold)
+
+  // The kind is the credential's, which the machine fixed when it issued the
+  // code. A tablet that spends a phone's code holds a phone credential, and
+  // the paired card says so.
+  it("says when the credential's kind is not the device's", async () => {
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => ({ ...credential, client: "phone" as const })} deviceName="iPad" onDone={jest.fn()} device="tablet" />,
+    )
+    await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    await waitFor(() => expect(screen.getByText("Paired with djs-macbook-pro-1")).toBeOnTheScreen())
+
+    expect(screen.getByText("Paired as a phone, because the code was issued for one.")).toBeOnTheScreen()
+  }, cold)
+
+  it("says nothing about the kind when it is the device's", async () => {
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device="phone" />,
+    )
+    await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    await waitFor(() => expect(screen.getByText("Paired with djs-macbook-pro-1")).toBeOnTheScreen())
+
+    expect(screen.queryByText(/^Paired as a/)).toBeNull()
   }, cold)
 
   it("says what a wrong code is and keeps scanning", async () => {
